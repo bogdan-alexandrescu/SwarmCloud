@@ -1,0 +1,328 @@
+"""Firestore document shapes for the control plane.
+
+Firestore has no joins, so every document carries the denormalised fields the
+scheduler needs to make an admission decision without a second read. The
+scheduler's hot path reads exactly one query (READY tasks, ordered) plus the
+slot-pool documents; nothing else.
+
+Collection layout (`swarm` database, not `(default)`, so the project's default
+database stays free for other teams):
+
+    tenants/{tenant_id}
+    tasks/{task_id}
+    tasks/{task_id}/events/{event_id}
+    attempts/{attempt_id}
+    leases/{lease_id}
+    pools/{pool_name}
+    quota/{provider}:{tenant_id}
+    workflows/{workflow_id}
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from datetime import datetime, timezone
+from typing import Any
+
+from .states import TaskState, ParkReason, BlockedReason, EventType
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:20]}"
+
+
+# --------------------------------------------------------------------------
+# Slot pools
+# --------------------------------------------------------------------------
+
+@dataclass
+class SlotPool:
+    """A named concurrency budget.
+
+    `active` is the authoritative count of leases currently holding this pool.
+    It is mutated ONLY inside the admission transaction and the release
+    transaction, never by a background job, so it cannot drift under contention.
+
+    `effective_limit` is the real ceiling and is always the minimum of the
+    configured hard limit, the adaptive target, and any quota-derived cap.
+    Adaptive logic may lower it; nothing may raise it above `hard_limit`.
+    """
+
+    name: str
+    hard_limit: int
+    adaptive_target: int | None = None
+    quota_derived_limit: int | None = None
+    active: int = 0
+    enabled: bool = True
+    updated_at: datetime = field(default_factory=utcnow)
+
+    @property
+    def effective_limit(self) -> int:
+        candidates = [self.hard_limit]
+        if self.adaptive_target is not None:
+            candidates.append(self.adaptive_target)
+        if self.quota_derived_limit is not None:
+            candidates.append(self.quota_derived_limit)
+        return max(0, min(candidates))
+
+    @property
+    def available(self) -> int:
+        return max(0, self.effective_limit - self.active)
+
+    def has_capacity(self, units: int = 1) -> bool:
+        return self.enabled and self.active + units <= self.effective_limit
+
+
+def pool_names_for(
+    *,
+    tenant_id: str,
+    provider: str | None,
+    resource_class: str,
+    runner_profile: str,
+    backend: str,
+) -> list[str]:
+    """Every pool a task must simultaneously acquire.
+
+    Admission is all-or-nothing across this list. Reserving some and failing on
+    the rest would leak capacity that nothing would ever release.
+    """
+    pools = [
+        "global",
+        f"tenant:{tenant_id}",
+        f"resource:{resource_class}",
+        f"runner:{runner_profile}",
+        f"backend:{backend}",
+    ]
+    if provider:
+        pools.append(f"provider:{provider}")
+        # Provider quota is tracked per tenant because tenants bring their own
+        # keys -- one tenant's 429 must not throttle another's.
+        pools.append(f"provider:{provider}:tenant:{tenant_id}")
+    return pools
+
+
+# --------------------------------------------------------------------------
+# Leases
+# --------------------------------------------------------------------------
+
+@dataclass
+class Lease:
+    """Authoritative record that a task holds capacity.
+
+    The lease -- not the pod, not the Cloud Run execution -- is what concurrency
+    accounting counts. Infrastructure is downstream of the lease, never upstream.
+    """
+
+    lease_id: str
+    task_id: str
+    attempt_id: str
+    tenant_id: str
+    generation: int
+    pools: list[str]
+    units: int
+    state: TaskState
+    created_at: datetime
+    dispatch_deadline: datetime
+    expires_at: datetime
+    heartbeat_at: datetime | None = None
+    released_at: datetime | None = None
+    release_reason: str | None = None
+
+    @property
+    def is_released(self) -> bool:
+        return self.released_at is not None
+
+    def is_expired(self, now: datetime | None = None) -> bool:
+        return (now or utcnow()) > self.expires_at
+
+    def dispatch_overdue(self, now: datetime | None = None) -> bool:
+        """Admitted but never started. The reconciler reclaims these."""
+        return self.state is TaskState.LEASED and (now or utcnow()) > self.dispatch_deadline
+
+
+# --------------------------------------------------------------------------
+# Tasks
+# --------------------------------------------------------------------------
+
+@dataclass
+class Task:
+    id: str
+    tenant_id: str
+    created_at: datetime
+    updated_at: datetime
+    state: TaskState
+    runner_profile: str
+    resource_class: str
+    input: dict[str, Any]
+    submitted_by: str                       # verified email from the ID token
+    provider: str | None = None
+    model: str | None = None
+    priority: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    repository_url: str | None = None
+    repository_ref: str | None = None
+    timeout_seconds: int = 3600
+    max_attempts: int = 3
+    attempt_count: int = 0
+    next_eligible_at: datetime | None = None
+    park_reason: ParkReason | None = None
+    blocked_by: list[dict[str, Any]] = field(default_factory=list)
+    current_lease_id: str | None = None
+    current_generation: int = 0
+    # Workflow membership. Null for a standalone task.
+    workflow_id: str | None = None
+    step_id: str | None = None
+    depends_on: list[str] = field(default_factory=list)
+    cancel_requested: bool = False
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error: str | None = None
+    result_summary: dict[str, Any] | None = None
+    latest_checkpoint: str | None = None
+
+    def to_firestore(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["state"] = self.state.value
+        d["park_reason"] = self.park_reason.value if self.park_reason else None
+        return d
+
+
+@dataclass
+class Attempt:
+    """One execution of a task. A retry is a new attempt with a new generation."""
+
+    attempt_id: str
+    task_id: str
+    tenant_id: str
+    generation: int
+    lease_id: str
+    backend: str
+    created_at: datetime
+    execution_name: str | None = None       # Cloud Run execution or k8s Job name
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    exit_code: int | None = None
+    error: str | None = None
+    peak_rss_bytes: int | None = None       # feeds the sizing tuning report
+    peak_disk_bytes: int | None = None
+    oom_near_miss: bool = False
+    checkpoints: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TaskEvent:
+    event_id: str
+    task_id: str
+    tenant_id: str
+    type: EventType
+    at: datetime
+    attempt_id: str | None = None
+    lease_id: str | None = None
+    generation: int | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# Tenants, quota, workflows
+# --------------------------------------------------------------------------
+
+@dataclass
+class Tenant:
+    """A Google group, or a single user as a personal fallback tenant."""
+
+    tenant_id: str
+    kind: str                               # "group" | "user"
+    principal: str                          # eng@saga.xyz | alice@saga.xyz
+    created_at: datetime
+    display_name: str | None = None
+    max_active: int = 20
+    capacity_units: int = 40
+    monthly_budget_usd: float | None = None
+    enabled: bool = True
+    #: Providers this tenant has registered a key for. A runner whose provider
+    #: is absent parks as CREDENTIAL_MISSING rather than failing at runtime.
+    credentials: list[str] = field(default_factory=list)
+    service_account: str | None = None
+    gcs_prefix: str | None = None
+    namespace: str | None = None
+
+    def secret_name(self, provider: str) -> str:
+        return f"swarm-tenant-{self.tenant_id}-{provider}"
+
+
+class ProviderState(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    THROTTLED = "THROTTLED"
+    EXHAUSTED = "EXHAUSTED"
+    COOLDOWN = "COOLDOWN"
+    UNKNOWN = "UNKNOWN"
+    DISABLED = "DISABLED"
+
+
+@dataclass
+class QuotaState:
+    """Per (provider, tenant) health. Keyed that way because keys are per tenant."""
+
+    provider: str
+    tenant_id: str
+    state: ProviderState
+    updated_at: datetime
+    configured_hard_max: int = 50
+    adaptive_target: int | None = None
+    quota_derived_limit: int | None = None
+    requests_remaining: int | None = None
+    tokens_remaining: int | None = None
+    reset_at: datetime | None = None
+    cooldown_until: datetime | None = None
+    last_429_at: datetime | None = None
+    retry_after_seconds: int | None = None
+    success_count: int = 0
+    rate_limit_count: int = 0
+
+    @property
+    def effective_limit(self) -> int:
+        candidates = [self.configured_hard_max]
+        if self.adaptive_target is not None:
+            candidates.append(self.adaptive_target)
+        if self.quota_derived_limit is not None:
+            candidates.append(self.quota_derived_limit)
+        limit = min(candidates)
+        if self.state in (ProviderState.EXHAUSTED, ProviderState.DISABLED):
+            return 0
+        if self.state is ProviderState.COOLDOWN:
+            return 0
+        return max(0, limit)
+
+
+@dataclass
+class WorkflowStep:
+    step_id: str
+    runner_profile: str
+    input: dict[str, Any]
+    depends_on: list[str] = field(default_factory=list)
+    resource_class: str | None = None
+    #: Map of upstream step_id -> artifact filename to stage into this step's
+    #: workspace. Artifacts pass by GCS reference, never inline through Firestore.
+    input_from: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: int | None = None
+    task_id: str | None = None
+
+
+@dataclass
+class Workflow:
+    workflow_id: str
+    tenant_id: str
+    created_at: datetime
+    updated_at: datetime
+    state: TaskState
+    submitted_by: str
+    steps: list[WorkflowStep] = field(default_factory=list)
+    on_step_failure: str = "fail_workflow"   # or "continue"
+    priority: int = 0
+    cancel_requested: bool = False
