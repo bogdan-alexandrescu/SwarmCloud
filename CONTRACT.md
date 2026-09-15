@@ -51,3 +51,31 @@ If you believe it needs a change, say so in your report rather than editing it.
 - `make destroy` is label-scoped and ABORTS if the plan would delete anything
   lacking `managed-by=swarm-terraform`. The project holds a live GKE cluster
   `agents-staging`, VPC `agents-staging-vpc`, and 12 other service accounts.
+
+## Verified operational constraint — Cloud Identity group resolution
+
+Tested live against saga-agents-staging on 2026-09-15. Two calls, two different outcomes:
+
+    groups:lookup?groupKey.id=eng@saga.xyz                        WORKS
+    groups/{id}/memberships:checkTransitiveMembership             WORKS
+    groups/-/memberships:searchTransitiveGroups                   403 Error(4013)
+                                                 "Insufficient permissions to retrieve memberships"
+
+So the API MUST NOT resolve a caller's tenant by enumerating the groups they belong to.
+Instead, iterate the admin-registered tenant groups and check membership in each:
+
+    GET https://cloudidentity.googleapis.com/v1/{group_id}/memberships:checkTransitiveMembership
+        ?query=member_key_id == '<caller email>'
+    -> {"hasMembership": true|false}
+
+This needs NO org-level IAM grant, is least-privilege (the platform only ever learns about
+groups an admin deliberately registered), and requires no change to the frozen contract:
+`identity.resolve_tenant(principal, group_priority)` already takes the admin-ordered group
+list, so the API simply populates `Principal.groups` from these per-group checks.
+
+Every Cloud Identity call REQUIRES the header `x-goog-user-project: <project_id>`. Without
+it the call fails 403 SERVICE_DISABLED naming gcloud's shared client project as consumer,
+which looks like a permissions problem but is not.
+
+Cache membership results per (caller, group) with a short TTL; checkTransitiveMembership is
+a network round trip on a request path that must stay fast.
