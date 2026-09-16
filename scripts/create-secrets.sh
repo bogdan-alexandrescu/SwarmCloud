@@ -15,7 +15,15 @@
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
 #   scripts/create-secrets.sh --tenant eng --provider openai --from-file ./key.txt
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
+#   scripts/create-secrets.sh --tenant eng --provider anthropic --subscription --stdin
 #   scripts/create-secrets.sh --list [--tenant eng]
+#
+# --subscription stores a Claude SUBSCRIPTION credential (the JSON Claude Code
+# keeps in the keychain: accessToken, refreshToken, expiresAt) in
+# swarm-tenant-<tenant>-<provider>-refresh. The quota broker then refreshes it
+# and republishes the short-lived access token to the secret the worker mounts.
+# Without it, the value is written directly as a static credential -- an API key
+# or a `claude setup-token` token.
 #
 # The secret's NAME is never an input. It is always
 # swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
@@ -29,6 +37,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 TENANT=""
 PROVIDER=""
 SECRET_NAME=""
+SUBSCRIPTION=0
 FROM_FILE=""
 READ_STDIN=0
 DISABLE_PREVIOUS=0
@@ -49,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     # away from another, and an escape hatch that lets an operator create an
     # arbitrarily-named secret while LABELLING it with an unrelated tenant is a
     # hole in all three at once.
+    --subscription) SUBSCRIPTION=1; shift ;;
     --name) die "--name was removed. A tenant's secret is always swarm-tenant-<tenant>-<provider>,
   because that is what swarm_common.models.Tenant.secret_name() returns and what the
   worker asks Secret Manager for. Any other name is a secret nothing will ever read." ;;
@@ -93,6 +103,17 @@ fi
 # tenant as CREDENTIAL_MISSING. Asserted against the frozen model by
 # scripts/lib/check-contract-parity.sh.
 SECRET_NAME="swarm-tenant-${TENANT}-${PROVIDER}"
+if [[ "${SUBSCRIPTION}" -eq 1 ]]; then
+  # The LONG-LIVED half of a Claude subscription credential. The quota broker is
+  # the only writer of the short-lived half (swarm-tenant-<t>-<p>), which it
+  # republishes from this one as the access token nears expiry -- see
+  # apps/quota-broker/quota_broker/credentials.py. Writing the access token here
+  # by hand would be overwritten on the next sweep.
+  #
+  # The payload is the JSON Claude Code keeps in the macOS keychain under
+  # `Claude Code-credentials`: accessToken, refreshToken, expiresAt.
+  SECRET_NAME="${SECRET_NAME}-refresh"
+fi
 
 # Belt and braces: a tenant id is never a shared resource, but this script is one
 # of the few that names a cloud resource from operator input, and the deny-list

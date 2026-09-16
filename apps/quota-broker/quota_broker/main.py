@@ -426,7 +426,26 @@ def create_app(
         if not is_platform:
             request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
             raise BrokerAuthError("only the platform may run a quota sweep")
-        return request.app.state.broker.sweep()
+        result = request.app.state.broker.sweep()
+
+        # The same scheduled tick refreshes subscription credentials, because
+        # this service is the platform's single writer for them -- see
+        # quota_broker.credentials for why more than one writer corrupts a
+        # rotating credential. A refresher is only present when the deployment
+        # has subscription tenants; an API-key-only deployment has none and this
+        # is a no-op.
+        refresher = getattr(request.app.state, "credential_refresher", None)
+        if refresher is not None:
+            pairs = request.app.state.subscription_tenants()
+            outcomes = refresher.sweep(pairs)
+            result["credentials"] = {
+                "examined": len(outcomes),
+                "refreshed": sum(1 for o in outcomes if o.refreshed),
+                "reauth_required": [
+                    o.tenant_id for o in outcomes if o.reason == "reauth_required"
+                ],
+            }
+        return result
 
     return app
 
