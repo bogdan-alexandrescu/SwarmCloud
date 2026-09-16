@@ -179,6 +179,21 @@ class Reconciler:
         FindingKind.MISSING_EXECUTION,
     )
 
+    def _never_dispatched(self, finding: Finding, snapshot: ControlSnapshot) -> bool:
+        """True when this task provably never reached a backend.
+
+        The lease exists and the task is still LEASED -- it never advanced to
+        DISPATCHED -- and no attempt for it records an execution. Dispatch is
+        what creates an execution, so nothing can be running.
+        """
+        task = snapshot.tasks.get(finding.task_id or "")
+        if task is None or task.state is not TaskState.LEASED:
+            return False
+        for attempt in snapshot.attempts.values():
+            if attempt.task_id == finding.task_id and getattr(attempt, "execution_name", None):
+                return False
+        return True
+
     def _is_actionable(
         self,
         finding: Finding,
@@ -205,7 +220,21 @@ class Reconciler:
             backend_name = attempt.backend if attempt else None
             if backend_name is not None:
                 readable = backend_name in backends
+            elif self._never_dispatched(finding, snapshot):
+                # No attempt names a backend AND the task never left LEASED, so
+                # no execution was ever created and no backend can be running
+                # it. Refusing to repair here cannot prevent a duplicate -- there
+                # is nothing to duplicate -- it only strands the lease for ever.
+                #
+                # This mattered in practice: an unreachable GKE backend held
+                # every never-dispatched lease hostage, including tasks destined
+                # for Cloud Run Jobs that GKE had no part in. The task sat LEASED
+                # while the drain, which scans only READY, never looked at it
+                # again.
+                readable = True
             else:
+                # An attempt exists but names no backend we can read. Something
+                # may genuinely be running, so the anti-duplicate rule holds.
                 readable = len(backends) == len(self._backends)
             if not readable:
                 self._log.warning(

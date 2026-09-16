@@ -274,6 +274,11 @@ locals {
       WAKE_TOPIC        = local.wake_topic
       GKE_CLUSTER       = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION      = var.region
+      # Required for a client running OUTSIDE the cluster. Without both, the GKE
+      # backend falls back to load_incluster_config(), which on Cloud Run fails
+      # with "Service host/port is not set" on every reconciliation pass.
+      GKE_ENDPOINT     = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
+      GKE_CA_CERT_B64  = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
       ARTIFACT_REGISTRY = var.artifact_registry_repository
       IMAGE_BASE        = local.image_base
     })
@@ -281,6 +286,8 @@ locals {
     "swarm-reconciler" = merge(local.common_env, {
       GKE_CLUSTER  = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION = var.region
+      GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
+      GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
     })
   }
 }
