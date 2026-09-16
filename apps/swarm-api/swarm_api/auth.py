@@ -122,14 +122,39 @@ class StaticTokenVerifier:
         return dict(claims)
 
 
-def bearer_token(authorization: str | None) -> str:
+def bearer_tokens(authorization: str | None) -> list[str]:
+    """Every bearer credential in an Authorization header, in order.
+
+    A header can legitimately carry more than one credential, and Cloud Run
+    exercises that: with IAM authentication enabled it adds its OWN
+    Authorization header to the request, and Starlette joins repeated headers
+    with ", ". A naive `partition(" ")` then returns
+    `<caller-token>, Bearer <platform-token>` as a single value, which is not a
+    JWT and fails verification with MalformedError -- while the caller's token
+    verifies perfectly everywhere else. That was diagnosed live on 2026-09-16 by
+    comparing token fingerprints: the fingerprint the service logged never
+    matched the one the client sent.
+
+    So the header is split and every bearer credential returned, letting the
+    caller try each rather than guessing which position the real one occupies.
+    """
     if not authorization:
         raise Unauthenticated("missing Authorization header")
-    scheme, _, value = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not value.strip():
+
+    found: list[str] = []
+    for part in authorization.split(","):
+        scheme, _, value = part.strip().partition(" ")
+        if scheme.lower() == "bearer" and value.strip():
+            found.append(value.strip())
+    if not found:
         # Deliberately does not echo the header value.
         raise Unauthenticated("Authorization header must be 'Bearer <google id token>'")
-    return value.strip()
+    return found
+
+
+def bearer_token(authorization: str | None) -> str:
+    """The first bearer credential. Kept for callers that want exactly one."""
+    return bearer_tokens(authorization)[0]
 
 
 class Authenticator:
@@ -146,11 +171,24 @@ class Authenticator:
         self._groups = groups
 
     def authenticate(self, authorization: str | None) -> AuthContext:
-        token = bearer_token(authorization)
-        try:
-            claims = self._verifier.verify(token)
-        except AuthError as exc:
-            raise Unauthenticated(str(exc)) from None
+        # Try every bearer credential the header carries. Cloud Run adds its own
+        # Authorization header when IAM authentication is on, so the caller's
+        # token is not always the only one -- see bearer_tokens(). Verification
+        # is what decides which is real; position is not reliable.
+        candidates_tokens = bearer_tokens(authorization)
+        claims = None
+        last: AuthError | None = None
+        for token in candidates_tokens:
+            try:
+                claims = self._verifier.verify(token)
+                break
+            except AuthError as exc:
+                last = exc
+        if claims is None:
+            log.info(
+                "no bearer credential verified (%d presented)", len(candidates_tokens)
+            )
+            raise Unauthenticated(str(last) if last else "id token verification failed") from None
 
         email = str(claims.get("email", "")).lower()
         subject = str(claims.get("sub", ""))
