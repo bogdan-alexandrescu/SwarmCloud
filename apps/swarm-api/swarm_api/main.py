@@ -8,6 +8,7 @@ in-memory Firestore. Nothing in the request path reads a module-level global.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -22,6 +23,8 @@ from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .routes import admin, health, platform, tasks, tenants, workflows
 from .validation import FORBIDDEN_CALLER_FIELDS
+
+from .logging_setup import configure_logging
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,11 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
 
 
 def create_app(ctx: AppContext | None = None) -> FastAPI:
+    # FIRST, before anything else can log. Nothing configured the root logger
+    # previously, so every log.info() in this package was discarded and an
+    # operator debugging a refused request saw the request and not the reason.
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
     app = FastAPI(
         title=TITLE,
         version="0.1.0",
