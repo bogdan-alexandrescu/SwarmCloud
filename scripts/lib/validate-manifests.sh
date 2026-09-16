@@ -69,17 +69,53 @@ check() {
     return 0
   fi
 
-  # --validate=false because `--dry-run=client` STILL fetches the OpenAPI schema
-  # from a live cluster, and CI has none: it fails with
-  # `failed to download openapi: Get "http://localhost:8080/openapi/v2"`.
-  # Locally it passes only when the kubeconfig happens to point somewhere
-  # reachable, which made this green on a laptop and red in CI. What remains is
-  # structural validation -- parseable YAML, apiVersion/kind/metadata present --
-  # and the assertions below, which check the security context properties that a
-  # schema check would not catch anyway.
-  if ! "${KB}" apply --dry-run=client --validate=false -f "${out}" -o name >"${WORK}/names" 2>&1; then
+  # OFFLINE, with no cluster. `kubectl apply --dry-run=client` is not offline:
+  # it still calls the API server to resolve kinds through the RESTMapper, so in
+  # CI it fails with `couldn't get current server API group list:
+  # Get "http://localhost:8080/api"`. It passed on a laptop only because a
+  # kubeconfig happened to point somewhere reachable -- green locally, red in CI,
+  # for a reason that had nothing to do with the manifests.
+  #
+  # What actually matters here is structural soundness plus the security
+  # properties asserted below, and neither needs a cluster.
+  if ! python3 - "${out}" >"${WORK}/names" 2>"${WORK}/err" <<'VALIDATE'; then
+import sys, yaml
+
+path = sys.argv[1]
+try:
+    docs = [d for d in yaml.safe_load_all(open(path)) if d]
+except yaml.YAMLError as exc:
+    print(f"not parseable as YAML: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+if not docs:
+    print("rendered no objects", file=sys.stderr)
+    raise SystemExit(1)
+
+problems = []
+for i, doc in enumerate(docs):
+    if not isinstance(doc, dict):
+        problems.append(f"document {i} is {type(doc).__name__}, not a mapping")
+        continue
+    for field in ("apiVersion", "kind"):
+        if not doc.get(field):
+            problems.append(f"document {i} has no {field}")
+    name = (doc.get("metadata") or {}).get("name")
+    generate = (doc.get("metadata") or {}).get("generateName")
+    if not name and not generate:
+        problems.append(f"{doc.get('kind', 'document')} {i} has no metadata.name")
+    if name:
+        print(f"{str(doc.get('kind','?')).lower()}/{name}")
+    elif generate:
+        print(f"{str(doc.get('kind','?')).lower()}/{generate}(generated)")
+
+if problems:
+    for p in problems:
+        print(p, file=sys.stderr)
+    raise SystemExit(1)
+VALIDATE
     err "${description}:"
-    sed 's/^/    /' <"${WORK}/names" >&2
+    sed 's/^/    /' <"${WORK}/err" >&2
     FAILED=1
     return 0
   fi
