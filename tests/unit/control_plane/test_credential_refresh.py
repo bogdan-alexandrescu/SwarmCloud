@@ -238,3 +238,27 @@ def test_logs_and_outcomes_never_carry_token_material():
 def test_serialise_round_trips():
     c = Credential("a", "r", NOW + timedelta(hours=4))
     assert parse_credential(serialise(c), now=NOW).refresh_token == "r"
+
+
+def test_the_keychain_item_can_be_pasted_verbatim():
+    """`security find-generic-password -s 'Claude Code-credentials' -w` returns
+    a `claudeAiOauth` wrapper. Requiring the operator to unwrap it by hand puts
+    a jq expression between them and a working tenant, and gets it wrong once."""
+    payload = json.dumps({
+        "claudeAiOauth": {
+            "accessToken": "access-x",
+            "refreshToken": "refresh-x",
+            "expiresAt": int((NOW + timedelta(hours=5)).timestamp() * 1000),
+            "scopes": ["user:inference"],
+        }
+    })
+    credential = parse_credential(payload, now=NOW)
+    assert credential.refresh_token == "refresh-x"
+    assert credential.expires_at == NOW + timedelta(hours=5)
+
+
+def test_an_access_token_pasted_on_its_own_is_refused_with_a_usable_message():
+    """The likeliest wrong paste. It must not be stored as if it were valid."""
+    with pytest.raises(CredentialError) as exc:
+        parse_credential("sk-ant-oat01-notjson", now=NOW)
+    assert "refreshToken" in str(exc.value)

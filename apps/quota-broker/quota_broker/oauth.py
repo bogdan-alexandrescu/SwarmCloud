@@ -146,6 +146,15 @@ def parse_credential(payload: str, *, now: datetime | None = None) -> Credential
     if not isinstance(data, dict):
         raise CredentialError("the stored credential is not a JSON object")
 
+    # Claude Code's keychain item (`Claude Code-credentials`) wraps the
+    # credential in a `claudeAiOauth` object. Unwrapped here because pasting
+    # that item verbatim is the obvious thing for an operator to do, and the
+    # failure otherwise is "no refresh token" at sweep time -- long after the
+    # paste, with nothing pointing at the cause.
+    inner = data.get("claudeAiOauth")
+    if isinstance(inner, dict):
+        data = inner
+
     access = data.get("accessToken") or data.get("access_token") or ""
     refresh = data.get("refreshToken") or data.get("refresh_token") or ""
     if not refresh:

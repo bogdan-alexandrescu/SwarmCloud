@@ -164,13 +164,38 @@ BYTES="$(wc -c <"${KEY_FILE}" | tr -d ' ')"
 [[ "${BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
 [[ "${BYTES}" -lt 65536 ]] || die "value is ${BYTES} bytes; that is not an API key"
 
+# A subscription credential is a JSON document, not a key, and the shape check
+# for it BLOCKS rather than warns. The likeliest mistake is pasting the access
+# token on its own: it is accepted by every check that only counts bytes, works
+# for a few hours, and then the tenant stops -- with nothing connecting the
+# outage to a paste made that morning. The refresh token is the part that
+# matters, so its absence is fatal here, where the operator is still watching.
+if [[ "${SUBSCRIPTION}" -eq 1 ]]; then
+  if ! python3 - "${KEY_FILE}" <<'PYEOF'; then
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit("not JSON")
+if isinstance(data, dict) and isinstance(data.get("claudeAiOauth"), dict):
+    data = data["claudeAiOauth"]          # the keychain item's own wrapper
+if not isinstance(data, dict) or not (data.get("refreshToken") or data.get("refresh_token")):
+    sys.exit("no refreshToken")
+PYEOF
+    die "a --subscription value must be the credential JSON containing refreshToken, not an access token
+     macOS: security find-generic-password -s 'Claude Code-credentials' -w"
+  fi
+  ok "value is a subscription credential with a refresh token (${BYTES} bytes)"
+fi
+
 # Shape check only. Providers change prefixes, so this warns and never blocks.
 PREFIX="$(cut -c1-7 <"${KEY_FILE}")"
-case "${PROVIDER}:${PREFIX}" in
-  anthropic:sk-ant-) ok "value looks like an Anthropic key (${BYTES} bytes)" ;;
-  openai:sk-*)       ok "value looks like an OpenAI key (${BYTES} bytes)" ;;
-  anthropic:*|openai:*) warn "value does not have the usual ${PROVIDER} prefix; storing it anyway (${BYTES} bytes)" ;;
-  *)                 info "stored ${BYTES} bytes for provider ${PROVIDER}" ;;
+case "${SUBSCRIPTION}:${PROVIDER}:${PREFIX}" in
+  1:*) : ;;  # already checked above, and a JSON blob has no key prefix
+  *:anthropic:sk-ant-) ok "value looks like an Anthropic key (${BYTES} bytes)" ;;
+  *:openai:sk-*)       ok "value looks like an OpenAI key (${BYTES} bytes)" ;;
+  *:anthropic:*|*:openai:*) warn "value does not have the usual ${PROVIDER} prefix; storing it anyway (${BYTES} bytes)" ;;
+  *)                   info "stored ${BYTES} bytes for provider ${PROVIDER}" ;;
 esac
 
 step "Secret ${SECRET_NAME}"
