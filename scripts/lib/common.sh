@@ -447,7 +447,18 @@ api_get()  { api_request GET  "${API_PREFIX}$1"; }
 api_post() { api_request POST "${API_PREFIX}$1" "$2"; }
 
 api_reachable() {
-  curl -sS -m 10 -o /dev/null -w '%{http_code}' "$(api_url)/healthz" 2>/dev/null | grep -q '^2'
+# Cloud Run reserves the path configured as the container's livenessProbe
+# (/healthz here): external requests to it are answered 404 by the frontend
+# before reaching the container, while the internal prober gets 200. Verified
+# 2026-09-16 -- /healthz returned 404 with no `server: Google Frontend` header
+# while /readyz on the same router returned 200 with one. /readyz is the better
+# gate regardless: it proves Firestore is reachable, not just that a process is up.
+  # The service requires an ID token: Cloud Run IAM answers an unauthenticated
+  # request 403, which is not a 2xx and so read as "unreachable" even when the
+  # API is perfectly healthy.
+  curl -sS -m 10 -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $(id_token)" \
+    "$(api_url)/readyz" 2>/dev/null | grep -q '^2'
 }
 
 # ---------------------------------------------------------------------------

@@ -10,12 +10,27 @@ variable "firestore_database" {
 
 variable "scope_firestore_to_database" {
   description = <<-EOT
-    Adds an IAM condition pinning every datastore.user grant to
-    projects/<project>/databases/<db>. The project is shared, so an unconditioned
-    datastore.user is a grant over every other team's Firestore data too.
+    Adds an IAM condition pinning datastore grants to
+    projects/<project>/databases/<db>.
+
+    DEFAULTS OFF, and it does NOT do what its name suggests. Firestore does not
+    evaluate IAM Conditions on the DATA plane, only for administrative
+    operations. Verified live on 2026-09-16: with this on, every control-plane
+    service was denied document reads and writes and /readyz reported
+    "firestore unavailable: PermissionDenied". Firestore Security Rules do not
+    help either -- server SDKs with admin credentials bypass Rules, and every
+    component here is a server SDK.
+
+    Turning it on therefore breaks the platform without buying isolation. It is
+    kept only for administrative-plane scoping, if you want that.
+
+    The honest position: a swarm identity can reach ANY Firestore database in
+    this project. Today `swarm` is the only one. If you create another database
+    in this project, these identities can read and write it. The real fix is a
+    dedicated project for Firestore, where project-level IAM IS the boundary.
   EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "custom_role_suffix" {

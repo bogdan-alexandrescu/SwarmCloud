@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import logging
+
 from fastapi import Depends, Header, Request
 
 from swarm_common.models import utcnow
@@ -125,6 +127,9 @@ def build_context(
 
 # --------------------------------------------------------------------------
 # FastAPI dependencies
+log = logging.getLogger(__name__)
+
+
 # --------------------------------------------------------------------------
 
 def get_context(request: Request) -> AppContext:
@@ -134,17 +139,44 @@ def get_context(request: Request) -> AppContext:
 def current_auth(
     request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
     ctx: AppContext = Depends(get_context),
 ) -> AuthContext:
     """Authenticate, then rate-limit by principal.
 
     The Authorization header is consumed here and nowhere else. It is never
     placed on `request.state`, never logged and never echoed in an error.
+
+    TWO HEADERS, because Cloud Run may claim one of them. When a service
+    requires IAM authentication, the platform validates the caller's token
+    itself; depending on configuration it can forward its OWN token in
+    `Authorization` and move the caller's original into
+    `X-Serverless-Authorization`. An app that reads only `Authorization` then
+    sees a token minted for the Cloud Run runtime rather than the human, and
+    rejects every request with "id token verification failed" while the same
+    token verifies correctly everywhere else.
+
+    So the caller's original is preferred when present. The header NAMES that
+    arrived are logged on failure -- never their values, which are full
+    impersonation of that caller's tenant.
     """
+    presented = serverless_authorization or authorization
     try:
-        auth = ctx.authenticator.authenticate(authorization)
+        auth = ctx.authenticator.authenticate(presented)
     except Exception as exc:
         ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
+        log.warning(
+            "authentication failed (%s); auth headers present: %s",
+            type(exc).__name__,
+            ",".join(
+                n for n, v in (
+                    ("Authorization", authorization),
+                    ("X-Serverless-Authorization", serverless_authorization),
+                ) if v
+            ) or "none",
+        )
         raise
     try:
         ctx.limiter.check(auth.principal.email)

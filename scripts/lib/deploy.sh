@@ -114,11 +114,11 @@ if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
       --region "${REGION}" --format='value(status.url)' 2>/dev/null || true)"
     [[ -n "${url}" ]] || continue
     code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
-      -H "Authorization: Bearer $(id_token)" "${url%/}/healthz" 2>/dev/null || echo 000)"
+      -H "Authorization: Bearer $(id_token)" "${url%/}/readyz" 2>/dev/null || echo 000)"
     if [[ "${code}" == "200" ]]; then
       ok "${service} ${url}"
     else
-      warn "${service} /healthz returned ${code}"
+      warn "${service} /readyz returned ${code}"
     fi
   done
 fi

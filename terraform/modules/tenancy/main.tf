@@ -82,8 +82,19 @@ resource "google_service_account" "worker" {
 # identity therefore shares one authorization scope over the `swarm` database,
 # and a worker running attacker-controlled code -- which is the normal case, not
 # the exceptional one -- is inside that scope. The condition below keeps it out
-# of `(default)` and every other database in this shared project. It cannot keep
-# tenant A's worker out of tenant B's documents, and no condition can.
+# of `(default)` and every other database in this shared project.
+#
+# CORRECTION, verified live 2026-09-16: that is FALSE. Firestore does not
+# evaluate IAM Conditions on the data plane -- only for administrative
+# operations -- so the condition neither restricted anything nor was silently
+# ignored: it DENIED document access outright, and every control-plane service
+# came up with /readyz reporting "firestore unavailable: PermissionDenied".
+# The condition now defaults off (see modules/iam/variables.tf), which means a
+# swarm identity can reach any Firestore database in this project. Today `swarm`
+# is the only one. The real boundary is a separate project.
+#
+# It also cannot keep tenant A's worker out of tenant B's documents, and no
+# condition can -- which is why the SHAPE of the grant below carries the weight.
 #
 # What IS available at this layer is the shape of the access, so the role is
 # built rather than borrowed. roles/datastore.user grants entities.delete and

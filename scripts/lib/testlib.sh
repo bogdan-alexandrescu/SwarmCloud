@@ -93,7 +93,7 @@ require_platform() {
     die "Firestore database '${FIRESTORE_DATABASE}' does not exist. Run 'make infra' first."
   fi
   if ! api_reachable; then
-    die "the API at $(api_url) did not answer /healthz. Run 'make deploy', or set API_URL."
+    die "the API at $(api_url) did not answer /readyz. Run 'make deploy', or set API_URL."
   fi
 }
 

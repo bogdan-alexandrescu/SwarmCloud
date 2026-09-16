@@ -457,3 +457,44 @@ carries the same trust requirement.
   service account keys exist**, and `deployer_roles` is explicitly enumerated —
   `roles/owner` is rejected by a variable validation — so what CI can do is
   reviewable in a diff.
+
+## Firestore database scoping does not exist (verified 2026-09-16)
+
+Earlier revisions of this repository claimed that an IAM Condition pinned every
+swarm identity to the `swarm` Firestore database, keeping it out of `(default)`
+and any other database in this shared project. **That claim was false**, and it
+was proven false on a live deployment.
+
+Firestore does not evaluate IAM Conditions on the **data plane**. Conditions
+govern administrative operations — creating a database, managing indexes,
+backups — and nothing else. With the condition attached, all four control-plane
+services were *denied* document access and reported:
+
+    {"status":"not-ready","detail":"firestore unavailable: PermissionDenied"}
+
+Firestore Security Rules are the documented alternative for data-plane
+conditions, and they do not apply here either: **server SDKs using admin
+credentials bypass Security Rules entirely**, and every component in this
+platform is a server SDK.
+
+**Current position, stated plainly.** The condition defaults off. Every swarm
+identity — the four services and every per-tenant worker — can read and write
+**any Firestore database in this project**. Today `swarm` is the only database,
+so nothing else is exposed.
+
+**If you create a second Firestore database in this project, these identities
+can read and write it.** There is no IAM mechanism that prevents that.
+
+What still holds:
+
+* Tenant workers hold the narrowed `swarmTenantWorkerFirestore` role, which
+  omits `datastore.entities.delete` and `datastore.entities.list`. A hostile
+  worker can neither enumerate nor destroy another tenant's documents; it can
+  only fetch documents whose ids it already knows, and ids are
+  `<prefix>_<20 hex>`.
+* Application-level tenant scoping is enforced on every read and write
+  (`agent_worker.control._assert_tenant`, and tenant filters throughout the API).
+
+**The real fix** is to move Firestore into a dedicated project, where
+project-level IAM *is* the database boundary. That was not done here because it
+requires project-creation and billing-link rights that were unavailable.

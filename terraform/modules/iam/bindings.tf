@@ -15,9 +15,33 @@ locals {
 
   sa_member = { for k, sa in google_service_account.platform : k => "serviceAccount:${sa.email}" }
 
+  # DOES NOT RESTRICT DOCUMENT ACCESS. Verified against a live deployment on
+  # 2026-09-16: with this condition attached, every control-plane service was
+  # denied Firestore reads and writes and /readyz reported
+  # "firestore unavailable: PermissionDenied".
+  #
+  # IAM Conditions are not evaluated on the Firestore DATA plane. They govern
+  # administrative operations (creating a database, indexes, backups) only, so a
+  # condition here either denies the data plane outright, as it did, or -- once
+  # granted unconditionally -- constrains nothing about which database the
+  # identity can read. Firestore Security Rules are the documented alternative
+  # and do NOT apply either: server SDKs using admin credentials bypass Rules
+  # entirely, and every component here is a server SDK.
+  #
+  # So this defaults OFF, and the boundary is stated honestly rather than
+  # claimed falsely: a swarm identity can reach ANY Firestore database in this
+  # project. Today that is only `swarm`, so nothing else is exposed. ANYONE
+  # CREATING A SECOND DATABASE IN saga-agents-staging MUST KNOW THIS -- the real
+  # fix is to move Firestore into its own project, where project-level IAM is
+  # the database boundary. See docs/security.md.
+  #
+  # What DOES still hold is the SHAPE of the access: tenant workers get the
+  # narrowed swarmTenantWorkerFirestore role, which omits entities.delete and
+  # entities.list, so a hostile worker can neither enumerate nor destroy
+  # another tenant's documents even though it shares the database scope.
   firestore_condition = var.scope_firestore_to_database ? [{
-    title       = "swarm-database-only"
-    description = "Restricts this grant to the swarm database; (default) belongs to other teams."
+    title       = "swarm-database-only-admin-ops"
+    description = "Admin-plane only. Firestore does NOT evaluate IAM conditions for document reads or writes."
     expression  = "resource.type == \"datastore.googleapis.com/Database\" && resource.name == \"projects/${var.project_id}/databases/${var.firestore_database}\""
   }] : []
 
