@@ -103,11 +103,51 @@ class CliAgentSpec:
     #: Environment variable holding a JSON list of argv flags, then the default.
     args_env: str
     args_default: tuple[str, ...]
-    #: Environment variable that must carry the tenant's key.
+    #: Environment variable that must carry the tenant's credential.
     key_env: str
+    #: Alternative credential variables, tried in order when `key_env` is unset.
+    #:
+    #: Claude Code accepts EITHER a pay-per-token API key (ANTHROPIC_API_KEY) or
+    #: a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN, from
+    #: `claude setup-token`). A tenant paying for a Claude subscription has no
+    #: API key at all, and requiring one would mean buying metered API access
+    #: they already have a plan for. Whichever variable the tenant's secret
+    #: supplies is the one passed to the child, and only that one.
+    alt_key_envs: tuple[str, ...] = ()
     #: Flag used to select a model, if the CLI supports one.
     model_flag: str | None = "--model"
     transcript_name: str = "transcript.json"
+
+
+#: Claude subscription tokens from `claude setup-token` carry this prefix.
+#: Metered API keys are `sk-ant-api...`, so the two are distinguishable by value.
+_OAUTH_TOKEN_PREFIX = "sk-ant-oat"
+
+
+def _credential_env(spec: CliAgentSpec) -> str | None:
+    """Which credential variable to hand the child, chosen by the VALUE's shape.
+
+    A tenant has ONE secret per provider -- `swarm-tenant-<id>-anthropic` -- and
+    the Cloud Run Job projects it into every variable the profile declares. So
+    both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN arrive holding the SAME
+    string, and picking by name order would put a subscription token into the
+    API-key variable, where Claude Code would reject it.
+
+    The value itself says which it is: `claude setup-token` mints
+    `sk-ant-oat...`, while metered keys are `sk-ant-api...`. So the shape picks
+    the variable, and only that one is passed to the child -- the other is
+    dropped rather than handed over holding a credential of the wrong kind.
+    """
+    present = [(name, os.environ.get(name, "")) for name in (spec.key_env, *spec.alt_key_envs)]
+    present = [(name, value) for name, value in present if value]
+    if not present:
+        return None
+
+    oauth_names = [n for n in spec.alt_key_envs if "OAUTH" in n.upper()]
+    looks_oauth = any(v.startswith(_OAUTH_TOKEN_PREFIX) for _, v in present)
+    if looks_oauth and oauth_names:
+        return oauth_names[0]
+    return present[0][0]
 
 
 def _argv_prefix(spec: CliAgentSpec) -> list[str]:
@@ -175,9 +215,11 @@ def run_cli_agent(
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise RunnerFailure(f"{spec.name} requires a non-empty string input.prompt")
-    if not os.environ.get(spec.key_env):
+    credential_env = _credential_env(spec)
+    if credential_env is None:
+        accepted = " or ".join((spec.key_env, *spec.alt_key_envs))
         raise RunnerFailure(
-            f"{spec.name} requires {spec.key_env}; the tenant has no {spec.provider} "
+            f"{spec.name} requires {accepted}; the tenant has no {spec.provider} "
             "credential mounted for this attempt"
         )
 
@@ -198,7 +240,7 @@ def run_cli_agent(
     # `run_child` logs the argv it starts. Register the key here as well as in
     # the worker: a runner is a separate process and does not inherit the
     # worker logger's registered set.
-    log.register_secret(os.environ.get(spec.key_env))
+    log.register_secret(os.environ.get(credential_env))
     for passthrough in _SENSITIVE_PASSTHROUGH:
         log.register_secret(os.environ.get(passthrough))
     if limits.clamped:
@@ -219,7 +261,7 @@ def run_cli_agent(
         "TERM": "dumb",
         "CI": "1",
         "NO_COLOR": "1",
-        spec.key_env: os.environ[spec.key_env],
+        credential_env: os.environ[credential_env],
     }
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
         if os.environ.get(passthrough):
@@ -242,7 +284,9 @@ def run_cli_agent(
     # becomes an artifact in GCS or a field in Firestore, and both outlive the
     # pod. `env` is the set of values this process was given, so it is exactly
     # the set of secrets it could have leaked.
-    secrets = collect_secrets(env.get(name) for name in (spec.key_env, *_SENSITIVE_PASSTHROUGH))
+    secrets = collect_secrets(
+        env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
+    )
     for captured in (stdout_path, stderr_path):
         scrub_file(captured, secrets)
 

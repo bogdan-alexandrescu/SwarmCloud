@@ -63,8 +63,19 @@ locals {
       resource_class = "standard"
       backend        = "CLOUD_RUN_JOB"
       provider       = "anthropic"
-      # checkov:skip=CKV_SECRET_6:an env-var name mapped to a provider id, not a credential. The value is literally the string "anthropic"; the key lives only in Secret Manager.
-      secret_env      = { ANTHROPIC_API_KEY = "anthropic" }
+      # Both names map to the SAME tenant secret, and that is deliberate: a
+      # tenant holds one credential per provider and it is either metered API
+      # access or a Claude subscription token from `claude setup-token`. The
+      # worker picks the right variable from the value's shape
+      # (agent_worker.runners.cliagent._credential_env) -- `sk-ant-oat...` is a
+      # subscription token, `sk-ant-api...` is a key -- and passes only that one
+      # to the CLI. Projecting just one name would force a tenant who already
+      # pays for a subscription to buy metered access as well.
+      # checkov:skip=CKV_SECRET_6:env-var names mapped to a provider id, not credentials. The values are literally the string "anthropic"; the credential lives only in Secret Manager.
+      secret_env = {
+        ANTHROPIC_API_KEY       = "anthropic"
+        CLAUDE_CODE_OAUTH_TOKEN = "anthropic"
+      }
       timeout_seconds = 7200
     }
     "codex" = {

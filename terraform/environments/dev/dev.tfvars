@@ -120,9 +120,9 @@ tenants = {
   # Declaring it keeps the dev environment self-testing. In prod, grant the API
   # service account group-read instead of enumerating humans here.
   u-bogdan = {
-    kind           = "user"
-    principal      = "bogdan@saga.xyz"
-    display_name   = "Bogdan (personal)"
+    kind         = "user"
+    principal    = "bogdan@saga.xyz"
+    display_name = "Bogdan (personal)"
     # Declaring a provider creates the tenant's OWN Secret Manager container and
     # its claude-code Cloud Run Job. The key material is not managed here:
     # scripts/create-secrets.sh adds versions, so no plaintext ever reaches the

@@ -136,7 +136,12 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.CLOUD_RUN_JOB,
         command=("python", "-m", "agent_worker.runners.claude_code"),
         provider="anthropic",
-        secrets=("ANTHROPIC_API_KEY",),
+        # BOTH are accepted, and a tenant supplies exactly one. Claude Code runs
+        # on either metered API access (ANTHROPIC_API_KEY) or a Claude
+        # subscription token (CLAUDE_CODE_OAUTH_TOKEN, from
+        # `claude setup-token`). Requiring the API key would make a tenant who
+        # already pays for a subscription buy metered access on top of it.
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         timeout_seconds=7200,
     ),
     "codex": RunnerProfile(

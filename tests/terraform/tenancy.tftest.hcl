@@ -123,13 +123,27 @@ run "a_worker_identity_can_create_no_infrastructure" {
   # a worker's authority is wider than one tenant. Two things are asserted, and
   # the error messages say only what is actually true of each.
   #
-  # First: the grant reaches no OTHER database in this shared project.
+  # First: the grant carries NO IAM condition, and that is the correct shape.
+  #
+  # REVERSED on evidence, 2026-09-16, exactly as the same assertion in
+  # iam.tftest.hcl was. This used to demand a condition pinning the grant to
+  # projects/<p>/databases/swarm. Firestore does not evaluate IAM Conditions on
+  # the DATA plane -- only for administrative operations -- so the condition
+  # never scoped document access: it DENIED it, and every identity carrying it
+  # reported "firestore unavailable: PermissionDenied". A worker with that
+  # condition cannot read the task it was dispatched for, so the platform does
+  # not run at all. Demanding it back here would demand an outage, which is why
+  # this asserts the absence rather than the presence.
+  #
+  # The database boundary this used to claim does not exist at the IAM layer at
+  # all: a swarm identity can reach any Firestore database in this project.
+  # Today `swarm` is the only one, and the real fix is a separate project. See
+  # terraform/modules/iam/variables.tf and docs/security.md.
   assert {
     condition = alltrue([
-      for k, b in google_project_iam_member.worker_firestore :
-      length(b.condition) == 1 && strcontains(b.condition[0].expression, "databases/swarm")
+      for k, b in google_project_iam_member.worker_firestore : length(b.condition) == 0
     ])
-    error_message = "a worker's Firestore grant must be conditioned to the swarm database; (default) and every other team's database are out of reach"
+    error_message = "a worker's Firestore grant must be UNCONDITIONED: an IAM condition is not evaluated on the data plane, so it denies document access outright instead of scoping it, and the worker cannot read its own task"
   }
 
   # Second: the SHAPE of the access inside that database. The predefined

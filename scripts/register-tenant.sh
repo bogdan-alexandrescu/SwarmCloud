@@ -273,9 +273,31 @@ fi
 # --- 3. IAM -------------------------------------------------------------------
 step "IAM"
 
-# Firestore, conditioned on the swarm database. Without the condition this would
-# also grant access to the (default) database, which belongs to other teams in
-# this shared project.
+# Firestore, with NO IAM CONDITION. Verified live on 2026-09-16.
+#
+# This used to attach `resource.name.endsWith('/databases/swarm')` and announce
+# the grant as "scoped to the swarm database". Firestore does not evaluate IAM
+# Conditions on the DATA PLANE: conditions govern administrative operations --
+# creating a database, managing indexes, backups -- and nothing else. A
+# conditioned binding therefore does not narrow document access, it REMOVES it.
+# Every identity carrying that condition reported
+#
+#     {"status":"not-ready","detail":"firestore unavailable: PermissionDenied"}
+#
+# so a tenant onboarded by this script got a worker that could not read its own
+# task, its own lease or its own attempt, and parked on its first control-plane
+# read. terraform/modules/tenancy learned this first: its
+# `scope_firestore_to_database` variable defaults to FALSE for exactly this
+# reason, so the two provisioning paths disagreed -- and this script's own rule
+# is that they must grant identical authority.
+#
+# What the condition never bought is worth stating too, because it reads like a
+# boundary: the smallest resource Firestore IAM can name is the DATABASE, so
+# even when evaluated it scoped which database, never which tenant. The tenant
+# boundary here is the SHAPE of the role plus application-level scoping
+# (agent_worker.control._assert_tenant), which is what docs/security.md
+# "Firestore database scoping does not exist" and docs/multi-tenancy.md's
+# Firestore row now say.
 #
 # The role is the NARROWED CUSTOM ROLE terraform builds, never roles/datastore.user.
 # This script and terraform/modules/tenancy must grant identical authority, or a
@@ -301,12 +323,19 @@ if ! gcloud iam roles describe "swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+
   tenant's control-plane documents."
 fi
 
+# `--condition None` is how gcloud spells "an unconditional binding" -- it is not
+# the same as omitting the flag. When the project policy already holds a
+# CONDITIONAL binding for this member and role (every tenant registered before
+# this fix has one), omitting it makes gcloud prompt for which binding to modify,
+# which under `--quiet` fails instead of asking. Saying None also replaces the
+# old conditional binding rather than adding a second one beside it.
 run gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member "serviceAccount:${GSA_EMAIL}" \
   --role "${FIRESTORE_ROLE}" \
-  --condition "expression=resource.name.endsWith('/databases/${FIRESTORE_DATABASE}'),title=swarm_db_only,description=Only the swarm Firestore database" \
+  --condition None \
   --quiet >/dev/null
-ok "${FIRESTORE_ROLE##*/} (no deletes, no queries; scoped to the ${FIRESTORE_DATABASE} database)"
+ok "${FIRESTORE_ROLE##*/} (no deletes, no queries; unconditioned -- see docs/security.md)"
+dim "  a condition here would DENY the data plane, not scope it; terraform does not add one either"
 
 # GCS, conditioned on this tenant's own prefix. This is the boundary that stops
 # a compromised worker from reading another tenant's artifacts by guessing a path.

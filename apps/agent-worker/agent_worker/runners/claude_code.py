@@ -1,8 +1,11 @@
 """Runner: Claude Code, non-interactive.
 
 The CLI is started in print mode with JSON output, in the attempt's isolated
-work directory, with the tenant's `ANTHROPIC_API_KEY` in its environment and
-nothing else from the worker's own environment.
+work directory, with the tenant's credential in its environment and nothing else
+from the worker's own environment. That credential is either `ANTHROPIC_API_KEY`
+(metered API access) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token
+from `claude setup-token`) -- whichever the tenant's secret supplies. Only the
+one that is present is passed to the child.
 
 About permissions: an interactive permission prompt in a non-interactive
 container is a hang, not a safety feature -- nobody is there to answer it, and
@@ -34,6 +37,12 @@ SPEC = CliAgentSpec(
         "--dangerously-skip-permissions",
     ),
     key_env="ANTHROPIC_API_KEY",
+    # A Claude subscription has no API key. `claude setup-token` mints a
+    # long-lived OAuth token for exactly this headless case, and the CLI reads it
+    # from CLAUDE_CODE_OAUTH_TOKEN. Supporting both means a tenant can bring
+    # whichever they actually pay for instead of buying metered API access to
+    # run agents they already have a plan for.
+    alt_key_envs=("CLAUDE_CODE_OAUTH_TOKEN",),
     model_flag="--model",
     transcript_name="claude-transcript.json",
 )

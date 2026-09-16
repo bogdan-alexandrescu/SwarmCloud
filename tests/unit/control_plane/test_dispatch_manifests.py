@@ -195,9 +195,19 @@ def test_cloud_run_job_runs_as_the_tenant_and_mounts_the_tenants_own_secret(
     assert template.service_account == tenant.service_account
 
     secret_envs = [e for e in template.containers[0].env if e.value_source.secret_key_ref.secret]
-    assert [e.name for e in secret_envs] == ["ANTHROPIC_API_KEY"]
-    assert secret_envs[0].value_source.secret_key_ref.secret == "swarm-tenant-eng-anthropic"
-    assert secret_envs[0].value_source.secret_key_ref.secret != "swarm-tenant-research-anthropic"
+
+    # claude-code accepts EITHER metered API access or a Claude subscription
+    # token, so both names are projected and the tenant supplies whichever they
+    # actually have. cliagent._credential_env picks the one that is set and
+    # passes only that to the child.
+    assert [e.name for e in secret_envs] == ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+
+    # The property that actually matters: every credential comes from THIS
+    # tenant's own secret. A job mounting another tenant's secret would hand one
+    # tenant another's provider credential, which is the whole isolation story.
+    for env in secret_envs:
+        assert env.value_source.secret_key_ref.secret.startswith("swarm-tenant-eng-")
+        assert "research" not in env.value_source.secret_key_ref.secret
 
 
 def test_cloud_run_job_never_retries_on_its_own(settings, tenant):
