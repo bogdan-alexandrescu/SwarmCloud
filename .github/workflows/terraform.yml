@@ -65,7 +65,14 @@ jobs:
           terraform_wrapper: false
 
       - name: terraform fmt
-        run: terraform fmt -check -recursive -diff terraform
+        # BOTH roots. `terraform fmt` takes one directory, and this step used to
+        # name only `terraform`, so tests/terraform/ -- the 87 assertions the
+        # `terraform test` job below depends on -- was the one Terraform in the
+        # tree whose formatting nothing checked. `make lint` does the same two.
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive -diff terraform
+          terraform fmt -check -recursive -diff tests/terraform
 
       - name: terraform init (no backend)
         # -backend=false validates configuration without touching remote state,

@@ -26,14 +26,18 @@
 # one yields a metric that counts correctly and groups by nothing.
 #
 # NOT METRICS HERE, deliberately, and this is the honest part of the file:
-# `lease_acquired` and admission denials are decided by the SCHEDULER, which
-# logs through the standard library with no handler configured, so those lines
-# are not JSON and at INFO are not emitted at all. Neither can be measured from
-# logs as the code stands. `starting` is used as the throughput signal instead
-# -- the worker emits it exactly once per attempt, which is the same thing being
-# counted one step later in the same causal chain. Restoring a true admission
-# metric needs the scheduler to emit structured JSON; until it does, a metric
-# for it would be decoration.
+# `lease_acquired` and admission denials are decided by the SCHEDULER, and the
+# scheduler emits no per-event vocabulary. Its lines ARE JSON now --
+# swarm_common.logging_setup.configure_logging() installs a formatter that
+# writes severity/message/logger, and scheduler/main.py calls it at startup --
+# but they are printf-style messages with the payload interpolated into the
+# text (`log.info("drain finished %s", report.to_dict())`, loop.py), so there is
+# no `event_type` field to filter on and no label to group by. `starting` is
+# used as the throughput signal instead -- the worker emits it exactly once per
+# attempt, which is the same thing being counted one step later in the same
+# causal chain. Restoring a true admission metric needs the scheduler to emit
+# the same `{"message": "event", "event_type": ...}` shape ControlPlane.emit()
+# does; until it does, a metric for it would be decoration.
 
 locals {
   # EventType value -> what the metric is for. Every key is a value the WORKER

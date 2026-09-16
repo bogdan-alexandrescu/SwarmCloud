@@ -32,8 +32,10 @@ run "the_metrics_read_the_frozen_event_vocabulary" {
   # today. That is the property worth asserting: a log-based metric whose filter
   # matches nothing fails nowhere -- not at apply, not in an alert, not on a
   # dashboard. It just stays at zero, which is indistinguishable from a healthy
-  # platform. Scheduler-side events are absent on purpose: the scheduler logs
-  # through the standard library with no handler, so those lines are not JSON.
+  # platform. Scheduler-side events are absent on purpose: the scheduler's lines
+  # are JSON (every service calls swarm_common.logging_setup.configure_logging)
+  # but carry no `event_type` field -- they are printf-style messages -- so
+  # there is nothing for a filter to match on yet.
   assert {
     condition = alltrue([
       for e in ["starting", "lease_released", "generation_fenced", "quota_exhausted", "dead_lettered", "checkpoint_completed", "parked"] :

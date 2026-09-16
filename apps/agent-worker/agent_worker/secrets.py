@@ -117,6 +117,7 @@ def resolve_credentials(
     tenant: Tenant,
     provider: str | None,
     secret_env_names: tuple[str, ...],
+    any_of: bool = False,
     client: SecretManagerClient,
     logger: Any,
 ) -> ResolvedCredentials:
@@ -169,7 +170,19 @@ def resolve_credentials(
         )
 
     missing = [name for name in secret_env_names if name not in env]
-    if missing:
+    if any_of:
+        # The declared names are INTERCHANGEABLE, not a set that must all be
+        # present: claude-code takes either metered API access or a Claude
+        # subscription token, and a tenant has exactly one. Requiring all of
+        # them would refuse a JSON secret that supplies precisely the credential
+        # the tenant pays for, with "does not supply CLAUDE_CODE_OAUTH_TOKEN"
+        # for an API-key tenant and the mirror image for a subscription one.
+        if not env:
+            raise SecretError(
+                f"secret {secret_name} supplies none of "
+                f"{', '.join(secret_env_names)} for provider {provider}"
+            )
+    elif missing:
         raise SecretError(
             f"secret {secret_name} does not supply {', '.join(missing)} for provider {provider}"
         )

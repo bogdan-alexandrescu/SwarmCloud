@@ -702,6 +702,7 @@ class Worker:
                 tenant=tenant,
                 provider=profile.provider,
                 secret_env_names=profile.secrets,
+                any_of=profile.secrets_any_of,
                 client=self.secret_client,
                 logger=self.log,
             )

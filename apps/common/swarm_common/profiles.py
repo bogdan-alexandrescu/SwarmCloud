@@ -93,6 +93,11 @@ class RunnerProfile:
     #: any key -- which is what keeps the mock smoke path always available.
     provider: str | None = None
     secrets: tuple[str, ...] = ()
+    #: True when `secrets` lists INTERCHANGEABLE credentials rather than a set
+    #: that must all be present. claude-code takes either metered API access or
+    #: a subscription token, never both, so requiring all of them would refuse a
+    #: tenant who supplied exactly the one they pay for.
+    secrets_any_of: bool = False
     supports_checkpoint: bool = True
     spot: SpotStrategy = SpotStrategy.ON_DEMAND_ONLY
     timeout_seconds: int = 3600
@@ -142,6 +147,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # `claude setup-token`). Requiring the API key would make a tenant who
         # already pays for a subscription buy metered access on top of it.
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
         timeout_seconds=7200,
     ),
     "codex": RunnerProfile(

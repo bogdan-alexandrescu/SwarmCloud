@@ -179,7 +179,12 @@ lint: ## shellcheck, doc links, terraform fmt/validate, tflint, kubernetes manif
 	@echo "==> documentation links"
 	@$(SCRIPTS)/lib/check-doc-links.sh
 	@echo "==> terraform fmt"
+	@# BOTH roots. `terraform fmt` takes one directory, and for a long time the
+	@# only one named here was terraform/ -- so tests/terraform/, the 87
+	@# assertions `make test` now depends on, was the one Terraform in the tree
+	@# whose formatting nothing checked.
 	@$(TERRAFORM) fmt -check -recursive terraform || { echo "run 'make fmt'"; exit 1; }
+	@$(TERRAFORM) fmt -check -recursive tests/terraform || { echo "run 'make fmt'"; exit 1; }
 	@if [ -d $(TF_ROOT)/.terraform ]; then echo "==> terraform validate"; $(TERRAFORM) -chdir=$(TF_ROOT) validate; fi
 	@if [ -n "$(TFLINT)" ] && [ -n "$$(find terraform -name '*.tf' -print -quit 2>/dev/null)" ]; then echo "==> tflint"; $(TFLINT) --chdir=terraform --recursive; fi
 	@if [ -n "$(KUBECTL)" ] && [ -f kubernetes/render.py ]; then echo "==> kubernetes manifests"; $(SCRIPTS)/lib/validate-manifests.sh; fi
@@ -187,6 +192,7 @@ lint: ## shellcheck, doc links, terraform fmt/validate, tflint, kubernetes manif
 
 fmt: ## Rewrite terraform files in canonical form
 	@$(TERRAFORM) fmt -recursive terraform
+	@$(TERRAFORM) fmt -recursive tests/terraform
 	@echo "formatted"
 
 security: ## checkov over terraform and the RENDERED manifests, trivy over the repo

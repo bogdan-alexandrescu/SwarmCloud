@@ -6,7 +6,9 @@
 # having:
 #
 #   * a dedicated Google service account            (identity)
-#   * Firestore access scoped to the swarm database (control-plane data)
+#   * a narrowed Firestore role -- no deletes, no queries -- and NO IAM
+#     condition, because Firestore ignores conditions on the data plane and a
+#     conditioned binding denies document access outright (docs/security.md)
 #   * GCS access conditioned on the tenant's own object prefix, so tenant A's
 #     credentials cannot read tenant B's artifacts even by guessing the path
 #   * Secret Manager access to that tenant's provider keys only
@@ -69,7 +71,7 @@ while [[ $# -gt 0 ]]; do
     --display-name)    DISPLAY_NAME="$2"; shift 2 ;;
     --skip-k8s)        SKIP_K8S=1; shift ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,42p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,44p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -323,19 +325,49 @@ if ! gcloud iam roles describe "swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+
   tenant's control-plane documents."
 fi
 
-# `--condition None` is how gcloud spells "an unconditional binding" -- it is not
-# the same as omitting the flag. When the project policy already holds a
-# CONDITIONAL binding for this member and role (every tenant registered before
-# this fix has one), omitting it makes gcloud prompt for which binding to modify,
-# which under `--quiet` fails instead of asking. Saying None also replaces the
-# old conditional binding rather than adding a second one beside it.
+# `--condition None` is how gcloud spells "an unconditional binding", and it is
+# not the same as omitting the flag: when the policy already holds a CONDITIONAL
+# binding for this member and role -- which every tenant registered before this
+# fix has -- gcloud asks which binding is meant, and under `--quiet` that failure
+# is the whole command, not a prompt.
 run gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member "serviceAccount:${GSA_EMAIL}" \
   --role "${FIRESTORE_ROLE}" \
   --condition None \
   --quiet >/dev/null
 ok "${FIRESTORE_ROLE##*/} (no deletes, no queries; unconditioned -- see docs/security.md)"
-dim "  a condition here would DENY the data plane, not scope it; terraform does not add one either"
+dim "  a condition here would DENY the data plane, not scope it; terraform adds none either"
+
+# IAM bindings are additive, so the unconditional binding above is enough to make
+# the worker work again -- but a tenant registered before this fix still carries
+# the old conditional binding, which grants nothing and reads like a boundary.
+# Say so rather than leave it for someone to find in the policy.
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+  # Read the condition's ACTUAL title, expression and description off the policy
+  # rather than assuming them. `remove-iam-policy-binding --condition` matches
+  # EXACTLY, and these bindings are written by more than one thing: this script
+  # once used title `swarm_db_only`, terraform/modules/tenancy writes
+  # `swarm-database-only`, and terraform/modules/iam writes
+  # `swarm-database-only-admin-ops`. A hardcoded title produces a command that
+  # silently removes nothing for every tenant terraform provisioned, which is
+  # the majority of them.
+  STALE="$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+    --flatten='bindings[].members' \
+    --filter="bindings.role=${FIRESTORE_ROLE} AND bindings.members:${GSA_EMAIL} AND bindings.condition.expression:databases" \
+    --format='csv[no-heading,separator="|"](bindings.condition.title,bindings.condition.expression,bindings.condition.description)' \
+    2>/dev/null | head -1)"
+  if [[ -n "${STALE}" ]]; then
+    STALE_TITLE="${STALE%%|*}"
+    STALE_REST="${STALE#*|}"
+    STALE_EXPR="${STALE_REST%%|*}"
+    STALE_DESC="${STALE_REST#*|}"
+    warn "${GSA_ID} still carries a CONDITIONAL binding for ${FIRESTORE_ROLE##*/} (title: ${STALE_TITLE})."
+    warn "It grants nothing -- Firestore ignores IAM conditions on the data plane -- and should be removed:"
+    dim  "  gcloud projects remove-iam-policy-binding ${PROJECT_ID} \\"
+    dim  "    --member serviceAccount:${GSA_EMAIL} --role ${FIRESTORE_ROLE} \\"
+    dim  "    --condition \"expression=${STALE_EXPR},title=${STALE_TITLE},description=${STALE_DESC}\""
+  fi
+fi
 
 # GCS, conditioned on this tenant's own prefix. This is the boundary that stops
 # a compromised worker from reading another tenant's artifacts by guessing a path.

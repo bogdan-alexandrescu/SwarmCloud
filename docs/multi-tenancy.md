@@ -19,7 +19,7 @@ Registering a tenant creates every boundary at once — there is no
 | Boundary | Resource | Enforced by |
 |---|---|---|
 | Identity | `swarm-agent-worker-<id>@<project>.iam.gserviceaccount.com` | IAM |
-| Control-plane data | custom role `swarmTenantWorkerFirestore`, conditioned on the `swarm` database | IAM — **see the caveat below** |
+| Control-plane data | custom role `swarmTenantWorkerFirestore`, **unconditioned** | IAM, on the shape of the access only — **see the caveat below** |
 | Artifacts & checkpoints | GCS prefix `tenants/<id>/`, granted by IAM condition | IAM condition on the binding |
 | Provider keys | `swarm-tenant-<id>-<provider>`, secret-level IAM | Secret Manager resource policy |
 | GKE workloads | namespace `swarm-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
@@ -38,9 +38,13 @@ registration had failed.
 **The Firestore row is the weakest boundary in this table, and it is worth
 reading before relying on it.** Firestore IAM has no collection- or
 document-level granularity: the smallest resource a binding or a condition can
-name is the *database*. The condition scopes *which database*, not which tenant,
-so every swarm identity shares one authorization scope over `swarm` — and a
-worker running attacker-controlled code is inside that scope. What is available
+name is the *database*. And the binding carries **no condition at all**, because
+Firestore does not evaluate IAM Conditions on the data plane — attaching one
+denies document access outright rather than scoping it (verified live; see
+[docs/security.md](security.md#firestore-database-scoping-does-not-exist-verified-2026-09-16)).
+So every swarm identity shares one authorization scope over *every* Firestore
+database in this project — and a worker running attacker-controlled code is
+inside that scope. What is available
 at this layer is the *shape* of the access, so the role is built rather than
 borrowed: `swarmTenantWorkerFirestore` drops `datastore.entities.delete` (a
 hostile worker cannot destroy another tenant's tasks, leases or the pool
@@ -213,9 +217,13 @@ Every row above needs two independent mechanisms to fail. This one does not have
 two, and pretending otherwise would be worse than saying so.
 
 Firestore exposes no collection-level IAM to a server-side service account. The
-smallest resource a binding or a condition can name is the database, so the
-`resource.name == .../databases/swarm` condition scopes *which database* and
-nothing finer. `docs/security.md` concedes that an agent can mint its own
+smallest resource a binding or a condition can name is the database — and on the
+data plane it cannot even name that, because Firestore ignores IAM Conditions
+there. A `resource.name == .../databases/swarm` condition does not scope the
+grant, it denies it: every identity that carried one reported `firestore
+unavailable: PermissionDenied`, so both Terraform (`scope_firestore_to_database`,
+default false) and `register-tenant.sh` now grant the role unconditioned.
+`docs/security.md` concedes that an agent can mint its own
 workload's metadata token and argues that the boundary is what that identity can
 do — so here is what it can do:
 

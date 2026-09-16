@@ -99,7 +99,7 @@ identity there is no tenant to attribute a task to.
   by name and nothing else
 - **Dispatch** — a real Cloud Run Job execution created from an admitted lease
 - Leak recovery — the reconciler reclaims stranded leases and returns slots
-- 538 Python tests, 87 Terraform tests
+- 555 Python tests, 87 Terraform tests
 
 **Not yet working:**
 
@@ -132,11 +132,20 @@ make smoke
 Submitting work:
 
 ```bash
-curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     -H "Content-Type: application/json" \
-     -X POST "$API_URL/v1/tasks" \
-     -d '{"runner_profile":"mock","input":{"prompt":"hello swarm"},"timeout_seconds":300}'
+./scripts/api.sh POST /tasks \
+  '{"runner_profile":"mock","input":{"prompt":"hello swarm"},"timeout_seconds":300}'
 ```
+
+An ID token is the *only* input from which the API derives tenant identity, so
+whoever holds one is that person's tenant for the next hour — their provider
+keys, their GCS prefix, their budget. `scripts/api.sh` builds the header with a
+shell builtin and hands it to `curl -K -` on stdin, so it never appears in argv.
+The obvious one-liner, `curl -H "Authorization: Bearer $(gcloud auth
+print-identity-token)"`, publishes the token to every process on the machine
+through `/proc/<pid>/cmdline` and writes it into shell history — the same
+objection that stops `create-secrets.sh` taking a key as an argument. See
+[`docs/security.md`](docs/security.md#handling-an-id-token-on-the-operator-side),
+which also covers why `API_AUDIENCE` is worth setting.
 
 `make destroy` is **label-scoped**: it aborts if the plan would delete anything
 lacking `managed-by=swarm-terraform`, because the target project is shared.
@@ -144,7 +153,7 @@ lacking `managed-by=swarm-terraform`, because the target project is shared.
 ## Development
 
 ```bash
-make test                     # 538 python + 87 terraform tests
+make test                     # 555 python + 87 terraform tests
 make lint                     # tflint, checkov, trivy, shellcheck
 uv run python scripts/dev/drive.py state      # dump live control-plane state
 uv run python scripts/dev/drive.py drain      # one scheduler pass, locally
