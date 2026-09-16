@@ -7,9 +7,13 @@ variable "firestore_database" {
   default = "swarm"
 }
 
+# DEFAULTS OFF. Firestore does not evaluate IAM Conditions on the data plane, so
+# this condition does not scope document access -- it DENIES it. Verified live:
+# every identity carrying it reported "firestore unavailable: PermissionDenied".
+# See terraform/modules/iam/variables.tf and docs/security.md.
 variable "scope_firestore_to_database" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "artifact_bucket" {

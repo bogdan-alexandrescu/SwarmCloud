@@ -118,12 +118,29 @@ variable "artifact_bucket" {
 
 variable "mount_artifact_bucket" {
   description = <<-EOT
-    Mandatory checkpointing (CONTRACT.md invariant 8) writes to GCS. Mounting
-    the bucket means a checkpoint is a file copy rather than an SDK upload the
-    worker has to get right while it is being terminated.
+    Mount the artifact bucket into the worker with gcsfuse.
+
+    DEFAULTS OFF, because it is incompatible with per-tenant isolation and the
+    worker does not need it. gcsfuse calls GetStorageLayout and lists at the
+    BUCKET ROOT when it mounts, while a tenant's storage.objectUser grant is
+    conditioned to its own `tenants/<id>/` prefix. The bucket-wide list is
+    therefore denied and the container never starts at all:
+
+      Application failed to run: volume (type: gcs, name: artifacts):
+      mount operation failed ... does not have storage.objects.list access
+
+    Scoping the mount with gcsfuse's `only-dir` would fix it, but the Terraform
+    provider's `gcs` volume block exposes only `bucket` and `read_only`. The
+    alternative -- granting bucket-wide object list -- would let any tenant
+    enumerate every other tenant's object names, which is exactly the boundary
+    the prefix condition exists to draw.
+
+    None of that is needed: agent_worker.objectstore uses the GCS client
+    library, so checkpoints and artifacts go through prefix-scoped SDK calls
+    that the conditioned grant already permits. Invariant 8 is unaffected.
   EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "workspace_memory_fraction" {
