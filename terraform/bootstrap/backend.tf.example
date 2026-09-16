@@ -1,0 +1,8 @@
+# Copy to backend.tf and run `terraform init -migrate-state` ONLY after the
+# state bucket already exists. Never in the same apply that creates it.
+terraform {
+  backend "gcs" {
+    # bucket = "swarm-tfstate-saga-agents-staging"
+    prefix = "bootstrap"
+  }
+}

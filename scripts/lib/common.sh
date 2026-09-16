@@ -1,0 +1,590 @@
+#!/usr/bin/env bash
+# Shared library for every script in scripts/. Sourced, never executed directly.
+#
+# Two things in here exist because of this specific machine and this specific
+# project, and removing them will break operators in ways that are hard to see:
+#
+#   1. kubectl is resolved EXPLICITLY. Three kubectl binaries are on this Mac and
+#      the two that win $PATH lookup are 1.22 (EKS) and 1.25 (Docker Desktop),
+#      both far outside the supported skew for a 1.35 control plane. A 1.22
+#      client against a 1.35 server does not fail loudly -- it silently drops
+#      fields it does not understand from manifests it applies.
+#   2. Every shared resource in saga-agents-staging that belongs to another team
+#      is named here, once, in SHARED_DENY_LIST. destroy.sh, purge-data.sh and
+#      configure-kubectl.sh all read it. One list, one place to keep correct.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+SWARM_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SWARM_LIB_DIR}/../.." && pwd)"
+BUILD_DIR="${REPO_ROOT}/build"
+export REPO_ROOT BUILD_DIR
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+else
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_DIM=""; C_BOLD=""
+fi
+
+log()  { printf '%s\n' "$*" >&2; }
+info() { printf '%s==>%s %s\n' "${C_BLUE}" "${C_RESET}" "$*" >&2; }
+step() { printf '\n%s== %s ==%s\n' "${C_BOLD}" "$*" "${C_RESET}" >&2; }
+ok()   { printf '%s  ok%s %s\n' "${C_GREEN}" "${C_RESET}" "$*" >&2; }
+warn() { printf '%swarn%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*" >&2; }
+err()  { printf '%s fail%s %s\n' "${C_RED}" "${C_RESET}" "$*" >&2; }
+dim()  { printf '%s%s%s\n' "${C_DIM}" "$*" "${C_RESET}" >&2; }
+die()  { err "$*"; exit 1; }
+
+hr() { printf '%s\n' "------------------------------------------------------------" >&2; }
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+load_env() {
+  local env_file="${SWARM_ENV_FILE:-${REPO_ROOT}/.env}"
+  if [[ -f "${env_file}" ]]; then
+    set -a
+    # shellcheck disable=SC1090  # path is operator-chosen by design
+    source "${env_file}"
+    set +a
+  fi
+
+  PROJECT_ID="${PROJECT_ID:-saga-agents-staging}"
+  REGION="${REGION:-us-central1}"
+  ZONE="${ZONE:-us-central1-a}"
+  ENVIRONMENT="${ENVIRONMENT:-dev}"
+
+  # Named database. NEVER (default): this project is shared and (default)
+  # belongs to whoever gets there first.
+  FIRESTORE_DATABASE="${FIRESTORE_DATABASE:-swarm}"
+
+  ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-${PROJECT_ID}-swarm-artifacts}"
+  ARTIFACT_REGISTRY="${ARTIFACT_REGISTRY:-swarm-images}"
+  # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately
+  # not saga-agents-terraform-state-staging: that bucket belongs to another team
+  # (it is on the deny-list below) and putting our state in it would make our
+  # teardown depend on their retention policy.
+  TF_STATE_BUCKET="${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID}}"
+  TF_STATE_PREFIX="${TF_STATE_PREFIX:-infra/${ENVIRONMENT}}"
+
+  # The swarm's own Autopilot cluster. agents-staging belongs to another team and
+  # is deny-listed below; nothing here may ever target it.
+  GKE_CLUSTER="${GKE_CLUSTER:-swarm-autopilot}"
+  GKE_LOCATION="${GKE_LOCATION:-${REGION}}"
+
+  PUBSUB_TOPIC="${PUBSUB_TOPIC:-swarm-scheduler-wake}"
+  SCHEDULER_JOB="${SCHEDULER_JOB:-swarm-scheduler-tick}"
+
+  API_SERVICE="${API_SERVICE:-swarm-api}"
+  SCHEDULER_SERVICE="${SCHEDULER_SERVICE:-swarm-scheduler}"
+  QUOTA_SERVICE="${QUOTA_SERVICE:-swarm-quota-broker}"
+
+  API_PREFIX="${API_PREFIX:-/v1}"
+  HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"
+
+  IMAGE_HOST="${IMAGE_HOST:-${REGION}-docker.pkg.dev}"
+  IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
+
+  export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
+  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE
+  export API_PREFIX HTTP_TIMEOUT IMAGE_HOST IMAGE_REPO
+
+  mkdir -p "${BUILD_DIR}"
+
+  # configure-kubectl.sh writes an isolated kubeconfig rather than merging into
+  # the operator's default one. Pick it up here so every other script targets the
+  # swarm cluster without the operator having to remember an export -- and
+  # without any script ever inheriting a stray production context.
+  if [[ -z "${KUBECONFIG:-}" && -f "${BUILD_DIR}/kubeconfig-${ENVIRONMENT}.yaml" ]]; then
+    KUBECONFIG="${BUILD_DIR}/kubeconfig-${ENVIRONMENT}.yaml"
+    export KUBECONFIG
+  fi
+}
+
+# Resources owned by other teams in this shared project. Verified against the
+# live project on 2026-09-15. Nothing this repo runs may delete, modify or even
+# point kubectl at anything in this list.
+SHARED_DENY_LIST=(
+  "agents-staging"
+  "agents-staging-vpc"
+  "agents-staging-subnet"
+  "gke-agents-staging-88280d02-pe-subnet"
+  "default"
+  "saga-agents-crawled-media-staging"
+  "saga-agents-files-staging"
+  "saga-agents-terraform-state-staging"
+  "api-service@saga-agents-staging.iam.gserviceaccount.com"
+  "publisher@saga-agents-staging.iam.gserviceaccount.com"
+  "209012342332-compute@developer.gserviceaccount.com"
+  "promptlab-deployer@saga-agents-staging.iam.gserviceaccount.com"
+  "promptlab-runner@saga-agents-staging.iam.gserviceaccount.com"
+  "aipipeline@saga-agents-staging.iam.gserviceaccount.com"
+  "saga-storage-ro@saga-agents-staging.iam.gserviceaccount.com"
+  "saga-storage-rw@saga-agents-staging.iam.gserviceaccount.com"
+  "external-secrets@saga-agents-staging.iam.gserviceaccount.com"
+  "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com"
+  "crawler@saga-agents-staging.iam.gserviceaccount.com"
+  "tournament-digest@saga-agents-staging.iam.gserviceaccount.com"
+)
+
+is_shared_resource() {
+  local candidate="$1" protected
+  for protected in "${SHARED_DENY_LIST[@]}"; do
+    [[ "${candidate}" == "${protected}" ]] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+require_cmd() {
+  local missing=0 cmd
+  for cmd in "$@"; do
+    command -v "${cmd}" >/dev/null 2>&1 || { err "required command not found: ${cmd}"; missing=1; }
+  done
+  [[ "${missing}" -eq 0 ]] || die "install the missing tools, or run: make prerequisites"
+}
+
+# First two components of a `vX.Y.Z` anywhere in the given string.
+_semver_minor() {
+  local raw="$1"
+  if [[ "${raw}" =~ v?([0-9]+)\.([0-9]+) ]]; then
+    printf '%s %s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+KUBECTL=""
+# Resolve a kubectl new enough for a 1.35 control plane. The old binaries on this
+# machine win $PATH, so PATH order is deliberately consulted LAST.
+kubectl_bin() {
+  if [[ -n "${KUBECTL}" ]]; then printf '%s' "${KUBECTL}"; return 0; fi
+
+  local candidates=() c parsed major minor
+  [[ -n "${SWARM_KUBECTL:-}" ]] && candidates+=("${SWARM_KUBECTL}")
+  candidates+=("/opt/homebrew/bin/kubectl" "/usr/local/opt/kubernetes-cli/bin/kubectl")
+  if c="$(command -v kubectl 2>/dev/null)"; then candidates+=("${c}"); fi
+
+  for c in "${candidates[@]}"; do
+    [[ -x "${c}" ]] || continue
+    local ver
+    ver="$("${c}" version --client 2>/dev/null | head -n 2 | tr '\n' ' ')" || continue
+    parsed="$(_semver_minor "${ver}")" || continue
+    read -r major minor <<<"${parsed}"
+    if [[ "${major}" -gt 1 || ( "${major}" -eq 1 && "${minor}" -ge 30 ) ]]; then
+      KUBECTL="${c}"
+      printf '%s' "${KUBECTL}"
+      return 0
+    fi
+  done
+
+  err "no kubectl >= 1.30 found. Checked: ${candidates[*]}"
+  err "this machine has kubectl 1.22 (EKS) and 1.25 (Docker Desktop) ahead of 1.36 on \$PATH."
+  die "set SWARM_KUBECTL=/opt/homebrew/bin/kubectl, or install kubernetes-cli"
+}
+
+kc() {
+  local bin
+  bin="$(kubectl_bin)"
+  "${bin}" "$@"
+}
+
+# Resolve a tool, preferring the pinned copy in ~/.local/bin over whatever wins
+# $PATH. This is not cosmetic: on this workstation Homebrew's checkov 3.3.10 is
+# broken (it raises on import) and shadows the working 3.3.17 in ~/.local/bin,
+# exactly as three old kubectl binaries shadow 1.36.3.
+prefer_local_bin() {
+  local name="$1" override="${2:-}"
+  if [[ -n "${override}" ]]; then printf '%s' "${override}"; return 0; fi
+  if [[ -x "${HOME}/.local/bin/${name}" ]]; then printf '%s' "${HOME}/.local/bin/${name}"; return 0; fi
+  command -v "${name}" 2>/dev/null || return 1
+}
+
+# The swarm's own contexts, and the only ones any script here may act through.
+# This guard is not theoretical: on the reference workstation the ACTIVE context
+# was gke_saga-agents-staging_us-central1-a_agents-staging -- another team's live
+# cluster -- with gke_saga-agents-prod_us-central1_agents-prod sitting in the same
+# kubeconfig. Creating a namespace through whatever context happened to be
+# current would have put swarm objects in someone else's production.
+kube_context_allowed() {
+  local ctx="$1"
+  [[ "${ctx}" == "swarm-${ENVIRONMENT}" ]] && return 0
+  [[ "${ctx}" == "gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}" ]] && return 0
+  return 1
+}
+
+kube_current_context() {
+  local bin
+  bin="$(kubectl_bin 2>/dev/null)" || return 1
+  "${bin}" config current-context 2>/dev/null
+}
+
+# True only when kubectl is pointed at the swarm's own cluster.
+kube_context_is_swarm() {
+  local ctx
+  ctx="$(kube_current_context)" || return 1
+  [[ -n "${ctx}" ]] || return 1
+  # A context whose name ends in a deny-listed cluster is never acceptable, even
+  # if someone renamed it to look like ours.
+  local trailing="${ctx##*_}"
+  is_shared_resource "${trailing}" && return 1
+  kube_context_allowed "${ctx}"
+}
+
+assert_kube_context() {
+  local ctx
+  ctx="$(kube_current_context || true)"
+  if kube_context_is_swarm; then
+    return 0
+  fi
+  err "kubectl is pointed at '''${ctx:-<none>}''', which is not the swarm cluster."
+  err "Expected 'swarm-${ENVIRONMENT}' or 'gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}'."
+  err "Other teams''' clusters -- including production -- are reachable from this kubeconfig."
+  die "run scripts/configure-kubectl.sh first; it writes an isolated kubeconfig for the swarm cluster"
+}
+
+terraform_bin() {
+  prefer_local_bin terraform "${SWARM_TERRAFORM:-}" \
+    || die "terraform not found; run: make prerequisites"
+}
+
+tflint_bin()  { prefer_local_bin tflint  "${SWARM_TFLINT:-}"; }
+checkov_bin() { prefer_local_bin checkov "${SWARM_CHECKOV:-}"; }
+trivy_bin()   { prefer_local_bin trivy   "${SWARM_TRIVY:-}"; }
+
+tf() {
+  local bin
+  bin="$(terraform_bin)"
+  "${bin}" "$@"
+}
+
+# There is ONE terraform root. Environments are tfvars files against it, not
+# roots of their own -- so `terraform plan` for dev and prod run identical
+# configuration and differ only in inputs and state prefix. A root per
+# environment is how prod quietly drifts from dev.
+tf_root() {
+  local dir="${REPO_ROOT}/terraform/infra"
+  [[ -d "${dir}" ]] || die "no terraform root: ${dir}"
+  printf '%s' "${dir}"
+}
+
+# The variables for this environment. Absent is fatal rather than defaulted:
+# planning prod with dev's inputs is the mistake this refuses to make possible.
+tf_var_file() {
+  local file="${REPO_ROOT}/terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars"
+  [[ -f "${file}" ]] || die "no tfvars for environment '${ENVIRONMENT}': ${file}"
+  printf '%s' "${file}"
+}
+
+# Usage: tf_var_args; tf -chdir="$(tf_root)" plan "${TF_VAR_ARGS[@]}"
+TF_VAR_ARGS=()
+tf_var_args() {
+  TF_VAR_ARGS=(-var-file="$(tf_var_file)")
+}
+
+# Read one terraform output, empty string if the output or the state is absent.
+# Never fails the caller: scripts must degrade to env defaults, because an
+# operator running `make status` before the first apply is a normal thing to do.
+tf_output() {
+  local name="$1" dir value
+  dir="${REPO_ROOT}/terraform/infra"
+  [[ -d "${dir}/.terraform" ]] || return 0
+  value="$(tf -chdir="${dir}" output -raw "${name}" 2>/dev/null)" || return 0
+  printf '%s' "${value}"
+}
+
+# ---------------------------------------------------------------------------
+# Credentials. Nothing below ever prints a token.
+# ---------------------------------------------------------------------------
+
+_ACCESS_TOKEN=""
+access_token() {
+  if [[ -z "${_ACCESS_TOKEN}" ]]; then
+    _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
+      || die "no gcloud credentials; run: gcloud auth login"
+  fi
+  printf '%s' "${_ACCESS_TOKEN}"
+}
+
+# A Google ID token for the API.
+#
+# The API verifies the token itself and checks the `hd` claim, so the useful
+# source depends on who is calling:
+#   SWARM_ID_TOKEN        -- CI supplies its own, already minted by WIF
+#   SWARM_IMPERSONATE_SA  -- mint one for an exact audience via impersonation
+#   otherwise             -- the operator's own gcloud user token, whose audience
+#                            is the gcloud OAuth client; API_AUDIENCE must list it
+_ID_TOKEN=""
+id_token() {
+  if [[ -n "${_ID_TOKEN}" ]]; then printf '%s' "${_ID_TOKEN}"; return 0; fi
+  if [[ -n "${SWARM_ID_TOKEN:-}" ]]; then
+    _ID_TOKEN="${SWARM_ID_TOKEN}"
+  elif [[ -n "${SWARM_IMPERSONATE_SA:-}" ]]; then
+    _ID_TOKEN="$(gcloud auth print-identity-token \
+      --impersonate-service-account="${SWARM_IMPERSONATE_SA}" \
+      --audiences="${API_AUDIENCE:-$(api_url)}" --include-email 2>/dev/null)" \
+      || die "could not mint an ID token by impersonating ${SWARM_IMPERSONATE_SA}"
+  else
+    _ID_TOKEN="$(gcloud auth print-identity-token 2>/dev/null)" \
+      || die "no ID token available; run: gcloud auth login"
+  fi
+  printf '%s' "${_ID_TOKEN}"
+}
+
+# ---------------------------------------------------------------------------
+# Control-plane API
+# ---------------------------------------------------------------------------
+
+_API_URL=""
+api_url() {
+  if [[ -n "${_API_URL}" ]]; then printf '%s' "${_API_URL}"; return 0; fi
+  if [[ -n "${API_URL:-}" ]]; then
+    _API_URL="${API_URL%/}"
+  else
+    local from_tf
+    from_tf="$(tf_output api_url)"
+    if [[ -n "${from_tf}" ]]; then
+      _API_URL="${from_tf%/}"
+    else
+      _API_URL="$(gcloud run services describe "${API_SERVICE}" \
+        --project "${PROJECT_ID}" --region "${REGION}" \
+        --format='value(status.url)' 2>/dev/null || true)"
+      _API_URL="${_API_URL%/}"
+    fi
+  fi
+  [[ -n "${_API_URL}" ]] || die "cannot resolve the API URL; set API_URL in .env or deploy first"
+  printf '%s' "${_API_URL}"
+}
+
+# api_request METHOD PATH [BODY] -> body on stdout, HTTP status in API_STATUS
+API_STATUS=0
+api_request() {
+  local method="$1" path="$2" body="${3:-}"
+  local url token response
+  url="$(api_url)${path}"
+  token="$(id_token)"
+
+  if [[ -n "${body}" ]]; then
+    response="$(curl -sS -m "${HTTP_TIMEOUT}" -w $'\n%{http_code}' -X "${method}" \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
+  else
+    response="$(curl -sS -m "${HTTP_TIMEOUT}" -w $'\n%{http_code}' -X "${method}" \
+      -H "Authorization: Bearer ${token}" "${url}")" || { API_STATUS=0; return 1; }
+  fi
+
+  API_STATUS="${response##*$'\n'}"
+  printf '%s' "${response%$'\n'*}"
+  [[ "${API_STATUS}" -ge 200 && "${API_STATUS}" -lt 300 ]]
+}
+
+api_get()  { api_request GET  "${API_PREFIX}$1"; }
+api_post() { api_request POST "${API_PREFIX}$1" "$2"; }
+
+api_reachable() {
+  curl -sS -m 10 -o /dev/null -w '%{http_code}' "$(api_url)/healthz" 2>/dev/null | grep -q '^2'
+}
+
+# ---------------------------------------------------------------------------
+# Firestore REST. Used instead of a Python client so that ops scripts have no
+# dependency beyond curl + jq, and so they work identically from CI.
+# ---------------------------------------------------------------------------
+
+fs_base() {
+  printf 'https://firestore.googleapis.com/v1/projects/%s/databases/%s/documents' \
+    "${PROJECT_ID}" "${FIRESTORE_DATABASE}"
+}
+
+fs_request() {
+  local method="$1" url="$2" body="${3:-}"
+  local token
+  token="$(access_token)"
+  if [[ -n "${body}" ]]; then
+    curl -sS -m "${HTTP_TIMEOUT}" -X "${method}" \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      --data-binary "${body}" "${url}"
+  else
+    curl -sS -m "${HTTP_TIMEOUT}" -X "${method}" \
+      -H "Authorization: Bearer ${token}" "${url}"
+  fi
+}
+
+fs_get()    { fs_request GET "$(fs_base)/$1"; }
+fs_delete() { fs_request DELETE "$(fs_base)/$1" >/dev/null; }
+
+# fs_list COLLECTION [PAGE_SIZE] -> concatenated `documents` arrays, paginated.
+fs_list() {
+  local collection="$1" page_size="${2:-300}"
+  local token page url out
+  token=""
+  while :; do
+    url="$(fs_base)/${collection}?pageSize=${page_size}"
+    [[ -n "${token}" ]] && url="${url}&pageToken=${token}"
+    page="$(fs_request GET "${url}")"
+    out="$(printf '%s' "${page}" | jq -c '.documents // []')"
+    printf '%s\n' "${out}"
+    token="$(printf '%s' "${page}" | jq -r '.nextPageToken // ""')"
+    [[ -n "${token}" ]] || break
+  done
+}
+
+# One decoded document per line.
+fs_list_docs() { fs_list "$1" "${2:-300}" | jq -c "${FS_JQ} .[] | doc"; }
+
+# fs_patch DOC_PATH FIELD_MASK_CSV JSON_FIELDS
+fs_patch() {
+  local doc="$1" mask="$2" fields="$3"
+  local url="" part
+  url="$(fs_base)/${doc}?"
+  IFS=',' read -r -a _mask_parts <<<"${mask}"
+  for part in "${_mask_parts[@]}"; do
+    url+="updateMask.fieldPaths=${part}&"
+  done
+  fs_request PATCH "${url%&}" "{\"fields\":${fields}}" >/dev/null
+}
+
+# fs_count_where COLLECTION WHERE_JSON -> integer, via a server-side aggregation,
+# so a hundred thousand tasks cost one request and zero document reads. Pass
+# 'null' for an unfiltered count.
+fs_count_where() {
+  local collection="$1" where="${2:-null}"
+  local query result
+  query="$(jq -nc --arg c "${collection}" --argjson w "${where}" '
+    {structuredAggregationQuery:{
+       structuredQuery: ({from:[{collectionId:$c}]} + (if $w == null then {} else {where:$w} end)),
+       aggregations:[{alias:"n",count:{}}]}}')"
+  result="$(fs_request POST "$(fs_base):runAggregationQuery" "${query}")"
+  printf '%s' "$(printf '%s' "${result}" \
+    | jq -r '[.[]?|.result?.aggregateFields?.n?.integerValue//empty]|first // "0"')"
+}
+
+# fs_count COLLECTION [FIELD OP STRING_VALUE]
+fs_count() {
+  local collection="$1" field="${2:-}" op="${3:-}" value="${4:-}"
+  local where='null'
+  if [[ -n "${field}" ]]; then
+    where="$(jq -nc --arg f "${field}" --arg o "${op}" --arg v "${value}" \
+      '{fieldFilter:{field:{fieldPath:$f},op:$o,value:{stringValue:$v}}}')"
+  fi
+  fs_count_where "${collection}" "${where}"
+}
+
+fs_null_filter() {
+  jq -nc --arg f "$1" --arg o "$2" '{unaryFilter:{field:{fieldPath:$f},op:$o}}'
+}
+
+# Firestore's REST encoding is typed ({"integerValue":"3"}), which is unreadable
+# in a terminal and awkward in jq. This prelude decodes a document into plain
+# JSON: `jq "${FS_JQ} .[] | doc"`.
+FS_JQ='
+def fv:
+  if type != "object" then .
+  elif has("integerValue")   then (.integerValue|tonumber)
+  elif has("doubleValue")    then .doubleValue
+  elif has("booleanValue")   then .booleanValue
+  elif has("stringValue")    then .stringValue
+  elif has("timestampValue") then .timestampValue
+  elif has("nullValue")      then null
+  elif has("bytesValue")     then "<bytes>"
+  elif has("arrayValue")     then [ (.arrayValue.values // [])[] | fv ]
+  elif has("mapValue")       then ( (.mapValue.fields // {}) | with_entries(.value |= fv) )
+  else . end;
+def doc: { id: (.name | split("/") | last) }
+         + ( (.fields // {}) | with_entries(.value |= fv) );
+# Mirrors swarm_common.models.SlotPool.effective_limit exactly: the minimum of
+# the hard limit and any adaptive or quota-derived cap, floored at zero.
+def effective_limit:
+  [ (.hard_limit // 0) ]
+  + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
+  + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
+  | min | if . < 0 then 0 else . end;
+'
+
+# fs_query COLLECTION WHERE_JSON [LIMIT] -> one document JSON per line
+fs_query() {
+  local collection="$1" where="${2:-null}" limit="${3:-500}"
+  local query
+  query="$(jq -nc --arg c "${collection}" --argjson w "${where}" --argjson l "${limit}" '
+    {structuredQuery: ({from:[{collectionId:$c}], limit:$l}
+       + (if $w == null then {} else {where:$w} end))}')"
+  fs_request POST "$(fs_base):runQuery" "${query}" \
+    | jq -c '.[]? | select(.document != null) | .document'
+}
+
+fs_field_filter() {
+  jq -nc --arg f "$1" --arg o "$2" --argjson v "$3" \
+    '{fieldFilter:{field:{fieldPath:$f},op:$o,value:$v}}'
+}
+
+fs_database_exists() {
+  gcloud firestore databases describe --database="${FIRESTORE_DATABASE}" \
+    --project="${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Safety
+# ---------------------------------------------------------------------------
+
+is_production() {
+  [[ "${ENVIRONMENT}" == "prod" || "${ENVIRONMENT}" == "production" ]]
+}
+
+# confirm PROMPT EXPECTED_ANSWER -- typed confirmation, never a bare y/n for
+# anything destructive. Honours SWARM_ASSUME_YES only for non-destructive flows.
+confirm() {
+  local prompt="$1" expected="$2" answer
+  if [[ -n "${SWARM_ASSUME_YES:-}" ]]; then
+    warn "SWARM_ASSUME_YES set; skipping confirmation for: ${prompt}"
+    return 0
+  fi
+  [[ -t 0 ]] || die "refusing to proceed without an interactive confirmation (not a TTY)"
+  printf '%s\n' "${prompt}" >&2
+  printf 'Type %s to continue: ' "${expected}" >&2
+  read -r answer
+  [[ "${answer}" == "${expected}" ]] || die "confirmation did not match; aborted"
+}
+
+git_sha() {
+  if git -C "${REPO_ROOT}" rev-parse --short=12 HEAD >/dev/null 2>&1; then
+    git -C "${REPO_ROOT}" rev-parse --short=12 HEAD
+  else
+    printf 'nogit-%s' "$(date -u +%Y%m%d%H%M%S)"
+  fi
+}
+
+git_dirty() {
+  git -C "${REPO_ROOT}" diff --quiet 2>/dev/null && \
+  git -C "${REPO_ROOT}" diff --cached --quiet 2>/dev/null && return 1
+  return 0
+}
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Redact anything that looks like a credential before it reaches a terminal or a
+# CI log. Applied to every command output that could contain one.
+redact() {
+  sed -E \
+    -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1********/g' \
+    -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
+    -e 's/(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+/\1********/g' \
+    -e 's/(AIza)[A-Za-z0-9_-]{20,}/\1********/g' \
+    -e 's/("?(api_?key|password|secret|token|authorization)"?[[:space:]]*[:=][[:space:]]*"?)[^",[:space:]]+/\1********/Ig'
+}
+
+load_env

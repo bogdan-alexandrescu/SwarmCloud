@@ -1,0 +1,21 @@
+# Keep the build context small and free of anything that must never reach an
+# image: local virtualenvs, terraform state (which holds secrets), and git
+# history. The image Dockerfiles copy only apps/common and apps/agent-worker.
+.git/
+.github/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+**/.DS_Store
+.env
+docs/
+scripts/
+terraform/
+kubernetes/
+tests/
+uv.lock
+**/*.tfstate
+**/*.tfstate.backup
+**/.terraform/

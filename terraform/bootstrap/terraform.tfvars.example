@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and edit.
+#
+#   terraform -chdir=terraform/bootstrap init
+#   terraform -chdir=terraform/bootstrap plan
+#
+# This root uses LOCAL state on purpose -- see the comment in versions.tf.
+
+project_id = "saga-agents-staging"
+region     = "us-central1"
+location   = "US-CENTRAL1"
+
+# Keyless CI. Leave false until the repository exists and the workflow is ready.
+enable_github_wif = false
+# github_repository   = "saga/agent-swarm-infra"
+# github_allowed_refs = ["refs/heads/main"]

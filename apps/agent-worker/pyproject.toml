@@ -1,0 +1,31 @@
+# Track C execution plane: the process that runs exactly one attempt of one task.
+#
+# The GCP client libraries are ordinary dependencies, but every one of them is
+# imported LAZILY inside a factory (see `clients.py`). A unit test therefore runs
+# the whole lifecycle with in-memory doubles and never imports grpc at all, which
+# is what keeps `uv run pytest tests/unit/worker -q` fast and hermetic.
+[project]
+name = "swarm-agent-worker"
+version = "0.1.0"
+description = "Execution-plane worker: fencing, checkpointing, runners, artifacts."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "google-cloud-firestore>=2.16",
+    "google-cloud-storage>=2.18",
+    "google-cloud-secret-manager>=2.20",
+    "google-cloud-monitoring>=2.22",
+]
+
+[project.scripts]
+agent-worker = "agent_worker.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_worker"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }

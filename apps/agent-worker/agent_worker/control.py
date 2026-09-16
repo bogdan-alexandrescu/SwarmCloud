@@ -1,0 +1,575 @@
+"""The worker's window onto the control plane.
+
+Everything the worker knows about the outside world -- whether it is still the
+rightful owner of its task, whether someone cancelled it, whether its provider
+has run out of quota -- arrives through this module, and every durable fact the
+worker produces leaves through it.
+
+Three rules shape the design.
+
+**Fencing is checked against the task document, not against the environment.**
+The worker is handed a generation in its environment, but the authority is
+`tasks/{id}.current_generation`. If a reconciler decided this attempt was dead
+and a newer attempt was admitted, the task document is where that fact lives, so
+that is what `validate_generation` reads -- before any workspace exists, before
+any credential is fetched, before the runner is started.
+
+**Releasing capacity goes through the frozen admission module.** There is
+exactly one function in the codebase that decrements a pool, and it lives in
+`swarm_common.admission`. The worker calls it inside a transaction like everyone
+else, and it is idempotent, so the worker, the reconciler and a cancellation can
+all race to release the same lease without inflating capacity.
+
+**A fenced worker does not release the lease.** Its lease belongs to a
+superseded generation; the live lease is someone else's. Releasing is the
+reconciler's job precisely because the reconciler can order invalidation before
+release, and touching pools on the way out of a fence is the one way a worker
+could hand a slot to nobody.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable, Protocol
+
+from swarm_common.admission import release_lease_in_transaction
+from swarm_common.models import Attempt, ProviderState, TaskEvent, new_id, utcnow
+from swarm_common.states import (
+    CONCURRENCY_STATES,
+    TERMINAL_STATES,
+    EventType,
+    ParkReason,
+    TaskState,
+    assert_transition,
+)
+
+from .errors import ControlPlaneError, FencedError
+
+# ---------------------------------------------------------------------------
+# Signals
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ControlSignals:
+    """A point-in-time read of everything that can stop or divert this worker."""
+
+    state: TaskState
+    generation: int
+    cancel_requested: bool
+    lease_released: bool
+    lease_expires_at: datetime | None = None
+    provider_state: ProviderState | None = None
+    provider_paused: bool = False
+    retry_after_seconds: int | None = None
+    quota_reset_at: datetime | None = None
+    observed_at: datetime | None = None
+
+    def is_fenced(self, generation: int) -> bool:
+        """True when this worker no longer owns the task."""
+        return (
+            self.generation != generation
+            or self.lease_released
+            or self.state in TERMINAL_STATES
+        )
+
+    def wants_stop(self, generation: int) -> bool:
+        return self.cancel_requested or self.is_fenced(generation)
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    # Firestore's server timestamps expose .timestamp_pb() / .ToDatetime() shims.
+    to_dt = getattr(value, "ToDatetime", None)
+    if callable(to_dt):
+        return to_dt()
+    return None
+
+
+def _as_state(value: Any) -> TaskState:
+    if isinstance(value, TaskState):
+        return value
+    try:
+        return TaskState(value)
+    except (ValueError, TypeError) as exc:
+        raise ControlPlaneError(f"task document holds an unknown state {value!r}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Transactions
+# ---------------------------------------------------------------------------
+
+
+class TransactionRunner(Protocol):
+    """Runs a function inside one Firestore transaction, retrying on contention."""
+
+    def run(self, fn: Callable[[Any], Any]) -> Any: ...
+
+
+class FirestoreTransactionRunner:
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def run(self, fn: Callable[[Any], Any]) -> Any:
+        from google.cloud import firestore  # lazy: unit tests never import grpc
+
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _inner(txn: Any) -> Any:
+            return fn(txn)
+
+        return _inner(transaction)
+
+
+# ---------------------------------------------------------------------------
+# Control plane
+# ---------------------------------------------------------------------------
+
+
+class ControlPlane:
+    """Firestore-backed control-plane operations for exactly one attempt."""
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        task_id: str,
+        attempt_id: str,
+        lease_id: str,
+        tenant_id: str,
+        generation: int,
+        logger: Any,
+        txn_runner: TransactionRunner | None = None,
+        heartbeat_extension_seconds: int = 120,
+    ) -> None:
+        self._db = db
+        self.task_id = task_id
+        self.attempt_id = attempt_id
+        self.lease_id = lease_id
+        self.tenant_id = tenant_id
+        self.generation = generation
+        self._log = logger
+        self._txn = txn_runner or FirestoreTransactionRunner(db)
+        self._heartbeat_extension = heartbeat_extension_seconds
+        self._lease_released = False
+
+    # -- raw reads ---------------------------------------------------------
+    def _task_ref(self) -> Any:
+        return self._db.collection("tasks").document(self.task_id)
+
+    def _lease_ref(self) -> Any:
+        return self._db.collection("leases").document(self.lease_id)
+
+    def _attempt_ref(self) -> Any:
+        return self._db.collection("attempts").document(self.attempt_id)
+
+    def _quota_ref(self, provider: str) -> Any:
+        return self._db.collection("quota").document(f"{provider}:{self.tenant_id}")
+
+    def fetch_task(self) -> dict[str, Any]:
+        snap = self._task_ref().get()
+        if not snap.exists:
+            raise FencedError(self.generation, -1, "task document no longer exists")
+        return snap.to_dict() or {}
+
+    def fetch_lease(self) -> dict[str, Any] | None:
+        snap = self._lease_ref().get()
+        if not snap.exists:
+            return None
+        return snap.to_dict() or {}
+
+    # -- fencing -----------------------------------------------------------
+    def validate_generation(self) -> ControlSignals:
+        """THE safety gate. Raises FencedError if this worker is superseded.
+
+        Called before the workspace is created, before credentials are read and
+        before the runner is started. Everything below the raise is what does
+        NOT happen when an attempt has been superseded.
+        """
+        task = self.fetch_task()
+        current_generation = int(task.get("current_generation", 0))
+        state = _as_state(task.get("state"))
+
+        if current_generation != self.generation:
+            raise FencedError(
+                self.generation,
+                current_generation,
+                "task has moved to a newer generation",
+            )
+        if state in TERMINAL_STATES:
+            raise FencedError(
+                self.generation, current_generation, f"task is already terminal ({state.value})"
+            )
+        if state not in CONCURRENCY_STATES:
+            # READY or PARKED means the lease was reclaimed underneath us.
+            raise FencedError(
+                self.generation,
+                current_generation,
+                f"task no longer holds capacity (state={state.value})",
+            )
+
+        lease = self.fetch_lease()
+        if lease is None:
+            raise FencedError(self.generation, current_generation, "lease document is gone")
+        if lease.get("released_at") is not None:
+            raise FencedError(
+                self.generation, current_generation, "lease has already been released"
+            )
+        if int(lease.get("generation", -1)) != self.generation:
+            raise FencedError(
+                self.generation,
+                int(lease.get("generation", -1)),
+                "lease belongs to a different generation",
+            )
+        if lease.get("task_id") != self.task_id:
+            raise FencedError(
+                self.generation, current_generation, "lease belongs to a different task"
+            )
+        if task.get("current_lease_id") not in (None, self.lease_id):
+            raise FencedError(
+                self.generation,
+                current_generation,
+                "task points at a different lease",
+            )
+
+        return ControlSignals(
+            state=state,
+            generation=current_generation,
+            cancel_requested=bool(task.get("cancel_requested")),
+            lease_released=False,
+            lease_expires_at=_as_datetime(lease.get("expires_at")),
+            observed_at=utcnow(),
+        )
+
+    # -- polling -----------------------------------------------------------
+    def poll(self, provider: str | None = None) -> ControlSignals:
+        """One read of task + lease (+ quota), used by the supervision loop."""
+        try:
+            task = self.fetch_task()
+        except FencedError:
+            return ControlSignals(
+                state=TaskState.CANCELLED,
+                generation=-1,
+                cancel_requested=False,
+                lease_released=True,
+                observed_at=utcnow(),
+            )
+        lease = self.fetch_lease() or {}
+        provider_state: ProviderState | None = None
+        provider_paused = False
+        retry_after: int | None = None
+        reset_at: datetime | None = None
+
+        if provider:
+            qsnap = self._quota_ref(provider).get()
+            if qsnap.exists:
+                q = qsnap.to_dict() or {}
+                try:
+                    provider_state = ProviderState(q.get("state", ProviderState.UNKNOWN.value))
+                except ValueError:
+                    provider_state = ProviderState.UNKNOWN
+                provider_paused = provider_state in (
+                    ProviderState.EXHAUSTED,
+                    ProviderState.COOLDOWN,
+                    ProviderState.DISABLED,
+                )
+                retry_after = q.get("retry_after_seconds")
+                reset_at = _as_datetime(q.get("reset_at")) or _as_datetime(q.get("cooldown_until"))
+
+        return ControlSignals(
+            state=_as_state(task.get("state")),
+            generation=int(task.get("current_generation", -1)),
+            cancel_requested=bool(task.get("cancel_requested")),
+            lease_released=lease.get("released_at") is not None or not lease,
+            lease_expires_at=_as_datetime(lease.get("expires_at")),
+            provider_state=provider_state,
+            provider_paused=provider_paused,
+            retry_after_seconds=int(retry_after) if retry_after is not None else None,
+            quota_reset_at=reset_at,
+            observed_at=utcnow(),
+        )
+
+    # -- events ------------------------------------------------------------
+    def emit(
+        self,
+        event_type: EventType,
+        detail: dict[str, Any] | None = None,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        event = TaskEvent(
+            event_id=new_id("evt"),
+            task_id=self.task_id,
+            tenant_id=self.tenant_id,
+            type=event_type,
+            at=at or utcnow(),
+            attempt_id=self.attempt_id,
+            lease_id=self.lease_id,
+            generation=self.generation,
+            detail=detail or {},
+        )
+        self._task_ref().collection("events").document(event.event_id).set(
+            {
+                "event_id": event.event_id,
+                "task_id": event.task_id,
+                "tenant_id": event.tenant_id,
+                "type": event.type.value,
+                "at": event.at,
+                "attempt_id": event.attempt_id,
+                "lease_id": event.lease_id,
+                "generation": event.generation,
+                "detail": event.detail,
+            }
+        )
+        self._log.info("event", event_type=event_type.value, detail=event.detail)
+
+    # -- state transitions -------------------------------------------------
+    def _current_state(self) -> TaskState:
+        return _as_state(self.fetch_task().get("state"))
+
+    def transition(
+        self,
+        to_state: TaskState,
+        *,
+        fields: dict[str, Any] | None = None,
+        from_state: TaskState | None = None,
+    ) -> None:
+        current = from_state or self._current_state()
+        if current is to_state:
+            if fields:
+                self._task_ref().update({**fields, "updated_at": utcnow()})
+            return
+        assert_transition(current, to_state)
+        payload: dict[str, Any] = {"state": to_state.value, "updated_at": utcnow()}
+        payload.update(fields or {})
+        self._task_ref().update(payload)
+
+    def advance_to_running(self) -> None:
+        """Walk LEASED -> DISPATCHED -> STARTING -> RUNNING legally.
+
+        The dispatcher normally sets DISPATCHED, but a worker that starts faster
+        than that write lands here at LEASED, and skipping a hop would trip the
+        frozen state machine rather than silently corrupting it.
+        """
+        state = self._current_state()
+        if state is TaskState.LEASED:
+            self.transition(TaskState.DISPATCHED, from_state=state)
+            state = TaskState.DISPATCHED
+        if state is TaskState.DISPATCHED:
+            self.transition(
+                TaskState.STARTING, from_state=state, fields={"started_at": utcnow()}
+            )
+            self.emit(EventType.STARTING)
+            state = TaskState.STARTING
+        if state is TaskState.STARTING:
+            self.transition(TaskState.RUNNING, from_state=state)
+            self.emit(EventType.RUNNING)
+            return
+        if state is TaskState.RUNNING:
+            return
+        raise ControlPlaneError(f"cannot start from state {state.value}")
+
+    # -- attempt bookkeeping ----------------------------------------------
+    def record_attempt_start(self, *, backend: str, execution_name: str | None) -> None:
+        attempt = Attempt(
+            attempt_id=self.attempt_id,
+            task_id=self.task_id,
+            tenant_id=self.tenant_id,
+            generation=self.generation,
+            lease_id=self.lease_id,
+            backend=backend,
+            created_at=utcnow(),
+            execution_name=execution_name,
+            started_at=utcnow(),
+        )
+        self._attempt_ref().set(
+            {
+                "attempt_id": attempt.attempt_id,
+                "task_id": attempt.task_id,
+                "tenant_id": attempt.tenant_id,
+                "generation": attempt.generation,
+                "lease_id": attempt.lease_id,
+                "backend": attempt.backend,
+                "created_at": attempt.created_at,
+                "execution_name": attempt.execution_name,
+                "started_at": attempt.started_at,
+                "completed_at": None,
+                "exit_code": None,
+                "error": None,
+                "peak_rss_bytes": None,
+                "peak_disk_bytes": None,
+                "oom_near_miss": False,
+                "checkpoints": [],
+            }
+        )
+
+    def record_checkpoint(self, *, checkpoint_id: str, uri: str, size_bytes: int, seq: int) -> None:
+        # Read-modify-write rather than ArrayUnion: exactly one worker owns an
+        # attempt document, so there is no contention to serialise, and this
+        # keeps the Firestore sentinel types out of the worker's hot path.
+        snap = self._attempt_ref().get()
+        existing = list((snap.to_dict() or {}).get("checkpoints", [])) if snap.exists else []
+        if checkpoint_id not in existing:
+            existing.append(checkpoint_id)
+        # merge-set, not update: an attempt cancelled before it started has no
+        # attempt document yet, and losing the record would be worse than
+        # creating it late.
+        self._attempt_ref().set({"checkpoints": existing}, merge=True)
+        self._task_ref().update({"latest_checkpoint": uri, "updated_at": utcnow()})
+        self.emit(
+            EventType.CHECKPOINT_COMPLETED,
+            {"checkpoint_id": checkpoint_id, "uri": uri, "size_bytes": size_bytes, "seq": seq},
+        )
+
+    def record_resource_usage(
+        self, *, peak_rss_bytes: int, peak_disk_bytes: int, oom_near_miss: bool
+    ) -> None:
+        self._attempt_ref().set(
+            {
+                "peak_rss_bytes": int(peak_rss_bytes),
+                "peak_disk_bytes": int(peak_disk_bytes),
+                "oom_near_miss": bool(oom_near_miss),
+            },
+            merge=True,
+        )
+
+    def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
+        self._attempt_ref().set(
+            {"completed_at": utcnow(), "exit_code": exit_code, "error": error}, merge=True
+        )
+
+    # -- heartbeat ---------------------------------------------------------
+    def heartbeat(self) -> None:
+        now = utcnow()
+        self._lease_ref().update(
+            {
+                "heartbeat_at": now,
+                "expires_at": now + timedelta(seconds=self._heartbeat_extension),
+            }
+        )
+
+    # -- quota -------------------------------------------------------------
+    def update_quota_state(
+        self,
+        *,
+        provider: str,
+        state: ProviderState,
+        retry_after_seconds: int | None = None,
+        reset_at: datetime | None = None,
+    ) -> None:
+        """Publish what this worker learned about the provider.
+
+        The quota broker owns the adaptive limits; the worker only reports the
+        ground truth it just observed (a 429, a retry-after header) so the next
+        admission decision is made with it.
+        """
+        now = utcnow()
+        payload: dict[str, Any] = {
+            "provider": provider,
+            "tenant_id": self.tenant_id,
+            "state": state.value,
+            "updated_at": now,
+        }
+        if retry_after_seconds is not None:
+            payload["retry_after_seconds"] = int(retry_after_seconds)
+        if reset_at is not None:
+            payload["reset_at"] = reset_at
+        if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED):
+            payload["last_429_at"] = now
+        ref = self._quota_ref(provider)
+        snap = ref.get()
+        if snap.exists:
+            existing = snap.to_dict() or {}
+            payload["rate_limit_count"] = int(existing.get("rate_limit_count", 0)) + (
+                1 if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED) else 0
+            )
+            ref.update(payload)
+        else:
+            payload.setdefault("configured_hard_max", 50)
+            payload.setdefault("rate_limit_count", 1)
+            payload.setdefault("success_count", 0)
+            ref.set(payload)
+
+    # -- lease release -----------------------------------------------------
+    def release_lease(self, reason: str) -> bool:
+        """Return capacity. Idempotent, and never called on the fenced path."""
+        if self._lease_released:
+            return False
+
+        def _release(txn: Any) -> bool:
+            return release_lease_in_transaction(
+                txn, db=self._db, lease_id=self.lease_id, reason=reason
+            )
+
+        released = bool(self._txn.run(_release))
+        self._lease_released = True
+        if released:
+            self.emit(EventType.LEASE_RELEASED, {"reason": reason})
+        return released
+
+    # -- terminal outcomes -------------------------------------------------
+    def park(
+        self,
+        *,
+        reason: ParkReason,
+        next_eligible_at: datetime,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """Quota path: checkpointed already, now give the slot back and exit.
+
+        Order matters. The task leaves the concurrency states first, so that the
+        instant the pools are decremented there is no document claiming this
+        task is still running.
+        """
+        self.transition(
+            TaskState.PARKED,
+            fields={
+                "park_reason": reason.value,
+                "next_eligible_at": next_eligible_at,
+                "current_lease_id": None,
+                "blocked_by": [{"reason": reason.value, **(detail or {})}],
+            },
+        )
+        self.emit(
+            EventType.PARKED,
+            {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},
+        )
+        self.release_lease(f"parked:{reason.value}")
+
+    def finish(
+        self,
+        *,
+        state: TaskState,
+        exit_code: int | None,
+        error: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+    ) -> None:
+        if state not in TERMINAL_STATES:
+            raise ControlPlaneError(f"{state.value} is not terminal")
+        fields: dict[str, Any] = {
+            "completed_at": utcnow(),
+            "current_lease_id": None,
+            "last_error": error,
+        }
+        if result_summary is not None:
+            fields["result_summary"] = result_summary
+        self.transition(state, fields=fields)
+        self.record_attempt_end(exit_code=exit_code, error=error)
+        event = {
+            TaskState.SUCCEEDED: EventType.SUCCEEDED,
+            TaskState.FAILED: EventType.FAILED,
+            TaskState.CANCELLED: EventType.CANCELLED,
+            TaskState.DEAD_LETTERED: EventType.DEAD_LETTERED,
+        }[state]
+        self.emit(event, {"exit_code": exit_code, "error": error})
+        self.release_lease(f"terminal:{state.value}")

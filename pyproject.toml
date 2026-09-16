@@ -1,0 +1,36 @@
+[project]
+name = "agent-swarm-infra"
+version = "0.1.0"
+description = "Track A control plane: swarm-api, scheduler, quota-broker."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "swarm-api",
+    "swarm-scheduler",
+    "swarm-quota-broker",
+    "swarm-agent-worker",
+    "swarm-reconciler",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+swarm-common = { path = "apps/common", editable = true }
+swarm-api = { path = "apps/swarm-api", editable = true }
+swarm-scheduler = { path = "apps/scheduler", editable = true }
+swarm-quota-broker = { path = "apps/quota-broker", editable = true }
+swarm-agent-worker = { path = "apps/agent-worker", editable = true }
+swarm-reconciler = { path = "apps/reconciler", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
