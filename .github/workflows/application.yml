@@ -190,9 +190,12 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          # The Firestore emulator is a Java program.
+          # The Firestore emulator is a Java program, and it now REQUIRES a
+          # Java 21+ JRE: on 17 it refuses to start with "The java executable on
+          # your PATH is not a Java 21+ JRE", which is why the integration job
+          # sat retrying a connection for two minutes and never said why.
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - uses: google-github-actions/setup-gcloud@v2
 
