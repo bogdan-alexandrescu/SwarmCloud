@@ -3,8 +3,16 @@
     python -m reconciler            serve on $PORT (Cloud Run)
     python -m reconciler --once     run exactly one pass and print the report
 
-`--once` is what `make reconcile` and an operator debugging an incident use: the
-same code path the scheduler triggers, with the report on stdout.
+`--once` is what an operator debugging an incident uses: the same code path the
+scheduler triggers, with the report on stdout. There is deliberately no wrapper
+around it -- run it against a deployed environment with
+
+    uv run python -m reconciler --once
+
+after `set -a; . ./.env; set +a`, which is what supplies PROJECT_ID and the rest
+of `swarm_common.config.Settings`. The exit code is 0 when the pass completed
+with no errors and 1 when any repair failed, so it is usable from a shell
+condition.
 """
 
 from __future__ import annotations

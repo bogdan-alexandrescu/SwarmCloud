@@ -80,9 +80,9 @@ tenant's pod — would be unenforceable. So each `(tenant, profile)` pair gets i
 own Job resource bound to that tenant's service account:
 
 ```
-swarm-job-eng-claude-code        -> sa: swarm-tenant-eng@<project>.iam
-swarm-job-eng-codex              -> sa: swarm-tenant-eng@<project>.iam
-swarm-job-research-claude-code   -> sa: swarm-tenant-research@<project>.iam
+swarm-job-eng-claude-code        -> sa: swarm-agent-worker-eng@<project>.iam
+swarm-job-eng-codex              -> sa: swarm-agent-worker-eng@<project>.iam
+swarm-job-research-claude-code   -> sa: swarm-agent-worker-research@<project>.iam
 ```
 
 Terraform materialises a Job only for combinations that can actually run: a

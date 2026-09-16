@@ -69,7 +69,7 @@ def tenant_docs() -> list[dict[str, Any]]:
             "GSA_EMAIL": f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
             "PROJECT_ID": PROJECT,
             "REGION": "us-central1",
-            "PSS_ENFORCE": "baseline",
+            "PSS_ENFORCE": "restricted",
             "POD_CIDR": "10.0.0.0/8",
             "SERVICE_CIDR": "34.118.224.0/20",
             "QUOTA_PODS": "8",
@@ -136,23 +136,60 @@ def test_the_namespace_is_gc_eligible_by_the_reconcilers_own_rule(tenant_docs):
     assert is_namespace_gc_eligible(labels)
 
 
-def test_pod_security_admission_is_labelled_on_the_namespace(tenant_docs):
+def test_pod_security_admission_enforces_restricted_by_default(tenant_docs):
+    """The browser profile runs Chromium with its own sandbox off, on the
+    argument that the isolation is the pod. That argument is only true while the
+    pod controls are ENFORCED rather than audited, so this label is load-bearing
+    for the one profile that runs on this path."""
     labels = one(tenant_docs, "Namespace")["metadata"]["labels"]
-    assert labels["pod-security.kubernetes.io/enforce"] == "baseline"
-    # The target level is audited and warned about today so the gap is visible.
+    assert labels["pod-security.kubernetes.io/enforce"] == "restricted"
     assert labels["pod-security.kubernetes.io/audit"] == "restricted"
     assert labels["pod-security.kubernetes.io/warn"] == "restricted"
 
 
-def test_restricted_enforcement_is_one_flag_away(tenant_docs):
+def test_lowering_enforcement_stays_possible_for_an_incident(tenant_docs):
+    """`baseline` is an escape hatch, not a setting to leave in place -- and
+    audit and warn stay at `restricted` when it is used, so lowering enforcement
+    leaves a trail."""
     import contextlib
     import io
 
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
-        render.main(["tenant", "--tenant", TENANT, "--pss-enforce", "restricted"])
-    ns = one(documents(buffer.getvalue()), "Namespace")
-    assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
+        render.main(["tenant", "--tenant", TENANT, "--pss-enforce", "baseline"])
+    labels = one(documents(buffer.getvalue()), "Namespace")["metadata"]["labels"]
+    assert labels["pod-security.kubernetes.io/enforce"] == "baseline"
+    assert labels["pod-security.kubernetes.io/audit"] == "restricted"
+
+
+def test_the_dispatchers_gke_manifest_satisfies_restricted():
+    """The namespace enforces `restricted`, so a dispatcher manifest that does
+    not satisfy it produces Pending pods for every browser task -- a failure that
+    reads as a scheduling problem. Checking the dispatcher's OWN manifest here is
+    what makes a regression on that side fail in CI instead of in a cluster.
+
+    `apps/scheduler` belongs to another track; this only reads it.
+    """
+    from scheduler.dispatch import CONTAINER_SECURITY_CONTEXT, POD_SECURITY_CONTEXT
+
+    assert POD_SECURITY_CONTEXT["runAsNonRoot"] is True
+    assert POD_SECURITY_CONTEXT["runAsUser"] == 10001
+    assert POD_SECURITY_CONTEXT["seccompProfile"]["type"] == "RuntimeDefault"
+
+    assert CONTAINER_SECURITY_CONTEXT["allowPrivilegeEscalation"] is False
+    assert CONTAINER_SECURITY_CONTEXT["privileged"] is False
+    assert CONTAINER_SECURITY_CONTEXT["runAsNonRoot"] is True
+    assert CONTAINER_SECURITY_CONTEXT["capabilities"]["drop"] == ["ALL"]
+    assert CONTAINER_SECURITY_CONTEXT["seccompProfile"]["type"] == "RuntimeDefault"
+
+    # The Job template this directory owns must set the same fields, or the two
+    # paths would be hardened differently for the same workload.
+    spec = render_job("browser")["spec"]["template"]["spec"]
+    assert spec["securityContext"]["runAsNonRoot"] is True
+    assert spec["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    container = spec["containers"][0]["securityContext"]
+    assert container["allowPrivilegeEscalation"] is False
+    assert container["capabilities"]["drop"] == ["ALL"]
 
 
 # ---------------------------------------------------------------------------
@@ -444,17 +481,41 @@ def test_the_browser_job_sizes_dev_shm():
     assert any(m["mountPath"] == "/dev/shm" for m in spec["containers"][0]["volumeMounts"])
 
 
-def test_a_provider_profile_projects_the_tenants_own_secret():
-    """The secret name must match what Secret Manager holds for this tenant, and
-    it lives in this tenant's namespace, so another tenant's pod cannot mount it.
+@pytest.mark.parametrize("profile", ["mock", "generic", "claude-code", "codex", "browser"])
+def test_no_rendered_job_puts_a_provider_key_in_the_containers_environment(profile):
+    """Not even the profiles that need one.
+
+    Every process in the container runs as uid 10001, so a variable in the
+    worker's environment is readable at /proc/1/environ by the runner child, by
+    anything the agent spawns and by a `cat` in a generic task. Projecting the
+    key here would hand it to all of them, and the env allowlist in
+    `workspace.child_env` cannot take back what PID 1 was started with.
+
+    The worker resolves the key itself, from Secret Manager, as the tenant's own
+    GSA -- see `lifecycle._build_child_env` -- and puts it only into the
+    environment of the single child that needs it.
     """
-    container = render_job("claude-code")["spec"]["template"]["spec"]["containers"][0]
-    env = {e["name"]: e for e in container["env"]}
-    key = env["ANTHROPIC_API_KEY"]
+    container = render_job(profile)["spec"]["template"]["spec"]["containers"][0]
+    names = [entry["name"] for entry in container["env"]]
+    assert all("valueFrom" not in entry for entry in container["env"])
+    for secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GIT_TOKEN"):
+        assert secret_name not in names
+
+
+def test_a_rendered_job_names_no_kubernetes_secret_because_none_is_created():
+    """`secretKeyRef` names a KUBERNETES Secret, and nothing in this repository
+    creates one: a tenant's provider key lives in Secret Manager as
+    `swarm-tenant-<tenant>-<provider>`, which the worker reads through Workload
+    Identity. A reference to a Secret that does not exist is not a leak, it is a
+    pod stuck in CreateContainerConfigError."""
     expected = Tenant(
         tenant_id=TENANT, kind="group", principal="eng@saga.xyz", created_at=utcnow()
     ).secret_name("anthropic")
-    assert key["valueFrom"]["secretKeyRef"]["name"] == expected
+    assert expected == f"swarm-tenant-{TENANT}-anthropic"
+    for profile in ("claude-code", "browser"):
+        rendered = yaml.safe_dump(render_job(profile))
+        assert "secretKeyRef" not in rendered
+        assert expected not in rendered
 
 
 def test_the_mock_profile_needs_no_credential_at_all():
@@ -464,6 +525,17 @@ def test_the_mock_profile_needs_no_credential_at_all():
     container = render_job("mock")["spec"]["template"]["spec"]["containers"][0]
     assert all("valueFrom" not in entry for entry in container["env"])
     assert RUNNER_PROFILES["mock"].provider is None
+
+
+def test_no_rendered_job_injects_a_gcs_prefix_the_worker_does_not_read():
+    """`WorkerConfig.from_env` never looks up GCS_PREFIX; the worker derives
+    `tenants/<tenant>/tasks/<task>/attempts/<attempt>` from identifiers it
+    already has. The value this template used to inject was `tenants/<tenant>`,
+    three levels short -- a dead variable that pointed an operator chasing
+    artifacts at the wrong path."""
+    for profile in ("mock", "browser"):
+        container = render_job(profile)["spec"]["template"]["spec"]["containers"][0]
+        assert "GCS_PREFIX" not in [entry["name"] for entry in container["env"]]
 
 
 def test_a_rendered_job_carries_the_identifiers_the_reconciler_reads():
@@ -529,13 +601,41 @@ def test_the_hard_constraints_deny_and_fail_closed(policy_docs):
         assert binding["spec"]["validationActions"] == ["Deny"]
 
 
-def test_the_advisories_warn_and_fail_open(policy_docs):
-    policy = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-hardening-advisories")
-    assert policy["spec"]["failurePolicy"] == "Ignore", "an advisory must never block a pod"
-    binding = one(
-        policy_docs, "ValidatingAdmissionPolicyBinding", "swarm-worker-hardening-advisories"
-    )
-    assert set(binding["spec"]["validationActions"]) == {"Warn", "Audit"}
+def test_the_pod_hardening_policy_denies_and_fails_closed(policy_docs):
+    """It warned rather than denied while the dispatcher's manifest could not
+    satisfy it. That manifest now sets both securityContext blocks and mounts no
+    API token, so the check that the browser profile's `chromium_sandbox=False`
+    argument rests on is a refusal rather than a log line."""
+    policy = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-pod-hardening")
+    assert policy["spec"]["failurePolicy"] == "Fail"
+    binding = one(policy_docs, "ValidatingAdmissionPolicyBinding", "swarm-worker-pod-hardening")
+    assert "Deny" in binding["spec"]["validationActions"]
+    # Audit too: a pod created by a controller rather than by a person shows up
+    # only in the API server's audit log.
+    assert "Audit" in binding["spec"]["validationActions"]
+
+
+def test_the_hardening_policy_still_checks_every_field_restricted_requires(policy_docs):
+    policy = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-pod-hardening")
+    expressions = " ".join(v["expression"] for v in policy["spec"]["validations"])
+    for field in (
+        "automountServiceAccountToken",
+        "allowPrivilegeEscalation",
+        "capabilities",
+        "runAsNonRoot",
+        "seccompProfile",
+    ):
+        assert field in expressions
+
+
+def test_no_policy_in_this_directory_is_advisory_any_more(policy_docs):
+    """An admission policy that only warns is a control an operator believes
+    they have. Every binding here denies."""
+    for binding in by_kind(policy_docs, "ValidatingAdmissionPolicyBinding"):
+        actions = binding["spec"]["validationActions"]
+        assert "Deny" in actions, binding["metadata"]["name"]
+    for policy in by_kind(policy_docs, "ValidatingAdmissionPolicy"):
+        assert policy["spec"]["failurePolicy"] == "Fail", policy["metadata"]["name"]
 
 
 def test_each_policy_matches_exactly_one_kind(policy_docs):

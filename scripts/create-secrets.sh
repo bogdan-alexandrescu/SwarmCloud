@@ -16,6 +16,10 @@
 #   scripts/create-secrets.sh --tenant eng --provider openai --from-file ./key.txt
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
 #   scripts/create-secrets.sh --list [--tenant eng]
+#
+# The secret's NAME is never an input. It is always
+# swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
+# secret_name() returns and what the worker asks Secret Manager for.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -34,17 +38,42 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tenant|-t)        TENANT="$2"; shift 2 ;;
     --provider|-p)      PROVIDER="$2"; shift 2 ;;
-    --name)             SECRET_NAME="$2"; shift 2 ;;
     --from-file|-f)     FROM_FILE="$2"; shift 2 ;;
     --stdin)            READ_STDIN=1; shift ;;
     --disable-previous) DISABLE_PREVIOUS=1; shift ;;
     --list|-l)          LIST=1; shift ;;
-    -h|--help)          sed -n '2,21p' "$0"; exit 0 ;;
+    -h|--help)          sed -n '2,22p' "$0"; exit 0 ;;
+    # There is deliberately no --name. The secret's name is
+    # swarm_common.models.Tenant.secret_name() and nothing else: docs call that
+    # spelling the first of three independent mechanisms keeping one tenant's key
+    # away from another, and an escape hatch that lets an operator create an
+    # arbitrarily-named secret while LABELLING it with an unrelated tenant is a
+    # hole in all three at once.
+    --name) die "--name was removed. A tenant's secret is always swarm-tenant-<tenant>-<provider>,
+  because that is what swarm_common.models.Tenant.secret_name() returns and what the
+  worker asks Secret Manager for. Any other name is a secret nothing will ever read." ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 require_cmd gcloud
+
+# Validated BEFORE anything uses it, --list included.
+#
+# The --list branch builds a gcloud --filter expression out of ${TENANT} and used
+# to run before this check, so a crafted value such as `eng" OR labels.tenant!="`
+# rewrote the filter and enumerated every tenant's secret names through a flag
+# advertised as tenant-scoped. The charset below leaves nothing to quote with.
+if [[ -n "${TENANT}" ]]; then
+  case "${TENANT}" in
+    *[!a-z0-9-]*) die "tenant id '${TENANT}' must be lowercase letters, digits and hyphens (see identity.tenant_id_for_group)" ;;
+  esac
+fi
+if [[ -n "${PROVIDER}" ]]; then
+  case "${PROVIDER}" in
+    *[!a-z0-9-]*) die "provider '${PROVIDER}' must be lowercase letters, digits and hyphens" ;;
+  esac
+fi
 
 if [[ "${LIST}" -eq 1 ]]; then
   step "Tenant credentials in ${PROJECT_ID}"
@@ -61,12 +90,16 @@ fi
 
 # Must match swarm_common.models.Tenant.secret_name(), which is what the worker
 # asks Secret Manager for at runtime. A mismatch here parks every task of that
-# tenant as CREDENTIAL_MISSING.
-SECRET_NAME="${SECRET_NAME:-swarm-tenant-${TENANT}-${PROVIDER}}"
+# tenant as CREDENTIAL_MISSING. Asserted against the frozen model by
+# scripts/lib/check-contract-parity.sh.
+SECRET_NAME="swarm-tenant-${TENANT}-${PROVIDER}"
 
-case "${TENANT}" in
-  *[!a-z0-9-]*) die "tenant id ${TENANT} must be lowercase letters, digits and hyphens (see identity.tenant_id_for_group)" ;;
-esac
+# Belt and braces: a tenant id is never a shared resource, but this script is one
+# of the few that names a cloud resource from operator input, and the deny-list
+# check costs nothing.
+if is_shared_resource "${SECRET_NAME}" || is_shared_resource "${TENANT}"; then
+  die "'${SECRET_NAME}' names a resource on the shared deny-list (scripts/lib/common.sh). Refusing."
+fi
 
 TMPDIR_SECRET="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
 chmod 0700 "${TMPDIR_SECRET}"

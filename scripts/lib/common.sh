@@ -50,9 +50,41 @@ hr() { printf '%s\n' "----------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
+# `.env` is SOURCED, not parsed. Sourcing it means every line in it is shell
+# executed by every script here -- including destroy.sh and purge-data.sh, which
+# read PROJECT_ID, GKE_CLUSTER and ENVIRONMENT from it before any deny-list
+# check runs. So the file is treated as code, and code this repository runs must
+# not be writable by anyone but its owner.
+#
+# This refuses rather than warns: a warning printed before `source` has already
+# lost, because the next line runs the file anyway.
+assert_env_file_is_trustworthy() {
+  local env_file="$1" perms owner
+  [[ -f "${env_file}" ]] || return 0
+  # BSD stat (macOS) and GNU stat (CI) spell this differently.
+  perms="$(stat -f '%Lp' "${env_file}" 2>/dev/null || stat -c '%a' "${env_file}" 2>/dev/null || echo "")"
+  owner="$(stat -f '%u' "${env_file}" 2>/dev/null || stat -c '%u' "${env_file}" 2>/dev/null || echo "")"
+  if [[ -n "${owner}" && -n "${EUID:-}" && "${owner}" != "${EUID}" ]]; then
+    printf 'error: %s is owned by uid %s, not by you (%s). It is sourced as shell; refusing.\n' \
+      "${env_file}" "${owner}" "${EUID}" >&2
+    exit 1
+  fi
+  if [[ -n "${perms}" && "${perms}" =~ ^[0-7]?([0-7])([0-7])$ ]]; then
+    local group="${BASH_REMATCH[1]}" other="${BASH_REMATCH[2]}"
+    if (( (group & 2) != 0 || (other & 2) != 0 )); then
+      printf 'error: %s is group- or world-writable (mode %s). It is sourced as shell by every\n' \
+        "${env_file}" "${perms}" >&2
+      printf '       script in scripts/, so anyone who can write it can run commands as you.\n' >&2
+      printf '       Fix with: chmod 600 %s\n' "${env_file}" >&2
+      exit 1
+    fi
+  fi
+}
+
 load_env() {
   local env_file="${SWARM_ENV_FILE:-${REPO_ROOT}/.env}"
   if [[ -f "${env_file}" ]]; then
+    assert_env_file_is_trustworthy "${env_file}"
     set -a
     # shellcheck disable=SC1090  # path is operator-chosen by design
     source "${env_file}"
@@ -348,6 +380,19 @@ id_token() {
   printf '%s' "${_ID_TOKEN}"
 }
 
+# A curl config carrying one Authorization header, written to curl's STDIN.
+#
+# The token never reaches argv. `curl -H "Authorization: Bearer ${token}"` puts
+# it in curl's command line, which is world-readable through /proc on Linux and
+# lands in shell history when a human copies the pattern -- and an ID token here
+# is not a session cookie, it is full impersonation of that caller's tenant:
+# their provider keys, their GCS prefix, their budget.
+#
+# `printf` is a bash BUILTIN, so building this string forks no process and
+# creates no /proc entry of its own; the value exists only in this shell's
+# memory and in the pipe to curl.
+auth_config() { printf 'header = "Authorization: Bearer %s"\n' "$1"; }
+
 # ---------------------------------------------------------------------------
 # Control-plane API
 # ---------------------------------------------------------------------------
@@ -381,14 +426,16 @@ api_request() {
   url="$(api_url)${path}"
   token="$(id_token)"
 
+  # -K - : the Authorization header arrives on stdin, never in argv. See
+  # auth_config above for why that distinction matters for an ID token.
   if [[ -n "${body}" ]]; then
-    response="$(curl -sS -m "${HTTP_TIMEOUT}" -w $'\n%{http_code}' -X "${method}" \
-      -H "Authorization: Bearer ${token}" \
+    response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
+      -w $'\n%{http_code}' -X "${method}" \
       -H "Content-Type: application/json" \
       --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
   else
-    response="$(curl -sS -m "${HTTP_TIMEOUT}" -w $'\n%{http_code}' -X "${method}" \
-      -H "Authorization: Bearer ${token}" "${url}")" || { API_STATUS=0; return 1; }
+    response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
+      -w $'\n%{http_code}' -X "${method}" "${url}")" || { API_STATUS=0; return 1; }
   fi
 
   API_STATUS="${response##*$'\n'}"
@@ -418,13 +465,11 @@ fs_request() {
   local token
   token="$(access_token)"
   if [[ -n "${body}" ]]; then
-    curl -sS -m "${HTTP_TIMEOUT}" -X "${method}" \
-      -H "Authorization: Bearer ${token}" \
+    auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X "${method}" \
       -H "Content-Type: application/json" \
       --data-binary "${body}" "${url}"
   else
-    curl -sS -m "${HTTP_TIMEOUT}" -X "${method}" \
-      -H "Authorization: Bearer ${token}" "${url}"
+    auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X "${method}" "${url}"
   fi
 }
 
@@ -579,15 +624,34 @@ git_dirty() {
 
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# Redact anything that looks like a credential before it reaches a terminal or a
-# CI log. Applied to every command output that could contain one.
+# Mask anything that looks like a credential before it reaches a terminal or a
+# CI log.
+#
+# THIS IS BEST-EFFORT AND IS NOT A BOUNDARY. It is a pattern list, so it masks
+# the shapes it knows and nothing else: an opaque, high-entropy key from a
+# provider whose prefix is not below (Azure, Bedrock, a self-hosted gateway)
+# passes through in cleartext. The controls that actually stop a key reaching a
+# log are the ones with no pattern matching in them -- the worker registering
+# every secret value with its logger the moment it reads it, and the API having
+# no code path that returns payload bytes at all. Treat this filter as the last
+# of three layers, never as the first.
+#
+# The `Bearer` rule is separate from the assignment rule on purpose: the
+# assignment rule's terminator stops at whitespace, so `Authorization: Bearer X`
+# would otherwise mask only the literal word `Bearer` and print X.
 redact() {
   sed -E \
     -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1********/g' \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
     -e 's/(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+/\1********/g' \
     -e 's/(AIza)[A-Za-z0-9_-]{20,}/\1********/g' \
-    -e 's/("?(api_?key|password|secret|token|authorization)"?[[:space:]]*[:=][[:space:]]*"?)[^",[:space:]]+/\1********/Ig'
+    -e 's/(gh[pousr]_)[A-Za-z0-9]{8,}/\1********/g' \
+    -e 's/(github_pat_)[A-Za-z0-9_]{8,}/\1********/g' \
+    -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
+    -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
+    -e 's/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/\1********/g' \
+    -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
+    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*"?)[^",[:space:]]+/\1********/Ig'
 }
 
 load_env

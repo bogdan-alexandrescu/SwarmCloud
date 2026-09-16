@@ -11,13 +11,31 @@ already summarises most of what is below in its **Attention** section.
 make status
 ```
 
-Work sits in `READY` while pools are idle. Three causes, in order of likelihood:
+Work sits in `READY` while pools are idle. Four causes, in the order the
+scheduler itself checks them:
 
-**1. Admission is paused.** `status.sh` prints paused pools. Undo with
-`./scripts/resume-swarm.sh`, which re-enables exactly what `pause-swarm.sh`
-recorded.
+**1. Dispatch is paused by an admin.** This is the cause the scheduler checks
+*first* — `scheduler/loop.py` reads it before anything else and stops with
+`stop_reason = "dispatch_paused"` — and it is a different mechanism from paused
+pools. It lives in Firestore at `control/dispatch`, written by
+`POST /v1/admin/dispatch/pause`, and no pool looks any different because of it.
 
-**2. The scheduler is not being woken.** Every submission publishes to
+```bash
+make status                      # prints "DISPATCH IS PAUSED" and who did it
+./scripts/api.sh POST /admin/dispatch/resume '{}'
+```
+
+`status.sh` used to read only `tasks`, `leases`, `pools`, `quota` and `tenants`,
+never `control` — so an operator following this runbook checked paused pools,
+then the Cloud Scheduler tick, then `blocked_by`, and never found it.
+
+**2. Admission is paused at the pool level.** `status.sh` prints paused pools in
+the STATE column and in "Attention". Undo with `./scripts/resume-swarm.sh`, which
+re-enables exactly what `pause-swarm.sh` recorded. (This is what
+`pause-swarm.sh` uses: `enabled=false` on a pool, which
+`evaluate_capacity` honours as `MANUAL_PAUSE`.)
+
+**3. The scheduler is not being woken.** Every submission publishes to
 `swarm-scheduler-wake`, and a 1-minute Cloud Scheduler tick is the floor. Check:
 
 ```bash
@@ -29,11 +47,10 @@ make logs SERVICE=swarm-scheduler
 A paused tick plus a broken push means nothing drains. If the tick is doing all
 the work, the push path is broken — latency will be up to a minute per task.
 
-**3. A pool you did not expect is the binding one.** Look at `blocked_by`:
+**4. A pool you did not expect is the binding one.** Look at `blocked_by`:
 
 ```bash
-curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     "$API/v1/tasks/$TASK" | jq .blocked_by
+./scripts/api.sh GET "/tasks/$TASK" | jq .blocked_by
 ```
 
 It names the pool and the reason. `provider:anthropic:tenant:eng` at its limit
@@ -126,7 +143,7 @@ deciding live workers are dead, which almost always means:
 This should not happen: `requests == limits`, no bursting, no Spot. When it does:
 
 ```bash
-curl -s "$API/v1/stats" | jq '.resource_usage'   # peak RSS by profile
+./scripts/api.sh GET /stats | jq '.resource_usage'   # peak RSS by profile
 ```
 
 * `oom_near_miss` on recent attempts -> the class is genuinely too small; raise it
@@ -144,7 +161,7 @@ For reference, the measured baseline for one Claude Code lane was ~2.5 GiB
 
 ```bash
 ./scripts/status.sh            # provider quota section
-curl "$API/v1/providers" | jq
+./scripts/api.sh GET /providers | jq
 ```
 
 Expected behaviour: AIMD halves the adaptive target immediately, work parks
@@ -152,9 +169,16 @@ rather than sleeping, and the target climbs back after 20 consecutive successes.
 
 If it is **not** recovering: check `quota/{provider}:{tenant}` for a `reset_at`
 in the future or a `state` stuck at `EXHAUSTED`, and confirm the quota-refresh
-tick is running. If one tenant's 429s appear to throttle everyone, the binding
-pool is the provider-wide one rather than the per-tenant one — compare
-`provider:X` and `provider:X:tenant:Y` in `status.sh`.
+tick is running.
+
+If one tenant's 429s appear to throttle everyone, compare `provider:X` and
+`provider:X:tenant:Y` in `status.sh` — and treat a `quota_derived_limit` on the
+shared `provider:X` pool while any enabled tenant is healthy as a **regression**,
+not as the expected shape. A tenant-attributed observation may only ever lower
+`provider:X:tenant:Y`; the shared pool is capped only when every enabled tenant is
+stopped. See [quota-management.md](quota-management.md#3-how-a-429-travels). That
+state is also self-sustaining: with the shared pool at zero nothing runs, so no
+success can arrive to clear it.
 
 ---
 
@@ -182,7 +206,7 @@ permissions problem and is a billing-project problem.
 **Cloud Identity 403 Error(4013) "Insufficient permissions to retrieve
 memberships"**: something is calling `groups/-/memberships:searchTransitiveGroups`.
 That call does not work in this project, and the platform must not use it — see
-[multi-tenancy.md](multi-tenancy.md#group-resolution).
+[multi-tenancy.md](multi-tenancy.md#2-group-resolution--the-constraint-that-shapes-the-api).
 
 ---
 

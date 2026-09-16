@@ -30,7 +30,13 @@ Then register a tenant and give it a key:
 ```bash
 make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
+make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic   # re-run to bind the secret
 ```
+
+That one command creates the tenant's service account, its IAM conditions, its
+Firestore documents, and — through `kubernetes/apply.sh` — its whole namespace
+with a default-deny NetworkPolicy, a ResourceQuota and Pod Security Admission
+labels. See [multi-tenancy.md](docs/multi-tenancy.md#1-what-a-tenant-owns).
 
 Day to day:
 
@@ -49,12 +55,17 @@ it in an isolated per-tenant sandbox, checkpoints it every two minutes, and
 returns artifacts.
 
 ```bash
-curl -X POST "$API/v1/tasks" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -d '{"runner_profile": "claude-code",
-       "repository_url": "https://github.com/acme/widgets",
-       "input": {"prompt": "Add tests for the retry path"}}'
+./scripts/api.sh POST /tasks '{
+  "runner_profile": "claude-code",
+  "repository_url": "https://github.com/acme/widgets",
+  "input": {"prompt": "Add tests for the retry path"}}'
 ```
+
+`scripts/api.sh` calls the API as you, with a Google ID token that never reaches
+a command line. `curl -H "Authorization: Bearer $(gcloud auth
+print-identity-token)"` is the obvious one-liner and is unsafe: argv is
+world-readable through `/proc`, an ID token *is* the tenant identity, and it
+lands in shell history. See [security.md](docs/security.md#authentication).
 
 The caller chooses a profile **by name** and nothing else. Images, commands,
 resource specs and backends come from a frozen catalogue — which is what stops an
@@ -181,10 +192,14 @@ Workstation specifics that are not optional:
 
 ```bash
 make dev                # Firestore emulator + seeded pools + the API
-make test               # unit tests + the destroy-guard self-test. No cloud.
-make lint               # shellcheck, terraform fmt/validate, tflint, manifests
-make security           # checkov + trivy
+make test               # unit tests, terraform tests, guard self-tests. No cloud.
+make lint               # shellcheck, doc links, terraform fmt/validate, tflint, manifests
+make security           # checkov over terraform and the rendered manifests, trivy
 ```
+
+`make test` is offline: unit tests, the destroy-guard and plan-guard self-tests,
+the frozen-contract parity check, and 86 `terraform test` assertions against a
+mock provider. No credentials, no emulator, nothing created.
 
 CI (`.github/workflows/`) authenticates to GCP with Workload Identity
 Federation; there are **no downloadable service account keys**. Production

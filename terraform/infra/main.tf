@@ -70,13 +70,27 @@ module "artifact_registry" {
   repository_id  = var.artifact_registry_repository
   immutable_tags = var.immutable_image_tags
 
-  # Every identity that pulls an image. Workers pull their runner image; the
-  # control plane pulls its own. Keyed by component and tenant, because the
-  # emails themselves are not known until apply.
-  readers = merge(
-    { for c in local.control_plane_services : c => module.iam.service_account_members[c] },
-    { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" },
-  )
+  custom_role_suffix = var.custom_role_suffix
+
+  # Two grants, not one, because the two sides need different things.
+  #
+  # The control plane may enumerate the repository: the reconciler compares what
+  # is published against what is referenced, and roles/artifactregistry.reader is
+  # the role for that.
+  #
+  # A tenant worker only ever pulls the one image its profile names, and it runs
+  # attacker-controlled code by design. Artifact Registry IAM cannot be narrowed
+  # below the repository, so the narrowing that IS available is the shape of the
+  # access: `pullers` gets a custom role with every *.list permission removed, so
+  # a tenant cannot discover image names it was not given -- which is what keeps
+  # this from becoming a cross-tenant read the day a customer-specific runner
+  # image is published here.
+  #
+  # Both are keyed by component and tenant, because the emails themselves are not
+  # known until apply.
+  readers = { for c in local.control_plane_services : c => module.iam.service_account_members[c] }
+
+  pullers = { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" }
 
   labels = local.labels
 
@@ -139,8 +153,8 @@ module "gke_autopilot" {
   region       = var.region
   cluster_name = "${var.name_prefix}-autopilot"
 
-  network             = module.network.network_self_link
-  subnetwork          = module.network.subnetwork_self_link
+  network             = module.network.network_id
+  subnetwork          = module.network.subnetwork_id
   pods_range_name     = module.network.pods_range_name
   services_range_name = module.network.services_range_name
 
@@ -225,8 +239,8 @@ module "cloud_run" {
   project_id = var.project_id
   region     = var.region
 
-  network    = module.network.network_self_link
-  subnetwork = module.network.subnetwork_self_link
+  network    = module.network.network_id
+  subnetwork = module.network.subnetwork_id
 
   deletion_protection = var.deletion_protection
 
@@ -293,8 +307,8 @@ module "cloud_run_jobs" {
   project_id = var.project_id
   region     = var.region
 
-  network    = module.network.network_self_link
-  subnetwork = module.network.subnetwork_self_link
+  network    = module.network.network_id
+  subnetwork = module.network.subnetwork_id
 
   # Tagging the worker instances is what puts them in scope of the deny rule
   # that stops one tenant's worker connecting to another's on the shared subnet.

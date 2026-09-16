@@ -132,19 +132,34 @@ SKIPPED=()
 for target in "${TARGETS[@]}"; do
   step "Build ${target}"
   if ! recipe="$(find_recipe "${target}")"; then
-    warn "no Dockerfile or cloudbuild.yaml found for ${target}; skipping"
+    # FAIL, do not skip. A warning here let `make build` report success having
+    # built nothing for swarm-api, swarm-scheduler and swarm-quota-broker, while
+    # terraform/infra deployed those exact tags -- so the first sign of trouble
+    # was Cloud Run reporting "Image not found" long after the build "passed".
+    err "no Dockerfile or cloudbuild.yaml found for ${target}"
     dim "looked in images/${target}/, apps/${target}/, docker/${target}/"
-    SKIPPED+=("${target}")
-    continue
+    die "every target in ALL_TARGETS must be buildable; add a recipe or remove it from the list"
   fi
   kind="${recipe%%$'\t'*}"
   path="${recipe#*$'\t'}"
   image="${IMAGE_REPO}/${target}"
 
   config=""
+  # Cloud Build REJECTS a substitution key the template never references, so the
+  # two recipe kinds must be submitted differently:
+  #   config      a checked-in cloudbuild.yaml, which parameterises itself with
+  #               ${_IMAGE} / ${_TAG} / ${_DOCKERFILE} and needs them supplied
+  #   dockerfile  a config generate_config() wrote, with every value already
+  #               inlined -- passing substitutions here fails the submit with
+  #               "key ... is not matched in the template"
+  SUBS=()
   case "${kind}" in
     config)
       config="${REPO_ROOT}/${path}"
+      # NOT _DOCKERFILE: for this kind `path` IS the cloudbuild.yaml, and passing
+      # it made docker try to parse the YAML as a Dockerfile ("unknown
+      # instruction: TIMEOUT:"). The config declares its own _DOCKERFILE default.
+      SUBS=(--substitutions "_IMAGE=${image},_TAG=${TAG},_TARGET=${target}")
       info "using checked-in ${path}"
       ;;
     dockerfile)
@@ -158,7 +173,7 @@ for target in "${TARGETS[@]}"; do
   gcloud builds submit "${REPO_ROOT}" \
     "${SUBMIT_ARGS[@]}" \
     --config "${config}" \
-    --substitutions "_IMAGE=${image},_TAG=${TAG},_TARGET=${target},_DOCKERFILE=${path}" \
+    ${SUBS[@]+"${SUBS[@]}"} \
     2>&1 | redact
 
   BUILT+=("${target}")

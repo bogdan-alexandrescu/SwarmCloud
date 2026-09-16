@@ -58,8 +58,8 @@ larger.
 Per-tenant budgets park work rather than failing it:
 
 ```bash
-curl -X PUT "$API/v1/admin/tenants/eng/limits" \
-     -d '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
+./scripts/api.sh PUT /admin/tenants/eng/limits \
+    '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
 ```
 
 A tenant over budget gets `PARKED(BUDGET_EXHAUSTED)` — free, resumable,

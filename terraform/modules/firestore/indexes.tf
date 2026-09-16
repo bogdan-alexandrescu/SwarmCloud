@@ -50,6 +50,56 @@ locals {
     }
 
     # ---- API listing: a tenant's own tasks, newest first --------------------
+    # Firestore serves `<equality filters> ORDER BY created_at DESC` ONLY from an
+    # index whose ordered field follows the equality fields IMMEDIATELY. A
+    # near-miss index does not degrade the query, it fails it with
+    # FAILED_PRECONDITION, so each of these four maps to a required endpoint
+    # that returns 500 without it.
+
+    # GET /v1/tasks?state=...   (tasks-tenant-state-updated orders on updated_at;
+    # tasks-tenant-state-priority-created puts priority between state and created_at)
+    "tasks-tenant-state-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
+    # GET /v1/workflows/{id} -- lists that workflow's tasks, tenant-scoped.
+    "tasks-tenant-workflow-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "workflow_id", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
+    # GET /v1/tasks?runner_profile=...
+    "tasks-tenant-runner-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "runner_profile", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
+    # GET /v1/workflows -- workflows-tenant-state-created has state in the middle.
+    "workflows-tenant-created" = {
+      collection  = "workflows"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
     "tasks-tenant-created" = {
       collection  = "tasks"
       query_scope = "COLLECTION"

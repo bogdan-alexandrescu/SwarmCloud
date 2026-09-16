@@ -65,36 +65,17 @@ GUARD_JQ="${REPO_ROOT}/scripts/lib/destroy-guard.jq"
 # Types that cannot carry a label in the google provider. Anything not on this
 # list and not labelled managed-by=swarm-terraform is an offender. Adding to this
 # list is a deliberate, reviewable act -- which is the point.
-UNLABELABLE_TYPES='[
-  "google_service_account",
-  "google_service_account_key",
-  "google_project_service",
-  "google_project_iam_custom_role",
-  "google_firestore_database",
-  "google_firestore_index",
-  "google_firestore_field",
-  "google_compute_network",
-  "google_compute_subnetwork",
-  "google_compute_firewall",
-  "google_compute_router",
-  "google_compute_router_nat",
-  "google_compute_route",
-  "google_compute_network_peering",
-  "google_service_networking_connection",
-  "google_cloud_scheduler_job",
-  "google_container_node_pool",
-  "google_iam_workload_identity_pool",
-  "google_iam_workload_identity_pool_provider",
-  "google_monitoring_alert_policy",
-  "google_monitoring_notification_channel",
-  "google_monitoring_dashboard",
-  "google_monitoring_uptime_check_config",
-  "google_logging_project_sink",
-  "google_logging_metric",
-  "google_storage_bucket_object",
-  "google_secret_manager_secret_version",
-  "random_id", "random_string", "random_password", "time_sleep", "null_resource", "local_file"
-]'
+#
+# The list lives in scripts/lib/unlabelable-types.json, not here, because the CI
+# plan guards need exactly the same list and a second copy is how they drift. It
+# already had: `google_firestore_document` was missing from this script's copy
+# while release.yml's copy exempted the whole `google_firestore_` family, so
+# `make destroy` aborted on every environment with bootstrapped pool documents
+# (terraform/infra defaults bootstrap_firestore_documents = true) while CI
+# thought the same plan was fine.
+TYPES_JSON="${REPO_ROOT}/scripts/lib/unlabelable-types.json"
+[[ -f "${TYPES_JSON}" ]] || die "missing ${TYPES_JSON}"
+UNLABELABLE_TYPES="$(jq -c '.types' "${TYPES_JSON}")"
 
 # ---------------------------------------------------------------------------
 # Self-test. The guard is the only thing standing between `make destroy` and
@@ -125,7 +106,14 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
     "network":"projects/saga-agents-staging/global/networks/agents-staging-vpc"}}},
  {"address":"elsewhere.bucket","type":"google_storage_bucket",
   "change":{"actions":["delete"],"before":{"name":"x","project":"some-other-project",
-    "labels":{"managed-by":"swarm-terraform"}}}}
+    "labels":{"managed-by":"swarm-terraform"}}}},
+ {"address":"ours.pool_doc","type":"google_firestore_document",
+  "change":{"actions":["delete"],"before":{"collection":"pools","document_id":"global",
+    "database":"swarm","project":"saga-agents-staging"}}},
+ {"address":"ours.bucket_iam","type":"google_storage_bucket_iam_member",
+  "change":{"actions":["delete"],"before":{"bucket":"saga-agents-staging-swarm-artifacts",
+    "project":"saga-agents-staging",
+    "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}}
 ]}
 FIXTURE_JSON
 
@@ -154,6 +142,16 @@ FIXTURE_JSON
   expect "foreign project caught"      '[.wrong_project[].address] | index("elsewhere.bucket") != null' true || FAILED=1
   expect "data-bearing bucket flagged" '[.data_bearing[].address] | index("ours.bucket") != null' true || FAILED=1
   expect "our bucket is not an offender" '[.offenders[].address] | index("ours.bucket") == null' true || FAILED=1
+  # terraform/modules/firestore creates one document per pool and per tenant, and
+  # google_firestore_document carries no labels at all. When it was missing from
+  # the allow-list, every `make destroy` on a bootstrapped environment aborted
+  # with "no labels at all" -- a guard that can never pass is a guard that gets
+  # deleted, so it is asserted here rather than discovered at teardown.
+  expect "firestore document allowed by type" '[.unlabelable_allowed[].address] | index("ours.pool_doc") != null' true || FAILED=1
+  expect "firestore document is not an offender" '[.offenders[].address] | index("ours.pool_doc") == null' true || FAILED=1
+  # Matched by SHAPE (`_iam_(member|binding|policy)$`), not by a prefix list, so
+  # a bucket/topic/secret/service IAM edge is exempt the day it is written.
+  expect "bucket IAM edge allowed by shape" '[.unlabelable_allowed[].address] | index("ours.bucket_iam") != null' true || FAILED=1
 
   hr
   if [[ "${FAILED}" -eq 1 ]]; then

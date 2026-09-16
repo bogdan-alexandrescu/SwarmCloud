@@ -144,7 +144,9 @@ class Reconciler:
             executions.extend(found)
         report.executions_examined = len(executions)
 
-        findings = detect_all(snapshot, executions, self._config, now=snapshot.taken_at)
+        findings = detect_all(
+            snapshot, executions, self._config, now=snapshot.taken_at, logger=self._log
+        )
         findings = [f for f in findings if self._is_actionable(f, snapshot, backend_by_name)]
         report.findings = len(findings)
 

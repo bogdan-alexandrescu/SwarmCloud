@@ -21,14 +21,25 @@
 # (recognised managed-by marker, swarm-tenant label) instead of on one value --
 # see `is_namespace_gc_eligible` in apps/reconciler/reconciler/backends.py.
 #
-# Pod Security Admission is set to enforce `baseline` and audit/warn
-# `restricted`. That gap is deliberate and temporary: the GKE manifest built in
-# `apps/scheduler/scheduler/dispatch.py` does not yet set a container
-# `securityContext`, so enforcing `restricted` today would reject every browser
-# job the dispatcher creates and take the GKE path offline. The audit and warn
-# levels make the gap visible in the API server's audit log now, and
-# `render.py tenant --pss-enforce restricted` closes it the day the dispatcher's
-# pod spec matches `worker-templates/worker-job.yaml`.
+# Pod Security Admission ENFORCES `restricted`, which is the level this path
+# actually depends on. The browser profile runs Chromium with its own sandbox
+# deliberately disabled -- it needs user namespaces and CAP_SYS_ADMIN, which this
+# pod refuses -- on the argument that the isolation is the pod. That argument is
+# only true while the pod controls are enforced rather than audited, so this
+# label is load-bearing for the one profile that runs here.
+#
+# It was `baseline` while the GKE manifest built in
+# `apps/scheduler/scheduler/dispatch.py` set no securityContext, because
+# enforcing the stronger level would have rejected every browser job the
+# dispatcher created and taken the GKE path offline. That manifest now sets
+# POD_SECURITY_CONTEXT and CONTAINER_SECURITY_CONTEXT and mounts no API token,
+# so the gap is closed;
+# `tests/unit/worker/test_kubernetes_manifests.py::test_the_dispatchers_gke_manifest_satisfies_restricted`
+# checks the dispatcher's own manifest against the same requirements, so a
+# regression there fails in CI rather than as Pending pods in a cluster.
+#
+# `--pss-enforce baseline` is still available for an incident. Audit and warn
+# stay at `restricted` regardless, so lowering enforcement leaves a trail.
 apiVersion: v1
 kind: Namespace
 metadata:

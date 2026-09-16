@@ -16,9 +16,7 @@ same transaction, counts against the same pools, checkpoints the same way, and
 costs nothing while it waits.
 
 ```bash
-curl -X POST "$API/v1/workflows" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -H "Content-Type: application/json" -d '{
+./scripts/api.sh POST /workflows '{
   "priority": 10,
   "on_step_failure": "fail_workflow",
   "steps": [
@@ -90,13 +88,13 @@ and partial work; killing them wastes what checkpointing exists to preserve.
 Cancel explicitly if that is what you want:
 
 ```bash
-curl -X POST "$API/v1/workflows/$WORKFLOW_ID/cancel"
+./scripts/api.sh POST "/workflows/$WORKFLOW_ID/cancel"
 ```
 
 ## Inspecting
 
 ```bash
-curl "$API/v1/workflows/$WORKFLOW_ID" | jq '{
+./scripts/api.sh GET "/workflows/$WORKFLOW_ID" | jq '{
   state: .workflow.state,
   steps: [.tasks[] | {step_id, state, park_reason, blocked_by}]
 }'

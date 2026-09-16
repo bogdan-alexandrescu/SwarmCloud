@@ -52,6 +52,15 @@ from .limits import platform_ceilings, resolve_limits
 
 BASE_PATH = "/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin:/bin"
 
+#: Environment values that are copied through to the CLI and may themselves
+#: carry a credential. A proxy URL routinely embeds `user:password@`, so it is
+#: registered for redaction alongside the provider key rather than assumed
+#: harmless. `NO_PROXY` and `NODE_EXTRA_CA_CERTS` are a host list and a path,
+#: never a secret, so they are passed through without being redacted -- a path
+#: appearing in output is diagnostic information worth keeping readable.
+_SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY")
+_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS")
+
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (
     "rate_limit_error",
@@ -65,6 +74,12 @@ _RATE_LIMIT_MARKERS = (
     "quota exceeded",
     "resource_exhausted",
     "usage limit reached",
+    # A CLI that surfaces the raw HTTP header and nothing else. `Retry-After` is
+    # only ever sent with a 429 or a 503, so it is a rate limit or an outage --
+    # both of which must park rather than burn one of the task's three attempts.
+    # `_RETRY_AFTER_PATTERNS` then reads the value out of the same line.
+    "retry-after",
+    "retry_after",
 )
 
 _RETRY_AFTER_PATTERNS = (
@@ -179,6 +194,13 @@ def run_cli_agent(
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
+    # This process's own stderr is captured by the worker and uploaded, and
+    # `run_child` logs the argv it starts. Register the key here as well as in
+    # the worker: a runner is a separate process and does not inherit the
+    # worker logger's registered set.
+    log.register_secret(os.environ.get(spec.key_env))
+    for passthrough in _SENSITIVE_PASSTHROUGH:
+        log.register_secret(os.environ.get(passthrough))
     if limits.clamped:
         log.warning(
             "requested limits exceed the platform ceiling and were clamped",
@@ -199,7 +221,7 @@ def run_cli_agent(
         "NO_COLOR": "1",
         spec.key_env: os.environ[spec.key_env],
     }
-    for passthrough in ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"):
+    for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
         if os.environ.get(passthrough):
             env[passthrough] = os.environ[passthrough]
 

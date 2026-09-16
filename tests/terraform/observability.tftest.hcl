@@ -211,8 +211,13 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
 
   variables {
     readers = {
-      "swarm-api"  = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      "tenant-eng" = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      "swarm-api"        = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      "swarm-reconciler" = "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+    }
+
+    pullers = {
+      "tenant-eng"      = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      "tenant-research" = "serviceAccount:swarm-agent-worker-research@saga-agents-staging.iam.gserviceaccount.com"
     }
   }
 
@@ -250,4 +255,92 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
     condition     = length(google_artifact_registry_repository_iam_member.writers) == 0
     error_message = "no runtime identity may push an image; writers are CI only and are not set here"
   }
+
+  # Artifact Registry IAM stops at the repository, so a tenant worker's grant
+  # cannot be narrowed to the images its profiles name. What CAN be narrowed is
+  # the shape: a role with no *.list permission means an image is only reachable
+  # under a name the caller already holds, so a customer- or tenant-specific
+  # runner image published into this repository is not discoverable by another
+  # tenant's worker. Without this the grant is a standing cross-tenant read.
+  assert {
+    condition = alltrue([
+      for k, m in google_artifact_registry_repository_iam_member.pullers :
+      m.role == "projects/saga-agents-staging/roles/swarmImagePuller"
+    ])
+    error_message = "tenant workers must hold the pull-only custom role, not roles/artifactregistry.reader"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in google_project_iam_custom_role.image_puller[0].permissions :
+      !strcontains(lower(p), "list")
+    ])
+    error_message = "the pull role grants no enumeration: one tenant's worker must not be able to list every image name in the shared repository"
+  }
+
+  assert {
+    condition     = contains(google_project_iam_custom_role.image_puller[0].permissions, "artifactregistry.repositories.downloadArtifacts") && contains(google_project_iam_custom_role.image_puller[0].permissions, "artifactregistry.repositories.get")
+    error_message = "the pull role must still be able to pull, or every worker fails at image pull instead of running"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in google_project_iam_custom_role.image_puller[0].permissions :
+      !can(regex("(create|update|delete|upload|export)", p))
+    ])
+    error_message = "a worker identity that can push or delete an image can replace the runtime every other tenant runs"
+  }
+
+  # The control plane and the tenants are deliberately on different grants.
+  assert {
+    condition = !anytrue([
+      for k, m in google_artifact_registry_repository_iam_member.readers :
+      strcontains(m.member, "swarm-agent-worker-")
+    ])
+    error_message = "a tenant worker in `readers` would take roles/artifactregistry.reader and with it the whole enumeration surface"
+  }
+}
+
+run "a_puller_role_that_can_enumerate_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/artifact_registry"
+  }
+
+  variables {
+    pullers = {
+      "tenant-eng" = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+    }
+
+    puller_permissions = [
+      "artifactregistry.repositories.get",
+      "artifactregistry.repositories.downloadArtifacts",
+      "artifactregistry.packages.list",
+    ]
+  }
+
+  expect_failures = [var.puller_permissions]
+}
+
+run "a_puller_role_that_can_push_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/artifact_registry"
+  }
+
+  variables {
+    pullers = {
+      "tenant-eng" = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+    }
+
+    puller_permissions = [
+      "artifactregistry.repositories.get",
+      "artifactregistry.repositories.downloadArtifacts",
+      "artifactregistry.repositories.uploadArtifacts",
+    ]
+  }
+
+  expect_failures = [var.puller_permissions]
 }

@@ -68,6 +68,79 @@ run "the_gke_backend_can_be_switched_off_entirely" {
   }
 }
 
+# A tenant that states no ceiling must take the ENVIRONMENT's default, not a
+# number hidden in the type constraint.
+#
+# `max_active` is declared `optional(number)` with no default precisely so that
+# the coalesce in locals.tf has a null to fall through to. Give the optional a
+# default and the fallback becomes unreachable: `pool_limits.default_tenant`
+# turns into dead configuration that both tfvars files set as though it worked,
+# and an operator adding a tenant without a ceiling silently gets the type's
+# number instead of the environment's. In dev that is the difference between a
+# tenant capped at 10 and one tenant able to consume the entire global budget of
+# 20 -- in the environment whose own comment says a runaway loop spends real
+# money. Nothing else in this suite exercises a tenant that omits max_active.
+run "a_tenant_that_states_no_ceiling_takes_the_environments_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment = "dev"
+
+    tenants = {
+      declared = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 7 }
+      silent   = { kind = "group", principal = "research@saga.xyz", providers = [] }
+    }
+
+    pool_limits = {
+      global          = 20
+      default_tenant  = 10
+      provider_tenant = 5
+    }
+  }
+
+  assert {
+    condition     = output.pool_limits["tenant:silent"] == 10
+    error_message = "a tenant with no max_active must take pool_limits.default_tenant; a number from the variable's type constraint means the environment's ceiling is dead configuration"
+  }
+
+  assert {
+    condition     = output.pool_limits["tenant:declared"] == 7
+    error_message = "an explicit max_active must still win over the default"
+  }
+
+  # The Firestore tenant document and the slot pool are resolved from one local
+  # so the ceiling admission enforces and the ceiling Firestore records cannot
+  # disagree. If they ever did, the pool would be the real limit and the
+  # document would be a lie an operator reads.
+  assert {
+    condition     = output.pool_limits["tenant:silent"] <= output.pool_limits["global"]
+    error_message = "a single undeclared tenant must not be able to consume the whole environment's budget"
+  }
+}
+
+run "a_tenant_ceiling_of_zero_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {
+      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 0 }
+    }
+  }
+
+  # Zero is not "unlimited" and it is not "paused" either: it is a tenant that
+  # can never admit anything, which is a ceiling nobody chose. Omitting the
+  # field is how you ask for the default.
+  expect_failures = [var.tenants]
+}
+
 run "the_prod_shaped_configuration_composes" {
   command = plan
 

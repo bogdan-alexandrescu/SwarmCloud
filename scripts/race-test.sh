@@ -76,12 +76,36 @@ trap restore EXIT INT TERM
 
 # ---------------------------------------------------------------------------
 t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s)"
-CURRENT_ACTIVE="$(jq -r '.active // 0' <<<"$(pool_doc "${POOL_NAME}")" 2>/dev/null || echo 0)"
-[[ "${CURRENT_ACTIVE}" == "null" ]] && CURRENT_ACTIVE=0
-fs_patch "pools/${POOL_NAME}" "name,hard_limit,active,enabled,updated_at" \
-  "$(jq -nc --arg n "${POOL_NAME}" --argjson l "${SLOT_LIMIT}" --argjson a "${CURRENT_ACTIVE}" --arg t "$(iso_now)" \
-    '{name:{stringValue:$n},hard_limit:{integerValue:($l|tostring)},
-      active:{integerValue:($a|tostring)},enabled:{booleanValue:true},updated_at:{timestampValue:$t}}')"
+#
+# `active` IS NOT IN THE FIELD MASK, and must never be.
+#
+# It used to be: this read `active`, then wrote it back in a plain PATCH,
+# milliseconds before launching the concurrent submissions this test exists to
+# race. Firestore's REST PATCH is not transactional, so an admission committing
+# between the read and the write was silently clobbered -- the pool's `active`
+# dropped below its true value and capacity was inflated on a live deployment.
+#
+# Worse, it broke the test's own purpose: the clobber lowers `active`, so the
+# "narrowed pool is never over its limit" assertion below would PASS on a
+# platform that was genuinely oversubscribed. The one test meant to catch
+# oversubscription could mask it.
+#
+# swarm_common.models.SlotPool says `active` is mutated ONLY inside the admission
+# and release transactions. Every sibling script honours that -- register-tenant
+# patches only hard_limit, pause-swarm only enabled -- and so does this now. A
+# pool that does not exist yet is created with active=0, which is safe because
+# no lease can be holding a pool document that has never existed.
+if [[ "${POOL_EXISTED}" -eq 1 ]]; then
+  fs_patch "pools/${POOL_NAME}" "hard_limit,enabled,updated_at" \
+    "$(jq -nc --argjson l "${SLOT_LIMIT}" --arg t "$(iso_now)" \
+      '{hard_limit:{integerValue:($l|tostring)},enabled:{booleanValue:true},
+        updated_at:{timestampValue:$t}}')"
+else
+  fs_patch "pools/${POOL_NAME}" "name,hard_limit,active,enabled,updated_at" \
+    "$(jq -nc --arg n "${POOL_NAME}" --argjson l "${SLOT_LIMIT}" --arg t "$(iso_now)" \
+      '{name:{stringValue:$n},hard_limit:{integerValue:($l|tostring)},
+        active:{integerValue:"0"},enabled:{booleanValue:true},updated_at:{timestampValue:$t}}')"
+fi
 assert_eq "${SLOT_LIMIT}" "$(pool_doc "${POOL_NAME}" | jq -r '.hard_limit')" "${POOL_NAME} hard_limit"
 
 # ---------------------------------------------------------------------------

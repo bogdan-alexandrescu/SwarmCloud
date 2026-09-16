@@ -32,7 +32,7 @@ from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
 from .config import ReconcilerConfig
-from .model import ControlSnapshot, ExecutionView, JobResourceView, LeaseView, TaskView
+from .model import ControlSnapshot, ExecutionView, JobResourceView
 
 
 class FindingKind(str, Enum):
@@ -125,6 +125,50 @@ def normalise_executions(
             continue
         resolved.append(replace(execution, task_id=task_id, attempt_id=attempt_id))
     return resolved
+
+
+def scope_executions_to_their_tenant(
+    snapshot: ControlSnapshot,
+    executions: Iterable[ExecutionView],
+    logger: Any | None = None,
+) -> list[ExecutionView]:
+    """Refuse an execution's claim on a task belonging to a different tenant.
+
+    `backends.owning_tenant` has already replaced whatever the container's
+    environment said with the tenant of the object that encloses it -- its
+    namespace, or the per-tenant Cloud Run Job resource. This is the other half:
+    the TASK id is still container-supplied, and every repair in `repair.py`
+    acts on it with a cluster-wide identity. An execution naming another
+    tenant's task and its current generation would otherwise invalidate that
+    generation, release the victim's lease and re-queue their work -- a
+    cross-tenant kill switch pressed by the one component trusted to press it.
+
+    So a mismatch strips the task and attempt from the view rather than
+    correcting them. What remains is an execution the control plane cannot
+    account for, running in the claimant's own namespace, which the orphan rule
+    then terminates: the blast radius is the attacker's own pod.
+    """
+    scoped: list[ExecutionView] = []
+    for execution in executions:
+        task = snapshot.tasks.get(execution.task_id or "")
+        if (
+            task is None
+            or not execution.tenant_id
+            or not task.tenant_id
+            or task.tenant_id == execution.tenant_id
+        ):
+            scoped.append(execution)
+            continue
+        if logger is not None:
+            logger.error(
+                "refusing an execution's claim on another tenant's task",
+                execution=execution.name,
+                execution_tenant=execution.tenant_id,
+                claimed_task=execution.task_id,
+                task_tenant=task.tenant_id,
+            )
+        scoped.append(replace(execution, task_id=None, attempt_id=None, generation=None))
+    return scoped
 
 
 def detect_stale_leases(
@@ -400,6 +444,7 @@ def detect_all(
     executions: list[ExecutionView],
     config: ReconcilerConfig,
     now: datetime | None = None,
+    logger: Any | None = None,
 ) -> list[Finding]:
     """Every rule, deduplicated by (kind, lease, execution), most urgent first.
 
@@ -409,6 +454,9 @@ def detect_all(
     """
     now = now or utcnow()
     executions = normalise_executions(snapshot, executions)
+    # Resolve the ids first, then check who owns them: an execution whose task
+    # belongs to another tenant must not reach any rule below.
+    executions = scope_executions_to_their_tenant(snapshot, executions, logger)
     by_attempt = {
         execution.attempt_id: execution
         for execution in executions

@@ -112,13 +112,41 @@ runner child sees 429 (it is the only thing that sees the provider's headers)
         -> worker reads it, decides short-wait vs park
             -> worker POSTs the observation to the quota broker
                 -> broker applies AIMD to quota/{provider}:{tenant}
-                    -> broker writes quota_derived_limit on the provider pools
+                    -> broker writes quota_derived_limit on provider:{p}:tenant:{t}
                         -> scheduler reads the pool and admits fewer tasks
 ```
 
 The scheduler never asks a provider how it feels. It reads a pool, and the pool
 already carries the answer. That separation is what keeps the admission path a
 single Firestore transaction with no network calls in it.
+
+### The pool a tenant's 429 may write to
+
+```
+A tenant-attributed observation may ONLY lower provider:<p>:tenant:<id>.
+The shared provider:<p> pool is capped only when EVERY enabled tenant is stopped.
+```
+
+This is an invariant, not a preference, and it is the difference between a
+throttle and a denial of service. `pool_names_for` puts `provider:<p>` in
+*every* tenant's admission list, so a tenant-derived limit written there halts
+tenants that have never touched the provider — and a tenant can reach its own
+429 threshold deliberately, by burning its own key into rate limits. That would
+be a cheap, deniable cross-tenant outage.
+
+`QuotaService._recompute_provider_pool` enforces it, and two details matter:
+
+* the shared pool is capped only when every state in the roster is a stop state,
+  **and** every *enabled tenant* has reported. A tenant with no quota document
+  for that provider has never touched it, so the evidence is incomplete and the
+  shared pool stays uncapped;
+* the condition is also self-sustaining if it fires wrongly. With the shared pool
+  at zero nothing runs, so no success can arrive to clear it, and the only way
+  out is the platform-only sweep.
+
+Tested by `tests/unit/control_plane/test_aimd.py` under
+"the shared provider pool is not a cross-tenant lever" — the same way the
+`adaptive_target <= configured_hard_max` clamp is tested rather than asserted.
 
 A worker also learns from this: the control plane publishes aggregated provider
 state, so one worker discovers that *another* worker on the same tenant key has
@@ -167,21 +195,20 @@ strictly no early promotion.
 ./scripts/status.sh
 
 # Or through the API
-curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     "$API/v1/providers"
+./scripts/api.sh GET /providers
 
 # Stop admitting anything for one provider; running work continues
 ./scripts/pause-swarm.sh --provider anthropic
 ./scripts/resume-swarm.sh --provider anthropic
 
 # Drain a provider gracefully (limit -> 0, no kills)
-curl -X POST "$API/v1/admin/providers/anthropic/drain"
+./scripts/api.sh POST /admin/providers/anthropic/drain
 
 # Disable/enable a provider entirely
-curl -X POST "$API/v1/admin/providers/anthropic/enabled" -d '{"enabled": false}'
+./scripts/api.sh POST /admin/providers/anthropic/enabled '{"enabled": false}'
 
 # Raise the ceiling AIMD is allowed to approach
-curl -X PUT "$API/v1/admin/limits/provider/anthropic" -d '{"hard_limit": 80}'
+./scripts/api.sh PUT /admin/limits/provider/anthropic '{"hard_limit": 80}'
 ```
 
 Verify the behaviour end to end without waiting for a real rate limit:
@@ -204,5 +231,5 @@ original state on every exit path.
 | Tasks park immediately on submit | tenant has no key for the profile's provider | `park_reason: CREDENTIAL_MISSING`; `scripts/create-secrets.sh --list` |
 | Provider stuck at a low target | AIMD is still climbing after a 429 storm | `quota/{provider}:{tenant}.success_count` vs `AIMD_SUCCESS_THRESHOLD` |
 | Provider never recovers | `state=EXHAUSTED` and nothing clears it | `reset_at` in the future, or the broker tick is not running |
-| One tenant's 429s throttle everyone | a provider-wide pool is the binding one, not the per-tenant one | compare `provider:X` and `provider:X:tenant:Y` in `status.sh` |
+| One tenant's 429s throttle everyone | **a regression, not an expected mode** — section 3 forbids a tenant-derived limit on `provider:X`. Compare `provider:X` and `provider:X:tenant:Y` in `status.sh`; if `provider:X` carries a `quota_derived_limit` while any enabled tenant is healthy, `_recompute_provider_pool` has broken and the AIMD test that covers it should be failing |
 | Workers burning CPU while rate-limited | `max_in_worker_retry_delay_seconds` set too high | it should stay well under a typical provider window |

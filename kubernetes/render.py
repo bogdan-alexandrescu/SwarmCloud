@@ -12,15 +12,39 @@ readable as the thing that will exist in the cluster. An operator reading
 `namespaces/tenant-namespace.yaml` during an incident should see the
 ResourceQuota, not a values file and a template function.
 
-Substitution is done here rather than with `sed` or `envsubst` because two
-fields are structural rather than textual -- the provider secret block is
-several lines of YAML or nothing at all, and the resource numbers come from the
-frozen catalogue rather than from a flag. Getting those wrong with a regex is
-easy and silent.
+Substitution is done here rather than with `sed` or `envsubst` for two reasons.
+The resource numbers come from the frozen catalogue rather than from a flag, and
+-- more importantly -- every interpolated value is validated against a pattern
+before it reaches the YAML. `substitute()` is a plain `str.replace`, so a tenant
+id containing a newline would otherwise be arbitrary YAML added to the
+namespace, RBAC, ServiceAccount and NetworkPolicy documents that
+`apply.sh --confirm` sends to the cluster. `sed` and `envsubst` cannot do that
+check at all.
 
 Defaults come from the frozen contract wherever one exists: resource classes and
 runner profiles are read from `swarm_common.profiles`, so a manifest rendered
 here cannot disagree with what the scheduler admits or what the worker runs.
+
+Two things are deliberately NOT rendered into a worker Job.
+
+`GCS_PREFIX` is gone: nothing read it. `WorkerConfig.from_env` never looks it up
+and the worker derives its own prefix --
+`tenants/<tenant>/tasks/<task>/attempts/<attempt>` -- from identifiers it
+already has. The value this file used to inject was `tenants/<tenant>`, three
+levels short, so an operator grepping for it while chasing artifacts that landed
+somewhere unexpected was being pointed at the wrong path by the manifest.
+
+The provider key is gone as a `secretKeyRef` env entry. Every process in the
+container runs as uid 10001, so a variable in the worker's environment is
+readable at `/proc/1/environ` by the runner child, by anything the agent spawns
+and by a `cat` -- the env allowlist in `workspace.child_env` confines nothing it
+has already been given. The worker instead reads the key from Secret Manager
+itself, through Workload Identity, and passes it only into the environment of
+the one child that needs it (`lifecycle._build_child_env`). It also removes a
+dependency that was never satisfied: `secretKeyRef` names a KUBERNETES Secret,
+and nothing in this repository creates one -- the tenant's key lives in Secret
+Manager as `swarm-tenant-<tenant>-<provider>`, so the browser pod would have
+failed with CreateContainerConfigError.
 """
 
 from __future__ import annotations
@@ -42,6 +66,81 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E40
 
 NAMESPACE_PREFIX = "swarm-"
 _NAME_SAFE = re.compile(r"[^a-z0-9-]+")
+
+
+class RenderError(SystemExit):
+    """A value that must not reach the YAML. Exits non-zero with the reason."""
+
+
+#: What each interpolated value is allowed to look like. `substitute()` is a
+#: plain `str.replace` over YAML text, so an unvalidated value is YAML
+#: injection: a tenant id containing a newline and two spaces adds keys to the
+#: intentionally-empty `swarm-worker` Role, or rules to the egress policy, in
+#: documents `apply.sh --confirm` then sends to the cluster. This is
+#: operator-supplied rather than caller-supplied input, which bounds the
+#: exposure -- it does not make an unvalidated interpolation into a safe one,
+#: and this file renders every tenant-isolation object the platform has.
+_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
+    # RFC 1123 label, which is what a namespace, a service account and a label
+    # value all have to be anyway.
+    "TENANT_ID": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "NAMESPACE": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "KSA_NAME": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "GSA_EMAIL": re.compile(r"^[A-Za-z0-9._%+-]{1,128}@[A-Za-z0-9.-]{1,128}$"),
+    "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
+    "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
+    "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
+    "POD_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
+    "SERVICE_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
+    "QUOTA_PODS": re.compile(r"^[0-9]{1,6}$"),
+    "QUOTA_JOBS": re.compile(r"^[0-9]{1,6}$"),
+    "QUOTA_CPU": re.compile(r"^[0-9]{1,6}m?$"),
+    "QUOTA_MEMORY": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
+    "QUOTA_EPHEMERAL": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
+    # Firestore document ids. Underscores are legal here and are exactly why the
+    # label spellings have to be sanitised separately.
+    "TASK_ID": re.compile(r"^[A-Za-z0-9._-]{1,128}$"),
+    "ATTEMPT_ID": re.compile(r"^[A-Za-z0-9._-]{1,128}$"),
+    "LEASE_ID": re.compile(r"^[A-Za-z0-9._-]{1,128}$"),
+    "TASK_LABEL": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "JOB_NAME": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "GENERATION": re.compile(r"^[0-9]{1,12}$"),
+    "RUNNER_PROFILE": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    # A container image reference: registry/path:tag or registry/path@sha256:...
+    "IMAGE": re.compile(r"^[A-Za-z0-9._/-]{1,200}(:[A-Za-z0-9._-]{1,128}|@sha256:[a-f0-9]{64})$"),
+    "CPU": re.compile(r"^[0-9]{1,4}m?$"),
+    "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
+    "CHECKPOINT_INTERVAL_SECONDS": re.compile(r"^[0-9]{1,8}$"),
+    "MAX_IN_WORKER_RETRY_DELAY_SECONDS": re.compile(r"^[0-9]{1,8}$"),
+    "FIRESTORE_DATABASE": re.compile(r"^[A-Za-z0-9._-]{1,64}$"),
+    "ARTIFACT_BUCKET": re.compile(r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$"),
+}
+
+
+def check_values(values: dict[str, str]) -> dict[str, str]:
+    """Refuse any value that does not match its pattern, before substitution.
+
+    Every key must have a pattern: a new placeholder added to a template without
+    one here fails loudly rather than being interpolated unchecked, which is the
+    property that keeps this list from rotting.
+    """
+    for key, value in sorted(values.items()):
+        pattern = _VALUE_PATTERNS.get(key)
+        if pattern is None:
+            raise RenderError(
+                f"render: no validation pattern for placeholder __{key}__; add one to "
+                "_VALUE_PATTERNS before interpolating it into a manifest"
+            )
+        if not pattern.fullmatch(str(value)):
+            raise RenderError(
+                f"render: {key}={value!r} is not allowed here; it must match "
+                f"{pattern.pattern}. An unconstrained value in a template is YAML "
+                "injection into the objects that isolate tenants from one another."
+            )
+    return values
+
 
 #: Files that make up a tenant's namespace, in apply order. The namespace comes
 #: first because everything else lives in it; the network policies come last
@@ -85,58 +184,25 @@ def sanitize_name(*parts: str, max_length: int = 63) -> str:
     return slug
 
 
-def secret_env_block(profile_name: str, tenant_id: str, indent: int = 12) -> str:
-    """The provider-key env entries, projected from the tenant's own secret.
-
-    Returns an empty string for a provider-less profile such as `mock`, which is
-    what keeps the smoke path working for a tenant that has registered no key.
-    """
-    profile = RUNNER_PROFILES[profile_name]
-    if not profile.provider or not profile.secrets:
-        return ""
-    pad = " " * indent
-    secret_name = f"swarm-tenant-{tenant_id}-{profile.provider}"
-    lines: list[str] = []
-    for env_name in profile.secrets:
-        lines.extend(
-            [
-                f"{pad}- name: {env_name}",
-                f"{pad}  valueFrom:",
-                f"{pad}    secretKeyRef:",
-                f"{pad}      name: {secret_name}",
-                f"{pad}      key: {env_name}",
-            ]
-        )
-    return "\n".join(lines)
-
-
 def substitute(text: str, values: dict[str, str]) -> str:
     """Replace every `__TOKEN__`, and refuse to emit one that was missed.
 
-    A leftover placeholder in applied YAML is not a cosmetic problem: `name:
-    __NAMESPACE__` is a valid-looking string that would create a real namespace
-    called `__NAMESPACE__`, so this fails loudly instead.
-    """
-    for key, value in values.items():
-        token = f"__{key}__"
-        if token == "__SECRET_ENV__" or key == "SECRET_ENV":
-            continue
-        text = text.replace(token, str(value))
+    Every value is checked against `_VALUE_PATTERNS` first. This function is a
+    plain `str.replace` over YAML text, which means an unchecked value is a way
+    to write arbitrary YAML into the namespace, RBAC, ServiceAccount and
+    NetworkPolicy documents that `apply.sh --confirm` sends to the cluster.
 
-    if "__SECRET_ENV__" in text:
-        block = values.get("SECRET_ENV", "")
-        out: list[str] = []
-        for line in text.splitlines():
-            if line.strip() == "__SECRET_ENV__":
-                if block:
-                    out.append(block)
-                continue  # drop the placeholder line entirely when unused
-            out.append(line)
-        text = "\n".join(out) + "\n"
+    A leftover placeholder in applied YAML is not a cosmetic problem either:
+    `name: __NAMESPACE__` is a valid-looking string that would create a real
+    namespace called `__NAMESPACE__`, so that fails loudly too.
+    """
+    check_values(values)
+    for key, value in values.items():
+        text = text.replace(f"__{key}__", str(value))
 
     leftover = sorted(set(re.findall(r"__[A-Z0-9_]+__", text)))
     if leftover:
-        raise SystemExit(f"render: unsubstituted placeholders {leftover}")
+        raise RenderError(f"render: unsubstituted placeholders {leftover}")
     return text
 
 
@@ -172,7 +238,6 @@ def render_job(args: argparse.Namespace) -> str:
     profile = RUNNER_PROFILES[args.profile]
     rc = RESOURCE_CLASSES[profile.resource_class]
     values = tenant_values(args)
-    tenant = values["TENANT_ID"]
     generation = str(args.generation)
     values.update(
         {
@@ -195,8 +260,6 @@ def render_job(args: argparse.Namespace) -> str:
             "MAX_IN_WORKER_RETRY_DELAY_SECONDS": str(args.max_in_worker_retry_delay_seconds),
             "FIRESTORE_DATABASE": args.firestore_database,
             "ARTIFACT_BUCKET": args.bucket or f"{args.project}-swarm-artifacts",
-            "GCS_PREFIX": f"tenants/{tenant}",
-            "SECRET_ENV": secret_env_block(profile.name, tenant),
         }
     )
     template = JOB_FILES.get(profile.name, JOB_FILES["default"])
@@ -221,12 +284,17 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--region", default="us-central1")
     parser.add_argument(
         "--pss-enforce",
-        default="baseline",
+        default="restricted",
         choices=("privileged", "baseline", "restricted"),
         help=(
-            "Pod Security Admission enforce level. `restricted` is the target; "
-            "it rejects pods without a securityContext, which the dispatcher's "
-            "current GKE manifest does not set."
+            "Pod Security Admission enforce level. The default is `restricted`, "
+            "which is what the GKE path runs at: the dispatcher's manifest "
+            "(apps/scheduler/scheduler/dispatch.py POD_SECURITY_CONTEXT and "
+            "CONTAINER_SECURITY_CONTEXT) satisfies it, and so does "
+            "worker-templates/worker-job.yaml. `baseline` exists as an escape "
+            "hatch for an incident, not as a setting to leave in place -- "
+            "restricted is the level the browser profile's "
+            "`chromium_sandbox=False` depends on being true."
         ),
     )
     parser.add_argument("--pod-cidr", default="10.0.0.0/8")

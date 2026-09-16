@@ -21,6 +21,32 @@
 # and link-local, so a worker can reach api.anthropic.com and github.com but not
 # another tenant's pod, not a node, and not a ClusterIP service.
 #
+# WHAT RULE 2 COSTS, stated plainly because the rest of this directory is built
+# on the opposite assumption.
+#
+# A NetworkPolicy selects PODS, not processes, and the agent child runs in the
+# same pod -- therefore the same network namespace -- as the worker. So every
+# process in the container, including anything the agent spawns and anything a
+# cloned repository talks it into running, can reach 169.254.169.254 and mint an
+# access token for the tenant's GSA, and rule 3 then opens the Google API VIPs to
+# spend it on. The env allowlist in `workspace.child_env` does not confine that;
+# nothing at this layer can.
+#
+# The rule stays because removing it breaks the worker outright: Workload
+# Identity IS the metadata server, and without it every attempt fails at startup
+# looking like an IAM problem. The consequence is that the tenant GSA's IAM
+# grants are, in practice, granted to arbitrary agent-executed code -- which is
+# why those grants are scoped per tenant (own Firestore documents by code check,
+# own GCS prefix by IAM condition, own Secret Manager secret) rather than
+# per component, and why `control.py` re-checks `tenant_id` on every document it
+# reads instead of trusting that only the worker holds the token.
+#
+# Confining it further is not a NetworkPolicy change. It needs the workload to
+# stop sharing a network namespace with the credential -- GKE metadata
+# concealment on the node pool, a sandboxed (gVisor) node pool, or the agent in
+# its own pod behind a broker -- all of which live in `terraform/` and in the
+# dispatcher, not here.
+#
 # Egress to the provider API is deliberately open rather than pinned to a list
 # of provider hostnames. NetworkPolicy matches IPs, not names; the provider APIs
 # sit behind CDN ranges that change without notice, and a stale pinned range

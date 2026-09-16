@@ -1,9 +1,12 @@
 # Track C execution plane: the process that runs exactly one attempt of one task.
 #
 # The GCP client libraries are ordinary dependencies, but every one of them is
-# imported LAZILY inside a factory (see `clients.py`). A unit test therefore runs
-# the whole lifecycle with in-memory doubles and never imports grpc at all, which
-# is what keeps `uv run pytest tests/unit/worker -q` fast and hermetic.
+# imported LAZILY, inside the function that needs it -- `control.py`'s
+# `FirestoreTransactionRunner.run`, `objectstore.py`'s `GcsObjectStore._get_bucket`,
+# `secrets.py`'s `SecretManagerClient._get` and `metrics.py`'s exporter. There is
+# no top-level `from google...` anywhere in the package. A unit test therefore
+# runs the whole lifecycle with in-memory doubles and never imports grpc at all,
+# which is what keeps `uv run pytest tests/unit/worker -q` fast and hermetic.
 [project]
 name = "swarm-agent-worker"
 version = "0.1.0"

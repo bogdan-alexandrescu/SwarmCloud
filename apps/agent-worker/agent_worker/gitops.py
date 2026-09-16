@@ -43,6 +43,17 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _SAFE_REF = re.compile(r"^[A-Za-z0-9._\-/]{1,255}$")
 ALLOWED_SCHEMES = ("https", "ssh")
 
+#: A DNS hostname. Checked after parsing rather than trusted from it: the
+#: scp-style rewrite below BUILDS a `ssh://` URL out of caller text, so a host
+#: that came through that path has never been validated by anything else.
+_SAFE_HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$")
+
+#: Characters a repository path may contain. Deliberately narrower than RFC 3986
+#: allows: no real repository path needs anything outside this, and the set is
+#: what stops the scp rewrite from smuggling a shell fragment into the path
+#: component of a URL that then looks structurally valid.
+_SAFE_PATH = re.compile(r"^[A-Za-z0-9._~%!$&'()*+,;=:@/-]*$")
+
 
 class GitError(RuntimeError):
     pass
@@ -60,8 +71,12 @@ class CloneResult:
 def validate_repository_url(url: str) -> str:
     if not url or url.startswith("-"):
         raise GitError("repository url must not be empty or start with '-'")
-    if "\n" in url or "\r" in url:
-        raise GitError("repository url must not contain newlines")
+    # Any whitespace or control character, not just a newline. The scp rewrite
+    # below turns caller text into an `ssh://` URL by string concatenation, so
+    # `git@ext::sh -c id` would otherwise become a structurally valid URL whose
+    # path is a shell fragment. Nothing in a real repository URL is a space.
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        raise GitError("repository url must not contain whitespace or control characters")
     if url.startswith("git@") and ":" in url:
         # scp-style syntax; rewrite to ssh:// so it goes through one code path
         host, _, path = url[4:].partition(":")
@@ -74,6 +89,16 @@ def validate_repository_url(url: str) -> str:
         )
     if not parsed.netloc:
         raise GitError("repository url has no host")
+    try:
+        hostname, port = parsed.hostname, parsed.port
+    except ValueError as exc:                    # a non-numeric port
+        raise GitError(f"repository url has an invalid port: {exc}") from exc
+    if not hostname or not _SAFE_HOST.match(hostname):
+        raise GitError(f"repository host {hostname!r} is not a valid hostname")
+    if port is not None and not 1 <= port <= 65535:
+        raise GitError(f"repository port {port} is out of range")
+    if not _SAFE_PATH.match(parsed.path):
+        raise GitError("repository path contains characters that are not allowed in a git path")
     return url
 
 

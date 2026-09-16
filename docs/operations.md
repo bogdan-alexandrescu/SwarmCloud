@@ -30,6 +30,24 @@ Then register a tenant and give it a key:
 ```bash
 make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
+make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic   # re-run to bind the secret
+```
+
+`register-tenant.sh` creates the service account, the IAM conditions, the
+Firestore documents *and* the whole GKE namespace — it calls
+`kubernetes/apply.sh` for the namespace, so the NetworkPolicy, ResourceQuota,
+LimitRange, Pod Security Admission labels and RBAC land with it. If kubectl is
+not pointed at the swarm cluster it says so and skips that step; run
+`make kubectl` and re-run. Nothing on the Cloud Run path needs the cluster, but
+browser-class runners cannot be dispatched for a tenant that has no namespace.
+
+To re-apply or inspect just the Kubernetes side of an existing tenant, without
+touching IAM or Firestore:
+
+```bash
+kubernetes/apply.sh --tenant eng             # dry run, prints a diff
+kubernetes/apply.sh --tenant eng --confirm
+kubernetes/apply.sh --policies --confirm     # cluster-scoped admission policies
 ```
 
 ---
@@ -81,11 +99,11 @@ for scripting; `--watch [seconds]` refreshes; `--tenant <id>` narrows.
 Limits live in Firestore, so this needs no redeploy:
 
 ```bash
-curl -X PUT "$API/v1/admin/limits/global"                -d '{"hard_limit": 150}'
-curl -X PUT "$API/v1/admin/limits/provider/anthropic"    -d '{"hard_limit": 40}'
-curl -X PUT "$API/v1/admin/limits/tenant/eng"            -d '{"hard_limit": 25}'
-curl -X PUT "$API/v1/admin/limits/resource/large"        -d '{"hard_limit": 4}'
-curl -X PUT "$API/v1/admin/limits/runner/claude-code"    -d '{"hard_limit": 60}'
+./scripts/api.sh PUT /admin/limits/global             '{"hard_limit": 150}'
+./scripts/api.sh PUT /admin/limits/provider/anthropic '{"hard_limit": 40}'
+./scripts/api.sh PUT /admin/limits/tenant/eng         '{"hard_limit": 25}'
+./scripts/api.sh PUT /admin/limits/resource/large     '{"hard_limit": 4}'
+./scripts/api.sh PUT /admin/limits/runner/claude-code '{"hard_limit": 60}'
 ```
 
 Lowering a limit never kills anything: running tasks keep their leases and the
@@ -142,10 +160,9 @@ arrives.
 ```bash
 TASK=tsk_...
 
-curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     "$API/v1/tasks/$TASK"            | jq '{state, park_reason, blocked_by, attempt_count, last_error}'
-curl ... "$API/v1/tasks/$TASK/events"    | jq -r '.events[] | "\(.at) \(.type)"'
-curl ... "$API/v1/tasks/$TASK/artifacts"
+./scripts/api.sh GET "/tasks/$TASK"           | jq '{state, park_reason, blocked_by, attempt_count, last_error}'
+./scripts/api.sh GET "/tasks/$TASK/events"    | jq -r '.events[] | "\(.at) \(.type)"'
+./scripts/api.sh GET "/tasks/$TASK/artifacts"
 ```
 
 `blocked_by` names the exact pool and reason. `TENANT_LIMIT` and

@@ -28,6 +28,42 @@ for correlating requests.
 Admin routes are gated on membership in `ADMIN_GROUPS`, separate from
 `TENANT_GROUPS` so an admin still has a normal tenant for their own work.
 
+### Handling an ID token on the operator side
+
+The ID token is the *only* input from which tenant identity is derived, so
+possession of one for the next hour is full impersonation of that person's
+tenant: their provider keys, their GCS prefix, their budget. Two consequences
+that are easy to get wrong, and that this repository used to get wrong in its own
+documentation.
+
+**Never in argv.** `curl -H "Authorization: Bearer $(gcloud auth
+print-identity-token)"` puts the token in curl's command line, which is
+world-readable through `/proc/<pid>/cmdline` on Linux, and writes it into shell
+history. That is the same objection that justifies `create-secrets.sh` never
+taking a key as an argument, so the docs may not teach the opposite. Use
+`scripts/api.sh`, which builds the header with a shell builtin and hands it to
+`curl -K -` on stdin:
+
+```bash
+./scripts/api.sh GET  /tasks/tsk_123 | jq .blocked_by
+./scripts/api.sh POST /tasks '{"runner_profile":"mock","input":{}}'
+```
+
+`api_request` in `scripts/lib/common.sh` does the same, so every ops script is
+covered.
+
+**Mind the audience.** A bare `gcloud auth print-identity-token` mints a token
+whose audience is gcloud's *public* OAuth client. Any Google principal with
+gcloud can mint one, and one captured anywhere else is replayable against this
+API — leaving only the `hd` claim and Cloud Run's `run.invoker` binding as
+controls. That is a real weakening of "there is no shared platform bearer token":
+it is not shared, but it is broadly scoped and freely mintable.
+
+Set `API_AUDIENCE` to the API's own URL and mint through impersonation
+(`SWARM_IMPERSONATE_SA`) for anything beyond a local poke; CI already supplies
+`SWARM_ID_TOKEN` minted by WIF for an exact audience. `.env.example` documents
+the trade-off next to the setting.
+
 ---
 
 ## Public endpoint exposure
@@ -150,19 +186,37 @@ secret version puts the plaintext in a state file that several people can read.
 
 ## Secret leakage in logs
 
-Three layers, because this is the leak that happens by accident:
+Two controls that hold, and one filter that helps:
 
-* the worker registers every secret value with its logger the moment it is read;
-  registered values are replaced with `***REDACTED***` in both the message and
-  the structured fields;
-* every ops script pipes command output through `redact()`, which masks
-  `sk-...`, `ya29....`, JWTs, `AIza...` and any `key|password|secret|token|
-  authorization` assignment;
-* `scripts/status.sh` prints no environment variables, no secret payloads and no
-  tokens, by construction — it is the command an operator runs while sharing a
-  screen.
+**The worker's logger redaction holds.** Every secret value is registered with
+the logger the moment it is read, and registered values are replaced with
+`***REDACTED***` in both the message and the structured fields. This is exact
+matching on a known value, not pattern matching, so it does not depend on what
+the key looks like.
 
-`make logs` pipes Cloud Logging output through the same filter.
+**The API having no read path holds.** No function returns payload bytes, so
+there is nothing for a route to leak.
+
+**`redact()` in `scripts/lib/common.sh` is best-effort and is not a boundary.**
+It is a list of `sed` patterns, so it masks the shapes it knows — `sk-…`,
+`ya29.…`, JWTs, `AIza…`, `ghp_`/`gho_`/`github_pat_`, `xox*`, `AKIA`/`ASIA`, PEM
+headers, `Bearer <token>` bodies and `key|password|secret|token|credential|
+authorization` assignments — and nothing else. An opaque, high-entropy key from
+a provider whose prefix is not on that list (Azure, Bedrock, a self-hosted
+gateway) reaches the terminal in cleartext, and `create-secrets.sh` already has a
+generic provider branch, so those providers are contemplated rather than
+hypothetical. Treat it as the last of the three layers, never the first.
+
+Where it is actually applied: `make logs` pipes all Cloud Logging output through
+it; `scripts/status.sh` pipes every `gcloud` and `kubectl` subprocess through it
+before parsing; `configure-kubectl.sh` and `push-images.sh` pipe the commands
+whose output could carry one. It is *not* applied by every script in `scripts/`,
+and this document used to claim it was.
+
+`scripts/status.sh` prints no environment variables, no secret payloads and no
+tokens by construction — it reads control-plane documents and resource listings
+only. It is the command an operator runs while sharing a screen, so its
+`--tenant` flag scopes the snapshot it collects, not merely what it prints.
 
 ---
 
@@ -211,11 +265,16 @@ Agents have no reason to talk to Kubernetes and are given no way to.
 * The reconciler is the only component that creates or deletes Jobs, and it runs
   as the platform's own service account outside the tenant namespaces.
 * `scripts/configure-kubectl.sh` writes an **isolated** kubeconfig
-  (`build/kubeconfig-<env>.yaml`) instead of merging into `~/.kube/config`, and
-  refuses to fetch credentials for any deny-listed cluster. On the reference
-  workstation the *active* context was another team's live cluster, with a
-  production cluster in the same file — merging would have been one `kubectl
-  delete` away from a very bad afternoon.
+  (`build/kubeconfig-<env>.yaml`, mode 0600) instead of merging into
+  `~/.kube/config`, and refuses to fetch credentials for any deny-listed cluster.
+  On the reference workstation the *active* context was another team's live
+  cluster, with a production cluster in the same file — merging would have been
+  one `kubectl delete` away from a very bad afternoon.
+* That script has a `--merge` flag, and it undoes the control above. It exists
+  because some tooling cannot be told to use a different kubeconfig. It is named
+  here rather than left out of the doc, because an operator reading only this
+  page would not know the control is one flag away from being off; it requires a
+  typed confirmation, which `SWARM_ASSUME_YES` does not skip.
 
 ---
 
@@ -234,8 +293,19 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   agent that could reach one would escape every boundary above it.
 * `trivy image` runs in `push-images.sh` **before** a digest is allowed a channel
   tag, and failing the scan refuses promotion.
-* Deployment is always by digest (`image@sha256:...`). `:dev` and `:prod` exist
-  for humans; nothing downstream resolves a mutable tag.
+* The **control plane** deploys by digest (`image@sha256:...`):
+  `scripts/lib/deploy.sh` reads the promotion manifest and hands Terraform or
+  `gcloud run services update` an immutable reference, so the deployed digest is
+  recorded in state and cannot drift.
+* The **worker** path does not, and that is worth knowing rather than glossing.
+  `apps/scheduler/scheduler/dispatch.py` builds `…/<image>:<worker_image_tag>` —
+  a channel tag. The tag is pinned to a digest that `trivy image` passed, by
+  `push-images.sh`, so the content is vetted; but the reference resolved at pull
+  time is mutable, and the GKE Job template sets `imagePullPolicy: IfNotPresent`,
+  so a node with a cached `:dev` layer can run the previous digest. This is why
+  the checkov image-reference checks (CKV_K8S_14/15/43) are skipped over the
+  rendered manifests: they are asking about a reference this repository's
+  manifests do not decide. Closing it means the dispatcher naming a digest.
 * CI builds in Cloud Build with `--platform linux/amd64`, never on a developer
   machine.
 
@@ -326,7 +396,7 @@ and stale generation.
 
 The worst outcome, and the one every other section feeds into. The full table of
 what would have to fail is in
-[multi-tenancy.md](multi-tenancy.md#cross-tenant-escape-what-would-have-to-go-wrong).
+[multi-tenancy.md](multi-tenancy.md#4-cross-tenant-escape-what-would-have-to-go-wrong).
 Every path requires **two** independent mechanisms to fail together: an IAM
 boundary plus a naming boundary, or a namespace boundary plus a policy boundary.
 
@@ -352,7 +422,29 @@ their VPC, their buckets and 12 service accounts. Protections:
   still there;
 * the guard has a self-test (`scripts/destroy.sh --self-test`, also run by
   `make test`) so it is verifiable without a live plan;
+* the CI plan guards are **the same implementation**, not a restatement of it.
+  `scripts/lib/plan-guard.sh` runs `scripts/lib/destroy-guard.jq` against the
+  shared deny-list and the shared unlabelable-type list, and both
+  `.github/workflows/terraform.yml` and `release.yml` call it. They used to
+  re-implement the rule — one in awk, one in jq — and the copies drifted in both
+  directions: the awk exempted only `google_project_iam*`, so removing a tenant
+  (which deletes a `google_storage_bucket_iam_member`) was blocked from
+  production; `make destroy`'s list omitted `google_firestore_document`, so a
+  teardown of any environment with bootstrapped pool documents always aborted.
+  Both regressions are now fixtures in `plan-guard.sh --self-test`;
+* on an apply, the guard also asserts the forward half: everything the plan
+  *creates* must carry `managed-by=swarm-terraform`. `make destroy` refuses to
+  delete anything that does not, so an unlabelled resource merging into this
+  shared project is one nobody can ever clean up;
 * `purge-data.sh` refuses to operate on the `(default)` Firestore database.
+
+**`.env` is executed, not parsed.** `load_env` sources it under `set -a`, so
+every line in it runs as shell in every script here — including `destroy.sh` and
+`purge-data.sh`, which read `PROJECT_ID`, `GKE_CLUSTER` and `ENVIRONMENT` from it
+*before* any deny-list check happens. It is therefore treated as code: `load_env`
+refuses to run if the file is not owned by the caller, or if it is group- or
+world-writable. `SWARM_ENV_FILE` points the same machinery at another path and
+carries the same trust requirement.
 
 ---
 

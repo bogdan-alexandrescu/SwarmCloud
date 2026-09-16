@@ -12,14 +12,22 @@
 #    ValidatingAdmissionPolicy -- it would report success having applied
 #    nothing. The binary is resolved explicitly, and its version is checked.
 #
-# 2. The right cluster. This kubeconfig reaches three clusters that are not
-#    ours: `agents-staging` (a live GKE Standard cluster owned by another team
-#    in this same shared project), `agents-prod`, and an EKS cluster. Applying a
+# 2. The right cluster. This kubeconfig reaches clusters that are not ours:
+#    `agents-staging` (a live GKE Standard cluster owned by another team in this
+#    same shared project), `agents-prod`, and an EKS cluster. Applying a
 #    default-deny NetworkPolicy into the wrong one is a full outage for whoever
-#    owns it. So the context must name the swarm's own Autopilot cluster, whose
-#    name starts with `swarm-` -- the same rule terraform enforces on
-#    `gke_autopilot.cluster_name` -- and every known-foreign cluster name is
-#    refused outright, whatever flags are passed.
+#    owns it. Three independent refusals, because each catches what the others
+#    cannot:
+#      * the context must not name anything on SHARED_DENY_LIST, which lives
+#        once in scripts/lib/common.sh and is sourced rather than restated;
+#      * the context must not look like an EKS one. The EKS cluster's NAME
+#        appears nowhere in this repository and inventing a placeholder for it
+#        was worse than useless -- a literal `eks-cluster-name` matches no real
+#        context, so the entry read as a handled case while handling nothing.
+#        The shape is what is checkable without the name: an EKS context is its
+#        cluster ARN, or a host under `eks.amazonaws.com`;
+#      * the cluster must start with `swarm-`, the same rule terraform enforces
+#        on `gke_autopilot.cluster_name`, and the context must name it.
 #
 # 3. Dry run first, and offline by default. Without --confirm nothing is sent as
 #    a write. Validation is client-side unless --server-dry-run is passed,
@@ -29,21 +37,27 @@
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd -- "${HERE}/.." && pwd)"
+
+# The deny-list of other teams' resources lives ONCE, in scripts/lib/common.sh
+# (CLAUDE.md rule 2). Restating it here is how the two copies drift and how a
+# resource added to one list stays unprotected in the other. common.sh only
+# defines functions and arrays when sourced -- it reads no .env and contacts
+# nothing -- so sourcing it costs nothing and buys `kubectl_bin` as well.
+COMMON="${REPO}/scripts/lib/common.sh"
+[[ -f "${COMMON}" ]] || { printf 'error: %s is missing; the shared deny-list lives there\n' "${COMMON}" >&2; exit 1; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=../scripts/lib/common.sh
+source "${COMMON}"
 
 # The swarm's own cluster, as `scripts/lib/common.sh` and terraform name it.
 CLUSTER="${GKE_CLUSTER:-swarm-autopilot}"
-#: Clusters in this kubeconfig that belong to other teams. Named, not inferred.
-FOREIGN_CLUSTERS=(agents-staging agents-prod eks-cluster-name)
 TENANT=""
 MODE="tenant"
 CONFIRM=0
 SERVER_DRY_RUN=0
 CONTEXT=""
 RENDER_ARGS=()
-
-die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
-info() { printf '\033[2m%s\033[0m\n' "$*" >&2; }
-ok() { printf '\033[32m%s\033[0m\n' "$*" >&2; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
     --cluster)    CLUSTER="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,36p' "$0"; exit 0 ;;
     # Everything else is passed straight to render.py, so --pss-enforce,
     # --pod-cidr, --quota-cpu and friends work without being restated here.
     *)            RENDER_ARGS+=("$1"); shift ;;
@@ -61,18 +75,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- 1. the right kubectl ----------------------------------------------------
-KUBECTL=""
-for candidate in "${KUBECTL_BIN:-}" /opt/homebrew/bin/kubectl "$(command -v kubectl || true)"; do
-  [[ -n "${candidate}" && -x "${candidate}" ]] || continue
-  version="$("${candidate}" version --client -o json 2>/dev/null \
-    | sed -n 's/.*"minor": *"\([0-9]*\)".*/\1/p' | head -1)"
-  if [[ -n "${version}" && "${version}" -ge 30 ]]; then
-    KUBECTL="${candidate}"
-    break
-  fi
-  info "skipping ${candidate}: client minor version '${version:-unknown}' is too old"
-done
-[[ -n "${KUBECTL}" ]] || die "no kubectl >= 1.30 found; /opt/homebrew/bin/kubectl is the expected one"
+# `kubectl_bin` from common.sh, not a second copy of the same search: it already
+# knows that 1.22 (EKS) and 1.25 (Docker Desktop) win $PATH on this machine and
+# that a 1.22 client silently DROPS fields it does not understand -- including
+# the whole of ValidatingAdmissionPolicy -- while reporting success.
+KUBECTL="$(kubectl_bin)"
 info "kubectl  ${KUBECTL}"
 
 # --- 2. the right cluster ----------------------------------------------------
@@ -85,12 +92,27 @@ else
 fi
 [[ -n "${CURRENT}" ]] || die "no kubectl context is selected; run scripts/configure-kubectl.sh"
 
-for foreign in "${FOREIGN_CLUSTERS[@]}"; do
+for foreign in "${SHARED_DENY_LIST[@]}"; do
+  # Service accounts and the project's `default` VPC are on the shared list but
+  # can never name a kube context, and substring-matching `default` would refuse
+  # legitimate contexts that merely contain the word. Cluster-shaped entries
+  # only.
+  case "${foreign}" in
+    *@*|default) continue ;;
+  esac
   case "${CURRENT}" in
     *"${foreign}"*)
       die "context '${CURRENT}' names '${foreign}', which belongs to another team. Refusing." ;;
   esac
 done
+
+# EKS by SHAPE, because its name is not in this repository. A kubeconfig entry
+# for EKS is the cluster ARN, or a host under eks.amazonaws.com.
+case "${CURRENT}" in
+  arn:aws:eks:*|*.eks.amazonaws.com*|*eks.amazonaws.com*)
+    die "context '${CURRENT}' looks like an EKS cluster. This script applies GKE
+       tenant isolation objects; refusing." ;;
+esac
 case "${CLUSTER}" in
   swarm-*) ;;
   *) die "cluster '${CLUSTER}' does not start with 'swarm-'; the swarm's Autopilot

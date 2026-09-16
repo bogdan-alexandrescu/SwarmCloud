@@ -101,14 +101,35 @@ output "pool_limits" {
   value = { for name, p in local.pools : name => p.hard_limit }
 }
 
+# The three outputs below are the restatement of swarm_common.profiles that
+# locals.tf has to carry because terraform cannot import Python. They are
+# exported so a test can compare them against the real file:
+# tests/terraform/catalogue_mirror parses apps/common/swarm_common/profiles.py
+# off disk and tests/terraform/catalogue.tftest.hcl asserts these against it.
+# Without that comparison the mirror is a copy nothing checks, and the two drift
+# together the first time a profile is resized.
 output "resource_classes" {
-  description = "Mirror of swarm_common.profiles.RESOURCE_CLASSES, asserted against the Python catalogue in tests."
+  description = "Mirror of swarm_common.profiles.RESOURCE_CLASSES, compared field by field against the parsed Python source in tests/terraform/catalogue.tftest.hcl."
   value       = local.resource_classes
 }
 
 output "runner_backends" {
   description = "runner profile -> backend, mirroring resolve_backend()."
   value       = { for name, p in local.runner_profiles : name => p.backend }
+}
+
+output "runner_profiles" {
+  description = "Mirror of swarm_common.profiles.RUNNER_PROFILES: image, class, backend, provider, timeout and the secret env-var names. Compared against the parsed Python source in tests."
+  value = {
+    for name, p in local.runner_profiles : name => {
+      image            = p.image
+      resource_class   = p.resource_class
+      backend          = p.backend
+      provider         = p.provider
+      timeout_seconds  = p.timeout_seconds
+      secret_env_names = sort(keys(p.secret_env))
+    }
+  }
 }
 
 output "workspace_size_gib" {

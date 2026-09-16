@@ -10,11 +10,28 @@
 #   * GCS access conditioned on the tenant's own object prefix, so tenant A's
 #     credentials cannot read tenant B's artifacts even by guessing the path
 #   * Secret Manager access to that tenant's provider keys only
-#   * a Kubernetes namespace + workload-identity binding for the GKE path
+#   * the full Kubernetes namespace -- NetworkPolicy, ResourceQuota, LimitRange,
+#     Pod Security Admission labels, RBAC -- plus the workload-identity binding
 #   * a tenants/<id> document and a tenant:<id> slot pool
 #
-# Everything is idempotent: re-running updates limits and fills in whatever is
-# missing.
+# Re-running is safe for LIMITS and WIRING. It is not a way to re-point a tenant:
+# if tenants/<id> already names a different principal or kind, this refuses,
+# because one `--group contractors@saga.xyz --tenant eng` would otherwise hand
+# every member of contractors@ eng's provider keys, artifacts and budget with no
+# prompt and no warning.
+#
+# NAMING. The identity created here is `swarm-agent-worker-<tenant>`, which is
+# what terraform/modules/tenancy creates, what terraform/modules/cloud_run_jobs
+# binds to each (tenant, profile) Job, and what kubernetes/render.py defaults to.
+# This script used to create `swarm-t-<tenant>` instead -- an identity nothing
+# ever ran as -- so every boundary it granted was granted to an orphan while the
+# real worker got none of them, and its `kubectl annotate` actively re-pointed
+# the tenant's Kubernetes service account at that orphan.
+#
+# The tenant id is DERIVED from the principal by swarm_common.identity, which is
+# the same function the API uses to resolve a caller. `--tenant` is an assertion,
+# not a choice: it must equal the derived id or this refuses, because any other
+# id registers boundaries under a name nothing ever resolves to.
 #
 # Usage:
 #   scripts/register-tenant.sh --group eng@saga.xyz
@@ -22,6 +39,7 @@
 #   scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai \
 #                              --max-active 40 --capacity-units 80 --budget 2000
 #   scripts/register-tenant.sh --group eng@saga.xyz --dry-run
+#   scripts/register-tenant.sh --group eng@saga.xyz --skip-k8s   # Cloud Run only
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -51,32 +69,65 @@ while [[ $# -gt 0 ]]; do
     --display-name)    DISPLAY_NAME="$2"; shift 2 ;;
     --skip-k8s)        SKIP_K8S=1; shift ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-require_cmd gcloud jq curl
+require_cmd gcloud jq curl python3
 
-# --- identity -> tenant id, exactly as swarm_common.identity does it ---------
-slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//'; }
+# --- identity -> tenant id ---------------------------------------------------
+#
+# Asked of swarm_common.identity rather than restated in shell. The shell copy
+# that used to live here was a plain slugify, and a plain slugify is exactly the
+# thing the frozen module documents as unsafe: `eng.team@` and `eng-team@` both
+# reduce to `eng-team`, so two distinct Google groups would have been registered
+# as ONE tenant sharing a namespace, a service account, provider keys and
+# artifacts. The frozen module appends a digest of the full principal whenever
+# the slug is lossy, so it cannot do that -- and the API derives the caller's
+# tenant with the same function, so anything else registers a tenant nobody ever
+# resolves to.
+derive_tenant_id() {
+  local kind="$1" principal="$2"
+  python3 - "${REPO_ROOT}" "${kind}" "${principal}" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.identity import tenant_id_for_group, tenant_id_for_user
+
+kind, principal = sys.argv[2], sys.argv[3]
+print(tenant_id_for_group(principal) if kind == "group" else tenant_id_for_user(principal))
+PY
+}
 
 KIND=""
 PRINCIPAL=""
 if [[ -n "${GROUP}" ]]; then
   KIND="group"
   PRINCIPAL="${GROUP}"
-  TENANT_ID="${TENANT_ID:-$(slugify "${GROUP%%@*}")}"
 elif [[ -n "${USER_EMAIL}" ]]; then
   KIND="user"
   PRINCIPAL="${USER_EMAIL}"
-  # Personal tenants are namespaced so they can never collide with a group.
-  TENANT_ID="${TENANT_ID:-u-$(slugify "${USER_EMAIL%%@*}")}"
 else
   die "give either --group <group@saga.xyz> or --user <person@saga.xyz>"
 fi
 
-[[ -n "${TENANT_ID}" ]] || die "could not derive a tenant id from ${PRINCIPAL}"
+DERIVED_TENANT_ID="$(derive_tenant_id "${KIND}" "${PRINCIPAL}")" \
+  || die "swarm_common.identity could not derive a tenant id from ${PRINCIPAL}"
+[[ -n "${DERIVED_TENANT_ID}" ]] || die "could not derive a tenant id from ${PRINCIPAL}"
+
+# `--tenant` is an override for reading a registration out loud, not a way to
+# choose an id: the API derives the caller's tenant from the token and never
+# looks at this. An id that disagrees registers boundaries under a name nothing
+# ever resolves to, so it is refused rather than honoured.
+if [[ -n "${TENANT_ID}" && "${TENANT_ID}" != "${DERIVED_TENANT_ID}" ]]; then
+  die "--tenant '${TENANT_ID}' does not match the id the API will derive for ${PRINCIPAL}.
+  swarm_common.identity resolves that principal to '${DERIVED_TENANT_ID}'; every request
+  from a member of ${PRINCIPAL} would land in '${DERIVED_TENANT_ID}' and find nothing
+  registered. Drop --tenant, or register the principal that really owns this tenant."
+fi
+TENANT_ID="${DERIVED_TENANT_ID}"
+
 case "${TENANT_ID}" in
   *[!a-z0-9-]*) die "derived tenant id '${TENANT_ID}' is not a valid slug" ;;
 esac
@@ -88,11 +139,55 @@ case ",${ALLOWED_DOMAINS}," in
   *) die "${PRINCIPAL} is outside the allowed hosted domain(s) (${ALLOWED_DOMAINS}); authentication would reject it anyway" ;;
 esac
 
-GSA_ID="swarm-t-${TENANT_ID}"
-GSA_ID="${GSA_ID:0:30}"
+# --- names, all of them owned by another track -------------------------------
+#
+# GSA: terraform/modules/tenancy/main.tf builds `swarm-agent-worker-<tenant>`,
+# cloud_run_jobs binds it to each (tenant, profile) Job, and kubernetes/render.py
+# defaults to it. It is the identity a worker actually runs as, so it is the one
+# that has to receive every grant below.
+GSA_PREFIX="swarm-agent-worker-"
+GSA_ID="${GSA_PREFIX}${TENANT_ID}"
+
+# A GCP service account id is capped at 30 characters, and this is NOT truncated
+# to fit. Truncating is how two tenants end up sharing one workload identity:
+# with a 30-character cut, every tenant id agreeing in its first 11 characters
+# collapses onto one service account, and both tenants' secretAccessor bindings
+# and both tenants' GCS prefix conditions then accumulate on it -- each tenant
+# able to read the other's provider keys. terraform/modules/tenancy/variables.tf
+# refuses the same ids for the same reason, so both provisioning paths agree on
+# which tenants can exist.
+MAX_TENANT_ID=$(( 30 - ${#GSA_PREFIX} ))
+if [[ "${#TENANT_ID}" -gt "${MAX_TENANT_ID}" ]]; then
+  die "tenant id '${TENANT_ID}' is ${#TENANT_ID} characters; the limit here is ${MAX_TENANT_ID}.
+
+  The service account is '${GSA_PREFIX}<tenant>' and GCP caps a service account id at 30
+  characters, so ${MAX_TENANT_ID} is all that is left. Truncating to fit would silently merge this
+  tenant with any other whose id shares its first ${MAX_TENANT_ID} characters -- one shared workload
+  identity, both tenants' secretAccessor bindings and both tenants' GCS prefix conditions
+  accumulating on it. So this refuses, exactly as terraform/modules/tenancy does.
+
+  This is a CROSS-TRACK CONFLICT, not a misconfiguration of yours.
+  swarm_common.identity caps a tenant id at 22, sized for the prefix 'swarm-t-' (8 chars);
+  terraform/modules/tenancy uses '${GSA_PREFIX}' (${#GSA_PREFIX} chars), which leaves ${MAX_TENANT_ID}. Ids between
+  ${MAX_TENANT_ID} and 22 characters are therefore resolvable by the API and provisionable by nobody --
+  which includes most personal fallback tenants, because any dot in a local part makes the
+  slug lossy and the frozen module then appends a 6-character digest.
+
+  Until the two agree, either register ${PRINCIPAL} under a group whose name slugs to
+  ${MAX_TENANT_ID} characters or fewer, or shorten the prefix in terraform/modules/tenancy.
+  See docs/multi-tenancy.md section 6."
+fi
+
 GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Namespace and KSAs: kubernetes/render.py (NAMESPACE_PREFIX = "swarm-") is what
+# creates these objects and what the dispatcher's pod spec names, so they are
+# taken from there rather than invented here. It creates two service accounts on
+# purpose -- `swarm-worker` and `swarm-<tenant>`, the name dispatch.py asks for --
+# and both need the workload-identity binding or a pod naming the other one stays
+# Pending until its deadline expires, which reads as a scheduling problem.
 NAMESPACE="swarm-${TENANT_ID}"
-KSA="swarm-worker"
+KSAS=("swarm-worker" "swarm-${TENANT_ID}")
 GCS_PREFIX="tenants/${TENANT_ID}"
 
 PROVIDERS=()
@@ -118,6 +213,38 @@ run() {
   fi
   "$@"
 }
+
+# --- 0. never re-point an existing tenant ------------------------------------
+#
+# Re-running this script is advertised as harmless idempotency, and for limits
+# and wiring it is. It also used to rewrite IDENTITY: `principal` and `kind` were
+# both in the field mask, and nothing compared the incoming principal against the
+# one already stored. So a single
+#
+#     register-tenant.sh --group contractors@saga.xyz --tenant eng
+#
+# made every member of contractors@ resolve to tenant eng and inherit eng's
+# provider keys, artifact prefix and budget -- no warning, no confirmation, and
+# no trace beyond one changed field.
+#
+# Checked before anything is created, so a mistyped principal costs nothing.
+if fs_database_exists; then
+  EXISTING_DOC="$(fs_get "tenants/${TENANT_ID}" | jq -c "${FS_JQ} if .fields then doc else null end")"
+  if [[ -n "${EXISTING_DOC}" && "${EXISTING_DOC}" != "null" ]]; then
+    EXISTING_PRINCIPAL="$(jq -r '.principal // ""' <<<"${EXISTING_DOC}")"
+    EXISTING_KIND="$(jq -r '.kind // ""' <<<"${EXISTING_DOC}")"
+    if [[ -n "${EXISTING_PRINCIPAL}" && "${EXISTING_PRINCIPAL}" != "${PRINCIPAL}" ]] \
+       || [[ -n "${EXISTING_KIND}" && "${EXISTING_KIND}" != "${KIND}" ]]; then
+      die "tenant '${TENANT_ID}' already belongs to ${EXISTING_KIND} ${EXISTING_PRINCIPAL}.
+  You asked to register ${KIND} ${PRINCIPAL} under the same id, which would hand every
+  member of ${PRINCIPAL} that tenant's provider keys, artifacts and budget.
+  Refusing. To retire the existing tenant deliberately:
+      scripts/purge-data.sh --tenant ${TENANT_ID} --dry-run
+  and then remove tenants/${TENANT_ID} before re-registering."
+    fi
+    ok "tenants/${TENANT_ID} already belongs to ${EXISTING_KIND} ${EXISTING_PRINCIPAL}; updating limits and wiring"
+  fi
+fi
 
 # --- 1. the group must actually exist ---------------------------------------
 if [[ "${KIND}" == "group" ]]; then
@@ -183,14 +310,44 @@ ok "${FIRESTORE_ROLE##*/} (no deletes, no queries; scoped to the ${FIRESTORE_DAT
 
 # GCS, conditioned on this tenant's own prefix. This is the boundary that stops
 # a compromised worker from reading another tenant's artifacts by guessing a path.
+#
+# Three details are copied from terraform/modules/tenancy rather than improvised,
+# because this script and that module must grant IDENTICAL authority -- a tenant
+# onboarded here must not end up more privileged than one terraform created:
+#
+#   * roles/storage.objectUser, NOT roles/storage.objectAdmin. objectAdmin adds
+#     storage.objects.setIamPolicy, which lets a compromised worker grant its own
+#     objects to anyone. Nothing in the worker path sets an object policy.
+#   * the condition has TWO clauses. The first covers get/create/delete on an
+#     object path. The second covers LIST, which carries no object name at all --
+#     the only attribute that can scope a list request is objectListPrefix, and
+#     without it the worker can enumerate every tenant's object names.
+#   * a separate custom role for storage.buckets.get. Cloud Storage FUSE and the
+#     client libraries both need the bucket's own metadata, and a prefix
+#     condition can never match the bucket resource name. legacyBucketReader
+#     would hand over objects.list across the whole bucket instead.
+BUCKET_METADATA_ROLE_ID="swarmBucketMetadataReader${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
 if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
      --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
   run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
     --member "serviceAccount:${GSA_EMAIL}" \
-    --role roles/storage.objectAdmin \
-    --condition "expression=resource.name.startsWith('projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/'),title=tenant_prefix_only,description=Only this tenant's object prefix" \
+    --role roles/storage.objectUser \
+    --condition "expression=resource.name.startsWith('projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('${GCS_PREFIX}/'),title=tenant_prefix_only,description=Only this tenant's object prefix, listing included" \
     >/dev/null
-  ok "storage.objectAdmin (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/)"
+  ok "storage.objectUser (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, listing included)"
+
+  if gcloud iam roles describe "${BUCKET_METADATA_ROLE_ID}" \
+       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+    run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+      --member "serviceAccount:${GSA_EMAIL}" \
+      --role "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" >/dev/null
+    ok "${BUCKET_METADATA_ROLE_ID} (storage.buckets.get only -- enough to mount, not to enumerate)"
+  else
+    warn "custom role ${BUCKET_METADATA_ROLE_ID} does not exist yet; run 'make infra'"
+    warn "without it the worker can reach its objects but cannot read the bucket's own metadata,"
+    warn "which Cloud Storage FUSE needs in order to mount"
+  fi
+
   if [[ "${DRY_RUN}" -eq 0 ]]; then
     printf 'tenant %s registered %s\n' "${TENANT_ID}" "$(iso_now)" \
       | gcloud storage cp - "gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/.tenant" \
@@ -228,40 +385,61 @@ if [[ "${#PROVIDERS[@]}" -gt 0 ]]; then
 fi
 
 # --- 5. Kubernetes ------------------------------------------------------------
+#
+# The whole namespace, applied by kubernetes/apply.sh, not assembled here.
+#
+# This used to create the namespace and a service account with two kubectl calls
+# and stop there. A namespace with no NetworkPolicy runs under Kubernetes'
+# DEFAULT allow-all pod networking, so tenant A's browser agent could open a
+# socket straight to tenant B's running agent -- traffic that never touches a
+# Google API, so no amount of IAM scoping sees it. It also had no ResourceQuota
+# (one tenant could consume the cluster) and no pod-security.kubernetes.io/enforce
+# label, so the cluster default applied instead of `baseline`.
+#
+# Those objects exist in kubernetes/ and are rendered by kubernetes/render.py,
+# which validates every interpolated value before it reaches a manifest. Calling
+# the renderer is the only way to get them all, in the right order, with the
+# tenant id checked -- and it is what keeps this script from being a second,
+# weaker definition of what a tenant namespace is.
 if [[ "${SKIP_K8S}" -eq 0 ]]; then
   step "Kubernetes namespace (GKE path)"
+  APPLY_SH="${REPO_ROOT}/kubernetes/apply.sh"
   KUBECTL_BIN="$(kubectl_bin 2>/dev/null || true)"
   # Never create objects through whatever context happens to be current: this
-  # kubeconfig can reach other teams' clusters, production included.
-  if [[ -n "${KUBECTL_BIN}" ]] && kube_context_is_swarm \
+  # kubeconfig can reach other teams' clusters, production included. apply.sh
+  # refuses on its own too; checking here keeps "not connected" a skip rather
+  # than a failure, because the Cloud Run path does not need the cluster.
+  if [[ ! -f "${APPLY_SH}" ]]; then
+    warn "kubernetes/apply.sh is missing; cannot create the tenant namespace"
+  elif [[ -n "${KUBECTL_BIN}" ]] && kube_context_is_swarm \
      && "${KUBECTL_BIN}" get --raw='/readyz' >/dev/null 2>&1; then
-    if "${KUBECTL_BIN}" get namespace "${NAMESPACE}" >/dev/null 2>&1; then
-      ok "namespace ${NAMESPACE} exists"
+    APPLY_ARGS=(--tenant "${TENANT_ID}" --gsa "${GSA_EMAIL}")
+    [[ "${DRY_RUN}" -eq 1 ]] || APPLY_ARGS+=(--confirm)
+    if "${APPLY_SH}" "${APPLY_ARGS[@]}"; then
+      ok "namespace ${NAMESPACE}: quota, limits, RBAC, PSA labels and default-deny networking applied"
     else
-      run "${KUBECTL_BIN}" create namespace "${NAMESPACE}"
-      run "${KUBECTL_BIN}" label namespace "${NAMESPACE}" \
-        managed-by=swarm-terraform "swarm-tenant=${TENANT_ID}" --overwrite
-      ok "created namespace ${NAMESPACE}"
+      die "kubernetes/apply.sh failed; the tenant namespace is not isolated. Refusing to
+  report this tenant as registered -- a namespace without its NetworkPolicy is
+  reachable from every other tenant's pods."
     fi
 
-    if "${KUBECTL_BIN}" -n "${NAMESPACE}" get serviceaccount "${KSA}" >/dev/null 2>&1; then
-      ok "service account ${NAMESPACE}/${KSA} exists"
-    else
-      run "${KUBECTL_BIN}" -n "${NAMESPACE}" create serviceaccount "${KSA}"
-      ok "created ${NAMESPACE}/${KSA}"
-    fi
-    run "${KUBECTL_BIN}" -n "${NAMESPACE}" annotate serviceaccount "${KSA}" \
-      "iam.gke.io/gcp-service-account=${GSA_EMAIL}" --overwrite >/dev/null
-
-    run gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
-      --project "${PROJECT_ID}" \
-      --role roles/iam.workloadIdentityUser \
-      --member "serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${KSA}]" \
-      --quiet >/dev/null
-    ok "workload identity: ${NAMESPACE}/${KSA} -> ${GSA_ID}"
+    # Workload Identity is a GCP-side binding, so it stays here. Both service
+    # account names that kubernetes/service-accounts/worker-serviceaccount.yaml
+    # creates are bound: `swarm-worker` and the `swarm-<tenant>` alias that
+    # apps/scheduler/scheduler/dispatch.py asks for. A pod naming the unbound one
+    # would authenticate as nothing at all.
+    for ksa in "${KSAS[@]}"; do
+      run gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
+        --project "${PROJECT_ID}" \
+        --role roles/iam.workloadIdentityUser \
+        --member "serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa}]" \
+        --quiet >/dev/null
+      ok "workload identity: ${NAMESPACE}/${ksa} -> ${GSA_ID}"
+    done
   else
     info "not connected to the swarm cluster (context: $(kube_current_context || echo none)); skipping the GKE namespace"
     dim "  run scripts/configure-kubectl.sh and re-run, or pass --skip-k8s if this tenant never needs browser/GPU runners"
+    warn "until then this tenant has NO GKE namespace: browser-class runners cannot be dispatched for it"
   fi
 fi
 

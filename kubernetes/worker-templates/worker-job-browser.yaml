@@ -111,8 +111,6 @@ spec:
               value: __FIRESTORE_DATABASE__
             - name: ARTIFACT_BUCKET
               value: __ARTIFACT_BUCKET__
-            - name: GCS_PREFIX
-              value: __GCS_PREFIX__
             - name: WORKSPACE_ROOT
               value: /workspace
             - name: CHECKPOINT_INTERVAL_SECONDS
@@ -121,11 +119,25 @@ spec:
               value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
             - name: TASK_TIMEOUT_SECONDS
               value: "__TIMEOUT_SECONDS__"
+            # NO PROVIDER KEY IS PROJECTED HERE, deliberately.
+            #
+            # Every process in this container runs as uid 10001, so anything in
+            # the worker's own environment is readable at /proc/1/environ by the
+            # runner child, by anything the agent spawns, and by a `cat`. A
+            # `secretKeyRef` entry would hand the tenant's provider key to every
+            # one of them, and the env allowlist in `workspace.child_env` cannot
+            # take back what the container was started with.
+            #
+            # The worker reads the key from Secret Manager itself, as the
+            # tenant's own GSA through Workload Identity (that GSA holds
+            # secretAccessor on exactly `swarm-tenant-<tenant>-<provider>` and
+            # nothing else), and puts it only into the environment of the single
+            # child that needs it. A `secretKeyRef` would also have named a
+            # KUBERNETES Secret, and nothing in this repository creates one.
             # Playwright's browser bundle lives in the image, outside the
             # writable paths, and must not be re-downloaded into the workspace.
             - name: PLAYWRIGHT_BROWSERS_PATH
               value: /opt/playwright
-            __SECRET_ENV__
           volumeMounts:
             - name: workspace
               mountPath: /workspace

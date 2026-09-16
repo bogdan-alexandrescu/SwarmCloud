@@ -70,11 +70,26 @@ preserves them:
 
 Every script in `scripts/` must be:
 
-* `#!/usr/bin/env bash` with `set -euo pipefail`;
+* `#!/usr/bin/env bash` with `set -euo pipefail` as the **first effective line** —
+  the first line that is not the shebang, a comment or blank. CI checks exactly
+  that, not a fixed window, so a long explanatory header (which is the house
+  style here) is free;
 * **shellcheck-clean** (`shellcheck -x scripts/*.sh scripts/lib/*.sh`);
 * executable;
 * sourcing `scripts/lib/common.sh` rather than re-deriving project, region,
-  paths, the deny-list, or the redaction filter.
+  paths, the deny-list, the redaction filter, the unlabelable-type list, or the
+  plan guard. The Makefile and the workflows go through the scripts too
+  (`scripts/lib/resolve.sh`, `scripts/lib/plan-guard.sh`): every rule that got
+  restated in a second place here has since drifted.
+
+Two shell/jq traps that have already cost this repository a working check:
+
+* **`false // true` is `true` in jq.** The alternative operator treats `false` as
+  absent, so `.enabled // true` reports a *paused* pool as open — the one thing
+  that column exists to show. Compare explicitly: `.enabled == false`.
+* **A command substitution runs in a subshell.** `X="$(api_request ...)"` throws
+  away anything the function assigned, so `API_STATUS` stays at its old value and
+  every response reads as a success. Redirect to a file instead.
 
 Environment specifics that will bite you:
 
@@ -144,9 +159,15 @@ Specifically, these must stay in the docs and must not be softened:
 ## Before you say you are finished
 
 ```bash
-make lint        # shellcheck + terraform fmt/validate + tflint + manifests
-make test        # unit tests + destroy-guard self-test
+make lint        # shellcheck + doc links + terraform fmt/validate + tflint + manifests
+make test        # unit tests + terraform tests + the guard and parity self-tests
 ```
+
+`make test` is fully offline — no credentials, no emulator, nothing created. It
+runs the unit tests, `terraform test` over `tests/terraform` (86 assertions
+against a mock provider), the destroy-guard and plan-guard self-tests, and
+`scripts/lib/check-contract-parity.sh`, which asserts that every shell or jq
+restatement of the frozen contract still matches the Python.
 
 and, if you touched anything in the admission, dispatch or reconciliation paths,
 against a deployed environment:

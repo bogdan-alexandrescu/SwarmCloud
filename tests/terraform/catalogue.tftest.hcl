@@ -1,10 +1,21 @@
 # The execution catalogue, mirrored from the frozen Python contract.
 #
 # terraform/infra/locals.tf restates swarm_common.profiles because terraform
-# cannot import Python. This file is the drift detector for that restatement:
-# every number below is copied from swarm_common/profiles.py, so if the two ever
-# disagree, this fails rather than a worker being sized for a profile it is not
-# running.
+# cannot import Python. This file checks that restatement two different ways,
+# and only one of them is a real drift detector:
+#
+#   The hand-written runs below ("resource_classes_match_the_frozen_catalogue",
+#   "runner_backends_match_resolve_backend") state what the catalogue is SUPPOSED
+#   to be. They are documentation with teeth -- they catch a terraform edit -- but
+#   they compare terraform against terraform, so if profiles.py is edited they
+#   drift away from Python alongside locals.tf and still pass.
+#
+#   "the_terraform_mirror_matches_the_python_catalogue" is the actual detector.
+#   ./catalogue_mirror reads apps/common/swarm_common/profiles.py off disk and
+#   parses it, and the run compares the parse against terraform's outputs. That
+#   is the one that fails when Python moves and terraform does not -- the case
+#   whose symptom in production is a Job resource sized for a profile the worker
+#   is not running, which is exactly the class of bug nobody finds by reading.
 
 mock_provider "google" {}
 
@@ -251,4 +262,86 @@ run "extra_labels_cannot_overwrite_the_destroy_guard_label" {
   }
 
   expect_failures = [var.extra_labels]
+}
+
+# ---------------------------------------------------------------------------
+# The drift detector proper: terraform's mirror against the Python source.
+# ---------------------------------------------------------------------------
+
+run "the_python_catalogue_is_readable" {
+  command = plan
+
+  module {
+    source = "./catalogue_mirror"
+  }
+
+  # A text parser that finds nothing returns an empty map, and an empty map
+  # compares equal to nothing and fails no assertion. So the parse is checked
+  # before it is trusted: if profiles.py moved or was reformatted past the
+  # parser, this run fails here rather than the comparison below passing
+  # vacuously.
+  assert {
+    condition     = output.profiles_file != ""
+    error_message = "swarm_common/profiles.py was not found at any candidate path: the drift detector is reading nothing, so the catalogue comparison below would pass vacuously"
+  }
+
+  assert {
+    condition     = length(output.resource_classes) == 3
+    error_message = "expected 3 resource classes in profiles.py (standard, browser, large); the parser read a different number, so it no longer matches the file's literal form"
+  }
+
+  assert {
+    condition     = length(output.runner_profiles) == 5
+    error_message = "expected 5 runner profiles in profiles.py (mock, generic, claude-code, codex, browser); the parser read a different number"
+  }
+
+  assert {
+    condition     = output.default_timeout_seconds > 0
+    error_message = "RunnerProfile.timeout_seconds default could not be read; a profile that states no timeout would be compared against 0"
+  }
+}
+
+run "the_terraform_mirror_matches_the_python_catalogue" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition = length(output.resource_classes) == length(run.the_python_catalogue_is_readable.resource_classes) && alltrue([
+      for name, rc in run.the_python_catalogue_is_readable.resource_classes :
+      contains(keys(output.resource_classes), name)
+      && output.resource_classes[name].cpu == rc.cpu
+      && output.resource_classes[name].memory_gib == rc.memory_gib
+      && output.resource_classes[name].disk_gib == rc.disk_gib
+      && output.resource_classes[name].units == rc.units
+    ])
+    error_message = "local.resource_classes in terraform/infra/locals.tf no longer matches RESOURCE_CLASSES in swarm_common/profiles.py: the Job resources would be sized for a class the worker is not running"
+  }
+
+  assert {
+    condition = length(output.runner_profiles) == length(run.the_python_catalogue_is_readable.runner_profiles) && alltrue([
+      for name, rp in run.the_python_catalogue_is_readable.runner_profiles :
+      contains(keys(output.runner_profiles), name)
+      && output.runner_profiles[name].image == rp.image
+      && output.runner_profiles[name].resource_class == rp.resource_class
+      && output.runner_profiles[name].backend == rp.backend
+      && output.runner_profiles[name].timeout_seconds == rp.timeout_seconds
+    ])
+    error_message = "local.runner_profiles in terraform/infra/locals.tf no longer matches RUNNER_PROFILES in swarm_common/profiles.py: image, resource class, backend or timeout has drifted"
+  }
+
+  # provider and the secret env-var names decide which tenants get a Job at all
+  # and which Secret Manager entry each Job's environment is wired to, so they
+  # are compared separately from the sizing. Terraform models "no provider" as
+  # null and the parser as "", which is the same statement.
+  assert {
+    condition = alltrue([
+      for name, rp in run.the_python_catalogue_is_readable.runner_profiles :
+      (output.runner_profiles[name].provider == null ? "" : output.runner_profiles[name].provider) == rp.provider
+      && output.runner_profiles[name].secret_env_names == rp.secret_env_names
+    ])
+    error_message = "the provider or the secret env-var names in terraform/infra/locals.tf no longer match swarm_common/profiles.py: a Job would be created for a tenant holding no key, or wired to the wrong secret"
+  }
 }

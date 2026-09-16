@@ -17,6 +17,10 @@ on:
   pull_request:
     paths:
       - "terraform/**"
+      - "tests/terraform/**"
+      - "scripts/lib/plan-guard.sh"
+      - "scripts/lib/destroy-guard.jq"
+      - "scripts/lib/unlabelable-types.json"
       - ".github/workflows/terraform.yml"
   workflow_dispatch:
     inputs:
@@ -86,6 +90,34 @@ jobs:
           tflint --init --chdir=terraform
           tflint --chdir=terraform --recursive --format=compact
 
+  test:
+    name: terraform test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform test
+        # 86 assertions over the promises the docs lean on -- no secret version
+        # is ever written by terraform, a public accessor is refused, a plaintext
+        # push endpoint is refused, a tenant can only reach its own objects, a
+        # tenant id too long for a service account is refused.
+        #
+        # Every run block is `command = plan` against a mock_provider, so this
+        # creates nothing and needs no credentials. The suite existed and was
+        # wired into nothing -- not make test, not make lint, not any workflow --
+        # so 86 working assertions sat outside the gate CLAUDE.md names as the
+        # completeness check, and would have rotted the first time a module
+        # changed. `make test` runs the same command.
+        run: |
+          set -euo pipefail
+          terraform -chdir=tests/terraform init -input=false
+          terraform -chdir=tests/terraform test
+
   checkov:
     name: checkov
     runs-on: ubuntu-24.04
@@ -109,6 +141,11 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [validate]
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
+    env:
+      # Read by scripts/lib/plan-guard.sh (through scripts/lib/common.sh) to
+      # decide which project a resource is allowed to live in.
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
     steps:
       - uses: actions/checkout@v4
 
@@ -151,24 +188,23 @@ jobs:
         # change may target a resource owned by another team, and everything we
         # create must carry managed-by=swarm-terraform so it can be safely
         # destroyed later. An unlabelled resource is one nobody can clean up.
-        run: |
-          set -euo pipefail
-          deny='["agents-staging","agents-staging-vpc","agents-staging-subnet",
-                 "saga-agents-crawled-media-staging","saga-agents-files-staging",
-                 "saga-agents-terraform-state-staging"]'
-          offenders="$(jq -r --argjson deny "${deny}" '
-            [ .resource_changes[]?
-              | select(.change.actions | index("no-op") | not)
-              | . as $rc
-              | ($rc.change.after.name // $rc.change.before.name // "") as $name
-              | select(($deny | index($name)) != null)
-              | "\($rc.address)  \($name)" ] | .[]' terraform/infra/plan.json)"
-          if [ -n "${offenders}" ]; then
-            echo "::error::plan touches resources owned by other teams:"
-            echo "${offenders}"
-            exit 1
-          fi
-          echo "no shared resources in this plan"
+        #
+        # Both halves are now actually enforced, by the same implementation
+        # `make destroy` uses. This step used to state both in its comment and
+        # implement only the first: the jq body was a single `select($deny |
+        # index($name))` with no label predicate anywhere in it, so the
+        # forward-looking half -- the half that matters later, because an
+        # unlabelled resource merging into a shared project is permanently
+        # undestroyable -- was documented as enforced and was not.
+        #
+        # The deny-list is also no longer a six-entry copy of SHARED_DENY_LIST
+        # pasted into the workflow. plan-guard.sh sources the real one from
+        # scripts/lib/common.sh, so the twelve service accounts the copy omitted
+        # are covered too, and a resource added to the list is protected here the
+        # same day. Names are matched across both halves of a change, so an IAM
+        # binding CREATED on another team's bucket is caught -- a create deletes
+        # nothing and the old before-only scan could not see it.
+        run: ./scripts/lib/plan-guard.sh --plan terraform/infra/plan.json --mode apply
 
       - name: summarise
         run: |

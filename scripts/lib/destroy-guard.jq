@@ -14,33 +14,65 @@
 # is an offender until a human adds it to the allow-list in a reviewed change.
 
 def before: (.change.before // {});
+def after:  (.change.after  // {});
 
-def label_map:
-  ( before.labels
-    // before.effective_labels
-    // before.terraform_labels
+# The same six spellings, read out of whichever half of the change we are
+# judging: `before` for a deletion, `after` for a creation.
+def label_map_of($state):
+  ( $state.labels
+    // $state.effective_labels
+    // $state.terraform_labels
     # google_container_cluster calls them resource_labels, monitoring calls them
     # user_labels, and every kubernetes_* resource hides them under metadata.
-    // before.resource_labels
-    // before.user_labels
-    // ( (before.metadata // []) | if type == "array" then (.[0].labels // null) else (.labels // null) end )
+    // $state.resource_labels
+    // $state.user_labels
+    // ( ($state.metadata // []) | if type == "array" then (.[0].labels // null) else (.labels // null) end )
     // null );
 
-def managed_label:
-  ( label_map // {} ) | if type == "object" then (.["managed-by"] // null) else null end;
+def label_map: label_map_of(before);
+def after_label_map: label_map_of(after);
 
-# Every string in the before-state that could name a real resource.
-def tokens:
-  before as $b
-  | [ $b.name?, $b.id?, $b.email?, $b.account_id?, $b.bucket?, $b.cluster?,
-      $b.network?, $b.subnetwork?, $b.repository?, $b.secret_id?, $b.service?,
-      $b.job?, $b.cluster_id?, $b.database?, $b.topic?, $b.subscription? ]
+def managed_of($map):
+  ( $map // {} ) | if type == "object" then (.["managed-by"] // null) else null end;
+
+def managed_label: managed_of(label_map);
+def after_managed_label: managed_of(after_label_map);
+
+# Whether terraform says a label field's value is not yet known at plan time.
+# `after_unknown` mirrors the resource's shape: `true` for a wholly unknown
+# value, an object or array for a partially unknown one. A create whose labels
+# are computed from something unknown is not evidence of a missing label, so it
+# is not reported -- the destroy-side check catches it later with real values.
+def _unknown_at($k):
+  ((.change.after_unknown // {})[$k] // false) as $v
+  | ($v == true)
+    or ((($v | type) == "object") and (($v | length) > 0))
+    or ((($v | type) == "array")  and (($v | length) > 0));
+
+def labels_unknown:
+  ( _unknown_at("labels") or _unknown_at("effective_labels")
+    or _unknown_at("terraform_labels") or _unknown_at("resource_labels")
+    or _unknown_at("user_labels") );
+
+# Every string in one half of the change that could name a real resource.
+def tokens_of($b):
+  [ $b.name?, $b.id?, $b.email?, $b.account_id?, $b.bucket?, $b.cluster?,
+    $b.network?, $b.subnetwork?, $b.repository?, $b.secret_id?, $b.service?,
+    $b.job?, $b.cluster_id?, $b.database?, $b.topic?, $b.subscription? ]
   + ( ($b.id? // "")   | tostring | split("/") )
   + ( ($b.name? // "") | tostring | split("/") )
   + ( ($b.member? // "") | tostring | sub("^serviceAccount:"; "") | [.] )
   | map(select(. != null and . != "")) | map(tostring) | unique;
 
+def tokens: tokens_of(before);
+
+# A create plan never has a `before`, so naming another team's resource in a
+# CREATE -- an IAM binding on their bucket, a subnetwork in their VPC -- would be
+# invisible to a before-only scan. Both halves are read.
+def tokens_both: (tokens_of(before) + tokens_of(after)) | unique;
+
 def deny_hits($deny): [ tokens[] | select(IN($deny[])) ] | unique;
+def deny_hits_both($deny): [ tokens_both[] | select(IN($deny[])) ] | unique;
 
 # The shared VPC's default network is matched on the field, not on the token
 # list: "default" is too common a string to compare blindly against every id.
@@ -48,7 +80,16 @@ def default_network_hit:
   ( ((before.network    // "") | tostring | test("(^|/)default$"))
     or ((before.subnetwork // "") | tostring | test("(^|/)default$")) );
 
+def default_network_hit_both:
+  ( default_network_hit
+    or ((after.network    // "") | tostring | test("(^|/)default$"))
+    or ((after.subnetwork // "") | tostring | test("(^|/)default$")) );
+
 def is_deletion: (.change.actions // []) | index("delete") != null;
+
+# A create or an update. `create`+`delete` (a replacement) is both, deliberately:
+# the new object still has to be labelled and the old one still has to be ours.
+def is_creation: (.change.actions // []) | (index("create") != null or index("update") != null);
 
 # A type is exempt from the label rule only if it physically cannot carry one.
 # Every *_iam_member / *_iam_binding / *_iam_policy is a policy edge rather than
@@ -81,6 +122,19 @@ def summarise($deny; $allow_types; $project):
         | { address: $r.address, type: $r.type,
             matched: (if ($hits|length) > 0 then $hits else ["default-network"] end) } ],
 
+      # Every change -- create, update or delete -- that names something on the
+      # deny-list. `denylist_hits` above is the deletion-only view make destroy
+      # uses; this is the view an APPLY plan needs, because creating an IAM
+      # binding on another team's bucket deletes nothing and would otherwise
+      # pass.
+      denylist_touches: [ .resource_changes[]?
+        | select((.change.actions // []) | index("no-op") | not)
+        | . as $r
+        | ($r | deny_hits_both($deny)) as $hits
+        | select(($hits | length) > 0 or ($r | default_network_hit_both))
+        | { address: $r.address, type: $r.type, actions: $r.change.actions,
+            matched: (if ($hits|length) > 0 then $hits else ["default-network"] end) } ],
+
       wrong_project: [ $deletions[]
         | select((.change.before.project // $project) != $project)
         | { address: .address, type: .type, project: .change.before.project } ],
@@ -94,6 +148,29 @@ def summarise($deny; $allow_types; $project):
             managed_by: ($m // null),
             labels: ($r | label_map),
             reason: (if ($r | label_map) == null
+                     then "no labels at all, and the type is not on the unlabelable allow-list"
+                     else "labels present but managed-by is \($m // "absent"), not swarm-terraform"
+                     end) } ],
+
+      # The forward-looking half of the same rule, for an APPLY plan rather than
+      # a destroy plan: everything this repository creates must carry
+      # managed-by=swarm-terraform, because `make destroy` refuses to delete
+      # anything that does not. An unlabelled resource merging into a SHARED
+      # project is one nobody can ever clean up -- it has to be found by hand and
+      # removed by hand, in a project holding another team's production.
+      #
+      # Reported here and gated by scripts/lib/plan-guard.sh --mode apply; a
+      # destroy plan has no creations, so this is empty there.
+      unlabelled_creations: [ $mutations[]
+        | . as $r
+        | select(($r.type | is_unlabelable($allow_types)) | not)
+        | select(($r | labels_unknown) | not)
+        | ($r | after_managed_label) as $m
+        | select($m != "swarm-terraform")
+        | { address: $r.address, type: $r.type,
+            actions: $r.change.actions,
+            managed_by: ($m // null),
+            reason: (if ($r | after_label_map) == null
                      then "no labels at all, and the type is not on the unlabelable allow-list"
                      else "labels present but managed-by is \($m // "absent"), not swarm-terraform"
                      end) } ],

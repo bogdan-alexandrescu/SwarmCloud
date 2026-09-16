@@ -202,13 +202,11 @@ they change without a redeploy:
 
 ```bash
 # Global ceiling
-curl -X PUT "$API/v1/admin/limits/global" \
-     -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     -d '{"hard_limit": 150}'
+./scripts/api.sh PUT /admin/limits/global '{"hard_limit": 150}'
 
 # One provider, one tenant
-curl -X PUT "$API/v1/admin/limits/provider/anthropic" -d '{"hard_limit": 40}'
-curl -X PUT "$API/v1/admin/limits/tenant/eng"         -d '{"hard_limit": 25}'
+./scripts/api.sh PUT /admin/limits/provider/anthropic '{"hard_limit": 40}'
+./scripts/api.sh PUT /admin/limits/tenant/eng         '{"hard_limit": 25}'
 
 # What every pool is doing right now
 ./scripts/status.sh

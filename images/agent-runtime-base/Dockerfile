@@ -66,8 +66,18 @@ COPY apps/agent-worker/ /src/apps/agent-worker/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
 
+ARG PYTEST_VERSION=8.4.2
+
+# `pytest` is installed into the SAME venv as the worker because the `pytest`
+# entry in `agent_worker.runners.generic.GENERIC_COMMANDS` runs
+# `python -m pytest` on this image's PATH, and that command is the first example
+# the generic profile's docstring gives. Without it a tenant submitting the
+# documented use case gets `No module named pytest` and a hard RunnerFailure.
+# Pinned for the same reason as every other version here: a rebuild in six
+# months must produce the same toolchain.
 RUN python -m venv /opt/venv \
- && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-agent-worker
+ && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-agent-worker \
+ && uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -137,8 +147,11 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
     fi
 
 # Non-root, with a fixed uid so the GKE pod spec and the Cloud Run Job agree.
-RUN groupadd --gid 10001 swarm \
- && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/swarm --shell /bin/bash swarm \
+# ABSOLUTE PATHS ON PURPOSE: the runtime PATH above deliberately omits
+# /usr/sbin so the unprivileged agent cannot reach admin tooling, and
+# groupadd/useradd live there. Calling them by name fails with 127.
+RUN /usr/sbin/groupadd --gid 10001 swarm \
+ && /usr/sbin/useradd --uid 10001 --gid 10001 --create-home --home-dir /home/swarm --shell /bin/bash swarm \
  && mkdir -p /workspace \
  && chown -R swarm:swarm /workspace /home/swarm
 
@@ -148,6 +161,15 @@ WORKDIR /workspace
 # A worker that cannot import its own runners is broken in a way that must not
 # reach production, so the build proves it can.
 RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
+
+# Every program the generic runner's catalogue names must exist in this image,
+# or the first tenant to submit the documented use case discovers it instead of
+# the build doing. `_resolve_program` looks each one up on `generic.BASE_PATH`,
+# so this proves exactly what the runner will do at execution time.
+RUN python -c "\
+from agent_worker.runners.generic import GENERIC_COMMANDS, _resolve_program; \
+print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})" \
+ && python -m pytest --version
 
 # tini reaps orphaned grandchildren; the worker still terminates its own process
 # group itself, so signals reach exactly one direct child.

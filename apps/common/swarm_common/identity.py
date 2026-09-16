@@ -32,9 +32,14 @@ class Principal:
 _TENANT_SAFE = re.compile(r"[^a-z0-9-]+")
 
 
-#: `swarm-t-` + tenant id must fit a GCP service account id, which caps at 30.
-_MAX_TENANT_ID = 22
-_GSA_PREFIX_LEN = len("swarm-t-")
+#: The worker service account is `swarm-agent-worker-<tenant>` and GCP caps a
+#: service account id at 30 characters. The prefix is 19, so a tenant id has 11.
+#: This MUST track terraform/modules/tenancy, scripts/register-tenant.sh and
+#: kubernetes/render.py; an earlier value of 22 was computed from a `swarm-t-`
+#: prefix that no longer exists, and would mint ids no worker could be named for.
+_GSA_PREFIX = "swarm-agent-worker-"
+_GSA_ACCOUNT_ID_MAX = 30
+_MAX_TENANT_ID = _GSA_ACCOUNT_ID_MAX - len(_GSA_PREFIX)
 
 
 def _slug(principal: str, prefix: str = "") -> str:

@@ -118,8 +118,14 @@ api_invokers = [
 # own group here would let any member of that tenant replace another tenant's
 # provider key with one pointing at infrastructure they control.
 # terraform/infra/variables.tf refuses that shape.
+# NOTE: group:swarm-admins@saga.xyz does not exist in this Workspace, and
+# creating it needs Workspace-admin rights. For dev the platform admin is a
+# named user, which satisfies the same constraint: it is not a tenant group, so
+# no tenant member can replace another tenant's provider key. Create the group
+# and switch this back before prod, where one named human is a single point of
+# failure.
 secret_admin_members = [
-  "group:swarm-admins@saga.xyz",
+  "user:bogdan@saga.xyz",
 ]
 
 # --- observability ---------------------------------------------------------

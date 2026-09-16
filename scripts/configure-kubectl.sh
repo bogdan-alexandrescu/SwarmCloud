@@ -11,6 +11,16 @@
 #      agents-staging is a live cluster owned by another team in this same
 #      project; this repo must never hold credentials for it.
 #
+# The kubeconfig is written 0600. It carries a bearer credential for a
+# Kubernetes API server, and build/ is an ordinary directory in a repository
+# checkout.
+#
+# --merge UNDOES safety property 1 -- it writes the swarm context into
+# ~/.kube/config alongside whatever production contexts are already there, which
+# is exactly the hazard this script exists to avoid. It exists because some
+# tooling cannot be told to use a different kubeconfig, and it requires a typed
+# confirmation for the same reason a destroy does. docs/security.md names it.
+#
 # Usage: scripts/configure-kubectl.sh [--cluster NAME] [--location LOC] [--merge]
 
 set -euo pipefail
@@ -24,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     --cluster|-c)  GKE_CLUSTER="$2"; shift 2 ;;
     --location|-l) GKE_LOCATION="$2"; shift 2 ;;
     --merge)       MERGE=1; shift ;;
-    -h|--help)     sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,25p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -70,14 +80,31 @@ ok "status ${STATUS}, autopilot ${AUTOPILOT}, control plane ${SERVER_VERSION}"
 step "Credentials"
 KUBECONFIG_PATH="${BUILD_DIR}/kubeconfig-${ENVIRONMENT}.yaml"
 if [[ "${MERGE}" -eq 1 ]]; then
-  warn "--merge writes into ${KUBECONFIG:-${HOME}/.kube/config}, alongside your other contexts"
+  MERGE_TARGET="${KUBECONFIG:-${HOME}/.kube/config}"
+  warn "--merge writes the swarm context into ${MERGE_TARGET}, alongside your other contexts."
+  warn "That is the shared-kubeconfig hazard this script exists to avoid: on this workstation the"
+  warn "ACTIVE context was another team's live agents-staging cluster, with agents-prod in the same"
+  warn "file. Every later 'kubectl delete' is then one 'use-context' away from the wrong cluster."
+  warn "The isolated file at ${KUBECONFIG_PATH} needs no flag and every script here picks it up."
+  # A safety-reducing action gets the same typed confirmation as a destructive
+  # one, and SWARM_ASSUME_YES does not skip it.
+  SWARM_ASSUME_YES="" confirm "This weakens the isolation the script provides." "merge"
 else
   export KUBECONFIG="${KUBECONFIG_PATH}"
   rm -f "${KUBECONFIG_PATH}"
+  # Created 0600 BEFORE gcloud writes into it: a kubeconfig holds a credential
+  # for a Kubernetes API server, and build/ is a normal directory in a checkout.
+  # Doing it afterwards leaves a window in which the file exists world-readable.
+  ( umask 077 && : >"${KUBECONFIG_PATH}" )
+  chmod 0600 "${KUBECONFIG_PATH}"
 fi
 
 gcloud container clusters get-credentials "${GKE_CLUSTER}" \
   --project "${PROJECT_ID}" --location "${GKE_LOCATION}" 2>&1 | redact
+
+if [[ "${MERGE}" -eq 0 ]]; then
+  chmod 0600 "${KUBECONFIG_PATH}"
+fi
 
 GENERATED_CONTEXT="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
 DESIRED_CONTEXT="swarm-${ENVIRONMENT}"

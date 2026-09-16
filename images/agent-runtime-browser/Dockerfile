@@ -8,13 +8,19 @@
 #         --build-arg BASE_IMAGE=<base image ref, ideally by digest> \
 #         -t us-central1-docker.pkg.dev/$PROJECT/swarm-images/agent-runtime-browser:$TAG .
 #
-# CI passes BASE_IMAGE by digest, so a browser image always names the exact base
-# it was built on -- the same pinning rule the base applies to Debian.
+# BASE_IMAGE is supplied by digest by the checked-in
+# `images/agent-runtime-browser/cloudbuild.yaml`, which derives the base ref
+# from the image being built, pulls it, and reads the digest back. The default
+# below is a LOCAL convenience only -- in a Cloud Build worker there is no local
+# `agent-runtime-base:latest`, so a build that falls through to it fails with a
+# manifest-unknown pull error rather than silently using something else.
 #
 # This profile is the only one that does not run on Cloud Run Jobs. Chromium
 # needs a large /dev/shm and Cloud Run does not let us size it, so the frozen
-# catalogue pins `browser` to GKE Autopilot, where the Job template mounts 1Gi
-# of tmpfs at /dev/shm.
+# catalogue pins `browser` to GKE Autopilot, where the Job template mounts 2Gi
+# of tmpfs at /dev/shm -- which is also why the `browser` resource class is
+# 16 GiB rather than 8: that tmpfs counts against the container's memory limit
+# before Chromium has allocated a single tab.
 #
 # Chromium's own sandbox stays OFF: it needs user namespaces and CAP_SYS_ADMIN,
 # which the pod security policy refuses. The isolation here is the pod --

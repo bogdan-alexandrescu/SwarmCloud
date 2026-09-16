@@ -12,7 +12,7 @@ in Firestore, not a deployment.** Growing the fleet means raising slot pool
 limits; the control plane follows.
 
 ```bash
-curl -X PUT "$API/v1/admin/limits/global" -d '{"hard_limit": 250}'
+./scripts/api.sh PUT /admin/limits/global '{"hard_limit": 250}'
 ```
 
 No redeploy, no Terraform apply, effective on the next scheduler pass. Lowering
@@ -148,8 +148,7 @@ platform exists to avoid.
 
 ```bash
 # p95 peak RSS by profile, last 200 attempts
-curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     "$API/v1/stats" | jq '.resource_usage'
+./scripts/api.sh GET /stats | jq '.resource_usage'
 ```
 
 Raise a class when p95 peak approaches 80% of the limit or `oom_near_miss` shows
@@ -178,7 +177,7 @@ the hot path) or a second independent control plane with its own pools — which
 the honest design, and a project rather than a config change.
 
 **More backends.** See
-[execution-backends.md](execution-backends.md#adding-a-backend). The step people
+[execution-backends.md](execution-backends.md#6-adding-a-backend). The step people
 skip is teaching the reconciler to terminate it; without that, repair cannot
 safely release slots on the new backend.
 

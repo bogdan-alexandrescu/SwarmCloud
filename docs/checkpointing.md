@@ -26,7 +26,7 @@ migration intact, revisit `requires_preview_disk` in
 `swarm_common/profiles.py` — and until then, treat the checkpoint interval as a
 reliability control, not a tuning knob.
 
-See also [cost-control.md](cost-control.md#the-preview-disk-tension) for what the
+See also [cost-control.md](cost-control.md#4-the-preview-disk-tension) for what the
 interval costs.
 
 ---
@@ -183,8 +183,7 @@ and in the task's event stream, `checkpoint_started` / `checkpoint_completed` /
 `checkpoint_restored`:
 
 ```bash
-curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     "$API/v1/tasks/${TASK_ID}/events"
+./scripts/api.sh GET "/tasks/${TASK_ID}/events"
 ```
 
 ---

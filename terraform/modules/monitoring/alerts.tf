@@ -337,7 +337,12 @@ resource "google_monitoring_alert_policy" "tasks_dead_lettered" {
     display_name = "Tasks exhausted every attempt"
 
     condition_threshold {
+      # A dead-letter can be written by the worker (Cloud Run Jobs or a GKE pod)
+      # or by the scheduler (a Cloud Run service), so the restriction names all
+      # three. Monitoring REQUIRES a resource.type restriction, and naming only
+      # one would silently drop the other two sources.
       filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"cloud_run_revision\", \"k8s_container\")",
         "metric.type = \"logging.googleapis.com/user/${google_logging_metric.events["dead_lettered"].name}\"",
       ])
 

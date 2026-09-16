@@ -36,6 +36,19 @@ document id would fail, and a failed match reads as "this execution belongs to
 no task I know about" -- an orphan, which gets terminated. The container
 environment carries the identifiers verbatim, so that is what is trusted, with
 the label kept only as a hint that `detect` can resolve by sanitised comparison.
+
+**The TENANT is the one identifier that is never taken from the container.**
+Everything else in a pod spec is a hint; the tenant decides whose work this
+service is allowed to fence, release and re-queue, and this service runs with an
+identity that can do that to every tenant at once. A container environment is
+written by whoever created the object, so a Job whose env claimed another
+tenant's `TENANT_ID` and `TASK_ID` would be a cross-tenant kill switch operated
+by a trusted identity. So the tenant comes from the enclosing object instead --
+the Kubernetes namespace, or the Cloud Run Job resource's own label, both of
+which the platform creates per tenant and neither of which a workload can edit
+from inside itself. A container that disagrees is logged and overruled, and
+`detect.scope_executions_to_their_tenant` then drops any claim on a task that
+belongs to someone else.
 """
 
 from __future__ import annotations
@@ -47,6 +60,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from .detect import sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, as_datetime
 
 MANAGED_LABEL = "managed-by"
@@ -137,6 +151,47 @@ def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def owning_tenant(
+    claimed: Any,
+    authority: str | None,
+    *,
+    resource: str,
+    logger: Any | None = None,
+) -> str | None:
+    """Reconcile a container-supplied tenant id against the enclosing object.
+
+    `authority` is derived from something the workload cannot write from inside
+    itself -- its namespace, or the label on the per-tenant Job resource it runs
+    under. `claimed` is whatever the container's environment or its own labels
+    say. The claim is accepted only when it names the same tenant the authority
+    does, because the identifiers differ in shape: a namespace is
+    `swarm-<tenant>` or `swarm-tenant-<tenant>` depending on which of the two
+    dispatch paths created it, and a label has been through `sanitize_name`.
+
+    When there is no authority (nothing per-tenant encloses the object) the
+    claim is returned unchanged -- there is nothing to check it against, and
+    `detect.scope_executions_to_their_tenant` still refuses to let it act on
+    another tenant's task.
+    """
+    claim = str(claimed).strip() if claimed not in (None, "") else None
+    if authority is None or authority == "":
+        return claim
+    if claim is None:
+        return authority
+    slug = sanitised(claim)
+    if slug and (authority == slug or authority.endswith(f"-{slug}")):
+        return claim
+    if logger is not None:
+        logger.warning(
+            "execution claims a tenant its own namespace or job resource does not; "
+            "using the enclosing object's tenant instead",
+            resource=resource,
+            claimed=claim,
+            authority=authority,
+        )
+    return authority
+
+
 class Backend(Protocol):
     name: str
 
@@ -211,8 +266,17 @@ class CloudRunBackend:
             job_name = getattr(job, "name", "")
             if not self._is_managed(job):
                 continue
+            # The Job resource is created per (tenant, profile) by the
+            # dispatcher, and Cloud Run pins the service account on it -- so its
+            # tenant label is the identity the executions under it actually run
+            # as, and is what an execution's own claim is checked against.
+            owner = _first(self._labels(job), TENANT_LABELS)
             for execution in self._executions_client().list_executions(parent=job_name):
-                views.append(self._execution_view(execution, job_name))
+                views.append(
+                    self._execution_view(
+                        execution, job_name, job_tenant=str(owner) if owner else None
+                    )
+                )
         return views
 
     def _list_jobs(self) -> list[Any]:
@@ -234,7 +298,9 @@ class CloudRunBackend:
         """Deletable by this service: runtime markers only."""
         return is_gc_eligible(self._labels(resource))
 
-    def _execution_view(self, execution: Any, job_name: str) -> ExecutionView:
+    def _execution_view(
+        self, execution: Any, job_name: str, *, job_tenant: str | None = None
+    ) -> ExecutionView:
         labels = dict(getattr(execution, "labels", {}) or {})
         env = self._env_from_template(execution)
         running = int(getattr(execution, "running_count", 0) or 0)
@@ -266,7 +332,12 @@ class CloudRunBackend:
             created_at=as_datetime(getattr(execution, "create_time", None)),
             task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
             attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
-            tenant_id=env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+            tenant_id=owning_tenant(
+                env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                job_tenant,
+                resource=str(getattr(execution, "name", "")),
+                logger=self._log,
+            ),
             generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
             parent=job_name,
         )
@@ -290,17 +361,45 @@ class CloudRunBackend:
 
     # -- writes ---------------------------------------------------------
     def terminate(self, execution: ExecutionView) -> bool:
+        """Cancel the execution and return whether Cloud Run CONFIRMED it.
+
+        Only an operation whose result names this exact execution counts.
+        `bool(result)` would not: a protobuf is truthy whenever it carries any
+        field at all, so falling back to it reports success for essentially any
+        completed operation -- including one that returned a different
+        execution, which is precisely the case the name comparison exists to
+        catch. `repair.py` gates the lease release on this boolean, so a false
+        True releases a slot while the first agent may still be running: two
+        agents, one task, one credential, one repository.
+
+        A `NotFound` is a confirmed stop: the execution this service was asked
+        to end does not exist any more.
+        """
+        from google.api_core import exceptions as gapi_exceptions
         from google.cloud import run_v2
 
         request = run_v2.CancelExecutionRequest(name=execution.name)
-        operation = self._executions_client().cancel_execution(request=request)
-        result = operation.result(timeout=120)
+        try:
+            operation = self._executions_client().cancel_execution(request=request)
+            result = operation.result(timeout=120)
+        except gapi_exceptions.NotFound:
+            if self._log:
+                self._log.info(
+                    "cloud run execution already gone", execution=execution.name, confirmed=True
+                )
+            return True
         cancelled = getattr(result, "name", None) == execution.name
         if self._log:
-            self._log.info(
-                "cloud run execution cancelled", execution=execution.name, confirmed=cancelled
+            log = self._log.info if cancelled else self._log.error
+            log(
+                "cloud run execution cancelled"
+                if cancelled
+                else "cloud run did not confirm the cancellation; NOT releasing the slot",
+                execution=execution.name,
+                returned=str(getattr(result, "name", "")) or None,
+                confirmed=cancelled,
             )
-        return True if cancelled else bool(result)
+        return cancelled
 
     def list_job_resources(self) -> list[JobResourceView]:
         resources: list[JobResourceView] = []
@@ -470,6 +569,10 @@ class GkeBackend:
             if not is_swarm_managed(labels):
                 continue
             env = self._pod_env(job)
+            # The namespace is per-tenant and a workload cannot move itself
+            # between namespaces, so it -- not the container's own environment
+            # -- decides whose task this execution is allowed to be about.
+            namespace = str(metadata.namespace)
             status = job.status
             active = int(getattr(status, "active", 0) or 0)
             succeeded = int(getattr(status, "succeeded", 0) or 0)
@@ -490,11 +593,16 @@ class GkeBackend:
                     created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
                     task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
                     attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
-                    tenant_id=env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                    tenant_id=owning_tenant(
+                        env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                        namespace[len(self._prefix):],
+                        resource=f"{namespace}/{metadata.name}",
+                        logger=self._log,
+                    ),
                     generation=_int_or_none(
                         env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)
                     ),
-                    namespace=str(metadata.namespace),
+                    namespace=namespace,
                 )
             )
         return views

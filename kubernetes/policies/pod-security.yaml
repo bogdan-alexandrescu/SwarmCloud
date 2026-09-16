@@ -31,7 +31,10 @@
 #                                                 actually creates, where the
 #                                                 error is visible rather than
 #                                                 buried in a controller event.
-#   swarm-worker-hardening-...      pods, Warn.   See its own note below.
+#   swarm-worker-pod-hardening      pods, Deny.   The fields PSA `restricted`
+#                                                 requires, checked here as well
+#                                                 so the failure names the field
+#                                                 rather than the level.
 #
 # Every binding is scoped by namespace label, so nothing here can affect the
 # other teams' workloads in this shared cluster.
@@ -253,32 +256,38 @@ spec:
       matchLabels:
         app.kubernetes.io/part-of: swarm
 ---
-# The pod-hardening fields, reported rather than enforced -- for now.
+# The pod-hardening fields, ENFORCED.
 #
-# These are exactly what `worker-templates/worker-job.yaml` sets, and exactly
-# what Pod Security Admission's `restricted` level would require. The GKE
-# manifest built in `apps/scheduler/scheduler/dispatch.py` does not set a
-# container securityContext yet, so denying here -- or setting the namespace's
-# PSA enforce label to `restricted` -- would reject every browser job the
-# dispatcher creates and take the GKE path offline.
+# These are exactly what `worker-templates/worker-job.yaml` sets, exactly what
+# `apps/scheduler/scheduler/dispatch.py` now builds, and exactly what Pod
+# Security Admission's `restricted` level requires. The namespace enforces
+# `restricted` too, so strictly this is a second check of the same properties --
+# and it is worth having twice, because PSA reports "violates PodSecurity
+# restricted:latest" while this names the field and says why it matters at 3am.
 #
-# Warn reaches whoever ran kubectl. Audit reaches the API server's audit log,
-# which is where a pod created by a controller rather than by a person shows up,
-# so the gap is measurable today instead of merely known. Change
-# `validationActions` to ["Deny"] and the namespace label to
-# `pod-security.kubernetes.io/enforce: restricted` on the same day the
-# dispatcher's pod spec matches the template.
+# RENAMED from `swarm-worker-hardening-advisories`, which warned rather than
+# denied while the dispatcher's manifest could not satisfy it. `kubectl apply`
+# does not remove a renamed object, so a cluster that has the old pair still has
+# it; delete them once:
+#
+#     kubectl delete validatingadmissionpolicybinding swarm-worker-hardening-advisories
+#     kubectl delete validatingadmissionpolicy        swarm-worker-hardening-advisories
+#
+# Leaving them costs nothing but a duplicate warning, which is why this is a
+# note rather than a step in apply.sh: a script that deletes admission policies
+# is a worse thing to own than a stale warning.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
-  name: swarm-worker-hardening-advisories
+  name: swarm-worker-pod-hardening
   labels:
     managed-by: swarm-terraform
     app.kubernetes.io/part-of: swarm
 spec:
-  # An advisory check must never block a pod, so an evaluation failure is
-  # ignored -- the opposite of the hard constraints above, deliberately.
-  failurePolicy: Ignore
+  # Fail, like the other two enforcing policies: a constraint about whether a
+  # container can gain privilege must not fail open. This was `Ignore` while the
+  # policy was advisory, where failing open was the right default.
+  failurePolicy: Fail
   matchConstraints:
     resourceRules:
       - apiGroups: [""]
@@ -295,26 +304,26 @@ spec:
         has(object.spec.automountServiceAccountToken) &&
         object.spec.automountServiceAccountToken == false
       message: >-
-        automountServiceAccountToken should be false. A worker never calls the
+        automountServiceAccountToken must be false. A worker never calls the
         Kubernetes API -- it authenticates to Google APIs through Workload
         Identity -- so a mounted token is a credential with no use to the pod and
         real use to anything that can read its filesystem.
-      reason: Invalid
+      reason: Forbidden
 
     - expression: >-
         variables.containers.all(c,
           has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) &&
           c.securityContext.allowPrivilegeEscalation == false)
-      message: "allowPrivilegeEscalation should be explicitly false on every container."
-      reason: Invalid
+      message: "allowPrivilegeEscalation must be explicitly false on every container."
+      reason: Forbidden
 
     - expression: >-
         variables.containers.all(c,
           has(c.securityContext) && has(c.securityContext.capabilities) &&
           has(c.securityContext.capabilities.drop) &&
           c.securityContext.capabilities.drop.exists(d, d == 'ALL'))
-      message: "every container should drop ALL capabilities."
-      reason: Invalid
+      message: "every container must drop ALL capabilities."
+      reason: Forbidden
 
     - expression: >-
         (has(object.spec.securityContext) &&
@@ -324,9 +333,9 @@ spec:
           has(c.securityContext) && has(c.securityContext.runAsNonRoot) &&
           c.securityContext.runAsNonRoot == true)
       message: >-
-        runAsNonRoot should be true. The runtime images already run as uid 10001,
+        runAsNonRoot must be true. The runtime images already run as uid 10001,
         so declaring it costs nothing and makes the kubelet enforce it.
-      reason: Invalid
+      reason: Forbidden
 
     - expression: >-
         (has(object.spec.securityContext) &&
@@ -335,19 +344,22 @@ spec:
         variables.containers.all(c,
           has(c.securityContext) && has(c.securityContext.seccompProfile) &&
           c.securityContext.seccompProfile.type == 'RuntimeDefault')
-      message: "seccompProfile should be RuntimeDefault."
-      reason: Invalid
+      message: "seccompProfile must be RuntimeDefault."
+      reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
-  name: swarm-worker-hardening-advisories
+  name: swarm-worker-pod-hardening
   labels:
     managed-by: swarm-terraform
     app.kubernetes.io/part-of: swarm
 spec:
-  policyName: swarm-worker-hardening-advisories
-  validationActions: ["Warn", "Audit"]
+  policyName: swarm-worker-pod-hardening
+  # Audit alongside Deny: a refusal reaches whoever ran kubectl, but a pod
+  # created by a controller rather than by a person only shows up in the API
+  # server's audit log.
+  validationActions: ["Deny", "Audit"]
   matchResources:
     namespaceSelector:
       matchLabels:

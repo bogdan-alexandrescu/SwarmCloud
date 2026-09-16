@@ -64,6 +64,7 @@ from .errors import (
     CheckpointError,
     ExitCode,
     FencedError,
+    TenantMismatchError,
     WorkerError,
 )
 from .gitops import GitError, shallow_clone
@@ -72,7 +73,15 @@ from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED
-from .secrets import CredentialMissing, SecretManagerClient, load_tenant, resolve_credentials
+from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
+from .secrets import (
+    CredentialMissing,
+    SecretError,
+    SecretManagerClient,
+    load_tenant,
+    resolve_credentials,
+    resolve_git_token,
+)
 
 #: How many times the runner may be restarted in place after a SHORT provider
 #: wait. A long wait parks instead, so this bound is only ever reached by a
@@ -143,6 +152,8 @@ class Worker:
             signals = self.control.validate_generation()
         except FencedError as exc:
             return self._exit_fenced(exc)
+        except TenantMismatchError as exc:
+            return self._exit_tenant_mismatch(exc)
 
         if signals.cancel_requested:
             # Cancelled between admission and start: nothing ran, so there is
@@ -159,6 +170,12 @@ class Worker:
             outcome = self._execute()
         except FencedError as exc:
             return self._exit_fenced(exc)
+        except TenantMismatchError as exc:
+            # BEFORE `except WorkerError`, and the order is the point. The
+            # generic handler calls `_safe_finish`, which writes a terminal
+            # state, an attempt record and an event -- and on this path every
+            # one of those writes would land on ANOTHER TENANT's documents.
+            return self._exit_tenant_mismatch(exc)
         except WorkerError as exc:
             self.log.exception("worker failed", exc)
             self._safe_finish(TaskState.FAILED, exit_code=exc.exit_code, error=str(exc))
@@ -446,12 +463,14 @@ class Worker:
 
         runner_result = _read_json(ws.result_path)
         if runner_result:
-            summary["runner"] = {
-                "status": runner_result.get("status"),
-                "summary": str(runner_result.get("summary", ""))[:4000],
-                "output": _truncate_json(runner_result.get("output"), 8000),
-                "metrics": runner_result.get("metrics") or {},
-            }
+            summary["runner"] = self._scrub(
+                {
+                    "status": runner_result.get("status"),
+                    "summary": str(runner_result.get("summary", ""))[:4000],
+                    "output": _truncate_json(runner_result.get("output"), 8000),
+                    "metrics": runner_result.get("metrics") or {},
+                }
+            )
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
@@ -493,7 +512,9 @@ class Worker:
         self.control.finish(
             state=TaskState.FAILED,
             exit_code=result.exit_code,
-            error=str(error)[:4000] if error else f"runner exited {result.exit_code}",
+            # `last_error` is a Firestore field and a failing CLI is exactly the
+            # thing that echoes its own configuration, so the tail is scrubbed.
+            error=self._scrub(str(error)[:4000]) if error else f"runner exited {result.exit_code}",
             result_summary=summary,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
@@ -522,6 +543,28 @@ class Worker:
         except Exception as emit_exc:  # the exit code is the real signal
             self.log.warning("could not record the fencing event", error=str(emit_exc))
         return ExitCode.GENERATION_FENCED
+
+    def _exit_tenant_mismatch(self, exc: TenantMismatchError) -> int:
+        """Stop, having written nothing. Not even an event.
+
+        A control-plane document names a tenant that is not this attempt's, which
+        is either corruption or another tenant writing into these documents.
+        Either way the worker must not touch them: `emit` would create an event
+        under another tenant's task, `finish` would rewrite their state and
+        `release_lease` would decrement pools their live attempt is holding. So
+        this path logs to stdout -- the one channel that is this pod's own -- and
+        exits. The reconciler is the backstop: the lease stops heartbeating and
+        is reclaimed by the component that is allowed to act across tenants.
+        """
+        self.log.error(
+            "TENANT MISMATCH: a control-plane document belongs to another tenant; "
+            "exiting without writing anything",
+            kind=exc.kind,
+            document_id=exc.document_id,
+            expected_tenant=exc.expected,
+            actual_tenant=exc.actual,
+        )
+        return ExitCode.TENANT_MISMATCH
 
     def _restore_checkpoint(self, pointer: Any) -> None:
         ws = self.ws
@@ -563,11 +606,15 @@ class Worker:
                 url=url,
                 ref=ref,
                 destination=destination,
-                workspace_tmp=ws.tmp,
+                # The worker's own scratch directory, NOT `ws.tmp`: `ws.tmp` is
+                # what the agent is handed as TMPDIR, and a credential file left
+                # there is one `cat $TMPDIR/.git-credentials` away from any
+                # prompt injection in the repository being cloned.
+                private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=os.environ.get("GIT_TOKEN") or None,
+                token=self._git_token(),
             )
         except GitError as exc:
             raise WorkerError(f"repository clone failed: {exc}") from exc
@@ -577,6 +624,33 @@ class Worker:
             "ref": clone.ref,
             "commit": clone.commit,
         }
+
+    def _git_token(self) -> str | None:
+        """The TENANT's own clone token, or None.
+
+        Read from `swarm-tenant-<tenant>-git` through the same per-tenant Secret
+        Manager path as a provider key, never from a platform-wide `GIT_TOKEN`
+        in the worker's environment: one token able to clone every tenant's
+        repositories would make a single malicious repository in one tenant a
+        credential compromise for all of them (invariant 9).
+
+        None is not an error. A public repository clones without a credential
+        and a private one fails with git's own message, which is the correct
+        diagnosis to surface.
+        """
+        if self.secret_client is None:
+            return None
+        try:
+            tenant = load_tenant(self.db, self.cfg.tenant_id)
+            return resolve_git_token(
+                tenant=tenant, client=self.secret_client, logger=self.log
+            )
+        except SecretError as exc:
+            self.log.warning(
+                "no usable tenant git credential; cloning unauthenticated",
+                error=str(exc),
+            )
+            return None
 
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
@@ -596,6 +670,15 @@ class Worker:
             "SWARM_ATTEMPT_ID": self.cfg.attempt_id,
             "SWARM_TENANT_ID": self.cfg.tenant_id,
             "SWARM_RUNNER_PROFILE": self.cfg.runner_profile,
+            # The ceilings a runner may apply to ITS OWN child (the agent CLI,
+            # the catalogue command). `runners/limits.py` clamps whatever the
+            # caller's `input` asks for against these, so `input` can lower a
+            # limit and never raise one -- which is invariant 10 for the one
+            # execution parameter a caller is allowed to influence at all.
+            TIMEOUT_ENV: str(self.cfg.timeout_seconds),
+            GRACE_ENV: str(self.cfg.termination_grace_seconds),
+            STDOUT_ENV: str(self.cfg.max_stdout_bytes),
+            STDERR_ENV: str(self.cfg.max_stderr_bytes),
         }
         for passthrough in ("PYTHONPATH", "VIRTUAL_ENV", "NODE_PATH", "NODE_EXTRA_CA_CERTS"):
             value = os.environ.get(passthrough)
@@ -746,10 +829,44 @@ class Worker:
             self._heartbeat()
 
     # -- uploads -----------------------------------------------------------
+    def _scrub(self, value: Any) -> Any:
+        """Redact every registered secret from a value bound for Firestore."""
+        return self.log.scrub_value(value)
+
+    def _redact_before_upload(self) -> None:
+        """Scrub the captured streams and artifacts before they leave the pod.
+
+        A log line is only one of four ways a provider key gets out. The other
+        three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
+        result summary -- and the first two are uploaded to GCS, where they
+        outlive the pod. The logger holds the registered values, so it does the
+        rewriting; binary and oversized files are left alone by `scrub_file`,
+        because corrupting a tenant's artifact to protect a key that is probably
+        not in it is the wrong trade.
+        """
+        ws = self.ws
+        if ws is None or not self.log.has_secrets:
+            return
+        targets = [ws.stdout_path, ws.stderr_path]
+        targets += [
+            path
+            for path in sorted(ws.artifacts.rglob("*"))
+            if path.is_file() and not path.is_symlink()
+        ]
+        targets.append(ws.result_path)
+        for path in targets:
+            try:
+                self.log.scrub_file(path)
+            except OSError as exc:  # a read-only or vanished file must not fail the attempt
+                self.log.warning(
+                    "could not redact a file before upload", path=str(path), error=str(exc)
+                )
+
     def _upload_outputs(self) -> dict[str, Any]:
         ws = self.ws
         if ws is None:
             return {}
+        self._redact_before_upload()
         artifacts: list[dict[str, Any]] = []
         skipped: list[str] = []
         total = 0
@@ -803,7 +920,10 @@ class Worker:
                 "checkpoint_id": self._restored_from.checkpoint_id,
                 "attempt_id": self._restored_from.attempt_id,
             }
-        return summary
+        # This dict becomes `task.result_summary`, a Firestore document that
+        # every reader of the task can see. It is scrubbed on the way out for
+        # the same reason the files above are.
+        return self._scrub(summary)
 
     # -- metrics -----------------------------------------------------------
     def _start_sampler(self, child: ChildProcess) -> None:
@@ -868,7 +988,10 @@ class Worker:
             summary = self._upload_outputs()
             self._export_metrics()
             self.control.finish(
-                state=state, exit_code=exit_code, error=error[:4000], result_summary=summary
+                state=state,
+                exit_code=exit_code,
+                error=self._scrub(error[:4000]),
+                result_summary=summary,
             )
         except Exception as exc:
             # The reconciler is the backstop: a lease with no heartbeat gets

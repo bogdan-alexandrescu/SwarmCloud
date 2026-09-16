@@ -12,26 +12,43 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-ENVIRONMENT ?= dev
-PROJECT_ID  ?= saga-agents-staging
-REGION      ?= us-central1
+SCRIPTS  := scripts
+
+# Configuration and tool paths are ASKED OF THE SCRIPTS, not re-derived here.
+#
+# This Makefile used to do both itself, and got both wrong in the same silent
+# way. It read no .env, so with ENVIRONMENT=staging in .env `make tf-plan`
+# planned dev while `make status` reported staging -- make and the scripts
+# disagreed about which environment they were in. And it hard-coded its own
+# `if [ -x $$HOME/.local/bin/... ]` probes, so the SWARM_TERRAFORM /
+# SWARM_TFLINT / SWARM_CHECKOV / SWARM_TRIVY / SWARM_KUBECTL overrides that
+# .env.example documents and scripts/lib/common.sh honours had no effect on
+# `make lint`, `make fmt`, `make tf-plan`, `make tf-apply` or `make security`.
+# On this workstation that matters: kubectl 1.22 and checkov 3.3.10 win $PATH
+# and both are broken in ways that report success.
+#
+# `?=` still lets an explicit `make ENVIRONMENT=prod ...` win over .env, which is
+# the precedence an operator expects.
+RESOLVE := $(SCRIPTS)/lib/resolve.sh
+
+ENVIRONMENT ?= $(shell $(RESOLVE) env ENVIRONMENT)
+PROJECT_ID  ?= $(shell $(RESOLVE) env PROJECT_ID)
+REGION      ?= $(shell $(RESOLVE) env REGION)
 
 export ENVIRONMENT
 export PROJECT_ID
 export REGION
-
-SCRIPTS  := scripts
 
 # ONE terraform root, parameterised per environment by a tfvars file. dev and
 # prod therefore run identical configuration and differ only in inputs and in
 # the state prefix -- a root per environment is how prod quietly drifts.
 TF_ROOT  := terraform/infra
 VAR_FILE := terraform/environments/$(ENVIRONMENT)/$(ENVIRONMENT).tfvars
-TERRAFORM := $(shell if [ -x "$$HOME/.local/bin/terraform" ]; then echo "$$HOME/.local/bin/terraform"; else command -v terraform; fi)
-TFLINT    := $(shell if [ -x "$$HOME/.local/bin/tflint" ]; then echo "$$HOME/.local/bin/tflint"; else command -v tflint || echo ""; fi)
-CHECKOV   := $(shell if [ -x "$$HOME/.local/bin/checkov" ]; then echo "$$HOME/.local/bin/checkov"; else command -v checkov || echo ""; fi)
-TRIVY     := $(shell if [ -x "$$HOME/.local/bin/trivy" ]; then echo "$$HOME/.local/bin/trivy"; else command -v trivy || echo ""; fi)
-KUBECTL   := $(shell if [ -x /opt/homebrew/bin/kubectl ]; then echo /opt/homebrew/bin/kubectl; else command -v kubectl || echo ""; fi)
+TERRAFORM := $(shell $(RESOLVE) tool terraform)
+TFLINT    := $(shell $(RESOLVE) tool tflint)
+CHECKOV   := $(shell $(RESOLVE) tool checkov)
+TRIVY     := $(shell $(RESOLVE) tool trivy)
+KUBECTL   := $(shell $(RESOLVE) tool kubectl)
 
 # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately not
 # saga-agents-terraform-state-staging: that one belongs to another team.
@@ -40,7 +57,7 @@ TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix
 TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
-        load-test quota-test concurrency-test failure-test race-test test lint \
+        load-test quota-test concurrency-test failure-test race-test test tf-test lint \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -129,21 +146,38 @@ failure-test: ## Failures, cancellation and malformed input leak no capacity
 race-test: ## The last free slot goes to exactly one task
 	@$(SCRIPTS)/race-test.sh
 
-test: ## Unit tests plus the destroy guard self-test (no cloud resources needed)
+test: ## Unit tests, terraform tests and the guard self-tests (no cloud resources needed)
 	@$(SCRIPTS)/destroy.sh --self-test
+	@$(SCRIPTS)/lib/plan-guard.sh --self-test
+	@$(SCRIPTS)/lib/check-contract-parity.sh
 	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
 	  uv run --project . pytest tests/unit -q; \
 	else \
 	  echo "no unit tests in tests/unit yet"; \
+	fi
+	@$(MAKE) tf-test
+
+tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no credentials)
+	@# 86 assertions covering the platform promises the docs lean on. This suite
+	@# existed and was wired into nothing -- not make test, not make lint, not any
+	@# workflow -- so it sat outside the gate CLAUDE.md names as the completeness
+	@# check and would have rotted the first time a module changed.
+	@if [ -n "$(TERRAFORM)" ] && [ -d tests/terraform ]; then \
+	  $(TERRAFORM) -chdir=tests/terraform init -input=false >/dev/null && \
+	  $(TERRAFORM) -chdir=tests/terraform test; \
+	else \
+	  echo "terraform not found, or no tests/terraform; skipping"; \
 	fi
 
 ## ---------------------------------------------------------------------------
 ## Quality
 ## ---------------------------------------------------------------------------
 
-lint: ## shellcheck, terraform fmt/validate, tflint, kubernetes manifests
+lint: ## shellcheck, doc links, terraform fmt/validate, tflint, kubernetes manifests
 	@echo "==> shellcheck"
 	@shellcheck -x $(SCRIPTS)/*.sh $(SCRIPTS)/lib/*.sh
+	@echo "==> documentation links"
+	@$(SCRIPTS)/lib/check-doc-links.sh
 	@echo "==> terraform fmt"
 	@$(TERRAFORM) fmt -check -recursive terraform || { echo "run 'make fmt'"; exit 1; }
 	@if [ -d $(TF_ROOT)/.terraform ]; then echo "==> terraform validate"; $(TERRAFORM) -chdir=$(TF_ROOT) validate; fi
@@ -155,8 +189,24 @@ fmt: ## Rewrite terraform files in canonical form
 	@$(TERRAFORM) fmt -recursive terraform
 	@echo "formatted"
 
-security: ## checkov over terraform, trivy over the built images and the repo
-	@if [ -n "$(CHECKOV)" ] && [ -n "$$(find terraform -name '*.tf' -print -quit 2>/dev/null)" ]; then $(CHECKOV) -d terraform --quiet --compact; else echo "no terraform to scan"; fi
+security: ## checkov over terraform and the RENDERED manifests, trivy over the repo
+	@if [ -n "$(CHECKOV)" ] && [ -n "$$(find terraform -name '*.tf' -print -quit 2>/dev/null)" ]; then $(CHECKOV) -d terraform --framework terraform --quiet --compact; else echo "no terraform to scan"; fi
+	@# RENDERED, not raw. The files in kubernetes/ are templates: checkov reads a
+	@# placeholder image reference as an unpinned tag, and silently SKIPS a file a
+	@# placeholder makes unparseable while still exiting 0 -- so the scan reports
+	@# clean over exactly the two manifests that carry the container hardening.
+	@# The three skipped checks are the image-reference family; scripts/push-images.sh
+	@# pins the channel tag to a trivy-scanned digest, so provenance is enforced in
+	@# the image pipeline rather than in a lint artifact. Same set as security.yml.
+	@if [ -n "$(CHECKOV)" ] && [ -f kubernetes/render.py ]; then \
+	  rm -rf build/rendered && mkdir -p build/rendered && \
+	  python3 kubernetes/render.py policies > build/rendered/policies.yaml && \
+	  python3 kubernetes/render.py tenant --tenant lint > build/rendered/tenant.yaml && \
+	  for p in $$(python3 -c "import sys; sys.path.insert(0,'apps/common'); from swarm_common.profiles import RUNNER_PROFILES; print(' '.join(sorted(RUNNER_PROFILES)))"); do \
+	    python3 kubernetes/render.py job --tenant lint --profile $$p --task tsk_lint --attempt att_lint --lease lease_lint --generation 1 > build/rendered/job-$$p.yaml; \
+	  done && \
+	  $(CHECKOV) -d build/rendered --framework kubernetes --skip-check CKV_K8S_14,CKV_K8S_15,CKV_K8S_43 --quiet --compact; \
+	else echo "no kubernetes manifests to scan"; fi
 	@if [ -n "$(TRIVY)" ]; then $(TRIVY) fs --scanners vuln,secret,misconfig --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed .; fi
 
 ## ---------------------------------------------------------------------------
@@ -201,5 +251,5 @@ purge-data: ## Delete swarm runtime data (Firestore, artifacts), never infrastru
 	@$(SCRIPTS)/purge-data.sh --environment $(ENVIRONMENT)
 
 clean: ## Remove local build artifacts (never touches the cloud)
-	@rm -rf build/*.tfplan build/*.json build/*.jsonl build/kubeconfig-*.yaml build/cloudbuild-*.yaml
+	@rm -rf build/*.tfplan build/*.json build/*.jsonl build/kubeconfig-*.yaml build/cloudbuild-*.yaml build/rendered
 	@echo "cleaned build/"

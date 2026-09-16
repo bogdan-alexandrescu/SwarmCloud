@@ -1,0 +1,96 @@
+# Checked-in build config for agent-runtime-browser.
+#
+# It exists because the generated one cannot work. `scripts/build-images.sh`
+# generates a config that passes only `--build-arg GIT_SHA` and
+# `--build-arg BUILD_TIME`, so the Dockerfile fell through to its default
+# `ARG BASE_IMAGE=agent-runtime-base:latest`. There is no local
+# `agent-runtime-base:latest` in a Cloud Build worker, so `FROM ${BASE_IMAGE}`
+# failed with a manifest-unknown pull error and the browser image never built --
+# and `browser` is the ONLY profile on the GKE path, so that failure takes out
+# the entire Autopilot path.
+#
+# `find_recipe()` prefers `images/<target>/cloudbuild.yaml` over the Dockerfile,
+# so this file is what runs. `build-images.sh` passes `_IMAGE`, `_TAG`,
+# `_TARGET` and `_DOCKERFILE`; the base image ref is DERIVED from `_IMAGE`
+# rather than restated, so it cannot drift from whatever registry and project
+# the caller is building into.
+#
+# BASE_IMAGE is passed BY DIGEST, which is what the Dockerfile's header claims.
+# The digest is read back from the image that was just pulled, so it is the
+# digest that actually exists in the registry rather than one a previous build
+# reported.
+#
+# ORDERING: this build pulls `agent-runtime-base:${_TAG}`, so the base must
+# already be pushed. `ALL_TARGETS` lists `agent-runtime-base` first and
+# `build-images.sh` submits builds in order, so a plain `make build` is correct.
+# A targeted `scripts/build-images.sh agent-runtime-browser` at a tag whose base
+# was never built fails in step 1, loudly, naming the ref it could not find --
+# which is the failure worth having, rather than a `FROM` error deep in a layer.
+#
+# `$$` is a literal dollar for the shell; `${_VAR}` is a Cloud Build
+# substitution. Mixing them up is the classic way a config like this silently
+# builds the wrong thing, so every shell variable below is spelled `$$name`.
+timeout: 3600s
+options:
+  machineType: E2_HIGHCPU_8
+  # CLOUD_LOGGING_ONLY keeps builds working when the legacy Cloud Build bucket
+  # is absent and when a user-specified build service account is in use.
+  logging: CLOUD_LOGGING_ONLY
+  # build-images.sh passes `_TARGET` to every config it submits, and this one
+  # has no use for it. Loose substitution keeps an unreferenced key from failing
+  # the build.
+  substitution_option: ALLOW_LOOSE
+
+substitutions:
+  _IMAGE: ""
+  _TAG: ""
+  _DOCKERFILE: images/agent-runtime-browser/Dockerfile
+
+steps:
+  # 1. Resolve the base image to a digest. Pulling first is deliberate: it turns
+  #    "the base for this tag was never built" into a clear failure here rather
+  #    than into a confusing `FROM` error inside the build.
+  - id: resolve-base
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -eu
+      - -c
+      - |
+        image='${_IMAGE}'
+        tag='${_TAG}'
+        registry="$${image%/*}"
+        base="$${registry}/agent-runtime-base:$${tag}"
+        echo "resolving base image $${base}"
+        docker pull "$${base}"
+        digest="$$(docker image inspect --format '{{index .RepoDigests 0}}' "$${base}")"
+        echo "base resolved to $${digest}"
+        printf '%s' "$${digest}" > /workspace/base-image-ref
+
+  # 2. Build the browser image on that exact digest.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    # BuildKit is REQUIRED, not a preference: the Dockerfile declares
+    # `# syntax=docker/dockerfile:1.7` and uses a heredoc for the Chromium
+    # smoke check. The legacy builder ignores the syntax directive and parses
+    # the heredoc's Python as Dockerfile instructions, so
+    # `from playwright.sync_api import ...` fails as
+    # "FROM requires either one or three arguments".
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - -eu
+      - -c
+      - |
+        base="$$(cat /workspace/base-image-ref)"
+        docker build \
+          --platform linux/amd64 \
+          -f '${_DOCKERFILE}' \
+          -t '${_IMAGE}:${_TAG}' \
+          --build-arg "BASE_IMAGE=$${base}" \
+          --build-arg "GIT_SHA=${_TAG}" \
+          .
+
+images:
+  - ${_IMAGE}:${_TAG}

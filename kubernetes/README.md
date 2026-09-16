@@ -46,17 +46,26 @@ kubernetes/render.py job --tenant eng --profile browser \
     --task task_9f3a --attempt att_7b21 --lease lease_c4 --generation 3
 ```
 
-`apply.sh` refuses to run against `agents-staging`, `agents-prod` or the EKS
-cluster in this kubeconfig, and requires the target cluster's name to start with
-`swarm-` — the same rule terraform enforces on `gke_autopilot.cluster_name`.
-`agents-staging` in particular is a live GKE Standard cluster owned by another
-team **in this same project**, and it is the current context on a freshly
-configured workstation.
+`apply.sh` refuses three ways, and each catches what the others cannot:
 
-It also resolves kubectl explicitly rather than trusting `PATH`: an EKS kubectl
-1.22 shadows the current one on the reference workstation, and 1.22 does not
-understand `ValidatingAdmissionPolicy` — it would report success having applied
-nothing.
+* the context must name nothing on `SHARED_DENY_LIST`. That list lives **once**,
+  in `scripts/lib/common.sh`, and `apply.sh` sources it rather than restating it,
+  so a resource added there is protected here on the same commit. `agents-staging`
+  in particular is a live GKE Standard cluster owned by another team **in this
+  same project**, and it is the current context on a freshly configured
+  workstation;
+* the context must not look like EKS. The EKS cluster's **name appears nowhere in
+  this repository**, so this check matches its shape instead — an ARN, or a host
+  under `eks.amazonaws.com`. An earlier version carried a literal
+  `eks-cluster-name` in its deny list, which matches no real context and made the
+  EKS case read as handled while handling nothing;
+* the cluster must start with `swarm-` and the context must name it — the same
+  rule terraform enforces on `gke_autopilot.cluster_name`.
+
+It also resolves kubectl through `common.sh`'s `kubectl_bin` rather than trusting
+`PATH`: an EKS kubectl 1.22 shadows the current one on the reference workstation,
+and 1.22 does not understand `ValidatingAdmissionPolicy` — it would report success
+having applied nothing.
 
 ## Why the manifests look the way they do
 
@@ -79,11 +88,52 @@ that no RFC1918 entry covers.
 
 **Two service accounts, deliberately.** See the conflicts below.
 
+**No provider key in a Job's environment, not even for the profiles that need
+one.** Every process in the container runs as uid 10001, so a variable in the
+worker's environment is readable at `/proc/1/environ` by the runner child, by
+anything the agent spawns, and by a `cat`. A `secretKeyRef` entry would hand the
+tenant's key to all of them, and the env allowlist in `workspace.child_env` cannot
+take back what PID 1 was started with. The worker reads the key from Secret
+Manager itself, as the tenant's own GSA through Workload Identity, and puts it
+only into the environment of the one child that needs it. That also removes a
+dependency nothing satisfied: `secretKeyRef` names a **Kubernetes** Secret and
+nothing in this repository creates one — tenant keys live in Secret Manager as
+`swarm-tenant-<tenant>-<provider>`.
+
 **A Role with `rules: []`.** A worker needs nothing from the Kubernetes API: its
 state is in Firestore, its artifacts are in GCS, and its credentials arrive as
 environment variables projected from the tenant's own Secret Manager secret. The
 empty Role makes that absence greppable; `automountServiceAccountToken: false`
 makes it true even if someone fills the Role in.
+
+## What this directory does NOT cover
+
+Worth stating plainly, because the care taken over these files invites the
+assumption that they protect the platform: **they protect the GKE path only, and
+the GKE path carries the least traffic.** Per `swarm_common.profiles`, `mock`,
+`generic`, `claude-code` and `codex` are all pinned to `Backend.CLOUD_RUN_JOB`;
+only `browser` (and anything above the Cloud Run 8 vCPU / 32 GiB ceiling) reaches
+Autopilot.
+
+So for the profiles a caller actually uses, none of the following applies: the
+default-deny NetworkPolicy, the cross-tenant ingress denial, the per-tenant
+ResourceQuota and LimitRange, or the ValidatingAdmissionPolicies. Cloud Run worker
+jobs run with `vpc_access { egress = "ALL_TRAFFIC" }` into the shared VPC
+(`terraform/modules/cloud_run_jobs`), where the equivalent controls are VPC
+firewall rules and network tags rather than anything in this directory. Two
+consequences are worth being explicit about:
+
+* the ResourceQuota is **not** a platform-wide ceiling. On the Cloud Run path the
+  Firestore slot-pool accounting is the only thing bounding a tenant, so the
+  "second line of defence for when that accounting is wrong" does not exist where
+  most work runs;
+* `default-deny.yaml`'s own rationale — one tenant's agent opening a socket to
+  another's, which no IAM scoping stops because none of it goes through a Google
+  API — describes a risk that is mitigated here and must be mitigated separately
+  in `terraform/` for Cloud Run.
+
+Closing this needs a change outside `kubernetes/`, which is why it is recorded
+here rather than worked around.
 
 ## Open cross-track conflicts
 
@@ -135,21 +185,36 @@ a sanitised id back to the real one before any rule runs. Without that, an
 execution whose task could not be found is an orphan, and orphans get
 terminated.
 
-### 4. `automountServiceAccountToken: true` in the dispatcher's pod spec
+### 4. Pod hardening — CLOSED
 
-The dispatcher's GKE manifest sets it to `true`, which overrides the `false` on
-the ServiceAccount. Nothing in the worker calls the Kubernetes API, so the token
-is a credential with no use to the pod and real use to anything that can read its
-filesystem — in a container whose job is to read files and follow instructions
-found in them.
+The dispatcher's GKE manifest used to set `automountServiceAccountToken: true`
+and no container `securityContext`, so the namespace could only enforce PSA
+`baseline` and `swarm-worker-hardening-advisories` could only warn: enforcing
+the stronger level would have rejected every browser job the dispatcher created.
 
-Until it changes, the namespace enforces PSA `baseline` while auditing and
-warning at `restricted`, and `swarm-worker-hardening-advisories` records every
-non-compliant pod in the audit log. Closing it is two edits: the dispatcher sets
-`automountServiceAccountToken: false` and a container `securityContext`
-matching the Job template, then
-`render.py tenant --pss-enforce restricted` and the advisory binding flips to
-`["Deny"]`.
+`apps/scheduler/scheduler/dispatch.py` now sets `automountServiceAccountToken:
+False`, `POD_SECURITY_CONTEXT` and `CONTAINER_SECURITY_CONTEXT`, so both sides
+of that trade are gone. On this side:
+
+* `render.py --pss-enforce` defaults to `restricted`;
+* `swarm-worker-hardening-advisories` became `swarm-worker-pod-hardening` with
+  `failurePolicy: Fail` and `validationActions: ["Deny", "Audit"]`.
+
+That matters more than a tidy-up: the `browser` profile runs Chromium with its
+own sandbox deliberately disabled, on the argument that the isolation is the
+pod. The argument only holds while the pod controls are enforced.
+
+**Applying this on an existing cluster leaves the superseded policy behind** —
+`kubectl apply` does not delete a renamed object. Delete it once:
+
+```bash
+kubectl delete validatingadmissionpolicybinding swarm-worker-hardening-advisories
+kubectl delete validatingadmissionpolicy        swarm-worker-hardening-advisories
+```
+
+`test_the_dispatchers_gke_manifest_satisfies_restricted` checks the dispatcher's
+own manifest against the same requirements, so a regression on that side fails in
+CI rather than as Pending pods.
 
 ### 5. Two service account names, two GSA naming schemes
 

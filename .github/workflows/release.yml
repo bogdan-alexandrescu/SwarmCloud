@@ -173,35 +173,28 @@ jobs:
             -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
           terraform -chdir=${{ env.TF_ROOT }} show -json plan.tfplan > "${TF_ROOT}/plan.json"
 
-      - name: refuse to delete anything that is not ours
-        # The same assertion `make destroy` makes, applied to every apply. A
-        # plan that DELETES something in this shared project must be ours and
-        # must carry managed-by=swarm-terraform. Fails closed.
-        run: |
-          set -euo pipefail
-          deletions="$(jq -r '
-            [ .resource_changes[]?
-              | select(.change.actions | index("delete"))
-              | { address, type,
-                  name: (.change.before.name // .change.before.email // ""),
-                  label: ((.change.before.labels // .change.before.resource_labels // {})["managed-by"] // "") } ]
-            | .[] | "\(.address)\t\(.type)\t\(.name)\t\(.label)"' "${TF_ROOT}/plan.json")"
-          if [ -z "${deletions}" ]; then
-            echo "plan deletes nothing"; exit 0
-          fi
-          echo "resources this plan would delete:"
-          echo "${deletions}"
-          # Types that physically cannot carry a label are exempt; everything
-          # else must be labelled ours.
-          unlabelled="$(echo "${deletions}" | awk -F'\t' '
-            $2 ~ /^(google_service_account|google_project_service|google_project_iam|google_firestore_|google_compute_(network|subnetwork|firewall|router)|google_cloud_scheduler_job|google_logging_|google_monitoring_|random_|time_)/ { next }
-            $4 != "swarm-terraform" { print }')"
-          if [ -n "${unlabelled}" ]; then
-            echo "::error::plan would delete resources not labelled managed-by=swarm-terraform:"
-            echo "${unlabelled}"
-            exit 1
-          fi
-          echo "every deletion is ours"
+      - name: shared-project guard
+        # The SAME implementation `make destroy` uses -- scripts/lib/plan-guard.sh
+        # over scripts/lib/destroy-guard.jq -- not a restatement of it.
+        #
+        # This step used to re-implement the rule as an awk type regex, and the
+        # two drifted. destroy-guard.jq exempts IAM edges by SHAPE
+        # (`_iam_(member|binding|policy)$`); the awk exempted only
+        # `google_project_iam`, so a plan deleting any of
+        # google_storage_bucket_iam_member, google_pubsub_topic_iam_member,
+        # google_secret_manager_secret_iam_binding,
+        # google_artifact_registry_repository_iam_member,
+        # google_cloud_run_v2_service_iam_member or
+        # google_pubsub_subscription_iam_member was blocked from production.
+        # Those are exactly the resources that disappear when a tenant is
+        # removed or a tenant's provider list changes -- routine applies.
+        # (The awk also exempted `google_firestore_` while destroy.sh's own list
+        # did not, so the two Track D guards disagreed in both directions.)
+        #
+        # It also now enforces the forward half of the rule: everything the plan
+        # CREATES must carry managed-by=swarm-terraform, because `make destroy`
+        # refuses to delete anything that does not.
+        run: ./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --mode apply
 
       - name: apply
         run: terraform -chdir=${{ env.TF_ROOT }} apply -input=false -lock-timeout=180s plan.tfplan

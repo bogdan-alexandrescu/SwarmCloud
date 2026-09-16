@@ -18,20 +18,57 @@ Registering a tenant creates every boundary at once — there is no
 
 | Boundary | Resource | Enforced by |
 |---|---|---|
-| Identity | `swarm-tenant-<id>@<project>.iam.gserviceaccount.com` | IAM |
-| Control-plane data | Firestore access scoped to the `swarm` database | IAM |
+| Identity | `swarm-agent-worker-<id>@<project>.iam.gserviceaccount.com` | IAM |
+| Control-plane data | custom role `swarmTenantWorkerFirestore`, conditioned on the `swarm` database | IAM — **see the caveat below** |
 | Artifacts & checkpoints | GCS prefix `tenants/<id>/`, granted by IAM condition | IAM condition on the binding |
 | Provider keys | `swarm-tenant-<id>-<provider>`, secret-level IAM | Secret Manager resource policy |
-| GKE workloads | namespace `swarm-<id>` + workload identity binding | Kubernetes RBAC + network policy |
+| GKE workloads | namespace `swarm-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
 | Capacity | `tenant:<id>` and `provider:<p>:tenant:<id>` slot pools | admission transaction |
 | Record | `tenants/<id>` document | control plane |
+
+The service account name is `swarm-agent-worker-<id>`, and it is the one name to
+grant or audit against. It is what `terraform/modules/tenancy` creates, what
+`terraform/modules/cloud_run_jobs` binds to each `(tenant, profile)` Job, and
+what `kubernetes/render.py` puts in the Workload Identity annotation. Two other
+spellings used to appear — this table said `swarm-tenant-<id>` and
+`register-tenant.sh` created `swarm-t-<id>` — and neither existed in a deployed
+project, so an operator checking a boundary found nothing and concluded
+registration had failed.
+
+**The Firestore row is the weakest boundary in this table, and it is worth
+reading before relying on it.** Firestore IAM has no collection- or
+document-level granularity: the smallest resource a binding or a condition can
+name is the *database*. The condition scopes *which database*, not which tenant,
+so every swarm identity shares one authorization scope over `swarm` — and a
+worker running attacker-controlled code is inside that scope. What is available
+at this layer is the *shape* of the access, so the role is built rather than
+borrowed: `swarmTenantWorkerFirestore` drops `datastore.entities.delete` (a
+hostile worker cannot destroy another tenant's tasks, leases or the pool
+documents the platform admits against) and `datastore.entities.list` (no
+queries, so no enumerating every tenant's prompts and repository URLs — a
+document can only be fetched by an id already known, and ids are
+`<prefix>_<20 hex>`). The residual is stated in section 4 rather than implied.
 
 ```bash
 ./scripts/register-tenant.sh --group eng@saga.xyz \
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
-Idempotent: re-running updates limits and fills in whatever is missing.
+Re-running updates limits and wiring and fills in whatever is missing. It will
+**refuse** if `tenants/<id>` already names a different principal or kind: that
+is not idempotency, it is re-pointing a tenant, and one
+`--group contractors@saga.xyz --tenant eng` would otherwise hand every member of
+`contractors@` eng's provider keys, artifact prefix and budget.
+
+The script creates the GKE side by calling `kubernetes/apply.sh`, so a
+registered tenant gets its NetworkPolicy, ResourceQuota, LimitRange, Pod
+Security Admission labels and RBAC in the same run as its namespace. It used to
+create only the namespace and a service account, which left the namespace on
+Kubernetes' default allow-all pod networking — one tenant's agent could open a
+socket to another's, traffic no IAM scoping ever sees. If the cluster is not
+reachable the script says so and skips that step; nothing on the Cloud Run path
+needs it, and browser-class runners cannot be dispatched for that tenant until
+it is done.
 
 ---
 
@@ -163,11 +200,47 @@ two independent mechanisms to fail together:
 | Ask the API for another tenant's task | tenant-scoped queries; 404 not 403 |
 | Name another tenant's secret in a request | secret name comes from the frozen contract, never from input |
 | Read another tenant's secret from a worker | worker runs as the tenant GSA; secret IAM names one accessor |
-| Read another tenant's checkpoints | GCS binding is conditioned on the tenant prefix |
+| Read another tenant's checkpoints | GCS binding is conditioned on the tenant prefix, listing included |
 | Reach another tenant's pod | per-tenant namespace + default-deny NetworkPolicy |
 | Have work dispatched under another tenant's identity | Job resource is per tenant and carries the SA |
 | Escalate via a runner profile | callers name profiles; images and commands are catalogue-only |
 | Spoof a tenant claim | tenant is derived from a verified ID token, never from a header or body field |
+| **Read or write another tenant's control-plane documents** | **partially. See below — this row is the one that does not have two mechanisms.** |
+
+### The Firestore row, in full
+
+Every row above needs two independent mechanisms to fail. This one does not have
+two, and pretending otherwise would be worse than saying so.
+
+Firestore exposes no collection-level IAM to a server-side service account. The
+smallest resource a binding or a condition can name is the database, so the
+`resource.name == .../databases/swarm` condition scopes *which database* and
+nothing finer. `docs/security.md` concedes that an agent can mint its own
+workload's metadata token and argues that the boundary is what that identity can
+do — so here is what it can do:
+
+* **It cannot delete anything.** `datastore.entities.delete` is not in the role.
+  Another tenant's tasks, attempts, leases and the `pools/*` documents the whole
+  platform admits against cannot be destroyed.
+* **It cannot enumerate anything.** `datastore.entities.list` is not in the role,
+  so there are no queries: no dumping every tenant's prompts, repository URLs and
+  artifact paths. A document can only be fetched by an id already known, and
+  task, attempt and lease ids are `<prefix>_<20 hex>`.
+* **It CAN read and write a document whose id it can guess.** `pools/global`,
+  `pools/tenant:<victim>`, `tenants/<victim>` and `quota/<provider>:<victim>` are
+  all guessable names. So a hostile worker can disable another tenant's pool,
+  raise its own `hard_limit` past the admin's ceiling, or rewrite a `tenants/<id>`
+  document whose `service_account` and `gcs_prefix` the control plane trusts as
+  configuration. `attempts/<id>` is not guessable, so bumping another attempt's
+  fencing `generation` needs an id it was never given.
+
+Closing this needs one of two changes, neither expressible in IAM: the worker off
+direct Firestore access entirely, reaching state through a control-plane service
+that scopes by caller identity; or one database per tenant. Until then the honest
+statement is that the Firestore boundary is *narrowed*, not *closed*, and the
+grant is identical whether a tenant was created by Terraform or by
+`register-tenant.sh` — the script refuses to run at all if the custom role is
+missing rather than falling back to `roles/datastore.user`.
 
 The one place to be careful when extending the platform: **anything that accepts
 a tenant id as input**. Admin routes do, and they are gated on `ADMIN_GROUPS`
@@ -191,8 +264,8 @@ single change that undoes this table.
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
 
 # Limits
-curl -X PUT "$API/v1/admin/tenants/eng/limits" \
-     -d '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
+./scripts/api.sh PUT /admin/tenants/eng/limits \
+    '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
 
 # Pause one tenant without touching anyone else
 ./scripts/pause-swarm.sh --tenant eng
@@ -211,13 +284,55 @@ consuming the platform on their first bad loop.
 ## 6. The personal fallback tenant
 
 A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
-`u-alice`). Two properties:
+`u-alice`). Three properties:
 
 * the `u-` prefix cannot collide with a group-derived tenant id, because group
   ids are the group's local part with no prefix;
+* slugging is **not** allowed to be lossy. `eng.team@` and `eng-team@` both
+  reduce to `eng-team`, and two distinct Google groups silently becoming one
+  tenant — one namespace, one service account, one set of provider keys — is the
+  exact cross-tenant merge this design exists to prevent. So whenever the slug is
+  not a faithful rendering of the local part, `swarm_common.identity` appends a
+  6-character digest of the full principal. `eng.team@saga.xyz` becomes
+  `eng-team-9aef5b`, not `eng-team`;
 * the tenant is real — own GSA, own prefix, own pools — so a personal task is
   isolated exactly like a group's.
 
 This exists so that onboarding never requires a group change first. It is also
 why `tenant:<id>` pools are created on demand rather than only by Terraform: a
 personal tenant appears the first time its owner submits.
+
+### Tenant ids are capped at 11 characters, and that cap is currently too small
+
+A GCP service account id is capped at 30 characters. The identity is
+`swarm-agent-worker-<id>`, and that prefix is 19 characters, so a tenant id may
+be at most **11**. Both provisioning paths enforce it —
+`terraform/modules/tenancy/variables.tf` and `register-tenant.sh` — and neither
+truncates to fit. Truncating is what turns a length limit into a security bug:
+with a 30-character cut, every tenant id agreeing in its first 11 characters
+collapses onto one service account, and both tenants' `secretAccessor` bindings
+and both tenants' GCS prefix conditions then accumulate on it, each able to read
+the other's provider keys.
+
+**This is an unresolved conflict between two tracks, recorded here rather than
+smoothed over.** `swarm_common.identity` caps a tenant id at 22, sized for the
+prefix `swarm-t-` (8 characters). Terraform uses a 19-character prefix. Ids
+between 12 and 22 characters are therefore resolvable by the API and
+provisionable by nobody:
+
+| Principal | Resolves to | Length | Provisionable |
+|---|---|---|---|
+| `eng@saga.xyz` | `eng` | 3 | yes |
+| `research@saga.xyz` | `research` | 8 | yes |
+| `platform-eng@saga.xyz` | `platform-eng` | 12 | **no** |
+| `eng.team@saga.xyz` | `eng-team-9aef5b` | 15 | **no** |
+| `alice@saga.xyz` | `u-alice` | 7 | yes |
+| `alice.smith@saga.xyz` | `u-alice-smi-4c1f2a` | 18 | **no** |
+
+The last row is the one that bites: any dot in a local part makes the slug lossy,
+the digest is appended, and the result is over 11 — so the personal fallback
+tenant this section describes does not work for most real names today.
+`register-tenant.sh` refuses with this conflict spelled out rather than creating
+a tenant the API will never resolve to. Closing it means shortening the service
+account prefix in `terraform/modules/tenancy` to the `swarm-t-` the frozen module
+already assumes; the frozen module cannot be the side that moves.

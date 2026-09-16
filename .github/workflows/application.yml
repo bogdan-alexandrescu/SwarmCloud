@@ -16,9 +16,13 @@ on:
       - "kubernetes/**"
       - "scripts/**"
       - "tests/**"
+      - "docs/**"
       - "pyproject.toml"
       - "uv.lock"
       - "Makefile"
+      - "README.md"
+      - "CLAUDE.md"
+      - "CONTRACT.md"
       - ".github/workflows/application.yml"
   workflow_dispatch:
 
@@ -46,15 +50,37 @@ jobs:
         run: shellcheck -x scripts/*.sh scripts/lib/*.sh
 
       - name: scripts are executable and strict
+        # The property is "strict mode is on before anything runs", so the check
+        # is the FIRST EFFECTIVE LINE -- not a fixed window.
+        #
+        # This used to be `head -n 20 | grep`, which failed on five scripts whose
+        # header comments are longer than twenty lines: destroy.sh (line 30),
+        # purge-data.sh (24), race-test.sh (21), register-tenant.sh (26),
+        # lib/validate-manifests.sh (23). All five did set it, and those long
+        # headers are the house style CLAUDE.md asks for -- so the check was
+        # wrong, not the scripts. Widening the window would only move the same
+        # failure further out; the awk below has no window at all.
         run: |
           set -euo pipefail
           fail=0
           for f in scripts/*.sh scripts/lib/*.sh; do
             [ -x "$f" ] || { echo "::error file=$f::not executable"; fail=1; }
-            head -n 20 "$f" | grep -q 'set -euo pipefail' \
-              || { echo "::error file=$f::missing 'set -euo pipefail'"; fail=1; }
+            first="$(awk 'NR==1 && /^#!/ {next} /^[[:space:]]*#/ {next} /^[[:space:]]*$/ {next} {print; exit}' "$f")"
+            [ "$first" = "set -euo pipefail" ] \
+              || { echo "::error file=$f::first effective line is '$first', expected 'set -euo pipefail'"; fail=1; }
           done
           exit "$fail"
+
+      - name: the shell restatements of the frozen contract still match it
+        # A bash script cannot import Python, so SlotPool.effective_limit and
+        # Tenant.secret_name() are necessarily restated in jq and in shell. This
+        # asserts the copies against the frozen module. It needs no credentials.
+        run: ./scripts/lib/check-contract-parity.sh
+
+      - name: the plan guard still catches offenders
+        # The single implementation both `make destroy` and the two Terraform
+        # workflows use to decide whether a plan may touch this shared project.
+        run: ./scripts/lib/plan-guard.sh --self-test
 
       - name: no TODO or stub markers in shipped code
         # A TODO in a dispatch path is an outage with a comment attached.
@@ -68,6 +94,14 @@ jobs:
             exit 1
           fi
           echo "none found"
+
+      - name: documentation links resolve
+        # Anchors, not just files. A broken anchor lands the reader at the top of
+        # the page and looks like it worked, so seven had accumulated -- two of
+        # them the deliberate hand-offs into the Preview-disk risk that CLAUDE.md
+        # says must not be softened. A hand-off that silently misses IS a
+        # softening, so it is checked rather than proof-read.
+        run: ./scripts/lib/check-doc-links.sh
 
   python:
     name: format / unit tests
@@ -204,47 +238,96 @@ jobs:
           # so a manifest can "validate" while losing its security context.
           version: ${{ env.KUBECTL_VERSION }}
 
-      - name: client-side validation
-        run: |
-          set -euo pipefail
-          shopt -s nullglob globstar
-          files=(kubernetes/**/*.yaml)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "no manifests yet"; exit 0
-          fi
-          for f in "${files[@]}"; do
-            echo "==> ${f}"
-            kubectl apply --dry-run=client -f "${f}" -o name >/dev/null
-          done
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: render and validate
+        # The repository's own validator, not a second implementation.
+        #
+        # The files in kubernetes/ are TEMPLATES with __TOKEN__ placeholders, and
+        # `kubectl apply --dry-run` over them reports errors that are not errors
+        # -- which, as scripts/lib/validate-manifests.sh's own header says, is
+        # worse than not checking at all, because it trains people to ignore the
+        # output. CI validated the raw templates while `make lint` validated the
+        # rendered ones, so the correct validator existed and was not the one CI
+        # ran. This renders with kubernetes/render.py first, exactly as an
+        # operator does, and additionally fails on any placeholder that survives.
+        run: ./scripts/lib/validate-manifests.sh
 
       - name: security posture assertions
         # These are platform promises, not style preferences: a workload that
         # can run as root, escalate privileges or restart is a workload the
         # no-preemption / no-restart guarantee does not actually cover.
+        #
+        # Scoped to kubernetes/worker-templates, and matching the real Spot LABEL
+        # rather than the word. The previous version matched `*policies*`, which
+        # also matches `network-policies/`, so a NetworkPolicy object was
+        # required to declare `runAsNonRoot`; it required the same of
+        # policies/pod-security.yaml, a ValidatingAdmissionPolicy that contains
+        # neither string; and `grep -qi spot` matched the prose in both worker
+        # templates and the eleven mentions in pod-security.yaml that exist in
+        # order to REJECT Spot. Four guaranteed errors on an untouched tree, so
+        # the gate enforced nothing. security.yml:172 already had this right.
         run: |
           set -euo pipefail
-          shopt -s nullglob globstar
+          shopt -s nullglob
           fail=0
-          for f in kubernetes/**/*.yaml; do
-            case "$f" in *worker-templates*|*policies*) ;; *) continue ;; esac
+          found=0
+          for f in kubernetes/worker-templates/*.yaml; do
+            found=$((found + 1))
             grep -q 'runAsNonRoot: true' "$f" || { echo "::error file=$f::missing runAsNonRoot"; fail=1; }
             grep -q 'allowPrivilegeEscalation: false' "$f" || { echo "::error file=$f::missing allowPrivilegeEscalation:false"; fail=1; }
+            grep -q 'readOnlyRootFilesystem: true' "$f" || { echo "::error file=$f::missing readOnlyRootFilesystem"; fail=1; }
             if grep -q 'restartPolicy' "$f"; then
               grep -q 'restartPolicy: Never' "$f" || { echo "::error file=$f::restartPolicy must be Never"; fail=1; }
             fi
-            if grep -qi 'spot' "$f"; then
-              echo "::error file=$f::Spot is disabled platform-wide (Spot Pods cannot use extended run time)"
+            # The Spot node label, not the word: the admission policies name the
+            # same label in order to reject it, and both templates mention Spot
+            # in a comment explaining why it is disabled.
+            if grep -qE 'cloud\.google\.com/gke-spot' "$f"; then
+              echo "::error file=$f::a worker template requests Spot capacity (Spot Pods cannot use Autopilot extended run time)"
               fail=1
             fi
           done
+          # A check that silently matches no files is a check that passes for the
+          # wrong reason; this is how the whole job came to enforce nothing.
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no worker templates found under kubernetes/worker-templates"
+            fail=1
+          fi
+          echo "checked ${found} worker template(s)"
           exit "$fail"
 
   build:
     name: build images
     runs-on: ubuntu-24.04
-    needs: [python, shell]
+    needs: [python, shell, manifests]
     # A build costs money and needs cloud credentials, so it runs only after the
     # free checks have passed.
+    #
+    # GATED ON A GITHUB ENVIRONMENT WITH REQUIRED REVIEWERS, and that gate is
+    # load-bearing rather than procedural.
+    #
+    # This job authenticates as vars.GCP_DEPLOY_SA and then runs
+    # ./scripts/build-images.sh from the PULL REQUEST'S OWN CHECKOUT.
+    # build-images.sh executes any checked-in images/<t>/cloudbuild.yaml or
+    # apps/<t>/cloudbuild.yaml as a Cloud Build config, so the PR author chooses
+    # what runs. The deployer holds roles/secretmanager.admin,
+    # roles/datastore.owner, roles/storage.admin and
+    # roles/resourcemanager.projectIamAdmin (terraform/bootstrap/variables.tf) --
+    # enough to read every tenant's provider key, read and write the whole swarm
+    # Firestore database, and self-escalate to owner.
+    #
+    # Today the WIF attribute condition saves this by accident:
+    # `github_allowed_refs` defaults to ['refs/heads/main'], so a pull_request
+    # ref is rejected and the auth step fails. That is not a control, it is
+    # standing pressure to add refs/pull/* to github_allowed_refs to "fix CI" --
+    # and the moment anyone does, any PR author runs arbitrary code as that
+    # identity. github_allowed_refs MUST NEVER INCLUDE refs/pull/*. The approval
+    # gate below is what makes this job workable without that change: a human
+    # looks at the diff before any credential is minted.
+    environment: build-pr
     steps:
       - uses: actions/checkout@v4
 

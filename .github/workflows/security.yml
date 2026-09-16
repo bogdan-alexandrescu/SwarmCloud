@@ -131,23 +131,73 @@ jobs:
             --output cli --output sarif --output-file-path console,checkov-tf.sarif \
             --compact
 
-      - name: scan kubernetes manifests
+      - name: render the manifests
+        # Scanned RENDERED, not raw.
+        #
+        # The files in kubernetes/ are templates with __TOKEN__ placeholders.
+        # Checkov reads a placeholder image reference as an unpinned tag and
+        # reports a finding about a value that is not the deployed value, and
+        # when a placeholder makes a file unparseable checkov SKIPS the file
+        # silently and still exits 0 -- so the scan reports clean while the two
+        # most security-sensitive manifests in the repository, the ones where
+        # runAsNonRoot, allowPrivilegeEscalation, readOnlyRootFilesystem and the
+        # projected tenant secret actually live, are not scanned at all.
+        #
+        # kubernetes/render.py produces the objects that really reach a cluster,
+        # for every runner profile in the frozen catalogue. This is the same
+        # renderer `make lint` and kubernetes/apply.sh use.
         run: |
           set -euo pipefail
-          if compgen -G "kubernetes/**/*.yaml" >/dev/null 2>&1 || [ -d kubernetes ]; then
-            checkov -d kubernetes --framework kubernetes \
-              --output cli --output sarif --output-file-path console,checkov-k8s.sarif \
-              --compact
-          else
-            echo "no manifests yet"
-          fi
+          mkdir -p build/rendered
+          python3 kubernetes/render.py policies > build/rendered/policies.yaml
+          python3 kubernetes/render.py tenant --tenant lint > build/rendered/tenant.yaml
+          profiles="$(python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "apps/common")
+          from swarm_common.profiles import RUNNER_PROFILES
+          print(" ".join(sorted(RUNNER_PROFILES)))
+          PY
+          )"
+          for p in ${profiles}; do
+            python3 kubernetes/render.py job --tenant lint --profile "${p}" \
+              --task tsk_lint --attempt att_lint --lease lease_lint --generation 1 \
+              > "build/rendered/job-${p}.yaml"
+          done
+          ls -1 build/rendered
 
-      - name: upload SARIF
+      - name: scan kubernetes manifests
+        # CKV_K8S_14, _15 and _43 are skipped, and only those three. All three
+        # are about the image REFERENCE, which is not decided by these manifests:
+        # the deployed reference is chosen by the dispatcher at dispatch time and
+        # the tag it names is pinned to a vetted sha256 digest by
+        # scripts/push-images.sh, which runs `trivy image` before a digest is
+        # allowed a channel tag at all. The tag in a rendered lint artifact is
+        # render.py's default, so gating on it would gate on a placeholder.
+        #
+        # Every other kubernetes check is a hard gate. Nothing is soft-failed:
+        # a scan that cannot fail is the thing this step is replacing.
+        run: |
+          set -euo pipefail
+          checkov -d build/rendered --framework kubernetes \
+            --skip-check CKV_K8S_14,CKV_K8S_15,CKV_K8S_43 \
+            --output cli --output sarif --output-file-path console,checkov-k8s.sarif \
+            --compact
+
+      - name: upload SARIF (terraform)
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: checkov-tf.sarif
           category: checkov-terraform
+
+      - name: upload SARIF (kubernetes)
+        # Uploaded separately, and previously not uploaded at all: a finding that
+        # only ever appears in a job log is a finding nobody re-reads.
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-k8s.sarif
+          category: checkov-kubernetes
 
   policy:
     name: platform policy assertions

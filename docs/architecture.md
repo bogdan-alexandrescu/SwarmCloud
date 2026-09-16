@@ -94,7 +94,7 @@ See [concurrency.md](concurrency.md) for the admission transaction itself.
 2. **Resolve the tenant.** The caller's tenant is their highest-priority
    admin-registered Google group, or a personal fallback tenant `u-<user>`. The
    membership check is per group, never an enumeration — see
-   [multi-tenancy.md](multi-tenancy.md#group-resolution).
+   [multi-tenancy.md](multi-tenancy.md#2-group-resolution--the-constraint-that-shapes-the-api).
 3. **Validate against the frozen catalogue.** The caller names a
    `runner_profile`. Image, command, resource class, backend, provider and
    secrets all come from `swarm_common.profiles`; a request carrying any of them
@@ -256,7 +256,7 @@ One working Claude Code lane on the reference workstation, measured 2026-09-15:
 not its average and the cost of being wrong is an OOM kill. `browser` is
 8 / 16 (Chromium), `large` is 8 / 32 (the Cloud Run ceiling). The worker reports
 peak RSS and peak disk per attempt so these get corrected from production rather
-than from arithmetic. See [scaling.md](scaling.md#right-sizing).
+than from arithmetic. See [scaling.md](scaling.md#6-right-sizing).
 
 ### A known risk, accepted deliberately
 
@@ -266,7 +266,7 @@ why Cloud Run was chosen for long jobs, so this specific feature partially
 undermines the reason for the choice. It is accepted, not hidden, and the
 compensation is mandatory 120-second checkpointing. Read
 [checkpointing.md](checkpointing.md) and
-[cost-control.md](cost-control.md#the-preview-disk-tension) before changing
+[cost-control.md](cost-control.md#4-the-preview-disk-tension) before changing
 either the disk configuration or the checkpoint interval.
 
 ### Multi-tenant from V1
