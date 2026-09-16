@@ -31,6 +31,8 @@ from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
 from .store import SchedulerStore
 
+from swarm_common.logging_setup import configure_logging
+
 log = logging.getLogger(__name__)
 
 
@@ -154,6 +156,11 @@ def decode_push_envelope(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_app(scheduler: Scheduler | None = None) -> FastAPI:
+    # FIRST, before anything can log. Nothing configured the root logger, so
+    # every record this service produced was discarded -- which is why a
+    # failing drain showed only uvicorn access lines and never a reason.
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
     app = FastAPI(title="swarm scheduler", version="0.1.0")
     app.state.scheduler = scheduler if scheduler is not None else build_scheduler()
     environment = os.environ.get("ENVIRONMENT", "dev").strip().lower()

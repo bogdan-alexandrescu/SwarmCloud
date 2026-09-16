@@ -21,6 +21,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from swarm_common.config import Settings
+from swarm_common.logging_setup import configure_logging
 
 from .backends import Backend, CloudRunBackend, GkeBackend
 from .config import ReconcilerConfig
@@ -89,6 +90,11 @@ def _verify_invoker(authorization: str | None, logger: Any) -> None:
 
 
 def create_app(reconciler: Reconciler | None = None, logger: Any | None = None) -> FastAPI:
+    # FIRST, before anything can log. Nothing configured the root logger, so
+    # every record this service produced was discarded -- which is why a
+    # failing drain showed only uvicorn access lines and never a reason.
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
     logger = logger or build_logger()
     app = FastAPI(title="swarm-reconciler", version="0.1.0")
     state: dict[str, Any] = {"reconciler": reconciler, "last_report": None}

@@ -24,7 +24,7 @@ from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .routes import admin, health, platform, tasks, tenants, workflows
 from .validation import FORBIDDEN_CALLER_FIELDS
 
-from .logging_setup import configure_logging
+from swarm_common.logging_setup import configure_logging
 
 log = logging.getLogger(__name__)
 

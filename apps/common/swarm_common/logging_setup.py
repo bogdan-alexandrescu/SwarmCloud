@@ -1,6 +1,6 @@
-"""Logging configuration. Without this, the service's own logs go nowhere.
+"""Logging configuration for EVERY swarm service. Without it, logs go nowhere.
 
-Every module in this package does `logging.getLogger(__name__)` and then logs,
+Every module in every service does `logging.getLogger(__name__)` and then logs,
 but nothing ever configured the root logger, so INFO records were dropped
 entirely and even WARNING records did not reach Cloud Logging. Only uvicorn's
 access log appeared, because uvicorn configures its own handlers. The practical

@@ -107,6 +107,26 @@ tenants = {
     max_active     = 2
     capacity_units = 4
   }
+
+  # A personal fallback tenant. swarm_common.identity maps a caller who is in
+  # none of the registered groups to `u-<local part>`, and that is what an
+  # operator running the smoke test from their laptop actually resolves to:
+  # group membership is resolved through Cloud Identity, and the swarm-api
+  # service account has no permission to read groups, so every human currently
+  # lands here rather than in `eng`. Without a tenant entry there are no
+  # per-tenant Cloud Run Jobs to dispatch to, and an admitted task holds its
+  # lease with nowhere to run.
+  #
+  # Declaring it keeps the dev environment self-testing. In prod, grant the API
+  # service account group-read instead of enumerating humans here.
+  u-bogdan = {
+    kind           = "user"
+    principal      = "bogdan@saga.xyz"
+    display_name   = "Bogdan (personal)"
+    providers      = []
+    max_active     = 2
+    capacity_units = 4
+  }
 }
 
 # allUsers lets the caller's ID token REACH the app, which is the only component
@@ -129,8 +149,14 @@ api_invokers = [
 # no tenant member can replace another tenant's provider key. Create the group
 # and switch this back before prod, where one named human is a single point of
 # failure.
+# Must NOT be any tenant's own principal: this list administers EVERY tenant's
+# secrets, so naming a tenant member there would let that tenant replace another
+# tenant's provider key with one pointing at infrastructure they control.
+# terraform/infra/variables.tf enforces that, and caught exactly this when
+# bogdan@saga.xyz was both the secret admin and the principal of the u-bogdan
+# fallback tenant. admin@ is a platform account that owns no tenant.
 secret_admin_members = [
-  "user:bogdan@saga.xyz",
+  "user:admin@saga.xyz",
 ]
 
 # --- observability ---------------------------------------------------------
