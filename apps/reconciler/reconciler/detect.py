@@ -194,7 +194,38 @@ def detect_stale_leases(
         if not (expired or overdue_dispatch) and silent <= config.heartbeat_grace_seconds:
             continue
         if task is not None and task.generation != lease.generation:
-            # Already superseded; the generation rule handles it.
+            # Superseded. The generation rule handles the case where an
+            # EXECUTION is still running under the old generation -- but it acts
+            # on executions, and a lease that never dispatched has none. Skipping
+            # unconditionally here is how the reconciler strands its own partial
+            # repair: `invalidate_generation` and `release_lease` are separate
+            # transactions, so anything interrupting between them leaves the
+            # lease unreleased at the old generation, and every later pass then
+            # skips it as "superseded". The slots it holds are never returned.
+            #
+            # Observed live: task gen 2, lease gen 1, released_at None, five
+            # pools each holding active=1 an hour after the dispatch deadline.
+            #
+            # So skip only when there is something else to act on -- an
+            # execution the generation rule will reach. An unreleased lease with
+            # no execution is a leak, and is reported.
+            if executions_by_attempt.get(lease.attempt_id) is not None:
+                continue
+            findings.append(
+                Finding(
+                    kind=FindingKind.ORPHAN_LEASE,
+                    reason=(
+                        f"lease generation {lease.generation} superseded by task "
+                        f"generation {task.generation} with no execution; slots "
+                        "would never be returned"
+                    ),
+                    task_id=lease.task_id,
+                    lease_id=lease.lease_id,
+                    attempt_id=lease.attempt_id,
+                    tenant_id=lease.tenant_id,
+                    generation=lease.generation,
+                )
+            )
             continue
 
         execution = executions_by_attempt.get(lease.attempt_id)

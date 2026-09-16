@@ -27,7 +27,7 @@ nat_static_ip_count = 1
 restrict_egress     = false
 
 # --- GKE Autopilot (browser / GPU / >32 GiB only) --------------------------
-enable_gke_autopilot        = true
+enable_gke_autopilot = false
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
