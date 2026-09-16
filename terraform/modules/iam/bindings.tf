@@ -61,11 +61,11 @@ locals {
   # fail. Referencing `.role_id` still creates the dependency edge, but the value
   # is already in the configuration, so the key is known.
   custom_roles = {
-    job_dispatcher = "projects/${var.project_id}/roles/${google_project_iam_custom_role.job_dispatcher.role_id}"
-    job_reaper     = "projects/${var.project_id}/roles/${google_project_iam_custom_role.job_reaper.role_id}"
-    secret_lister  = "projects/${var.project_id}/roles/${google_project_iam_custom_role.secret_lister.role_id}"
-    gke_dispatcher = var.gke_enabled ? "projects/${var.project_id}/roles/${google_project_iam_custom_role.gke_dispatcher[0].role_id}" : ""
-    gke_reaper     = var.gke_enabled ? "projects/${var.project_id}/roles/${google_project_iam_custom_role.gke_reaper[0].role_id}" : ""
+    job_dispatcher = "projects/${var.project_id}/roles/${local.custom_role_ids.job_dispatcher}"
+    job_reaper     = "projects/${var.project_id}/roles/${local.custom_role_ids.job_reaper}"
+    secret_lister  = "projects/${var.project_id}/roles/${local.custom_role_ids.secret_lister}"
+    gke_dispatcher = var.gke_enabled ? "projects/${var.project_id}/roles/${local.custom_role_ids.gke_dispatcher}" : ""
+    gke_reaper     = var.gke_enabled ? "projects/${var.project_id}/roles/${local.custom_role_ids.gke_reaper}" : ""
   }
 
   # account key -> list of unconditioned project roles. Every element is known at
@@ -145,6 +145,18 @@ resource "google_project_iam_member" "plain" {
   project = var.project_id
   role    = each.value.role
   member  = local.sa_member[each.value.account]
+
+  # Explicit, because the role strings above are now built from configuration
+  # rather than read off the resources. That is what keeps the for_each keys
+  # known, and it also removes the implicit edge -- without this, a grant can be
+  # attempted before the custom role it names exists.
+  depends_on = [
+    google_project_iam_custom_role.job_dispatcher,
+    google_project_iam_custom_role.job_reaper,
+    google_project_iam_custom_role.secret_lister,
+    google_project_iam_custom_role.gke_dispatcher,
+    google_project_iam_custom_role.gke_reaper,
+  ]
 }
 
 # GKE dispatch and reap, pinned to the swarm's own cluster.
@@ -164,6 +176,13 @@ resource "google_project_iam_member" "gke" {
   project = var.project_id
   role    = each.value
   member  = local.sa_member[each.key]
+
+  # Same reason as the `plain` grants: the role string is configuration now, so
+  # the ordering edge has to be stated rather than inferred.
+  depends_on = [
+    google_project_iam_custom_role.gke_dispatcher,
+    google_project_iam_custom_role.gke_reaper,
+  ]
 
   dynamic "condition" {
     for_each = local.gke_condition

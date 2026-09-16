@@ -294,3 +294,41 @@ run "custom_role_ids_accept_only_legal_characters" {
 
   expect_failures = [var.custom_role_suffix]
 }
+
+# The broker enumerates tenants to find whose subscription credential is due.
+# Enumeration is a list, and a list is all it gets: the ability to READ a
+# credential is granted per-secret by the secret_manager module, on the refresh
+# secrets only. If that separation ever collapses into one project-wide role,
+# a bug in the broker stops being a failed refresh and becomes every tenant's
+# provider key at once.
+run "the_broker_can_list_secrets_and_read_none" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  assert {
+    condition     = google_project_iam_custom_role.secret_lister.permissions == toset(["secretmanager.secrets.list"])
+    error_message = "discovery needs exactly one permission; anything more is reach it does not use"
+  }
+
+  assert {
+    condition = !contains(
+      google_project_iam_custom_role.secret_lister.permissions,
+      "secretmanager.versions.access"
+    )
+    error_message = "a project-wide payload read would defeat per-tenant secret isolation entirely"
+  }
+
+  # roles/secretmanager.viewer would have done the job and is the obvious
+  # shortcut. It also grants versions.list and versions.get over every secret in
+  # a project this platform shares with other teams.
+  assert {
+    condition = !contains(
+      local.plain_roles["swarm-quota-broker"],
+      "roles/secretmanager.viewer"
+    )
+    error_message = "the predefined viewer role reaches secrets belonging to other teams in this project"
+  }
+}

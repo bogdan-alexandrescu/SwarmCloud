@@ -15,11 +15,26 @@
 
 locals {
   role_suffix = var.custom_role_suffix == "" ? "" : "_${var.custom_role_suffix}"
+
+  # Role ids live here, in configuration, rather than being read back off the
+  # resources. They end up inside for_each KEYS in bindings.tf, and a key that
+  # depends on a resource attribute is unknown for any role that does not exist
+  # yet. `terraform plan` happens to resolve it from configuration anyway, which
+  # is why that worked -- but `terraform import` does not, and the whole root
+  # module becomes un-importable the moment a new custom role is added. Adding
+  # one should not break importing an unrelated Firestore document.
+  custom_role_ids = {
+    job_dispatcher = "swarmJobDispatcher${local.role_suffix}"
+    job_reaper     = "swarmJobReaper${local.role_suffix}"
+    gke_dispatcher = "swarmGkeDispatcher${local.role_suffix}"
+    gke_reaper     = "swarmGkeReaper${local.role_suffix}"
+    secret_lister  = "swarmSecretLister${local.role_suffix}"
+  }
 }
 
 resource "google_project_iam_custom_role" "job_dispatcher" {
   project = var.project_id
-  role_id = "swarmJobDispatcher${local.role_suffix}"
+  role_id = local.custom_role_ids.job_dispatcher
   title   = "Swarm Job Dispatcher"
 
   description = "Create and run Cloud Run Job resources. No delete, no IAM, no services."
@@ -46,7 +61,7 @@ resource "google_project_iam_custom_role" "job_dispatcher" {
 
 resource "google_project_iam_custom_role" "job_reaper" {
   project = var.project_id
-  role_id = "swarmJobReaper${local.role_suffix}"
+  role_id = local.custom_role_ids.job_reaper
   title   = "Swarm Job Reaper"
 
   description = "Cancel and delete executions, garbage-collect unused Job resources. Reconciler only."
@@ -71,7 +86,7 @@ resource "google_project_iam_custom_role" "gke_dispatcher" {
   count = var.gke_enabled ? 1 : 0
 
   project = var.project_id
-  role_id = "swarmGkeDispatcher${local.role_suffix}"
+  role_id = local.custom_role_ids.gke_dispatcher
   title   = "Swarm GKE Dispatcher"
 
   description = "Create and observe Jobs on the swarm Autopilot cluster. No Secret access, no cluster mutation."
@@ -99,7 +114,7 @@ resource "google_project_iam_custom_role" "gke_reaper" {
   count = var.gke_enabled ? 1 : 0
 
   project = var.project_id
-  role_id = "swarmGkeReaper${local.role_suffix}"
+  role_id = local.custom_role_ids.gke_reaper
   title   = "Swarm GKE Reaper"
 
   description = "Delete finished Jobs and stuck Pods on the swarm Autopilot cluster. Reconciler only."
@@ -120,7 +135,7 @@ resource "google_project_iam_custom_role" "gke_reaper" {
 
 resource "google_project_iam_custom_role" "secret_lister" {
   project = var.project_id
-  role_id = "swarmSecretLister${local.role_suffix}"
+  role_id = local.custom_role_ids.secret_lister
   title   = "Swarm Secret Lister"
 
   description = "List secret METADATA project-wide. Cannot read any payload."
