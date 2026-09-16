@@ -10,6 +10,13 @@
 # These pin the defaults to the routes the applications actually serve, so a
 # rename fails in CI rather than in production silence.
 
+# Every other file in this directory does the same: CI has no GCP credentials,
+# and without a mock the plan fails with "Provider ... requires explicit
+# configuration". This test passed locally only because the shell had ambient
+# application-default credentials -- which is exactly the kind of thing CI is
+# supposed to catch.
+mock_provider "google" {}
+
 variables {
   project_id              = "saga-agents-staging"
   scheduler_push_endpoint = "https://swarm-scheduler.example.run.app"

@@ -1,227 +1,177 @@
-# agent-swarm-infra
+# SwarmCloud
 
-A production control plane for running long-lived AI coding agents on Google
-Cloud — multi-tenant, capacity-bounded, and built so that **no agent is ever
-killed by the platform** and **queued work costs nothing**.
+A zero-idle, multi-tenant platform for running AI coding agents on Google Cloud.
+
+Agents run as ephemeral cloud jobs instead of on a laptop. Work that is queued,
+blocked on provider quota, or waiting on a dependency costs nothing at all: it
+is a row in Firestore, not a sleeping container. When there is nothing runnable,
+agent compute is zero.
+
+> **Status: the control plane works end to end; the agent runtime does not yet.**
+> A submitted task is authenticated, attributed to a tenant, admitted through
+> atomic multi-pool concurrency control, and dispatched to a real Cloud Run Job
+> execution. The worker container then exits 1. See
+> [Current state](#current-state) for exactly what is proven and what is not.
+
+## The idea
+
+Most agent platforms keep a worker alive while it waits — for a rate limit to
+reset, for a dependency, for a retry window. That is a container billing you to
+sleep. SwarmCloud makes waiting a *durable state* rather than a *running
+process*:
 
 ```
-   412 QUEUED   31 PARKED   88 READY      <- costs nothing
-     3 LEASED    2 DISPATCHED  4 STARTING  34 RUNNING   <- the entire bill
+desired work → durable task state → eligibility + quota check
+             → concurrency admission → execution lease → compute demand
 ```
 
-That split is the whole idea. A backlog is Firestore documents, not pending pods
-that an autoscaler answers by buying nodes.
+Infrastructure follows admitted work. It never leads it. A backlog of ten
+thousand tasks produces zero pods, because nothing creates compute until it
+holds a lease.
 
----
+## Architecture
+
+```
+ client ──▶ Swarm API ──▶ Firestore ──▶ Scheduler ──▶ Cloud Run Jobs
+           (Cloud Run)    tasks         (admission)    (agents, 0→N→0)
+            min=0         leases              │
+                          pools               └────▶ GKE Autopilot
+                          quota                      (browser, GPU)
+                                          Reconciler
+                                       (repairs leaks)
+```
+
+**Control plane** — four Cloud Run services at `min-instances=0`, so idle cost is
+zero. **Execution plane** — Cloud Run Jobs by default; GKE Autopilot for browser,
+GPU and workloads above 32 GiB.
+
+### Decisions worth knowing
+
+**Cloud Run Jobs is the primary backend, not Kubernetes.** The requirement was no
+preemption, no OOM kills, no restarts. Cloud Run has no nodes, no autoscaler and
+no node upgrades, so there is far less that can kill a job mid-run.
+
+**Spot is disabled everywhere.** Spot Pods cannot use GKE Autopilot's extended run
+time, so "Spot preferred" and "no preemption" are mutually exclusive. We chose
+no preemption.
+
+**`requests == limits`, no bursting.** Bursting past a request is exactly what
+gets a container OOM-killed under node pressure.
+
+**Resource classes were measured, not guessed.** One working Claude Code lane on
+the reference machine was `claude` 1.5 GB + `pytest` 0.8 GB + node/tsx 0.2 GB ≈
+2.5 GiB, so the classes are roughly double that. The worker exports peak RSS and
+peak disk per runner profile so the numbers get corrected from production.
+
+| class | vCPU | memory | workspace |
+|---|---|---|---|
+| `standard` | 4 | 8 GiB | ~4 GiB |
+| `browser` | 8 | 16 GiB | ~8 GiB |
+| `large` | 8 | 32 GiB | ~16 GiB |
+
+Workspaces are **memory-backed tmpfs, carved out of the class's memory** — not
+extra disk. Cloud Run's disk-backed ephemeral storage is Preview and the
+Terraform provider cannot express it (`empty_dir.medium` accepts only `MEMORY`).
+The upside is that this path is fully GA and supports live migration, which the
+Preview disk explicitly does not.
+
+### Multi-tenancy
+
+A tenant is a **Google group**, resolved through Cloud Identity, with a personal
+fallback tenant for anyone in no registered group. Each tenant gets its own
+service account, its own provider API keys in Secret Manager, its own GCS
+prefix, its own Cloud Run Job resources, and its own slot pools. Admission
+round-robins across tenants so one tenant cannot starve another.
+
+Authentication is a Google ID token restricted to a hosted domain. There is no
+shared platform bearer token: a shared secret carries no identity, and without
+identity there is no tenant to attribute a task to.
+
+## Current state
+
+**Proven on a live deployment:**
+
+- 188 Terraform resources apply cleanly; **zero deletions across every plan**
+- Google ID token auth, hosted-domain enforcement, tenant resolution
+- **Atomic admission** — `READY → LEASED` reserving every applicable pool in one
+  Firestore transaction, or none
+- Caller-supplied `image` and `command` rejected — callers pick a runner profile
+  by name and nothing else
+- **Dispatch** — a real Cloud Run Job execution created from an admitted lease
+- Leak recovery — the reconciler reclaims stranded leases and returns slots
+- 538 Python tests, 87 Terraform tests
+
+**Not yet working:**
+
+- **The worker container exits 1** with no logs. It is the one service that never
+  received the logging fix, so it fails silently for the same reason everything
+  else did.
+- **No task has reached `SUCCEEDED`.** The platform around the agent works; the
+  agent does not run yet.
+- **GKE Autopilot path is unexercised.** The reconciler cannot reach a private
+  control plane from Cloud Run without authorized-networks work.
+- **Firestore has no per-database IAM boundary.** IAM Conditions are not
+  evaluated on Firestore's data plane, and server SDKs bypass Security Rules. Any
+  swarm identity can reach any Firestore database in the project. Today there is
+  only one. See [`docs/security.md`](docs/security.md) — this is documented
+  honestly rather than claimed as solved.
 
 ## Quick start
 
 ```bash
-make prerequisites      # tools, credentials, APIs, shared-project guards
-make bootstrap          # state bucket, .env, terraform init
-make tf-plan            # READ THIS -- saga-agents-staging is a SHARED project
-make tf-apply
-make build push deploy  # Cloud Build -> scan -> promote by digest -> Cloud Run
-make smoke              # submit a mock task and prove it runs end to end
+cp .env.example .env          # set PROJECT_ID, REGION
+gcloud auth login && gcloud auth application-default login
+
+make bootstrap                # TF state bucket, APIs
+make infra                    # VPC, Firestore, IAM, Cloud Run, jobs
+make build && make push       # images via Cloud Build (never local Docker)
+make deploy
+make smoke
 ```
 
-Then register a tenant and give it a key:
+Submitting work:
 
 ```bash
-make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic
-./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
-make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic   # re-run to bind the secret
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+     -H "Content-Type: application/json" \
+     -X POST "$API_URL/v1/tasks" \
+     -d '{"runner_profile":"mock","input":{"prompt":"hello swarm"},"timeout_seconds":300}'
 ```
 
-That one command creates the tenant's service account, its IAM conditions, its
-Firestore documents, and — through `kubernetes/apply.sh` — its whole namespace
-with a default-deny NetworkPolicy, a ResourceQuota and Pod Security Admission
-labels. See [multi-tenancy.md](docs/multi-tenancy.md#1-what-a-tenant-owns).
-
-Day to day:
-
-```bash
-make status             # cluster, jobs, agents, queues, leases, pools, quota
-make logs               # recent control-plane logs, redacted
-make help               # every target
-```
-
----
-
-## What it does
-
-Submit a task naming a **runner profile**; the platform finds it capacity, runs
-it in an isolated per-tenant sandbox, checkpoints it every two minutes, and
-returns artifacts.
-
-```bash
-./scripts/api.sh POST /tasks '{
-  "runner_profile": "claude-code",
-  "repository_url": "https://github.com/acme/widgets",
-  "input": {"prompt": "Add tests for the retry path"}}'
-```
-
-`scripts/api.sh` calls the API as you, with a Google ID token that never reaches
-a command line. `curl -H "Authorization: Bearer $(gcloud auth
-print-identity-token)"` is the obvious one-liner and is unsafe: argv is
-world-readable through `/proc`, an ID token *is* the tenant identity, and it
-lands in shell history. See [security.md](docs/security.md#authentication).
-
-The caller chooses a profile **by name** and nothing else. Images, commands,
-resource specs and backends come from a frozen catalogue — which is what stops an
-authenticated caller turning the swarm into arbitrary compute.
-
-| Profile | Runs | Class | Backend |
-|---|---|---|---|
-| `mock` | a no-op, for smoke tests (no API key needed) | standard | Cloud Run Job |
-| `generic` | a plain command | standard | Cloud Run Job |
-| `claude-code` | Claude Code | standard | Cloud Run Job |
-| `codex` | Codex CLI | standard | Cloud Run Job |
-| `browser` | Playwright + Chromium | browser | GKE Autopilot |
-
----
-
-## Design decisions worth knowing up front
-
-These are departures from the original brief, each forced by "no preemption, no
-OOM kills, no restarts". [architecture.md](docs/architecture.md#5-deliberate-departures-from-the-original-design)
-has the full reasoning.
-
-* **Cloud Run Jobs is the primary backend, not GKE Autopilot.** Cloud Run has no
-  nodes, no autoscaler and no node upgrades, so it has far fewer mechanisms that
-  can end a running agent. Autopilot is kept for browser, GPU and >32 GiB work.
-* **Spot is disabled platform-wide.** Verified: Spot Pods cannot use Autopilot
-  extended run time, so "Spot preferred" and "no preemption" are mutually
-  exclusive. The frozen catalogue raises at import if a profile tries.
-* **requests == limits, no bursting.** Bursting past a request is exactly what
-  gets a container OOM-killed under node pressure.
-* **Resource classes were measured, not guessed.** One working Claude Code lane
-  on the reference machine was claude 1,532 MB + pytest 769 MB + node/tsx 207 MB
-  ≈ 2.5 GiB, so `standard` is 8 GiB — roughly 2x measured.
-* **A known risk, accepted deliberately:** Cloud Run ephemeral disk is Preview
-  and, per Google's docs, **disables live migration** — partially undermining the
-  reason Cloud Run was chosen for long jobs. Mandatory 120-second checkpointing
-  is the compensation, not a cure. See
-  [checkpointing.md](docs/checkpointing.md#the-tension-stated-plainly).
-* **Multi-tenant from V1.** A tenant is a Google group, with a personal fallback
-  tenant. Per-tenant service account, secrets, GCS prefix and namespace; tenants
-  bring their own provider keys.
-* **Auth is Google ID tokens restricted to `saga.xyz`. There is no shared
-  platform bearer token** — a shared secret carries no identity, and
-  multi-tenancy has to start at authentication.
-
----
-
-## Repository layout
-
-```
-apps/
-  common/swarm_common/   FROZEN domain contract -- import it, never edit it
-  swarm-api/             submission, tenancy, admin surface
-  scheduler/             bounded drain loop, fairness, dispatch
-  quota-broker/          AIMD provider concurrency control
-  reconciler/            detects and repairs control-plane/reality drift
-  agent-worker/          the process that runs an agent
-terraform/
-  bootstrap/             state bucket + GitHub WIF (local state, by necessity)
-  infra/                 ONE root; environments are tfvars against it
-  modules/               network, iam, firestore, storage, cloud_run, gke, ...
-  environments/<env>/    <env>.tfvars
-images/                  agent-runtime-base, agent-runtime-browser (digest-pinned)
-kubernetes/              namespaces, RBAC, network policies, worker templates
-scripts/                 the real operator interface; make targets wrap these
-docs/                    see below
-tests/                   unit (no cloud) and integration
-```
-
----
-
-## Documentation
-
-| Doc | Read it when |
-|---|---|
-| [architecture.md](docs/architecture.md) | you want the whole picture and the reasoning |
-| [concurrency.md](docs/concurrency.md) | limits, leases, fairness, the admission transaction |
-| [quota-management.md](docs/quota-management.md) | 429s, parking, AIMD |
-| [checkpointing.md](docs/checkpointing.md) | resume behaviour, and the Preview-disk risk |
-| [execution-backends.md](docs/execution-backends.md) | Cloud Run vs GKE, dispatch, adding a backend |
-| [multi-tenancy.md](docs/multi-tenancy.md) | tenants, groups, secrets, isolation |
-| [security.md](docs/security.md) | the threat model, in full |
-| [operations.md](docs/operations.md) | the day-to-day runbook |
-| [troubleshooting.md](docs/troubleshooting.md) | something is wrong right now |
-| [disaster-recovery.md](docs/disaster-recovery.md) | something is very wrong |
-| [scaling.md](docs/scaling.md) | growing the fleet; what binds first |
-| [cost-control.md](docs/cost-control.md) | the bill |
-| [versions.md](docs/versions.md) | exact pins, and why `$PATH` is not trusted |
-| [workflows.md](docs/workflows.md) | task DAGs, the local loop, CI/CD |
-| [CONTRACT.md](CONTRACT.md) | **before writing any code** |
-
----
-
-## Safety notes for this project
-
-`saga-agents-staging` is **shared**. It holds a live GKE cluster
-(`agents-staging`), a VPC (`agents-staging-vpc`) and 12 service accounts owned by
-other teams (promptlab, crawler, aipipeline, external-secrets,
-tournament-digest). Nothing here may touch them.
-
-* `make destroy` runs `terraform plan -destroy -json` and **aborts** unless every
-  resource marked for deletion carries `managed-by=swarm-terraform`. Unknown
-  unlabelable types are treated as offenders — it fails **closed**. It refuses in
-  prod without `--allow-prod`, ignores `SWARM_ASSUME_YES`, requires a typed
-  confirmation, and re-verifies afterwards that every shared resource still
-  exists. Verify the guard itself with `./scripts/destroy.sh --self-test`.
-* `make purge-data` deletes runtime data only, exports Firestore first, and
-  refuses the `(default)` database and every deny-listed bucket.
-* `scripts/configure-kubectl.sh` writes an **isolated** kubeconfig and refuses to
-  fetch credentials for another team's cluster.
-* Firestore is the named database `swarm`, never `(default)`.
-
-Workstation specifics that are not optional:
-
-* **Images build with Cloud Build**, never the local Docker daemon — this Mac is
-  arm64, the targets are amd64, and the local daemon is broken.
-* **kubectl is resolved explicitly.** Older binaries win `$PATH` here and an old
-  client silently drops manifest fields it does not understand.
-* The scripts are written for **bash 3.2** (what macOS ships) and the interactive
-  shell is **zsh**, which does not word-split unquoted variables.
-
----
+`make destroy` is **label-scoped**: it aborts if the plan would delete anything
+lacking `managed-by=swarm-terraform`, because the target project is shared.
 
 ## Development
 
 ```bash
-make dev                # Firestore emulator + seeded pools + the API
-make test               # unit tests, terraform tests, guard self-tests. No cloud.
-make lint               # shellcheck, doc links, terraform fmt/validate, tflint, manifests
-make security           # checkov over terraform and the rendered manifests, trivy
+make test                     # 538 python + 87 terraform tests
+make lint                     # tflint, checkov, trivy, shellcheck
+uv run python scripts/dev/drive.py state      # dump live control-plane state
+uv run python scripts/dev/drive.py drain      # one scheduler pass, locally
+uv run python scripts/dev/drive.py reconcile  # one reconciliation pass
 ```
 
-`make test` is offline: unit tests, the destroy-guard and plan-guard self-tests,
-the frozen-contract parity check, and 86 `terraform test` assertions against a
-mock provider. No credentials, no emulator, nothing created.
+`scripts/dev/drive.py` runs the real scheduler and reconciler in-process against
+the real Firestore. Deploying to diagnose costs about eight minutes per
+iteration; this costs seconds, and it is how most of the integration bugs in this
+repository were found.
 
-CI (`.github/workflows/`) authenticates to GCP with Workload Identity
-Federation; there are **no downloadable service account keys**. Production
-applies require manual approval through a GitHub Environment.
+CI runs on every push to `main`: unit and integration tests, shellcheck,
+Kubernetes manifest rendering, `terraform fmt/validate/test`, tflint, checkov,
+trivy and secret scanning. Deployments require Workload Identity Federation and
+a manual environment approval — no downloadable service-account keys exist.
 
----
+## Documentation
+
+[`architecture`](docs/architecture.md) · [`concurrency`](docs/concurrency.md) ·
+[`quota management`](docs/quota-management.md) ·
+[`checkpointing`](docs/checkpointing.md) ·
+[`multi-tenancy`](docs/multi-tenancy.md) · [`security`](docs/security.md) ·
+[`operations`](docs/operations.md) · [`cost control`](docs/cost-control.md) ·
+[`troubleshooting`](docs/troubleshooting.md)
+
+[`CONTRACT.md`](CONTRACT.md) holds the invariants every component must respect.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
-
----
-
-**Correction (workspace storage).** This platform does NOT use Cloud Run ephemeral
-disk. The Terraform google provider cannot express it (`empty_dir.medium` accepts
-only `"MEMORY"`), so workspaces are memory-backed tmpfs and the deployment runs on
-the fully-GA path, which DOES support live migration.
-
-Mandatory periodic checkpointing therefore remains required, but for different
-reasons than originally written: a worker can still lose its attempt to a quota
-park-and-exit, a cancellation, a reconciler reclaim of a stale generation, or an
-ordinary crash. Checkpointing is what makes any of those cost minutes instead of
-the whole attempt. Do not relax it on the grounds that live migration is now
-available — migration covers infrastructure moves, not the application-level
-interruptions above.
+MIT — see [LICENSE](LICENSE).

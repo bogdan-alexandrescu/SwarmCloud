@@ -69,7 +69,15 @@ check() {
     return 0
   fi
 
-  if ! "${KB}" apply --dry-run=client -f "${out}" -o name >"${WORK}/names" 2>&1; then
+  # --validate=false because `--dry-run=client` STILL fetches the OpenAPI schema
+  # from a live cluster, and CI has none: it fails with
+  # `failed to download openapi: Get "http://localhost:8080/openapi/v2"`.
+  # Locally it passes only when the kubeconfig happens to point somewhere
+  # reachable, which made this green on a laptop and red in CI. What remains is
+  # structural validation -- parseable YAML, apiVersion/kind/metadata present --
+  # and the assertions below, which check the security context properties that a
+  # schema check would not catch anyway.
+  if ! "${KB}" apply --dry-run=client --validate=false -f "${out}" -o name >"${WORK}/names" 2>&1; then
     err "${description}:"
     sed 's/^/    /' <"${WORK}/names" >&2
     FAILED=1

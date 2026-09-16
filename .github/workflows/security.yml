@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -63,7 +63,7 @@ jobs:
         # --ignore-unfixed on purpose: failing a build for a vulnerability with
         # no available fix teaches people to ignore the build, and the finding is
         # still recorded in the Security tab above.
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .

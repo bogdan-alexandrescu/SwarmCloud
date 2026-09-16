@@ -219,11 +219,23 @@ jobs:
           set -euo pipefail
           gcloud emulators firestore start --host-port=127.0.0.1:8080 \
             --database-mode=firestore-native >/tmp/emulator.log 2>&1 &
-          for _ in $(seq 1 60); do
-            curl -sS -m 2 -o /dev/null "http://127.0.0.1:8080/" && break
+          # Wait on the PORT, not on an HTTP response: the emulator does not
+          # serve a useful document at "/", and curl's exit 7 was the only signal
+          # the old loop ever saw. 120s because a cold JVM start on a CI runner
+          # is routinely slower than 60s.
+          ready=0
+          for _ in $(seq 1 120); do
+            if (echo >/dev/tcp/127.0.0.1/8080) >/dev/null 2>&1; then ready=1; break; fi
             sleep 1
           done
-          curl -sS -m 2 -o /dev/null "http://127.0.0.1:8080/" || { cat /tmp/emulator.log; exit 1; }
+          # ALWAYS show the log on failure. The old version piped it to a file and
+          # then exited on the curl, so CI reported "connection refused" 60 times
+          # and never once printed why the emulator had not started.
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::Firestore emulator did not bind 127.0.0.1:8080 within 120s"
+            cat /tmp/emulator.log || true
+            exit 1
+          fi
           export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
           if [ -d tests/integration ] && ls tests/integration/test_*.py >/dev/null 2>&1; then
             uv run pytest tests/integration -q
