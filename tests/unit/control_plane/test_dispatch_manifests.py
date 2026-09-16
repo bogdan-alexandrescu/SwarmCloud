@@ -1,4 +1,8 @@
-"""What the dispatchers actually ask the platform to create.
+"""NOTE: job names carry the "job" segment because terraform/infra/locals.tf
+creates them as `${name_prefix}-job-${tenant}-${profile}`. The dispatcher must
+match exactly; see tests/unit/control_plane/test_job_name_matches_terraform.py.
+
+What the dispatchers actually ask the platform to create.
 
 No network here: the real `run_v2` protobuf types and the real manifest builder
 run, and the assertions are about the resource that would be submitted. These
@@ -93,7 +97,7 @@ def make_lease(task: Task) -> Lease:
 # -- naming ---------------------------------------------------------------
 
 def test_names_are_cloud_run_and_k8s_safe():
-    assert job_id_for("eng", "claude-code") == "swarm-eng-claude-code"
+    assert job_id_for("eng", "claude-code") == "swarm-job-eng-claude-code"
     assert sanitize_name("Swarm", "TEAM_Alpha", "codex") == "swarm-team-alpha-codex"
     long = sanitize_name("swarm", "x" * 200, "browser")
     assert len(long) <= 63 and long[0].isalpha()
@@ -232,7 +236,7 @@ def test_the_job_is_created_once_per_tenant_and_profile(settings, tenant):
     dispatcher.dispatch(task=task, lease=lease, profile=profile, tenant=tenant)
 
     assert len(client.created) == 1, "the Job resource is reused across executions"
-    assert client.created[0]["job_id"] == "swarm-eng-claude-code"
+    assert client.created[0]["job_id"] == "swarm-job-eng-claude-code"
     assert len(client.runs) == 2
 
 
@@ -425,12 +429,12 @@ def test_an_overridden_class_gets_its_own_cloud_run_job(settings, tenant):
     at the profile's full size anyway -- capacity reserved against a pool that
     does not govern the workload, at the wrong weight.
     """
-    assert job_id_for("eng", "browser") == "swarm-eng-browser"
-    assert job_id_for("eng", "browser", "browser") == "swarm-eng-browser", (
+    assert job_id_for("eng", "browser") == "swarm-job-eng-browser"
+    assert job_id_for("eng", "browser", "browser") == "swarm-job-eng-browser", (
         "the profile's own class is the common case and keeps one Job per "
         "(tenant, profile)"
     )
-    assert job_id_for("eng", "browser", "standard") == "swarm-eng-browser-standard"
+    assert job_id_for("eng", "browser", "standard") == "swarm-job-eng-browser-standard"
 
     client = FakeJobsClient()
     dispatcher = CloudRunJobDispatcher(settings, client=client)
@@ -439,8 +443,8 @@ def test_an_overridden_class_gets_its_own_cloud_run_job(settings, tenant):
         dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
 
     assert [job["job_id"] for job in client.created] == [
-        "swarm-eng-browser",
-        "swarm-eng-browser-standard",
+        "swarm-job-eng-browser",
+        "swarm-job-eng-browser-standard",
     ]
 
 

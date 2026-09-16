@@ -281,17 +281,19 @@ locals {
       GKE_CA_CERT_B64   = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
       ARTIFACT_REGISTRY = var.artifact_registry_repository
       IMAGE_BASE        = local.image_base
+      # The agent runtime images carry the same immutable git-SHA tag as the
+      # control plane. Without this the dispatcher asked for ":latest", which
+      # scripts/build-images.sh never pushes, so every dispatch failed with
+      # `404 Image '...agent-runtime-base:latest' not found` and the task was
+      # left holding a lease.
+      WORKER_IMAGE_TAG = var.image_tag
     })
     "swarm-quota-broker" = local.common_env
     "swarm-reconciler" = merge(local.common_env, {
-      GKE_CLUSTER  = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
-      GKE_LOCATION = var.region
-      # The agent runtime images carry the same immutable git-SHA tag as the
-      # control plane. Without this the dispatcher asked for ":latest", which
-      # scripts/build-images.sh never pushes, and every dispatch 404'd.
-      WORKER_IMAGE_TAG = var.image_tag
-      GKE_ENDPOINT     = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
-      GKE_CA_CERT_B64  = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
+      GKE_CLUSTER     = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
+      GKE_LOCATION    = var.region
+      GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
+      GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
     })
   }
 }

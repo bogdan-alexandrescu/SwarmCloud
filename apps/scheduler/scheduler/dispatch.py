@@ -175,12 +175,20 @@ def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = N
     Job resource and cannot override them per execution -- so without this the
     smaller class would be charged for at admission and then run in the profile's
     full-size container anyway.
+
+    The "job" segment is NOT decoration: terraform/infra/locals.tf names these
+    `${name_prefix}-job-${tenant}-${profile}`, and this must match exactly. It
+    did not -- the dispatcher asked for `swarm-u-bogdan-mock` while terraform had
+    created `swarm-job-u-bogdan-mock` -- so every dispatch 404'd and the
+    dispatcher then created its OWN job under the wrong name. Those jobs carry no
+    `managed-by=swarm-terraform` label, which means scripts/destroy.sh would
+    refuse to run at all rather than delete an unlabelled resource.
     """
     profile = RUNNER_PROFILES.get(profile_name)
     default_class = profile.resource_class if profile else None
     if resource_class and resource_class != default_class:
-        return sanitize_name("swarm", tenant_id, profile_name, resource_class)
-    return sanitize_name("swarm", tenant_id, profile_name)
+        return sanitize_name("swarm", "job", tenant_id, profile_name, resource_class)
+    return sanitize_name("swarm", "job", tenant_id, profile_name)
 
 
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
