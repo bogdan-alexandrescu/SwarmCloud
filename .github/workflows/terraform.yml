@@ -14,6 +14,11 @@
 name: terraform
 
 on:
+  # Also on main, so a direct push is tested too. Without this the suite only
+  # ever ran on pull requests, and a repository whose history landed straight
+  # on main had never run its own tests once.
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "terraform/**"
