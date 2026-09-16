@@ -123,7 +123,11 @@ tenants = {
     kind           = "user"
     principal      = "bogdan@saga.xyz"
     display_name   = "Bogdan (personal)"
-    providers      = []
+    # Declaring a provider creates the tenant's OWN Secret Manager container and
+    # its claude-code Cloud Run Job. The key material is not managed here:
+    # scripts/create-secrets.sh adds versions, so no plaintext ever reaches the
+    # Terraform state file, which several teams can read.
+    providers      = ["anthropic"]
     max_active     = 2
     capacity_units = 4
   }
