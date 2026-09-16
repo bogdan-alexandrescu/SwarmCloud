@@ -200,3 +200,87 @@ run "artifacts_must_outlive_the_investigation_that_needs_them" {
 
   expect_failures = [var.artifact_retention_days]
 }
+
+# -- the long-lived half of a subscription credential ----------------------
+#
+# A refresh token is a standing grant on the tenant's Claude account; an access
+# token expires. The whole point of splitting them is that a job holds only the
+# expiring one, so a prompt-injected agent cannot walk out with durable access.
+# These assertions are that split, stated as a test.
+
+run "a_worker_cannot_read_the_refresh_token_it_runs_on" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/secret_manager"
+  }
+
+  variables {
+    enable_subscription_refresh = true
+    refresher_member            = "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
+    tenant_secrets = {
+      "u-bogdan" = {
+        providers     = ["anthropic"]
+        accessor      = "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com"
+        admin_members = ["group:platform@saga.xyz"]
+      }
+    }
+  }
+
+  assert {
+    condition = google_secret_manager_secret_iam_binding.refresh_accessor["swarm-tenant-u-bogdan-anthropic-refresh"].members == toset([
+      "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
+    ])
+    error_message = "only the broker may read a refresh token; a worker that could read one could mint itself credentials after its job ended"
+  }
+
+  # The broker writes both halves: the rotated refresh token back to the
+  # sibling, and the access token it exchanged for into the base secret.
+  assert {
+    condition = alltrue([
+      for id in ["swarm-tenant-u-bogdan-anthropic", "swarm-tenant-u-bogdan-anthropic-refresh"] :
+      contains(google_secret_manager_secret_iam_binding.version_adder[id].members,
+      "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com")
+    ])
+    error_message = "the broker must be able to add a version to both halves, or a refreshed credential has nowhere to go"
+  }
+
+  # Discovery reads labels rather than splitting the name, because `u-bogdan`
+  # contains a dash and the name does not split unambiguously.
+  assert {
+    condition = (
+      google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].labels["tenant"] == "u-bogdan" &&
+      google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].labels["provider"] == "anthropic" &&
+      google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].labels["component"] == "tenant-credential"
+    )
+    error_message = "the broker discovers tenants by label; without these it cannot find this secret"
+  }
+
+  # Same protection as the base secret. It is the more sensitive of the two.
+  assert {
+    condition     = google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].version_destroy_ttl == "86400s"
+    error_message = "a refresh token destroyed by mistake must be recoverable for as long as a provider key is"
+  }
+}
+
+run "an_api_key_only_deployment_grows_no_refresh_secrets" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/secret_manager"
+  }
+
+  variables {
+    tenant_secrets = {
+      eng = {
+        providers = ["anthropic"]
+        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      }
+    }
+  }
+
+  assert {
+    condition     = length(google_secret_manager_secret.refresh) == 0
+    error_message = "refresh secrets exist only where a refresher does"
+  }
+}

@@ -228,6 +228,12 @@ module "secret_manager" {
     }
   }
 
+  # One writer, and this is it. See the variable's own description, and
+  # quota_broker.credentials, for why a second one corrupts a rotating
+  # credential rather than merely duplicating work.
+  enable_subscription_refresh = true
+  refresher_member            = module.iam.service_account_members["swarm-quota-broker"]
+
   labels = local.labels
 
   depends_on = [module.project_services]

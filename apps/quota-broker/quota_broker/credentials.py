@@ -41,7 +41,18 @@ REFRESH_SUFFIX = "-refresh"
 
 
 class SecretStore(Protocol):
-    def access(self, name: str) -> str: ...
+    def access(self, name: str) -> str:
+        """Return the latest version's payload.
+
+        Raises `KeyError` -- and only `KeyError` -- when the secret does not
+        exist or holds no enabled version. Every other failure must raise
+        something else, because the two mean opposite things here: a missing
+        refresh secret is an ordinary tenant using a static API key, while a
+        Secret Manager outage is an incident. If both arrived as the same
+        exception, an outage would read as "no subscription tenants" and the
+        sweep would report success while refreshing nothing.
+        """
+
     def add_version(self, name: str, payload: str) -> None: ...
 
 
@@ -86,18 +97,30 @@ class CredentialRefresher:
 
         try:
             stored = self._store.access(refresh_secret)
-        except Exception:
+        except KeyError:
             # No refresh secret at all is the NORMAL case for a tenant using a
             # static API key or a setup-token. Not an error, and not something to
             # log noisily on every sweep.
             return RefreshOutcome(tenant_id, provider, False, "no_refresh_credential")
+        except Exception as exc:
+            # Anything else is the store failing, not the tenant lacking a
+            # credential. Reported separately so a broken sweep is visible.
+            self._log.warning(
+                "could not read the refresh credential",
+                extra={
+                    "tenant_id": tenant_id,
+                    "provider": provider,
+                    "error": type(exc).__name__,
+                },
+            )
+            return RefreshOutcome(tenant_id, provider, False, "store_unavailable")
 
         try:
             credential = parse_credential(stored, now=now)
         except CredentialError as exc:
             self._log.warning(
                 "stored subscription credential is unusable",
-                tenant_id=tenant_id, provider=provider, error=str(exc),
+                extra={"tenant_id": tenant_id, "provider": provider, "error": str(exc)},
             )
             return RefreshOutcome(tenant_id, provider, False, "unreadable")
 
@@ -112,33 +135,36 @@ class CredentialRefresher:
             # Terminal. Say so once, loudly, and stop.
             self._log.error(
                 "subscription credential needs a human; tasks will park",
-                tenant_id=tenant_id, provider=provider, error=str(exc),
+                extra={"tenant_id": tenant_id, "provider": provider, "error": str(exc)},
             )
             return RefreshOutcome(tenant_id, provider, False, "reauth_required")
         except CredentialError as exc:
             self._log.warning(
                 "credential refresh failed; will retry on the next sweep",
-                tenant_id=tenant_id, provider=provider, error=str(exc),
+                extra={"tenant_id": tenant_id, "provider": provider, "error": str(exc)},
             )
             return RefreshOutcome(tenant_id, provider, False, "refresh_failed")
 
         # ORDER IS THE SAFETY PROPERTY. Persist the means of getting more
         # credentials before the credentials themselves.
+        # Written on EVERY refresh, not only when the token rotates: this
+        # payload also carries the new expiry, and the next sweep reads its
+        # expiry to decide whether to refresh. Skipping the write when the
+        # endpoint returns the same refresh token would leave a stale expiry
+        # behind and refresh again on every tick, forever.
+        self._store.add_version(refresh_secret, serialise(fresh))
         if fresh.refresh_token != credential.refresh_token:
-            self._store.add_version(refresh_secret, serialise(fresh))
             self._log.info(
                 "refresh token rotated and persisted",
-                tenant_id=tenant_id, provider=provider,
+                extra={"tenant_id": tenant_id, "provider": provider},
             )
-        else:
-            self._store.add_version(refresh_secret, serialise(fresh))
 
         # Only now the short-lived half the worker actually mounts.
         self._store.add_version(base, fresh.access_token)
 
         self._log.info(
             "subscription credential refreshed",
-            tenant_id=tenant_id, provider=provider, **fresh.redacted(),
+            extra={"tenant_id": tenant_id, "provider": provider, **fresh.redacted()},
         )
         return RefreshOutcome(tenant_id, provider, True, "refreshed", fresh.expires_at)
 
@@ -151,7 +177,11 @@ class CredentialRefresher:
             except Exception as exc:  # one tenant must not stop the sweep
                 self._log.error(
                     "credential sweep raised for a tenant",
-                    tenant_id=tenant_id, provider=provider, error=type(exc).__name__,
+                    extra={
+                        "tenant_id": tenant_id,
+                        "provider": provider,
+                        "error": type(exc).__name__,
+                    },
                 )
                 outcomes.append(RefreshOutcome(tenant_id, provider, False, "error"))
         return outcomes

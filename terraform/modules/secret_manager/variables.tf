@@ -60,3 +60,50 @@ variable "deletion_protection" {
 variable "labels" {
   type = map(string)
 }
+
+variable "enable_subscription_refresh" {
+  description = <<-EOT
+    Whether to create the `-refresh` siblings at all.
+
+    Separate from `refresher_member` for a plan-time reason, not a stylistic
+    one: the member is a service account email produced by another module, so
+    its VALUE is unknown until apply, and `var.refresher_member != ""` is
+    therefore also unknown. A for_each key set derived from it cannot be
+    planned. The bool is known statically, so the set of secrets is known
+    statically, and only the members inside each binding are resolved late.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "refresher_member" {
+  description = <<-EOT
+    The quota broker, which is the platform's SINGLE writer of subscription
+    credentials. Empty disables the whole mechanism.
+
+    Setting it creates a `<secret_id>-refresh` sibling for every tenant/provider
+    pair, holding the long-lived half of a Claude subscription credential. The
+    broker exchanges it for a short-lived access token and publishes that to the
+    base secret, which is the only half a worker ever mounts.
+
+    The sibling is deliberately NOT readable by the tenant's worker: a refresh
+    token is a standing grant on the tenant's Claude account, while an access
+    token expires. Giving a job the refresh token would let a prompt-injected
+    agent walk out with durable account access.
+
+    One writer is not a simplification. Refresh tokens ROTATE, so two refreshers
+    racing would each invalidate the other's token and lock the tenant out.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.refresher_member == "" || startswith(var.refresher_member, "serviceAccount:")
+    error_message = "the credential refresher must be a service account."
+  }
+
+  validation {
+    condition     = !var.enable_subscription_refresh || var.refresher_member != ""
+    error_message = "enable_subscription_refresh needs a refresher_member; otherwise the refresh secrets would be created with nobody able to read them."
+  }
+}

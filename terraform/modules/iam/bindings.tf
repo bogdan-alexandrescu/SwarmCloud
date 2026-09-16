@@ -63,6 +63,7 @@ locals {
   custom_roles = {
     job_dispatcher = "projects/${var.project_id}/roles/${google_project_iam_custom_role.job_dispatcher.role_id}"
     job_reaper     = "projects/${var.project_id}/roles/${google_project_iam_custom_role.job_reaper.role_id}"
+    secret_lister  = "projects/${var.project_id}/roles/${google_project_iam_custom_role.secret_lister.role_id}"
     gke_dispatcher = var.gke_enabled ? "projects/${var.project_id}/roles/${google_project_iam_custom_role.gke_dispatcher[0].role_id}" : ""
     gke_reaper     = var.gke_enabled ? "projects/${var.project_id}/roles/${google_project_iam_custom_role.gke_reaper[0].role_id}" : ""
   }
@@ -89,6 +90,10 @@ locals {
         # Reads its own metrics to drive the adaptive target. No write access to
         # anything outside Firestore.
         "roles/monitoring.viewer",
+        # Discovers which tenants hold a subscription credential. Metadata only;
+        # the ability to READ one is granted per-secret by the secret_manager
+        # module, and only on the refresh secrets.
+        local.custom_roles.secret_lister,
       ])
       "swarm-reconciler" = concat(local.telemetry_roles, [
         local.custom_roles.job_reaper,

@@ -117,3 +117,25 @@ resource "google_project_iam_custom_role" "gke_reaper" {
     "container.events.list",
   ]
 }
+
+resource "google_project_iam_custom_role" "secret_lister" {
+  project = var.project_id
+  role_id = "swarmSecretLister${local.role_suffix}"
+  title   = "Swarm Secret Lister"
+
+  description = "List secret METADATA project-wide. Cannot read any payload."
+  stage       = "GA"
+
+  # The quota broker must discover which tenants hold a subscription
+  # credential, and discovery is a list. roles/secretmanager.viewer would do it,
+  # but it also grants versions.list and versions.get across every secret in the
+  # project, including secrets belonging to teams that have nothing to do with
+  # this platform. This is the single permission discovery actually needs.
+  #
+  # Absent, and deliberately: secretmanager.versions.access. Payload access
+  # stays per-secret, granted by the secret_manager module on the specific
+  # refresh secrets, so a bug here cannot widen into reading tenant keys.
+  permissions = [
+    "secretmanager.secrets.list",
+  ]
+}

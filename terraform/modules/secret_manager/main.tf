@@ -28,8 +28,29 @@ locals {
     ]) : pair.secret_id => pair
   }
 
+  refresher_enabled = var.enable_subscription_refresh
+
+  # The long-lived half. One per tenant/provider pair, created empty: a tenant
+  # on a static API key simply never has a version added, and the broker's
+  # sweep skips it. That keeps "this tenant uses a subscription" an operator
+  # action (scripts/create-secrets.sh --subscription) rather than a terraform
+  # change, which matters because the two are done by different people at
+  # different times.
+  refresh_secrets = local.refresher_enabled ? {
+    for k, v in local.secrets : "${k}-refresh" => v
+  } : {}
+
+  # The broker publishes the short-lived half into the BASE secret, so it needs
+  # versionAdder there too -- but never accessor. It writes access tokens; it
+  # has no reason to read back the one already in place.
+  #
+  # The condition is structural on purpose -- it asks whether the refresher is
+  # enabled, never what its email is. Filtering on the member's VALUE would make
+  # these keys unknown until apply, and an unknown for_each key set cannot be
+  # planned at all.
   admin_grants = {
-    for k, v in local.secrets : k => v if length(v.admin_members) > 0
+    for k, v in merge(local.secrets, local.refresh_secrets) : k => v
+    if local.refresher_enabled || length(v.admin_members) > 0
   }
 }
 
@@ -60,9 +81,18 @@ resource "google_secret_manager_secret" "this" {
   version_destroy_ttl = var.version_destroy_ttl
   deletion_protection = var.deletion_protection
 
+  # `component`/`tenant`/`provider` are the same keys scripts/create-secrets.sh
+  # writes, and the broker's discovery reads them rather than taking the secret
+  # name apart -- `swarm-tenant-u-bogdan-anthropic-refresh` does not split
+  # unambiguously, because personal tenant ids are `u-<user>` and contain a
+  # dash. Two provisioning paths that label differently would make half the
+  # fleet invisible to the refresher, so they are kept identical here.
   labels = merge(var.labels, {
     "swarm-tenant"   = each.value.tenant_id
     "swarm-provider" = each.value.provider
+    "component"      = "tenant-credential"
+    "tenant"         = each.value.tenant_id
+    "provider"       = each.value.provider
   })
 
   annotations = {
@@ -91,8 +121,72 @@ resource "google_secret_manager_secret_iam_binding" "accessor" {
 resource "google_secret_manager_secret_iam_binding" "version_adder" {
   for_each = local.admin_grants
 
+  project = var.project_id
+  secret_id = contains(keys(local.refresh_secrets), each.key) ? (
+    google_secret_manager_secret.refresh[each.key].secret_id
+  ) : google_secret_manager_secret.this[each.key].secret_id
+  role = "roles/secretmanager.secretVersionAdder"
+  members = distinct(concat(
+    each.value.admin_members,
+    local.refresher_enabled ? [var.refresher_member] : [],
+  ))
+}
+
+# -- the long-lived half ---------------------------------------------------
+#
+# Same replication, CMEK and destroy-delay as the base secret: it is strictly
+# MORE sensitive, being a standing grant on the tenant's Claude account rather
+# than a token that expires.
+
+resource "google_secret_manager_secret" "refresh" {
+  for_each = local.refresh_secrets
+
   project   = var.project_id
-  secret_id = google_secret_manager_secret.this[each.key].secret_id
-  role      = "roles/secretmanager.secretVersionAdder"
-  members   = each.value.admin_members
+  secret_id = each.key
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+
+        dynamic "customer_managed_encryption" {
+          for_each = var.kms_key_name == "" ? [] : [var.kms_key_name]
+          content {
+            kms_key_name = customer_managed_encryption.value
+          }
+        }
+      }
+    }
+  }
+
+  version_destroy_ttl = var.version_destroy_ttl
+  deletion_protection = var.deletion_protection
+
+  labels = merge(var.labels, {
+    "swarm-tenant"   = each.value.tenant_id
+    "swarm-provider" = each.value.provider
+    "component"      = "tenant-credential"
+    "tenant"         = each.value.tenant_id
+    "provider"       = each.value.provider
+  })
+
+  annotations = {
+    "swarm-populated-by" = "out-of-band"
+  }
+
+  lifecycle {
+    ignore_changes = [annotations["swarm-last-rotated"]]
+  }
+}
+
+# The tenant's worker is ABSENT from this list on purpose, and that absence is
+# the isolation property: a job can use the subscription for as long as its
+# access token lives, and cannot mint itself a new one afterwards.
+resource "google_secret_manager_secret_iam_binding" "refresh_accessor" {
+  for_each = local.refresh_secrets
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.refresh[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  members   = [var.refresher_member]
 }

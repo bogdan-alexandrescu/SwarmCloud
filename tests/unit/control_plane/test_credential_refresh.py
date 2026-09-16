@@ -9,10 +9,14 @@ concurrently, each would invalidate the others.
 
 from __future__ import annotations
 
+import itertools
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from swarm_common.logging_setup import CloudLoggingFormatter
 
 from quota_broker.credentials import CredentialRefresher, REFRESH_SUFFIX
 from quota_broker.oauth import (
@@ -29,11 +33,47 @@ BASE = "swarm-tenant-eng-anthropic"
 REFRESH_SECRET = BASE + REFRESH_SUFFIX
 
 
+class _Capture(logging.Handler):
+    """A REAL logging handler behind a REAL logging.Logger.
+
+    Deliberately not a duck-typed fake. A fake that accepts `**kwargs` makes
+    structlog-style calls -- `log.info("x", tenant_id=t)` -- pass here and raise
+    TypeError in production, where the logger is a plain logging.Logger. The
+    same fake also hides a reserved `extra=` key, which stdlib rejects with
+    "Attempt to overwrite 'x' in LogRecord" only when a real record is built.
+    Both are exactly the seam this module cannot afford: it runs on a timer,
+    and a crash inside it is a tenant quietly losing its credential.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[str] = []
+        self._formatter = CloudLoggingFormatter()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(self._formatter.format(record))
+
+
+_LOGGER_SEQ = itertools.count()
+
+
 class _Log:
-    def __init__(self): self.records = []
-    def info(self, m, **k): self.records.append(("info", m, k))
-    def warning(self, m, **k): self.records.append(("warning", m, k))
-    def error(self, m, **k): self.records.append(("error", m, k))
+    """Adapter so a test can say `log.records` and get what was really emitted."""
+
+    def __init__(self) -> None:
+        self._logger = logging.getLogger(f"test.credentials.{next(_LOGGER_SEQ)}")
+        self._logger.handlers = []
+        self._logger.propagate = False
+        self._logger.setLevel(logging.DEBUG)
+        self._capture = _Capture()
+        self._logger.addHandler(self._capture)
+
+    @property
+    def records(self) -> list[str]:
+        return self._capture.records
+
+    def __getattr__(self, name: str):
+        return getattr(self._logger, name)
 
 
 class _Store:
@@ -164,7 +204,7 @@ def test_invalid_grant_stops_rather_than_retrying():
     out = _refresher(store, ep, log).refresh_tenant("eng", "anthropic")
     assert out.reason == "reauth_required"
     assert store.writes == []
-    assert any(lvl == "error" for lvl, _, _ in log.records)
+    assert any(json.loads(r)["severity"] == "ERROR" for r in log.records)
 
 
 def test_a_transient_failure_is_retried_next_sweep_not_escalated():
@@ -190,9 +230,9 @@ def test_logs_and_outcomes_never_carry_token_material():
                     "expires_in": 3600})
     log = _Log()
     out = _refresher(store, ep, log).refresh_tenant("eng", "anthropic")
-    blob = json.dumps([out.as_dict(), [(l, m, {k: str(v) for k, v in kw.items()})
-                                       for l, m, kw in log.records]])
+    blob = json.dumps([out.as_dict(), log.records])
     assert "SUPERSECRET" not in blob and "ALSOSECRET" not in blob
+    assert log.records, "the refresh path must say something, or nothing is observable"
 
 
 def test_serialise_round_trips():

@@ -28,6 +28,9 @@ from swarm_common.models import ProviderState, QuotaState
 from swarm_common.profiles import RUNNER_PROFILES
 
 from .aimd import quota_derived_limit_for
+from .credentials import CredentialRefresher
+from .oauth import HttpTokenEndpoint
+from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
 from .settings import BrokerSettings
 
@@ -205,6 +208,13 @@ class WorkerIdentity:
         return match.group("tenant"), False
 
 
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _known_provider(provider: str) -> str:
     providers = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
     name = provider.strip().lower()
@@ -243,6 +253,8 @@ def create_app(
     *,
     identity: WorkerIdentity | None = None,
     metrics: BrokerMetrics | None = None,
+    credential_refresher: CredentialRefresher | None = None,
+    subscription_tenants: Any | None = None,
 ) -> FastAPI:
     app = FastAPI(title="swarm quota broker", version="0.1.0")
     app.state.broker = broker if broker is not None else build_broker()
@@ -260,6 +272,27 @@ def create_app(
         project_id=os.environ.get("PROJECT_ID", ""),
         hardened=environment not in {"dev", "test", "local"},
     )
+
+    # This service is the platform's single writer of subscription credentials.
+    # See quota_broker.credentials for why exactly one writer is required; the
+    # refresh runs on the existing sweep tick rather than a timer of its own,
+    # so there is no second thing to schedule, monitor or forget.
+    refresher, tenants = credential_refresher, subscription_tenants
+    if refresher is None and _flag("CREDENTIAL_REFRESH_ENABLED", True):
+        project_id = os.environ.get("PROJECT_ID", "").strip()
+        if project_id:
+            store = SecretManagerStore(project_id)
+            refresher = CredentialRefresher(store, HttpTokenEndpoint(), logger=log)
+            if tenants is None:
+                tenants = store.subscription_tenants
+        else:
+            log.warning(
+                "PROJECT_ID is unset, so subscription credentials will not be "
+                "refreshed; tenants using a Claude subscription will stop "
+                "working when their access token expires"
+            )
+    app.state.credential_refresher = refresher
+    app.state.subscription_tenants = tenants or (lambda: [])
 
     def _authorize(request: Request, authorization: str | None, tenant_id: str) -> str:
         """Confirm the caller may speak for `tenant_id`."""
@@ -436,15 +469,27 @@ def create_app(
         # is a no-op.
         refresher = getattr(request.app.state, "credential_refresher", None)
         if refresher is not None:
-            pairs = request.app.state.subscription_tenants()
-            outcomes = refresher.sweep(pairs)
-            result["credentials"] = {
-                "examined": len(outcomes),
-                "refreshed": sum(1 for o in outcomes if o.refreshed),
-                "reauth_required": [
-                    o.tenant_id for o in outcomes if o.reason == "reauth_required"
-                ],
-            }
+            # Credential refresh must never take the quota sweep down with it.
+            # The sweep is what un-parks throttled tenants; if a Secret Manager
+            # permission error could 500 this endpoint, one broken credential
+            # would stall every tenant's quota recovery.
+            try:
+                pairs = request.app.state.subscription_tenants()
+                outcomes = refresher.sweep(pairs)
+            except Exception as exc:
+                log.error(
+                    "subscription credential sweep failed",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+                )
+                result["credentials"] = {"error": type(exc).__name__}
+            else:
+                result["credentials"] = {
+                    "examined": len(outcomes),
+                    "refreshed": sum(1 for o in outcomes if o.refreshed),
+                    "reauth_required": [
+                        o.tenant_id for o in outcomes if o.reason == "reauth_required"
+                    ],
+                }
         return result
 
     return app
