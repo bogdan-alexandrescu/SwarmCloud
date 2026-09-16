@@ -12,6 +12,7 @@ to a personal tenant so nobody is ever hard-blocked from the platform.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -31,22 +32,56 @@ class Principal:
 _TENANT_SAFE = re.compile(r"[^a-z0-9-]+")
 
 
-def tenant_id_for_group(group_email: str) -> str:
-    """`eng@saga.xyz` -> `eng`. Stable, and safe as a k8s namespace suffix."""
-    local = group_email.split("@", 1)[0].lower()
+#: `swarm-t-` + tenant id must fit a GCP service account id, which caps at 30.
+_MAX_TENANT_ID = 22
+_GSA_PREFIX_LEN = len("swarm-t-")
+
+
+def _slug(principal: str, prefix: str = "") -> str:
+    """Slugify an email local part into a tenant id that cannot collide.
+
+    Two problems make the naive `split("@")[0]` version unsafe, and both are
+    reachable inside a single domain:
+
+      * SLUGIFICATION IS LOSSY. `eng.team@` and `eng-team@` both reduce to
+        `eng-team`. Two distinct Google groups would silently become ONE tenant,
+        sharing a namespace, a service account, provider credentials and
+        artifacts -- the exact cross-tenant merge the whole design exists to
+        prevent.
+      * LENGTH. A long group name yields an id no GCP service account can be
+        named for, because `swarm-t-<id>` must fit in 30 characters. Silently
+        truncating reintroduces collisions at the truncation boundary.
+
+    So whenever the slug is not a faithful, short-enough rendering of the local
+    part, a short digest of the FULL principal is appended. The digest is
+    deterministic, so a given group always resolves to the same tenant, and
+    readable ids like `eng` survive untouched.
+    """
+    local = principal.split("@", 1)[0].lower()
     slug = _TENANT_SAFE.sub("-", local).strip("-")
     if not slug:
-        raise ValueError(f"cannot derive a tenant id from {group_email!r}")
-    return slug
+        raise ValueError(f"cannot derive a tenant id from {principal!r}")
+
+    budget = _MAX_TENANT_ID - len(prefix)
+    lossy = slug != local
+    too_long = len(slug) > budget
+
+    if lossy or too_long:
+        digest = hashlib.sha256(principal.lower().encode("utf-8")).hexdigest()[:6]
+        keep = max(1, budget - len(digest) - 1)
+        slug = f"{slug[:keep].rstrip('-')}-{digest}"
+
+    return f"{prefix}{slug}"
+
+
+def tenant_id_for_group(group_email: str) -> str:
+    """`eng@saga.xyz` -> `eng`. Stable, collision-free, safe as a k8s namespace."""
+    return _slug(group_email)
 
 
 def tenant_id_for_user(email: str) -> str:
     """Personal fallback tenant, namespaced so it cannot collide with a group."""
-    local = email.split("@", 1)[0].lower()
-    slug = _TENANT_SAFE.sub("-", local).strip("-")
-    if not slug:
-        raise ValueError(f"cannot derive a tenant id from {email!r}")
-    return f"u-{slug}"
+    return _slug(email, prefix="u-")
 
 
 def assert_allowed_domain(email: str, allowed: tuple[str, ...]) -> str:

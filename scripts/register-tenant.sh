@@ -149,12 +149,37 @@ step "IAM"
 # Firestore, conditioned on the swarm database. Without the condition this would
 # also grant access to the (default) database, which belongs to other teams in
 # this shared project.
+#
+# The role is the NARROWED CUSTOM ROLE terraform builds, never roles/datastore.user.
+# This script and terraform/modules/tenancy must grant identical authority, or a
+# tenant onboarded here ends up more privileged than one terraform created.
+#
+# roles/datastore.user carries two permissions the custom role deliberately drops,
+# and Firestore IAM cannot scope below the database, so both apply to EVERY
+# tenant's documents, not just this tenant's:
+#
+#   datastore.entities.delete -- a hostile worker could delete another tenant's
+#   tasks, leases and attempts, and the pool documents the whole platform admits
+#   against. Nothing in the worker path deletes a document.
+#
+#   datastore.entities.list -- queries. Without it a document can only be fetched
+#   by an id already known, and ids are `<prefix>_<20 hex>`.
+FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
+
+if ! gcloud iam roles describe "swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}" \
+     --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+  die "custom role ${FIRESTORE_ROLE} does not exist. Run \`make infra\` first:
+  terraform/modules/tenancy creates it, and granting roles/datastore.user instead
+  would hand this tenant entities.delete and entities.list over every other
+  tenant's control-plane documents."
+fi
+
 run gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member "serviceAccount:${GSA_EMAIL}" \
-  --role roles/datastore.user \
+  --role "${FIRESTORE_ROLE}" \
   --condition "expression=resource.name.endsWith('/databases/${FIRESTORE_DATABASE}'),title=swarm_db_only,description=Only the swarm Firestore database" \
   --quiet >/dev/null
-ok "datastore.user (scoped to the ${FIRESTORE_DATABASE} database)"
+ok "${FIRESTORE_ROLE##*/} (no deletes, no queries; scoped to the ${FIRESTORE_DATABASE} database)"
 
 # GCS, conditioned on this tenant's own prefix. This is the boundary that stops
 # a compromised worker from reading another tenant's artifacts by guessing a path.

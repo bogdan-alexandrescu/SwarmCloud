@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(terraform apply:*)",
+      "Bash(terraform destroy:*)",
+      "Bash(terraform plan:*)",
+      "Bash(terraform init:*)",
+      "Bash(terraform validate:*)",
+      "Bash(terraform fmt:*)",
+      "Bash(terraform test:*)",
+      "Bash(terraform output:*)",
+      "Bash(gcloud builds submit:*)",
+      "Bash(gcloud run deploy:*)",
+      "Bash(gcloud run jobs:*)",
+      "Bash(gcloud run services:*)",
+      "Bash(gcloud container clusters:*)",
+      "Bash(gcloud artifacts:*)",
+      "Bash(gcloud firestore:*)",
+      "Bash(gcloud secrets:*)",
+      "Bash(gcloud pubsub:*)",
+      "Bash(gcloud scheduler:*)",
+      "Bash(gcloud storage:*)",
+      "Bash(gcloud services enable:*)",
+      "Bash(kubectl:*)",
+      "Bash(make:*)",
+      "Bash(uv run:*)"
+    ],
+    "deny": [
+      "Bash(gcloud projects delete:*)",
+      "Bash(gcloud projects create:*)",
+      "Bash(gcloud billing:*)",
+      "Bash(gcloud organizations:*)"
+    ]
+  }
+}
