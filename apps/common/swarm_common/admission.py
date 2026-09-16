@@ -266,13 +266,23 @@ def release_lease_in_transaction(
         return False                      # already released; do not double-decrement
 
     units = int(d.get("units", 1))
-    for name in d.get("pools", []):
-        ref = db.collection("pools").document(name)
+
+    # EVERY READ BEFORE ANY WRITE. Firestore forbids a read after a write inside
+    # a transaction and raises ReadAfterWriteError. Reading each pool and
+    # updating it in the same loop meant the second pool's read came after the
+    # first pool's write, so releasing a lease that held more than one pool
+    # always failed -- and a lease that cannot be released holds its slots for
+    # ever. `acquire_lease_in_transaction` already reads all pools first, which
+    # is why admission worked and only release was broken.
+    pool_refs = {name: db.collection("pools").document(name) for name in d.get("pools", [])}
+    actives: dict[str, int] = {}
+    for name, ref in pool_refs.items():
         psnap = _snapshot(txn.get(ref))
-        if not psnap.exists:
-            continue
-        active = int(psnap.to_dict().get("active", 0))
-        txn.update(ref, {"active": max(0, active - units), "updated_at": now})
+        if psnap.exists:
+            actives[name] = int((psnap.to_dict() or {}).get("active", 0))
+
+    for name, active in actives.items():
+        txn.update(pool_refs[name], {"active": max(0, active - units), "updated_at": now})
 
     txn.update(lease_ref, {"released_at": now, "release_reason": reason})
     return True

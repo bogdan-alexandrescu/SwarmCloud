@@ -75,12 +75,44 @@ def clean() -> None:
             print(f"  reset pool {p.id}.active -> 0")
 
 
+def drain() -> None:
+    """One scheduler drain pass, in-process, against the real control plane."""
+    from scheduler.config import SchedulerConfig
+    from scheduler.main import build_scheduler
+
+    scheduler = build_scheduler()
+    report = scheduler.drain()
+    print("\ndrain report:")
+    for k, v in sorted(vars(report).items() if hasattr(report, "__dict__") else report.items()):
+        print(f"  {k:26s} {v}")
+
+
+def reconcile() -> None:
+    from reconciler.config import ReconcilerConfig
+    from reconciler.logs import build_logger
+    from reconciler.service import build_reconciler
+    from swarm_common.config import Settings
+
+    settings = Settings.from_env()
+    config = ReconcilerConfig.from_env(settings)
+    logger = build_logger()
+    rec = build_reconciler(config, settings, logger)
+    report = rec.run_once()
+    print("\nreconcile report:")
+    for k, v in sorted(vars(report).items() if hasattr(report, "__dict__") else report.items()):
+        print(f"  {k:26s} {v}")
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "state"
     if cmd == "state":
         state()
     elif cmd == "clean":
         clean()
+    elif cmd == "drain":
+        drain()
+    elif cmd == "reconcile":
+        reconcile()
     else:
         raise SystemExit(f"unknown command {cmd!r}")
 

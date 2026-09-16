@@ -104,6 +104,11 @@ class SchedulerSettings:
     project_id: str = ""
     region: str = "us-central1"
     artifact_registry_host: str = ""
+    #: Tag for the agent runtime images. Defaults to the same immutable tag the
+    #: control plane itself was deployed with, because "latest" is not pushed by
+    #: scripts/build-images.sh -- every image carries a git SHA. Dispatch failed
+    #: with `404 Image '...agent-runtime-base:latest' not found` on every task
+    #: until this was wired, and the spec requires immutable tags in prod anyway.
     worker_image_tag: str = "latest"
     dispatch_topic: str = ""
 
@@ -134,7 +139,11 @@ class SchedulerSettings:
             project_id=core.project_id,
             region=core.region,
             artifact_registry_host=registry,
-            worker_image_tag=os.environ.get("WORKER_IMAGE_TAG", "latest"),
+            worker_image_tag=(
+                os.environ.get("WORKER_IMAGE_TAG")
+                or os.environ.get("IMAGE_TAG")
+                or "latest"
+            ),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
         )
 
