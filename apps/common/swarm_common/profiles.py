@@ -58,13 +58,26 @@ class ResourceClass:
             raise ValueError(f"resource class {self.name} exceeds the Cloud Run Jobs ceiling")
 
 
+# WORKSPACE SIZES ARE MEMORY, NOT DISK.
+#
+# These originally claimed 20/40/100 GiB of disk-backed ephemeral storage. That
+# is a Cloud Run Preview feature the Terraform google provider cannot express:
+# `empty_dir.medium` accepts only "MEMORY". The workspace is therefore a tmpfs
+# carved out of the container's memory, so `disk_gib` is a slice OF `memory_gib`
+# and not additional capacity.
+#
+# The measured reference workload -- Claude Code plus a Node/Python toolchain
+# running a test suite -- peaks near 2.5 GiB, which leaves standard roughly
+# 1.5 GiB of real workspace headroom. A large monorepo with node_modules will
+# not fit on `standard`; use `browser` or `large`, or route to GKE.
+#
+# Upside: this path is fully GA and supports live migration, which the Preview
+# disk explicitly does not -- so the reliability requirement that drove the
+# Cloud Run choice is better served here than by the feature we set out to use.
 RESOURCE_CLASSES: dict[str, ResourceClass] = {
-    "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=20, units=1,
-                              requires_preview_disk=True),
-    "browser": ResourceClass("browser", cpu=8, memory_gib=16, disk_gib=40, units=2,
-                             requires_preview_disk=True),
-    "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=100, units=4,
-                           requires_preview_disk=True),
+    "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1),
+    "browser": ResourceClass("browser", cpu=8, memory_gib=16, disk_gib=8, units=2),
+    "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4),
 }
 
 

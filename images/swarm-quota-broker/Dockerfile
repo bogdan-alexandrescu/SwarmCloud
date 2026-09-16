@@ -102,4 +102,8 @@ RUN PROJECT_ID=build-time-import-check \
     python -c "from quota_broker.main import create_app; create_app(); print('swarm-quota-broker ok')"
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "reconciler"]
+# These three expose create_app() and deliberately no module-level `app`, so
+# uvicorn is given --factory. sh -c is needed because Cloud Run supplies the
+# port through $PORT and the exec form performs no variable expansion; `exec`
+# keeps uvicorn as the signal-receiving child of tini rather than a grandchild.
+ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c", "exec uvicorn --factory quota_broker.main:create_app --host 0.0.0.0 --port ${PORT:-8080}"]

@@ -1,5 +1,15 @@
 # Execution backends
 
+> **Workspace sizes are memory, not disk.** These classes originally specified
+> 20/40/100 GiB of disk-backed ephemeral storage. That is a Cloud Run Preview
+> feature the Terraform google provider cannot express — `empty_dir.medium`
+> accepts only `"MEMORY"` — so the workspace is a tmpfs carved out of the
+> container's memory: **standard ~4 GiB, browser ~8 GiB, large ~16 GiB**, each a
+> slice of that class's total memory rather than capacity on top of it.
+> The upside is that this path is fully GA and supports live migration, which the
+> Preview disk explicitly does not, so the no-interruption requirement that drove
+> the Cloud Run choice is better served here than by the feature we set out to use.
+
 Two backends. Cloud Run Jobs runs almost everything; GKE Autopilot exists for
 the three things Cloud Run cannot do.
 
@@ -112,9 +122,9 @@ the class's number, with no headroom to burst into. Bursting past a request is
 what gets a container OOM-killed under pressure, so the platform never does it.
 
 ```
-standard   4 vCPU   8 GiB   20 GiB disk
-browser    8 vCPU  16 GiB   40 GiB disk   (GKE only)
-large      8 vCPU  32 GiB  100 GiB disk   (Cloud Run ceiling)
+standard   4 vCPU   8 GiB   ~4 GiB workspace (tmpfs)
+browser    8 vCPU  16 GiB   ~8 GiB workspace (tmpfs)   (GKE only)
+large      8 vCPU  32 GiB  ~16 GiB workspace (tmpfs)   (Cloud Run ceiling)
 ```
 
 `max_retries = 0` on every Job. Retries are a control-plane decision, made with
