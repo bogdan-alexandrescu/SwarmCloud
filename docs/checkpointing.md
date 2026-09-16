@@ -197,3 +197,18 @@ and in the task's event stream, `checkpoint_started` / `checkpoint_completed` /
 | Resume starts from scratch | no committed checkpoint exists yet | the attempt died inside its first interval |
 | Checkpoints growing every cycle | build output or `node_modules` inside `work/` | fix the runner; do not raise `max_bytes` |
 | Restore fails with "escapes the workspace" | the archive contains a traversing path or link | expected refusal; inspect the archive before trusting its producer |
+
+---
+
+**Correction (workspace storage).** This platform does NOT use Cloud Run ephemeral
+disk. The Terraform google provider cannot express it (`empty_dir.medium` accepts
+only `"MEMORY"`), so workspaces are memory-backed tmpfs and the deployment runs on
+the fully-GA path, which DOES support live migration.
+
+Mandatory periodic checkpointing therefore remains required, but for different
+reasons than originally written: a worker can still lose its attempt to a quota
+park-and-exit, a cancellation, a reconciler reclaim of a stale generation, or an
+ordinary crash. Checkpointing is what makes any of those cost minutes instead of
+the whole attempt. Do not relax it on the grounds that live migration is now
+available — migration covers infrastructure moves, not the application-level
+interruptions above.
