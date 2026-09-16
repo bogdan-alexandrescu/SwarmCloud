@@ -129,29 +129,42 @@ run "only_the_reconciler_can_delete" {
   }
 }
 
-run "firestore_access_is_pinned_to_the_swarm_database" {
+run "firestore_grants_are_unconditioned_because_iam_conditions_do_not_gate_the_data_plane" {
   command = plan
 
   module {
     source = "../../terraform/modules/iam"
   }
 
-  # The project is SHARED. An unconditioned roles/datastore.user is read-write
-  # over every other team's Firestore data in the project.
+  # REVERSED on evidence, 2026-09-16. This used to require an IAM condition
+  # pinning every grant to the swarm database. Firestore does not evaluate IAM
+  # Conditions on the DATA plane -- only for administrative operations -- so the
+  # condition did not restrict document access, it DENIED it: every
+  # control-plane service came up reporting
+  # "firestore unavailable: PermissionDenied". Security Rules are not an
+  # alternative either; server SDKs with admin credentials bypass them.
+  #
+  # So the grant is unconditioned, and the honest boundary is documented in
+  # docs/security.md: a swarm identity can reach any Firestore database in this
+  # project. Today `swarm` is the only one. The real fix is a separate project.
   assert {
     condition = alltrue([
-      for k, b in google_project_iam_member.firestore :
-      length(b.condition) == 1 && strcontains(b.condition[0].expression, "databases/swarm")
+      for k, b in google_project_iam_member.firestore : length(b.condition) == 0
     ])
-    error_message = "every datastore.user grant must be conditioned to the swarm database"
+    error_message = "datastore grants must be UNCONDITIONED: an IAM condition here denies the data plane outright rather than scoping it"
   }
 
+  # The replacement guarantee, since IAM cannot provide the old one: only the
+  # four control-plane identities hold a datastore grant at all. Tenant workers
+  # get the narrowed swarmTenantWorkerFirestore custom role instead, which omits
+  # entities.delete and entities.list -- so a hostile worker can neither
+  # enumerate nor destroy another tenant's documents even though it shares the
+  # database scope. That is the boundary that actually holds.
   assert {
     condition = alltrue([
-      for k, b in google_project_iam_member.firestore :
-      !strcontains(b.condition[0].expression, "(default)")
+      for k, b in google_project_iam_member.firestore : b.role == "roles/datastore.user"
     ])
-    error_message = "no swarm identity may reach the (default) database"
+    error_message = "the control plane holds roles/datastore.user; anything broader is a regression"
   }
 }
 

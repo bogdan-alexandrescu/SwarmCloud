@@ -265,7 +265,12 @@ run "the_default_firestore_database_is_refused" {
   expect_failures = [var.firestore_database]
 }
 
-run "a_public_api_invoker_is_refused" {
+# allUsers is now the supported setting for api_invokers -- Cloud Run's edge
+# consumes the caller's token when it gates, so the application can never
+# identify a tenant behind it. allAuthenticatedUsers remains refused: it means
+# every Google account on earth and buys nothing, because swarm_api.auth is what
+# actually authenticates. See terraform/infra/variables.tf for the measurement.
+run "an_all_authenticated_api_invoker_is_refused" {
   command = plan
 
   module {
@@ -273,7 +278,7 @@ run "a_public_api_invoker_is_refused" {
   }
 
   variables {
-    api_invokers = ["allUsers"]
+    api_invokers = ["allAuthenticatedUsers"]
   }
 
   expect_failures = [var.api_invokers]

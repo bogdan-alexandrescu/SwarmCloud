@@ -31,8 +31,8 @@ run "the_fast_path_is_authenticated_push_with_a_dead_letter" {
   }
 
   assert {
-    condition     = google_pubsub_subscription.wake.push_config[0].push_endpoint == "https://swarm-scheduler-abcdef-uc.a.run.app/pubsub/wake"
-    error_message = "the subscription must push to the scheduler's wake path"
+    condition     = google_pubsub_subscription.wake.push_config[0].push_endpoint == "https://swarm-scheduler-abcdef-uc.a.run.app/pubsub/push"
+    error_message = "the subscription must push to /pubsub/push -- the route scheduler/main.py actually serves. \"/pubsub/wake\" 404d every delivery and no task was ever admitted."
   }
 
   # Cloud Run ingress is internal-and-cloud-load-balancing and the service

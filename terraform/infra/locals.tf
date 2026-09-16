@@ -19,10 +19,19 @@ locals {
   )
 
   # --- swarm_common.profiles.RESOURCE_CLASSES ------------------------------
+  #
+  # `disk_gib` is a slice OF `memory_gib`, not capacity on top of it. These once
+  # read 20/40/100 GiB of disk-backed ephemeral storage, which the Terraform
+  # google provider cannot express: empty_dir.medium accepts only "MEMORY". The
+  # workspace is therefore a tmpfs and comes out of the container's memory.
+  #
+  # Keep this table byte-identical to swarm_common.profiles.RESOURCE_CLASSES;
+  # tests/terraform/catalogue.tftest.hcl reads the Python at test time and fails
+  # on drift, which is how this mismatch was caught.
   resource_classes = {
-    standard = { cpu = 4, memory_gib = 8, disk_gib = 20, units = 1 }
-    browser  = { cpu = 8, memory_gib = 16, disk_gib = 40, units = 2 }
-    large    = { cpu = 8, memory_gib = 32, disk_gib = 100, units = 4 }
+    standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
+    browser  = { cpu = 8, memory_gib = 16, disk_gib = 8, units = 2 }
+    large    = { cpu = 8, memory_gib = 32, disk_gib = 16, units = 4 }
   }
 
   # --- swarm_common.profiles.RUNNER_PROFILES -------------------------------

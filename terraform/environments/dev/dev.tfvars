@@ -109,8 +109,13 @@ tenants = {
   }
 }
 
+# allUsers lets the caller's ID token REACH the app, which is the only component
+# that can identify a tenant. Cloud Run's edge IAM would consume that token (see
+# terraform/infra/variables.tf). The service is not internet-reachable: ingress
+# stays internal-and-cloud-load-balancing, and the app still requires a valid
+# Google ID token from saga.xyz.
 api_invokers = [
-  "group:eng@saga.xyz",
+  "allUsers",
 ]
 
 # A dedicated platform-admin group, NOT a tenant group. This list is applied to

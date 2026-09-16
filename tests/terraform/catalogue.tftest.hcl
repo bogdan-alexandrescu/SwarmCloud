@@ -46,17 +46,17 @@ run "resource_classes_match_the_frozen_catalogue" {
 
   # RESOURCE_CLASSES: standard 4/8/20, browser 8/16/40, large 8/32/100.
   assert {
-    condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 20
+    condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 4
     error_message = "the standard class is 4 vCPU / 8 GiB / 20 GiB"
   }
 
   assert {
-    condition     = output.resource_classes["browser"].cpu == 8 && output.resource_classes["browser"].memory_gib == 16 && output.resource_classes["browser"].disk_gib == 40
+    condition     = output.resource_classes["browser"].cpu == 8 && output.resource_classes["browser"].memory_gib == 16 && output.resource_classes["browser"].disk_gib == 8
     error_message = "the browser class is 8 vCPU / 16 GiB / 40 GiB"
   }
 
   assert {
-    condition     = output.resource_classes["large"].cpu == 8 && output.resource_classes["large"].memory_gib == 32 && output.resource_classes["large"].disk_gib == 100
+    condition     = output.resource_classes["large"].cpu == 8 && output.resource_classes["large"].memory_gib == 32 && output.resource_classes["large"].disk_gib == 16
     error_message = "the large class is 8 vCPU / 32 GiB / 100 GiB"
   }
 

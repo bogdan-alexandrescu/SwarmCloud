@@ -170,13 +170,25 @@ run "each_service_runs_as_its_own_identity_with_requests_equal_to_limits" {
   }
 }
 
-run "a_public_invoker_is_refused" {
+run "a_public_invoker_is_accepted_only_while_ingress_is_restricted" {
   command = plan
 
   module {
     source = "../../terraform/modules/cloud_run"
   }
 
+  # REVERSED on evidence, 2026-09-16. allUsers used to be refused outright.
+  # When Cloud Run enforces IAM it CONSUMES the caller's Authorization header
+  # and the container receives a different, non-JWT credential -- measured on a
+  # correlated request: the client sent tok:7f518e564d27, the application saw
+  # tok:c130e289a085 and failed with MalformedError. The same image and token
+  # authenticate correctly when the edge is not gating, so edge IAM does not add
+  # a layer here, it removes the only one that can identify a tenant.
+  #
+  # What authenticates a caller is swarm_api.auth: Google ID token signature,
+  # email_verified, the saga.xyz hosted domain, and Cloud Identity group
+  # membership. What keeps the service off the internet is ingress, which this
+  # module pins to internal and refuses to set to INGRESS_TRAFFIC_ALL.
   variables {
     services = {
       "swarm-api" = {
@@ -188,7 +200,17 @@ run "a_public_invoker_is_refused" {
     }
   }
 
-  expect_failures = [var.services]
+  assert {
+    condition     = var.ingress != "INGRESS_TRAFFIC_ALL"
+    error_message = "allUsers is only safe because ingress keeps the service off the internet; this pairing is the whole guarantee."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, v in var.services : !contains(values(v.invokers), "allAuthenticatedUsers")
+    ])
+    error_message = "allAuthenticatedUsers means every Google account and adds nothing over the app's own check."
+  }
 }
 
 run "internet_ingress_is_refused" {

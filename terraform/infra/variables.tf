@@ -240,13 +240,34 @@ variable "secret_admin_members" {
 }
 
 variable "api_invokers" {
-  description = "Identities allowed to call swarm-api. Google groups, not allUsers."
+  description = <<-EOT
+    Identities allowed past Cloud Run's edge to reach swarm-api.
+
+    This is NOT what authenticates a caller. swarm_api.auth is: it verifies the
+    Google ID token against Google's keys, requires email_verified, enforces the
+    saga.xyz hosted domain, and resolves Cloud Identity group membership to pick
+    the tenant. This variable only decides who the platform lets through to be
+    authenticated.
+
+    Setting it to ["allUsers"] is the SUPPORTED configuration, because Cloud Run
+    cannot do both jobs at once. When the edge enforces IAM it CONSUMES the
+    caller's Authorization header and the container receives a different,
+    non-JWT credential -- measured on one correlated request on 2026-09-16:
+    the client sent tok:7f518e564d27 and the application saw tok:c130e289a085,
+    which failed with MalformedError. So edge IAM does not add a second layer
+    here; it removes the only one that can identify a tenant.
+
+    Reachability is controlled by ingress, which the cloud_run module pins to
+    internal-and-cloud-load-balancing and refuses to set to INGRESS_TRAFFIC_ALL.
+    That, not this binding, is what satisfies "no required service publicly
+    exposed by default".
+  EOT
   type        = list(string)
   default     = []
 
   validation {
-    condition     = !contains(var.api_invokers, "allUsers") && !contains(var.api_invokers, "allAuthenticatedUsers")
-    error_message = "the API authenticates callers by Google ID token; a public invoker binding would bypass that entirely."
+    condition     = !contains(var.api_invokers, "allAuthenticatedUsers")
+    error_message = "allAuthenticatedUsers means every Google account and adds nothing: the application performs the real authentication. Use allUsers with internal ingress, or name specific groups."
   }
 }
 

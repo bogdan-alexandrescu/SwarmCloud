@@ -34,8 +34,16 @@ variable "scheduler_push_endpoint" {
 }
 
 variable "scheduler_push_path" {
-  type    = string
-  default = "/pubsub/wake"
+  description = <<-EOT
+    MUST match a route scheduler/main.py actually serves. It was "/pubsub/wake"
+    while the application served "/pubsub/push", so every Pub/Sub delivery and
+    every Cloud Scheduler tick returned 404. Nothing alerted: a push
+    subscription treats 404 as a delivery failure and retries quietly, so the
+    scheduler was simply never woken and every submitted task sat in READY
+    forever while the control plane looked healthy.
+  EOT
+  type        = string
+  default     = "/pubsub/push"
 }
 
 variable "reconciler_endpoint" {
@@ -67,8 +75,15 @@ variable "enable_quota_refresh" {
 }
 
 variable "quota_broker_path" {
-  type    = string
-  default = "/refresh"
+  description = <<-EOT
+    MUST match a route quota_broker/main.py actually serves. It was "/refresh",
+    which the application has never served -- its sweep endpoint is
+    POST /v1/quota/sweep -- so the periodic quota refresh 404'd on every run.
+    The visible symptom is nothing at all: provider state simply goes stale, and
+    an EXHAUSTED provider is never observed to have recovered.
+  EOT
+  type        = string
+  default     = "/v1/quota/sweep"
 }
 
 variable "tick_service_account" {
