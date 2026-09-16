@@ -38,7 +38,6 @@ RENDER="${REPO_ROOT}/kubernetes/render.py"
 [[ -f "${RENDER}" ]] || die "no ${RENDER}"
 
 require_cmd python3
-KB="$(kubectl_bin)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-manifests.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT INT TERM

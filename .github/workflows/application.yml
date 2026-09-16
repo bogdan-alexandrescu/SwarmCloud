@@ -262,6 +262,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # The offline manifest validator parses YAML; the runner's system python
+      # has no PyYAML. Installing it here keeps the validator free of a cluster
+      # AND free of the repo's virtualenv.
+      - name: install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
       - name: render and validate
         # The repository's own validator, not a second implementation.
         #
