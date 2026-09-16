@@ -46,6 +46,28 @@ class AdmissionConfig:
     heartbeat_interval_seconds: int = 30
 
 
+def _snapshot(result: Any) -> Any:
+    """One DocumentSnapshot from a Firestore transactional get.
+
+    `Transaction.get()` in google-cloud-firestore returns a GENERATOR, because
+    the same method accepts a Query as well as a DocumentReference. Treating the
+    result as a snapshot raises
+
+        AttributeError: 'generator' object has no attribute 'exists'
+
+    at the first `.exists`, which is exactly what happened on the live scheduler:
+    every Pub/Sub wake returned 503 and no task was ever admitted. In-memory test
+    doubles return a snapshot directly, so no unit test could catch it -- hence
+    this helper accepts both shapes.
+    """
+    if hasattr(result, "exists"):
+        return result
+    try:
+        return next(iter(result))
+    except StopIteration:  # pragma: no cover - a get always yields one result
+        raise RuntimeError("transactional get returned no snapshot") from None
+
+
 def _blocked_reason_for_pool(pool_name: str) -> BlockedReason:
     if pool_name == "global":
         return BlockedReason.GLOBAL_CONCURRENCY_LIMIT
@@ -121,7 +143,7 @@ def acquire_lease_in_transaction(
     now = now or utcnow()
 
     task_ref = db.collection("tasks").document(task.id)
-    snapshot = txn.get(task_ref)
+    snapshot = _snapshot(txn.get(task_ref))
     if not snapshot.exists:
         raise AdmissionDenied([{"reason": "task_missing"}])
 
@@ -145,7 +167,7 @@ def acquire_lease_in_transaction(
     pool_refs = {name: db.collection("pools").document(name) for name in required}
     pools: dict[str, SlotPool] = {}
     for name, ref in pool_refs.items():
-        snap = txn.get(ref)
+        snap = _snapshot(txn.get(ref))
         if snap.exists:
             d = snap.to_dict()
             pools[name] = SlotPool(
@@ -236,7 +258,7 @@ def release_lease_in_transaction(
     """
     now = now or utcnow()
     lease_ref = db.collection("leases").document(lease_id)
-    snap = txn.get(lease_ref)
+    snap = _snapshot(txn.get(lease_ref))
     if not snap.exists:
         return False
     d = snap.to_dict()
@@ -246,7 +268,7 @@ def release_lease_in_transaction(
     units = int(d.get("units", 1))
     for name in d.get("pools", []):
         ref = db.collection("pools").document(name)
-        psnap = txn.get(ref)
+        psnap = _snapshot(txn.get(ref))
         if not psnap.exists:
             continue
         active = int(psnap.to_dict().get("active", 0))

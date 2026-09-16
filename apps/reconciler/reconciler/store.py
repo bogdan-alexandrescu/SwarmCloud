@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 
+from swarm_common.admission import _snapshot
 from swarm_common.admission import release_lease_in_transaction
 from swarm_common.models import TaskEvent, new_id, utcnow
 from swarm_common.states import (
@@ -147,7 +148,7 @@ class ControlStore:
         task_ref = self._db.collection("tasks").document(task_id)
 
         def _apply(txn: Any) -> int | None:
-            snap = txn.get(task_ref)
+            snap = _snapshot(txn.get(task_ref))
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
@@ -197,7 +198,7 @@ class ControlStore:
         task_ref = self._db.collection("tasks").document(task_id)
 
         def _apply(txn: Any) -> TaskState | None:
-            snap = txn.get(task_ref)
+            snap = _snapshot(txn.get(task_ref))
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
