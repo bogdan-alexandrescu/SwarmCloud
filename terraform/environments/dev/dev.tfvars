@@ -113,8 +113,13 @@ api_invokers = [
   "group:eng@saga.xyz",
 ]
 
+# A dedicated platform-admin group, NOT a tenant group. This list is applied to
+# every tenant that names no `secret_admins` of its own, so putting a tenant's
+# own group here would let any member of that tenant replace another tenant's
+# provider key with one pointing at infrastructure they control.
+# terraform/infra/variables.tf refuses that shape.
 secret_admin_members = [
-  "group:eng@saga.xyz",
+  "group:swarm-admins@saga.xyz",
 ]
 
 # --- observability ---------------------------------------------------------

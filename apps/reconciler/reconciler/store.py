@@ -112,6 +112,26 @@ class ControlStore:
     def active_tenants(self, snapshot: ControlSnapshot) -> set[str]:
         return {task.tenant_id for task in snapshot.tasks.values() if task.tenant_id}
 
+    def registered_tenants(self) -> set[str]:
+        """Every tenant the control plane knows about, busy or idle.
+
+        Used to protect per-tenant Kubernetes namespaces from garbage
+        collection. A Cloud Run Job resource is safe to delete when idle because
+        the dispatcher recreates it on the next dispatch; a namespace is not --
+        it also holds the tenant's service account and its workload-identity
+        binding, and nothing in the dispatch path recreates those. Deleting the
+        namespace of a tenant who merely had a quiet day would turn their next
+        submission into a dispatch failure, so a registered tenant keeps its
+        namespace however long it sits idle.
+        """
+        tenants: set[str] = set()
+        for doc in self._db.collection("tenants").stream():
+            data = doc.to_dict() or {}
+            tenant_id = data.get("tenant_id") or doc.id
+            if tenant_id:
+                tenants.add(str(tenant_id))
+        return tenants
+
     # -- writes ----------------------------------------------------------
     def invalidate_generation(self, task_id: str, expected_generation: int) -> int | None:
         """Bump `current_generation`, fencing any worker still running.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictModel(BaseModel):
@@ -96,12 +96,15 @@ class PauseRequest(StrictModel):
 
 
 class LimitRequest(StrictModel):
-    limit: int = Field(ge=0, le=100_000)
-
-
-class NamedLimitRequest(StrictModel):
-    name: str = Field(min_length=1, max_length=128)
-    limit: int = Field(ge=0, le=100_000)
+    #: `hard_limit` is accepted as well as `limit`, because that is the spelling
+    #: the operator runbooks in docs/ tell you to send and every one of those
+    #: copy-pasteable curls returned 422 against `extra="forbid"`. A limit an
+    #: operator cannot set during an incident is not a limit.
+    limit: int = Field(
+        ge=0,
+        le=100_000,
+        validation_alias=AliasChoices("limit", "hard_limit"),
+    )
 
 
 class DrainRequest(StrictModel):
@@ -119,5 +122,10 @@ class ProviderEnableRequest(StrictModel):
 class TenantLimitsRequest(StrictModel):
     max_active: int | None = Field(default=None, ge=0, le=10_000)
     capacity_units: int | None = Field(default=None, ge=0, le=100_000)
-    monthly_budget_usd: float | None = Field(default=None, ge=0)
     enabled: bool | None = None
+    #: Accepted so the refusal can explain itself rather than arriving as a bare
+    #: "extra_forbidden". This control plane has no cost attribution source -- no
+    #: billing export, no per-attempt spend -- so a dollar budget could be stored
+    #: and echoed back but never enforced, and ParkReason.BUDGET_EXHAUSTED would
+    #: never be reached. The route rejects it; see routes/admin.py.
+    monthly_budget_usd: float | None = Field(default=None, ge=0)

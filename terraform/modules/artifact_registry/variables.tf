@@ -45,15 +45,21 @@ variable "cleanup_dry_run" {
 }
 
 variable "readers" {
-  description = "IAM members granted artifactregistry.reader. Every runtime SA that pulls an image belongs here."
-  type        = list(string)
-  default     = []
+  description = <<-EOT
+    IAM members granted artifactregistry.reader, keyed by a stable label.
+
+    A map rather than a list because the members are service account emails that
+    are only known after apply: `for_each = toset(<unknown>)` cannot be planned
+    at all, so the key has to be something the configuration already knows.
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "writers" {
-  description = "IAM members granted artifactregistry.writer. CI only -- no runtime identity may push."
-  type        = list(string)
-  default     = []
+  description = "IAM members granted artifactregistry.writer, keyed by a stable label. CI only -- no runtime identity may push."
+  type        = map(string)
+  default     = {}
 }
 
 variable "kms_key_name" {

@@ -26,6 +26,12 @@ locals {
   }
 
   # --- swarm_common.profiles.RUNNER_PROFILES -------------------------------
+  #
+  # `secret_env` maps an environment variable NAME to a provider id. Neither is
+  # a credential: the value is the string "anthropic" or "openai", and the real
+  # key lives only in Secret Manager, added out of band. No secret material
+  # exists anywhere in this repository.
+  # checkov:skip=CKV_SECRET_6:env-var name to provider id, not a credential -- see above.
   runner_profiles = {
     "mock" = {
       image           = "agent-runtime-base"
@@ -44,10 +50,11 @@ locals {
       timeout_seconds = 3600
     }
     "claude-code" = {
-      image           = "agent-runtime-base"
-      resource_class  = "standard"
-      backend         = "CLOUD_RUN_JOB"
-      provider        = "anthropic"
+      image          = "agent-runtime-base"
+      resource_class = "standard"
+      backend        = "CLOUD_RUN_JOB"
+      provider       = "anthropic"
+      # checkov:skip=CKV_SECRET_6:an env-var name mapped to a provider id, not a credential. The value is literally the string "anthropic"; the key lives only in Secret Manager.
       secret_env      = { ANTHROPIC_API_KEY = "anthropic" }
       timeout_seconds = 7200
     }
@@ -87,6 +94,25 @@ locals {
   image_base = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repository}"
 
   tenant_ids = keys(var.tenants)
+
+  # Resolved once, used by both the tenant slot pool and the tenant document, so
+  # the ceiling Firestore records and the ceiling admission enforces cannot
+  # disagree. `max_active` is nullable on purpose (see variables.tf): without
+  # that, this coalesce has nothing to fall through to and
+  # `pool_limits.default_tenant` is dead configuration that both tfvars files
+  # set as though it worked.
+  tenant_max_active = {
+    for t, cfg in var.tenants :
+    t => coalesce(cfg.max_active, var.pool_limits.default_tenant)
+  }
+
+  # Per-tenant secret administrators, falling back to the platform list. The
+  # fallback may not name any tenant's own principal -- var.secret_admin_members
+  # validates that -- because it is applied to every tenant that declares none.
+  tenant_secret_admins = {
+    for t, cfg in var.tenants :
+    t => length(cfg.secret_admins) > 0 ? cfg.secret_admins : var.secret_admin_members
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -105,7 +131,7 @@ locals {
 
   pool_tenants = {
     for t, cfg in var.tenants :
-    "tenant:${t}" => { hard_limit = coalesce(cfg.max_active, var.pool_limits.default_tenant) }
+    "tenant:${t}" => { hard_limit = local.tenant_max_active[t] }
   }
 
   pool_resource_classes = {

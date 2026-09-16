@@ -44,13 +44,40 @@ class PushVerifier:
     Cloud Run IAM already refuses unauthenticated callers; this is the second
     layer that also checks WHICH service account called, so a different
     authorised caller in the project cannot drive the admission controller.
-    Disabled when `PUSH_SERVICE_ACCOUNT` is unset.
+
+    It is only a second layer if it is actually on. `PUSH_SERVICE_ACCOUNT` unset
+    used to leave it silently disabled in every deployed environment, which is
+    worse than not having it: the comment above asserts a control a reviewer then
+    believes is present. `required` (driven by ENVIRONMENT) makes the process
+    refuse to start instead. `PUSH_AUDIENCE` is checked the same way, because
+    google-auth SKIPS the `aud` claim entirely when no audience is passed, so
+    without it a token the tick service account minted for ANY other audience is
+    accepted here.
     """
 
-    def __init__(self, service_account: str, audience: str = "") -> None:
+    def __init__(
+        self, service_account: str, audience: str = "", *, required: bool = False
+    ) -> None:
         self._service_account = service_account.strip()
         self._audience = audience.strip() or None
         self._request = None
+        if required:
+            missing = [
+                name
+                for name, value in (
+                    ("PUSH_SERVICE_ACCOUNT", self._service_account),
+                    ("PUSH_AUDIENCE", self._audience),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"{' and '.join(missing)} must be set outside local development: "
+                    "the admission controller's /pubsub/push and /tick would otherwise "
+                    "accept any caller Cloud Run invoker IAM lets through, with no "
+                    "check on which service account called or what the token was "
+                    "minted for"
+                )
 
     @property
     def enabled(self) -> bool:
@@ -129,9 +156,11 @@ def decode_push_envelope(body: dict[str, Any]) -> dict[str, Any]:
 def create_app(scheduler: Scheduler | None = None) -> FastAPI:
     app = FastAPI(title="swarm scheduler", version="0.1.0")
     app.state.scheduler = scheduler if scheduler is not None else build_scheduler()
+    environment = os.environ.get("ENVIRONMENT", "dev").strip().lower()
     app.state.verifier = PushVerifier(
         os.environ.get("PUSH_SERVICE_ACCOUNT", ""),
         os.environ.get("PUSH_AUDIENCE", ""),
+        required=environment not in {"dev", "test", "local"},
     )
     # One drain at a time per process. Two overlapping drains would not corrupt
     # anything -- admission is transactional -- but they would waste reads
@@ -188,9 +217,12 @@ def create_app(scheduler: Scheduler | None = None) -> FastAPI:
         except Exception as exc:
             # 5xx asks Pub/Sub to redeliver, which is only useful if the failure
             # was transient infrastructure rather than bad input.
+            # The exception type only. The message would carry whatever Firestore
+            # or a backend API said, which routinely names the resource it was
+            # handed; the full text is in the log line above.
             log.exception("drain failed")
             response.status_code = 503
-            return {"status": "error", "detail": type(exc).__name__, "message": str(exc)[:500]}
+            return {"status": "error", "detail": type(exc).__name__}
 
     @app.post("/tick")
     async def tick(request: Request, response: Response) -> dict[str, Any]:

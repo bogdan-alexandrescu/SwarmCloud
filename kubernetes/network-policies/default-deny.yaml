@@ -1,0 +1,67 @@
+# Default deny, both directions, for every pod in a tenant namespace.
+#
+# This is the policy that makes tenant isolation real on the GKE path. Without
+# it, Kubernetes' default is that every pod can reach every other pod in the
+# cluster: tenant A's browser agent could open a socket to tenant B's running
+# agent, and a compromised or merely over-helpful agent could exfiltrate another
+# tenant's work over the pod network, which no amount of IAM scoping would stop
+# because none of it goes through a Google API.
+#
+# The rules are additive in Kubernetes: once ANY policy selects a pod for a
+# direction, only traffic explicitly allowed by some policy is permitted in that
+# direction. So this file denies everything by selecting every pod for both
+# Ingress and Egress, and `allow-egress.yaml` adds back the narrow set of
+# destinations a worker genuinely needs.
+#
+# Ingress is denied and never added back. A worker listens on nothing: it polls
+# Firestore, it writes to GCS, it talks to a provider API. There is no health
+# endpoint to scrape and no port to expose, so every inbound connection is
+# either a mistake or an attack.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-default-deny
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  # Empty selector: every pod in the namespace, including any that a future
+  # component creates without knowing this policy exists.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No `ingress:` and no `egress:` key at all. An empty list would read as "this
+  # policy permits nothing", which is the same result, but omitting them is the
+  # canonical spelling and leaves no room for a future editor to add one rule to
+  # what looks like an empty allow-list.
+---
+# A second, explicit statement of the cross-tenant rule.
+#
+# Strictly speaking this is redundant: `swarm-default-deny` already denies all
+# ingress, so no pod in another tenant's namespace can reach this one. It is
+# here anyway for two reasons. It survives someone adding a broad ingress
+# allowance to solve an unrelated problem -- the denial in the default policy
+# would evaporate, this one would not, because it selects no sources at all
+# while still marking every pod as ingress-isolated. And it documents the
+# intent in the object itself, where an operator reading `kubectl get netpol`
+# will see it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-deny-cross-tenant-ingress
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+  annotations:
+    swarm.saga.xyz/rationale: >-
+      Tenant isolation must not depend on a single policy object remaining
+      unedited. No pod in any other tenant namespace may open a connection to a
+      pod in this one.
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []

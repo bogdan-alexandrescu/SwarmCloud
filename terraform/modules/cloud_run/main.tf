@@ -56,15 +56,29 @@ resource "google_cloud_run_v2_service" "this" {
       }
 
       resources {
-        # requests == limits (CONTRACT.md invariant 7).
+        # requests == limits, no bursting (CONTRACT.md invariant 7). Both flags
+        # below are the ways Cloud Run breaks that equality, and both are off:
+        #
+        #   startup_cpu_boost allocates MORE CPU than the declared limit while an
+        #   instance starts. That is bursting by definition.
+        #
+        #   cpu_idle = true throttles CPU to near zero between requests, so the
+        #   guaranteed allocation is not the limit -- it is the limit only while
+        #   a request happens to be in flight. The scheduler's drain loop and the
+        #   reconciler's sweep both run for minutes inside one request with
+        #   concurrency 1; "CPU always allocated" is what makes their declared
+        #   2 vCPU an actual 2 vCPU for that whole time.
+        #
+        # This costs more than request-billed CPU on an idle service. It is paid
+        # deliberately: min_instance_count is 0, so an idle swarm still runs no
+        # instances at all and the bill is still zero (invariant 1).
         limits = {
           cpu    = each.value.cpu
           memory = each.value.memory
         }
 
-        # CPU is only billed while a request is in flight.
-        cpu_idle          = true
-        startup_cpu_boost = true
+        cpu_idle          = false
+        startup_cpu_boost = false
       }
 
       dynamic "env" {
@@ -112,10 +126,17 @@ resource "google_cloud_run_v2_service" "this" {
 
   lifecycle {
     ignore_changes = [
-      # Images are rolled by the deploy pipeline, not by terraform. Without this
-      # every `terraform apply` would silently roll production back to whatever
-      # tag was in the tfvars.
-      template[0].containers[0].image,
+      # `client` and `client_version` are stamped by whatever last touched the
+      # service (gcloud, the console, Cloud Deploy). They are metadata about the
+      # writer, not about the workload, and a permanent diff on them is noise.
+      #
+      # The image is deliberately NOT ignored. scripts/lib/deploy.sh detects the
+      # `image_tag` variable in terraform/infra and deploys by running
+      # `terraform apply -var image_tag=<promoted tag>`, so terraform IS the
+      # deploy mechanism here: ignoring the image would make every deploy a
+      # no-op. It also means an image changed out of band -- by anything holding
+      # run.services.update or run.jobs.update -- shows up as drift on the next
+      # plan instead of running unnoticed.
       client,
       client_version,
     ]
@@ -124,12 +145,18 @@ resource "google_cloud_run_v2_service" "this" {
 
 # Invoker IAM. There is no allUsers binding anywhere: every caller presents a
 # Google ID token, and service-to-service calls present their own SA identity.
+#
+# `invokers` is a map keyed by a caller LABEL. Keying it by the member string
+# would put a service account email -- unknown until apply -- in a for_each key,
+# which terraform cannot plan: the first plan on a fresh project fails with
+# "the for_each map includes keys derived from resource attributes that cannot
+# be determined until apply".
 resource "google_cloud_run_v2_service_iam_member" "invokers" {
   for_each = {
     for pair in flatten([
       for svc_name, svc in var.services : [
-        for member in svc.invokers : {
-          key     = "${svc_name}:${member}"
+        for label, member in svc.invokers : {
+          key     = "${svc_name}:${label}"
           service = svc_name
           member  = member
         }

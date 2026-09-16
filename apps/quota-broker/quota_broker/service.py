@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 
 QUOTA = "quota"
 POOLS = "pools"
+TENANTS = "tenants"
 
 #: Every provider state that means "start nothing new right now".
 _STOP_STATES = (ProviderState.EXHAUSTED, ProviderState.DISABLED, ProviderState.COOLDOWN)
@@ -259,16 +260,55 @@ class QuotaBroker:
         return {tenant_pool: derived, f"provider:{state.provider}": provider_limit}
 
     def _recompute_provider_pool(self, provider: str) -> int | None:
+        """Cap the SHARED provider pool only when genuinely every tenant is stopped.
+
+        `self.list(provider=...)` sees only tenants that already have a quota
+        DOCUMENT, and a tenant that has never reported has none. Reading `all()`
+        over that subset meant one tenant hitting its own 429 threshold could
+        drive the shared pool -- which `pool_names_for` puts in EVERY tenant's
+        admission list -- to an absolute stop, halting tenants that had never
+        touched the provider. It was also self-sustaining: with the shared pool
+        at 0 no work runs, so no success can arrive to clear it, and the only
+        other way out is the platform-only sweep.
+
+        So the roster is consulted, and only when the cheap check has already
+        passed: any enabled tenant with no document for this provider means the
+        evidence is incomplete and the shared pool stays uncapped. The per-tenant
+        pools are unaffected either way, and they are what actually stops the
+        tenant that is out of quota.
+        """
         states = self.list(provider=provider)
         if not states:
             return None
+        limit: int | None = None
         if all(s.state in _STOP_STATES for s in states):
-            limit: int | None = 0
-        else:
-            # No platform-wide cap: the per-tenant pools carry the real limits.
-            limit = None
+            reported = {s.tenant_id for s in states}
+            unreported = [t for t in self._enabled_tenant_ids() if t not in reported]
+            if unreported:
+                log.info(
+                    "provider %s is stopped for every tenant that has reported, but "
+                    "%d enabled tenant(s) have no quota document; leaving the shared "
+                    "pool uncapped rather than halting them",
+                    provider,
+                    len(unreported),
+                )
+            else:
+                limit = 0
         self._write_pool(f"provider:{provider}", quota_derived_limit=limit)
         return limit
+
+    def _enabled_tenant_ids(self, limit: int = 500) -> list[str]:
+        """Tenants that may currently be admitted.
+
+        Read only when the subset check above has already said "all stopped",
+        which is rare, so the ordinary report path still costs one query.
+        """
+        out: list[str] = []
+        for snap in self._db.collection(TENANTS).limit(limit).stream():
+            data = snap.to_dict() or {}
+            if data.get("enabled", True):
+                out.append(str(data.get("tenant_id") or snap.id))
+        return out
 
     def _write_pool(
         self,

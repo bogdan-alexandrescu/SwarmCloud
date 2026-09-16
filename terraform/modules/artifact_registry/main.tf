@@ -48,8 +48,12 @@ resource "google_artifact_registry_repository" "this" {
   labels = var.labels
 }
 
+# Keyed by a STABLE label rather than by the member string. Members are service
+# account emails that are unknown until apply, and a for_each whose KEYS are
+# unknown fails the very first plan -- terraform cannot name instances it cannot
+# compute. Keys static, unknown values only in the value.
 resource "google_artifact_registry_repository_iam_member" "readers" {
-  for_each = toset(var.readers)
+  for_each = var.readers
 
   project    = var.project_id
   location   = google_artifact_registry_repository.this.location
@@ -59,7 +63,7 @@ resource "google_artifact_registry_repository_iam_member" "readers" {
 }
 
 resource "google_artifact_registry_repository_iam_member" "writers" {
-  for_each = toset(var.writers)
+  for_each = var.writers
 
   project    = var.project_id
   location   = google_artifact_registry_repository.this.location

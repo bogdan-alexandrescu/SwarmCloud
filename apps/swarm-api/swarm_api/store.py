@@ -5,12 +5,23 @@ easy to add and easy to forget. `get_task` takes a tenant_id and treats another
 tenant's document as absent -- not as a 403, which would confirm the id exists.
 Every list method starts from an equality filter on `tenant_id`.
 
-Composite indexes this module relies on (owned by the terraform track):
+Composite indexes this module relies on (owned by the terraform track). Every
+list query below is `<equality filters> ORDER BY created_at DESC`, and Firestore
+serves that only from an index whose ordered field follows the equality fields
+immediately -- an index with any other field in between does NOT satisfy it:
 
-    tasks:      tenant_id ASC, state ASC, created_at DESC
-    tasks:      tenant_id ASC, created_at DESC
-    tasks:      tenant_id ASC, workflow_id ASC, created_at DESC
-    workflows:  tenant_id ASC, created_at DESC
+    tasks-tenant-created            tenant_id ASC, created_at DESC
+    tasks-tenant-state-created      tenant_id ASC, state ASC, created_at DESC
+    tasks-tenant-workflow-created   tenant_id ASC, workflow_id ASC, created_at DESC
+    tasks-tenant-runner-created     tenant_id ASC, runner_profile ASC, created_at DESC
+    workflows-tenant-created        tenant_id ASC, created_at DESC
+
+Only the first exists in terraform/modules/firestore/indexes.tf today. See the
+handover note in this track's report: the other four are required before
+`GET /v1/tasks?state=`, `GET /v1/tasks?runner_profile=`, `GET /v1/workflows/{id}`
+and `GET /v1/workflows` will work against a real Firestore. `count_tasks_by_state`
+uses equality filters with no ordering, which Firestore serves by merge join from
+single-field indexes, so it needs nothing added.
 
 Pagination uses an inequality on `created_at` rather than a Firestore cursor
 token so a page token stays a plain, opaque timestamp the caller can hold across
@@ -57,7 +68,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
-from .errors import Conflict, NotFound
+from .errors import Conflict, NotFound, ValidationFailed
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +96,40 @@ _BATCH_CHUNK = 200
 UNLIMITED_HARD_LIMIT = 1_000_000
 
 
+#: Google caps a service account id at 30 characters. Provisioning truncates to
+#: fit (scripts/register-tenant.sh does `${GSA_ID:0:30}`), and terraform simply
+#: refuses a tenant id that would not fit. Either way a name the API derived by
+#: concatenation would silently point at a DIFFERENT tenant's identity once two
+#: ids share a prefix, so the API refuses to derive one at all past the limit.
+MAX_SERVICE_ACCOUNT_ID = 30
+
+
+def derived_service_account(
+    tenant_id: str, *, project_id: str, prefix: str = "swarm-agent-worker"
+) -> str | None:
+    """The tenant's worker service account email, or None if it cannot be derived.
+
+    None means "this tenant has no identity the API can name". Downstream that is
+    a loud failure -- `put_credential` refuses, and the dispatcher refuses to
+    create a job with no service account -- which is the correct outcome for a
+    tenant whose infrastructure was never provisioned. Guessing a truncated name
+    instead would hand the tenant whichever identity the truncation collided
+    with.
+    """
+    account_id = f"{prefix}-{tenant_id}"
+    if len(account_id) > MAX_SERVICE_ACCOUNT_ID:
+        log.warning(
+            "tenant %r cannot have a derived service account: %r is %d characters, "
+            "over the %d character limit; provisioning must assign one explicitly",
+            tenant_id,
+            account_id,
+            len(account_id),
+            MAX_SERVICE_ACCOUNT_ID,
+        )
+        return None
+    return f"{account_id}@{project_id}.iam.gserviceaccount.com"
+
+
 def encode_cursor(moment: datetime) -> str:
     return base64.urlsafe_b64encode(moment.isoformat().encode("utf-8")).decode("ascii")
 
@@ -96,7 +141,9 @@ def decode_cursor(token: str | None) -> datetime | None:
         raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
         parsed = datetime.fromisoformat(raw)
     except (binascii.Error, UnicodeDecodeError, ValueError):
-        raise NotFound("invalid page_token") from None
+        # A malformed token is a bad request, not a missing resource: 404 here
+        # would tell a caller their own tasks had disappeared.
+        raise ValidationFailed("page_token is not a valid cursor") from None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
@@ -149,35 +196,83 @@ class Store:
         default_capacity_units: int,
         project_id: str,
         artifact_bucket: str,
+        service_account_prefix: str = "swarm-agent-worker",
+        namespace_prefix: str = "swarm-tenant-",
     ) -> Tenant:
-        """Read the tenant, creating it on first sight.
+        """Read the tenant, creating the control-plane record on first sight.
 
-        Invariant 9 is set up here: the tenant gets its own service account, its
-        own GCS prefix and its own namespace at creation, so nothing downstream
-        has to invent them and accidentally share one.
+        What this DOES create: the Firestore tenant document and the
+        `tenant:<id>` slot pool (a tenant with no pool document is unlimited by
+        construction in `evaluate_capacity`, so it is created with the tenant
+        rather than lazily on first admission).
+
+        What this does NOT create, and must not be read as creating: the Google
+        service account, the Secret Manager secrets, the bucket IAM condition,
+        the Kubernetes namespace, the NetworkPolicy or the ResourceQuota. Every
+        one of those is provisioned out of band -- terraform's `tenants` map or
+        scripts/register-tenant.sh -- and both of those paths also seed this
+        document, with the same field values. The strings written below are
+        REFERENCES to that infrastructure, derived by the same naming rule, so a
+        self-service tenant is recognisable (its work fails to dispatch with a
+        missing-identity error) rather than silently running as something else.
+
+        `principal` is the TENANT's principal -- the group email for a group
+        tenant -- not the caller's address. It is checked against the existing
+        document on every request, because the frozen `tenant_id_for_group`
+        slugs the local part only: `eng@saga.xyz`, `eng@partner.com`,
+        `eng.team@saga.xyz` and `Eng-Team@saga.xyz` all derive tenant `eng`.
+        Without this check the second group would inherit the first group's
+        service account, secrets, GCS prefix and namespace with no error
+        anywhere.
         """
         existing = self.get_tenant(tenant_id)
         if existing is not None:
+            self._assert_principal_matches(existing, principal)
             return existing
         kind = "user" if tenant_id.startswith("u-") else "group"
         tenant = Tenant(
             tenant_id=tenant_id,
             kind=kind,
-            principal=principal,
+            principal=principal.strip().lower(),
             created_at=self._now(),
             display_name=tenant_id,
             max_active=default_max_active,
             capacity_units=default_capacity_units,
-            service_account=f"swarm-t-{tenant_id}@{project_id}.iam.gserviceaccount.com",
+            service_account=derived_service_account(
+                tenant_id, project_id=project_id, prefix=service_account_prefix
+            ),
             gcs_prefix=f"gs://{artifact_bucket}/tenants/{tenant_id}",
-            namespace=f"swarm-{tenant_id}",
+            namespace=f"{namespace_prefix}{tenant_id}",
         )
         self._db.collection(TENANTS).document(tenant_id).set(tenant_to_firestore(tenant))
-        # A tenant with no pool document is unlimited by construction in
-        # `evaluate_capacity`, so the pool is created WITH the tenant rather
-        # than lazily on first admission.
-        self.upsert_pool(f"tenant:{tenant_id}", hard_limit=tenant.max_active)
+        self.upsert_pool(
+            f"tenant:{tenant_id}",
+            hard_limit=min(tenant.max_active, tenant.capacity_units),
+        )
         return tenant
+
+    @staticmethod
+    def _assert_principal_matches(existing: Tenant, principal: str) -> None:
+        """Refuse a caller whose tenant id collides with a different principal.
+
+        A blank stored principal is treated as a match: a document seeded before
+        this check existed should not lock its own tenant out. Anything else that
+        differs is a genuine collision and is refused rather than served, because
+        serving it hands one group another group's credentials.
+        """
+        stored = (existing.principal or "").strip().lower()
+        incoming = (principal or "").strip().lower()
+        if not stored or stored == incoming:
+            return
+        raise Conflict(
+            f"tenant id {existing.tenant_id!r} already belongs to a different "
+            "principal; two distinct groups or users cannot share one tenant",
+            detail={
+                "tenant_id": existing.tenant_id,
+                "registered_principal": stored,
+                "requested_principal": incoming,
+            },
+        )
 
     def set_tenant_limits(
         self,
@@ -185,28 +280,44 @@ class Store:
         *,
         max_active: int | None = None,
         capacity_units: int | None = None,
-        monthly_budget_usd: float | None = None,
         enabled: bool | None = None,
     ) -> Tenant:
+        """Change a tenant's limits, and move the pool that enforces them with it.
+
+        Both `max_active` and `capacity_units` are ceilings on the SAME thing.
+        `acquire_lease_in_transaction` increments every pool by the task's
+        weighted `units`, so `tenant:<id>.active` is a count of units, and a task
+        always costs at least one unit. The pool's hard limit is therefore the
+        smaller of the two numbers: that bound is correct read either way, and it
+        can never raise a ceiling an operator set.
+
+        Before this, `capacity_units` was written to the document and consulted
+        by nothing -- the same shape as a limit that is a lie.
+        """
         ref = self._db.collection(TENANTS).document(tenant_id)
         snap = ref.get()
         if not snap.exists:
             raise NotFound(f"tenant {tenant_id!r} does not exist")
+        current = tenant_from_dict(snap.to_dict())
         patch: dict[str, Any] = {}
         if max_active is not None:
             patch["max_active"] = int(max_active)
         if capacity_units is not None:
             patch["capacity_units"] = int(capacity_units)
-        if monthly_budget_usd is not None:
-            patch["monthly_budget_usd"] = float(monthly_budget_usd)
         if enabled is not None:
             patch["enabled"] = bool(enabled)
         if patch:
             ref.update(patch)
-        if max_active is not None:
-            # The tenant pool is what the scheduler actually enforces, so the
-            # document and the pool must move together or the limit is a lie.
-            self.upsert_pool(f"tenant:{tenant_id}", hard_limit=int(max_active))
+        if max_active is not None or capacity_units is not None:
+            effective = min(
+                int(max_active if max_active is not None else current.max_active),
+                int(
+                    capacity_units
+                    if capacity_units is not None
+                    else current.capacity_units
+                ),
+            )
+            self.upsert_pool(f"tenant:{tenant_id}", hard_limit=effective)
         return tenant_from_dict(ref.get().to_dict())
 
     def register_credential(self, tenant_id: str, provider: str) -> Tenant:

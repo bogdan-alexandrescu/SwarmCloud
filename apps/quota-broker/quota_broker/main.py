@@ -33,14 +33,45 @@ from .settings import BrokerSettings
 
 log = logging.getLogger(__name__)
 
-#: `swarm-t-<tenant>@<project>.iam.gserviceaccount.com` -> `<tenant>`. The
-#: spelling is produced by the API when it provisions a tenant, so the two must
-#: change together.
-_WORKER_SA = re.compile(r"^swarm-t-(?P<tenant>[a-z0-9-]+)@[^@]+\.iam\.gserviceaccount\.com$")
+#: Prefixes the two provisioning paths use for a tenant's worker service
+#: account: terraform's `tenancy` module writes `swarm-agent-worker-<tenant>`,
+#: scripts/register-tenant.sh writes `swarm-t-<tenant>`. Both are accepted
+#: because both really exist; nothing else is.
+WORKER_SA_PREFIXES = ("swarm-agent-worker", "swarm-t")
+
+
+def worker_sa_pattern(project_id: str) -> re.Pattern[str]:
+    """`swarm-agent-worker-<tenant>@<THIS project>...` -> `<tenant>`.
+
+    The project id is PINNED. With `[^@]+` in its place, a service account named
+    `swarm-agent-worker-eng` in an ATTACKER'S own Google Cloud project produces a
+    genuine, Google-signed OIDC token that satisfies this pattern, and the broker
+    would authorize it as tenant `eng` -- able to report 429s and exhaustion
+    against them, and to read their quota state. Cloud Run's internal ingress and
+    invoker IAM would be the only thing in the way, which makes this app-level
+    check load-bearing exactly where it was weakest.
+    """
+    if not project_id:
+        raise ValueError(
+            "PROJECT_ID is required: without it the worker service account "
+            "pattern cannot be pinned to this project and any project's "
+            "similarly-named service account would authenticate as a tenant"
+        )
+    alternatives = "|".join(re.escape(p) for p in WORKER_SA_PREFIXES)
+    return re.compile(
+        rf"^(?:{alternatives})-(?P<tenant>[a-z0-9-]+)@"
+        rf"{re.escape(project_id)}\.iam\.gserviceaccount\.com$"
+    )
 
 
 class BrokerAuthError(Exception):
-    pass
+    """The caller is not who they need to be. Answered with 403."""
+
+
+class BrokerValidationError(Exception):
+    """The caller is allowed, but the request names something that does not
+    exist. Answered with 422: reporting it as 403 would send an operator
+    hunting for a missing IAM grant that was never the problem."""
 
 
 class StrictModel(BaseModel):
@@ -110,13 +141,36 @@ class BrokerMetrics:
 
 
 class WorkerIdentity:
-    """Verifies the caller's Google ID token and derives its tenant."""
+    """Verifies the caller's Google ID token and derives its tenant.
+
+    `required=False` makes every anonymous caller a PLATFORM caller, which is
+    how `REQUIRE_OIDC=false` turned a dev convenience into "anyone may set any
+    tenant's hard max and run the sweep". It is accepted only in a local
+    environment now, and `hardened` refuses the combination outright rather than
+    letting a deployment inherit it from a copied .env.
+    """
 
     def __init__(self, *, audience: str = "", platform_accounts: tuple[str, ...] = (),
-                 required: bool = True) -> None:
+                 required: bool = True, project_id: str = "",
+                 hardened: bool = False) -> None:
+        if hardened:
+            if not required:
+                raise ValueError(
+                    "REQUIRE_OIDC=false is refused outside local development: with "
+                    "it off every unauthenticated caller is treated as a platform "
+                    "administrator, able to set any tenant's hard max and run the "
+                    "quota sweep"
+                )
+            if not audience:
+                raise ValueError(
+                    "BROKER_AUDIENCE is required outside local development: "
+                    "google-auth skips the 'aud' check entirely when no audience is "
+                    "given, so a token minted for any other service would be accepted"
+                )
         self._audience = audience or None
         self._platform = {a.lower() for a in platform_accounts if a}
         self._required = required
+        self._pattern = worker_sa_pattern(project_id) if required else None
         self._request = None
 
     @property
@@ -145,7 +199,7 @@ class WorkerIdentity:
         email = str(claims.get("email", "")).lower()
         if email in self._platform:
             return None, True
-        match = _WORKER_SA.match(email)
+        match = self._pattern.match(email) if self._pattern else None
         if not match:
             raise BrokerAuthError("caller is not a swarm worker service account")
         return match.group("tenant"), False
@@ -155,7 +209,10 @@ def _known_provider(provider: str) -> str:
     providers = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
     name = provider.strip().lower()
     if name not in providers:
-        raise BrokerAuthError(f"unknown provider {provider!r}")
+        raise BrokerValidationError(
+            f"unknown provider {provider!r}; known providers are "
+            + ", ".join(sorted(providers))
+        )
     return name
 
 
@@ -190,6 +247,7 @@ def create_app(
     app = FastAPI(title="swarm quota broker", version="0.1.0")
     app.state.broker = broker if broker is not None else build_broker()
     app.state.metrics = metrics or BrokerMetrics()
+    environment = os.environ.get("ENVIRONMENT", "dev").strip().lower()
     app.state.identity = identity or WorkerIdentity(
         audience=os.environ.get("BROKER_AUDIENCE", ""),
         platform_accounts=tuple(
@@ -199,6 +257,8 @@ def create_app(
         ),
         required=os.environ.get("REQUIRE_OIDC", "true").strip().lower()
         not in {"0", "false", "no", "off"},
+        project_id=os.environ.get("PROJECT_ID", ""),
+        hardened=environment not in {"dev", "test", "local"},
     )
 
     def _authorize(request: Request, authorization: str | None, tenant_id: str) -> str:
@@ -222,6 +282,15 @@ def create_app(
         return JSONResponse(
             status_code=403,
             content={"code": "forbidden", "message": str(exc)},
+        )
+
+    @app.exception_handler(BrokerValidationError)
+    async def validation_handler(request: Request, exc: BrokerValidationError) -> Response:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=422,
+            content={"code": "validation_failed", "message": str(exc)},
         )
 
     @app.get("/healthz")
@@ -378,4 +447,12 @@ if __name__ == "__main__":  # pragma: no cover
     main()
 
 
-__all__ = ["BrokerMetrics", "WorkerIdentity", "build_broker", "create_app", "ProviderState"]
+__all__ = [
+    "BrokerAuthError",
+    "BrokerMetrics",
+    "BrokerValidationError",
+    "ProviderState",
+    "WorkerIdentity",
+    "build_broker",
+    "create_app",
+]

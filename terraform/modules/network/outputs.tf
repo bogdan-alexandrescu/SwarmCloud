@@ -38,3 +38,8 @@ output "nat_addresses" {
 output "internal_ranges" {
   value = local.internal_ranges
 }
+
+output "worker_network_tag" {
+  description = "Network tag the Cloud Run Jobs module must stamp on worker instances for the deny rule to reach them."
+  value       = var.worker_network_tag
+}

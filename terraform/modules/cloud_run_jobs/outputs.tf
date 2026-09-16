@@ -8,16 +8,16 @@ output "job_ids" {
 
 output "workspace_size_gib" {
   description = <<-EOT
-    Effective workspace size per job. Note this is min(profile disk, container
-    memory), not the profile's disk_gib: Cloud Run's disk-backed ephemeral
-    storage is still Preview and the provider exposes only memory-medium
-    volumes. Surface it so the sizing gap is visible in `terraform output`
-    rather than discovered by a worker running out of space mid-run.
+    Effective workspace size per job. This is a FRACTION OF CONTAINER MEMORY,
+    not the profile's disk_gib: Cloud Run's disk-backed ephemeral storage is
+    still Preview and the provider exposes only memory-medium volumes. Surface
+    it so the sizing gap is visible in `terraform output` rather than discovered
+    by a worker running out of space mid-run.
   EOT
-  value = {
-    for k, v in var.jobs : k => min(
-      var.resource_classes[v.resource_class].disk_gib,
-      var.resource_classes[v.resource_class].memory_gib
-    )
-  }
+  value       = { for k, v in var.jobs : k => local.workspace_gib[v.resource_class] }
+}
+
+output "workspace_size_gib_by_class" {
+  description = "resource class -> workspace GiB, so a test can assert the workspace never claims a container's whole memory limit."
+  value       = local.workspace_gib
 }

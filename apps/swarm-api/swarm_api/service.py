@@ -82,11 +82,17 @@ class SubmissionService:
     def tenant_for(self, ctx: AuthContext) -> Tenant:
         tenant = self._store.ensure_tenant(
             ctx.tenant_id,
-            principal=ctx.email,
+            # The TENANT's principal (the group, for a group tenant), never the
+            # caller's: a tenant is shared by every member of its group, and the
+            # store compares this against the stored value to refuse two
+            # different groups whose ids collide.
+            principal=ctx.tenant_principal or ctx.email,
             default_max_active=self._settings.core.default_tenant_max_active,
             default_capacity_units=self._settings.core.default_tenant_capacity_units,
             project_id=self._settings.project_id,
             artifact_bucket=self._settings.core.artifact_bucket,
+            service_account_prefix=self._settings.tenant_service_account_prefix,
+            namespace_prefix=self._settings.tenant_namespace_prefix,
         )
         if not tenant.enabled:
             raise Forbidden(f"tenant {tenant.tenant_id!r} is disabled")

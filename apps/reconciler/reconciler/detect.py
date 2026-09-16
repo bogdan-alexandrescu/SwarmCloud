@@ -22,7 +22,8 @@ yet. Dispatch takes time, image pulls take minutes, and a reconciler that treats
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any, Iterable
@@ -72,6 +73,58 @@ class Finding:
             FindingKind.ORPHAN_EXECUTION,
             FindingKind.OBSOLETE_GENERATION,
         ) or (self.execution is not None and self.execution.is_active)
+
+
+_NAME_SAFE = re.compile(r"[^a-z0-9-]+")
+
+
+def sanitised(value: str) -> str:
+    """The shape an identifier takes once it has been through a label.
+
+    Mirrors the dispatcher's `sanitize_name` for the cases that matter here:
+    `task_9f3a` becomes `task-9f3a`. Reproducing it is what lets a label-derived
+    identifier be matched back to the Firestore document it names.
+    """
+    slug = _NAME_SAFE.sub("-", str(value).lower()).strip("-")
+    return re.sub(r"-{2,}", "-", slug)
+
+
+def _resolve(value: str | None, index: dict[str, str]) -> str | None:
+    """Map a possibly-sanitised identifier back to the real one."""
+    if not value:
+        return None
+    return index.get(sanitised(value), value)
+
+
+def normalise_executions(
+    snapshot: ControlSnapshot, executions: Iterable[ExecutionView]
+) -> list[ExecutionView]:
+    """Resolve label-derived identifiers back to control-plane document ids.
+
+    A backend that could only read an identifier from a label hands us a
+    sanitised copy of it -- `task-9f3a` where Firestore holds `task_9f3a`. Left
+    alone, that fails every lookup in this module, and an execution whose task
+    cannot be found is an orphan, which gets terminated. Terminating a healthy
+    agent because of a character-class rule is not a trade worth making, so the
+    ids are resolved against the snapshot before any rule runs.
+    """
+    task_index = {sanitised(task_id): task_id for task_id in snapshot.tasks}
+    attempt_index = {
+        sanitised(attempt_id): attempt_id
+        for attempt_id in {
+            *snapshot.attempts.keys(),
+            *(lease.attempt_id for lease in snapshot.leases.values() if lease.attempt_id),
+        }
+    }
+    resolved: list[ExecutionView] = []
+    for execution in executions:
+        task_id = _resolve(execution.task_id, task_index)
+        attempt_id = _resolve(execution.attempt_id, attempt_index)
+        if task_id == execution.task_id and attempt_id == execution.attempt_id:
+            resolved.append(execution)
+            continue
+        resolved.append(replace(execution, task_id=task_id, attempt_id=attempt_id))
+    return resolved
 
 
 def detect_stale_leases(
@@ -355,6 +408,7 @@ def detect_all(
     an execution it has not yet stopped.
     """
     now = now or utcnow()
+    executions = normalise_executions(snapshot, executions)
     by_attempt = {
         execution.attempt_id: execution
         for execution in executions

@@ -19,7 +19,7 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker)
+ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler)
 TARGETS=()
 TAG=""
 CREATE_REPO=0

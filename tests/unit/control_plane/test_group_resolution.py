@@ -132,17 +132,92 @@ def test_results_are_cached_per_caller_and_group(session):
     assert len(session.calls) > first, "the cache must expire"
 
 
-def test_a_lookup_failure_degrades_to_the_personal_tenant(session):
+def test_a_lookup_failure_that_could_change_the_tenant_is_not_swallowed(session):
+    """Failing open here does not degrade a caller -- it MOVES them.
+
+    The tenant decides which Secret Manager secret, which GCS prefix and which
+    namespace the work runs under. A caller quietly demoted to `u-alice` during a
+    Cloud Identity blip submits tasks their group cannot see afterwards, which may
+    park as CREDENTIAL_MISSING or run against a different key. A 503 they retry is
+    the cheaper failure.
+    """
     session.fail_lookup = {"eng@saga.xyz"}
     resolved = resolver(session)
 
     with pytest.raises(GroupLookupError):
         resolved.group_resource_name("eng@saga.xyz")
 
-    # groups_for swallows it: one flaky group must not take down the API.
-    assert resolved.groups_for("alice@saga.xyz", ("eng@saga.xyz",)) == ()
-    principal = Principal(email="alice@saga.xyz", subject="s", domain="saga.xyz", groups=())
-    assert resolve_tenant(principal, ("eng@saga.xyz",)) == "u-alice"
+    with pytest.raises(GroupLookupError):
+        resolved.groups_for("alice@saga.xyz", ("eng@saga.xyz",))
+
+
+def test_a_failure_below_a_confirmed_match_cannot_change_the_tenant_and_is_swallowed(
+    session,
+):
+    """One flaky group must not take down the API when it changes no answer.
+
+    `candidate_groups` arrives in admin priority order and `resolve_tenant` takes
+    the FIRST match, so a group that could only ever lose to `eng` is irrelevant
+    to alice's tenant however it answers.
+    """
+    session.fail_lookup = {"research@saga.xyz"}
+    resolved = resolver(session)
+
+    found = resolved.groups_for("alice@saga.xyz", ("eng@saga.xyz", "research@saga.xyz"))
+    assert found == ("eng@saga.xyz",)
+    principal = Principal(email="alice@saga.xyz", subject="s", domain="saga.xyz", groups=found)
+    assert resolve_tenant(principal, ("eng@saga.xyz", "research@saga.xyz")) == "eng"
+
+
+def test_a_failure_above_a_confirmed_match_is_raised(session):
+    """bob is in `research`, but `eng` outranks it and did not answer.
+
+    Returning `research` here would file bob's work under the wrong tenant if he
+    was in fact also a member of `eng`.
+    """
+    session.fail_lookup = {"eng@saga.xyz"}
+    resolved = resolver(session)
+
+    with pytest.raises(GroupLookupError):
+        resolved.groups_for("bob@saga.xyz", ("eng@saga.xyz", "research@saga.xyz"))
+
+
+def test_an_unresolvable_tenant_is_a_503_not_a_silent_tenant_switch(db, tokens, group_map):
+    """End to end through the real app: the request fails, it does not move."""
+    from fastapi.testclient import TestClient
+
+    from swarm_api.deps import build_context
+    from swarm_api.auth import StaticTokenVerifier
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.main import create_app
+    from swarm_api.waker import NullWaker
+
+    from .conftest import api_settings
+
+    class BrokenGroups:
+        def groups_for(self, member_email, candidate_groups):
+            raise GroupLookupError("cloud identity is having a bad minute")
+
+    ctx = build_context(
+        settings=api_settings(),
+        db=db,
+        verifier=StaticTokenVerifier(tokens),
+        groups=BrokenGroups(),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/tasks",
+        headers={"Authorization": "Bearer token-alice"},
+        json={"runner_profile": "mock"},
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "upstream_unavailable"
+    # And nothing was filed under the personal tenant.
+    assert not [path for path in db.docs if path.startswith("tasks/")]
+    assert "tenants/u-alice" not in db.docs
 
 
 def test_group_priority_is_deterministic_for_multi_group_members(session):

@@ -1,0 +1,209 @@
+# Terraform checks on every pull request that touches infrastructure.
+#
+# This workflow PLANS and never applies. Applying is release.yml's job, behind a
+# GitHub Environment approval, because saga-agents-staging is a SHARED project:
+# a plan that would delete another team's cluster must be read by a person
+# before anyone can approve it.
+#
+# Authentication is Workload Identity Federation. There are no downloadable
+# service account keys in this repository, and none should ever be added -- a key
+# is a credential with no expiry, no rotation and no record of where it was
+# copied. See terraform/bootstrap/wif.tf, where the attribute condition pins both
+# the repository and the allowed refs.
+
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to plan"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write        # required to mint the WIF token
+  pull-requests: write   # to post the plan summary
+
+concurrency:
+  # Terraform takes a state lock. Two runs of the same environment would have one
+  # of them waiting on a lock for its whole timeout.
+  group: terraform-${{ github.event.inputs.environment || 'dev' }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TERRAFORM_VERSION: "1.16.2"
+  TFLINT_VERSION: "v0.64.0"
+  CHECKOV_VERSION: "3.3.17"
+  TF_ROOT: terraform/infra
+
+jobs:
+  validate:
+    name: fmt / validate / tflint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff terraform
+
+      - name: terraform init (no backend)
+        # -backend=false validates configuration without touching remote state,
+        # so this job needs no cloud credentials at all.
+        run: terraform -chdir=${{ env.TF_ROOT }} init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform -chdir=${{ env.TF_ROOT }} validate
+
+      - name: validate every module in isolation
+        # A module that only validates through the root can hide a broken
+        # variable default that a future caller would hit.
+        run: |
+          set -euo pipefail
+          for dir in terraform/modules/*/ terraform/bootstrap/; do
+            echo "==> ${dir}"
+            terraform -chdir="${dir}" init -backend=false -input=false >/dev/null
+            terraform -chdir="${dir}" validate
+          done
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: tflint
+        run: |
+          tflint --init --chdir=terraform
+          tflint --chdir=terraform --recursive --format=compact
+
+  checkov:
+    name: checkov
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install checkov
+        run: pip install "checkov==${CHECKOV_VERSION}"
+
+      - name: scan
+        # Inline `checkov:skip=` comments in the Terraform carry the reasoning
+        # for each accepted finding, so they are reviewable in a diff.
+        run: checkov -d terraform --quiet --compact --framework terraform
+
+  plan:
+    name: plan (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-24.04
+    needs: [validate]
+    environment: ${{ github.event.inputs.environment || 'dev' }}-plan
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          terraform -chdir=${{ env.TF_ROOT }} init -input=false -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="prefix=infra/${ENVIRONMENT}"
+
+      - name: terraform plan
+        id: plan
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          # -out is relative to -chdir, but a shell redirection is not, so both
+          # derived files are written explicitly under the root.
+          terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=120s \
+            -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
+            -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
+          terraform -chdir=${{ env.TF_ROOT }} show -json plan.tfplan > "${TF_ROOT}/plan.json"
+
+      - name: shared-project guard
+        # The same assertion make destroy makes, applied to a CREATE plan: no
+        # change may target a resource owned by another team, and everything we
+        # create must carry managed-by=swarm-terraform so it can be safely
+        # destroyed later. An unlabelled resource is one nobody can clean up.
+        run: |
+          set -euo pipefail
+          deny='["agents-staging","agents-staging-vpc","agents-staging-subnet",
+                 "saga-agents-crawled-media-staging","saga-agents-files-staging",
+                 "saga-agents-terraform-state-staging"]'
+          offenders="$(jq -r --argjson deny "${deny}" '
+            [ .resource_changes[]?
+              | select(.change.actions | index("no-op") | not)
+              | . as $rc
+              | ($rc.change.after.name // $rc.change.before.name // "") as $name
+              | select(($deny | index($name)) != null)
+              | "\($rc.address)  \($name)" ] | .[]' terraform/infra/plan.json)"
+          if [ -n "${offenders}" ]; then
+            echo "::error::plan touches resources owned by other teams:"
+            echo "${offenders}"
+            exit 1
+          fi
+          echo "no shared resources in this plan"
+
+      - name: summarise
+        run: |
+          {
+            echo "### Terraform plan (${{ github.event.inputs.environment || 'dev' }})"
+            echo
+            echo '```'
+            tail -c 60000 terraform/infra/plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: comment on the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('terraform/infra/plan.txt', 'utf8');
+            const clipped = body.length > 60000 ? body.slice(-60000) : body;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform plan (dev)\n\n<details><summary>plan output</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`,
+            });
+
+      - name: upload the human-readable plan
+        # Only the text plan, which Terraform already renders with sensitive
+        # attributes masked. The binary plan and plan.json are NOT uploaded:
+        # both can contain sensitive attribute values in cleartext, and an
+        # artifact is readable by everyone with repository access. release.yml
+        # re-plans immediately before applying rather than trusting an artifact,
+        # which is also the only way an apply reflects the state as it is now.
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-text-${{ github.event.inputs.environment || 'dev' }}
+          path: terraform/infra/plan.txt
+          retention-days: 5

@@ -1,0 +1,249 @@
+# Security scanning.
+#
+# Runs on every pull request AND on a weekly schedule. The schedule is the
+# important half: a dependency that was clean when it merged is not clean
+# forever, and a vulnerability disclosed after merge is invisible to PR-only
+# scanning until someone happens to touch that file.
+#
+# Findings are uploaded as SARIF so they appear in the repository's Security tab
+# with file and line annotations, rather than only in a log nobody re-reads.
+
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # to upload SARIF
+  id-token: write          # WIF, for scanning published images
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRIVY_VERSION: "0.74.0"
+  CHECKOV_VERSION: "3.3.17"
+
+jobs:
+  filesystem:
+    name: trivy (repo)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: "0"        # report everything; the gate is the next step
+          version: v${{ env.TRIVY_VERSION }}
+
+      - name: upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: fail on fixable HIGH/CRITICAL
+        # --ignore-unfixed on purpose: failing a build for a vulnerability with
+        # no available fix teaches people to ignore the build, and the finding is
+        # still recorded in the Security tab above.
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+          version: v${{ env.TRIVY_VERSION }}
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a key removed in the latest commit is still a leaked
+          # key if it is reachable anywhere in the branch.
+          fetch-depth: 0
+
+      - name: trivy secret scan (history)
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
+
+      - name: no service account keys in the repository
+        # WIF exists so that no downloadable key is ever needed. A committed key
+        # is a credential with no expiry and no record of where it was copied.
+        run: |
+          set -euo pipefail
+          # Scan TRACKED files only, via git ls-files. Scanning the working tree
+          # would match vendored library source (cryptography and google-auth
+          # both contain PEM header literals) and report a leak that is not one.
+          fail=0
+          if git ls-files -z | xargs -0 grep -lIE '"type"[[:space:]]*:[[:space:]]*"service_account"' 2>/dev/null; then
+            echo "::error::a Google service account key appears to be committed"
+            fail=1
+          fi
+          if git ls-files -z | xargs -0 grep -nIE -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 2>/dev/null; then
+            echo "::error::a private key appears to be committed"
+            fail=1
+          fi
+          if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
+          exit "${fail}"
+
+  iac:
+    name: checkov (terraform + kubernetes)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install checkov
+        run: pip install "checkov==${CHECKOV_VERSION}"
+
+      - name: scan terraform
+        run: |
+          set -euo pipefail
+          checkov -d terraform --framework terraform \
+            --output cli --output sarif --output-file-path console,checkov-tf.sarif \
+            --compact
+
+      - name: scan kubernetes manifests
+        run: |
+          set -euo pipefail
+          if compgen -G "kubernetes/**/*.yaml" >/dev/null 2>&1 || [ -d kubernetes ]; then
+            checkov -d kubernetes --framework kubernetes \
+              --output cli --output sarif --output-file-path console,checkov-k8s.sarif \
+              --compact
+          else
+            echo "no manifests yet"
+          fi
+
+      - name: upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-tf.sarif
+          category: checkov-terraform
+
+  policy:
+    name: platform policy assertions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: no Spot anywhere
+        # Verified constraint: Spot Pods cannot use GKE Autopilot extended run
+        # time, so Spot and the platform's no-preemption requirement are
+        # mutually exclusive. The frozen catalogue raises at import if a profile
+        # tries; this catches the Terraform and manifest sides.
+        run: |
+          set -euo pipefail
+          fail=0
+          # Terraform must never ASK for spot or preemptible capacity.
+          if grep -rnIE '(spot|preemptible)[[:space:]]*=[[:space:]]*true' \
+               --exclude-dir=.git --exclude-dir=.terraform terraform 2>/dev/null; then
+            echo "::error::Spot/preemptible capacity is disabled platform-wide"
+            fail=1
+          fi
+          # Worker pods must never SELECT or TOLERATE spot nodes. The admission
+          # policies in kubernetes/policies/ mention the same label in order to
+          # REJECT it, so only the templates are checked here.
+          if [ -d kubernetes/worker-templates ] \
+             && grep -rnIE 'cloud\.google\.com/gke-spot' kubernetes/worker-templates 2>/dev/null; then
+            echo "::error::a worker template requests Spot capacity"
+            fail=1
+          fi
+          if [ "${fail}" -eq 0 ]; then echo "no spot configuration"; fi
+          exit "${fail}"
+
+      - name: no public Cloud Run services
+        # allUsers on a control-plane service would put an agent-execution API on
+        # the public internet with no identity behind it.
+        run: |
+          set -euo pipefail
+          # Only actual GRANTS, not the variable validations that exist to
+          # forbid them -- terraform/infra/variables.tf and two modules refuse
+          # allUsers by name, and those lines must not fail this check.
+          if grep -rnIE 'members?[[:space:]]*=[[:space:]]*\[?[[:space:]]*"(allUsers|allAuthenticatedUsers)"' \
+               --exclude-dir=.git --exclude-dir=.terraform terraform 2>/dev/null; then
+            echo "::error::a public IAM member is granted in the Terraform"
+            exit 1
+          fi
+          echo "no public bindings"
+
+      - name: destroy guard still catches offenders
+        # This guard is the only thing between `make destroy` and another team's
+        # live cluster in the shared project. It is verified here as well as in
+        # `make test`, because it is security-critical rather than merely tested.
+        run: ./scripts/destroy.sh --self-test
+
+      - name: the frozen contract is intact
+        run: |
+          set -euo pipefail
+          for f in states.py models.py profiles.py admission.py config.py identity.py; do
+            test -f "apps/common/swarm_common/${f}" || { echo "::error::missing ${f}"; exit 1; }
+          done
+          # Spot must remain impossible to configure through the catalogue.
+          grep -q 'Spot is disabled platform-wide' apps/common/swarm_common/profiles.py \
+            || { echo "::error::the Spot guard has been removed from profiles.py"; exit 1; }
+          echo "contract present"
+
+  images:
+    name: trivy (published images)
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Scheduled only: this scans what is DEPLOYED, which is the question a PR
+    # cannot answer. A base-image CVE published today affects a running fleet
+    # that no pull request is touching.
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: scan the current channel images
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
+          status=0
+          for image in agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler; do
+            echo "==> ${image}:dev"
+            trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1
+          done
+          exit "${status}"

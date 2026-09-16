@@ -81,10 +81,26 @@ def validate_resource_class_override(profile: RunnerProfile, requested: str | No
             detail={"known_resource_classes": sorted(RESOURCE_CLASSES)},
         )
     base = RESOURCE_CLASSES[profile.resource_class]
-    if target.cpu > base.cpu or target.memory_gib > base.memory_gib or target.units > base.units:
+    # Every dimension, which is what the guarantee above says. `disk_gib` was
+    # missing: it is not exploitable with the current three-class catalogue,
+    # where disk rises with cpu and memory, but the check is the stated promise
+    # and a fourth class with a big disk and a small CPU would walk straight
+    # through the gap.
+    larger = [
+        dimension
+        for dimension, requested_value, base_value in (
+            ("cpu", target.cpu, base.cpu),
+            ("memory_gib", target.memory_gib, base.memory_gib),
+            ("disk_gib", target.disk_gib, base.disk_gib),
+            ("units", target.units, base.units),
+        )
+        if requested_value > base_value
+    ]
+    if larger:
         raise ValidationFailed(
             f"resource_class {requested!r} is larger than runner_profile "
-            f"{profile.name!r} permits ({profile.resource_class!r})"
+            f"{profile.name!r} permits ({profile.resource_class!r})",
+            detail={"larger_in": larger},
         )
     return requested
 

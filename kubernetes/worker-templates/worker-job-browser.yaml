@@ -1,0 +1,151 @@
+# The browser worker Job: `worker-job.yaml` plus shared memory for Chromium.
+#
+# The `browser` profile is the reason the GKE path exists at all. Chromium's
+# renderer processes communicate through /dev/shm, and the container runtime
+# default of 64 MiB is what makes headless Chrome crash under load with
+# "Target closed" -- an error that looks like a flaky site and is not. Cloud Run
+# gives no way to size /dev/shm, so the frozen catalogue pins this profile to
+# Autopilot, where an `emptyDir` with `medium: Memory` mounted at /dev/shm can
+# be sized directly.
+#
+# That emptyDir counts against the container's memory limit, which is why the
+# `browser` resource class is 16 GiB rather than 8: 2 GiB of it is shared memory
+# before Chromium has allocated a single tab.
+#
+# Chromium's own sandbox stays OFF, and the runner passes
+# `chromium_sandbox=False`. It needs user namespaces and CAP_SYS_ADMIN, and this
+# pod drops every capability. The isolation here is the pod and the namespace --
+# non-root, no privilege escalation, seccomp RuntimeDefault, default-deny
+# NetworkPolicy -- not Chromium's inner sandbox, and handing a capability back to
+# regain the latter would be a bad trade.
+#
+# `readOnlyRootFilesystem` is true here as well; Chromium writes its profile and
+# crash dumps under $HOME, which is a writable emptyDir, and its browser bundle
+# under /opt/playwright is read at runtime and never written.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-scheduler
+    swarm-tenant: __TENANT_ID__
+    swarm-profile: __RUNNER_PROFILE__
+    swarm-task: __TASK_LABEL__
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/component: agent-worker
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    swarm.saga.xyz/task-id: __TASK_ID__
+    swarm.saga.xyz/attempt-id: __ATTEMPT_ID__
+    swarm.saga.xyz/generation: "__GENERATION__"
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-scheduler
+        swarm-tenant: __TENANT_ID__
+        swarm-task: __TASK_LABEL__
+        app.kubernetes.io/part-of: swarm
+        app.kubernetes.io/component: agent-worker
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: __KSA_NAME__
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __DISK__
+            limits:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __DISK__
+          env:
+            - name: TASK_ID
+              value: __TASK_ID__
+            - name: ATTEMPT_ID
+              value: __ATTEMPT_ID__
+            - name: LEASE_ID
+              value: __LEASE_ID__
+            - name: GENERATION
+              value: "__GENERATION__"
+            - name: TENANT_ID
+              value: __TENANT_ID__
+            - name: RUNNER_PROFILE
+              value: __RUNNER_PROFILE__
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: REGION
+              value: __REGION__
+            - name: FIRESTORE_DATABASE
+              value: __FIRESTORE_DATABASE__
+            - name: ARTIFACT_BUCKET
+              value: __ARTIFACT_BUCKET__
+            - name: GCS_PREFIX
+              value: __GCS_PREFIX__
+            - name: WORKSPACE_ROOT
+              value: /workspace
+            - name: CHECKPOINT_INTERVAL_SECONDS
+              value: "__CHECKPOINT_INTERVAL_SECONDS__"
+            - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
+              value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
+            - name: TASK_TIMEOUT_SECONDS
+              value: "__TIMEOUT_SECONDS__"
+            # Playwright's browser bundle lives in the image, outside the
+            # writable paths, and must not be re-downloaded into the workspace.
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: /opt/playwright
+            __SECRET_ENV__
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: dshm
+              mountPath: /dev/shm
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/swarm
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: __DISK__
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 4Gi

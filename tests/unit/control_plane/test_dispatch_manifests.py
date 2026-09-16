@@ -51,9 +51,9 @@ def tenant() -> Tenant:
         kind="group",
         principal="eng@saga.xyz",
         created_at=NOW,
-        service_account=f"swarm-t-eng@{PROJECT}.iam.gserviceaccount.com",
+        service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
-        namespace="swarm-eng",
+        namespace="swarm-tenant-eng",
     )
 
 
@@ -293,7 +293,7 @@ def test_browser_work_goes_to_gke_with_a_real_dev_shm(settings, tenant):
     dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
 
     namespace, body = api.created[0]
-    assert namespace == "swarm-eng", "a tenant's pods live in that tenant's namespace"
+    assert namespace == "swarm-tenant-eng", "a tenant's pods live in that tenant's namespace"
     volumes = {v["name"]: v for v in body["spec"]["template"]["spec"]["volumes"]}
     assert volumes["dshm"]["emptyDir"]["medium"] == "Memory"
     assert volumes["dshm"]["emptyDir"]["sizeLimit"] == "2Gi", (
@@ -385,3 +385,324 @@ def test_router_refuses_an_unresolved_backend(settings):
     router = BackendRouter(cloud_run=object(), gke=object(), settings=settings)
     with pytest.raises(DispatchError):
         router.for_backend(Backend.AUTO)
+
+
+# -- the container is sized from the TASK's class, not the profile's --------
+
+def make_overridden_task(profile_name: str, resource_class: str) -> Task:
+    """A workflow step that named a SMALLER named class than its profile.
+
+    `validate_resource_class_override` permits nothing larger, and admission has
+    always charged the task's class: `pool_names_for(resource_class=
+    task.resource_class)` and `RESOURCE_CLASSES[task.resource_class].units` both
+    read it inside the frozen transaction.
+    """
+    task = make_task(profile_name)
+    task.resource_class = resource_class
+    return task
+
+
+def test_cloud_run_sizes_the_container_from_the_task_not_the_profile(settings, tenant):
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES["browser"]                     # browser: 8 cpu / 16 GiB
+    task = make_overridden_task("browser", "standard")       # standard: 4 cpu / 8 GiB
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    job = client.created[0]["job"]
+    container = job.template.template.containers[0]
+    rc = RESOURCE_CLASSES["standard"]
+    assert container.resources.limits["cpu"] == str(int(rc.cpu))
+    assert container.resources.limits["memory"] == f"{rc.memory_gib}Gi"
+    assert job.template.template.volumes[0].empty_dir.size_limit == f"{rc.disk_gib}Gi"
+
+
+def test_an_overridden_class_gets_its_own_cloud_run_job(settings, tenant):
+    """Cloud Run pins sizing on the JOB, so one Job cannot express two sizes.
+
+    Without this the smaller class is charged at admission and the container runs
+    at the profile's full size anyway -- capacity reserved against a pool that
+    does not govern the workload, at the wrong weight.
+    """
+    assert job_id_for("eng", "browser") == "swarm-eng-browser"
+    assert job_id_for("eng", "browser", "browser") == "swarm-eng-browser", (
+        "the profile's own class is the common case and keeps one Job per "
+        "(tenant, profile)"
+    )
+    assert job_id_for("eng", "browser", "standard") == "swarm-eng-browser-standard"
+
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES["browser"]
+    for task in (make_task("browser"), make_overridden_task("browser", "standard")):
+        dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert [job["job_id"] for job in client.created] == [
+        "swarm-eng-browser",
+        "swarm-eng-browser-standard",
+    ]
+
+
+def test_gke_sizes_the_container_from_the_task_not_the_profile(settings, tenant):
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_overridden_task("browser", "standard")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+    )
+
+    container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
+    rc = RESOURCE_CLASSES["standard"]
+    assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
+    assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
+    assert container["resources"]["limits"]["ephemeral-storage"] == f"{rc.disk_gib}Gi"
+    assert container["resources"]["requests"] == container["resources"]["limits"]
+
+
+# -- pod hardening ---------------------------------------------------------
+
+def gke_pod_spec(settings, tenant, profile_name: str = "browser") -> dict:
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_task(profile_name)
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    return api.created[0][1]["spec"]["template"]["spec"]
+
+
+def test_gke_pod_runs_non_root_with_no_privilege_escalation(settings, tenant):
+    """Untrusted agent code, on a cluster shared with other tenants' pods.
+
+    kubernetes/namespaces/tenant-namespace.yaml holds Pod Security Admission at
+    `enforce: baseline` rather than `restricted` because this manifest used to
+    carry no securityContext at all.
+    """
+    spec = gke_pod_spec(settings, tenant)
+
+    pod = spec["securityContext"]
+    assert pod["runAsNonRoot"] is True
+    assert pod["runAsUser"] == 10001
+    assert pod["seccompProfile"] == {"type": "RuntimeDefault"}
+
+    container = spec["containers"][0]["securityContext"]
+    assert container["allowPrivilegeEscalation"] is False
+    assert container["privileged"] is False
+    assert container["readOnlyRootFilesystem"] is True
+    assert container["capabilities"] == {"drop": ["ALL"]}
+    assert container["seccompProfile"] == {"type": "RuntimeDefault"}
+
+
+def test_gke_pod_gets_no_kubernetes_api_token(settings, tenant):
+    """The worker never calls the Kubernetes API, and a mounted token is the
+    first thing a prompt injection or a malicious repository reaches for."""
+    assert gke_pod_spec(settings, tenant)["automountServiceAccountToken"] is False
+
+
+def test_gke_pod_runs_as_the_ksa_the_workload_identity_binding_was_issued_for(
+    settings, tenant
+):
+    """The KSA is not derived from the tenant id.
+
+    Terraform binds `<pool>[<namespace>/<ksa_name>]` with `ksa_name` defaulting
+    to `swarm-agent-worker`; the NAMESPACE is what makes the binding per-tenant.
+    A pod asking for any other KSA gets no Google identity at all, so it cannot
+    read its tenant's secret, its GCS prefix or Firestore.
+    """
+    spec = gke_pod_spec(settings, tenant)
+    assert spec["serviceAccountName"] == "swarm-agent-worker"
+
+
+def test_the_ksa_name_is_configurable_for_a_differently_provisioned_cluster(
+    settings, tenant
+):
+    from .conftest import scheduler_settings
+
+    other = scheduler_settings(worker_ksa_name="swarm-worker")
+    assert gke_pod_spec(other, tenant)["serviceAccountName"] == "swarm-worker"
+
+
+def test_the_worker_has_writable_paths_under_a_read_only_root(settings, tenant):
+    """readOnlyRootFilesystem is only safe if every written path is a volume."""
+    spec = gke_pod_spec(settings, tenant)
+    mounts = {m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
+    assert {"/workspace", "/dev/shm", "/tmp", "/home/swarm"} <= mounts
+    volumes = {v["name"] for v in spec["volumes"]}
+    assert {"workspace", "dshm", "tmp", "home"} <= volumes
+
+
+def test_the_worker_checkpoint_gets_a_grace_period(settings, tenant):
+    """The worker checkpoints on SIGTERM; the 30s default would lose the upload."""
+    assert gke_pod_spec(settings, tenant)["terminationGracePeriodSeconds"] == 120
+
+
+# -- the GKE path injects no key material ----------------------------------
+
+def test_gke_job_does_not_reference_a_kubernetes_secret_that_nothing_creates(
+    settings, tenant
+):
+    """A secretKeyRef needs a Kubernetes Secret, and nothing in this repository
+    ever creates one -- not terraform, not a SecretProviderClass, not
+    external-secrets. Every such pod fails CreateContainerConfigError while the
+    scheduler records it as DISPATCHED and holds the lease to the deadline.
+
+    The worker reads the key from Secret Manager itself under the identity this
+    pod's KSA assumes (agent_worker/secrets.py), so no injection is needed.
+    """
+    spec = gke_pod_spec(settings, tenant)
+    env = spec["containers"][0]["env"]
+
+    assert all("valueFrom" not in entry for entry in env), (
+        "the GKE path must not project from a Kubernetes Secret"
+    )
+    assert "secretKeyRef" not in repr(spec)
+    assert not any("KEY" in entry["name"] or "SECRET" in entry["name"] for entry in env)
+    # The identifiers the worker needs are still there.
+    names = {entry["name"] for entry in env}
+    assert {"TASK_ID", "TENANT_ID", "RUNNER_PROFILE", "GENERATION"} <= names
+
+
+# -- a tenant with no identity never starts a container ---------------------
+
+def test_neither_backend_will_run_work_for_a_tenant_with_no_service_account(settings):
+    """Cloud Run falls back to the project's DEFAULT compute service account
+    when a Job names none, which is shared and far more privileged than a
+    worker. A tenant whose infrastructure was never provisioned belongs back in
+    READY with a clear error."""
+    unprovisioned = Tenant(
+        tenant_id="newteam",
+        kind="group",
+        principal="newteam@saga.xyz",
+        created_at=NOW,
+        service_account=None,
+        namespace="swarm-tenant-newteam",
+    )
+    task = make_task("mock")
+
+    with pytest.raises(DispatchError) as cloud_run:
+        CloudRunJobDispatcher(settings, client=FakeJobsClient()).dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"],
+            tenant=unprovisioned,
+        )
+    assert cloud_run.value.code == "tenant_identity_missing"
+
+    browser = make_task("browser")
+    with pytest.raises(DispatchError) as gke:
+        GkeJobDispatcher(
+            settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=FakeBatchApi()
+        ).dispatch(
+            task=browser, lease=make_lease(browser), profile=RUNNER_PROFILES["browser"],
+            tenant=unprovisioned,
+        )
+    assert gke.value.code == "tenant_identity_missing"
+
+
+def test_a_dispatch_error_carries_a_code_separate_from_its_message(settings, tenant):
+    """The message is for the operator's log; only the code reaches the tenant."""
+    from google.api_core import exceptions as gexc
+
+    class Broken(FakeJobsClient):
+        def run_job(self, request):
+            raise gexc.ServiceUnavailable(
+                f"denied for {tenant.service_account} on swarm-tenant-eng-anthropic"
+            )
+
+    dispatcher = CloudRunJobDispatcher(settings, client=Broken())
+    task = make_task("mock")
+    with pytest.raises(DispatchError) as exc:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+        )
+    assert exc.value.code == "cloud_run_run_job_failed"
+    assert tenant.service_account in str(exc.value), "the log keeps the detail"
+    assert tenant.service_account not in exc.value.code
+
+
+# -- admission and dispatch agree, end to end ------------------------------
+
+def real_backend_scheduler(db, settings, batch_api):
+    """The real drain loop over the real dispatchers, with fake backend clients."""
+    from scheduler.loop import Scheduler
+    from scheduler.metrics import SchedulerMetrics
+    from scheduler.store import SchedulerStore
+
+    return Scheduler(
+        settings=settings,
+        store=SchedulerStore(db),
+        router=BackendRouter(
+            cloud_run=CloudRunJobDispatcher(settings, client=FakeJobsClient()),
+            gke=GkeJobDispatcher(
+                settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=batch_api
+            ),
+            settings=settings,
+        ),
+        metrics=SchedulerMetrics(),
+    )
+
+
+def test_the_pool_that_is_charged_is_the_pool_that_governs_the_container(db, settings):
+    """CONTRACT.md invariants 2 and 10, through the real drain loop.
+
+    Before: a `browser` step overridden to `standard` reserved `resource:standard`
+    at 1 unit and then ran an 8 cpu / 16 GiB container, so `resource:browser` --
+    the pool that actually governed the workload -- was never in the lease's
+    `required` list. An admin drain or cap on it did not stop the task, and the
+    weighted global budget was charged half of what was running.
+    """
+    from .conftest import seed_pool, seed_task, seed_tenant
+
+    api = FakeBatchApi()
+    seed_tenant(db, "eng", credentials=("anthropic",), max_active=20)
+    seed_pool(db, "global", hard_limit=100)
+    seed_pool(db, "resource:standard", hard_limit=10)
+    seed_pool(db, "resource:browser", hard_limit=10)
+    seed_task(
+        db,
+        task_id="task_override",
+        tenant_id="eng",
+        runner_profile="browser",
+        resource_class="standard",
+        provider="anthropic",
+    )
+
+    report = real_backend_scheduler(db, settings, api).drain()
+    assert report.dispatched == 1, report.to_dict()
+
+    lease = next(d for path, d in db.docs.items() if path.startswith("leases/"))
+    container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
+    charged = RESOURCE_CLASSES["standard"]
+
+    assert "resource:standard" in lease["pools"]
+    assert lease["units"] == charged.units
+    assert container["resources"]["limits"]["cpu"] == str(int(charged.cpu))
+    assert container["resources"]["limits"]["memory"] == f"{charged.memory_gib}Gi"
+    assert db.docs["pools/resource:standard"]["active"] == charged.units
+    assert db.docs["pools/resource:browser"]["active"] == 0
+
+
+def test_a_cap_on_the_class_that_runs_really_stops_the_task(db, make_scheduler):
+    """The other half: capping `resource:standard` at 0 refuses the overridden
+    step, because that is the class its container is sized at."""
+    from .conftest import seed_pool, seed_task, seed_tenant
+
+    seed_tenant(db, "eng", credentials=("anthropic",), max_active=20)
+    seed_pool(db, "global", hard_limit=100)
+    seed_pool(db, "resource:standard", hard_limit=0)
+    seed_task(
+        db,
+        task_id="task_override",
+        tenant_id="eng",
+        runner_profile="browser",
+        resource_class="standard",
+        provider="anthropic",
+    )
+
+    report = make_scheduler().drain()
+
+    assert report.leased == 0
+    assert report.denied == 1
+    blocked = db.docs["tasks/task_override"]["blocked_by"]
+    assert [entry["pool"] for entry in blocked] == ["resource:standard"]

@@ -21,6 +21,9 @@ class ExitCode:
     TIMEOUT = 76
     #: Worker could not even start (bad config, missing lease).
     CONFIG = 78
+    #: A control-plane document the worker was pointed at belongs to a DIFFERENT
+    #: tenant. The worker exits immediately, writing nothing at all.
+    TENANT_MISMATCH = 79
 
 
 class WorkerError(Exception):
@@ -65,6 +68,31 @@ class ControlPlaneError(WorkerError):
     Distinct from FencedError: fencing is an expected, safe outcome, while this
     means a document is missing or malformed in a way that needs a human.
     """
+
+
+class TenantMismatchError(ControlPlaneError):
+    """A control-plane document names a tenant that is not this worker's.
+
+    Invariant 9 in code rather than only in IAM. Firestore has no document-level
+    authorization, so the tenant field on every document the worker touches is
+    compared against the tenant this attempt was admitted for. A mismatch means
+    either a corrupted control plane or another tenant writing into this task's
+    documents, and in both cases the only safe response is to touch nothing:
+    no state transition, no lease release, no event, because every one of those
+    writes would land on the OTHER tenant's data.
+    """
+
+    exit_code = ExitCode.TENANT_MISMATCH
+
+    def __init__(self, *, kind: str, document_id: str, expected: str, actual: str | None) -> None:
+        super().__init__(
+            f"{kind} {document_id} belongs to tenant {actual!r}, not {expected!r}; "
+            "refusing to read or write another tenant's control-plane data"
+        )
+        self.kind = kind
+        self.document_id = document_id
+        self.expected = expected
+        self.actual = actual
 
 
 class QuotaExhausted(WorkerError):

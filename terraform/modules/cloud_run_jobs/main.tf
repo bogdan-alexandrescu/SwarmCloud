@@ -23,6 +23,23 @@ locals {
   job_labels = merge(var.labels, {
     "swarm-gc-exempt" = "true"
   })
+
+  # Workspace volume size per resource class.
+  #
+  # Cloud Run's disk-backed ephemeral storage is Preview and the provider does
+  # not expose it: `empty_dir.medium` accepts only "MEMORY". A memory-medium
+  # volume is charged against the CONTAINER'S memory limit, so the profile's
+  # disk_gib (20/40/100) is not reachable here.
+  #
+  # Sizing it at the full memory limit would be worse than useless: a workspace
+  # that grew into the agent's own memory would OOM-kill the container, and an
+  # OOM kill is a SIGKILL -- no checkpoint, no graceful park, the attempt is just
+  # gone. Capping it at a fraction means a runaway workspace hits ENOSPC on a
+  # write instead, which the worker can see, checkpoint through and report.
+  workspace_gib = {
+    for name, rc in var.resource_classes :
+    name => max(1, min(rc.disk_gib, floor(rc.memory_gib * var.workspace_memory_fraction)))
+  }
 }
 
 resource "google_cloud_run_v2_job" "this" {
@@ -71,6 +88,12 @@ resource "google_cloud_run_v2_job" "this" {
         network_interfaces {
           network    = var.network
           subnetwork = var.subnetwork
+
+          # The handle the worker-ingress deny rule targets. Without a tag on
+          # the instance, a firewall rule cannot name it, and every tenant's
+          # worker shares one flat subnet with every other tenant's -- see
+          # modules/network/firewall.tf.
+          tags = var.network_tags
         }
       }
 
@@ -78,14 +101,11 @@ resource "google_cloud_run_v2_job" "this" {
         name = "workspace"
 
         empty_dir {
-          # Cloud Run's disk-backed ephemeral storage is Preview and is not
-          # exposed by the provider: `medium` accepts only "MEMORY" today.
-          # Cloud Run clamps a memory-medium volume to the container's memory
-          # limit, so the declared size is min(disk, memory) rather than the
-          # profile's disk_gib. This is precisely why checkpointing is mandatory
-          # rather than optional -- see the note in outputs.tf.
+          # See local.workspace_gib: this is a fraction of the container's
+          # memory, not the profile's disk_gib, and that gap is exactly why
+          # checkpointing is mandatory rather than optional (invariant 8).
           medium     = "MEMORY"
-          size_limit = "${min(var.resource_classes[each.value.resource_class].disk_gib, var.resource_classes[each.value.resource_class].memory_gib)}Gi"
+          size_limit = "${local.workspace_gib[each.value.resource_class]}Gi"
         }
       }
 
@@ -159,7 +179,16 @@ resource "google_cloud_run_v2_job" "this" {
 
   lifecycle {
     ignore_changes = [
-      template[0].template[0].containers[0].image,
+      # Writer metadata only -- see the note in modules/cloud_run/main.tf.
+      #
+      # The image is NOT ignored, and that is the whole point on this path. The
+      # dispatcher holds run.jobs.update (modules/iam/custom_roles.tf) and
+      # iam.serviceAccountUser on every tenant SA, so a compromised dispatcher
+      # could repoint swarm-job-<tenant>-<profile> at an attacker image and run
+      # it under that tenant's identity, with that tenant's provider key. An
+      # ignored image is an image nothing ever compares, so that repoint would
+      # survive every subsequent apply. Tracking it makes the repoint drift that
+      # the next plan reverts.
       client,
       client_version,
     ]

@@ -68,6 +68,13 @@ class SchedulerMetrics:
             registry=self.registry,
             buckets=(0, 1, 5, 10, 25, 50, 100, 200, 500),
         )
+        self.topped_up = Counter(
+            "swarm_scheduler_tenants_topped_up_total",
+            "Tenants added to the rotation because a saturated candidate slice "
+            "had left them out entirely. A rising value means someone is "
+            "flooding the queue with high-priority work.",
+            registry=self.registry,
+        )
         self.tenants_in_rotation = Gauge(
             "swarm_scheduler_tenants_in_rotation",
             "Distinct tenants in the last round-robin rotation.",

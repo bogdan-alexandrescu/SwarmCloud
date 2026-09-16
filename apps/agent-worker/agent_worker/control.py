@@ -25,6 +25,16 @@ superseded generation; the live lease is someone else's. Releasing is the
 reconciler's job precisely because the reconciler can order invalidation before
 release, and touching pools on the way out of a fence is the one way a worker
 could hand a slot to nobody.
+
+**Every document is checked against this worker's tenant before it is used.**
+Firestore has no document-level IAM: `roles/datastore.user` is granted per
+DATABASE, so the tenant service account this worker runs as can physically read
+and write any task, lease, attempt or quota document in the `swarm` database.
+Invariant 9 therefore cannot rest on IAM alone on this path, and every read
+here compares `tenant_id` against the tenant the attempt was admitted for. A
+mismatch raises `TenantMismatchError` and the worker exits having written
+nothing -- not a state change, not a lease release, not even an event, because
+all three would be writes into another tenant's data.
 """
 
 from __future__ import annotations
@@ -44,7 +54,7 @@ from swarm_common.states import (
     assert_transition,
 )
 
-from .errors import ControlPlaneError, FencedError
+from .errors import ControlPlaneError, FencedError, TenantMismatchError
 
 # ---------------------------------------------------------------------------
 # Signals
@@ -176,17 +186,39 @@ class ControlPlane:
     def _quota_ref(self, provider: str) -> Any:
         return self._db.collection("quota").document(f"{provider}:{self.tenant_id}")
 
+    # -- tenant scoping ----------------------------------------------------
+    def _assert_tenant(self, data: dict[str, Any], *, kind: str, document_id: str) -> dict[str, Any]:
+        """Refuse a document that belongs to a different tenant.
+
+        An absent `tenant_id` is refused too. Treating "missing" as "mine" is
+        how an unscoped read becomes a cross-tenant read the first time a
+        document is written by something that forgot the field.
+        """
+        actual = data.get("tenant_id")
+        if actual != self.tenant_id:
+            raise TenantMismatchError(
+                kind=kind,
+                document_id=document_id,
+                expected=self.tenant_id,
+                actual=actual if isinstance(actual, str) else None,
+            )
+        return data
+
     def fetch_task(self) -> dict[str, Any]:
         snap = self._task_ref().get()
         if not snap.exists:
             raise FencedError(self.generation, -1, "task document no longer exists")
-        return snap.to_dict() or {}
+        return self._assert_tenant(
+            snap.to_dict() or {}, kind="task", document_id=self.task_id
+        )
 
     def fetch_lease(self) -> dict[str, Any] | None:
         snap = self._lease_ref().get()
         if not snap.exists:
             return None
-        return snap.to_dict() or {}
+        return self._assert_tenant(
+            snap.to_dict() or {}, kind="lease", document_id=self.lease_id
+        )
 
     # -- fencing -----------------------------------------------------------
     def validate_generation(self) -> ControlSignals:
@@ -195,8 +227,18 @@ class ControlPlane:
         Called before the workspace is created, before credentials are read and
         before the runner is started. Everything below the raise is what does
         NOT happen when an attempt has been superseded.
+
+        It is also the tenant gate: `fetch_task` and `fetch_lease` both refuse a
+        document carrying another tenant's id, and the attempt document is
+        checked here as well, so an attempt cannot be pointed at a task, a lease
+        and an attempt that do not all belong to the same tenant.
         """
         task = self.fetch_task()
+        attempt_snap = self._attempt_ref().get()
+        if attempt_snap.exists:
+            self._assert_tenant(
+                attempt_snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
+            )
         current_generation = int(task.get("current_generation", 0))
         state = _as_state(task.get("state"))
 
@@ -418,13 +460,21 @@ class ControlPlane:
         # attempt document, so there is no contention to serialise, and this
         # keeps the Firestore sentinel types out of the worker's hot path.
         snap = self._attempt_ref().get()
-        existing = list((snap.to_dict() or {}).get("checkpoints", [])) if snap.exists else []
+        existing: list[str] = []
+        if snap.exists:
+            data = self._assert_tenant(
+                snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
+            )
+            existing = list(data.get("checkpoints", []))
         if checkpoint_id not in existing:
             existing.append(checkpoint_id)
         # merge-set, not update: an attempt cancelled before it started has no
         # attempt document yet, and losing the record would be worse than
-        # creating it late.
-        self._attempt_ref().set({"checkpoints": existing}, merge=True)
+        # creating it late. `tenant_id` goes in every merge so a document this
+        # path creates is never one the tenant check would later refuse.
+        self._attempt_ref().set(
+            {"checkpoints": existing, "tenant_id": self.tenant_id}, merge=True
+        )
         self._task_ref().update({"latest_checkpoint": uri, "updated_at": utcnow()})
         self.emit(
             EventType.CHECKPOINT_COMPLETED,
@@ -439,13 +489,20 @@ class ControlPlane:
                 "peak_rss_bytes": int(peak_rss_bytes),
                 "peak_disk_bytes": int(peak_disk_bytes),
                 "oom_near_miss": bool(oom_near_miss),
+                "tenant_id": self.tenant_id,
             },
             merge=True,
         )
 
     def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
         self._attempt_ref().set(
-            {"completed_at": utcnow(), "exit_code": exit_code, "error": error}, merge=True
+            {
+                "completed_at": utcnow(),
+                "exit_code": exit_code,
+                "error": error,
+                "tenant_id": self.tenant_id,
+            },
+            merge=True,
         )
 
     # -- heartbeat ---------------------------------------------------------
@@ -489,7 +546,11 @@ class ControlPlane:
         ref = self._quota_ref(provider)
         snap = ref.get()
         if snap.exists:
-            existing = snap.to_dict() or {}
+            existing = self._assert_tenant(
+                snap.to_dict() or {},
+                kind="quota",
+                document_id=f"{provider}:{self.tenant_id}",
+            )
             payload["rate_limit_count"] = int(existing.get("rate_limit_count", 0)) + (
                 1 if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED) else 0
             )

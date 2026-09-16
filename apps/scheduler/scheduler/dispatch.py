@@ -14,7 +14,10 @@ cannot be overridden per execution. One shared Job would therefore run every
 tenant's work as the same identity, and invariant 9 -- a tenant's provider key
 must never be reachable from another tenant's pod -- would be unenforceable. So
 each (tenant, profile) gets its own Job bound to that tenant's service account,
-and the reconciler garbage-collects the ones that stop being used.
+and the reconciler garbage-collects the ones that stop being used. The same
+constraint applies to sizing, which Cloud Run also pins on the Job resource, so a
+workflow step that named a smaller resource class gets a Job of its own -- see
+the sizing note below.
 
 Two rules from the contract are applied here and are not negotiable:
   * requests == limits. Cloud Run expresses this as limits only; on GKE both
@@ -22,6 +25,28 @@ Two rules from the contract are applied here and are not negotiable:
     OOM-killed under node pressure.
   * No Spot, anywhere. Spot Pods cannot use Autopilot extended run time, so
     Spot and "no preemption" are mutually exclusive.
+
+SIZING COMES FROM `task.resource_class`, NOT from `profile.resource_class`.
+Those are usually the same, and differ only when a workflow step named a
+smaller named class (validation.py permits nothing larger). Admission has always
+accounted against the TASK's class -- `pool_names_for` and the weighted `units`
+both read `task.resource_class` inside the frozen admission transaction -- so a
+container sized from the profile's class instead would mean the reserved
+capacity and the running container disagree: the pool that governs the workload
+would never be in the lease's `required` list (so a drain or an admin cap on it
+would not stop the task), and the weighted global budget would be charged for
+something other than what is running. The Cloud Run Job id carries the class for
+the same reason: Cloud Run fixes sizing on the Job resource, so one Job per
+(tenant, profile) could only ever express one size.
+
+SECRETS ARE NOT INJECTED ON THE GKE PATH. The worker reads its tenant's key from
+Secret Manager at runtime using Workload Identity (agent_worker/secrets.py), and
+on Cloud Run the Job additionally projects it natively from Secret Manager. On
+GKE there is no such native source: a `secretKeyRef` needs a Kubernetes Secret,
+nothing in this repository ever creates one, and a Job referencing a missing
+Secret never starts (CreateContainerConfigError) while the scheduler records it
+as DISPATCHED and holds the lease to the deadline. So the GKE manifest passes no
+key material at all and the pod's KSA-to-GSA binding is what grants access.
 """
 
 from __future__ import annotations
@@ -38,9 +63,58 @@ log = logging.getLogger(__name__)
 
 _NAME_SAFE = re.compile(r"[^a-z0-9-]+")
 
+#: The image creates uid/gid 10001 with HOME=/home/swarm and runs as it
+#: (images/agent-runtime-base/Dockerfile). The pod spec repeats the number so
+#: the cluster enforces it rather than trusting the image, and so
+#: `runAsNonRoot` has something to check against.
+WORKER_UID = 10001
+WORKER_HOME = "/home/swarm"
+
+#: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
+#: Admission at `enforce: baseline` rather than `restricted` precisely because
+#: the manifest this module builds carried no securityContext at all, so
+#: enforcing the stronger policy would have rejected every job the dispatcher
+#: created. These two blocks are what `restricted` asks for, and they mirror
+#: kubernetes/worker-templates/worker-job-browser.yaml field for field.
+POD_SECURITY_CONTEXT: dict[str, Any] = {
+    "runAsNonRoot": True,
+    "runAsUser": WORKER_UID,
+    "runAsGroup": WORKER_UID,
+    "fsGroup": WORKER_UID,
+    "seccompProfile": {"type": "RuntimeDefault"},
+}
+
+#: The container runs untrusted agent code from a caller-supplied repository on
+#: a cluster shared with other tenants' pods, so it drops every capability and
+#: cannot gain privilege. Chromium's own sandbox needs user namespaces and
+#: CAP_SYS_ADMIN and stays off; the isolation is the pod and the namespace, and
+#: handing a capability back to regain the inner sandbox would be a bad trade.
+CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
+    "allowPrivilegeEscalation": False,
+    "privileged": False,
+    "readOnlyRootFilesystem": True,
+    "runAsNonRoot": True,
+    "runAsUser": WORKER_UID,
+    "capabilities": {"drop": ["ALL"]},
+    "seccompProfile": {"type": "RuntimeDefault"},
+}
+
 
 class DispatchError(Exception):
-    """Dispatch failed. The caller releases the lease and returns to READY."""
+    """Dispatch failed. The caller releases the lease and returns to READY.
+
+    `code` is the only part of this that is safe to hand back to a tenant.
+    `str(exc)` carries the upstream API's message, and a Cloud Run or Kubernetes
+    error routinely echoes the resource it was given: the tenant service account
+    email, the job name, the secret names in the manifest. None of that is key
+    material, but it is internal infrastructure detail, and `task.last_error` is
+    returned to the caller by `codec.task_to_api`. So the full text goes to the
+    log and the code goes to the tenant.
+    """
+
+    def __init__(self, message: str, *, code: str = "dispatch_failed") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class Dispatcher(Protocol):
@@ -49,13 +123,36 @@ class Dispatcher(Protocol):
     ) -> str: ...
 
 
+def resource_class_for(task: Task, profile: RunnerProfile) -> str:
+    """The class the container is sized from -- the same one admission charged.
+
+    A task whose stored class is not in the catalogue any more falls back to the
+    profile's, because a missing class would otherwise raise a KeyError deep in
+    manifest construction. Admission would have failed first in that case
+    (`RESOURCE_CLASSES[task.resource_class]` in the drain loop), so this is a
+    guard, not a path.
+    """
+    if task.resource_class in RESOURCE_CLASSES:
+        return task.resource_class
+    log.warning(
+        "task %s names resource class %r which is no longer in the catalogue; "
+        "sizing from the profile's own class %r",
+        task.id,
+        task.resource_class,
+        profile.resource_class,
+    )
+    return profile.resource_class
+
+
 def sanitize_name(*parts: str, max_length: int = 63) -> str:
     """A Cloud Run / k8s safe name: lowercase alnum and dashes, <= 63 chars."""
     joined = "-".join(p for p in parts if p)
     slug = _NAME_SAFE.sub("-", joined.lower()).strip("-")
     slug = re.sub(r"-{2,}", "-", slug)
     if not slug:
-        raise DispatchError(f"cannot build a resource name from {parts!r}")
+        raise DispatchError(
+            f"cannot build a resource name from {parts!r}", code="invalid_resource_name"
+        )
     if len(slug) > max_length:
         # Truncating alone would collide for two long tenant names sharing a
         # prefix, so the tail carries a hash of the full name.
@@ -68,7 +165,21 @@ def sanitize_name(*parts: str, max_length: int = 63) -> str:
     return slug
 
 
-def job_id_for(tenant_id: str, profile_name: str) -> str:
+def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = None) -> str:
+    """The Cloud Run Job resource id.
+
+    Still one Job per (tenant, profile) for every task that takes the profile's
+    own resource class, which is the overwhelming majority and what CONTRACT.md
+    describes. A workflow step that named a SMALLER class gets its own Job,
+    because Cloud Run pins CPU, memory and the ephemeral-disk size limit on the
+    Job resource and cannot override them per execution -- so without this the
+    smaller class would be charged for at admission and then run in the profile's
+    full-size container anyway.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    default_class = profile.resource_class if profile else None
+    if resource_class and resource_class != default_class:
+        return sanitize_name("swarm", tenant_id, profile_name, resource_class)
     return sanitize_name("swarm", tenant_id, profile_name)
 
 
@@ -105,6 +216,27 @@ def image_uri(settings: Any, profile: RunnerProfile) -> str:
     return f"{settings.artifact_registry_host}/{profile.image}:{settings.worker_image_tag}"
 
 
+def assert_tenant_identity(tenant: Tenant) -> str:
+    """Refuse to start anything for a tenant with no service account.
+
+    Cloud Run falls back to the project's DEFAULT compute service account when a
+    Job names none, and that identity is shared and usually far more privileged
+    than a worker -- so a tenant whose infrastructure was never provisioned would
+    run its code as it. Invariant 9 requires the tenant's own identity, and a
+    task that cannot have one belongs back in READY with a clear error, not in a
+    container.
+    """
+    if not tenant.service_account:
+        raise DispatchError(
+            f"tenant {tenant.tenant_id!r} has no service account; its identity has "
+            "not been provisioned (terraform tenants map, or "
+            "scripts/register-tenant.sh) and the platform will not run its work "
+            "under a shared one",
+            code="tenant_identity_missing",
+        )
+    return tenant.service_account
+
+
 # --------------------------------------------------------------------------
 # Cloud Run Jobs
 # --------------------------------------------------------------------------
@@ -129,12 +261,15 @@ class CloudRunJobDispatcher:
     def job_name(self, job_id: str) -> str:
         return f"{self.parent}/jobs/{job_id}"
 
-    def _build_job(self, profile: RunnerProfile, tenant: Tenant) -> Any:
+    def _build_job(
+        self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
+    ) -> Any:
         from google.api import launch_stage_pb2
         from google.cloud import run_v2
         from google.protobuf import duration_pb2
 
-        rc = RESOURCE_CLASSES[profile.resource_class]
+        assert_tenant_identity(tenant)
+        rc = RESOURCE_CLASSES[resource_class or profile.resource_class]
         env = [
             run_v2.EnvVar(name="RUNNER_PROFILE", value=profile.name),
             run_v2.EnvVar(name="TENANT_ID", value=tenant.tenant_id),
@@ -189,6 +324,7 @@ class CloudRunJobDispatcher:
                 "managed-by": "swarm-scheduler",
                 "swarm-tenant": sanitize_name(tenant.tenant_id),
                 "swarm-profile": sanitize_name(profile.name),
+                "swarm-resource-class": sanitize_name(rc.name),
             },
             template=run_v2.ExecutionTemplate(
                 parallelism=1,
@@ -207,11 +343,13 @@ class CloudRunJobDispatcher:
             ),
         )
 
-    def ensure_job(self, profile: RunnerProfile, tenant: Tenant) -> str:
+    def ensure_job(
+        self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
+    ) -> str:
         from google.api_core import exceptions as gexc
         from google.cloud import run_v2
 
-        job_id = job_id_for(tenant.tenant_id, profile.name)
+        job_id = job_id_for(tenant.tenant_id, profile.name, resource_class)
         name = self.job_name(job_id)
         if job_id in self._ensured:
             return name
@@ -224,14 +362,17 @@ class CloudRunJobDispatcher:
         except gexc.NotFound:
             pass
         except gexc.GoogleAPICallError as exc:
-            raise DispatchError(f"could not read Cloud Run job {job_id}: {exc}") from exc
+            raise DispatchError(
+                f"could not read Cloud Run job {job_id}: {exc}",
+                code="cloud_run_get_job_failed",
+            ) from exc
 
         try:
             operation = client.create_job(
                 request=run_v2.CreateJobRequest(
                     parent=self.parent,
                     job_id=job_id,
-                    job=self._build_job(profile, tenant),
+                    job=self._build_job(profile, tenant, resource_class),
                 )
             )
             operation.result(timeout=120)
@@ -239,7 +380,10 @@ class CloudRunJobDispatcher:
             # Another scheduler instance created it between our get and create.
             pass
         except gexc.GoogleAPICallError as exc:
-            raise DispatchError(f"could not create Cloud Run job {job_id}: {exc}") from exc
+            raise DispatchError(
+                f"could not create Cloud Run job {job_id}: {exc}",
+                code="cloud_run_create_job_failed",
+            ) from exc
         self._ensured.add(job_id)
         return name
 
@@ -248,7 +392,10 @@ class CloudRunJobDispatcher:
         from google.cloud import run_v2
         from google.protobuf import duration_pb2
 
-        name = self.ensure_job(profile, tenant)
+        # Before any API call: a tenant with no identity is refused here rather
+        # than after a round trip that would only be wasted.
+        assert_tenant_identity(tenant)
+        name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
         overrides = run_v2.RunJobRequest.Overrides(
             container_overrides=[
@@ -265,7 +412,9 @@ class CloudRunJobDispatcher:
                 request=run_v2.RunJobRequest(name=name, overrides=overrides)
             )
         except gexc.GoogleAPICallError as exc:
-            raise DispatchError(f"run_job failed for {name}: {exc}") from exc
+            raise DispatchError(
+                f"run_job failed for {name}: {exc}", code="cloud_run_run_job_failed"
+            ) from exc
 
         # The execution name is available from the operation's metadata without
         # waiting for the execution to FINISH -- waiting here would hold the
@@ -285,7 +434,15 @@ class CloudRunJobDispatcher:
 class GkeTarget:
     endpoint: str
     ca_cert_path: str
-    namespace_template: str = "swarm-{tenant}"
+    namespace_template: str = "swarm-tenant-{tenant}"
+    #: Kubernetes service account the pod runs as. It must be the KSA the
+    #: Workload Identity binding was issued for, or the pod gets no Google
+    #: identity at all and cannot read its tenant's secret, its GCS prefix or
+    #: Firestore. Terraform's `tenancy` module binds
+    #: `<pool>[<namespace>/<ksa_name>]` with `ksa_name` defaulting to
+    #: `swarm-agent-worker`, so that is the default here; `WORKER_KSA_NAME`
+    #: overrides it for a cluster provisioned with a different spelling.
+    ksa_name: str = "swarm-agent-worker"
 
 
 class GkeJobDispatcher:
@@ -307,7 +464,8 @@ class GkeJobDispatcher:
             return self._batch_api
         if self._target is None:
             raise DispatchError(
-                "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_PATH"
+                "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_PATH",
+                code="gke_not_configured",
             )
         import google.auth
         import google.auth.transport.requests
@@ -327,49 +485,57 @@ class GkeJobDispatcher:
     def namespace_for(self, tenant: Tenant) -> str:
         if tenant.namespace:
             return tenant.namespace
-        template = self._target.namespace_template if self._target else "swarm-{tenant}"
+        template = (
+            self._target.namespace_template if self._target else "swarm-tenant-{tenant}"
+        )
         return sanitize_name(template.format(tenant=tenant.tenant_id))
+
+    def ksa_for(self, tenant: Tenant) -> str:
+        """The Kubernetes service account the pod runs as.
+
+        NOT derived from the tenant id. The KSA only means anything because a
+        Workload Identity binding maps `<pool>[<namespace>/<ksa>]` to the
+        tenant's Google service account, and that binding is issued by
+        provisioning for a fixed KSA name inside the tenant's own namespace --
+        the namespace is what makes it per-tenant, which is exactly why terraform
+        notes that a pod in another tenant's namespace cannot impersonate this
+        GSA even if it guesses the KSA name. Inventing a third spelling here
+        produced a pod with no Google identity at all.
+        """
+        configured = str(getattr(self._settings, "worker_ksa_name", "") or "").strip()
+        if not configured and self._target is not None:
+            configured = self._target.ksa_name
+        return sanitize_name(configured or "swarm-agent-worker")
 
     def _manifest(self, *, task: Task, lease: Lease, profile: RunnerProfile,
                   tenant: Tenant) -> dict[str, Any]:
-        rc = RESOURCE_CLASSES[profile.resource_class]
+        assert_tenant_identity(tenant)
+        rc = RESOURCE_CLASSES[resource_class_for(task, profile)]
+        # Identifiers only. No provider key is injected: there is no Kubernetes
+        # Secret to project from, and the worker fetches its tenant's key from
+        # Secret Manager itself under the identity this pod's KSA assumes.
         env = [{"name": k, "value": v} for k, v in
                worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings).items()]
-        for secret_env in profile.secrets:
-            if not profile.provider:
-                continue
-            env.append(
-                {
-                    "name": secret_env,
-                    "valueFrom": {
-                        "secretKeyRef": {
-                            # Synced from the tenant's own Secret Manager secret
-                            # into the tenant's own namespace. Another tenant's
-                            # pod cannot mount it: different namespace.
-                            "name": tenant.secret_name(profile.provider),
-                            "key": secret_env,
-                        }
-                    },
-                }
-            )
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
             "ephemeral-storage": f"{rc.disk_gib}Gi",
         }
         job_name = sanitize_name("swarm", task.id.replace("task_", ""), str(lease.generation))
+        labels = {
+            "managed-by": "swarm-scheduler",
+            "swarm-tenant": sanitize_name(tenant.tenant_id),
+            "swarm-profile": sanitize_name(profile.name),
+            "swarm-resource-class": sanitize_name(rc.name),
+            "swarm-task": sanitize_name(task.id),
+        }
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
                 "name": job_name,
                 "namespace": self.namespace_for(tenant),
-                "labels": {
-                    "managed-by": "swarm-scheduler",
-                    "swarm-tenant": sanitize_name(tenant.tenant_id),
-                    "swarm-profile": sanitize_name(profile.name),
-                    "swarm-task": sanitize_name(task.id),
-                },
+                "labels": labels,
                 "annotations": {
                     # Autopilot extended run time: the pod is not evicted for
                     # scale-down. This is only available on on-demand capacity,
@@ -386,16 +552,20 @@ class GkeJobDispatcher:
                 "activeDeadlineSeconds": task.timeout_seconds,
                 "ttlSecondsAfterFinished": 3600,
                 "template": {
-                    "metadata": {
-                        "labels": {
-                            "swarm-task": sanitize_name(task.id),
-                            "swarm-tenant": sanitize_name(tenant.tenant_id),
-                        }
-                    },
+                    "metadata": {"labels": dict(labels)},
                     "spec": {
                         "restartPolicy": "Never",
-                        "serviceAccountName": sanitize_name("swarm", tenant.tenant_id),
-                        "automountServiceAccountToken": True,
+                        "serviceAccountName": self.ksa_for(tenant),
+                        # The workload is arbitrary code from a caller-supplied
+                        # repository on a cluster shared with other tenants. A
+                        # mounted Kubernetes API token is the first thing a
+                        # prompt injection or a malicious repository reaches for,
+                        # and the worker never calls the Kubernetes API.
+                        "automountServiceAccountToken": False,
+                        # The worker checkpoints on SIGTERM; killing it at the
+                        # 30s default would lose the workspace it was uploading.
+                        "terminationGracePeriodSeconds": 120,
+                        "securityContext": POD_SECURITY_CONTEXT,
                         "containers": [
                             {
                                 "name": "worker",
@@ -404,9 +574,15 @@ class GkeJobDispatcher:
                                 "env": env,
                                 # requests == limits, both directions, no bursting.
                                 "resources": {"requests": resources, "limits": resources},
+                                "securityContext": CONTAINER_SECURITY_CONTEXT,
                                 "volumeMounts": [
                                     {"name": "workspace", "mountPath": "/workspace"},
                                     {"name": "dshm", "mountPath": "/dev/shm"},
+                                    # readOnlyRootFilesystem means every path the
+                                    # runtime writes to needs a volume: /tmp, and
+                                    # a HOME for tool caches and crash dumps.
+                                    {"name": "tmp", "mountPath": "/tmp"},
+                                    {"name": "home", "mountPath": WORKER_HOME},
                                 ],
                             }
                         ],
@@ -418,6 +594,8 @@ class GkeJobDispatcher:
                             # is the reason browser work is on GKE at all.
                             {"name": "dshm", "emptyDir": {
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
+                            {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
+                            {"name": "home", "emptyDir": {"sizeLimit": "4Gi"}},
                         ],
                     },
                 },
@@ -429,8 +607,13 @@ class GkeJobDispatcher:
         namespace = manifest["metadata"]["namespace"]
         try:
             created = self._api().create_namespaced_job(namespace=namespace, body=manifest)
+        except DispatchError:
+            raise
         except Exception as exc:  # kubernetes.client.ApiException and transport errors
-            raise DispatchError(f"could not create GKE job in {namespace}: {exc}") from exc
+            raise DispatchError(
+                f"could not create GKE job in {namespace}: {exc}",
+                code="gke_create_job_failed",
+            ) from exc
         name = getattr(getattr(created, "metadata", None), "name", None)
         if not name and isinstance(created, dict):
             name = created.get("metadata", {}).get("name")
@@ -453,13 +636,20 @@ class BackendRouter:
     def for_backend(self, backend: Backend) -> Dispatcher:
         if backend is Backend.CLOUD_RUN_JOB:
             if self._cloud_run is None or not self._settings.core.enable_cloud_run_jobs:
-                raise DispatchError("Cloud Run Jobs dispatch is disabled")
+                raise DispatchError(
+                    "Cloud Run Jobs dispatch is disabled", code="backend_disabled"
+                )
             return self._cloud_run
         if backend is Backend.GKE_AUTOPILOT:
             if self._gke is None or not self._settings.core.enable_gke_autopilot:
-                raise DispatchError("GKE Autopilot dispatch is disabled")
+                raise DispatchError(
+                    "GKE Autopilot dispatch is disabled", code="backend_disabled"
+                )
             return self._gke
-        raise DispatchError(f"backend {backend} was never resolved to a concrete target")
+        raise DispatchError(
+            f"backend {backend} was never resolved to a concrete target",
+            code="backend_unresolved",
+        )
 
     def dispatch(
         self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend
@@ -474,7 +664,13 @@ def build_router(settings: Any) -> BackendRouter:
 
     endpoint = os.environ.get("GKE_ENDPOINT", "").strip()
     ca_path = os.environ.get("GKE_CA_CERT_PATH", "").strip()
-    target = GkeTarget(endpoint=endpoint, ca_cert_path=ca_path) if endpoint and ca_path else None
+    target = None
+    if endpoint and ca_path:
+        target = GkeTarget(
+            endpoint=endpoint,
+            ca_cert_path=ca_path,
+            ksa_name=getattr(settings, "worker_ksa_name", "") or "swarm-agent-worker",
+        )
     return BackendRouter(
         cloud_run=CloudRunJobDispatcher(settings),
         gke=GkeJobDispatcher(settings, target=target),

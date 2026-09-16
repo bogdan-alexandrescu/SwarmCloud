@@ -193,3 +193,105 @@ def test_admin_surface_requires_an_admin_group(client):
     assert client.post(
         "/v1/admin/dispatch/pause", headers=auth_header("root"), json={}
     ).status_code == 200
+
+
+# -- tenant ids collide; principals must not -------------------------------
+
+def collision_client(db, second_group: str, member: str):
+    """An app whose registered tenant groups both slug to the tenant id `eng`."""
+    from fastapi.testclient import TestClient
+
+    from swarm_api.auth import StaticTokenVerifier
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.deps import build_context
+    from swarm_api.groups import StaticGroups
+    from swarm_api.main import create_app
+    from swarm_api.waker import NullWaker
+
+    from .conftest import ENG_GROUP, api_settings, core_settings
+
+    domains = tuple(sorted({"saga.xyz", second_group.split("@", 1)[1]}))
+    tokens = {
+        "token-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s1"},
+        "token-mallory": {"email": member, "email_verified": True, "sub": "s2"},
+    }
+    ctx = build_context(
+        settings=api_settings(
+            core=core_settings(allowed_domains=domains),
+            tenant_groups=(ENG_GROUP, second_group),
+        ),
+        db=db,
+        verifier=StaticTokenVerifier(tokens),
+        groups=StaticGroups({"alice@saga.xyz": (ENG_GROUP,), member: (second_group,)}),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+    )
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
+    """`eng@saga.xyz` and `eng@partner.com` both slug to tenant `eng`.
+
+    The frozen `tenant_id_for_group` keeps the LOCAL PART only, and
+    ALLOWED_DOMAINS is explicitly a comma-separated list, so this needs no
+    unusual group naming -- just a second permitted domain. Without the principal
+    check the second group silently inherits the first's service account, its
+    Secret Manager secret, its GCS prefix and its namespace, and every member of
+    it can list the first group's tasks and overwrite its provider key.
+    """
+    client = collision_client(db, "eng@partner.com", "mallory@partner.com")
+
+    first = client.post(
+        "/v1/tasks", headers={"Authorization": "Bearer token-alice"},
+        json={"runner_profile": "mock"},
+    )
+    assert first.status_code == 201
+    assert first.json()["task"]["tenant_id"] == "eng"
+    assert db.docs["tenants/eng"]["principal"] == "eng@saga.xyz"
+
+    stolen = client.post(
+        "/v1/tasks", headers={"Authorization": "Bearer token-mallory"},
+        json={"runner_profile": "mock"},
+    )
+    assert stolen.status_code == 409, stolen.text
+    body = stolen.json()
+    assert body["code"] == "conflict"
+    assert body["detail"]["registered_principal"] == "eng@saga.xyz"
+    assert body["detail"]["requested_principal"] == "eng@partner.com"
+
+    # Nothing of theirs was written, and the tenant still belongs to the first.
+    assert db.docs["tenants/eng"]["principal"] == "eng@saga.xyz"
+    task_docs = [p for p in db.docs if p.startswith("tasks/") and p.count("/") == 1]
+    assert task_docs == [f"tasks/{first.json()['task']['id']}"]
+
+
+def test_a_punctuation_variant_of_a_group_name_collides_the_same_way(db):
+    """`eng.team@`, `eng_team@` and `Eng-Team@` all slug to `eng-team`; the
+    domain is not the only way in."""
+    client = collision_client(db, "eng@saga.xyz.example", "mallory@saga.xyz.example")
+    ok = client.post(
+        "/v1/tasks", headers={"Authorization": "Bearer token-alice"},
+        json={"runner_profile": "mock"},
+    )
+    assert ok.status_code == 201
+    refused = client.post(
+        "/v1/tasks", headers={"Authorization": "Bearer token-mallory"},
+        json={"runner_profile": "mock"},
+    )
+    assert refused.status_code == 409
+
+
+def test_every_member_of_one_group_shares_its_tenant(client, db):
+    """The check is on the TENANT's principal, not the caller's, so two members
+    of the same group are not mistaken for a collision."""
+    from .conftest import ADMIN_GROUP  # noqa: F401  (root is in eng as well)
+
+    assert submit(client, "alice")["tenant_id"] == "eng"
+    assert submit(client, "root")["tenant_id"] == "eng"
+    assert db.docs["tenants/eng"]["principal"] == "eng@saga.xyz"
+
+
+def test_a_personal_tenant_records_the_user_as_its_principal(client, db):
+    assert submit(client, "carol")["tenant_id"] == "u-carol"
+    assert db.docs["tenants/u-carol"]["principal"] == "carol@saga.xyz"
+    assert db.docs["tenants/u-carol"]["kind"] == "user"

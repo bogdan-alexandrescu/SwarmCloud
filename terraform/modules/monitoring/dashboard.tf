@@ -9,24 +9,24 @@ locals {
 
   dashboard_tiles = [
     {
-      title    = "Admitted work (lease_acquired)"
-      note     = "Throughput. Counts from LEASED, not RUNNING, because that is where capacity is actually reserved."
-      filter   = "metric.type=\"${local.user_metric}/${google_logging_metric.events["lease_acquired"].name}\""
+      title    = "Attempts started"
+      note     = "Throughput, counted where the platform can actually see it: one line per attempt the worker began."
+      filter   = "metric.type=\"${local.user_metric}/${google_logging_metric.events["starting"].name}\""
       aligner  = "ALIGN_DELTA"
       reducer  = "REDUCE_SUM"
       group_by = ["metric.label.runner_profile"]
     },
     {
-      title    = "Admission denials by reason"
-      note     = "Not errors. This is the platform refusing to oversubscribe, split by BlockedReason."
-      filter   = "metric.type=\"${local.user_metric}/${google_logging_metric.admission_denied.name}\""
+      title    = "Parked work by reason"
+      note     = "Not errors. PARKED costs nothing, so a tall bar is the platform declining to burn compute on a wait, split by ParkReason."
+      filter   = "metric.type=\"${local.user_metric}/${google_logging_metric.events["parked"].name}\""
       aligner  = "ALIGN_DELTA"
       reducer  = "REDUCE_SUM"
-      group_by = ["metric.label.blocked_reason"]
+      group_by = ["metric.label.park_reason"]
     },
     {
-      title    = "Parked work"
-      note     = "PARKED costs nothing. A tall bar here is the platform working, not failing."
+      title    = "Parked work by tenant"
+      note     = "The same signal grouped the other way: one tenant parking while the rest run is a credential or quota problem, not a platform one."
       filter   = "metric.type=\"${local.user_metric}/${google_logging_metric.events["parked"].name}\""
       aligner  = "ALIGN_DELTA"
       reducer  = "REDUCE_SUM"
@@ -87,6 +87,14 @@ locals {
       aligner  = "ALIGN_DELTA"
       reducer  = "REDUCE_PERCENTILE_99"
       group_by = ["metric.label.runner_profile"]
+    },
+    {
+      title    = "OOM near misses"
+      note     = "Attempts that finished within a hair of their memory limit. requests == limits, so there is no headroom to absorb the next increase."
+      filter   = "metric.type=\"${local.user_metric}/${google_logging_metric.oom_near_miss.name}\""
+      aligner  = "ALIGN_DELTA"
+      reducer  = "REDUCE_SUM"
+      group_by = ["metric.label.resource_class"]
     },
   ]
 

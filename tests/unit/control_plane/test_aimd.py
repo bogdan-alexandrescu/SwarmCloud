@@ -20,6 +20,8 @@ import pytest
 
 from swarm_common.models import ProviderState, QuotaState
 
+from .conftest import PROJECT
+
 from quota_broker.aimd import (
     AimdConfig,
     current_target,
@@ -271,3 +273,166 @@ def test_broker_sweep_retires_an_expired_cooldown(db):
     report = broker.sweep()
     assert report["recovered"] == 1
     assert db.docs["pools/provider:anthropic:tenant:eng"]["quota_derived_limit"] > 0
+
+
+# -- the broker's HTTP surface ---------------------------------------------
+
+def test_a_worker_may_not_report_quota_for_another_tenant(broker):
+    """Otherwise a 429 report is a one-line denial of service on any tenant.
+
+    The tenant is derived from the CALLER's service account, never from the
+    path, so tenant A's worker reporting a rate limit against tenant B is
+    refused rather than believed.
+    """
+    from fastapi.testclient import TestClient
+
+    from quota_broker.main import WorkerIdentity, create_app
+
+    class FixedIdentity(WorkerIdentity):
+        def resolve(self, authorization):
+            return "eng", False           # always tenant eng's worker, not platform
+
+    client = TestClient(create_app(broker, identity=FixedIdentity(project_id=PROJECT)),
+                        raise_server_exceptions=False)
+
+    mine = client.post("/v1/quota/anthropic/eng/rate-limit", json={})
+    assert mine.status_code == 200
+
+    theirs = client.post("/v1/quota/anthropic/research/rate-limit", json={})
+    assert theirs.status_code == 403
+    assert theirs.json()["code"] == "forbidden"
+
+    # ...and a worker may not raise its own ceiling either.
+    assert client.put(
+        "/v1/quota/anthropic/eng/hard-max", json={"hard_max": 10_000}
+    ).status_code == 403
+
+
+def test_an_unknown_provider_is_a_validation_error_not_a_permission_error(broker):
+    """403 would send an operator hunting for an IAM grant that was never the
+    problem. The provider simply is not in the frozen catalogue."""
+    from fastapi.testclient import TestClient
+
+    from quota_broker.main import WorkerIdentity, create_app
+
+    client = TestClient(create_app(broker, identity=WorkerIdentity(required=False)),
+                        raise_server_exceptions=False)
+
+    response = client.get("/v1/quota/mystery-llm/eng")
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_failed"
+    assert "anthropic" in response.json()["message"]
+
+
+# -- the shared provider pool is not a cross-tenant lever -------------------
+
+def test_a_tenant_with_no_quota_document_is_not_halted_by_another_tenants_429(
+    broker, db
+):
+    """`list(provider=...)` only sees tenants that already have a DOCUMENT.
+
+    A tenant that has never reported has none, so `all(stopped)` was evaluated
+    over a subset: one tenant hitting its own 429 threshold drove the SHARED
+    `provider:anthropic` pool to 0, and `pool_names_for` puts that pool in every
+    tenant's admission list with `effective_limit` 0 meaning an absolute stop.
+    It was self-sustaining too -- with the pool at 0 no work runs, so no success
+    can arrive to clear it, and the only other way out is a platform-only sweep.
+    """
+    from .conftest import seed_tenant
+
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")             # registered, enabled, never reported
+
+    for _ in range(broker.config.exhaustion_threshold):
+        broker.observe_rate_limit("anthropic", "eng")
+
+    assert db.docs["pools/provider:anthropic:tenant:eng"]["quota_derived_limit"] == 0
+    assert db.docs["pools/provider:anthropic"]["quota_derived_limit"] is None, (
+        "research has never touched anthropic; its work must keep flowing"
+    )
+    assert "pools/provider:anthropic:tenant:research" not in db.docs
+
+
+def test_the_shared_pool_still_caps_when_every_enabled_tenant_is_stopped(broker, db):
+    from .conftest import seed_tenant
+
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+
+    for name in ("eng", "research"):
+        for _ in range(broker.config.exhaustion_threshold):
+            broker.observe_rate_limit("anthropic", name)
+
+    assert db.docs["pools/provider:anthropic"]["quota_derived_limit"] == 0
+
+
+def test_a_disabled_tenant_does_not_hold_the_shared_pool_open(broker, db):
+    """A disabled tenant cannot be admitted anyway, so it is not evidence that
+    the provider is still usable."""
+    from .conftest import seed_tenant
+
+    seed_tenant(db, "eng")
+    seed_tenant(db, "archived", enabled=False)
+
+    for _ in range(broker.config.exhaustion_threshold):
+        broker.observe_rate_limit("anthropic", "eng")
+
+    assert db.docs["pools/provider:anthropic"]["quota_derived_limit"] == 0
+
+
+# -- the caller's service account is pinned to THIS project -----------------
+
+def test_a_lookalike_service_account_in_another_project_is_not_a_tenant():
+    """A service account named `swarm-agent-worker-eng` in an ATTACKER'S own
+    project produces a genuine Google-signed OIDC token. With the project
+    unpinned it satisfied the pattern and was authorized as tenant `eng`, able
+    to report rate limits and exhaustion against them."""
+    from quota_broker.main import worker_sa_pattern
+
+    pattern = worker_sa_pattern(PROJECT)
+    assert pattern.match(
+        f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
+    ).group("tenant") == "eng"
+    # The other provisioning path's spelling is real too.
+    assert pattern.match(
+        f"swarm-t-eng@{PROJECT}.iam.gserviceaccount.com"
+    ).group("tenant") == "eng"
+
+    assert pattern.match("swarm-agent-worker-eng@evil-project.iam.gserviceaccount.com") is None
+    assert pattern.match("swarm-t-eng@evil-project.iam.gserviceaccount.com") is None
+    assert pattern.match(f"someone-else@{PROJECT}.iam.gserviceaccount.com") is None
+
+
+def test_the_pattern_refuses_to_be_built_without_a_project():
+    from quota_broker.main import worker_sa_pattern
+
+    with pytest.raises(ValueError):
+        worker_sa_pattern("")
+
+
+# -- REQUIRE_OIDC is a local-development switch only ------------------------
+
+def test_disabling_oidc_is_refused_outside_local_development():
+    """With it off, `resolve` returns (None, True) for everyone: a full platform
+    caller, able to set any tenant's hard max and run the sweep."""
+    from quota_broker.main import WorkerIdentity
+
+    with pytest.raises(ValueError) as exc:
+        WorkerIdentity(required=False, hardened=True, project_id=PROJECT,
+                       audience="https://broker.example")
+    assert "REQUIRE_OIDC" in str(exc.value)
+
+    # Still available where it is meant to be.
+    assert WorkerIdentity(required=False).resolve(None) == (None, True)
+
+
+def test_an_unpinned_audience_is_refused_outside_local_development():
+    from quota_broker.main import WorkerIdentity
+
+    with pytest.raises(ValueError) as exc:
+        WorkerIdentity(required=True, hardened=True, project_id=PROJECT)
+    assert "BROKER_AUDIENCE" in str(exc.value)
+
+    WorkerIdentity(
+        required=True, hardened=True, project_id=PROJECT, audience="https://broker.example"
+    )

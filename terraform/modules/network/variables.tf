@@ -83,6 +83,21 @@ variable "flow_log_sampling" {
   }
 }
 
+variable "worker_network_tag" {
+  description = <<-EOT
+    Network tag carried by every agent-worker instance, on Cloud Run Jobs and on
+    GKE alike. It is the handle the worker-ingress deny rule targets, which is
+    what stops one tenant's worker reaching another's over the shared subnet.
+  EOT
+  type        = string
+  default     = "swarm-worker"
+
+  validation {
+    condition     = can(regex("^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$", var.worker_network_tag))
+    error_message = "a network tag is 1-63 lowercase alphanumerics or dashes, starting with a letter."
+  }
+}
+
 variable "restrict_egress" {
   description = <<-EOT
     When true, egress is default-deny with explicit allows for HTTPS, DNS and

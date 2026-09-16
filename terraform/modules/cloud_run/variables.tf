@@ -63,9 +63,11 @@ variable "services" {
     concurrency           = optional(number, 80)
     request_timeout       = optional(string, "300s")
     env                   = optional(map(string), {})
-    invokers              = optional(list(string), [])
-    health_check_path     = optional(string, "/healthz")
-    container_port        = optional(number, 8080)
+    # caller label -> IAM member. Keyed by label because the members are service
+    # account emails that are unknown until apply.
+    invokers          = optional(map(string), {})
+    health_check_path = optional(string, "/healthz")
+    container_port    = optional(number, 8080)
   }))
 
   validation {
@@ -79,7 +81,11 @@ variable "services" {
   }
 
   validation {
-    condition     = alltrue([for k, v in var.services : !contains(v.invokers, "allUsers") && !contains(v.invokers, "allAuthenticatedUsers")])
+    condition = alltrue([
+      for k, v in var.services : alltrue([
+        for label, member in v.invokers : member != "allUsers" && member != "allAuthenticatedUsers"
+      ])
+    ])
     error_message = "allUsers/allAuthenticatedUsers may never be granted run.invoker; callers are authenticated by Google ID token."
   }
 }

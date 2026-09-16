@@ -86,7 +86,15 @@ def build_context(
     db = db if db is not None else build_firestore(settings)
     metrics = metrics or ApiMetrics()
     store = Store(db, now=now)
-    verifier = verifier or GoogleTokenVerifier(settings.core.api_audience)
+    # `require_audience` outside local development. google-auth SKIPS the `aud`
+    # check entirely when no audience is passed, so an unset API_AUDIENCE means
+    # any Google ID token from an allowed domain authenticates -- including one
+    # an unrelated third-party SaaS obtained when an employee signed in with
+    # Google, which it could then replay here as that employee. Nothing about a
+    # service running with the check off looks wrong, so it is refused at start.
+    verifier = verifier or GoogleTokenVerifier(
+        settings.core.api_audience, require_audience=settings.hardened
+    )
     groups = groups or CloudIdentityGroups(
         settings.project_id, ttl_seconds=settings.group_cache_ttl_seconds
     )

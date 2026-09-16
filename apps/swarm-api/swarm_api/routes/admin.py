@@ -175,20 +175,43 @@ def set_tenant_limits(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    if body.monthly_budget_usd is not None:
+        # Refused rather than stored. There is no cost attribution anywhere in
+        # this control plane -- no billing export, no per-attempt spend, no price
+        # per resource class -- so accepting it would write a number into
+        # Firestore, echo it back with a 200, enforce nothing, and never reach
+        # ParkReason.BUDGET_EXHAUSTED. An admin would believe they had a spend
+        # control. store.py states the standard this would violate: "the document
+        # and the pool must move together or the limit is a lie".
+        raise ValidationFailed(
+            "monthly_budget_usd is not enforceable by this control plane: it has no "
+            "cost attribution source, so the value could be stored but never acted "
+            "on. Bound spend with max_active / capacity_units, which the scheduler "
+            "really does enforce on every admission.",
+            detail={
+                "enforceable_limits": ["max_active", "capacity_units", "enabled"],
+                "requires": "per-attempt cost attribution (billing export)",
+            },
+        )
     if all(
-        value is None
-        for value in (body.max_active, body.capacity_units, body.monthly_budget_usd, body.enabled)
+        value is None for value in (body.max_active, body.capacity_units, body.enabled)
     ):
         raise ValidationFailed("at least one limit must be supplied")
     tenant = ctx.store.set_tenant_limits(
         tenant_id,
         max_active=body.max_active,
         capacity_units=body.capacity_units,
-        monthly_budget_usd=body.monthly_budget_usd,
         enabled=body.enabled,
     )
     ctx.metrics.admin_actions.labels(action="tenant_limits").inc()
-    return {"tenant": tenant_to_api(tenant)}
+    # The pool is what the scheduler enforces, and its hard limit is the smaller
+    # of max_active and capacity_units, so an operator can see what their change
+    # actually did rather than only what was recorded.
+    pool = ctx.store.get_pool(f"tenant:{tenant_id}")
+    return {
+        "tenant": tenant_to_api(tenant),
+        "pool": pool_to_api(pool) if pool is not None else None,
+    }
 
 
 # -- drains and provider switches ----------------------------------------

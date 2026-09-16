@@ -12,6 +12,12 @@ locals {
   )
 
   alert_docs_suffix = "\n\nEnvironment: ${var.environment}. Managed by swarm-terraform; edit terraform/modules/monitoring rather than the console."
+
+  # The project is shared. Naming the four swarm services explicitly, and pinning
+  # the region, keeps these policies off another team's Cloud Run services --
+  # a prefix match would catch anything they happen to call swarm-something.
+  swarm_services_filter = "resource.labels.service_name = one_of(${join(", ", [for s in var.service_names : "\"${s}\""])})"
+  region_filter         = "resource.labels.location = \"${var.region}\""
 }
 
 resource "google_monitoring_notification_channel" "email" {
@@ -96,7 +102,8 @@ resource "google_monitoring_alert_policy" "service_errors" {
         "resource.type = \"cloud_run_revision\"",
         "metric.type = \"run.googleapis.com/request_count\"",
         "metric.labels.response_code_class = \"5xx\"",
-        "resource.labels.service_name = starts_with(\"swarm-\")",
+        local.swarm_services_filter,
+        local.region_filter,
       ])
 
       comparison      = "COMPARISON_GT"
@@ -149,6 +156,8 @@ resource "google_monitoring_alert_policy" "job_failures" {
         "resource.type = \"cloud_run_job\"",
         "metric.type = \"run.googleapis.com/job/completed_execution_count\"",
         "metric.labels.result = \"failed\"",
+        "resource.labels.job_name = starts_with(\"${var.name_prefix}-\")",
+        local.region_filter,
       ])
 
       comparison      = "COMPARISON_GT"

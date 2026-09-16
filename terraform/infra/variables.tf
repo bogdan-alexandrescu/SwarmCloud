@@ -181,23 +181,62 @@ variable "immutable_image_tags" {
 # ---------------------------------------------------------------------------
 
 variable "tenants" {
-  description = "Tenants provisioned up front. The API creates personal fallback tenants at runtime; those are not managed here."
+  description = <<-EOT
+    Tenants provisioned up front. The API creates personal fallback tenants at
+    runtime; those are not managed here.
+
+    `max_active` is deliberately NOT defaulted here. A default would make
+    `pool_limits.default_tenant` unreachable -- coalesce() never sees a null --
+    and an operator who added a tenant without stating a ceiling would silently
+    get the type's default instead of the environment's. Left null, the tenant
+    pool falls through to pool_limits.default_tenant, which is what both tfvars
+    files are written as though it does.
+  EOT
   type = map(object({
     kind           = string
     principal      = string
     display_name   = optional(string, "")
     providers      = optional(list(string), [])
-    max_active     = optional(number, 20)
+    max_active     = optional(number)
     capacity_units = optional(number, 40)
     ksa_name       = optional(string, "swarm-agent-worker")
+    # Identities allowed to add a version to THIS tenant's provider-key secrets.
+    # Empty falls back to var.secret_admin_members, which must be a platform
+    # admin group rather than any tenant's own group -- see the validation there.
+    secret_admins = optional(list(string), [])
   }))
   default = {}
+
+  validation {
+    condition     = alltrue([for t, v in var.tenants : v.max_active == null || v.max_active > 0])
+    error_message = "a tenant's max_active must be positive; omit it to take pool_limits.default_tenant."
+  }
 }
 
 variable "secret_admin_members" {
-  description = "Identities allowed to ADD a provider-key version. They cannot read one back."
+  description = <<-EOT
+    Fallback identities allowed to ADD a provider-key version for a tenant that
+    declares no `secret_admins` of its own. They cannot read a key back.
+
+    This list is applied to EVERY such tenant's secrets, so it must be a
+    dedicated platform-admin group. A tenant's own group here would hand every
+    member of that tenant secretVersionAdder on every other tenant's provider
+    key -- and while secretVersionAdder cannot read the key in place, it can
+    REPLACE it with one that points at an attacker-controlled proxy, after which
+    the victim tenant's prompts, source and output all flow through it. The
+    validation below refuses that shape outright.
+  EOT
   type        = list(string)
   default     = []
+
+  validation {
+    condition = length([
+      for m in var.secret_admin_members : m
+      if contains([for t, v in var.tenants : lower("group:${v.principal}")], lower(m))
+      || contains([for t, v in var.tenants : lower("user:${v.principal}")], lower(m))
+    ]) == 0
+    error_message = "secret_admin_members is applied to every tenant's secrets, so it may not name a tenant's own principal: that grants one tenant the ability to replace another tenant's provider key. Use a dedicated platform-admin group, or set per-tenant `secret_admins`."
+  }
 }
 
 variable "api_invokers" {
@@ -235,6 +274,28 @@ variable "pool_limits" {
   validation {
     condition     = var.pool_limits.global > 0
     error_message = "the global pool must have a positive, finite ceiling."
+  }
+
+  # swarm_common.models.pool_names_for() makes a task acquire BOTH
+  # `provider:<p>` and `provider:<p>:tenant:<t>`, and admission is all-or-nothing
+  # across the list. So whenever the provider-wide ceiling is lower than the sum
+  # of the per-tenant ceilings underneath it, it becomes the binding constraint
+  # and tenants start competing for the same slots -- one tenant parking long
+  # runs directly reduces what another can admit, even though that other tenant
+  # pays for and holds its own key. The per-tenant pools exist precisely so that
+  # cannot happen.
+  #
+  # Requiring the provider pool to be at least the sum keeps it as what it is
+  # meant to be: a platform-wide safety net that can never be what denies a
+  # tenant its own declared capacity. The `global` pool is where a real
+  # cross-tenant ceiling belongs, because it is the one every task shares.
+  validation {
+    condition = alltrue([
+      for p in distinct(flatten([for t, cfg in var.tenants : cfg.providers])) :
+      lookup(var.pool_limits.providers, p, var.pool_limits.global) >=
+      length([for t, cfg in var.tenants : t if contains(cfg.providers, p)]) * var.pool_limits.provider_tenant
+    ])
+    error_message = "a provider's platform-wide pool must be at least (tenants holding that provider) x provider_tenant, or the shared ceiling re-couples tenants that were deliberately given separate per-tenant provider pools."
   }
 }
 
@@ -297,6 +358,18 @@ variable "extra_notification_channels" {
 variable "create_alerts" {
   type    = bool
   default = true
+}
+
+variable "pubsub_kms_key_name" {
+  description = "Optional CMEK for the wake and dead-letter topics. Empty uses Google-managed keys."
+  type        = string
+  default     = ""
+}
+
+variable "enable_quota_refresh" {
+  description = "Create the Cloud Scheduler tick that recomputes provider quota state and adaptive pool targets."
+  type        = bool
+  default     = true
 }
 
 variable "manage_project_services" {

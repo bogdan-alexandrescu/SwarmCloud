@@ -93,16 +93,15 @@ variable "pools" {
     error_message = "a pool hard_limit cannot be negative."
   }
 
+  # Gated on `bootstrap_documents` rather than on a second switch of its own, so
+  # the module's DEFAULTS are usable: `pools = {}` with bootstrapping off is a
+  # legitimate configuration, while declaring pools and leaving `global` out is
+  # not -- evaluate_capacity() treats a missing pool document as UNLIMITED, so
+  # the first scheduler pass would admit with no ceiling at all.
   validation {
-    condition     = !var.bootstrap_documents_required || contains(keys(var.pools), "global")
-    error_message = "the `global` pool must exist: a missing pool document is treated as unlimited by evaluate_capacity()."
+    condition     = !var.bootstrap_documents || length(var.pools) == 0 || contains(keys(var.pools), "global")
+    error_message = "the `global` pool must be among the bootstrapped pools: a missing pool document is treated as unlimited by evaluate_capacity()."
   }
-}
-
-variable "bootstrap_documents_required" {
-  description = "Internal switch so the `global` pool check only fires when pools are being created at all."
-  type        = bool
-  default     = true
 }
 
 variable "tenant_documents" {

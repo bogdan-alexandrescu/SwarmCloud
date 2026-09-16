@@ -49,9 +49,21 @@ variable "reconciler_path" {
 }
 
 variable "quota_broker_endpoint" {
-  description = "HTTPS base URL of the swarm-quota-broker service. Empty disables its refresh tick."
+  description = "HTTPS base URL of the swarm-quota-broker service."
   type        = string
   default     = ""
+}
+
+variable "enable_quota_refresh" {
+  description = <<-EOT
+    Create the quota-broker refresh tick.
+
+    A boolean rather than an is-the-endpoint-empty test: the endpoint is a Cloud
+    Run URI that is unknown until apply, and terraform cannot plan a `count`
+    derived from a value it does not yet have.
+  EOT
+  type        = bool
+  default     = true
 }
 
 variable "quota_broker_path" {
@@ -65,9 +77,16 @@ variable "tick_service_account" {
 }
 
 variable "publisher_members" {
-  description = "Identities allowed to publish a wake message. The API publishes on every task submission."
-  type        = list(string)
-  default     = []
+  description = <<-EOT
+    Identities allowed to publish a wake message, keyed by component name. The
+    API publishes on every task submission.
+
+    A map keyed by component rather than a list of members: the members are
+    service account emails that are unknown until apply, and terraform cannot
+    plan a for_each whose keys it cannot compute.
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "safety_tick_schedule" {
@@ -109,6 +128,17 @@ variable "max_delivery_attempts" {
     condition     = var.max_delivery_attempts >= 5 && var.max_delivery_attempts <= 100
     error_message = "Pub/Sub requires max_delivery_attempts between 5 and 100."
   }
+}
+
+variable "kms_key_name" {
+  description = <<-EOT
+    Optional CMEK for the wake and dead-letter topics. Empty uses Google-managed
+    keys. A wake message is a doorbell -- `{"source": "..."}` -- and carries no
+    tenant data, so the default is deliberately not a customer key this platform
+    would then have to own, rotate and pay for in a shared project.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "time_zone" {

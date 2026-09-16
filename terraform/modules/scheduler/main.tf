@@ -24,8 +24,12 @@ locals {
 }
 
 resource "google_pubsub_topic" "wake" {
+  # checkov:skip=CKV_GCP_83:A wake message carries no tenant data -- it is a "there is work" doorbell with a one-hour retention. CMEK is supported via `kms_key_name` for environments that require it; it is unset by default because this platform owns no key ring in a shared project.
+
   project = var.project_id
   name    = local.wake_topic_name
+
+  kms_key_name = var.kms_key_name == "" ? null : var.kms_key_name
 
   # A wake message is worthless once it is stale -- the safety tick will
   # produce another within a minute -- so retention is short by design.
@@ -35,8 +39,12 @@ resource "google_pubsub_topic" "wake" {
 }
 
 resource "google_pubsub_topic" "dead_letter" {
+  # checkov:skip=CKV_GCP_83:Same payload as the wake topic, which carries no tenant data. CMEK is available through `kms_key_name`.
+
   project = var.project_id
   name    = local.dlq_topic_name
+
+  kms_key_name = var.kms_key_name == "" ? null : var.kms_key_name
 
   message_retention_duration = "604800s"
 
@@ -108,8 +116,11 @@ resource "google_pubsub_subscription" "dead_letter" {
 # Pub/Sub IAM
 # --------------------------------------------------------------------------
 
+# Keyed by component, not by member: the member strings are service account
+# emails that are unknown until apply, and a for_each with unknown KEYS cannot
+# be planned at all.
 resource "google_pubsub_topic_iam_member" "publishers" {
-  for_each = toset(var.publisher_members)
+  for_each = var.publisher_members
 
   project = var.project_id
   topic   = google_pubsub_topic.wake.name

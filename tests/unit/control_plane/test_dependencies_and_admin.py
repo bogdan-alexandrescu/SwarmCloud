@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from .conftest import auth_header, seed_pool, seed_task, seed_tenant
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
@@ -366,3 +368,212 @@ def test_pubsub_push_runs_one_drain(db, make_scheduler, dispatcher):
     assert client.post("/pubsub/push", json={"message": {"data": "!!!not-base64"}}).status_code == 200
     assert client.get("/healthz").status_code == 200
     assert "swarm_scheduler_runs_total" in client.get("/metrics").text
+
+
+# -- the limits an operator sets are the limits that bind ------------------
+
+def test_the_runbooks_spelling_of_a_limit_is_accepted(client, db):
+    """docs/concurrency.md and docs/quota-management.md all send `hard_limit`.
+
+    Under `extra="forbid"` every one of those copy-pasteable curls returned 422,
+    naming `limit` as missing and `hard_limit` as forbidden. A limit an operator
+    cannot set during an incident is not a limit.
+    """
+    seed_tenant(db, "eng", max_active=20)
+    for path in (
+        "/v1/admin/limits/global",
+        "/v1/admin/limits/provider/anthropic",
+        "/v1/admin/limits/resource/standard",
+        "/v1/admin/limits/runner/mock",
+    ):
+        response = client.put(path, headers=auth_header("root"), json={"hard_limit": 150})
+        assert response.status_code == 200, f"{path}: {response.text}"
+        assert response.json()["pool"]["hard_limit"] == 150
+
+    tenant_limit = client.put(
+        "/v1/admin/limits/tenant/eng", headers=auth_header("root"), json={"hard_limit": 7}
+    )
+    assert tenant_limit.status_code == 200
+    assert db.docs["pools/tenant:eng"]["hard_limit"] == 7
+
+    # The original spelling still works; this adds an alias, it does not move.
+    assert client.put(
+        "/v1/admin/limits/global", headers=auth_header("root"), json={"limit": 11}
+    ).status_code == 200
+    assert db.docs["pools/global"]["hard_limit"] == 11
+
+
+def test_capacity_units_really_bounds_the_tenant_pool(client, db):
+    """It used to be written to the document and consulted by nothing.
+
+    `acquire_lease_in_transaction` increments every pool by the task's weighted
+    `units`, so `tenant:<id>.active` is a count of UNITS. Both knobs are ceilings
+    on the same number, and the pool takes the smaller: correct read either way,
+    and it can never raise a ceiling an operator set.
+    """
+    seed_tenant(db, "eng", max_active=20)
+    response = client.put(
+        "/v1/admin/tenants/eng/limits",
+        headers=auth_header("root"),
+        json={"capacity_units": 6},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["tenant"]["capacity_units"] == 6
+    assert response.json()["pool"]["hard_limit"] == 6
+    assert db.docs["pools/tenant:eng"]["hard_limit"] == 6
+
+    # And the smaller of the two is what binds.
+    client.put(
+        "/v1/admin/tenants/eng/limits",
+        headers=auth_header("root"),
+        json={"max_active": 3},
+    )
+    assert db.docs["pools/tenant:eng"]["hard_limit"] == 3
+
+
+def test_a_capacity_units_ceiling_actually_refuses_admission(db, make_scheduler, dispatcher):
+    """Through the real drain loop, in weighted units rather than task count."""
+    seed_tenant(db, "eng", credentials=("anthropic",), max_active=100)
+    seed_pool(db, "global", hard_limit=100)
+    from swarm_api.store import Store
+
+    Store(db).set_tenant_limits("eng", capacity_units=3)
+
+    for index in range(4):
+        seed_task(
+            db,
+            task_id=f"task_browser_{index}",
+            tenant_id="eng",
+            runner_profile="browser",
+            resource_class="browser",         # 2 units each
+            provider="anthropic",
+        )
+
+    report = make_scheduler().drain()
+
+    assert report.leased == 1, "3 units of budget fits exactly one 2-unit task"
+    assert db.docs["pools/tenant:eng"]["active"] == 2
+
+
+def test_a_budget_that_cannot_be_enforced_is_refused_rather_than_stored(client, db):
+    """An admin who sets a budget used to get a 200 and no spend control.
+
+    There is no cost attribution anywhere in this control plane, and
+    ParkReason.BUDGET_EXHAUSTED appears in no code path, so the number could only
+    ever be stored and echoed back.
+    """
+    seed_tenant(db, "eng", max_active=20)
+    response = client.put(
+        "/v1/admin/tenants/eng/limits",
+        headers=auth_header("root"),
+        json={"monthly_budget_usd": 500},
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert "monthly_budget_usd" in body["message"]
+    assert body["detail"]["enforceable_limits"] == [
+        "max_active",
+        "capacity_units",
+        "enabled",
+    ]
+    assert db.docs["tenants/eng"].get("monthly_budget_usd") is None
+
+
+# -- a failed dispatch tells the tenant a code, not the backend's message ---
+
+def test_a_failed_dispatch_does_not_leak_backend_detail_to_the_tenant(
+    db, make_scheduler, dispatcher
+):
+    """`task.last_error` is returned to the caller by `codec.task_to_api`.
+
+    A Cloud Run or Kubernetes error echoes the resource it was handed: the tenant
+    service account email, the job name, the secret names in the manifest.
+    """
+    from scheduler.dispatch import DispatchError
+
+    base_pools(db)
+    seed_task(db, task_id="task_doomed", tenant_id="eng")
+
+    def explode(*, task, lease, profile, tenant):
+        raise DispatchError(
+            "PermissionDenied: swarm-agent-worker-eng@saga-agents-staging.iam."
+            "gserviceaccount.com cannot access secret swarm-tenant-eng-anthropic",
+            code="cloud_run_run_job_failed",
+        )
+
+    dispatcher.dispatch = explode
+    report = make_scheduler().drain()
+
+    assert report.dispatch_failures == 1
+    stored = db.docs["tasks/task_doomed"]
+    assert stored["last_error"].startswith("cloud_run_run_job_failed (attempt att_")
+    assert "gserviceaccount.com" not in stored["last_error"]
+    assert "swarm-tenant-eng-anthropic" not in stored["last_error"]
+
+    events = [
+        doc
+        for path, doc in db.docs.items()
+        if path.startswith("tasks/task_doomed/events/")
+        and doc["type"] == "lease_released"
+    ]
+    assert events[0]["detail"]["error_code"] == "cloud_run_run_job_failed"
+    assert events[0]["detail"]["correlation_id"].startswith("att_")
+    assert "gserviceaccount.com" not in repr(events[0]["detail"])
+
+
+# -- report and metric agree ------------------------------------------------
+
+def test_a_dependency_free_promotion_is_counted_in_the_metric_too(db, make_scheduler):
+    """DrainReport.promoted_dependencies and
+    `swarm_scheduler_promoted{kind="dependency"}` counted different things, so a
+    dashboard built on the metric under-counted promotions."""
+    base_pools(db)
+    seed_task(
+        db,
+        task_id="task_orphan",
+        tenant_id="eng",
+        state="PARKED",
+        park_reason="DEPENDENCY_INCOMPLETE",
+    )
+    seed_task(
+        db,
+        task_id="task_child",
+        tenant_id="eng",
+        state="PARKED",
+        park_reason="DEPENDENCY_INCOMPLETE",
+        depends_on=("task_parent",),
+    )
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="SUCCEEDED")
+
+    scheduler = make_scheduler()
+    report = scheduler.drain()
+
+    assert report.promoted_dependencies == 2
+    rendered = scheduler.metrics.render()[0].decode("utf-8")
+    assert 'swarm_scheduler_promoted_total{kind="dependency"} 2.0' in rendered
+
+
+# -- the push verifier is a real control, or the process does not start -----
+
+def test_the_scheduler_refuses_to_start_with_its_push_check_disabled(monkeypatch):
+    """`PUSH_SERVICE_ACCOUNT` unset left the second layer silently off in every
+    deployed environment, and the comment above it asserted a control a reviewer
+    would then believe was present."""
+    from scheduler.main import PushVerifier
+
+    with_nothing = PushVerifier("", "")
+    assert with_nothing.enabled is False, "still available for local development"
+
+    with pytest.raises(ValueError) as exc:
+        PushVerifier("", "", required=True)
+    assert "PUSH_SERVICE_ACCOUNT" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        PushVerifier("tick@saga-agents-staging.iam.gserviceaccount.com", "", required=True)
+    assert "PUSH_AUDIENCE" in str(exc.value)
+
+    PushVerifier(
+        "tick@saga-agents-staging.iam.gserviceaccount.com",
+        "https://scheduler.example",
+        required=True,
+    )

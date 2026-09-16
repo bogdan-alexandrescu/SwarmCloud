@@ -19,6 +19,16 @@ no restore will ever select, rather than a manifest pointing at a truncated one.
 Restore searches across ALL attempts of the task, because a resume is by
 definition a new attempt with a new id, and the checkpoint worth restoring was
 written by the attempt that died.
+
+**A checkpoint is only ever restored into the task it belongs to.** The pointer
+in `task.latest_checkpoint` is a Firestore field, and Firestore has no
+document-level IAM, so it must be treated as data rather than as an
+instruction: `find_by_uri` resolves it only inside THIS task's own prefix, and
+`restore` re-checks the manifest's `tenant_id` and `task_id` before it unpacks a
+byte. The GCS IAM condition on `tenants/<tenant>/` denies the cross-tenant case
+in production; these checks are what make the same true under
+`LOCAL_ARTIFACT_ROOT`, and what stop a pointer to another TASK of the same
+tenant from delivering the wrong working tree.
 """
 
 from __future__ import annotations
@@ -97,7 +107,14 @@ def _safe_members(tar: tarfile.TarFile, destination: Path) -> list[tarfile.TarIn
         if member.issym() or member.islnk():
             link = member.linkname
             link_target = (target.parent / link).resolve() if not os.path.isabs(link) else Path(link)
-            if not str(link_target).startswith(str(resolved_dest)):
+            # The separator is required here for the same reason it is required
+            # on the path check above: without it, `/w/workspace/att/work` would
+            # accept a link resolving to `/w/workspace/att/work-secrets`, a
+            # sibling that merely shares the string prefix.
+            if not (
+                str(link_target).startswith(str(resolved_dest) + os.sep)
+                or link_target == resolved_dest
+            ):
                 raise CheckpointError(
                     f"checkpoint archive contains a link escaping the workspace: {name} -> {link}"
                 )
@@ -218,10 +235,44 @@ class CheckpointManager:
                 count += 1
         return count
 
+    # -- ownership ---------------------------------------------------------
+    @property
+    def own_prefix(self) -> str:
+        """The only prefix this manager will ever read a checkpoint from."""
+        return attempts_prefix(tenant_id=self._tenant_id, task_id=self._task_id)
+
+    def _owns(self, record: CheckpointRecord) -> bool:
+        """True when the manifest describes a checkpoint of THIS task.
+
+        The manifest was found in a bucket; that is not evidence of who wrote
+        it. Both identifiers are compared, and the archive key is required to
+        sit under this task's prefix, so a manifest that names the right task
+        but points its archive somewhere else is refused too.
+        """
+        return (
+            record.tenant_id == self._tenant_id
+            and record.task_id == self._task_id
+            and record.archive_key.startswith(self.own_prefix)
+            and record.manifest_key.startswith(self.own_prefix)
+        )
+
+    def _accept(self, record: CheckpointRecord, key: str) -> CheckpointRecord | None:
+        if self._owns(record):
+            return record
+        self._log.error(
+            "refusing a checkpoint manifest that belongs to another task",
+            key=key,
+            manifest_tenant=record.tenant_id,
+            manifest_task=record.task_id,
+            expected_tenant=self._tenant_id,
+            expected_task=self._task_id,
+        )
+        return None
+
     # -- discover ----------------------------------------------------------
     def find_latest(self) -> CheckpointRecord | None:
         """Newest committed checkpoint for this TASK, across every attempt."""
-        prefix = attempts_prefix(tenant_id=self._tenant_id, task_id=self._task_id)
+        prefix = self.own_prefix
         manifests = [k for k in self._store.list_keys(prefix) if k.endswith(f"/{MANIFEST_NAME}")]
         best: CheckpointRecord | None = None
         for key in manifests:
@@ -231,29 +282,45 @@ class CheckpointManager:
             except Exception as exc:  # a half-written manifest must not block a resume
                 self._log.warning("ignoring unreadable checkpoint manifest", key=key, error=str(exc))
                 continue
+            if self._accept(record, key) is None:
+                continue
             if best is None or record.sort_key > best.sort_key:
                 best = record
         return best
 
     def find_by_uri(self, uri: str) -> CheckpointRecord | None:
-        """Resolve the pointer the control plane keeps in `task.latest_checkpoint`."""
+        """Resolve the pointer the control plane keeps in `task.latest_checkpoint`.
+
+        The pointer is a Firestore field and therefore untrusted input. It is
+        resolved ONLY within this task's own prefix: a pointer that does not name
+        a checkpoint of this task -- another tenant's, or another task of the
+        same tenant's -- resolves to nothing and the worker falls back to
+        `find_latest`, which searches that prefix and no other.
+        """
         if not uri:
             return None
         key = uri.split("://", 1)[-1]
         # Every object this platform writes lives under `tenants/`, so slicing
         # from there turns any flavour of URI -- gs://bucket/..., file:///abs/...
         # -- into the bucket-relative key without special-casing the store.
-        marker = key.find("tenants/")
+        marker = key.find(self.own_prefix)
         if marker > 0:
             key = key[marker:]
         elif key.startswith(self._store.bucket + "/"):
             key = key[len(self._store.bucket) + 1 :]
         key = key.rstrip("/") + f"/{MANIFEST_NAME}"
+        if not key.startswith(self.own_prefix):
+            self._log.error(
+                "refusing a checkpoint pointer outside this task's own prefix",
+                pointer=uri,
+                expected_prefix=self.own_prefix,
+            )
+            return None
         try:
             data = json.loads(self._store.download_bytes(key).decode("utf-8"))
         except Exception:
             return None
-        return CheckpointRecord.from_dict(data)
+        return self._accept(CheckpointRecord.from_dict(data), key)
 
     # -- restore -----------------------------------------------------------
     def restore(self, record: CheckpointRecord, ws: Workspace) -> int:
@@ -262,6 +329,12 @@ class CheckpointManager:
         The refusal is the point: restoring over an existing tree produces a
         workspace that matches no checkpoint, which is worse than failing.
         """
+        if not self._owns(record):
+            raise CheckpointError(
+                f"checkpoint {record.checkpoint_id} belongs to "
+                f"{record.tenant_id}/{record.task_id}, not "
+                f"{self._tenant_id}/{self._task_id}; refusing to restore it"
+            )
         if any(ws.work.iterdir()):
             raise CheckpointError(
                 "refusing to restore a checkpoint into a non-empty workspace; "

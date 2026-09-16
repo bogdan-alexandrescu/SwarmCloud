@@ -111,11 +111,14 @@ seed_pool "runner:mock" 5
 seed_pool "tenant:u-local" 10
 ok "pools seeded in the emulator"
 
+# Each service exposes create_app() and deliberately NOT a module-level `app`:
+# building one at import time would construct a Firestore client during import,
+# which would make every unit test need credentials. So uvicorn gets --factory.
 app_module() {
   case "$1" in
-    api)          printf 'swarm_api.main:app' ;;
-    scheduler)    printf 'scheduler.main:app' ;;
-    quota-broker) printf 'quota_broker.main:app' ;;
+    api)          printf 'swarm_api.main:create_app' ;;
+    scheduler)    printf 'scheduler.main:create_app' ;;
+    quota-broker) printf 'quota_broker.main:create_app' ;;
   esac
 }
 
@@ -137,12 +140,12 @@ case "${TARGET}" in
       warn "python package '${PACKAGE}' is not importable yet (its track may not have landed)"
       ok "the emulator is up at ${EMULATOR_HOST}; start your service against it manually"
       dim "  export FIRESTORE_EMULATOR_HOST=${EMULATOR_HOST} PROJECT_ID=${DEV_PROJECT}"
-      dim "  uv run uvicorn ${MODULE} --reload --port ${APP_PORT}"
+      dim "  uv run uvicorn --factory ${MODULE} --reload --port ${APP_PORT}"
       if [[ -n "${EMULATOR_PID}" ]]; then wait "${EMULATOR_PID}"; fi
       exit 0
     fi
-    info "uvicorn ${MODULE} on :${APP_PORT} against ${EMULATOR_HOST}"
-    uv run --project "${REPO_ROOT}" uvicorn "${MODULE}" --reload --port "${APP_PORT}"
+    info "uvicorn --factory ${MODULE} on :${APP_PORT} against ${EMULATOR_HOST}"
+    uv run --project "${REPO_ROOT}" uvicorn --factory "${MODULE}" --reload --port "${APP_PORT}"
     ;;
   *)
     die "unknown target '${TARGET}'; expected api, scheduler, quota-broker or emulator"

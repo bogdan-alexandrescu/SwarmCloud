@@ -88,6 +88,7 @@ load_env() {
   API_SERVICE="${API_SERVICE:-swarm-api}"
   SCHEDULER_SERVICE="${SCHEDULER_SERVICE:-swarm-scheduler}"
   QUOTA_SERVICE="${QUOTA_SERVICE:-swarm-quota-broker}"
+  RECONCILER_SERVICE="${RECONCILER_SERVICE:-swarm-reconciler}"
 
   API_PREFIX="${API_PREFIX:-/v1}"
   HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"
@@ -97,7 +98,7 @@ load_env() {
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
   export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
-  export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE
+  export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT IMAGE_HOST IMAGE_REPO
 
   mkdir -p "${BUILD_DIR}"
@@ -291,8 +292,10 @@ tf_var_file() {
 }
 
 # Usage: tf_var_args; tf -chdir="$(tf_root)" plan "${TF_VAR_ARGS[@]}"
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
 TF_VAR_ARGS=()
 tf_var_args() {
+  # shellcheck disable=SC2034  # read by the scripts that source this library
   TF_VAR_ARGS=(-var-file="$(tf_var_file)")
 }
 

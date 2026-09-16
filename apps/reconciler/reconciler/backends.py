@@ -6,14 +6,36 @@ across both implementations:
 
 * **Nothing is touched unless this platform created it.** The project is shared
   with a live GKE cluster, a VPC and a dozen service accounts belonging to other
-  teams. Every list is label-filtered on `managed-by=swarm` and every delete
-  re-checks the label on the object it is about to remove, because a list filter
-  is a query and a re-check is a guarantee.
+  teams. Every list is label-filtered on the `managed-by=swarm*` family and
+  every delete re-checks the label on the object it is about to remove, because
+  a list filter is a query and a re-check is a guarantee.
 * **Termination is confirmed, not requested.** `terminate()` returns True only
   when the backend acknowledged it. The caller uses that return value to decide
   whether it may release the slot, and a slot released after an unconfirmed
   termination is exactly the duplicate-execution bug this service exists to
   prevent.
+
+Two asymmetries here are deliberate, and both exist because being BLIND is far
+more dangerous than seeing too much.
+
+**Reading accepts the whole `managed-by=swarm*` family; deleting does not.**
+Components stamp their own marker -- the dispatcher writes `swarm-scheduler`,
+terraform writes `swarm-terraform`, the API writes `swarm-api`. A reconciler
+that recognised only one of those would list zero executions, conclude that
+every running task had no execution behind it, release its slot and let the
+scheduler start a second agent on the same task: the exact duplicate-execution
+failure this service exists to prevent, caused by a label typo. So reads accept
+the family. Deletes are narrower -- only the runtime markers (`swarm`,
+`swarm-scheduler`) -- because a `swarm-terraform` resource has an owner that
+will simply recreate it, and fighting terraform is not this service's job.
+
+**Identifiers are read from the environment first, labels second.** Label values
+are sanitised to fit Kubernetes' and Cloud Run's character rules, so the task
+`task_9f3a` appears in a label as `task-9f3a`. Matching that against a Firestore
+document id would fail, and a failed match reads as "this execution belongs to
+no task I know about" -- an orphan, which gets terminated. The container
+environment carries the identifiers verbatim, so that is what is trusted, with
+the label kept only as a hint that `detect` can resolve by sanitised comparison.
 """
 
 from __future__ import annotations
@@ -28,11 +50,91 @@ from typing import Any, Protocol
 from .model import ExecutionPhase, ExecutionView, JobResourceView, as_datetime
 
 MANAGED_LABEL = "managed-by"
+#: The marker this service itself would stamp. Other components stamp their own.
 MANAGED_VALUE = "swarm"
-TASK_LABEL = "swarm-task-id"
-ATTEMPT_LABEL = "swarm-attempt-id"
-TENANT_LABEL = "swarm-tenant-id"
-GENERATION_LABEL = "swarm-generation"
+
+#: Every marker this platform's components stamp. Listed explicitly rather than
+#: matched with a `swarm-*` glob so that a resource another team happens to
+#: label `swarm-something` is not silently adopted by the reconciler.
+MANAGED_VALUES: tuple[str, ...] = (
+    MANAGED_VALUE,
+    "swarm-scheduler",
+    "swarm-api",
+    "swarm-worker",
+    "swarm-terraform",
+    "swarm-bootstrap",
+)
+
+#: Markers whose resources the reconciler may DELETE. `swarm-terraform` is
+#: absent on purpose: terraform owns those and will recreate them.
+GC_MANAGED_VALUES: frozenset[str] = frozenset({"swarm", "swarm-scheduler", "swarm-worker"})
+
+#: Both label spellings in use across the platform. The dispatcher writes the
+#: short form; earlier drafts of this service assumed the long one. Reading both
+#: costs one dict lookup and removes a whole class of false orphans.
+TASK_LABELS = ("swarm-task-id", "swarm-task")
+ATTEMPT_LABELS = ("swarm-attempt-id", "swarm-attempt")
+TENANT_LABELS = ("swarm-tenant-id", "swarm-tenant")
+GENERATION_LABELS = ("swarm-generation",)
+
+TASK_LABEL = TASK_LABELS[0]
+ATTEMPT_LABEL = ATTEMPT_LABELS[0]
+TENANT_LABEL = TENANT_LABELS[0]
+GENERATION_LABEL = GENERATION_LABELS[0]
+
+#: Environment variables the dispatcher sets on every worker container. These
+#: carry the identifiers verbatim, which labels cannot.
+TASK_ENV = "TASK_ID"
+ATTEMPT_ENV = "ATTEMPT_ID"
+TENANT_ENV = "TENANT_ID"
+GENERATION_ENV = "GENERATION"
+
+
+def managed_marker(labels: dict[str, Any] | None) -> str | None:
+    """The `managed-by` value, when it is one this platform recognises."""
+    value = (labels or {}).get(MANAGED_LABEL)
+    return value if value in MANAGED_VALUES else None
+
+
+def is_swarm_managed(labels: dict[str, Any] | None) -> bool:
+    """True for any resource this platform created. Used for READS."""
+    return managed_marker(labels) is not None
+
+
+def is_gc_eligible(labels: dict[str, Any] | None) -> bool:
+    """True only for resources this service is allowed to DELETE."""
+    return (managed_marker(labels) or "") in GC_MANAGED_VALUES
+
+
+def is_namespace_gc_eligible(labels: dict[str, Any] | None) -> bool:
+    """True for a per-tenant namespace this service may collect when empty.
+
+    Namespaces get their own rule because they are the one platform resource
+    whose `managed-by` marker says `swarm-terraform` while no terraform state
+    contains it: `scripts/register-tenant.sh` creates it with kubectl and
+    relabels it on every run, and there is no kubernetes provider anywhere in
+    `terraform/`. Applying the Cloud Run rule here would make namespace
+    collection dead code.
+
+    What replaces it is a stronger pair of conditions: a recognised `managed-by`
+    marker AND a `swarm-tenant` label, which only this platform ever sets. A
+    namespace belonging to another team in this shared project can match neither.
+    """
+    labels = labels or {}
+    return is_swarm_managed(labels) and bool(_first(labels, TENANT_LABELS))
+
+
+def managed_label_selector() -> str:
+    """A set-based Kubernetes selector covering the whole managed family."""
+    return f"{MANAGED_LABEL} in ({','.join(MANAGED_VALUES)})"
+
+
+def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return value
+    return None
 
 
 class Backend(Protocol):
@@ -120,9 +222,17 @@ class CloudRunBackend:
             if str(getattr(job, "name", "")).rsplit("/", 1)[-1].startswith(self._prefix)
         ]
 
+    @staticmethod
+    def _labels(resource: Any) -> dict[str, Any]:
+        return dict(getattr(resource, "labels", {}) or {})
+
     def _is_managed(self, resource: Any) -> bool:
-        labels = dict(getattr(resource, "labels", {}) or {})
-        return labels.get(MANAGED_LABEL) == MANAGED_VALUE
+        """Visible to this service: any marker in the platform family."""
+        return is_swarm_managed(self._labels(resource))
+
+    def _is_gc_eligible(self, resource: Any) -> bool:
+        """Deletable by this service: runtime markers only."""
+        return is_gc_eligible(self._labels(resource))
 
     def _execution_view(self, execution: Any, job_name: str) -> ExecutionView:
         labels = dict(getattr(execution, "labels", {}) or {})
@@ -146,15 +256,18 @@ class CloudRunBackend:
         else:
             phase = ExecutionPhase.UNKNOWN
 
+        # Environment first: it carries the identifiers verbatim, while a label
+        # value has been through `sanitize_name` and no longer matches the
+        # Firestore document id it came from.
         return ExecutionView(
             name=str(getattr(execution, "name", "")),
             backend=self.name,
             phase=phase,
             created_at=as_datetime(getattr(execution, "create_time", None)),
-            task_id=labels.get(TASK_LABEL) or env.get("TASK_ID"),
-            attempt_id=labels.get(ATTEMPT_LABEL) or env.get("ATTEMPT_ID"),
-            tenant_id=labels.get(TENANT_LABEL) or env.get("TENANT_ID"),
-            generation=_int_or_none(labels.get(GENERATION_LABEL) or env.get("GENERATION")),
+            task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
+            attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
+            tenant_id=env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+            generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
             parent=job_name,
         )
 
@@ -194,7 +307,7 @@ class CloudRunBackend:
         for job in self._list_jobs():
             if not self._is_managed(job):
                 continue
-            labels = dict(getattr(job, "labels", {}) or {})
+            labels = self._labels(job)
             executions = list(self._executions_client().list_executions(parent=job.name))
             active = sum(
                 1 for e in executions if self._execution_view(e, job.name).is_active
@@ -206,11 +319,13 @@ class CloudRunBackend:
             resources.append(
                 JobResourceView(
                     name=str(job.name),
-                    tenant_id=labels.get(TENANT_LABEL),
-                    runner_profile=labels.get("swarm-runner-profile"),
+                    tenant_id=_first(labels, TENANT_LABELS),
+                    runner_profile=_first(labels, ("swarm-runner-profile", "swarm-profile")),
                     created_at=as_datetime(getattr(job, "create_time", None)),
                     last_execution_at=last,
-                    managed=True,
+                    # `managed` here means "this service may delete it", which is
+                    # the only question the GC asks of the flag.
+                    managed=self._is_gc_eligible(job),
                     active_executions=active,
                 )
             )
@@ -220,13 +335,16 @@ class CloudRunBackend:
         if not resource.managed:
             raise PermissionError(
                 f"refusing to delete unmanaged Cloud Run job {resource.name}: "
-                f"missing {MANAGED_LABEL}={MANAGED_VALUE}"
+                f"{MANAGED_LABEL} is not one of {sorted(GC_MANAGED_VALUES)}"
             )
         # Re-read and re-check the label: the list that produced this view may
         # be seconds old, and this project is shared with other teams.
         job = self._jobs_client().get_job(name=resource.name)
-        if not self._is_managed(job):
-            raise PermissionError(f"job {resource.name} is not managed by swarm; refusing delete")
+        if not self._is_gc_eligible(job):
+            raise PermissionError(
+                f"job {resource.name} does not carry a deletable {MANAGED_LABEL} "
+                f"marker; refusing delete"
+            )
         operation = self._jobs_client().delete_job(name=resource.name)
         operation.result(timeout=120)
         if self._log:
@@ -309,7 +427,35 @@ class GkeBackend:
 
     @property
     def label_selector(self) -> str:
-        return f"{MANAGED_LABEL}={MANAGED_VALUE}"
+        """Set-based, so every marker in the managed family is listed.
+
+        An equality selector on one value is how this service goes blind: the
+        dispatcher stamps `swarm-scheduler`, and a selector pinned to `swarm`
+        would return an empty list of Jobs for a cluster full of running agents.
+        """
+        return managed_label_selector()
+
+    @staticmethod
+    def _pod_env(job: Any) -> dict[str, str]:
+        """Identifiers from the worker container's environment.
+
+        Read verbatim, unlike labels, which `sanitize_name` has already rewritten
+        by the time they reach the API server.
+        """
+        env: dict[str, str] = {}
+        spec = getattr(job, "spec", None)
+        template = getattr(spec, "template", None)
+        pod_spec = getattr(template, "spec", None)
+        containers = getattr(pod_spec, "containers", None) or []
+        for container in containers:
+            for entry in getattr(container, "env", None) or []:
+                name = getattr(entry, "name", None)
+                value = getattr(entry, "value", None)
+                if name is None and isinstance(entry, dict):
+                    name, value = entry.get("name"), entry.get("value")
+                if name and isinstance(value, str):
+                    env.setdefault(name, value)
+        return env
 
     # -- reads ----------------------------------------------------------
     def list_executions(self) -> list[ExecutionView]:
@@ -321,6 +467,9 @@ class GkeBackend:
             if not str(metadata.namespace or "").startswith(self._prefix):
                 continue
             labels = dict(metadata.labels or {})
+            if not is_swarm_managed(labels):
+                continue
+            env = self._pod_env(job)
             status = job.status
             active = int(getattr(status, "active", 0) or 0)
             succeeded = int(getattr(status, "succeeded", 0) or 0)
@@ -339,10 +488,12 @@ class GkeBackend:
                     backend=self.name,
                     phase=phase,
                     created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
-                    task_id=labels.get(TASK_LABEL),
-                    attempt_id=labels.get(ATTEMPT_LABEL),
-                    tenant_id=labels.get(TENANT_LABEL),
-                    generation=_int_or_none(labels.get(GENERATION_LABEL)),
+                    task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
+                    attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
+                    tenant_id=env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                    generation=_int_or_none(
+                        env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)
+                    ),
                     namespace=str(metadata.namespace),
                 )
             )
@@ -370,11 +521,11 @@ class GkeBackend:
             resources.append(
                 JobResourceView(
                     name=name,
-                    tenant_id=labels.get(TENANT_LABEL) or name[len(self._prefix):],
+                    tenant_id=_first(labels, TENANT_LABELS) or name[len(self._prefix):],
                     runner_profile=None,
                     created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
                     last_execution_at=last,
-                    managed=labels.get(MANAGED_LABEL) == MANAGED_VALUE,
+                    managed=is_namespace_gc_eligible(labels),
                     active_executions=active,
                 )
             )
@@ -413,13 +564,15 @@ class GkeBackend:
 
         if not resource.managed:
             raise PermissionError(
-                f"refusing to delete namespace {resource.name}: not labelled "
-                f"{MANAGED_LABEL}={MANAGED_VALUE}"
+                f"refusing to delete namespace {resource.name}: it does not carry "
+                f"both a recognised {MANAGED_LABEL} marker and a tenant label"
             )
         namespace = self._core.read_namespace(name=resource.name)
         labels = dict(namespace.metadata.labels or {})
-        if labels.get(MANAGED_LABEL) != MANAGED_VALUE:
-            raise PermissionError(f"namespace {resource.name} is not managed by swarm")
+        if not is_namespace_gc_eligible(labels) or not resource.name.startswith(self._prefix):
+            raise PermissionError(
+                f"namespace {resource.name} is not a swarm tenant namespace; refusing delete"
+            )
         jobs = self._batch.list_namespaced_job(namespace=resource.name)
         if getattr(jobs, "items", []):
             return False             # not empty after all; leave it alone

@@ -32,11 +32,13 @@ variable "tenants" {
     absent parks as CREDENTIAL_MISSING rather than failing mid-run.
   EOT
   type = map(object({
-    kind           = string # "group" | "user"
-    principal      = string # eng@saga.xyz
-    display_name   = optional(string, "")
-    providers      = optional(list(string), [])
-    max_active     = optional(number, 20)
+    kind         = string # "group" | "user"
+    principal    = string # eng@saga.xyz
+    display_name = optional(string, "")
+    providers    = optional(list(string), [])
+    # Nullable, matching terraform/infra: a default here would shadow the
+    # environment's pool_limits.default_tenant rather than fall through to it.
+    max_active     = optional(number)
     capacity_units = optional(number, 40)
     # Kubernetes service account that assumes this tenant's GSA on Autopilot.
     ksa_name = optional(string, "swarm-agent-worker")
@@ -65,13 +67,16 @@ variable "tenants" {
 
 variable "dispatcher_members" {
   description = <<-EOT
-    Identities allowed to actAs a tenant worker SA. Cloud Run pins the service
-    account on the Job resource, so whoever creates that Job needs
-    iam.serviceAccountUser on the SA it names -- granted on the SA itself, never
-    project-wide.
+    Identities allowed to actAs a tenant worker SA, keyed by component name.
+    Cloud Run pins the service account on the Job resource, so whoever creates
+    that Job needs iam.serviceAccountUser on the SA it names -- granted on the
+    SA itself, never project-wide.
+
+    Keyed by component because the members are service account emails that only
+    exist after apply; terraform cannot plan a for_each over unknown keys.
   EOT
-  type        = list(string)
-  default     = []
+  type        = map(string)
+  default     = {}
 }
 
 variable "namespace_prefix" {

@@ -15,6 +15,17 @@ tenant's pod. Three things enforce it, and this module is the last of them:
 A tenant that has not registered a key for the provider its runner needs is not
 an error: the task parks as CREDENTIAL_MISSING, which costs nothing, and starts
 again by itself once an admin adds the key.
+
+**Only the variables the frozen profile declares are exported.** The secret
+payload may be a JSON object, and an earlier version of this module copied every
+upper-case key in it into the child's environment. That turned
+`roles/secretmanager.secretVersionAdder` -- which per-tenant admins hold, and
+which deliberately does NOT allow reading the key back -- into arbitrary process
+execution, because the runner reads `CLAUDE_CODE_BIN`, `CLAUDE_CODE_ARGS`,
+`PATH` and `HTTPS_PROXY` from that same environment. The allowlist is
+`RunnerProfile.secrets`, which comes from the frozen catalogue; anything else in
+the payload is ignored and named in a warning so a misnamed key is diagnosable
+without being obeyed.
 """
 
 from __future__ import annotations
@@ -46,10 +57,24 @@ class ResolvedCredentials:
 
 
 def load_tenant(db: Any, tenant_id: str) -> Tenant:
+    """Read this worker's OWN tenant document.
+
+    `tenant_id` is the worker's admitted tenant, never anything a caller
+    supplied, and the document is rejected if it carries a different id: a
+    `tenants/{id}` document whose `tenant_id` field says something else is
+    either corruption or another tenant writing into this one's record, and
+    trusting it would pick the wrong secret name two lines later.
+    """
     snap = db.collection("tenants").document(tenant_id).get()
     if not snap.exists:
         raise SecretError(f"tenant {tenant_id} does not exist")
     data = snap.to_dict() or {}
+    stored = data.get("tenant_id")
+    if stored is not None and stored != tenant_id:
+        raise SecretError(
+            f"tenants/{tenant_id} declares tenant_id {stored!r}; refusing to resolve "
+            "credentials against a document that belongs to another tenant"
+        )
     return Tenant(
         tenant_id=tenant_id,
         kind=data.get("kind", "group"),
@@ -100,6 +125,12 @@ def resolve_credentials(
     The secret payload is either a bare key or a JSON object mapping env var
     names to values, which is what lets a runner that needs two variables (a key
     and a base URL, say) keep using one per-tenant-per-provider secret.
+
+    Exactly the names in `secret_env_names` -- the frozen profile's `secrets`
+    tuple -- are exported. Every other key in the payload is dropped, because
+    the child's environment also decides which binary the runner starts and how
+    its libraries are loaded, and whoever can add a secret version is explicitly
+    not trusted with that.
     """
     if not provider or not secret_env_names:
         return ResolvedCredentials(env={}, secret_names=())
@@ -109,6 +140,7 @@ def resolve_credentials(
     secret_name = tenant.secret_name(provider)
     payload = client.access(secret_name)
     env: dict[str, str] = {}
+    ignored: list[str] = []
     parsed: Any = None
     stripped = payload.strip()
     if stripped.startswith("{"):
@@ -117,17 +149,24 @@ def resolve_credentials(
         except json.JSONDecodeError:
             parsed = None
     if isinstance(parsed, dict):
-        for name in secret_env_names:
-            if name in parsed:
-                env[name] = str(parsed[name])
         for key, value in parsed.items():
             if key in secret_env_names:
+                if isinstance(value, (str, int, float)):
+                    env[key] = str(value)
                 continue
-            if key.isupper() and isinstance(value, (str, int, float)):
-                env[key] = str(value)
+            ignored.append(str(key))
     else:
         for name in secret_env_names:
             env[name] = stripped
+
+    if ignored:
+        logger.warning(
+            "ignoring secret payload keys the runner profile does not declare",
+            secret=secret_name,
+            provider=provider,
+            ignored=sorted(ignored)[:20],
+            declared=sorted(secret_env_names),
+        )
 
     missing = [name for name in secret_env_names if name not in env]
     if missing:
@@ -139,3 +178,49 @@ def resolve_credentials(
     logger.info("tenant credentials resolved", provider=provider, secret=secret_name,
                 variables=sorted(env))
     return ResolvedCredentials(env=env, secret_names=(secret_name,))
+
+
+#: The provider name under which a tenant registers the token used to clone its
+#: repositories. It is a tenant credential like any other -- same naming rule,
+#: same IAM scoping -- and deliberately NOT a platform-wide token: one token
+#: that can clone every tenant's repositories would make a single malicious
+#: repository in one tenant a credential compromise for all of them.
+GIT_PROVIDER = "git"
+GIT_TOKEN_ENV = "GIT_TOKEN"
+
+
+def resolve_git_token(
+    *,
+    tenant: Tenant,
+    client: SecretManagerClient | None,
+    logger: Any,
+) -> str | None:
+    """The tenant's own clone token, or None when it has not registered one.
+
+    None is not an error: a public repository clones without a credential, and a
+    private one fails with git's own message, which is the right diagnosis. The
+    value is registered with the logger before it is returned so that every path
+    that might echo it is already scrubbing it.
+    """
+    if client is None or GIT_PROVIDER not in tenant.credentials:
+        return None
+    secret_name = tenant.secret_name(GIT_PROVIDER)
+    payload = client.access(secret_name).strip()
+    token = payload
+    if payload.startswith("{"):
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            value = parsed.get(GIT_TOKEN_ENV)
+            if not isinstance(value, (str, int, float)):
+                raise SecretError(
+                    f"secret {secret_name} is a JSON object without a {GIT_TOKEN_ENV} string"
+                )
+            token = str(value).strip()
+    if not token:
+        return None
+    logger.register_secret(token)
+    logger.info("tenant git credential resolved", secret=secret_name)
+    return token

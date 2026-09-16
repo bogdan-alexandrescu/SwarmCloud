@@ -5,11 +5,15 @@ per pool inside the admission transaction, and nothing else. Every wider sweep
 (dependency promotion, prewarm) is bounded and runs once per drain, not once per
 task.
 
-Composite indexes this module relies on (owned by the terraform track):
+Composite indexes this module relies on (owned by the terraform track). Both of
+these exist today as `tasks-state-priority-created` and
+`tasks-tenant-state-priority-created`:
 
     tasks:  state ASC, priority DESC, created_at ASC
-    tasks:  state ASC, park_reason ASC, next_eligible_at ASC
-    tasks:  workflow_id ASC, state ASC
+    tasks:  tenant_id ASC, state ASC, priority DESC, created_at ASC
+
+`parked_tasks` and `task_states` use equality filters only, which Firestore
+serves from single-field indexes by merge join, so they need no composite index.
 """
 
 from __future__ import annotations
@@ -89,6 +93,43 @@ class SchedulerStore:
             .limit(limit)
         )
         return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def ready_tasks_for_tenant(self, tenant_id: str, limit: int) -> list[Task]:
+        """One tenant's own READY work, in the same order as the global query.
+
+        This is the escape hatch from a priority flood. `ready_tasks` returns the
+        globally highest-priority slice, so a tenant holding more than
+        `candidate_batch_size` high-priority tasks fills that slice completely
+        and every other tenant vanishes from it -- at which point the
+        round-robin interleave has nothing of theirs to interleave and the aging
+        bonus has nothing to lift. Asking per tenant is what makes "one tenant
+        cannot starve others" true of the QUEUE rather than only of the slice.
+
+        Served by the `tasks-tenant-state-priority-created` composite index.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "==", TaskState.READY.value))
+            .order_by("priority", direction=firestore.Query.DESCENDING)
+            .order_by("created_at", direction=firestore.Query.ASCENDING)
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def enabled_tenant_ids(self, limit: int) -> list[str]:
+        """Tenants that may currently be admitted, oldest registration first.
+
+        One small document per tenant, read once per drain rather than once per
+        pass. A disabled tenant is skipped here so the top-up never spends a
+        query discovering work it would refuse to admit anyway.
+        """
+        out: list[str] = []
+        for snap in self._db.collection(TENANTS).limit(limit).stream():
+            data = snap.to_dict() or {}
+            if data.get("enabled", True):
+                out.append(str(data.get("tenant_id") or snap.id))
+        return out
 
     def parked_tasks(self, reason: ParkReason, limit: int) -> list[Task]:
         query = (
@@ -207,7 +248,13 @@ class SchedulerStore:
         )
 
     def return_to_ready_after_failed_dispatch(
-        self, task: Task, lease: Lease, error: str, *, retry_delay_seconds: int = 30
+        self,
+        task: Task,
+        lease: Lease,
+        error_code: str,
+        *,
+        correlation_id: str | None = None,
+        retry_delay_seconds: int = 30,
     ) -> None:
         """Dispatch failed after the lease was taken: give the capacity back.
 
@@ -219,15 +266,24 @@ class SchedulerStore:
         does not immediately re-lease the task and fail again: a backend that is
         refusing one dispatch is usually about to refuse the next, and a tight
         retry would burn the whole run's lease budget on one broken task.
+
+        `error_code` is a STABLE CODE, not the upstream exception text. This
+        field is returned to the tenant by `codec.task_to_api`, and a Cloud Run
+        or Kubernetes error echoes the resource it was given -- the tenant
+        service account email, the job name, the secret names in the manifest.
+        The correlation id (the attempt id) is what ties the tenant's copy to the
+        operator's log line, which has the full message.
         """
         now = self._now()
-        self.release_lease(lease.lease_id, reason=f"dispatch_failed: {error}"[:200])
+        reference = correlation_id or lease.attempt_id
+        public = f"{error_code} (attempt {reference})"
+        self.release_lease(lease.lease_id, reason=f"dispatch_failed: {error_code}"[:200])
         assert_transition(TaskState.LEASED, TaskState.READY)
         self._db.collection(TASKS).document(task.id).update(
             {
                 "state": TaskState.READY.value,
                 "current_lease_id": None,
-                "last_error": error[:1000],
+                "last_error": public[:1000],
                 "next_eligible_at": now + timedelta(seconds=max(0, retry_delay_seconds)),
                 "updated_at": now,
             }
@@ -235,7 +291,11 @@ class SchedulerStore:
         self.append_event(
             task,
             EventType.LEASE_RELEASED,
-            {"reason": "dispatch_failed", "error": error[:500]},
+            {
+                "reason": "dispatch_failed",
+                "error_code": error_code,
+                "correlation_id": reference,
+            },
             lease_id=lease.lease_id,
             generation=lease.generation,
         )

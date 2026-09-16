@@ -72,6 +72,7 @@ class DrainReport:
     promoted_credentials: int = 0
     promoted_prewarm: int = 0
     tenants_seen: int = 0
+    topped_up_tenants: int = 0
     stop_reason: str = "not_started"
     duration_seconds: float = 0.0
     blockers: dict[str, int] = field(default_factory=dict)
@@ -129,6 +130,7 @@ class Scheduler:
         started = self._monotonic()
         report = DrainReport()
         self._tenant_cache: dict[str, Tenant | None] = {}
+        self._topup_tenant_ids: list[str] | None = None
 
         if self._store.dispatch_paused():
             self._metrics.paused.set(1)
@@ -157,10 +159,13 @@ class Scheduler:
                 break
 
             candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
-            self._metrics.candidates.observe(len(candidates))
             if not candidates:
+                self._metrics.candidates.observe(0)
                 report.stop_reason = "queue_empty"
                 break
+            candidates, topped_up = self._top_up_starved_tenants(candidates)
+            report.topped_up_tenants = max(report.topped_up_tenants, topped_up)
+            self._metrics.candidates.observe(len(candidates))
 
             ordered = round_robin_order(
                 candidates,
@@ -194,6 +199,62 @@ class Scheduler:
         self._metrics.run_seconds.observe(report.duration_seconds)
         log.info("drain finished %s", report.to_dict())
         return report
+
+    # -- candidate selection ----------------------------------------------
+
+    def _top_up_starved_tenants(self, candidates: list[Task]) -> tuple[list[Task], int]:
+        """Add candidates for tenants the global slice left out entirely.
+
+        `ready_tasks` returns the globally highest-priority slice. Round-robin
+        and starvation aging both operate on that slice, so neither can help a
+        tenant that is not IN it -- and a tenant holding more than
+        `candidate_batch_size` high-priority tasks fills it by itself. Priority
+        is a number the caller chooses, so that is a one-line denial of service
+        against every other tenant, and it is exactly the failure round-robin
+        exists to prevent.
+
+        The top-up runs only when the slice came back FULL. A short slice is the
+        entire READY queue, so nobody can be missing from it and the extra
+        queries would buy nothing. That keeps the ordinary case at exactly one
+        query per pass, which is what the hot path was designed around.
+        """
+        budget = self._settings.tenant_topup_candidates
+        if budget <= 0 or len(candidates) < self._settings.candidate_batch_size:
+            return candidates, 0
+
+        if self._topup_tenant_ids is None:
+            # Once per drain, not once per pass: the tenant roster does not
+            # change inside a 45-second run.
+            self._topup_tenant_ids = self._store.enabled_tenant_ids(
+                self._settings.max_topup_tenants
+            )
+
+        represented = {task.tenant_id for task in candidates}
+        missing = [tid for tid in self._topup_tenant_ids if tid not in represented]
+        if not missing:
+            return candidates, 0
+
+        seen = {task.id for task in candidates}
+        topped = list(candidates)
+        tenants_added = 0
+        for tenant_id in missing:
+            extra = self._store.ready_tasks_for_tenant(tenant_id, budget)
+            added = False
+            for task in extra:
+                if task.id in seen:
+                    continue
+                seen.add(task.id)
+                topped.append(task)
+                added = True
+            if added:
+                tenants_added += 1
+        if tenants_added:
+            self._metrics.topped_up.inc(tenants_added)
+            log.info(
+                "candidate slice was saturated; topped up %d starved tenant(s)",
+                tenants_added,
+            )
+        return topped, tenants_added
 
     # -- one task ---------------------------------------------------------
 
@@ -320,10 +381,25 @@ class Scheduler:
         except DispatchError as exc:
             # Give the capacity straight back. Leaving the lease would hold a
             # slot no container will ever occupy until the dispatch deadline.
-            self._store.return_to_ready_after_failed_dispatch(task, lease, str(exc))
+            #
+            # The tenant gets `exc.code` plus the attempt id; the upstream API's
+            # own message goes to the log line below and nowhere else. Backend
+            # errors routinely echo the resource they were handed -- the tenant
+            # service account, the job name, the secret names -- and
+            # `task.last_error` is returned to the caller verbatim.
+            self._store.return_to_ready_after_failed_dispatch(
+                task, lease, exc.code, correlation_id=lease.attempt_id
+            )
             report.dispatch_failures += 1
             self._metrics.dispatch_failures.labels(backend=backend.value).inc()
-            log.warning("dispatch failed task=%s backend=%s: %s", task.id, backend.value, exc)
+            log.warning(
+                "dispatch failed task=%s attempt=%s backend=%s code=%s: %s",
+                task.id,
+                lease.attempt_id,
+                backend.value,
+                exc.code,
+                exc,
+            )
             # False: no capacity is held and nothing started, so this is not
             # progress. Reporting it as progress would keep the loop spinning on
             # a backend that is refusing dispatches.
@@ -350,6 +426,11 @@ class Scheduler:
         ):
             if not task.depends_on:
                 self._store.promote_to_ready(task, detail={"reason": "no_dependencies"})
+                # Counted in the metric as well as the report. Incrementing only
+                # the report here made `swarm_scheduler_promoted{kind=
+                # "dependency"}` disagree with DrainReport.promoted_dependencies,
+                # so a dashboard built on the metric under-counted promotions.
+                self._metrics.promoted.labels(kind="dependency").inc()
                 promoted += 1
                 continue
             states = self._store.task_states(task.depends_on)

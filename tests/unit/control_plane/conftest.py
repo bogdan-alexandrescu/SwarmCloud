@@ -167,9 +167,9 @@ def seed_tenant(db: FakeFirestore, tenant_id: str, *, credentials: tuple[str, ..
         capacity_units=max_active * 2,
         enabled=enabled,
         credentials=list(credentials),
-        service_account=f"swarm-t-{tenant_id}@{PROJECT}.iam.gserviceaccount.com",
+        service_account=f"swarm-agent-worker-{tenant_id}@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/{tenant_id}",
-        namespace=f"swarm-{tenant_id}",
+        namespace=f"swarm-tenant-{tenant_id}",
     )
     from dataclasses import asdict
 

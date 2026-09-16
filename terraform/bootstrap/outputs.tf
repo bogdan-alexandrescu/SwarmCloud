@@ -24,7 +24,7 @@ output "github_deployer_service_account" {
   value = var.enable_github_wif ? google_service_account.deployer[0].email : ""
 }
 
-output "github_principal" {
-  description = "The principalSet permitted to assume the deployer SA."
-  value       = local.github_principal
+output "github_principals" {
+  description = "ref -> the principalSet permitted to assume the deployer SA. One per allowed ref: the binding pins the ref as well as the repository, so the provider's attribute_condition is not the only thing holding the boundary."
+  value       = local.github_principals
 }

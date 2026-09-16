@@ -1,0 +1,273 @@
+# Application checks on every pull request.
+#
+# Everything in this workflow runs WITHOUT cloud credentials except the image
+# build, which uses Workload Identity Federation. That split is deliberate: the
+# fast feedback (lint, unit tests, manifest validation) must not depend on being
+# able to reach a project, so a GCP outage or a credential problem cannot block a
+# code review.
+
+name: application
+
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "images/**"
+      - "kubernetes/**"
+      - "scripts/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+      - ".github/workflows/application.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: application-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  KUBECTL_VERSION: "v1.36.3"
+
+jobs:
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        # -x follows `source` directives so lib/common.sh is analysed in context.
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
+
+      - name: scripts are executable and strict
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in scripts/*.sh scripts/lib/*.sh; do
+            [ -x "$f" ] || { echo "::error file=$f::not executable"; fail=1; }
+            head -n 20 "$f" | grep -q 'set -euo pipefail' \
+              || { echo "::error file=$f::missing 'set -euo pipefail'"; fail=1; }
+          done
+          exit "$fail"
+
+      - name: no TODO or stub markers in shipped code
+        # A TODO in a dispatch path is an outage with a comment attached.
+        run: |
+          set -euo pipefail
+          if grep -rnIE '\b(TODO|FIXME|XXX|NotImplementedError)\b' \
+               --exclude-dir=.terraform --exclude-dir=__pycache__ --exclude-dir=.venv \
+               --exclude='*.lock' --exclude='*.lock.hcl' \
+               apps scripts terraform kubernetes Makefile 2>/dev/null ; then
+            echo "::error::unfinished markers found"
+            exit 1
+          fi
+          echo "none found"
+
+  python:
+    name: format / unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync
+        run: uv sync --frozen --all-extras --dev
+
+      - name: the frozen contract is unchanged
+        # apps/common/swarm_common is frozen by CONTRACT.md. Every other
+        # component was written against those exact types, so a change there
+        # breaks all of them at once and must be a deliberate, discussed act.
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -n "${base}" ]; then
+            git fetch --no-tags --depth=1 origin "${base}" || true
+            if git diff --name-only "${base}"...HEAD -- apps/common/swarm_common | grep -q .; then
+              echo "::error::apps/common/swarm_common/ is FROZEN (see CONTRACT.md)."
+              echo "If it genuinely must change, say so in the PR description and get it agreed first."
+              git diff --stat "${base}"...HEAD -- apps/common/swarm_common
+              exit 1
+            fi
+          fi
+          echo "frozen contract untouched"
+
+      - name: format check
+        run: |
+          uv run python -m compileall -q apps tests
+          # Fail on syntax-level problems and obviously dead imports without
+          # imposing a formatter this repository has not adopted.
+          uv run python - <<'PY'
+          import pathlib, ast, sys
+          bad = []
+          for path in pathlib.Path("apps").rglob("*.py"):
+              src = path.read_text()
+              try:
+                  ast.parse(src)
+              except SyntaxError as exc:
+                  bad.append(f"{path}: {exc}")
+              if "\t" in src:
+                  bad.append(f"{path}: literal tab in source")
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          print("ok")
+          PY
+
+      - name: unit tests
+        # No emulator, no credentials. The admission logic is pure so the
+        # concurrency invariant can be tested exhaustively and fast.
+        run: uv run pytest tests/unit -q
+
+      - name: destroy-guard self-test
+        # The guard is the only thing between `make destroy` and another team's
+        # production cluster, so it is verified on every run, not before use.
+        run: ./scripts/destroy.sh --self-test
+
+  integration:
+    name: integration tests (emulator)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-java@v4
+        with:
+          # The Firestore emulator is a Java program.
+          distribution: temurin
+          java-version: "17"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: install the emulator
+        run: gcloud components install cloud-firestore-emulator --quiet
+
+      - name: sync
+        run: uv sync --frozen --all-extras --dev
+
+      - name: run integration tests against the emulator
+        # The emulator rather than a mock: the admission path depends on real
+        # transaction semantics -- the last-slot race resolves the way it does
+        # because Firestore aborts a transaction whose read set changed.
+        env:
+          PROJECT_ID: swarm-ci
+          # The emulator serves the (default) database; the named `swarm`
+          # database is a property of the real project, not of the emulator.
+          FIRESTORE_DATABASE: "(default)"
+          ENVIRONMENT: ci
+          # No REQUIRE_AUTH here: the API refuses that setting rather than
+          # ignoring it, and integration tests build the app directly with a
+          # test principal instead of asking the process to weaken itself.
+        run: |
+          set -euo pipefail
+          gcloud emulators firestore start --host-port=127.0.0.1:8080 \
+            --database-mode=firestore-native >/tmp/emulator.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sS -m 2 -o /dev/null "http://127.0.0.1:8080/" && break
+            sleep 1
+          done
+          curl -sS -m 2 -o /dev/null "http://127.0.0.1:8080/" || { cat /tmp/emulator.log; exit 1; }
+          export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
+          if [ -d tests/integration ] && ls tests/integration/test_*.py >/dev/null 2>&1; then
+            uv run pytest tests/integration -q
+          else
+            echo "no integration tests present"
+          fi
+
+  manifests:
+    name: kubernetes manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          # Pinned. An old client silently drops fields it does not understand,
+          # so a manifest can "validate" while losing its security context.
+          version: ${{ env.KUBECTL_VERSION }}
+
+      - name: client-side validation
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          files=(kubernetes/**/*.yaml)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no manifests yet"; exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "==> ${f}"
+            kubectl apply --dry-run=client -f "${f}" -o name >/dev/null
+          done
+
+      - name: security posture assertions
+        # These are platform promises, not style preferences: a workload that
+        # can run as root, escalate privileges or restart is a workload the
+        # no-preemption / no-restart guarantee does not actually cover.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          fail=0
+          for f in kubernetes/**/*.yaml; do
+            case "$f" in *worker-templates*|*policies*) ;; *) continue ;; esac
+            grep -q 'runAsNonRoot: true' "$f" || { echo "::error file=$f::missing runAsNonRoot"; fail=1; }
+            grep -q 'allowPrivilegeEscalation: false' "$f" || { echo "::error file=$f::missing allowPrivilegeEscalation:false"; fail=1; }
+            if grep -q 'restartPolicy' "$f"; then
+              grep -q 'restartPolicy: Never' "$f" || { echo "::error file=$f::restartPolicy must be Never"; fail=1; }
+            fi
+            if grep -qi 'spot' "$f"; then
+              echo "::error file=$f::Spot is disabled platform-wide (Spot Pods cannot use extended run time)"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+  build:
+    name: build images
+    runs-on: ubuntu-24.04
+    needs: [python, shell]
+    # A build costs money and needs cloud credentials, so it runs only after the
+    # free checks have passed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: build with Cloud Build
+        # Never a local docker build: the targets are amd64 and Cloud Build is
+        # also where the build service account lives.
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          ENVIRONMENT: dev
+        run: ./scripts/build-images.sh --tag "pr-${{ github.event.pull_request.number || github.run_id }}-$(git rev-parse --short=12 HEAD)"
+
+      - name: upload the build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-pr
+          path: build/images-*.json
+          retention-days: 5

@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 export ENVIRONMENT
-TF_STATE_PREFIX="swarm/${ENVIRONMENT}"
+TF_STATE_PREFIX="infra/${ENVIRONMENT}"
 
 require_cmd gcloud jq curl
 
@@ -98,14 +98,18 @@ else
 fi
 
 step "Terraform init (${ENVIRONMENT})"
-ENV_DIR="$(env_dir)"
-if compgen -G "${ENV_DIR}/*.tf" >/dev/null; then
-  tf -chdir="${ENV_DIR}" init -input=false -upgrade \
+TF_ROOT="$(tf_root)"
+tf_var_file >/dev/null   # fail now, loudly, if this environment has no inputs
+if compgen -G "${TF_ROOT}/*.tf" >/dev/null; then
+  # One root, one state prefix per environment. Re-initialising against a
+  # different prefix is how two environments end up sharing state, so the
+  # prefix is derived from ENVIRONMENT and never passed in by hand.
+  tf -chdir="${TF_ROOT}" init -input=false -upgrade -reconfigure \
     -backend-config="bucket=${TF_STATE_BUCKET}" \
     -backend-config="prefix=${TF_STATE_PREFIX}"
-  ok "terraform initialised in ${ENV_DIR}"
+  ok "terraform initialised: ${TF_ROOT} -> gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}"
 else
-  warn "${ENV_DIR} has no .tf files yet; skipping init"
+  warn "${TF_ROOT} has no .tf files yet; skipping init"
 fi
 
 hr

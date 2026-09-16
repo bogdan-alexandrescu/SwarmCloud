@@ -28,7 +28,23 @@ locals {
     "roles/cloudtrace.agent",
   ]
 
-  # account key -> list of unconditioned project roles.
+  # Custom role names, built from the role_id this configuration sets rather than
+  # read back from the resource's computed `id`.
+  #
+  # Both forms are the same string. The difference is WHEN it is known: `.id` is
+  # computed and therefore unknown until apply, and a role name that is unknown
+  # at plan time lands in the for_each keys below and makes the very first plan
+  # fail. Referencing `.role_id` still creates the dependency edge, but the value
+  # is already in the configuration, so the key is known.
+  custom_roles = {
+    job_dispatcher = "projects/${var.project_id}/roles/${google_project_iam_custom_role.job_dispatcher.role_id}"
+    job_reaper     = "projects/${var.project_id}/roles/${google_project_iam_custom_role.job_reaper.role_id}"
+    gke_dispatcher = var.gke_enabled ? "projects/${var.project_id}/roles/${google_project_iam_custom_role.gke_dispatcher[0].role_id}" : ""
+    gke_reaper     = var.gke_enabled ? "projects/${var.project_id}/roles/${google_project_iam_custom_role.gke_reaper[0].role_id}" : ""
+  }
+
+  # account key -> list of unconditioned project roles. Every element is known at
+  # plan time, which is what lets the bindings below be keyed by role.
   plain_roles = merge(
     {
       for account in keys(local.platform_accounts) :
@@ -43,19 +59,40 @@ locals {
         "roles/serviceusage.serviceUsageConsumer",
       ])
       "swarm-scheduler" = concat(local.telemetry_roles, [
-        google_project_iam_custom_role.job_dispatcher.id,
-      ], var.gke_enabled ? [google_project_iam_custom_role.gke_dispatcher[0].id] : [])
+        local.custom_roles.job_dispatcher,
+      ])
       "swarm-quota-broker" = concat(local.telemetry_roles, [
         # Reads its own metrics to drive the adaptive target. No write access to
         # anything outside Firestore.
         "roles/monitoring.viewer",
       ])
       "swarm-reconciler" = concat(local.telemetry_roles, [
-        google_project_iam_custom_role.job_reaper.id,
+        local.custom_roles.job_reaper,
         "roles/monitoring.viewer",
-      ], var.gke_enabled ? [google_project_iam_custom_role.gke_reaper[0].id] : [])
+      ])
     }
   )
+
+  # The two container.* roles are held out of `plain_roles` on purpose: they are
+  # the only project-level grants in this module whose scope would otherwise
+  # cross into another team's infrastructure, so they get a condition and a
+  # resource of their own rather than riding along unconditioned.
+  gke_role_grants = var.gke_enabled ? {
+    "swarm-scheduler"  = local.custom_roles.gke_dispatcher
+    "swarm-reconciler" = local.custom_roles.gke_reaper
+  } : {}
+
+  swarm_cluster_name = var.gke_cluster_name == "" ? "" : "projects/${var.project_id}/locations/${var.gke_location}/clusters/${var.gke_cluster_name}"
+
+  # startsWith rather than ==: a Kubernetes API request is authorized against a
+  # resource name under the cluster (a namespace, a Job, a Pod), not against the
+  # bare cluster name, so an equality test would refuse the very calls the
+  # dispatcher exists to make.
+  gke_condition = var.scope_gke_to_cluster && local.swarm_cluster_name != "" ? [{
+    title       = "swarm-cluster-only"
+    description = "Restricts this grant to the swarm Autopilot cluster; agents-staging belongs to another team."
+    expression  = "resource.name.startsWith(\"${local.swarm_cluster_name}\")"
+  }] : []
 
   plain_bindings = {
     for pair in flatten([
@@ -79,6 +116,41 @@ resource "google_project_iam_member" "plain" {
   project = var.project_id
   role    = each.value.role
   member  = local.sa_member[each.value.account]
+}
+
+# GKE dispatch and reap, pinned to the swarm's own cluster.
+#
+# A project-level container.* binding covers every cluster in the project, and
+# saga-agents-staging holds a live `agents-staging` cluster owned by another
+# team. Unconditioned, swarm-scheduler could create Jobs in it and read its Pod
+# logs, and swarm-reconciler could delete its Jobs and Pods.
+#
+# The condition below is the only layer that can scope this at the IAM level.
+# IAM has no notion of a Kubernetes namespace, so confining the dispatcher to
+# the `swarm-tenant-*` namespaces INSIDE the swarm cluster is Kubernetes RBAC's
+# job and lives with the cluster manifests, not here.
+resource "google_project_iam_member" "gke" {
+  for_each = local.gke_role_grants
+
+  project = var.project_id
+  role    = each.value
+  member  = local.sa_member[each.key]
+
+  dynamic "condition" {
+    for_each = local.gke_condition
+    content {
+      title       = condition.value.title
+      description = condition.value.description
+      expression  = condition.value.expression
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !var.scope_gke_to_cluster || var.gke_cluster_name != ""
+      error_message = "gke_cluster_name must name the swarm cluster when scope_gke_to_cluster is on, or the container.* grants would cover every cluster in this shared project."
+    }
+  }
 }
 
 resource "google_project_iam_member" "firestore" {

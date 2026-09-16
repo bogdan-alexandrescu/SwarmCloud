@@ -264,3 +264,97 @@ def test_lease_is_released_when_dispatch_fails(db, make_scheduler, dispatcher):
     assert report.stop_reason == "no_admissible_work"
     lease_docs = [d for path, d in db.docs.items() if path.startswith("leases/")]
     assert lease_docs and all(d["released_at"] is not None for d in lease_docs)
+
+
+def test_a_priority_flood_cannot_push_another_tenant_out_of_the_candidate_slice(
+    db, make_scheduler, dispatcher
+):
+    """The starvation case round-robin exists to prevent, at queue scale.
+
+    Round-robin and starvation aging both operate on the slice `ready_tasks`
+    returns, and that slice is ordered by priority. So a tenant that queues more
+    than `candidate_batch_size` high-priority tasks fills the slice by itself and
+    every other tenant disappears from the rotation entirely -- there is nothing
+    of theirs left to interleave, and no aging bonus can lift a task that was
+    never read. Priority is a number the caller picks, so without the top-up this
+    is a one-line denial of service against the whole platform.
+    """
+    seed_tenant(db, "flood", max_active=1000)
+    seed_tenant(db, "small", max_active=1000)
+    seed_pool(db, "global", hard_limit=1000)
+
+    fresh = datetime.now(timezone.utc) - timedelta(minutes=1)
+    # More priority-100 tasks than one candidate slice can hold.
+    for i in range(250):
+        seed_task(db, task_id=f"task_flood{i:04d}", tenant_id="flood",
+                  priority=100, created_at=fresh)
+    # Three ordinary-priority tasks that have already waited six hours.
+    starved = datetime.now(timezone.utc) - timedelta(hours=6)
+    for i in range(3):
+        seed_task(db, task_id=f"task_small{i}", tenant_id="small",
+                  priority=0, created_at=starved)
+
+    settings = scheduler_settings(candidate_batch_size=200, max_leases_per_run=40)
+    report = make_scheduler(settings=settings).drain()
+
+    dispatched = {}
+    for row in dispatcher.dispatched:
+        dispatched[row["tenant_id"]] = dispatched.get(row["tenant_id"], 0) + 1
+
+    assert dispatched.get("small") == 3, (
+        "the flooding tenant filled the candidate slice and starved the other "
+        f"tenant completely: {dispatched}"
+    )
+    assert dispatched.get("flood", 0) > 0, "the flood should still make progress"
+    assert report.topped_up_tenants == 1
+    assert report.leased == 40
+
+
+def test_the_top_up_costs_nothing_when_the_queue_fits_in_one_slice(
+    db, make_scheduler, dispatcher
+):
+    """A short slice IS the whole READY queue, so nobody can be missing from it.
+
+    The extra per-tenant queries would buy nothing there, and the hot path was
+    designed around exactly one query per pass. This pins that down so a future
+    change cannot quietly turn every drain into one query per tenant.
+    """
+    seed_tenant(db, "eng", max_active=100)
+    seed_tenant(db, "research", max_active=100)
+    seed_pool(db, "global", hard_limit=100)
+    for i in range(5):
+        seed_task(db, task_id=f"task_e{i}", tenant_id="eng")
+        seed_task(db, task_id=f"task_r{i}", tenant_id="research")
+
+    scheduler = make_scheduler()
+    calls: list[str] = []
+    real = scheduler.store.ready_tasks_for_tenant
+    scheduler.store.ready_tasks_for_tenant = lambda tid, limit: (  # type: ignore[method-assign]
+        calls.append(tid) or real(tid, limit)
+    )
+
+    report = scheduler.drain()
+
+    assert calls == []
+    assert report.topped_up_tenants == 0
+    assert len(dispatcher.dispatched) == 10
+
+
+def test_a_disabled_tenant_is_never_topped_up(db, make_scheduler, dispatcher):
+    """A top-up query for a tenant that cannot be admitted is a wasted read."""
+    seed_tenant(db, "flood", max_active=1000)
+    seed_tenant(db, "paused", max_active=1000, enabled=False)
+    seed_pool(db, "global", hard_limit=1000)
+
+    for i in range(250):
+        seed_task(db, task_id=f"task_flood{i:04d}", tenant_id="flood", priority=100)
+    seed_task(db, task_id="task_paused0", tenant_id="paused", priority=0)
+
+    scheduler = make_scheduler(settings=scheduler_settings(max_leases_per_run=5))
+    assert "paused" not in scheduler.store.enabled_tenant_ids(50)
+
+    report = scheduler.drain()
+
+    assert report.topped_up_tenants == 0
+    assert db.docs["tasks/task_paused0"]["state"] == "READY"
+    assert all(row["tenant_id"] == "flood" for row in dispatcher.dispatched)

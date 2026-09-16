@@ -24,8 +24,8 @@ from swarm_common.identity import (
     resolve_tenant,
 )
 
-from .errors import Forbidden, Unauthenticated
-from .groups import MembershipResolver
+from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
+from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
 
 log = logging.getLogger(__name__)
@@ -41,6 +41,14 @@ class AuthContext:
     principal: Principal
     tenant_id: str
     is_admin: bool
+    #: WHO the tenant is, as opposed to who is calling. For a group tenant this
+    #: is the group email (`eng@saga.xyz`); for the personal fallback it is the
+    #: user's own address. `tenant_id` alone cannot identify a tenant, because
+    #: the frozen `tenant_id_for_group` slugs the local part only: `eng@saga.xyz`
+    #: and `eng@partner.com` both produce `eng`. The store compares this against
+    #: the tenant document so the second group cannot inherit the first's
+    #: service account, secrets and GCS prefix.
+    tenant_principal: str = ""
 
     @property
     def email(self) -> str:
@@ -52,10 +60,26 @@ class TokenVerifier(Protocol):
 
 
 class GoogleTokenVerifier:
-    """Verifies a Google-issued ID token against Google's public keys."""
+    """Verifies a Google-issued ID token against Google's public keys.
 
-    def __init__(self, audience: str = "") -> None:
+    `require_audience` exists because `verify_oauth2_token` silently SKIPS the
+    `aud` check when the audience is None. With no audience pinned, any Google
+    ID token belonging to an allowed-domain account authenticates -- including
+    one a third-party SaaS obtained when an employee signed in with Google, which
+    that third party could then replay here. Outside local development the
+    process refuses to start rather than run with the check off, because the
+    failure is otherwise invisible: the service works normally.
+    """
+
+    def __init__(self, audience: str = "", *, require_audience: bool = False) -> None:
         self._audience = audience or None
+        if require_audience and not self._audience:
+            raise ValueError(
+                "API_AUDIENCE is required outside local development. Without it the "
+                "'aud' claim is not checked and any Google ID token from an allowed "
+                "domain is accepted. Set it to this service's Cloud Run URL (the "
+                "audience the caller mints its ID token for)."
+            )
         self._request = None
 
     def _transport(self) -> Any:
@@ -139,7 +163,18 @@ class Authenticator:
         candidates = tuple(
             dict.fromkeys(self._settings.tenant_groups + self._settings.admin_groups)
         )
-        member_groups = self._groups.groups_for(email, candidates) if candidates else ()
+        try:
+            member_groups = self._groups.groups_for(email, candidates) if candidates else ()
+        except GroupLookupError as exc:
+            # Only raised when the failed lookup could actually have changed the
+            # answer. Falling back to the personal tenant there would run the
+            # caller's work under a DIFFERENT tenant: another secret, another GCS
+            # prefix, another namespace, and their group cannot see the task
+            # afterwards. A 503 is recoverable; a misfiled task is not.
+            log.warning("tenant resolution unavailable for %s: %s", email, exc)
+            raise UpstreamUnavailable(
+                "group membership could not be resolved; retry shortly"
+            ) from None
 
         principal = Principal(
             email=email,
@@ -148,9 +183,28 @@ class Authenticator:
             groups=tuple(member_groups),
         )
         tenant_id = resolve_tenant(principal, self._settings.tenant_groups)
+        tenant_principal = self._tenant_principal(member_groups, email)
         admin_set = {g.lower() for g in self._settings.admin_groups}
         is_admin = any(g.lower() in admin_set for g in member_groups)
-        return AuthContext(principal=principal, tenant_id=tenant_id, is_admin=is_admin)
+        return AuthContext(
+            principal=principal,
+            tenant_id=tenant_id,
+            is_admin=is_admin,
+            tenant_principal=tenant_principal,
+        )
+
+    def _tenant_principal(self, member_groups: tuple[str, ...], email: str) -> str:
+        """The group `resolve_tenant` picked, or the caller for a personal tenant.
+
+        Mirrors `resolve_tenant`'s rule exactly -- first match in the
+        ADMIN-ORDERED list -- so the principal and the tenant id can never
+        describe different tenants.
+        """
+        member_of = {g.lower() for g in member_groups}
+        for group in self._settings.tenant_groups:
+            if group.lower() in member_of:
+                return group.lower()
+        return email
 
 
 def require_admin(ctx: AuthContext) -> AuthContext:

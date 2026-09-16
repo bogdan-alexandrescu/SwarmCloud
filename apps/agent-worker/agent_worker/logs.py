@@ -15,6 +15,13 @@ Two properties matter more than prettiness:
   ever holds a tenant's provider key, so it is the only component that can leak
   one into a log line. Registered secret values are replaced with a redaction
   marker in both the message and the structured fields.
+
+A log line is not the only way out, which is why `scrub_text`, `scrub_value` and
+`scrub_file` are public. The worker uploads `stdout.log`, `stderr.log` and the
+runner's artifacts to GCS and writes `result_summary` into Firestore, and a CLI
+that echoes its own configuration or a tool error quoting an `Authorization`
+header would otherwise land verbatim in both. The lifecycle runs every one of
+those channels through this same registered-secret set before it leaves the pod.
 """
 
 from __future__ import annotations
@@ -26,7 +33,9 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, TextIO
 
-REDACTED = "***REDACTED***"
+from .redact import REDACTED, MIN_SECRET_LENGTH, scrub_file as _scrub_file, scrub_text as _scrub
+
+__all__ = ["REDACTED", "StructuredLogger", "build_logger"]
 
 #: Field names whose values are never printed, no matter where they appear.
 _SENSITIVE_KEYS = frozenset(
@@ -84,15 +93,37 @@ class StructuredLogger:
         Scrubbing a 3-character value would corrupt ordinary text far more often
         than it would protect anything, and no real provider key is that short.
         """
-        if value and len(value) >= 8:
+        if value and len(value) >= MIN_SECRET_LENGTH:
             self._secrets.add(value)
+
+    @property
+    def has_secrets(self) -> bool:
+        return bool(self._secrets)
 
     # -- redaction ---------------------------------------------------------
     def _scrub_text(self, text: str) -> str:
-        for secret in self._secrets:
-            if secret in text:
-                text = text.replace(secret, REDACTED)
-        return text
+        return _scrub(text, self._secrets)
+
+    def scrub_text(self, text: str) -> str:
+        """Public: redact registered secrets from text bound for GCS or Firestore."""
+        return self._scrub_text(text)
+
+    def scrub_value(self, value: Any) -> Any:
+        """Public: the same redaction, applied recursively to a JSON-able value."""
+        return self._scrub(value)
+
+    def scrub_file(self, path: Any, *, max_bytes: int = 64 * 1024 * 1024) -> bool:
+        """Rewrite `path` in place with every registered secret redacted.
+
+        Returns True when the file was rewritten. Binary files and files larger
+        than `max_bytes` are left alone and reported as not rewritten: a partial
+        rewrite of a large or non-text artifact would corrupt it, and corrupting
+        a tenant's artifact to protect a key that is probably not in it is the
+        wrong trade. Uploading is still the caller's decision.
+        """
+        from pathlib import Path as _Path
+
+        return _scrub_file(_Path(path), self._secrets, max_bytes=max_bytes)
 
     def _scrub(self, value: Any, key: str | None = None) -> Any:
         if key is not None and key.lower() in _SENSITIVE_KEYS:

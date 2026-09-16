@@ -110,6 +110,38 @@ variable "enable_managed_prometheus" {
   default = true
 }
 
+variable "authenticator_groups_security_group" {
+  description = <<-EOT
+    Google group whose members' RBAC is managed through group membership, in the
+    form gke-security-groups@<domain>. The group must ALREADY EXIST: naming one
+    that does not makes cluster creation fail, which is why this is empty by
+    default rather than set optimistically.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.authenticator_groups_security_group == "" || startswith(var.authenticator_groups_security_group, "gke-security-groups@")
+    error_message = "GKE requires this group to be named gke-security-groups@<domain>."
+  }
+}
+
+variable "binary_authorization_mode" {
+  description = <<-EOT
+    Binary Authorization evaluation mode. DISABLED by default because the policy
+    it evaluates is a PROJECT singleton and saga-agents-staging is shared:
+    enabling enforcement here subjects swarm workloads to whatever attestation
+    policy another team has configured project-wide.
+  EOT
+  type        = string
+  default     = "DISABLED"
+
+  validation {
+    condition     = contains(["DISABLED", "PROJECT_SINGLETON_POLICY_ENFORCE"], var.binary_authorization_mode)
+    error_message = "binary_authorization_mode must be DISABLED or PROJECT_SINGLETON_POLICY_ENFORCE."
+  }
+}
+
 variable "enable_cilium_clusterwide_network_policy" {
   description = "Cluster-scoped Cilium policies on top of Dataplane V2's namespaced NetworkPolicy."
   type        = bool

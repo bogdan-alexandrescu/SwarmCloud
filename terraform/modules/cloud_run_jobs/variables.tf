@@ -15,6 +15,32 @@ variable "subnetwork" {
   type = string
 }
 
+variable "network_tags" {
+  description = <<-EOT
+    Network tags stamped on every worker instance's Direct VPC egress interface.
+
+    A Cloud Run execution is not a VM, but a tagged Direct VPC egress interface
+    IS matched by ordinary VPC firewall rules -- which is the only way to keep
+    one tenant's worker from reaching another's over the shared subnet. The
+    matching deny rule lives in modules/network/firewall.tf; an empty list here
+    removes the workers from its scope, so it is refused.
+  EOT
+  type        = list(string)
+  default     = ["swarm-worker"]
+
+  validation {
+    condition     = length(var.network_tags) > 0
+    error_message = "worker instances must carry at least one network tag, or no firewall rule can confine them."
+  }
+
+  validation {
+    condition = alltrue([
+      for t in var.network_tags : can(regex("^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$", t))
+    ])
+    error_message = "a network tag is 1-63 lowercase alphanumerics or dashes, starting with a letter."
+  }
+}
+
 variable "resource_classes" {
   description = <<-EOT
     Mirror of swarm_common.profiles.RESOURCE_CLASSES. The Python catalogue is
@@ -98,6 +124,24 @@ variable "mount_artifact_bucket" {
   EOT
   type        = bool
   default     = true
+}
+
+variable "workspace_memory_fraction" {
+  description = <<-EOT
+    Share of a container's memory limit the workspace volume may occupy.
+
+    Cloud Run only exposes memory-medium ephemeral volumes, so the workspace and
+    the agent process spend the same budget. At 1.0 a full workspace OOM-kills
+    the container -- a SIGKILL, so no checkpoint and no park. Below 1.0 the
+    write fails instead, which the worker can handle.
+  EOT
+  type        = number
+  default     = 0.5
+
+  validation {
+    condition     = var.workspace_memory_fraction > 0 && var.workspace_memory_fraction < 1
+    error_message = "workspace_memory_fraction must be between 0 and 1, exclusive: at 1.0 a full workspace OOM-kills the agent instead of failing a write."
+  }
 }
 
 variable "workspace_mount_path" {

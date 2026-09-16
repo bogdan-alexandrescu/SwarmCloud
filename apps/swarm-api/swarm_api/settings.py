@@ -9,6 +9,18 @@ the scheduler.
 
 Concurrency limits deliberately do NOT appear here -- they live in Firestore so
 an admin can change them through the admin API without a redeploy.
+
+Two settings here are SAFETY settings rather than tuning knobs, and both fail
+the process at start rather than degrading quietly:
+
+  * `hardened` (derived from ENVIRONMENT) turns the optional-by-default token
+    audience check into a required one. An unpinned audience means any Google
+    ID token from an allowed domain authenticates, including one a third-party
+    SaaS obtained when an employee signed in with Google.
+  * `REQUIRE_AUTH=false` used to be parsed and then never read by anything, so
+    an operator could set it and believe auth was off (or on). Nothing in this
+    build can disable authentication, so the value is refused outright instead
+    of being silently ignored.
 """
 
 from __future__ import annotations
@@ -72,16 +84,38 @@ class ApiSettings:
     #: Rate-limit burst. The sustained rate comes from the frozen Settings.
     rate_limit_burst: int = 40
 
-    #: Set false only for local development against the Firestore emulator.
-    require_auth: bool = True
+    #: How a tenant's Google service account is spelled. This is a REFERENCE to
+    #: an identity created out of band (terraform's tenancy module, or
+    #: scripts/register-tenant.sh); the API never creates one. Terraform's
+    #: spelling is the default because terraform is what seeds the tenant
+    #: document in a deployed environment.
+    tenant_service_account_prefix: str = "swarm-agent-worker"
+
+    #: Kubernetes namespace prefix, same reasoning: terraform's
+    #: `namespace_prefix` default.
+    tenant_namespace_prefix: str = "swarm-tenant-"
 
     @property
     def project_id(self) -> str:
         return self.core.project_id
 
+    @property
+    def hardened(self) -> bool:
+        """True outside local development, where safety checks are mandatory."""
+        return self.core.environment.strip().lower() not in {"dev", "test", "local"}
+
     @classmethod
     def from_env(cls) -> "ApiSettings":
         core = Settings.from_env()
+        if not _bool("REQUIRE_AUTH", True):
+            # Historically parsed and then read by nothing, which made it look
+            # like a working switch in .env.example and docker-compose.yml.
+            raise ValueError(
+                "REQUIRE_AUTH=false is refused: this service cannot serve an "
+                "unauthenticated request in any environment. Every route resolves a "
+                "tenant from a verified Google ID token, and without one there is no "
+                "tenant to attribute work to. Remove the variable."
+            )
         return cls(
             core=core,
             tenant_groups=_csv("TENANT_GROUPS"),
@@ -91,5 +125,12 @@ class ApiSettings:
             max_page_size=_int("MAX_PAGE_SIZE", 200),
             default_page_size=_int("DEFAULT_PAGE_SIZE", 50),
             rate_limit_burst=_int("RATE_LIMIT_BURST", max(40, core.requests_per_second * 2)),
-            require_auth=_bool("REQUIRE_AUTH", True),
+            tenant_service_account_prefix=os.environ.get(
+                "TENANT_SERVICE_ACCOUNT_PREFIX", "swarm-agent-worker"
+            ).strip()
+            or "swarm-agent-worker",
+            tenant_namespace_prefix=os.environ.get(
+                "TENANT_NAMESPACE_PREFIX", "swarm-tenant-"
+            ).strip()
+            or "swarm-tenant-",
         )

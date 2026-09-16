@@ -8,6 +8,12 @@ One attempt, one directory tree, created empty and destroyed at the end:
         logs/          stdout.log, stderr.log
         tmp/           TMPDIR for the child, so a stray temp file cannot escape
         restore/       staging for a downloaded checkpoint archive (never checkpointed)
+        private/       the WORKER's own scratch: git credentials during a clone.
+                       Its path is never in the child's environment, it is never
+                       checkpointed and never uploaded. Same uid, so this is not
+                       a permission boundary -- it is the difference between a
+                       credential file the agent is handed the path to and one it
+                       would have to go looking for, and the clone deletes it.
 
 The one rule worth stating out loud: **a resumed worker starts from an empty
 tree.** Cloud Run's ephemeral disk is per-execution, but GKE Jobs, local runs and
@@ -35,6 +41,7 @@ class Workspace:
     logs: Path
     tmp: Path
     restore: Path
+    private: Path
 
     @property
     def stdout_path(self) -> Path:
@@ -114,8 +121,9 @@ def create(root: Path, attempt_id: str) -> Workspace:
         logs=base / "logs",
         tmp=base / "tmp",
         restore=base / "restore",
+        private=base / "private",
     )
-    for path in (ws.root, ws.work, ws.artifacts, ws.logs, ws.tmp, ws.restore):
+    for path in (ws.root, ws.work, ws.artifacts, ws.logs, ws.tmp, ws.restore, ws.private):
         path.mkdir(parents=True, exist_ok=False)
         os.chmod(path, 0o700)
     return ws

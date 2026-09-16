@@ -16,6 +16,12 @@
 #     the pool name is visible to the tenancy module rather than implied.
 
 resource "google_container_cluster" "this" {
+  # checkov:skip=CKV_GCP_12:Autopilot is always Dataplane V2, which enforces Kubernetes NetworkPolicy natively. The legacy `network_policy` addon this check looks for is REJECTED by the API on an Autopilot cluster.
+  # checkov:skip=CKV_GCP_69:The GKE Metadata Server is mandatory and always on under Autopilot. The `node_config.workload_metadata_config` this check looks for is a node-level setting Autopilot does not accept.
+  # checkov:skip=CKV_GCP_61:Intranode visibility is always on with Dataplane V2, and VPC flow logs are enabled on the subnet itself (see modules/network/main.tf `log_config`), which is where flows are actually captured.
+  # checkov:skip=CKV_GCP_65:Google-group RBAC requires a gke-security-groups@<domain> group to already exist; pointing at one that does not FAILS cluster creation. Opt in with `authenticator_groups_security_group` once the group is created.
+  # checkov:skip=CKV_GCP_66:Binary Authorization enforces a PROJECT-singleton policy, and saga-agents-staging is shared. Turning it on here subjects swarm pods to another team's attestation policy. Opt in with `binary_authorization_mode`.
+
   project = var.project_id
 
   # Regional, not zonal: a zonal control plane is a single point of failure for
@@ -65,6 +71,32 @@ resource "google_container_cluster" "this" {
 
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
+  }
+
+  # Client certificates are a static credential with no expiry that bypasses
+  # IAM entirely. Autopilot already defaults to not issuing one; this states it
+  # so a future provider default cannot quietly change it.
+  master_auth {
+    client_certificate_config {
+      issue_client_certificate = false
+    }
+  }
+
+  # Off by default: see the CKV_GCP_65 note above. The group must exist first.
+  dynamic "authenticator_groups_config" {
+    for_each = var.authenticator_groups_security_group == "" ? [] : [var.authenticator_groups_security_group]
+    content {
+      security_group = authenticator_groups_config.value
+    }
+  }
+
+  # Off by default: see the CKV_GCP_66 note above. The policy is project-wide in
+  # a project this platform shares with other teams.
+  dynamic "binary_authorization" {
+    for_each = var.binary_authorization_mode == "DISABLED" ? [] : [var.binary_authorization_mode]
+    content {
+      evaluation_mode = binary_authorization.value
+    }
   }
 
   release_channel {

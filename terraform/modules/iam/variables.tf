@@ -35,6 +35,43 @@ variable "gke_enabled" {
   default     = true
 }
 
+variable "gke_cluster_name" {
+  description = <<-EOT
+    The swarm's own Autopilot cluster. Required when gke_enabled is true,
+    because the dispatch and reap roles are conditioned to it.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "gke_location" {
+  description = "Region of the swarm cluster; part of the resource name the IAM condition pins."
+  type        = string
+  default     = "us-central1"
+}
+
+variable "scope_gke_to_cluster" {
+  description = <<-EOT
+    Adds an IAM condition pinning the container.* grants to
+    projects/<project>/locations/<region>/clusters/<swarm cluster>.
+
+    This project is SHARED and holds a live `agents-staging` cluster owned by
+    another team. A project-level container.jobs.create covers EVERY cluster in
+    the project, so without this condition swarm-scheduler could create
+    workloads in -- and read pod logs out of -- that other team's production
+    cluster, and swarm-reconciler could delete their Jobs and Pods. That is
+    precisely the blast radius this platform is required never to have.
+
+    The switch exists for the same reason `scope_firestore_to_database` does: a
+    conditioned binding is fail-closed, so if an environment ever finds GKE's
+    authorizer evaluating a check this condition cannot match, an operator can
+    turn it off DELIBERATELY rather than discovering it during an incident.
+    Leaving it on is the supported configuration.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "artifact_bucket" {
   description = "Artifact bucket name; the control plane reads objects from it to serve results."
   type        = string

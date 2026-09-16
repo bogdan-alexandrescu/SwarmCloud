@@ -13,6 +13,9 @@ locals {
 }
 
 resource "google_storage_bucket" "access_logs" {
+  # checkov:skip=CKV_GCP_62:This IS the access-log sink. Pointing it at itself would log its own writes forever; pointing it at a third bucket only moves the same question one hop.
+  # checkov:skip=CKV_GCP_78:Access logs are append-only by nature and are expired by lifecycle rule; versioning them doubles the cost for no recovery value.
+
   project  = var.project_id
   name     = local.log_bucket_name
   location = var.location

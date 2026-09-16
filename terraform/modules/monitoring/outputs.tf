@@ -5,8 +5,19 @@ output "dashboard_id" {
 output "log_metric_names" {
   value = sort(concat(
     [for m in google_logging_metric.events : m.name],
-    [google_logging_metric.admission_denied.name, google_logging_metric.peak_rss.name],
+    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name],
   ))
+}
+
+output "log_metric_filters" {
+  description = "metric name -> its log filter, so a test can assert each one matches a line some component actually writes."
+  value = merge(
+    { for k, m in google_logging_metric.events : m.name => m.filter },
+    {
+      (google_logging_metric.peak_rss.name)      = google_logging_metric.peak_rss.filter
+      (google_logging_metric.oom_near_miss.name) = google_logging_metric.oom_near_miss.filter
+    },
+  )
 }
 
 output "notification_channels" {

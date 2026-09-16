@@ -1,0 +1,138 @@
+# Per-tenant namespace: the isolation boundary for the GKE Autopilot path.
+#
+# Render with `kubernetes/render.py tenant --tenant <id>`; the renderer fills in
+# every double-underscore placeholder below and refuses to emit one it missed.
+# The output is idempotent, so applying it after `scripts/register-tenant.sh`
+# upgrades an imperatively-created namespace into a fully-policed one without
+# disturbing anything running in it.
+#
+# Only `browser` and oversized profiles run here at all -- the frozen catalogue
+# pins everything else to Cloud Run Jobs -- but this is the path where a tenant's
+# workload shares a kernel and a network with other tenants' workloads, so it is
+# the path that needs every boundary stated explicitly.
+#
+# Labels are chosen to agree with the rest of the platform rather than to be
+# tidy: `scripts/register-tenant.sh` creates this namespace with
+# `managed-by=swarm-terraform` and re-applies that label with `--overwrite` on
+# every run, and `scripts/status.sh` and `scripts/configure-kubectl.sh` both
+# select on it. Using a different value here would flip-flop on every
+# registration and hide tenant namespaces from both status commands. The
+# reconciler's namespace garbage collector therefore keys on the PAIR
+# (recognised managed-by marker, swarm-tenant label) instead of on one value --
+# see `is_namespace_gc_eligible` in apps/reconciler/reconciler/backends.py.
+#
+# Pod Security Admission is set to enforce `baseline` and audit/warn
+# `restricted`. That gap is deliberate and temporary: the GKE manifest built in
+# `apps/scheduler/scheduler/dispatch.py` does not yet set a container
+# `securityContext`, so enforcing `restricted` today would reject every browser
+# job the dispatcher creates and take the GKE path offline. The audit and warn
+# levels make the gap visible in the API server's audit log now, and
+# `render.py tenant --pss-enforce restricted` closes it the day the dispatcher's
+# pod spec matches `worker-templates/worker-job.yaml`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/managed-by: swarm
+    # Pod Security Admission. `latest` pins the checks to the cluster's own
+    # version, so an upgrade tightens the policy rather than silently leaving it
+    # at whatever was current when the namespace was created.
+    pod-security.kubernetes.io/enforce: __PSS_ENFORCE__
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    swarm.saga.xyz/tenant: __TENANT_ID__
+    swarm.saga.xyz/service-account: __GSA_EMAIL__
+    swarm.saga.xyz/description: >-
+      Agent swarm tenant namespace. Workers here hold the tenant's own Google
+      service account through Workload Identity and can reach nothing belonging
+      to any other tenant.
+---
+# A hard ceiling on what one tenant can ask the cluster for.
+#
+# This is a SECOND line of defence, not the primary one. Concurrency is governed
+# by slot pools in Firestore, and a task that never gets a lease never becomes a
+# pod (invariant 1). The quota exists for the case where that accounting is
+# wrong: a scheduler bug, a stuck reconciler, a hand-run kubectl. Without it the
+# blast radius of such a bug is the whole cluster's capacity; with it, the
+# tenant's own ceiling.
+#
+# `requests.*` and `limits.*` are set to the same numbers because the platform
+# sets requests == limits on every container, so any divergence between these
+# two lines would be unreachable configuration.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: swarm-tenant-quota
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  hard:
+    pods: "__QUOTA_PODS__"
+    requests.cpu: "__QUOTA_CPU__"
+    requests.memory: __QUOTA_MEMORY__
+    requests.ephemeral-storage: __QUOTA_EPHEMERAL__
+    limits.cpu: "__QUOTA_CPU__"
+    limits.memory: __QUOTA_MEMORY__
+    limits.ephemeral-storage: __QUOTA_EPHEMERAL__
+    count/jobs.batch: "__QUOTA_JOBS__"
+    # Nothing in this platform creates any of these in a tenant namespace, and a
+    # zero quota turns "we never do that" into "the API server refuses to".
+    count/services: "0"
+    count/persistentvolumeclaims: "0"
+    count/deployments.apps: "0"
+    count/statefulsets.apps: "0"
+    count/daemonsets.apps: "0"
+    count/cronjobs.batch: "0"
+---
+# Per-container bounds, and the defaults an under-specified pod inherits.
+#
+# The default and the defaultRequest are IDENTICAL on purpose. A container that
+# omits its resources entirely still ends up with requests == limits, which is
+# invariant 7 holding even for a pod this repository did not write. A default
+# request lower than the limit is exactly the burstable configuration that gets
+# OOM-killed under node pressure.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: swarm-worker-limits
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "4"
+        memory: 8Gi
+        ephemeral-storage: 20Gi
+      defaultRequest:
+        cpu: "4"
+        memory: 8Gi
+        ephemeral-storage: 20Gi
+      # The ceiling is the largest resource class in the frozen catalogue.
+      max:
+        cpu: "8"
+        memory: 32Gi
+        ephemeral-storage: 100Gi
+      # Below this a runner cannot start its toolchain, and a pod that requests
+      # 10m CPU only discovers that after a five-minute image pull.
+      min:
+        cpu: 250m
+        memory: 512Mi
+        ephemeral-storage: 1Gi
+    - type: Pod
+      max:
+        cpu: "8"
+        memory: 32Gi
+        ephemeral-storage: 100Gi

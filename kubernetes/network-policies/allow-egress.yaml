@@ -1,0 +1,123 @@
+# The only egress a worker gets back after `default-deny.yaml`.
+#
+# Four destinations, and nothing else:
+#
+#   1. cluster DNS                 without it every hostname fails to resolve
+#   2. the GKE metadata server     Workload Identity gets its token from
+#                                  169.254.169.254; block it and the worker
+#                                  cannot authenticate to Firestore, GCS or
+#                                  Secret Manager, and every attempt fails at
+#                                  startup in a way that looks like an IAM
+#                                  problem
+#   3. Private Google Access       199.36.153.4/30 and 199.36.153.8/30, the
+#                                  restricted and private VIPs for Google APIs
+#   4. the public internet         MINUS every private range
+#
+# Rule 4 is where the isolation lives. `to.ipBlock` with `0.0.0.0/0` and an
+# `except` list is the only way a NetworkPolicy can say "the internet, but not
+# the cluster": there is no selector for "not in this cluster", and a
+# `namespaceSelector` allow-list would have to be rewritten every time a tenant
+# is registered. The excepted ranges are the pod CIDR, the service CIDR, RFC1918
+# and link-local, so a worker can reach api.anthropic.com and github.com but not
+# another tenant's pod, not a node, and not a ClusterIP service.
+#
+# Egress to the provider API is deliberately open rather than pinned to a list
+# of provider hostnames. NetworkPolicy matches IPs, not names; the provider APIs
+# sit behind CDN ranges that change without notice, and a stale pinned range
+# fails as "every task on this tenant is broken" rather than as a clean error.
+# The `browser` profile -- the main reason this path exists at all -- also has
+# to fetch whatever page the task names, which cannot be an allow-list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-worker-egress
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  # Every pod in the namespace, selected the same way the deny policy selects
+  # them. A `matchLabels` selector here would be a trap: the GKE manifest in
+  # `apps/scheduler/scheduler/dispatch.py` labels its pods `swarm-task` and
+  # `swarm-tenant` only, so a policy keyed on any other label would match
+  # nothing, leave the default deny in force and break every browser task with a
+  # DNS timeout. The namespace holds nothing but workers anyway -- the
+  # ResourceQuota sets `count/services`, `count/deployments.apps` and the rest
+  # to zero -- so "every pod" and "every worker" are the same set by
+  # construction rather than by convention.
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # 1. Cluster DNS. kube-dns runs in kube-system and is reachable on 53/UDP
+    #    and 53/TCP; TCP matters for responses larger than 512 bytes, which is
+    #    every Google API's CNAME chain.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # 2. The GKE metadata server. Port 988 is the Workload Identity endpoint
+    #    that gke-metadata-server proxies; port 80 serves the classic metadata
+    #    paths the Google client libraries probe on startup.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 988
+        - protocol: TCP
+          port: 80
+
+    # 3. Private Google Access VIPs, for the APIs the worker itself uses:
+    #    Firestore, Cloud Storage, Secret Manager, Cloud Monitoring, Cloud
+    #    Logging and Artifact Registry.
+    - to:
+        - ipBlock:
+            cidr: 199.36.153.4/30
+        - ipBlock:
+            cidr: 199.36.153.8/30
+      ports:
+        - protocol: TCP
+          port: 443
+
+    # 4. The public internet, with the cluster carved out.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # The cluster's own pod range: this is the cross-tenant hop.
+              # Defaults to 10.0.0.0/8, which also covers the nodes and the rest
+              # of the VPC, so it is not repeated in the RFC1918 entries below --
+              # `except` entries must each sit inside the cidr, and listing the
+              # same range twice is a validation error waiting to happen.
+              - __POD_CIDR__
+              # The cluster's service range. GKE Autopilot's default is
+              # 34.118.224.0/20, which is PUBLIC address space and therefore not
+              # covered by any RFC1918 entry -- omitting it would leave every
+              # ClusterIP service reachable from a tenant pod.
+              - __SERVICE_CIDR__
+              # The remaining private ranges, for a VPC that does not use 10/8.
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              # Link-local. The metadata server is allowed above as a single
+              # /32 with two ports; the rest of 169.254/16 is not.
+              - 169.254.0.0/16
+              # Carrier-grade NAT space, which some cloud internal endpoints use.
+              - 100.64.0.0/10
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+        # git over SSH, for a repository the task clones with an ssh:// URL.
+        - protocol: TCP
+          port: 22

@@ -1,0 +1,213 @@
+# OPTIONAL local development path.
+#
+# THE PRIMARY LOCAL LOOP IS `make dev`, which runs the gcloud Firestore emulator
+# directly with no containers at all. Read docs/workflows.md before choosing
+# between them. Two reasons the emulator path is primary:
+#
+#   1. The Docker daemon on the reference workstation is broken, so a path that
+#      requires it is a path that does not work for the person who wrote it.
+#   2. This Mac is arm64 and every deployment target is amd64. Anything built
+#      here would either fail to start in the cloud or run under emulation, so
+#      IMAGES ARE NEVER BUILT LOCALLY -- `make build` submits to Cloud Build.
+#      Nothing in this file builds a deployable artifact either; it mounts the
+#      source into a stock python image and runs it.
+#
+# This file exists for operators whose Docker works and who would rather have
+# one command than a background emulator process.
+#
+#   docker compose up api            # emulator + seeded pools + the API
+#   docker compose up scheduler      # emulator + the scheduler drain loop
+#   docker compose run --rm tests    # unit tests, no cloud credentials at all
+#   docker compose down -v           # discard the emulator's data
+#
+# Nothing here touches saga-agents-staging: there are no cloud credentials in any
+# of these containers and the Firestore host is the emulator. Authentication is
+# NOT disabled -- the API has no switch for that, on purpose -- so calls still
+# present a Google ID token. Every port is bound to 127.0.0.1 regardless: an
+# emulator reachable from the network is an unauthenticated database reachable
+# from the network.
+
+name: swarm-dev
+
+x-common-env: &common-env
+  PROJECT_ID: swarm-local
+  REGION: us-central1
+  ENVIRONMENT: dev
+  # The named database, same as production. Using (default) locally would let a
+  # bug that assumes (default) pass here and fail in the shared project.
+  FIRESTORE_DATABASE: swarm
+  FIRESTORE_EMULATOR_HOST: firestore:8080
+  ALLOWED_DOMAINS: saga.xyz
+  TENANT_GROUPS: eng@saga.xyz
+  ADMIN_GROUPS: eng@saga.xyz
+  DISABLE_CLOUD_MONITORING: "1"
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  LOG_LEVEL: DEBUG
+
+x-app: &app
+  # Stock upstream image, pinned by digest. The dependencies are installed into
+  # a named volume on first run rather than baked, because this file is a dev
+  # convenience and must not become a second, divergent way to build an image.
+  image: python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
+  working_dir: /src
+  volumes:
+    - ./:/src:cached
+    - venv:/opt/venv
+  environment: *common-env
+  depends_on:
+    firestore:
+      condition: service_healthy
+  # Entrypoint, not command: every service shares the same install step and
+  # differs only in what it runs afterwards.
+  entrypoint: ["/bin/sh", "-c"]
+
+services:
+  # -------------------------------------------------------------------------
+  # Firestore emulator. The only stateful thing here.
+  # -------------------------------------------------------------------------
+  firestore:
+    # Pinned to the same gcloud version the workstation runs. Published for
+    # amd64 only, so on Apple Silicon it runs under emulation -- slower to
+    # start, correct once up. It is also the ONLY local Firestore that works on
+    # a machine with no JRE, since the emulator is a Java program and the
+    # container brings its own.
+    image: google/cloud-sdk:483.0.0-emulators
+    platform: linux/amd64
+    command:
+      - /bin/sh
+      - -c
+      - |
+        gcloud emulators firestore start \
+          --host-port=0.0.0.0:8080 \
+          --database-mode=firestore-native
+    ports:
+      # Loopback only. An emulator reachable from the network is an unauthenticated
+      # database reachable from the network.
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      # The emulator answers /  with "Ok" once it is listening. curl is present
+      # in the cloud-sdk image, so this needs nothing extra.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # -------------------------------------------------------------------------
+  # Seed. Creates the slot pools the scheduler needs; without them every pool
+  # lookup misses and admission is unbounded, which is not what production does.
+  # -------------------------------------------------------------------------
+  seed:
+    <<: *app
+    command:
+      - |
+        set -e
+        python -m venv /opt/venv 2>/dev/null || true
+        /opt/venv/bin/pip install -q -e apps/common -e apps/swarm-api \
+          -e apps/scheduler -e apps/quota-broker -e apps/agent-worker -e apps/reconciler
+        /opt/venv/bin/python - <<'PY'
+        import os
+        from google.cloud import firestore
+        db = firestore.Client(project=os.environ["PROJECT_ID"],
+                              database=os.environ["FIRESTORE_DATABASE"])
+        pools = {
+            "global": 20, "tenant:eng": 10, "tenant:u-dev": 5,
+            "resource:standard": 20, "resource:browser": 4, "resource:large": 2,
+            "runner:mock": 20, "runner:generic": 10, "runner:claude-code": 10,
+            "runner:codex": 10, "runner:browser": 4,
+            "backend:CLOUD_RUN_JOB": 20, "backend:GKE_AUTOPILOT": 4,
+            "provider:anthropic": 10, "provider:openai": 10,
+            "provider:anthropic:tenant:eng": 5, "provider:openai:tenant:eng": 5,
+        }
+        for name, limit in pools.items():
+            db.collection("pools").document(name).set(
+                {"name": name, "hard_limit": limit, "active": 0, "enabled": True},
+                merge=True,
+            )
+        db.collection("tenants").document("eng").set(
+            {"tenant_id": "eng", "kind": "group", "principal": "eng@saga.xyz",
+             "enabled": True, "max_active": 10, "capacity_units": 20,
+             "credentials": [], "gcs_prefix": "tenants/eng/"},
+            merge=True,
+        )
+        print(f"seeded {len(pools)} pools and tenant 'eng'")
+        PY
+
+  # -------------------------------------------------------------------------
+  # Control plane
+  # -------------------------------------------------------------------------
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      firestore:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    command:
+      - |
+        set -e
+        /opt/venv/bin/uvicorn --factory swarm_api.main:create_app \
+          --host 0.0.0.0 --port 8000 --reload --reload-dir apps
+
+  scheduler:
+    <<: *app
+    ports:
+      - "127.0.0.1:8001:8000"
+    depends_on:
+      firestore:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      # No Cloud Run and no GKE locally, so dispatch has nowhere to send work.
+      # The drain loop, admission and fairness are all still exercised.
+      ENABLE_CLOUD_RUN_JOBS: "false"
+      ENABLE_GKE_AUTOPILOT: "false"
+      REQUIRE_OIDC: "false"
+    command:
+      - |
+        set -e
+        /opt/venv/bin/uvicorn --factory scheduler.main:create_app \
+          --host 0.0.0.0 --port 8000 --reload --reload-dir apps
+
+  quota-broker:
+    <<: *app
+    ports:
+      - "127.0.0.1:8002:8000"
+    depends_on:
+      firestore:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      REQUIRE_OIDC: "false"
+    command:
+      - |
+        set -e
+        /opt/venv/bin/uvicorn --factory quota_broker.main:create_app \
+          --host 0.0.0.0 --port 8000 --reload --reload-dir apps
+
+  # -------------------------------------------------------------------------
+  # Tests. Needs neither the emulator nor credentials -- the unit suite fakes
+  # Firestore -- so it deliberately does not depend on the firestore service.
+  # -------------------------------------------------------------------------
+  tests:
+    <<: *app
+    depends_on: []
+    profiles: ["tools"]
+    command:
+      - |
+        set -e
+        python -m venv /opt/venv 2>/dev/null || true
+        /opt/venv/bin/pip install -q -e apps/common -e apps/swarm-api \
+          -e apps/scheduler -e apps/quota-broker -e apps/agent-worker -e apps/reconciler \
+          pytest pytest-asyncio httpx
+        /opt/venv/bin/pytest tests/unit -q
+
+volumes:
+  venv:

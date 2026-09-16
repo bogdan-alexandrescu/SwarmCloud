@@ -54,6 +54,18 @@ class SchedulerSettings:
     #: tenants, small enough that one Firestore query stays cheap.
     candidate_batch_size: int = 200
 
+    #: Fairness top-up. The global candidate query returns the highest-priority
+    #: slice, so a tenant with more than `candidate_batch_size` high-priority
+    #: tasks queued can fill it entirely and every other tenant disappears from
+    #: the rotation -- round-robin cannot interleave what it never saw. When the
+    #: slice comes back FULL (and only then, because a short slice is already
+    #: the whole queue), the scheduler asks each unrepresented tenant for a few
+    #: of its own READY tasks and adds them to the rotation.
+    tenant_topup_candidates: int = 8
+    #: Ceiling on how many tenants that top-up may query in one pass, so the
+    #: cost of a pass stays bounded however many tenants exist.
+    max_topup_tenants: int = 50
+
     #: Hard stops on the drain loop.
     max_leases_per_run: int = 200
     max_passes_per_run: int = 25
@@ -81,6 +93,14 @@ class SchedulerSettings:
     gke_cluster: str = ""
     gke_location: str = ""
 
+    #: Kubernetes service account the worker pod runs as, inside the tenant's own
+    #: namespace. It must match the KSA the Workload Identity binding was issued
+    #: for, or the pod gets no Google identity: terraform's tenancy module binds
+    #: `<pool>[<namespace>/<ksa_name>]` with `ksa_name` defaulting to
+    #: `swarm-agent-worker`. The namespace is what makes the binding per-tenant,
+    #: so one shared spelling here is correct and is not a cross-tenant hole.
+    worker_ksa_name: str = "swarm-agent-worker"
+
     project_id: str = ""
     region: str = "us-central1"
     artifact_registry_host: str = ""
@@ -97,6 +117,8 @@ class SchedulerSettings:
         return cls(
             core=core,
             candidate_batch_size=_int("CANDIDATE_BATCH_SIZE", 200),
+            tenant_topup_candidates=_int("TENANT_TOPUP_CANDIDATES", 8),
+            max_topup_tenants=_int("MAX_TOPUP_TENANTS", 50),
             max_leases_per_run=_int("MAX_LEASES_PER_RUN", 200),
             max_passes_per_run=_int("MAX_PASSES_PER_RUN", 25),
             max_run_seconds=_float("MAX_RUN_SECONDS", 45.0),
@@ -107,6 +129,8 @@ class SchedulerSettings:
             enable_prewarm=_bool("ENABLE_QUOTA_PREWARM", core.enable_quota_prewarm),
             gke_cluster=os.environ.get("GKE_CLUSTER", ""),
             gke_location=os.environ.get("GKE_LOCATION", core.region),
+            worker_ksa_name=os.environ.get("WORKER_KSA_NAME", "").strip()
+            or "swarm-agent-worker",
             project_id=core.project_id,
             region=core.region,
             artifact_registry_host=registry,
@@ -117,6 +141,10 @@ class SchedulerSettings:
     def __post_init__(self) -> None:
         if self.candidate_batch_size <= 0:
             raise ValueError("candidate_batch_size must be positive")
+        if self.tenant_topup_candidates < 0:
+            raise ValueError("tenant_topup_candidates cannot be negative")
+        if self.max_topup_tenants < 0:
+            raise ValueError("max_topup_tenants cannot be negative")
         if self.max_leases_per_run <= 0 or self.max_passes_per_run <= 0:
             raise ValueError("the drain loop must be bounded by a positive number of passes")
         if self.max_run_seconds <= 0:

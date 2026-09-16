@@ -21,15 +21,23 @@ export PROJECT_ID
 export REGION
 
 SCRIPTS  := scripts
-ENV_DIR  := terraform/environments/$(ENVIRONMENT)
+
+# ONE terraform root, parameterised per environment by a tfvars file. dev and
+# prod therefore run identical configuration and differ only in inputs and in
+# the state prefix -- a root per environment is how prod quietly drifts.
+TF_ROOT  := terraform/infra
+VAR_FILE := terraform/environments/$(ENVIRONMENT)/$(ENVIRONMENT).tfvars
 TERRAFORM := $(shell if [ -x "$$HOME/.local/bin/terraform" ]; then echo "$$HOME/.local/bin/terraform"; else command -v terraform; fi)
 TFLINT    := $(shell if [ -x "$$HOME/.local/bin/tflint" ]; then echo "$$HOME/.local/bin/tflint"; else command -v tflint || echo ""; fi)
 CHECKOV   := $(shell if [ -x "$$HOME/.local/bin/checkov" ]; then echo "$$HOME/.local/bin/checkov"; else command -v checkov || echo ""; fi)
 TRIVY     := $(shell if [ -x "$$HOME/.local/bin/trivy" ]; then echo "$$HOME/.local/bin/trivy"; else command -v trivy || echo ""; fi)
 KUBECTL   := $(shell if [ -x /opt/homebrew/bin/kubectl ]; then echo /opt/homebrew/bin/kubectl; else command -v kubectl || echo ""; fi)
 
-TF_STATE_BUCKET ?= saga-agents-terraform-state-staging
-TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix=swarm/$(ENVIRONMENT)
+# The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately not
+# saga-agents-terraform-state-staging: that one belongs to another team.
+TF_STATE_BUCKET ?= swarm-tfstate-$(PROJECT_ID)
+TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix=infra/$(ENVIRONMENT)
+TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
         load-test quota-test concurrency-test failure-test race-test test lint \
@@ -65,15 +73,17 @@ up: ## Everything from zero: bootstrap, infra, build, push, deploy, smoke
 ## Infrastructure
 ## ---------------------------------------------------------------------------
 
-tf-init: ## terraform init for this environment
-	@$(TERRAFORM) -chdir=$(ENV_DIR) init -input=false $(TF_INIT_ARGS)
+tf-init: ## terraform init for this environment (state prefix infra/$(ENVIRONMENT))
+	@$(TERRAFORM) -chdir=$(TF_ROOT) init -input=false -reconfigure $(TF_INIT_ARGS)
 
 tf-plan: ## terraform plan (review every create in a shared project)
-	@$(TERRAFORM) -chdir=$(ENV_DIR) plan -input=false -lock-timeout=120s -out=$(CURDIR)/build/$(ENVIRONMENT).tfplan
+	@test -f $(VAR_FILE) || { echo "no $(VAR_FILE); ENVIRONMENT=$(ENVIRONMENT) has no inputs"; exit 1; }
+	@mkdir -p build
+	@$(TERRAFORM) -chdir=$(TF_ROOT) plan -input=false -lock-timeout=120s $(TF_VAR_ARGS) -out=$(CURDIR)/build/$(ENVIRONMENT).tfplan
 
 tf-apply: ## terraform apply the plan from tf-plan
 	@test -f build/$(ENVIRONMENT).tfplan || { echo "run 'make tf-plan' first"; exit 1; }
-	@$(TERRAFORM) -chdir=$(ENV_DIR) apply -input=false -lock-timeout=120s $(CURDIR)/build/$(ENVIRONMENT).tfplan
+	@$(TERRAFORM) -chdir=$(TF_ROOT) apply -input=false -lock-timeout=120s $(CURDIR)/build/$(ENVIRONMENT).tfplan
 	@rm -f build/$(ENVIRONMENT).tfplan
 
 infra: ## Plan and apply infrastructure, then point kubectl at the swarm cluster
@@ -136,9 +146,9 @@ lint: ## shellcheck, terraform fmt/validate, tflint, kubernetes manifests
 	@shellcheck -x $(SCRIPTS)/*.sh $(SCRIPTS)/lib/*.sh
 	@echo "==> terraform fmt"
 	@$(TERRAFORM) fmt -check -recursive terraform || { echo "run 'make fmt'"; exit 1; }
-	@if [ -d $(ENV_DIR)/.terraform ]; then echo "==> terraform validate"; $(TERRAFORM) -chdir=$(ENV_DIR) validate; fi
+	@if [ -d $(TF_ROOT)/.terraform ]; then echo "==> terraform validate"; $(TERRAFORM) -chdir=$(TF_ROOT) validate; fi
 	@if [ -n "$(TFLINT)" ] && [ -n "$$(find terraform -name '*.tf' -print -quit 2>/dev/null)" ]; then echo "==> tflint"; $(TFLINT) --chdir=terraform --recursive; fi
-	@if [ -n "$(KUBECTL)" ] && [ -n "$$(find kubernetes -name '*.yaml' -print -quit 2>/dev/null)" ]; then echo "==> kubernetes manifests"; find kubernetes -name '*.yaml' -exec $(KUBECTL) apply --dry-run=client -f {} \; >/dev/null; fi
+	@if [ -n "$(KUBECTL)" ] && [ -f kubernetes/render.py ]; then echo "==> kubernetes manifests"; $(SCRIPTS)/lib/validate-manifests.sh; fi
 	@echo "lint ok"
 
 fmt: ## Rewrite terraform files in canonical form

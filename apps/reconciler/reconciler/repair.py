@@ -339,11 +339,18 @@ class Reconciler:
         """
         outcomes: list[RepairOutcome] = []
         active = self._store.active_tenants(snapshot)
+        # A namespace is protected by mere registration; a Job resource is not.
+        # The difference is recoverability: `ensure_job` recreates a deleted Job
+        # on the next dispatch, whereas nothing recreates a namespace, its
+        # service account or its workload-identity binding.
+        protected_namespaces = active | self._store.registered_tenants()
         now = snapshot.taken_at
         for backend in backends.values():
             resources = backend.list_job_resources()
             if backend.name == "GKE_AUTOPILOT":
-                findings = detect_empty_namespaces(resources, active, self._config, now)
+                findings = detect_empty_namespaces(
+                    resources, protected_namespaces, self._config, now
+                )
             else:
                 findings = detect_unused_job_resources(resources, active, self._config, now)
             for finding in findings:

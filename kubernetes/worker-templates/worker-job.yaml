@@ -1,0 +1,175 @@
+# The canonical worker Job. One attempt, one Job, one pod, one generation.
+#
+# This is the reference shape for anything that creates a worker on GKE. Render
+# it with `kubernetes/render.sh --tenant <id> --job ...` for a manual run or an
+# incident repro; the dispatcher builds the same object in code.
+#
+# The parts that are load-bearing, and why:
+#
+# `command` is ABSENT, deliberately. The image's ENTRYPOINT is
+# `tini -- python -m agent_worker`, which starts the WORKER. The worker then
+# validates its fencing generation, creates an isolated workspace, restores the
+# latest checkpoint and only then starts the runner named by the frozen
+# catalogue as a supervised child. Overriding `command` with
+# `RUNNER_PROFILES[...].command` would start the runner DIRECTLY -- no fencing
+# check, no checkpointing, no heartbeat, no lease release -- which is every
+# safety property in this platform switched off at once. The profile's command
+# is the runner's entrypoint, not the container's.
+#
+# `backoffLimit: 0`. A retry is a new attempt with a new fencing generation,
+# minted by the scheduler inside the admission transaction. A Kubernetes-level
+# retry would re-run the agent under the OLD generation, against a lease that
+# may already have been released and reissued: two agents, one task.
+#
+# `safe-to-evict: "false"`. Autopilot extended run time. Without it the cluster
+# autoscaler may evict a perfectly healthy pod during a scale-down, mid-run.
+# This annotation is only honoured on on-demand capacity, which is the concrete
+# reason Spot is disabled platform-wide rather than merely discouraged.
+#
+# `requests == limits` on every resource, including ephemeral-storage. No
+# bursting: bursting is what gets a two-hour agent container OOM-killed at
+# minute ninety.
+#
+# No `tolerations` and no `nodeSelector`. Adding either is how a pod ends up on
+# Spot capacity; the admission policy in `policies/pod-security.yaml` refuses
+# both, and their absence here is the positive form of the same rule.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-scheduler
+    swarm-tenant: __TENANT_ID__
+    swarm-profile: __RUNNER_PROFILE__
+    swarm-task: __TASK_LABEL__
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/component: agent-worker
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    # The reconciler reads identifiers from the container environment, because a
+    # label value has been through name sanitisation and no longer matches the
+    # Firestore document id. These annotations carry them verbatim as well, for
+    # a human reading `kubectl describe`.
+    swarm.saga.xyz/task-id: __TASK_ID__
+    swarm.saga.xyz/attempt-id: __ATTEMPT_ID__
+    swarm.saga.xyz/generation: "__GENERATION__"
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  # Keep the finished Job around long enough for the reconciler's next pass and
+  # for a person to read the logs, then let the cluster clean it up.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-scheduler
+        swarm-tenant: __TENANT_ID__
+        swarm-task: __TASK_LABEL__
+        app.kubernetes.io/part-of: swarm
+        app.kubernetes.io/component: agent-worker
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: __KSA_NAME__
+      # The worker never calls the Kubernetes API. See rbac/worker-rbac.yaml.
+      automountServiceAccountToken: false
+      # The worker terminates its own child on SIGTERM, escalating to SIGKILL
+      # after the grace period, then checkpoints and parks. This must be longer
+      # than the worker's own termination grace or the kubelet kills the pod
+      # while it is still uploading the checkpoint that makes the interruption
+      # cheap.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __DISK__
+            limits:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __DISK__
+          env:
+            # Identifiers only. No image, no command, no resource spec: the
+            # worker reads what to run from the frozen catalogue keyed by
+            # RUNNER_PROFILE, so a doctored environment cannot change it.
+            - name: TASK_ID
+              value: __TASK_ID__
+            - name: ATTEMPT_ID
+              value: __ATTEMPT_ID__
+            - name: LEASE_ID
+              value: __LEASE_ID__
+            - name: GENERATION
+              value: "__GENERATION__"
+            - name: TENANT_ID
+              value: __TENANT_ID__
+            - name: RUNNER_PROFILE
+              value: __RUNNER_PROFILE__
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: REGION
+              value: __REGION__
+            - name: FIRESTORE_DATABASE
+              value: __FIRESTORE_DATABASE__
+            - name: ARTIFACT_BUCKET
+              value: __ARTIFACT_BUCKET__
+            - name: GCS_PREFIX
+              value: __GCS_PREFIX__
+            - name: WORKSPACE_ROOT
+              value: /workspace
+            - name: CHECKPOINT_INTERVAL_SECONDS
+              value: "__CHECKPOINT_INTERVAL_SECONDS__"
+            - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
+              value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
+            - name: TASK_TIMEOUT_SECONDS
+              value: "__TIMEOUT_SECONDS__"
+            # A provider key, when the profile needs one, is projected from the
+            # tenant's OWN secret in the tenant's OWN namespace. Another tenant's
+            # pod cannot mount it: it is not in their namespace. Rendered only
+            # when the profile declares a provider.
+            __SECRET_ENV__
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            # readOnlyRootFilesystem means every writable path must be declared.
+            # These three are the only ones the worker and its toolchain need:
+            # the workspace, the process temp dir, and the home directory that
+            # npm, uv and git write caches into.
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/swarm
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: __DISK__
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 4Gi

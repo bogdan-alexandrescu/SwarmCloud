@@ -163,12 +163,15 @@ FIXTURE_JSON
   exit 0
 fi
 
-ENV_DIR="$(env_dir)"
+TF_ROOT="$(tf_root)"
+tf_var_args
 
 step "Target"
 info "project      ${PROJECT_ID}"
 info "environment  ${ENVIRONMENT}"
-info "directory    ${ENV_DIR}"
+info "root         ${TF_ROOT}"
+info "variables    $(tf_var_file)"
+info "state        gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}"
 
 if is_production; then
   if [[ "${ALLOW_PROD}" -eq 0 ]]; then
@@ -178,7 +181,7 @@ if is_production; then
   warn "PRODUCTION teardown requested. Two confirmations will be required."
 fi
 
-[[ -d "${ENV_DIR}/.terraform" ]] || die "terraform is not initialised in ${ENV_DIR}; run: make bootstrap"
+[[ -d "${TF_ROOT}/.terraform" ]] || die "terraform is not initialised in ${TF_ROOT}; run: make bootstrap"
 
 # ---------------------------------------------------------------------------
 # 1. Plan
@@ -189,17 +192,17 @@ PLAN_LOG="${BUILD_DIR}/destroy-${ENVIRONMENT}.plan.jsonl"
 PLAN_JSON="${BUILD_DIR}/destroy-${ENVIRONMENT}.plan.json"
 VERDICT_JSON="${BUILD_DIR}/destroy-${ENVIRONMENT}.verdict.json"
 
-PLAN_ARGS=(-destroy -json -input=false -lock-timeout=120s -out="${PLAN_BIN}")
+PLAN_ARGS=(-destroy -json -input=false -lock-timeout=120s -out="${PLAN_BIN}" "${TF_VAR_ARGS[@]}")
 for t in ${TARGETS[@]+"${TARGETS[@]}"}; do PLAN_ARGS+=(-target="${t}"); done
 
 info "terraform plan -destroy -json (log: ${PLAN_LOG})"
-if ! tf -chdir="${ENV_DIR}" plan "${PLAN_ARGS[@]}" >"${PLAN_LOG}" 2>&1; then
+if ! tf -chdir="${TF_ROOT}" plan "${PLAN_ARGS[@]}" >"${PLAN_LOG}" 2>&1; then
   err "terraform plan -destroy failed:"
   jq -r 'select(.["@level"]=="error") | .["@message"]' <"${PLAN_LOG}" 2>/dev/null | redact >&2 \
     || tail -n 40 "${PLAN_LOG}" | redact >&2
   die "cannot continue without a plan"
 fi
-tf -chdir="${ENV_DIR}" show -json "${PLAN_BIN}" >"${PLAN_JSON}"
+tf -chdir="${TF_ROOT}" show -json "${PLAN_BIN}" >"${PLAN_JSON}"
 ok "plan written"
 
 # ---------------------------------------------------------------------------
@@ -309,7 +312,7 @@ fi
 # ---------------------------------------------------------------------------
 step "Confirmation"
 hr
-tf -chdir="${ENV_DIR}" show -no-color "${PLAN_BIN}" 2>/dev/null | head -n 60 | redact >&2
+tf -chdir="${TF_ROOT}" show -no-color "${PLAN_BIN}" 2>/dev/null | head -n 60 | redact >&2
 dim "(plan truncated; full plan: ${PLAN_JSON})"
 hr
 
@@ -322,7 +325,7 @@ fi
 # 4. Apply
 # ---------------------------------------------------------------------------
 step "Destroying"
-if ! tf -chdir="${ENV_DIR}" apply -input=false -lock-timeout=120s "${PLAN_BIN}" 2>&1 | redact; then
+if ! tf -chdir="${TF_ROOT}" apply -input=false -lock-timeout=120s "${PLAN_BIN}" 2>&1 | redact; then
   err "terraform apply of the destroy plan failed part-way"
   err "re-run this script: the plan is regenerated from live state each time"
   exit 1

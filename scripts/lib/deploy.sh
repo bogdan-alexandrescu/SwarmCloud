@@ -42,12 +42,12 @@ image_ref() {
   jq -r --arg n "$1" '.images[] | select(.name == $n) | .ref // empty' "${MANIFEST}"
 }
 
-ENV_DIR="${REPO_ROOT}/terraform/environments/${ENVIRONMENT}"
+TF_ROOT="${REPO_ROOT}/terraform/infra"
 TF_VAR_NAME=""
-if [[ -d "${ENV_DIR}" ]]; then
-  if grep -Rqs 'variable[[:space:]]*"image_refs"' "${ENV_DIR}"; then
+if [[ -d "${TF_ROOT}/.terraform" ]]; then
+  if grep -Rqs 'variable[[:space:]]*"image_refs"' "${TF_ROOT}"; then
     TF_VAR_NAME="image_refs"
-  elif grep -Rqs 'variable[[:space:]]*"image_tag"' "${ENV_DIR}"; then
+  elif grep -Rqs 'variable[[:space:]]*"image_tag"' "${TF_ROOT}"; then
     TF_VAR_NAME="image_tag"
   fi
 fi
@@ -61,12 +61,15 @@ if [[ -n "${TF_VAR_NAME}" ]]; then
   else
     VAR_ARGS+=(-var="image_tag=${TAG}")
   fi
-  tf -chdir="${ENV_DIR}" apply -input=false -auto-approve -lock-timeout=120s "${VAR_ARGS[@]}" 2>&1 | redact
+  tf_var_args
+  tf -chdir="${TF_ROOT}" apply -input=false -auto-approve -lock-timeout=120s \
+    "${TF_VAR_ARGS[@]}" "${VAR_ARGS[@]}" 2>&1 | redact
   ok "terraform apply complete"
 else
   step "Updating Cloud Run services directly"
   info "the ${ENVIRONMENT} environment declares no image variable, so services are updated in place"
-  for pair in "${API_SERVICE}:swarm-api" "${SCHEDULER_SERVICE}:swarm-scheduler" "${QUOTA_SERVICE}:swarm-quota-broker"; do
+  for pair in "${API_SERVICE}:swarm-api" "${SCHEDULER_SERVICE}:swarm-scheduler" \
+              "${QUOTA_SERVICE}:swarm-quota-broker" "${RECONCILER_SERVICE}:swarm-reconciler"; do
     service="${pair%%:*}"
     image_name="${pair##*:}"
     ref="$(image_ref "${image_name}")"
@@ -91,7 +94,7 @@ fi
 
 step "Waiting for revisions to become ready"
 DEADLINE=$(( $(date -u +%s) + WAIT_SECONDS ))
-for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}"; do
+for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}"; do
   while :; do
     ready="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" \
       --region "${REGION}" --format='value(status.conditions.filter("type:Ready").status)' 2>/dev/null || true)"
@@ -106,7 +109,7 @@ done
 
 if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
   step "Health"
-  for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}"; do
+  for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}"; do
     url="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" \
       --region "${REGION}" --format='value(status.url)' 2>/dev/null || true)"
     [[ -n "${url}" ]] || continue

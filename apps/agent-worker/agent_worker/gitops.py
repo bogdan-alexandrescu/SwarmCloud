@@ -11,8 +11,21 @@ caller, which means it is not trusted here. Three things are enforced:
   will happily use to execute an arbitrary command;
 * the URL cannot begin with `-`, which would make git parse it as an option
   (`--upload-pack=...` is the classic remote-code-execution shape);
-* credentials never appear in argv. A token goes into a 0600 credential file
-  inside the workspace, because argv is world-readable through /proc.
+* credentials never appear in argv. A token goes into a 0600 credential file,
+  because argv is world-readable through /proc.
+
+The credential file lives in `workspace/private/`, not in the workspace `tmp/`
+directory, and it is deleted as soon as the clone finishes. `tmp/` is the
+directory the worker hands the agent as `TMPDIR`, so a credential left there is
+one `cat $TMPDIR/.git-credentials` away from any prompt injection in the
+repository that was just cloned. Same uid, so the mode bits are not a boundary
+either way -- what changes is that the agent is never told the path and the file
+is gone before the agent starts.
+
+The token itself is the tenant's own, resolved from
+`swarm-tenant-<tenant>-git`, never a platform-wide one: a single token that can
+clone every tenant's repositories would make one malicious repository in one
+tenant a credential compromise for all of them (invariant 9).
 """
 
 from __future__ import annotations
@@ -74,10 +87,15 @@ def validate_ref(ref: str | None) -> str | None:
     return ref
 
 
-def _write_credentials(url: str, token: str, tmp_dir: Path) -> Path:
-    """Store `https://x-access-token:<token>@host` for git's `store` helper."""
+def _write_credentials(url: str, token: str, private_dir: Path) -> Path:
+    """Store `https://x-access-token:<token>@host` for git's `store` helper.
+
+    `private_dir` is the worker's own scratch directory, never the one the agent
+    is given as TMPDIR, and `shallow_clone` removes the file in a `finally`.
+    """
     parsed = urlparse(url)
-    cred_file = tmp_dir / ".git-credentials"
+    private_dir.mkdir(parents=True, exist_ok=True)
+    cred_file = private_dir / ".git-credentials"
     entry = urlunparse(
         (
             parsed.scheme,
@@ -98,22 +116,30 @@ def shallow_clone(
     url: str,
     ref: str | None,
     destination: Path,
-    workspace_tmp: Path,
+    private_dir: Path,
     logs_dir: Path,
     timeout_seconds: int,
     logger: Any,
     token: str | None = None,
     git_binary: str = "git",
 ) -> CloneResult:
-    """Clone `url` at `ref` into `destination`, shallow and single-branch."""
+    """Clone `url` at `ref` into `destination`, shallow and single-branch.
+
+    `private_dir` is the worker's own scratch directory (`workspace/private/`).
+    git's HOME and the credential file both live there rather than in the
+    directory the agent is handed as TMPDIR, and the credential file is removed
+    before this function returns, on every path including a failure.
+    """
     url = validate_repository_url(url)
     ref = validate_ref(ref)
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
 
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(workspace_tmp),
+        "HOME": str(private_dir),
         "GIT_TERMINAL_PROMPT": "0",            # never block waiting for a password
         "GIT_ASKPASS": "/bin/true",
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -121,8 +147,9 @@ def shallow_clone(
         "LC_ALL": "C",
     }
     config_args: list[str] = ["-c", "protocol.version=2", "-c", "advice.detachedHead=false"]
+    cred_file: Path | None = None
     if token:
-        cred_file = _write_credentials(url, token, workspace_tmp)
+        cred_file = _write_credentials(url, token, private_dir)
         config_args += ["-c", f"credential.helper=store --file={cred_file}"]
 
     is_sha = bool(ref and _SHA_RE.match(ref))
@@ -145,27 +172,39 @@ def shallow_clone(
         steps = [clone]
 
     total = 0.0
-    for index, argv in enumerate(steps):
-        result = run_child(
-            argv,
-            cwd=workspace_tmp,
-            env=env,
-            stdout_path=logs_dir / f"git-{index}.out.log",
-            stderr_path=logs_dir / f"git-{index}.err.log",
-            timeout_seconds=timeout_seconds,
-            grace_seconds=10,
-            max_stdout_bytes=1 * 1024 * 1024,
-            max_stderr_bytes=1 * 1024 * 1024,
-            logger=logger,
-        )
-        total += result.duration_seconds
-        if result.timed_out:
-            raise GitError(f"git step {index} timed out after {timeout_seconds}s")
-        if result.exit_code != 0:
-            tail = (logs_dir / f"git-{index}.err.log").read_text(errors="replace")[-2000:]
-            raise GitError(f"git step {index} failed with exit {result.exit_code}: {tail.strip()}")
+    try:
+        for index, argv in enumerate(steps):
+            result = run_child(
+                argv,
+                cwd=private_dir,
+                env=env,
+                stdout_path=logs_dir / f"git-{index}.out.log",
+                stderr_path=logs_dir / f"git-{index}.err.log",
+                timeout_seconds=timeout_seconds,
+                grace_seconds=10,
+                max_stdout_bytes=1 * 1024 * 1024,
+                max_stderr_bytes=1 * 1024 * 1024,
+                logger=logger,
+            )
+            total += result.duration_seconds
+            if result.timed_out:
+                raise GitError(f"git step {index} timed out after {timeout_seconds}s")
+            if result.exit_code != 0:
+                tail = (logs_dir / f"git-{index}.err.log").read_text(errors="replace")[-2000:]
+                raise GitError(
+                    f"git step {index} failed with exit {result.exit_code}: {tail.strip()}"
+                )
+    finally:
+        # The clone is the only thing that ever needs this file. Leaving it on
+        # disk for the length of the attempt is what turns a prompt injection in
+        # the cloned repository into a stolen token.
+        if cred_file is not None:
+            try:
+                cred_file.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.error("could not remove the git credential file", error=str(exc))
 
-    commit = _read_head(destination, workspace_tmp, logs_dir, logger, git_binary)
+    commit = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     logger.info("repository cloned", url=url, ref=ref, commit=commit, seconds=round(total, 2))
     return CloneResult(path=destination, url=url, ref=ref, commit=commit, duration_seconds=total)
 

@@ -14,8 +14,6 @@
 # pool.
 
 locals {
-  bootstrap_enabled = var.bootstrap_documents ? 1 : 0
-
   pool_documents = var.bootstrap_documents ? var.pools : {}
 
   tenant_documents = var.bootstrap_documents ? var.tenant_documents : {}

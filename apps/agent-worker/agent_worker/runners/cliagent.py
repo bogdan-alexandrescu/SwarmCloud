@@ -11,6 +11,26 @@ an environment variable set by the PLATFORM (the image, or the Cloud Run Job
 definition) -- never by a caller, whose input never reaches argv except as the
 prompt. That is what keeps these runners working across CLI releases without
 anybody guessing at flags in a Dockerfile.
+
+Two properties that are load-bearing rather than incidental:
+
+* **`CLAUDE_CODE_BIN` / `CODEX_BIN` and their `_ARGS` really are platform-set.**
+  They arrive in this process's environment, and the only things the worker puts
+  there are its own configuration and the values the frozen profile declares in
+  `RunnerProfile.secrets`. `secrets.resolve_credentials` exports exactly those
+  declared names and nothing else, which is what stops somebody who may only ADD
+  a secret version -- a per-tenant admin, who is deliberately not trusted to read
+  the key back -- from shipping `{"CLAUDE_CODE_BIN": "/bin/sh"}` and getting a
+  shell.
+
+* **The CLI's output is redacted before it becomes an artifact or a summary.**
+  The worker's logger scrubs its own log lines, but this process writes the raw
+  stdout and stderr into `artifacts/`, writes the transcript, and returns up to
+  2000 characters of that stdout as the summary that becomes
+  `task.result_summary` in Firestore. A CLI that echoes its configuration, or a
+  tool error quoting an `Authorization` header, would otherwise land verbatim in
+  a GCS object and a Firestore document. This runner holds the key, so this
+  runner scrubs it.
 """
 
 from __future__ import annotations
@@ -26,7 +46,9 @@ from typing import Any, Sequence
 
 from ..logs import StructuredLogger
 from ..procman import run_child
+from ..redact import collect_secrets, scrub_file, scrub_text
 from .base import QuotaExhaustedSignal, RunnerContext, RunnerFailure
+from .limits import platform_ceilings, resolve_limits
 
 BASE_PATH = "/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin:/bin"
 
@@ -155,8 +177,14 @@ def run_cli_agent(
     # is passed as a single trailing argument with no shell in the picture.
     argv.append(prompt)
 
-    timeout = float(payload.get("timeout_seconds", 3600))
+    limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
+    if limits.clamped:
+        log.warning(
+            "requested limits exceed the platform ceiling and were clamped",
+            clamped=list(limits.clamped),
+            effective=limits.as_dict(),
+        )
     stdout_path = ctx.artifacts_dir / f"{spec.name}.stdout.log"
     stderr_path = ctx.artifacts_dir / f"{spec.name}.stderr.log"
 
@@ -181,12 +209,20 @@ def run_cli_agent(
         env=env,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
-        timeout_seconds=timeout,
-        grace_seconds=float(payload.get("grace_seconds", 20)),
-        max_stdout_bytes=int(payload.get("max_stdout_bytes", 32 * 1024 * 1024)),
-        max_stderr_bytes=int(payload.get("max_stderr_bytes", 8 * 1024 * 1024)),
+        timeout_seconds=limits.timeout_seconds,
+        grace_seconds=limits.grace_seconds,
+        max_stdout_bytes=limits.max_stdout_bytes,
+        max_stderr_bytes=limits.max_stderr_bytes,
         logger=log,
     )
+
+    # Redact before anything is read back out. Everything below this line either
+    # becomes an artifact in GCS or a field in Firestore, and both outlive the
+    # pod. `env` is the set of values this process was given, so it is exactly
+    # the set of secrets it could have leaked.
+    secrets = collect_secrets(env.get(name) for name in (spec.key_env, *_SENSITIVE_PASSTHROUGH))
+    for captured in (stdout_path, stderr_path):
+        scrub_file(captured, secrets)
 
     combined = _tail(stdout_path) + "\n" + _tail(stderr_path)
     if result.exit_code != 0 or result.timed_out:
@@ -199,7 +235,7 @@ def run_cli_agent(
                 detail=f"{spec.name} reported a provider rate limit",
             )
     if result.timed_out:
-        raise RunnerFailure(f"{spec.name} timed out after {timeout}s")
+        raise RunnerFailure(f"{spec.name} timed out after {limits.timeout_seconds:.0f}s")
     if result.exit_code != 0:
         raise RunnerFailure(
             f"{spec.name} exited {result.exit_code}: {_tail(stderr_path, 2000).strip()}"
@@ -222,7 +258,10 @@ def run_cli_agent(
         parsed = events or None
 
     if parsed is not None:
-        ctx.write_artifact(spec.transcript_name, json.dumps(parsed, indent=2)[:4_000_000])
+        ctx.write_artifact(
+            spec.transcript_name,
+            scrub_text(json.dumps(parsed, indent=2)[:4_000_000], secrets),
+        )
 
     # A rate limit can also appear in a run the CLI still reports as successful.
     hit, retry_after, reset_at = detect_rate_limit(combined)
@@ -235,17 +274,32 @@ def run_cli_agent(
         )
 
     return {
-        "summary": _summarise(parsed, raw_stdout),
+        # `result.json` is read by the worker and stored as `task.result_summary`,
+        # which is a Firestore document. Neither the summary nor the structured
+        # output may carry the key that produced it.
+        "summary": scrub_text(_summarise(parsed, raw_stdout), secrets),
         "provider": spec.provider,
         "model": str(model) if model else None,
         "exit_code": result.exit_code,
-        "structured_output": parsed if isinstance(parsed, dict) else None,
+        "structured_output": _scrub_json(parsed, secrets) if isinstance(parsed, dict) else None,
+        "limits": limits.as_dict(),
         "metrics": {
             "duration_seconds": round(result.duration_seconds, 3),
             "stdout_bytes": result.stdout_bytes,
             "stderr_bytes": result.stderr_bytes,
         },
     }
+
+
+def _scrub_json(value: Any, secrets: Sequence[str]) -> Any:
+    """Redact every string in a JSON-able structure, keys included."""
+    if isinstance(value, str):
+        return scrub_text(value, secrets)
+    if isinstance(value, dict):
+        return {scrub_text(str(k), secrets): _scrub_json(v, secrets) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_json(v, secrets) for v in value]
+    return value
 
 
 def _looks_complete(parsed: Any) -> bool:

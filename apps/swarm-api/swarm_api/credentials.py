@@ -7,10 +7,19 @@ and all three live in this file.
   1. NAME. The secret is `swarm-tenant-<tenant>-<provider>`, taken from
      `Tenant.secret_name` in the frozen contract, so there is exactly one
      spelling of a tenant's secret anywhere in the platform.
-  2. IAM. The secret's OWN policy is set to exactly one accessor -- that
-     tenant's service account -- with `setIamPolicy` on the secret resource.
-     A project-level grant would make every tenant's key readable by every
-     tenant's workload, so the binding is never made at project level.
+  2. IAM. The binding is made on the SECRET RESOURCE, never at project level: a
+     project-level grant would make every tenant's key readable by every
+     tenant's workload. The policy is READ, the tenant's service account is
+     added to `roles/secretmanager.secretAccessor` if it is not already there,
+     and the result is written back with the etag it was read at.
+
+     It is deliberately a merge and not a replace. This endpoint is reachable by
+     any authenticated tenant member, and a replace would wipe every binding
+     terraform put on the secret -- including the accessor grant for the real
+     worker identity and the `secretVersionAdder` grant that is the admin
+     rotation path -- leaving the tenant locked out of its own key. The etag
+     makes the read-modify-write safe against a concurrent rotation, and a
+     policy that already carries the accessor is not written at all.
   3. READ PATH. There is no read path. This module can write a version and
      report metadata; it has no function that returns payload bytes, so no
      future route can accidentally expose one.
@@ -36,6 +45,10 @@ log = logging.getLogger(__name__)
 #: (a pasted file, a JSON blob) and is rejected rather than stored.
 MAX_KEY_BYTES = 8 * 1024
 MIN_KEY_BYTES = 8
+
+#: The one role a tenant's worker needs on its own secret. Nothing here ever
+#: grants a role on the PROJECT, and nothing here grants any other role.
+ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"
 
 
 @dataclass(frozen=True)
@@ -154,28 +167,7 @@ class SecretManagerCredentials:
         except gexc.GoogleAPICallError as exc:
             raise UpstreamUnavailable(f"could not create the tenant secret: {exc.message}") from None
 
-        # The secret's own IAM policy names exactly one accessor. Setting (not
-        # merging) the policy is deliberate: it also REVOKES any binding a
-        # previous misconfiguration left behind.
-        accessor = f"serviceAccount:{tenant.service_account}"
-        try:
-            client.set_iam_policy(
-                request={
-                    "resource": secret_name,
-                    "policy": {
-                        "bindings": [
-                            {
-                                "role": "roles/secretmanager.secretAccessor",
-                                "members": [accessor],
-                            }
-                        ]
-                    },
-                }
-            )
-        except gexc.GoogleAPICallError as exc:
-            raise UpstreamUnavailable(
-                f"could not bind the tenant secret to its service account: {exc.message}"
-            ) from None
+        self._grant_accessor(client, secret_name, tenant, gexc)
 
         try:
             version = client.add_secret_version(
@@ -190,7 +182,7 @@ class SecretManagerCredentials:
             # Drop the plaintext reference as early as possible.
             key = ""
 
-        version_name = getattr(version, "name", f"{secret_name}/versions/latest")
+        version_name = getattr(version, "name", None) or f"{secret_name}/versions/latest"
         log.info(
             "stored provider credential tenant=%s provider=%s version=%s",
             tenant.tenant_id,
@@ -205,6 +197,77 @@ class SecretManagerCredentials:
             accessor=tenant.service_account,
             created=created,
         )
+
+
+    def _grant_accessor(self, client: Any, secret_name: str, tenant: Tenant, gexc: Any) -> bool:
+        """Add the tenant's service account to the secret's accessor binding.
+
+        Returns True if the policy was written, False if the grant was already
+        there. Read-modify-write under the policy's own etag, retried once: a
+        concurrent rotation invalidates the etag and Secret Manager answers
+        ABORTED rather than clobbering, which is the behaviour we want and the
+        reason the etag is carried at all.
+        """
+        accessor = f"serviceAccount:{tenant.service_account}"
+        last_error: Any = None
+        for attempt in range(2):
+            try:
+                policy = client.get_iam_policy(request={"resource": secret_name})
+            except gexc.GoogleAPICallError as exc:
+                raise UpstreamUnavailable(
+                    f"could not read the tenant secret's IAM policy: {exc.message}"
+                ) from None
+
+            binding = _unconditional_binding(policy, ACCESSOR_ROLE)
+            if binding is not None and accessor in list(binding.members):
+                log.info(
+                    "tenant secret already bound to its accessor tenant=%s secret=%s",
+                    tenant.tenant_id,
+                    secret_name,
+                )
+                return False
+            if binding is None:
+                binding = policy.bindings.add()
+                binding.role = ACCESSOR_ROLE
+            binding.members.append(accessor)
+
+            try:
+                client.set_iam_policy(
+                    request={"resource": secret_name, "policy": policy}
+                )
+                return True
+            except gexc.Aborted as exc:          # etag no longer current
+                last_error = exc
+                log.info(
+                    "secret IAM policy changed under us, re-reading (attempt %d)",
+                    attempt + 1,
+                )
+            except gexc.GoogleAPICallError as exc:
+                raise UpstreamUnavailable(
+                    f"could not bind the tenant secret to its service account: "
+                    f"{exc.message}"
+                ) from None
+        raise UpstreamUnavailable(
+            "the tenant secret's IAM policy is being modified concurrently; "
+            f"retry the registration ({getattr(last_error, 'message', last_error)})"
+        )
+
+
+def _unconditional_binding(policy: Any, role: str) -> Any | None:
+    """The role's binding, ignoring conditional ones.
+
+    A conditional binding with the same role grants access only when its
+    expression holds, so adding a member to it would not actually grant the
+    worker anything. Those are left untouched.
+    """
+    for binding in policy.bindings:
+        if binding.role != role:
+            continue
+        condition = getattr(binding, "condition", None)
+        if condition is not None and getattr(condition, "expression", ""):
+            continue
+        return binding
+    return None
 
 
 class InMemoryCredentials:

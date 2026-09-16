@@ -170,21 +170,52 @@ class CloudIdentityGroups:
     def groups_for(self, member_email: str, candidate_groups: tuple[str, ...]) -> tuple[str, ...]:
         """Which of the admin-registered groups this caller belongs to.
 
-        A lookup failure for one group is logged and treated as "not a member"
-        rather than failing the request: the caller then falls back to their
-        personal tenant, which is the documented behaviour for a user in no
-        mapped group. Failing closed here would take the whole API down every
-        time Cloud Identity had a bad minute.
+        `candidate_groups` arrives in ADMIN PRIORITY ORDER, which is the order
+        `resolve_tenant` walks, so a failure only matters when it lands ABOVE the
+        first confirmed membership. That is the exact rule applied here:
+
+          * a failure at a lower priority than a confirmed match cannot change
+            the tenant, so it is logged and swallowed -- one flaky group must not
+            take down the API;
+          * a failure at a higher priority, or with no match at all, COULD change
+            the tenant, so it raises.
+
+        Failing open in that second case is not a cheap degradation: the tenant
+        decides which Secret Manager secret, which GCS prefix and which namespace
+        the caller's work runs under, so a caller silently demoted to their
+        personal tenant during a Cloud Identity blip submits work their group
+        cannot see afterwards and that may park as CREDENTIAL_MISSING or run
+        against a different key. A 503 the client retries is the cheaper failure.
         """
         found: list[str] = []
-        for group in candidate_groups:
+        first_match: int | None = None
+        first_failure: int | None = None
+        failures: list[str] = []
+        for index, group in enumerate(candidate_groups):
             try:
-                if self.is_member(member_email, group):
-                    found.append(group)
+                member = self.is_member(member_email, group)
             except GroupLookupError as exc:
                 log.warning("group membership check failed for group=%s: %s", group, exc)
+                failures.append(group)
+                first_failure = index if first_failure is None else first_failure
+                continue
             except Exception as exc:  # pragma: no cover - transport level
                 log.warning("group membership check errored for group=%s: %r", group, exc)
+                failures.append(group)
+                first_failure = index if first_failure is None else first_failure
+                continue
+            if member:
+                found.append(group)
+                first_match = index if first_match is None else first_match
+
+        if first_failure is not None and (first_match is None or first_failure < first_match):
+            raise GroupLookupError(
+                "cloud identity did not answer for "
+                + ", ".join(failures)
+                + "; a higher-priority group is unknown, so the caller's tenant "
+                "cannot be resolved without possibly filing their work under the "
+                "wrong one"
+            )
         return tuple(found)
 
 

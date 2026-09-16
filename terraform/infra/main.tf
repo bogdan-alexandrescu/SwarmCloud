@@ -71,10 +71,11 @@ module "artifact_registry" {
   immutable_tags = var.immutable_image_tags
 
   # Every identity that pulls an image. Workers pull their runner image; the
-  # control plane pulls its own.
-  readers = concat(
-    [for c in local.control_plane_services : "serviceAccount:${module.iam.service_account_emails[c]}"],
-    [for t, email in module.tenancy.worker_service_accounts : "serviceAccount:${email}"],
+  # control plane pulls its own. Keyed by component and tenant, because the
+  # emails themselves are not known until apply.
+  readers = merge(
+    { for c in local.control_plane_services : c => module.iam.service_account_members[c] },
+    { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" },
   )
 
   labels = local.labels
@@ -117,7 +118,7 @@ module "firestore" {
       kind            = cfg.kind
       principal       = cfg.principal
       display_name    = cfg.display_name
-      max_active      = cfg.max_active
+      max_active      = local.tenant_max_active[t]
       capacity_units  = cfg.capacity_units
       credentials     = cfg.providers
       service_account = module.tenancy.worker_service_accounts[t]
@@ -163,6 +164,12 @@ module "iam" {
   artifact_bucket    = module.storage.artifact_bucket_name
   custom_role_suffix = var.custom_role_suffix
 
+  # Named from configuration rather than read back from the cluster module: the
+  # cluster is behind a `count`, and the IAM condition must be known at plan
+  # time. The string is the same one gke_autopilot is given.
+  gke_cluster_name = "${var.name_prefix}-autopilot"
+  gke_location     = var.region
+
   labels = local.labels
 }
 
@@ -179,10 +186,10 @@ module "tenancy" {
   tenants = var.tenants
 
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
-  dispatcher_members = [
-    module.iam.service_account_members["swarm-scheduler"],
-    module.iam.service_account_members["swarm-reconciler"],
-  ]
+  dispatcher_members = {
+    scheduler  = module.iam.service_account_members["swarm-scheduler"]
+    reconciler = module.iam.service_account_members["swarm-reconciler"]
+  }
 
   labels = local.labels
 }
@@ -193,11 +200,17 @@ module "secret_manager" {
   project_id = var.project_id
   region     = var.region
 
+  # admin_members is per tenant, not one global list. A single list applied to
+  # every tenant means every one of those identities can REPLACE any other
+  # tenant's provider key with one pointing at a proxy they control -- which
+  # secretVersionAdder permits even though it cannot read the key in place.
+  # var.secret_admin_members is the fallback for tenants that name nobody, and
+  # it is validated to exclude any tenant's own principal.
   tenant_secrets = {
     for t, cfg in module.tenancy.secret_inputs : t => {
       providers     = cfg.providers
       accessor      = cfg.accessor
-      admin_members = var.secret_admin_members
+      admin_members = local.tenant_secret_admins[t]
     }
   }
 
@@ -226,7 +239,7 @@ module "cloud_run" {
       memory                = "1Gi"
       concurrency           = 80
       env                   = local.service_env["swarm-api"]
-      invokers              = var.api_invokers
+      invokers              = { for member in var.api_invokers : member => member }
     }
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
@@ -240,7 +253,7 @@ module "cloud_run" {
       concurrency     = 1
       request_timeout = "540s"
       env             = local.service_env["swarm-scheduler"]
-      invokers        = [module.iam.tick_member]
+      invokers        = { tick = module.iam.tick_member }
     }
     "swarm-quota-broker" = {
       service_account_email = module.iam.service_account_emails["swarm-quota-broker"]
@@ -250,11 +263,11 @@ module "cloud_run" {
       memory                = "512Mi"
       concurrency           = 40
       env                   = local.service_env["swarm-quota-broker"]
-      invokers = [
-        module.iam.tick_member,
-        module.iam.service_account_members["swarm-scheduler"],
-        module.iam.service_account_members["swarm-api"],
-      ]
+      invokers = {
+        tick      = module.iam.tick_member
+        scheduler = module.iam.service_account_members["swarm-scheduler"]
+        api       = module.iam.service_account_members["swarm-api"]
+      }
     }
     "swarm-reconciler" = {
       service_account_email = module.iam.service_account_emails["swarm-reconciler"]
@@ -265,7 +278,7 @@ module "cloud_run" {
       concurrency           = 1
       request_timeout       = "900s"
       env                   = local.service_env["swarm-reconciler"]
-      invokers              = [module.iam.tick_member]
+      invokers              = { tick = module.iam.tick_member }
     }
   }
 
@@ -282,6 +295,10 @@ module "cloud_run_jobs" {
 
   network    = module.network.network_self_link
   subnetwork = module.network.subnetwork_self_link
+
+  # Tagging the worker instances is what puts them in scope of the deny rule
+  # that stops one tenant's worker connecting to another's on the shared subnet.
+  network_tags = [module.network.worker_network_tag]
 
   resource_classes = local.resource_classes
   jobs             = local.jobs
@@ -309,16 +326,18 @@ module "scheduler" {
   scheduler_push_endpoint = module.cloud_run.service_urls["swarm-scheduler"]
   reconciler_endpoint     = module.cloud_run.service_urls["swarm-reconciler"]
   quota_broker_endpoint   = module.cloud_run.service_urls["swarm-quota-broker"]
+  enable_quota_refresh    = var.enable_quota_refresh
 
   tick_service_account = module.iam.tick_service_account
+  kms_key_name         = var.pubsub_kms_key_name
 
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
-  publisher_members = [
-    module.iam.service_account_members["swarm-api"],
-    module.iam.service_account_members["swarm-reconciler"],
-    module.iam.service_account_members["swarm-quota-broker"],
-  ]
+  publisher_members = {
+    api          = module.iam.service_account_members["swarm-api"]
+    reconciler   = module.iam.service_account_members["swarm-reconciler"]
+    quota_broker = module.iam.service_account_members["swarm-quota-broker"]
+  }
 
   labels = local.labels
 

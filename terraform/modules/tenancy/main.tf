@@ -23,12 +23,17 @@ locals {
 
   role_suffix = var.custom_role_suffix == "" ? "" : "_${var.custom_role_suffix}"
 
-  # (tenant, member) pairs for the actAs grant.
+  # (tenant, dispatcher) pairs for the actAs grant.
+  #
+  # Keyed by the dispatcher's LABEL, never by its member string: the member is a
+  # service account email that is unknown until apply, and a for_each whose keys
+  # are unknown cannot be planned -- the first plan on a fresh project fails
+  # outright. Keys stay static; only the value is unknown.
   act_as_grants = {
     for pair in flatten([
       for t in local.tenant_ids : [
-        for m in var.dispatcher_members : {
-          key    = "${t}:${m}"
+        for label, m in var.dispatcher_members : {
+          key    = "${t}:${label}"
           tenant = t
           member = m
         }
@@ -67,13 +72,67 @@ resource "google_service_account" "worker" {
   description  = "${local.owner_marker}; tenant ${each.key} (${each.value.principal}). No infrastructure-creation permissions."
 }
 
-# Control-plane state. Conditioned to the swarm database so a worker cannot read
-# another team's Firestore data in this shared project.
+# --------------------------------------------------------------------------
+# Control-plane state.
+#
+# Read this block together with its limits, because they are load-bearing.
+#
+# Firestore IAM has NO collection- or document-level granularity: the smallest
+# resource a binding or a condition can name is the database. Every swarm
+# identity therefore shares one authorization scope over the `swarm` database,
+# and a worker running attacker-controlled code -- which is the normal case, not
+# the exceptional one -- is inside that scope. The condition below keeps it out
+# of `(default)` and every other database in this shared project. It cannot keep
+# tenant A's worker out of tenant B's documents, and no condition can.
+#
+# What IS available at this layer is the shape of the access, so the role is
+# built rather than borrowed. roles/datastore.user grants entities.delete and
+# entities.list on top of what a worker needs. Removing them removes the two
+# capabilities that turn "can touch the shared database" into the worst version
+# of itself:
+#
+#   entities.delete -- a hostile worker could delete another tenant's tasks,
+#   leases and attempts, and the pool documents the whole platform admits
+#   against. Nothing in the worker path deletes a document: agent_worker.control
+#   and swarm_common.admission are get/set/update only.
+#
+#   entities.list -- queries. Without it, a document can only be fetched by an
+#   id already known, and task, attempt and lease ids are `<prefix>_<20 hex>`.
+#   So a hostile worker cannot ENUMERATE other tenants' work: no dumping every
+#   prompt, repo URL and artifact path in the database. The worker path runs no
+#   queries at all; every read is a document ref built from an id the dispatcher
+#   handed this attempt (agent_worker.control, agent_worker.secrets.load_tenant).
+#
+# The residual is real and is written down here rather than implied: a worker
+# still holds create/get/update across the database, so it can read a document
+# whose id it can guess (`pools/global`, `tenants/<id>`) and write one. Closing
+# that needs the worker off direct Firestore access entirely -- reaching state
+# through a control-plane service that scopes by caller identity -- or one
+# database per tenant, and neither is expressible in IAM.
+resource "google_project_iam_custom_role" "worker_firestore" {
+  project = var.project_id
+  role_id = "swarmTenantWorkerFirestore${local.role_suffix}"
+  title   = "Swarm Tenant Worker Firestore"
+
+  description = "Read and write control-plane documents by id. No deletes, no queries."
+  stage       = "GA"
+
+  permissions = [
+    # The client library resolves the named database before its first call.
+    "datastore.databases.get",
+    "resourcemanager.projects.get",
+    # Document get / set / update, which is the entire worker data path.
+    "datastore.entities.get",
+    "datastore.entities.create",
+    "datastore.entities.update",
+  ]
+}
+
 resource "google_project_iam_member" "worker_firestore" {
   for_each = var.tenants
 
   project = var.project_id
-  role    = "roles/datastore.user"
+  role    = google_project_iam_custom_role.worker_firestore.id
   member  = "serviceAccount:${google_service_account.worker[each.key].email}"
 
   dynamic "condition" {

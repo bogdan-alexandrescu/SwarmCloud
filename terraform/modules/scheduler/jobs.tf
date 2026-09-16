@@ -66,8 +66,12 @@ resource "google_cloud_scheduler_job" "reconciler" {
   }
 }
 
+# Gated by an explicit boolean, never by `endpoint == ""`. The endpoint is a
+# Cloud Run service URI, which is unknown until apply, and a `count` that
+# depends on an unknown value cannot be planned at all -- terraform refuses
+# rather than guessing how many instances to create.
 resource "google_cloud_scheduler_job" "quota_refresh" {
-  count = var.quota_broker_endpoint == "" ? 0 : 1
+  count = var.enable_quota_refresh ? 1 : 0
 
   project = var.project_id
   region  = var.region
