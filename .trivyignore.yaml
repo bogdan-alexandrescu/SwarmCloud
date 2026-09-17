@@ -1,0 +1,46 @@
+# Vulnerabilities accepted for a stated reason and a stated time.
+#
+# Everything here must have all four: an id, WHY it cannot simply be fixed, what
+# actually protects us meanwhile, and an expiry. An entry that has expired fails
+# the scan again, which is the point -- an ignore file with no expiry dates is
+# just a slower way of turning the gate off.
+#
+# Nothing in this file is a judgement that the CVE is harmless. It is a
+# judgement that we cannot fix it today and that we know what we are carrying.
+
+vulnerabilities:
+  # All three live inside the dependency trees of @anthropic-ai/claude-code and
+  # @openai/codex, which are installed as published npm packages. We do not
+  # resolve their transitive versions -- their own lockfiles do -- so there is
+  # no version of these CLIs we can pin that carries the fixed releases. The
+  # alternative would be forking the CLIs, which trades a denial-of-service risk
+  # for a supply-chain one.
+  #
+  # What bounds them: they are reachable only from inside an agent container,
+  # which is non-root with a read-only root filesystem, dropped capabilities, a
+  # per-attempt workspace that is destroyed afterwards, and a NetworkPolicy that
+  # denies egress to every other tenant. A DoS there fails one attempt, which
+  # the platform already treats as an ordinary outcome and retries; it does not
+  # reach another tenant or the control plane.
+  #
+  # Revisit by bumping CLAUDE_CODE_VERSION / CODEX_VERSION in
+  # images/agent-runtime-base/Dockerfile and re-running `make push`.
+  - id: CVE-2026-14257
+    statement: "brace-expansion DoS, transitive under the agent CLIs; no fixed release we can pin."
+    expired_at: 2026-12-17
+  - id: CVE-2026-69152
+    statement: "brace-expansion DoS bypassing the CVE-2026-14257 mitigation; same tree, same constraint."
+    expired_at: 2026-12-17
+  - id: CVE-2026-73566
+    statement: "node-tar DoS on crafted long-path archives, transitive under the agent CLIs."
+    expired_at: 2026-12-17
+
+  # SSRF through inconsistent IP parsing. Same tree and the same constraint, but
+  # noted separately because the failure mode is NOT a denial of service: a
+  # request that should have been refused as internal can be made. The container
+  # NetworkPolicy is what carries the weight here rather than the retry
+  # behaviour, so if that policy is ever relaxed this entry must be revisited
+  # before it expires, not after.
+  - id: CVE-2026-69192
+    statement: "ip-address SSRF, transitive under the agent CLIs; bounded by the egress NetworkPolicy."
+    expired_at: 2026-12-17

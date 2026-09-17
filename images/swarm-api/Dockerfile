@@ -44,6 +44,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_COMPILE_BYTECODE=1
 
 RUN apt-get update \
+ && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y build-essential ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -59,7 +60,12 @@ COPY apps/swarm-api/ /src/apps/swarm-api/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-api
 
-RUN python -m venv /opt/venv \
+# `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
+# and BUILD tooling is what those are. None of it is imported at runtime, and
+# all three were flagged by the promote scan (jaraco.context path traversal,
+# vendored inside setuptools; wheel privilege escalation). uv installs into the
+# venv from outside it, so nothing here needs a pip inside it.
+RUN python -m venv --without-pip /opt/venv \
  && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-api
 
 # ---------------------------------------------------------------------------
@@ -78,7 +84,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # ca-certificates for the Google APIs and the cluster endpoint; tini so that a
 # SIGTERM during a pass reaches the process rather than being swallowed by PID 1.
+# `apt-get upgrade` is not belt-and-braces here. The base image is pinned to a
+# digest, deliberately, so its packages stay at whatever the snapshot shipped
+# even as Debian publishes fixes for them -- a pinned base is a FROZEN set of
+# CVEs, not a safe one. `install` alone never touches a package that is already
+# present, which is how libpcre2-8-0 sat at 10.42-1 with a fixed 10.42-1+deb12u1
+# available and failed the promote scan on every image at once.
 RUN apt-get update \
+ && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 

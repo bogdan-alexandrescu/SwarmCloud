@@ -106,8 +106,16 @@ for target in "${TARGETS[@]}"; do
 
   if [[ "${SCAN}" -eq 1 ]]; then
     info "scanning ${target} (${SEVERITY})"
+    # --ignorefile carries the accepted-with-an-expiry list. Entries there are
+    # dated, so one that outlives its date fails this scan again rather than
+    # quietly becoming permanent.
+    IGNORE_ARGS=()
+    if [[ -f "${REPO_ROOT}/.trivyignore.yaml" ]]; then
+      IGNORE_ARGS=(--ignorefile "${REPO_ROOT}/.trivyignore.yaml")
+    fi
     if ! "${TRIVY_BIN}" image --quiet --scanners vuln \
          --severity "${SEVERITY}" --exit-code 1 --ignore-unfixed \
+         "${IGNORE_ARGS[@]}" \
          "${image}@${digest}" 2>&1 | redact; then
       err "${target}: trivy found unfixed-excluded ${SEVERITY} vulnerabilities; refusing to promote"
       FAILED+=("${target}")

@@ -47,6 +47,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_COMPILE_BYTECODE=1
 
 RUN apt-get update \
+ && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y \
       build-essential \
       ca-certificates \
@@ -66,6 +67,11 @@ COPY apps/agent-worker/ /src/apps/agent-worker/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
 
+# Floors, not pins: both ship inside the stdlib venv at versions Debian's
+# snapshot froze, and both had fixed HIGH advisories against those versions
+# (CVE-2026-23949, CVE-2026-24049).
+ARG SETUPTOOLS_VERSION=80.9.0
+ARG WHEEL_VERSION=0.46.2
 ARG PYTEST_VERSION=8.4.2
 
 # `pytest` is installed into the SAME venv as the worker because the `pytest`
@@ -75,7 +81,17 @@ ARG PYTEST_VERSION=8.4.2
 # documented use case gets `No module named pytest` and a hard RunnerFailure.
 # Pinned for the same reason as every other version here: a rebuild in six
 # months must produce the same toolchain.
+# pip STAYS here, unlike the control-plane images: an agent working in this
+# container reasonably reaches for `pip install`, and taking it away would turn
+# a normal step into a confusing failure inside somebody's task.
+#
+# setuptools and wheel are upgraded rather than removed for the same reason --
+# both were flagged by the promote scan (jaraco.context path traversal vendored
+# in setuptools, arbitrary code execution in wheel), and both are reachable here
+# precisely BECAUSE an agent may build a package.
 RUN python -m venv /opt/venv \
+ && uv pip install --python /opt/venv/bin/python \
+      "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}" \
  && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-agent-worker \
  && uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
 
@@ -105,7 +121,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # The agent's toolbox. `fd-find` installs the binary as `fdfind` on Debian, so
 # it gets the name every agent and every README expects.
+# `apt-get upgrade` is not belt-and-braces here. The base image is pinned to a
+# digest, deliberately, so its packages stay at whatever the snapshot shipped
+# even as Debian publishes fixes for them -- a pinned base is a FROZEN set of
+# CVEs, not a safe one. `install` alone never touches a package that is already
+# present, which is how libpcre2-8-0 sat at 10.42-1 with a fixed 10.42-1+deb12u1
+# available and failed the promote scan on every image at once.
 RUN apt-get update \
+ && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y \
       bash \
       build-essential \
