@@ -199,10 +199,16 @@ case "${SUBSCRIPTION}:${PROVIDER}:${PREFIX}" in
 esac
 
 step "Secret ${SECRET_NAME}"
-if gcloud secrets describe "${SECRET_NAME}" --project "${PROJECT_ID}" \
-     --format='value(name)' >/dev/null 2>&1; then
+# The credential is already in a file on disk at this point, so a failure here
+# that reads as anything other than "log in again" costs the operator the whole
+# minting step as well. One expired session produced exactly that: the command
+# died partway, stored nothing, and said nothing that pointed at the session.
+SECRET_ERR=""
+if SECRET_ERR="$(gcloud secrets describe "${SECRET_NAME}" --project "${PROJECT_ID}" \
+     --format='value(name)' 2>&1 >/dev/null)"; then
   ok "secret exists; adding a new version"
 else
+  die_if_auth_failure "${SECRET_ERR}"
   info "creating secret"
   gcloud secrets create "${SECRET_NAME}" \
     --project "${PROJECT_ID}" \

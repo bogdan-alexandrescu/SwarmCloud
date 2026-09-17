@@ -53,19 +53,30 @@ if git_dirty; then
 fi
 
 step "Artifact Registry"
-if gcloud artifacts repositories describe "${ARTIFACT_REGISTRY}" \
-     --project "${PROJECT_ID}" --location "${REGION}" --format='value(name)' >/dev/null 2>&1; then
+# stderr captured rather than discarded: the failure that matters most here is
+# an expired session, and discarding it turned that into "the repository does
+# not exist. Run 'make infra' first" -- advice that cannot work, for a
+# repository that was there all along.
+REPO_ERR=""
+if REPO_ERR="$(gcloud artifacts repositories describe "${ARTIFACT_REGISTRY}" \
+     --project "${PROJECT_ID}" --location "${REGION}" --format='value(name)' 2>&1 >/dev/null)"; then
   ok "repository ${IMAGE_REPO}"
-elif [[ "${CREATE_REPO}" -eq 1 ]]; then
-  info "creating Artifact Registry repository ${ARTIFACT_REGISTRY}"
-  gcloud artifacts repositories create "${ARTIFACT_REGISTRY}" \
-    --project "${PROJECT_ID}" --location "${REGION}" \
-    --repository-format=docker \
-    --description="Agent swarm images" \
-    --labels="managed-by=swarm-bootstrap,component=images"
-  ok "created ${IMAGE_REPO}"
 else
-  die "Artifact Registry repository ${ARTIFACT_REGISTRY} does not exist in ${REGION}. Run 'make infra' first, or re-run with --create-repo."
+  # Exits here if the session is dead, so nothing below can misreport it.
+  die_if_auth_failure "${REPO_ERR}"
+  if [[ "${CREATE_REPO}" -eq 1 ]]; then
+    info "creating Artifact Registry repository ${ARTIFACT_REGISTRY}"
+    gcloud artifacts repositories create "${ARTIFACT_REGISTRY}" \
+      --project "${PROJECT_ID}" --location "${REGION}" \
+      --repository-format=docker \
+      --description="Agent swarm images" \
+      --labels="managed-by=swarm-bootstrap,component=images"
+    ok "created ${IMAGE_REPO}"
+  else
+    err "Artifact Registry repository ${ARTIFACT_REGISTRY} does not exist in ${REGION}."
+    [[ -z "${REPO_ERR}" ]] || printf '%s\n' "${REPO_ERR}" | head -n 2 | sed 's/^/     /' >&2
+    die "run 'make infra' first, or re-run with --create-repo."
+  fi
 fi
 
 # Find the build recipe for a target. Track B owns images/ and the service

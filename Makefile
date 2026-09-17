@@ -149,6 +149,7 @@ race-test: ## The last free slot goes to exactly one task
 test: ## Unit tests, terraform tests and the guard self-tests (no cloud resources needed)
 	@$(SCRIPTS)/destroy.sh --self-test
 	@$(SCRIPTS)/lib/plan-guard.sh --self-test
+	@$(SCRIPTS)/lib/auth-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
 	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
 	  uv run --project . pytest tests/unit -q; \

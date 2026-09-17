@@ -91,6 +91,10 @@ for target in "${TARGETS[@]}"; do
   rm -f "${TMPDIR:-/tmp}/push-digest.$$"
   digest="$(printf '%s' "${digest}" | head -n1)"
   if [[ -z "${digest}" ]]; then
+    # An expired session reaches here too, and "build it first" is the worst
+    # possible advice for it -- the rebuild fails the same way, at a different
+    # message.
+    die_if_auth_failure "${describe_err}"
     if [[ -n "${describe_err}" ]]; then
       # Say what actually went wrong. A permission problem and a missing image
       # need opposite responses, and only one of them is fixed by rebuilding.

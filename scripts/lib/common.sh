@@ -47,6 +47,50 @@ die()  { err "$*"; exit 1; }
 hr() { printf '%s\n' "------------------------------------------------------------" >&2; }
 
 # ---------------------------------------------------------------------------
+# Telling an expired session apart from a missing resource
+# ---------------------------------------------------------------------------
+#
+# A Workspace session policy expires the operator's gcloud credential on a
+# timer. When it does, `gcloud auth print-access-token` still SUCCEEDS -- it
+# returns a ya29. token with the right scopes -- and every API call then fails
+# with UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED. So checking that a token
+# exists proves nothing; only a real call does.
+#
+# The cost of not distinguishing this was measured, not imagined. One expiry
+# produced, in the same minute:
+#
+#   build-images.sh   "Artifact Registry repository swarm-images does not exist
+#                      in us-central1. Run 'make infra' first"   (it existed)
+#   push-images.sh    "not found in Artifact Registry -- build it first"
+#                                                            (they were built)
+#   create-secrets.sh died partway, storing nothing, saying nothing useful
+#
+# Each message sends someone at a different wrong problem, and `make infra`
+# would have failed too, with a fourth unrelated message. Callers capture
+# stderr and pass it here instead of guessing from an exit code.
+
+gcloud_auth_failure() {
+  case "$1" in
+    *ACCESS_TOKEN_TYPE_UNSUPPORTED*|*UNAUTHENTICATED*) return 0 ;;
+    *"invalid authentication credentials"*)            return 0 ;;
+    *"Reauthentication required"*|*"reauth"*)          return 0 ;;
+    *"credentials were not found"*)                    return 0 ;;
+    *"Your current active account"*)                   return 0 ;;
+  esac
+  return 1
+}
+
+# Exit with the real diagnosis if the captured stderr is an auth failure;
+# otherwise return so the caller can report its own, accurate, error.
+die_if_auth_failure() {
+  gcloud_auth_failure "$1" || return 0
+  err "the gcloud session is not usable -- this is authentication, not a missing resource"
+  printf '%s\n' "$1" | head -n 2 | sed 's/^/     /' >&2
+  dim "a token still exists and still has the right scopes; the session behind it has expired"
+  die "run: gcloud auth login && gcloud auth application-default login"
+}
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
