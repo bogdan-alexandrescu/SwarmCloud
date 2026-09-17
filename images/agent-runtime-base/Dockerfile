@@ -100,6 +100,10 @@ RUN python -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS runtime
 
+# Re-declared: an ARG is scoped to the stage that declares it, so the builder's
+# copies above are not visible here.
+ARG SETUPTOOLS_VERSION=80.9.0
+ARG WHEEL_VERSION=0.46.2
 ARG INSTALL_AGENT_CLIS=1
 # Pinned on 2026-09-15; CI bumps these deliberately rather than by rebuilding.
 ARG CLAUDE_CODE_VERSION=2.1.273
@@ -156,6 +160,17 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
+
+# The base image carries its OWN setuptools and wheel in /usr/local/lib, which
+# is a different install from the one in /opt/venv -- upgrading the venv's copy
+# left these untouched, and the promote scan kept flagging jaraco.context (path
+# traversal, vendored inside setuptools) and wheel (arbitrary code execution).
+#
+# Upgraded here rather than removed, unlike the control-plane images. An agent
+# working in this container may legitimately build a package, and the reason
+# these are reachable at all is the reason they must stay.
+RUN /usr/local/bin/python3 -m pip install --no-cache-dir --upgrade \
+      "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}"
 COPY --from=builder /opt/venv /opt/venv
 
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both

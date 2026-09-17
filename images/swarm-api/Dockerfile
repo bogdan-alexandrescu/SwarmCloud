@@ -95,6 +95,21 @@ RUN apt-get update \
  && apt-get install --no-install-recommends -y ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
+# The python:3.11-slim base carries its own setuptools and wheel in
+# /usr/local/lib, entirely separate from /opt/venv -- which is why building the
+# venv --without-pip did not remove them, and why the promote scan still flagged
+# jaraco.context (path traversal, vendored in setuptools) and wheel (arbitrary
+# code execution) after that change.
+#
+# A control-plane service imports neither. They are build tooling that the base
+# image happens to ship, so they are removed rather than upgraded: an upgrade
+# only moves the next advisory further out, while nothing here will ever miss
+# them. pip goes last, because it is what performs its own removal.
+RUN /usr/local/bin/python3 -m pip uninstall --yes setuptools wheel \
+ && /usr/local/bin/python3 -m pip uninstall --yes pip \
+ && ! /usr/local/bin/python3 -c "import setuptools" 2>/dev/null \
+ && ! /usr/local/bin/python3 -c "import pip" 2>/dev/null
+
 COPY --from=builder /opt/venv /opt/venv
 
 # ABSOLUTE PATHS ON PURPOSE: the runtime PATH above omits /usr/sbin so the
