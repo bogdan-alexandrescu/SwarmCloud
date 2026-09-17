@@ -41,15 +41,22 @@ data:
     set -uo pipefail
 
     RUNTIME="${BENCH_RUNTIME:-unknown}"
+    # Integer nanoseconds and shell arithmetic, NOT `bc`. The first run of this
+    # benchmark reported 0.00 seconds for every phase because bc is not in the
+    # image: the substitution produced an empty string and printf %7.2f turned
+    # that into a plausible-looking zero. A missing tool that yields a WRONG
+    # NUMBER rather than an error is worse than one that crashes, and a
+    # benchmark that silently reports zeros is worse than no benchmark.
     phase() {
       local name="$1"; shift
-      local start end rc
-      start=$(date +%s.%N)
+      local start end rc ms
+      start=$(date +%s%N)
       "$@" >/tmp/phase.log 2>&1
       rc=$?
-      end=$(date +%s.%N)
-      printf 'BENCH runtime=%s phase=%-16s seconds=%7.2f rc=%d\n' \
-        "$RUNTIME" "$name" "$(echo "$end - $start" | bc)" "$rc"
+      end=$(date +%s%N)
+      ms=$(( (end - start) / 1000000 ))
+      printf 'BENCH runtime=%s phase=%-16s ms=%7d rc=%d\n' \
+        "$RUNTIME" "$name" "$ms" "$rc"
       if [ "$rc" -ne 0 ]; then
         printf 'BENCH runtime=%s phase=%s FAILED, last 5 lines:\n' "$RUNTIME" "$name"
         tail -5 /tmp/phase.log | sed 's/^/    /'
