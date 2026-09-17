@@ -148,6 +148,37 @@ for profile in ${PROFILES}; do
       --generation 1
 done
 
+# The v2 shape too. It is not yet the substrate in service, and a template that
+# nothing renders is a template that is broken the day it IS wanted -- which is
+# the day someone is trying to dispatch a real agent and has no appetite for a
+# YAML bug. Rendered at `baseline` because a root pod is refused at
+# `restricted`, which is the check itself, not a workaround for it.
+for profile in ${PROFILES}; do
+  check "worker job v2/gvisor (${profile})" \
+    python3 "${RENDER}" job \
+      --tenant "${TENANT}" \
+      --profile "${profile}" \
+      --task "tsk_lint" \
+      --attempt "att_lint" \
+      --lease "lease_lint" \
+      --generation 1 \
+      --runtime gvisor \
+      --pss-enforce baseline \
+      --account "lint-account"
+done
+
+# And the refusal itself, because it is a safety property rather than a
+# convenience: rendering a root pod for a `restricted` namespace must FAIL.
+# Without this, the guard could be deleted and every other check would pass.
+if python3 "${RENDER}" job --tenant "${TENANT}" --profile mock \
+     --task tsk_lint --attempt att_lint --lease lease_lint --generation 1 \
+     --runtime gvisor >/dev/null 2>&1; then
+  err "a gvisor job rendered at pss-enforce=restricted; that pod would be refused by the API server"
+  FAILED=$((FAILED + 1))
+else
+  ok "a root pod is refused for a restricted namespace"
+fi
+
 if [[ "${FAILED}" -ne 0 ]]; then
   die "kubernetes manifest validation failed"
 fi

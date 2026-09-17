@@ -116,6 +116,11 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "MAX_IN_WORKER_RETRY_DELAY_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "FIRESTORE_DATABASE": re.compile(r"^[A-Za-z0-9._-]{1,64}$"),
     "ARTIFACT_BUCKET": re.compile(r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$"),
+    # Which subscription account the broker assigned (BUILD_PROMPT_V2 §2.6).
+    # A label, not an id: "which account is this agent burning?" is the first
+    # question asked when one is exhausted and the others are not, and an
+    # opaque id does not answer it.
+    "ACCOUNT_LABEL": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
 }
 
 
@@ -159,6 +164,17 @@ POLICY_FILES = ("policies/pod-security.yaml",)
 JOB_FILES = {
     "browser": "worker-templates/worker-job-browser.yaml",
     "default": "worker-templates/worker-job.yaml",
+}
+
+#: v2: root inside a gVisor sandbox. Selected by `--runtime gvisor`, and NOT the
+#: default while the Cloud Run Jobs path is still the one in service.
+#:
+#: There is no per-profile variant here on purpose. The browser profile's own
+#: template exists because Chromium needs a large /dev/shm; under gVisor that
+#: profile needs measuring before it gets a sandboxed template of its own,
+#: rather than a copy made on the assumption it still works.
+JOB_FILES_GVISOR = {
+    "default": "worker-templates/worker-job-v2.yaml",
 }
 
 
@@ -260,9 +276,30 @@ def render_job(args: argparse.Namespace) -> str:
             "MAX_IN_WORKER_RETRY_DELAY_SECONDS": str(args.max_in_worker_retry_delay_seconds),
             "FIRESTORE_DATABASE": args.firestore_database,
             "ARTIFACT_BUCKET": args.bucket or f"{args.project}-swarm-artifacts",
+            "ACCOUNT_LABEL": getattr(args, "account", "") or "unassigned",
         }
     )
-    template = JOB_FILES.get(profile.name, JOB_FILES["default"])
+    if getattr(args, "runtime", "default") == "gvisor":
+        # Pod Security Admission REFUSES this pod at `restricted`, which is the
+        # level every existing namespace runs at: restricted forbids running as
+        # root, and root is the whole point of the v2 shape. A sandboxed agent
+        # namespace has to be `baseline`, which still forbids privileged
+        # containers, host namespaces and hostPath, and gVisor is what stands in
+        # for the part `restricted` was doing.
+        #
+        # Refused here rather than discovered at dispatch: the API server's
+        # rejection names a securityContext field, not the namespace label that
+        # caused it, and that sends people to edit the pod spec.
+        if getattr(args, "pss_enforce", "restricted") == "restricted":
+            raise RenderError(
+                "a gvisor job runs as root and Pod Security Admission refuses "
+                "that at `restricted`; render its namespace with "
+                "--pss-enforce baseline, and see BUILD_PROMPT_V2 §2.2 for why "
+                "the sandbox is what replaces the part restricted was doing"
+            )
+        template = JOB_FILES_GVISOR["default"]
+    else:
+        template = JOB_FILES.get(profile.name, JOB_FILES["default"])
     return substitute((HERE / template).read_text(), values)
 
 
@@ -342,6 +379,26 @@ def main(argv: list[str] | None = None) -> int:
     job.add_argument("--firestore-database", default="swarm")
     job.add_argument("--timeout", type=int, default=0)
     job.add_argument("--max-in-worker-retry-delay-seconds", type=int, default=45)
+    job.add_argument(
+        "--runtime",
+        default="default",
+        choices=("default", "gvisor"),
+        help=(
+            "`gvisor` renders the v2 shape: root inside a GKE Sandbox pod "
+            "(BUILD_PROMPT_V2 §2.2). Not the default while Cloud Run Jobs is "
+            "still the substrate in service."
+        ),
+    )
+    job.add_argument(
+        "--account",
+        default="",
+        help=(
+            "the subscription account label the broker assigned. Recorded on "
+            "the pod so `kubectl describe` can answer which account an agent is "
+            "burning without a Firestore lookup."
+        ),
+    )
+
 
     args = parser.parse_args(argv)
 

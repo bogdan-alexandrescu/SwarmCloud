@@ -1,0 +1,264 @@
+# The v2 agent Job: root inside a gVisor sandbox.
+#
+# This sits BESIDE worker-job.yaml rather than replacing it, and the pair is
+# worth reading together. v1's template argues at length for non-root, a
+# read-only root filesystem and dropped capabilities. That reasoning was correct
+# for v1 and is deliberately preserved: v2 does not overturn it, it moves the
+# boundary it depended on.
+#
+# WHY ROOT (BUILD_PROMPT_V2 §2.2)
+# An agent that cannot install the tool it needs fails at the first
+# unanticipated task, and "install what you need" is a stated requirement. apt
+# needs root; a writable root filesystem is what apt writes to.
+#
+# WHY THAT IS NOT A REGRESSION
+# Root removes the in-CONTAINER defence. `runtimeClassName: gvisor` replaces it
+# with a boundary a layer down: syscalls are served by gVisor's user-space
+# kernel, not the host's, so an escape must break gVisor before it reaches a
+# node shared with another tenant. Without the sandbox this file would be a
+# straightforward downgrade; with it, the defence moved rather than left.
+#
+# WHAT THE SANDBOX COSTS, so nobody rediscovers it as a mystery:
+#   * syscall-heavy work is slower. Measure with
+#     kubernetes/benchmarks/gvisor-overhead.yaml rather than trusting a number.
+#   * no GPU. A GPU profile needs its own unsandboxed pool and its own trust
+#     decision.
+#   * no Docker-in-pod. Agents that must build an image submit to Cloud Build,
+#     which is what this repository already does for its own images.
+#
+# UNCHANGED FROM v1, AND STILL LOAD-BEARING
+#   `command` is ABSENT. The image ENTRYPOINT starts the WORKER, which validates
+#   its fencing generation, restores the checkpoint and only then starts the
+#   runner as a supervised child. Setting `command` would start the runner
+#   directly -- no fencing, no checkpointing, no heartbeat, no lease release.
+#
+#   `backoffLimit: 0`. A retry is a new attempt with a new generation, minted
+#   inside the admission transaction. A Kubernetes retry would re-run under the
+#   OLD generation against a lease that may already have been reissued: two
+#   agents, one task.
+#
+#   `requests == limits`, including ephemeral-storage. Bursting is what gets a
+#   two-hour agent OOM-killed at minute ninety.
+#
+#   `safe-to-evict: "false"`. Autopilot extended run time, honoured only on
+#   on-demand capacity -- the concrete reason Spot is banned platform-wide.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-scheduler
+    swarm-tenant: __TENANT_ID__
+    swarm-profile: __RUNNER_PROFILE__
+    swarm-task: __TASK_LABEL__
+    swarm-runtime: gvisor
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/component: agent-worker
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    swarm.saga.xyz/task-id: __TASK_ID__
+    swarm.saga.xyz/attempt-id: __ATTEMPT_ID__
+    swarm.saga.xyz/generation: "__GENERATION__"
+    # Which subscription account the broker assigned. Recorded here as well as
+    # on the lease so `kubectl describe` answers "which account is this agent
+    # burning?" without a Firestore lookup -- the first question asked when one
+    # account is exhausted and others are not.
+    swarm.saga.xyz/account: __ACCOUNT_LABEL__
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-scheduler
+        swarm-tenant: __TENANT_ID__
+        swarm-task: __TASK_LABEL__
+        swarm-runtime: gvisor
+        app.kubernetes.io/part-of: swarm
+        app.kubernetes.io/component: agent-worker
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      # THE LOAD-BEARING LINE IN THIS FILE. Without it, every securityContext
+      # below is a plain privilege grant on a shared node.
+      runtimeClassName: gvisor
+      restartPolicy: Never
+      serviceAccountName: __KSA_NAME__
+      # The worker never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      # Longer than the worker's own grace period, or the kubelet kills the pod
+      # while it is still uploading the checkpoint that makes an interruption
+      # cheap.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        # Root, and stated once here rather than implied by omission.
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Installs the credential for the account the broker assigned, so the
+        # agent is authenticated before its first request and never sees a login
+        # prompt -- a prompt in a non-interactive container is a hang, not a
+        # safety feature.
+        #
+        # An init container, not a step inside the worker: if the credential
+        # cannot be installed the pod must fail HERE, visibly, rather than start
+        # an agent that will fail its first API call for reasons that read as a
+        # model problem.
+        - name: install-credential
+          image: __IMAGE__
+          command: ["/usr/local/bin/swarm-install-credential"]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: TENANT_ID
+              value: __TENANT_ID__
+            - name: ACCOUNT_LABEL
+              value: __ACCOUNT_LABEL__
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: CLAUDE_CONFIG_DIR
+              value: /work/.claude
+          # Reads the credential from Secret Manager as the TENANT's own GSA
+          # through Workload Identity, exactly as v1's worker does. No
+          # secretKeyRef: that would name a Kubernetes Secret, which nothing in
+          # this repository creates, and would put the credential in the pod
+          # spec where anyone with read access to the namespace can see it.
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        - name: worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Root with a writable root filesystem -- the point of v2.
+            runAsUser: 0
+            readOnlyRootFilesystem: false
+            # Still refused, because nothing an agent legitimately does needs
+            # them and gVisor is not a reason to stop asking. Privilege
+            # escalation beyond root buys an attacker capabilities root does not
+            # already have; SYS_ADMIN and friends are what container escapes are
+            # written against.
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+              # apt, npm and git need none of these. If a tool genuinely does,
+              # add it HERE with a comment naming the tool -- never by moving to
+              # privileged.
+              add: []
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __DISK__
+            limits:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __DISK__
+          env:
+            # Identifiers only. The worker reads WHAT to run from the frozen
+            # catalogue keyed by RUNNER_PROFILE, so a doctored environment
+            # cannot change the image, the command or the resource spec.
+            - name: TASK_ID
+              value: __TASK_ID__
+            - name: ATTEMPT_ID
+              value: __ATTEMPT_ID__
+            - name: LEASE_ID
+              value: __LEASE_ID__
+            - name: GENERATION
+              value: "__GENERATION__"
+            - name: TENANT_ID
+              value: __TENANT_ID__
+            - name: RUNNER_PROFILE
+              value: __RUNNER_PROFILE__
+            - name: ACCOUNT_LABEL
+              value: __ACCOUNT_LABEL__
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: REGION
+              value: __REGION__
+            - name: FIRESTORE_DATABASE
+              value: __FIRESTORE_DATABASE__
+            - name: ARTIFACT_BUCKET
+              value: __ARTIFACT_BUCKET__
+            - name: WORKSPACE_ROOT
+              value: /workspace
+            # Points Claude Code at a directory this pod owns. Verified against
+            # the Claude Code 2.1.274 binary: on non-macOS the credential is a
+            # plaintext JSON file at <config dir>/.credentials.json, mode 0600,
+            # and CLAUDE_CONFIG_DIR relocates it. This is what gives the
+            # credential exactly one owner and lets it die with the pod.
+            - name: CLAUDE_CONFIG_DIR
+              value: /work/.claude
+            - name: HOME
+              value: /work
+            - name: CHECKPOINT_INTERVAL_SECONDS
+              value: "__CHECKPOINT_INTERVAL_SECONDS__"
+            - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
+              value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
+            - name: TASK_TIMEOUT_SECONDS
+              value: "__TIMEOUT_SECONDS__"
+            # NO PROVIDER KEY IS PROJECTED HERE, and root makes this stricter
+            # rather than looser. Every process in this container is uid 0, so
+            # anything in the worker's environment is readable at /proc/1/environ
+            # by the runner child and by anything the agent spawns. The worker
+            # puts the credential only into the environment of the single child
+            # that needs it.
+          # Liveness and readiness, which the four stall signals do not cover.
+          # A crashed process inside a running pod is a DIFFERENT failure from
+          # an agent that is alive and idle: the stall guard watches progress,
+          # these watch existence. Without them a dead worker holds its slot
+          # until a ceiling expires.
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/swarm-healthcheck", "--liveness"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            # Three consecutive failures, not one: a busy agent can miss a probe
+            # without being dead, and restarting a healthy agent costs an
+            # attempt.
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/swarm-healthcheck", "--readiness"]
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Ephemeral, per BUILD_PROMPT_V2 §2.3: no volume to provision, leak or
+        # pay for, and a restart resumes from the GCS checkpoint instead.
+        - name: workspace
+          emptyDir:
+            sizeLimit: __DISK__
+        # HOME and CLAUDE_CONFIG_DIR. Separate from the workspace so a
+        # checkpoint of the workspace never sweeps up the credential -- a
+        # checkpoint goes to the tenant's GCS prefix, and a credential does not
+        # belong there.
+        - name: work
+          emptyDir:
+            sizeLimit: 4Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
