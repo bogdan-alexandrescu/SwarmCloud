@@ -108,6 +108,11 @@ infra: ## Plan and apply infrastructure, then point kubectl at the swarm cluster
 	@$(MAKE) tf-apply
 	@$(SCRIPTS)/configure-kubectl.sh || echo "note: the GKE cluster is not reachable yet; the Cloud Run path does not need it"
 
+kubectl-guard: ## Print the export that puts the guarded kubectl ahead of the real one
+	@echo 'export PATH="$(CURDIR)/bin:$$PATH"'
+	@echo '# eval "$$(make kubectl-guard)" -- a bare kubectl then refuses any' >&2
+	@echo '# context that is not the swarm cluster, read-only commands included.' >&2
+
 kubectl: ## Write an isolated kubeconfig for the swarm cluster
 	@$(SCRIPTS)/configure-kubectl.sh
 
@@ -150,6 +155,7 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@$(SCRIPTS)/destroy.sh --self-test
 	@$(SCRIPTS)/lib/plan-guard.sh --self-test
 	@$(SCRIPTS)/lib/auth-guard.sh --self-test
+	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
 	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
 	  uv run --project . pytest tests/unit -q; \

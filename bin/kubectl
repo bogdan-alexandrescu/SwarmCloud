@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# A kubectl that cannot reach another team's cluster.
+#
+# `scripts/lib/common.sh` has had `assert_kube_context` since the beginning, and
+# its own comment records why: on this workstation the ACTIVE context was
+# gke_saga-agents-staging_us-central1-a_agents-staging -- another team's live
+# cluster -- with agents-prod sitting in the same kubeconfig.
+#
+# The guard worked. Using it was optional, and that is the defect. On
+# 2026-09-18 a bare `kubectl get runtimeclass` was run against a cluster eight
+# minutes old and returned resources aged 133 days; it had reached
+# agents-staging. That call was read-only. The next one in the sequence was
+# `kubectl apply` of two Jobs.
+#
+# So this wrapper goes on PATH ahead of the real binary and applies the check to
+# EVERY invocation, including read-only ones. CLAUDE.md does not say "do not
+# write to their cluster", it says do not "even point kubectl at" it, and a read
+# is still pointing.
+#
+#   eval "$(make kubectl-guard)"     # puts this ahead of kubectl on PATH
+#
+# Escape hatch, deliberately awkward to type and impossible to reach by accident:
+#   SWARM_KUBECTL_UNGUARDED=1 kubectl ...
+set -euo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR/../scripts/lib
+# shellcheck source=scripts/lib/common.sh
+source "${HERE}/../scripts/lib/common.sh"
+
+REAL="$(kubectl_bin)"
+
+if [[ "${SWARM_KUBECTL_UNGUARDED:-0}" == "1" ]]; then
+  warn "kubectl guard disabled by SWARM_KUBECTL_UNGUARDED"
+  exec "${REAL}" "$@"
+fi
+
+# Commands that touch no cluster at all. `config` is here so that fixing a bad
+# context does not require disabling the guard that objected to it -- a guard
+# you must switch off to repair the thing it flagged is a guard people switch
+# off and leave off.
+case "${1:-}" in
+  config|version|completion|help|--help|-h|"")
+    exec "${REAL}" "$@"
+    ;;
+esac
+
+# `--context` on the command line beats the kubeconfig's current-context, so the
+# check has to read what THIS invocation will actually use, not what the file
+# says by default.
+ctx=""
+prev=""
+for arg in "$@"; do
+  case "${prev}" in
+    --context) ctx="${arg}" ;;
+  esac
+  case "${arg}" in
+    --context=*) ctx="${arg#--context=}" ;;
+  esac
+  prev="${arg}"
+done
+[[ -n "${ctx}" ]] || ctx="$("${REAL}" config current-context 2>/dev/null || true)"
+
+if [[ -z "${ctx}" ]]; then
+  err "kubectl has no current context, so there is nothing to check."
+  die "run scripts/configure-kubectl.sh, which writes an isolated kubeconfig for the swarm cluster"
+fi
+
+# A context renamed to look like ours is still that cluster underneath, so the
+# trailing segment is checked against the shared deny-list before the name is
+# trusted at all.
+trailing="${ctx##*_}"
+if is_shared_resource "${trailing}"; then
+  err "REFUSED: context '${ctx}' resolves to '${trailing}', which is on the shared deny-list."
+  err "That is another team's cluster. This project shares saga-agents-staging with them."
+  die "run scripts/configure-kubectl.sh, or export KUBECONFIG=build/kubeconfig-${ENVIRONMENT}.yaml"
+fi
+
+if ! kube_context_allowed "${ctx}"; then
+  err "REFUSED: context '${ctx}' is not the swarm cluster."
+  err "Allowed: 'swarm-${ENVIRONMENT}' or 'gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}'."
+  err "Every cluster in the default kubeconfig belongs to someone else, including production."
+  die "run scripts/configure-kubectl.sh, or export KUBECONFIG=build/kubeconfig-${ENVIRONMENT}.yaml"
+fi
+
+exec "${REAL}" "$@"
