@@ -7,7 +7,8 @@ and reconciler code in-process against the same project, so a fix is seconds.
     uv run python scripts/dev/drive.py state       # dump tasks, leases, attempts
     uv run python scripts/dev/drive.py drain       # one scheduler drain pass
     uv run python scripts/dev/drive.py reconcile   # one reconciliation pass
-    uv run python scripts/dev/drive.py submit      # insert a mock task
+    uv run python scripts/dev/drive.py submit                  # a mock task
+    uv run python scripts/dev/drive.py submit claude-code "..."  # a real agent
     uv run python scripts/dev/drive.py clean       # delete tasks/leases/attempts
 
 It is a DEVELOPMENT tool: it writes to the real control plane, so it refuses to
@@ -103,6 +104,82 @@ def reconcile() -> None:
         print(f"  {k:26s} {v}")
 
 
+def submit() -> None:
+    """Submit a task the way the API would, from a machine the API cannot see.
+
+    The control plane's ingress is INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, and
+    terraform REFUSES to set it to ALL, so `POST /v1/tasks` from a laptop gets
+    Google's 404 rather than the API. Until there is an internal load balancer
+    in front of it, this is how an operator submits.
+
+    It goes through SubmissionService, NOT straight to Firestore. That matters:
+    the service is where the runner profile is looked up by name and where
+    everything a caller must not choose -- image, command, resource class,
+    backend -- is filled in from the frozen catalogue instead (CONTRACT.md
+    invariant 10). A raw document write would skip exactly the check that keeps
+    a caller from naming their own image, and would quietly make this tool a
+    hole in the thing it is used to test.
+
+        uv run python scripts/dev/drive.py submit
+        uv run python scripts/dev/drive.py submit claude-code "list the files"
+    """
+    from swarm_api.auth import AuthContext
+    from swarm_api.deps import build_context
+    from swarm_api.schemas import TaskCreate
+    from swarm_common.identity import Principal, resolve_tenant
+
+    profile = sys.argv[2] if len(sys.argv) > 2 else "mock"
+    prompt = sys.argv[3] if len(sys.argv) > 3 else ""
+
+    email = _caller_email()
+
+    # Built by hand because there is no ID token here -- the caller is the
+    # operator's own ADC, and the API's verifier would have nothing to verify.
+    #
+    # `groups=()` on purpose, and it is not a shortcut: reading group membership
+    # needs Cloud Identity, and resolve_tenant then maps an ungrouped caller to
+    # the personal fallback `u-<local part>`. That is EXACTLY what the deployed
+    # API does today, because the swarm-api service account has no group-read
+    # permission either (CONTRACT.md, verified operational constraint). So this
+    # resolves to the same tenant the real path would, rather than to a
+    # privileged one -- and it uses the frozen resolver to get there instead of
+    # rebuilding the rule and drifting from it.
+    principal = Principal(email=email, subject=email, domain=email.split("@")[-1], groups=())
+    tenant_id = resolve_tenant(principal, ())
+    ctx = AuthContext(
+        principal=principal,
+        tenant_id=tenant_id,
+        is_admin=False,
+        tenant_principal=email,
+    )
+
+    payload: dict = {}
+    if prompt:
+        payload["prompt"] = prompt
+
+    app = build_context(db=DB)
+    result = app.submissions.submit_tasks(ctx, [TaskCreate(runner_profile=profile, input=payload)])
+    for task in result.tasks:
+        print(f"  {task.id}  {task.state}  tenant={task.tenant_id}  profile={task.runner_profile}")
+    print(f"  woke scheduler: {result.woke_scheduler}")
+
+
+def _caller_email() -> str:
+    """Whoever gcloud is currently authenticated as."""
+    import subprocess
+
+    out = subprocess.run(
+        ["gcloud", "config", "get-value", "account"],
+        capture_output=True, text=True, check=False,
+    )
+    email = out.stdout.strip()
+    if not email or "@" not in email:
+        raise SystemExit(
+            "could not determine the calling account; run: gcloud auth login"
+        )
+    return email
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "state"
     if cmd == "state":
@@ -113,6 +190,8 @@ def main() -> None:
         drain()
     elif cmd == "reconcile":
         reconcile()
+    elif cmd == "submit":
+        submit()
     else:
         raise SystemExit(f"unknown command {cmd!r}")
 
