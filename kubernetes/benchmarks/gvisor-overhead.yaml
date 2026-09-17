@@ -1,0 +1,185 @@
+# Measure what gVisor actually costs us, rather than quoting a documented range.
+#
+# BUILD_PROMPT_V2 §2.2 chose root-in-pod with gVisor underneath, and put the
+# overhead at "~10-15%". That figure is from Google's documentation, not from
+# this workload, and the decision it supports is not reversible cheaply. The
+# work agents actually do here is syscall-heavy in exactly the way gVisor taxes:
+# git checkouts of large trees, npm and uv resolving thousands of files,
+# terraform unpacking providers, pytest importing a few hundred modules.
+#
+# Two identical Jobs. The only difference is `runtimeClassName`. Anything else
+# that differs between them makes the comparison worthless, so keep them in one
+# file where a divergence is visible in a diff.
+#
+#   kubectl apply -f kubernetes/benchmarks/gvisor-overhead.yaml
+#   kubectl logs -n __NAMESPACE__ -l bench=gvisor-overhead --tail=-1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gvisor-bench-script
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-benchmark
+    bench: gvisor-overhead
+data:
+  bench.sh: |
+    #!/usr/bin/env bash
+    # Report a duration per phase, machine-readable, one line each.
+    #
+    # `set -e` is deliberately ABSENT. A phase that fails on one runtime and not
+    # the other is itself a finding -- gVisor not supporting a syscall some tool
+    # needs is more important than how fast the rest ran -- so every phase runs
+    # and reports, and a failure is recorded rather than aborting the run.
+    set -uo pipefail
+
+    RUNTIME="${BENCH_RUNTIME:-unknown}"
+    phase() {
+      local name="$1"; shift
+      local start end rc
+      start=$(date +%s.%N)
+      "$@" >/tmp/phase.log 2>&1
+      rc=$?
+      end=$(date +%s.%N)
+      printf 'BENCH runtime=%s phase=%-16s seconds=%7.2f rc=%d\n' \
+        "$RUNTIME" "$name" "$(echo "$end - $start" | bc)" "$rc"
+      if [ "$rc" -ne 0 ]; then
+        printf 'BENCH runtime=%s phase=%s FAILED, last 5 lines:\n' "$RUNTIME" "$name"
+        tail -5 /tmp/phase.log | sed 's/^/    /'
+      fi
+    }
+
+    printf 'BENCH runtime=%s kernel=%s\n' "$RUNTIME" "$(uname -r)"
+    # gVisor reports a distinctive kernel string, so this line alone confirms
+    # the sandbox is actually in effect rather than silently ignored.
+
+    cd /work
+
+    phase git_clone      git clone --depth 50 https://github.com/kubernetes/kubectl.git repo
+    phase file_walk      bash -c 'find / -xdev -type f 2>/dev/null | wc -l'
+    phase npm_install    bash -c 'mkdir -p n && cd n && npm init -y >/dev/null && npm install --no-audit --no-fund typescript eslint prettier'
+    phase python_venv    bash -c 'uv venv .venv && uv pip install --python .venv/bin/python fastapi pydantic google-cloud-firestore'
+    phase pytest_import  bash -c 'cd repo && python3 -c "import sys, importlib, pkgutil; [None for _ in range(1)]"'
+    phase tar_roundtrip  bash -c 'tar czf repo.tgz repo && tar xzf repo.tgz -C /tmp'
+    phase small_writes   bash -c 'for i in $(seq 1 2000); do echo x > /work/f$i; done; rm -f /work/f*'
+
+    printf 'BENCH runtime=%s DONE\n' "$RUNTIME"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-bench-sandboxed
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-benchmark
+    bench: gvisor-overhead
+    bench-runtime: gvisor
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-benchmark
+        bench: gvisor-overhead
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      # THE ONE DIFFERENCE between this Job and the next.
+      runtimeClassName: gvisor
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: bench
+          image: __IMAGE__
+          command: ["bash", "/bench/bench.sh"]
+          env:
+            - name: BENCH_RUNTIME
+              value: gvisor
+            - name: HOME
+              value: /work
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: bench
+              mountPath: /bench
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 8Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: bench
+          configMap:
+            name: gvisor-bench-script
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-bench-standard
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-benchmark
+    bench: gvisor-overhead
+    bench-runtime: standard
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-benchmark
+        bench: gvisor-overhead
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      # No runtimeClassName. This is the control.
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: bench
+          image: __IMAGE__
+          command: ["bash", "/bench/bench.sh"]
+          env:
+            - name: BENCH_RUNTIME
+              value: standard
+            - name: HOME
+              value: /work
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: bench
+              mountPath: /bench
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 8Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: bench
+          configMap:
+            name: gvisor-bench-script

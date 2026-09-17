@@ -30,7 +30,12 @@
 # Digest resolved from the registry on 2026-09-15; the same base the worker
 # image pins, so both move together.
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a
+# 0.12.15, not 0.11.7: the older uv statically links quinn-proto 0.11.14
+# and rustls-webpki 0.103.10, both with fixed HIGH advisories
+# (GHSA-4w2j-m93h-cj5j, GHSA-82j2-j2ch-gfr8) that failed the promote scan
+# on /usr/local/bin/uv and /usr/local/bin/uvx. Nothing else in the image
+# carries a Rust binary, which is why these two were the last to appear.
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
 
 FROM ${UV_IMAGE} AS uvbin
 
