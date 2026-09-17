@@ -131,178 +131,155 @@ goes to the cluster; anything needing your filesystem, your keychain or
 interactivity stays local. Placement is never a surprise, and "why did that run
 locally?" is never a debugging question.
 
-### 2.6 Accounts: a managed pool, onboarded one at a time
+### 2.6 Accounts: claudeswitch is the mechanism, the broker is the policy
 
-v1 gave each tenant one credential per provider. v2 replaces that with a **pool
-of Claude subscription accounts** that the platform owns end to end. Four
-distinct problems live here and each needs its own answer:
+**Do not rebuild this.** `claudeswitch` already solves the per-machine half of
+this problem, in production, with five accounts and an audit trail of real
+rotations. v2 reuses it rather than reimplementing it badly.
+
+The split is the same one claudeswitch already draws internally:
+
+| | |
+|---|---|
+| **claudeswitch, in the pod** | the *mechanism* — install a credential, refresh it, merge it correctly, verify it took |
+| **the quota broker, fleet-wide** | the *policy* — which account this pod gets, when to move it, who else is on it |
+
+What claudeswitch already provides, verified by reading the source at
+`~/claudespace/claudeswitch`:
+
+* `add`, `login`, `use`, `accounts`, `remove`, `rename`, `refresh`, `status`,
+  `audit`, `history`, `why` — a complete non-interactive CLI surface.
+* **A Linux credential store** (`internal/credstore/store_linux.go`) that already
+  knows the live credential is `~/.claude/.credentials.json`, written atomically
+  at 0600 inside a 0700 directory and verified by reading it back.
+* A vault of stored accounts kept deliberately *beside* the live credential,
+  "so that a stray claudeswitch file can never be mistaken for the credential
+  Claude Code reads".
+* A poller, a policy engine with hysteresis and cooldowns, and an audit log.
+* Go, so it cross-compiles into the agent image with no runtime to install.
+
+**What the pod must NOT run is claudeswitch's daemon.** Its policy is written for
+one machine choosing among its own accounts. N pods each rotating autonomously
+would collide — two pods jumping to the same account at once would burn it
+together, and independent refreshes across pods reintroduce exactly the rotating
+refresh-token hazard v1 spent effort eliminating. The broker owns policy; the pod
+runs the mechanism.
 
 #### 2.6.1 Onboarding — one account, one command
 
-Adding an account must be a single command and must never require anyone to
-handle a token by hand.
-
 ```
-/swarm account add --label personal
-/swarm account add --label team-2
-/swarm account list
-/swarm account pause  <label>     # stop assigning new agents to it
-/swarm account drain  <label>     # move every running agent OFF it
+/swarm account add --label personal     → claudeswitch login, then vault → Secret Manager
+/swarm account list                     → headroom per window, who holds it
+/swarm account pause  <label>           → stop assigning new agents
+/swarm account drain  <label>           → move every running agent off it
 /swarm account remove <label>
 ```
 
-`add` is the only interactive one, and it has to be: the OAuth flow opens a
-browser, which only works on the operator's own machine. Everything after that is
-the platform's job.
+`add` is the only interactive one and has to be — the OAuth flow opens a browser,
+which only works on the operator's machine. It delegates to `claudeswitch login`
+for the flow, then uploads the resulting vault entry to Secret Manager on STDIN.
 
-```
-/swarm account add --label personal
-  → runs `claude setup-token` locally (browser opens)
-  → the token goes to Secret Manager on STDIN, never argv
-  → registers the account in the pool with its label
-  → never written to disk unencrypted, never echoed, never logged
-```
+The v1 rules hold without exception: never an argv argument (`argv` is
+world-readable through `ps`), never in terraform state, never in git, never in a
+log line.
 
-The same rules v1 established hold without exception: a credential is never a
-command-line argument (`argv` is world-readable through `ps`), never in terraform
-state, never in git, never in a log line. `scripts/create-secrets.sh` already
-enforces this and is the model to follow.
+#### 2.6.2 Refresh — the broker stays the single writer
 
-**Labels matter more than they look.** With one account you never need to tell
-them apart; with six you always do — "which account is rate limited right now"
-is unanswerable without a name, and an account id is not a name.
+Unchanged from v1 in principle, extended from one credential to N. The broker
+refreshes on its existing sweep, persists the rotated refresh token **before**
+publishing the access token, and treats `invalid_grant` as terminal.
 
-#### 2.6.2 Refresh — the platform's job, not yours
+claudeswitch will also refresh a credential it holds. **In a pod it must not**,
+or there are two writers again. Run the pod-side `use` mechanism only, with
+refresh disabled, and let the broker own it.
 
-Already built in v1 and extended rather than replaced: the quota broker is the
-**single writer**, refreshing on its existing sweep, persisting the rotated
-refresh token **before** publishing the access token so a crash leaves an account
-recoverable rather than locked out. `invalid_grant` is terminal — it stops,
-marks the account, and surfaces it, because only a human can fix it.
-
-What changes is cardinality: one credential becomes N, and the sweep iterates the
-pool. The **one-writer property must be enforced rather than asserted** — see
-§7.3. The broker runs with `max_instances > 1`, and an adversarial review of v1
-found that a comment was the only thing making the claim true.
+§7.3 applies with full force: one-writer must be **enforced**, not asserted.
 
 #### 2.6.3 Dispatch — the pod starts already logged in
 
-An agent must never see a login prompt. Before the container's main process
-starts, the assigned account's credential is materialised at the path Claude Code
-reads, so `claude` is authenticated from its first invocation.
-
 ```
-admission  → broker assigns the account with the most headroom
-           → assignment recorded on the lease, not just in memory
-pod start  → init container writes the credential to the CLI's
-             credential path, mode 0600, from Secret Manager
-           → main container starts; claude is already logged in
+admission  → broker picks the account with the most headroom
+           → records the assignment on the LEASE, not just in memory
+pod start  → init container pulls that account from Secret Manager
+           → claudeswitch installs it as the live credential
+           → main container starts; claude is already authenticated
 ```
 
-The credential lands on the pod's own ephemeral filesystem and dies with it.
-It is **not** baked into an image and **not** passed as a build argument.
+`CLAUDE_CONFIG_DIR` points at the pod's own ephemeral directory, so the
+credential has exactly one owner and dies with the pod.
 
-**Verified against the Claude Code 2.1.274 binary**, not assumed:
+**Merge, do not overwrite.** `credstore.MergeForSwap` keeps the live blob's
+`MCPOAuth` section and replaces only `claudeAiOauth`. An implementation that
+writes the whole file wholesale silently destroys a pod's MCP server logins on
+every swap — and would look like the MCP servers spontaneously failing, with
+nothing pointing at the credential rotation that caused it.
 
-* On macOS the store is the keychain (`security find-generic-password`). On every
-  other platform it is a **plaintext JSON file**, and the CLI names that store
-  `"plaintext"` internally.
-* The path is **`<config dir>/.credentials.json`**, written with mode **0600**.
-* **`CLAUDE_CONFIG_DIR` relocates it.** That is the hook this design wants: each
-  pod points at its own config directory, so the credential never lands in a
-  shared or baked-in location and a swap rewrites one file with one owner.
+#### 2.6.4 Swap — no signal required
 
-What remains genuinely unverified is §2.6.4, not this. The CLI keeps an in-memory
-copy of the credential with a generation counter and an explicit
-`invalidateCache()`, and reads can be served from that copy. Whether an external
-rewrite is picked up without the CLI being told to invalidate is the thing to
-test (§8.1) — the file being a file is no longer in question.
+**ANSWERED by spike 1.** claudeswitch writes the live credential and sends the
+running `claude` process **no signal at all** — no SIGHUP, no restart, nothing.
+The CLI picks it up on its own. This is corroborated in the Claude Code 2.1.274
+binary: the plaintext credential store performs a fresh `readFileSync` on every
+read unless a caller explicitly requests the cached copy.
 
-#### 2.6.4 Swap — across every pod, running or about to start
-
-The point of a pool is that **no agent ever stops for quota**. Two paths, and
-both must exist:
-
-**Reactive**, for an agent that hits the wall mid-task:
+So hot-swap works, and it is already proven in production by claudeswitch's own
+rotation history, including forced mid-turn swaps at 100% weekly utilization.
 
 ```
-sidecar sees 429 / quota-exhausted
-  → asks the broker for an account with headroom
-  → broker assigns, records the swap on the lease
-  → sidecar rewrites the credential file in place
-  → the CLI picks it up on its next request; the agent never stops
+reactive   sidecar sees utilization crossing the floor, or a 429
+           → asks the broker for an account with headroom
+           → broker assigns and records the swap on the lease
+           → claudeswitch installs it; the agent never stops
+
+proactive  /swarm account drain <label>
+           → no new assignments
+           → every RUNNING agent holding it is swapped in place
+           → the account is idle when the last one finishes
 ```
 
-**Proactive**, for everything else:
+Draining is what makes an account safely removable, and it is the same code path
+the broker uses on its own when an account crosses a floor — so the rarely-used
+human command stays working because the automatic one exercises it.
 
-```
-/swarm account drain team-2
-  → broker marks team-2 as draining: no new assignments
-  → every RUNNING agent holding it is swapped in place
-  → the account is idle when the last one finishes
-```
+**One nuance to carry over:** claudeswitch prefers to swap while the CLI is
+*idle* and only forces mid-turn above a hard floor (99% by default), with a 30s
+cap on how long it will hold out. That preference exists for a reason — an
+in-flight request holding the old token can still fail — so the pod-side policy
+should inherit it rather than swapping the instant it is told to.
 
-Draining is what makes an account safely removable, and it is the same mechanism
-the broker uses on its own when an account crosses a headroom floor — so a
-scheduled rotation and a human saying `drain` are the same code path, which is
-the only way the rarely-used one stays working.
+**Build checkpoint-and-resume anyway.** It is the handler for a swap that does
+not take effect, and a swap mechanism with no fallback is a single point of
+failure for every agent at once.
 
-**Fallback if hot-swap proves impossible.** If the CLI caches its credential at
-startup, the agent checkpoints, exits `PARKED` holding no capacity, and resumes
-on a new account from its checkpoint. It loses the in-flight turn and nothing on
-disk, and it is built entirely on machinery v1 already has. **Build the
-checkpoint-and-resume path regardless** — it is the failure handler for a swap
-that does not take effect, and a swap mechanism with no fallback is a single
-point of failure for every agent at once.
+#### 2.6.5 Headroom — the API reports it directly
 
-#### 2.6.5 Headroom — the hard part
+**ANSWERED by spike 2.** `rate_limit_event` is a first-class event in the
+`stream-json` output, emitted proactively rather than only on failure:
 
-Everything above assumes the broker knows which account has room. Anthropic
-exposes no quota API, so headroom is **inferred**, and inference that is wrong in
-the optimistic direction sends agents at an account that is already exhausted.
-
-**The API tells us.** Verified in the Claude Code 2.1.274 binary: responses
-carry unified rate-limit headers, and the CLI already parses them into a
-structured shape it attaches to errors.
-
-```
-anthropic-ratelimit-unified-representative-claim   which limit is binding
-anthropic-ratelimit-unified-reset                  epoch seconds until reset
-anthropic-ratelimit-unified-overage-status         whether it is in overage
-                    ↓  parsed by the CLI into
-{ rateLimitType, resetsAt }
+```json
+{"type":"rate_limit_event","rate_limit_info":{
+  "status":"allowed","resetsAt":1789671000,"rateLimitType":"five_hour",
+  "overageStatus":"rejected","isUsingOverage":false,
+  "unifiedWindows":{
+    "five_hour":{"utilization":0.13,"resetsAt":1789671000},
+    "seven_day":{"utilization":0.61,"resetsAt":1789977600}}}}
 ```
 
-This turns headroom from guesswork into a reading, and it changes the design:
-the broker does not have to infer when an account comes back, because
-`resetsAt` says so. A drained account can be scheduled back into the pool at a
-known time rather than probed.
+`utilization` is a 0–1 float **per window**, with the exact reset time. Headroom
+is therefore a reading, not an inference, and a drained account can be scheduled
+back into the pool at a known instant rather than probed.
 
-Signals, in descending order of reliability:
+The broker consumes these from the event stream (§2.7) and must still:
 
-1. **`resetsAt` and overage status from the rate-limit headers** — authoritative,
-   and available on ordinary responses rather than only on failures. The
-   structured event stream (§2.7) is how these reach the broker.
-2. **Observed 429s** — ground truth, but arrives only after an agent has already
-   been refused. This is what v1's AIMD already consumes. Note the CLI
-   distinguishes a 429 from a **revoked OAuth token** (403, "OAuth token has been
-   revoked"), and so must the broker: one account is throttled and will return,
-   the other is dead and needs a human.
-3. **Token accounting per account per window** — exact per-turn counts from the
-   event stream, summed against a configured budget. Predictive, and the fallback
-   if the headers ever stop being surfaced.
-4. **Time since last 429** — crude, and only the fallback of last resort.
-
-The broker **must still be conservative**: treating an exhausted account as
-available costs a failed dispatch and a swap; treating an available one as
-exhausted costs only some idle capacity. Those are not symmetric, and the
-estimator should not pretend they are.
-
-The broker combines these into a headroom estimate per account and **must be
-conservative**: treating an exhausted account as available costs a failed
-dispatch and a swap; treating an available one as exhausted costs only some
-idle capacity. Those are not symmetric, and the estimator should not pretend
-they are.
+* **distinguish a 429 from a revoked token.** The CLI separates them (403,
+  `"OAuth token has been revoked"`); one account is throttled and will return,
+  the other is dead and needs a human.
+* **track both windows.** claudeswitch's own thresholds differ per window — 85%
+  session, 98% weekly — because a five-hour window recovers on its own and a
+  seven-day one does not.
+* **stay conservative.** Treating an exhausted account as available costs a
+  failed dispatch and a swap; treating an available one as exhausted costs only
+  some idle capacity. Those are not symmetric.
 
 ### 2.7 Live output: structured events
 
@@ -320,9 +297,32 @@ Small, queryable, aggregatable, and it survives the pod. Raw logs stay in Cloud
 Logging, reachable per agent on demand via `/swarm logs <id> --follow`, which is
 also what live debugging needs.
 
-**Dependency to verify:** the exact `stream-json` schema, and its stability across
-Claude Code releases. The parser must degrade to "unknown event" rather than
-crash, because a CLI upgrade must never take the platform down.
+**The schema, captured from Claude Code 2.1.274** (`--print --output-format
+stream-json --verbose`). Every event carries `session_id` and `uuid`:
+
+| `type` | carries | used for |
+|---|---|---|
+| `system` / `init` | cwd, model, tools, MCP servers, `claude_code_version`, `permissionMode` | provenance on every agent; which CLI version produced the run |
+| `system` / `hook_started`, `hook_response` | hook name, stdout, exit code, outcome | a failing hook is otherwise invisible |
+| `system` / `thinking_tokens` | running estimate and delta | progress signal DURING a long turn, before any tool call |
+| `rate_limit_event` | `utilization` and `resetsAt` per window, overage status | §2.6.5 — the whole account pool |
+| `assistant` | content blocks, and `usage` per message: input, output, `cache_creation_input_tokens`, `cache_read_input_tokens` | live token counts, cache effectiveness |
+| `user` | tool results | the other half of the tool-call record |
+| `result` | `total_cost_usd`, `duration_ms`, `duration_api_ms`, `ttft_ms`, `num_turns`, `modelUsage` per model, `permission_denials`, `subagent_stats`, `is_error` | terminal record, spend, the terminated-agents view |
+
+Three of these were not anticipated and each earns its place:
+
+* **`thinking_tokens`** ticks during a turn with no tool call in sight. Without it
+  §2.9's "no progress" signal would kill an agent that is thinking hard about one
+  hard problem — the exact false positive that makes a stall guard get disabled.
+* **`total_cost_usd` and `modelUsage`** make per-agent spend a read rather than an
+  estimate, including the Haiku calls made on the agent's behalf.
+* **`permission_denials`** shows an agent repeatedly attempting something it is
+  not allowed to do — which looks like a loop and is really a misconfiguration.
+
+**The parser must degrade to "unknown event" rather than crash.** A CLI upgrade
+adds event types, and a platform that falls over when Claude Code ships a release
+is a platform that blocks its own upgrades.
 
 ### 2.8 Dashboard: self-hosted Cloud Run service
 
@@ -492,8 +492,8 @@ v1 built these and they are correct. They are not rewritten:
    namespaces, NetworkPolicies, the pod spec, RBAC.
 2. **Pod dispatcher** replacing the Cloud Run Jobs dispatcher.
 3. **Sharded pool counters** preserving all-or-nothing admission.
-4. **Account pool** in the quota broker: onboarding, refresh for N accounts,
-   headroom estimation, assignment, drain, swap arbitration — still one writer.
+4. **Account pool** — broker-side policy (assignment, headroom, drain, refresh
+   for N, still one writer) over claudeswitch as the pod-side mechanism.
 5. **Agent sidecar** — credential swap, structured event publishing, checkpoint
    timer.
 6. **Structured event pipeline** — `stream-json` parser, transport, storage,
@@ -566,9 +566,9 @@ compared to discovering the answer halfway through.
 
 | # | Question | Invalidates if wrong |
 |---|---|---|
-| 1 | ~~Where does the CLI read credentials on Linux?~~ **ANSWERED:** `$CLAUDE_CONFIG_DIR/.credentials.json`, mode 0600, plaintext JSON | §2.6.3 — resolved, pre-login is straightforward |
-| 1b | Is an EXTERNAL rewrite of that file picked up mid-session, given the CLI's in-memory cache and generation counter? | §2.6.4 hot-swap → falls back to checkpoint-and-resume. Now the single largest unknown |
-| 2 | What is `stream-json`'s exact schema, and how stable? | §2.7 event pipeline, §2.9 signals 2 and 4, most of the dashboard |
+| 1 | ~~Where does the CLI read credentials on Linux?~~ **ANSWERED:** `~/.claude/.credentials.json` (relocatable via `CLAUDE_CONFIG_DIR`), 0600, plaintext JSON | §2.6.3 resolved |
+| 1b | ~~Is an external rewrite picked up mid-session?~~ **ANSWERED: YES.** claudeswitch sends no signal at all and the CLI picks it up; the plaintext store re-reads the file on every read | §2.6.4 hot-swap confirmed; checkpoint-and-resume demoted to fallback |
+| 2 | ~~What is `stream-json`'s schema?~~ **ANSWERED:** captured in full — see §2.7 | §2.7, §2.9 signals 2 and 4, the dashboard |
 | 3 | Does gVisor break any tool in §2.12? | §2.2 — measure `terraform`, `npm install`, a large `git clone` |
 | 4 | Real gVisor overhead on our actual workloads? | the 10–15% estimate is from documentation, not measurement |
 | 5 | Autopilot pod cold start, p50 and p99? | if p99 is minutes, short tasks need a different answer |
