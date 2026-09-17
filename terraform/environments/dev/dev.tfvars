@@ -31,6 +31,20 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
+# gke_master_authorized_cidrs is DELIBERATELY EMPTY HERE and set at apply time
+# instead:
+#
+#   make infra TF_ARGS="-var gke_master_authorized_cidrs=[{cidr_block=\"$(curl -s ifconfig.me)/32\",display_name=\"operator\"}]"
+#
+# Two reasons it is not committed. This repository is PUBLIC, so an operator's
+# home address in git is a personal detail published permanently; and the value
+# rots the moment anyone changes network, at which point the committed answer is
+# worse than no answer because it looks authoritative.
+#
+# An empty list means the control plane is reachable only from inside the VPC,
+# which is the correct default and the one prod should keep. Reaching it from a
+# laptop is a dev convenience, and it should read like one.
+
 # --- data ------------------------------------------------------------------
 firestore_database      = "swarm"
 artifact_retention_days = 14

@@ -12,6 +12,13 @@
 # file where a divergence is visible in a diff.
 #
 #   kubectl apply -f kubernetes/benchmarks/gvisor-overhead.yaml
+#
+# THREE arms, not two. Autopilot also offers `microvm` (handler kata-clh):
+# Kata Containers on Cloud Hypervisor, a real VM with a real Linux kernel.
+# That is a stronger boundary than gVisor AND is usually faster on syscall-
+# heavy work, at a declared 250m CPU / 130Mi per pod. BUILD_PROMPT_V2 §2.2
+# chose gVisor before anyone knew microvm was on the cluster; this is what
+# settles it.
 #   kubectl logs -n __NAMESPACE__ -l bench=gvisor-overhead --tail=-1
 ---
 apiVersion: v1
@@ -155,6 +162,70 @@ spec:
           env:
             - name: BENCH_RUNTIME
               value: standard
+            - name: HOME
+              value: /work
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 8Gi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: bench
+              mountPath: /bench
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 8Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: bench
+          configMap:
+            name: gvisor-bench-script
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-bench-microvm
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-benchmark
+    bench: gvisor-overhead
+    bench-runtime: microvm
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-benchmark
+        bench: gvisor-overhead
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      # Kata Containers on Cloud Hypervisor: a real VM with a real Linux
+      # kernel, rather than gVisor's user-space one. A STRONGER boundary,
+      # and usually faster on exactly the syscall-heavy work gVisor taxes
+      # most -- at a declared 250m CPU + 130Mi per pod, which gVisor does
+      # not charge. Which of those matters more is what this measures.
+      runtimeClassName: microvm
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: bench
+          image: __IMAGE__
+          command: ["bash", "/bench/bench.sh"]
+          env:
+            - name: BENCH_RUNTIME
+              value: microvm
             - name: HOME
               value: /work
           resources:

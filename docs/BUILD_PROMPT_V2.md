@@ -72,6 +72,20 @@ capabilities were doing that work. So the boundary moves down a layer:
 kernel rather than the host's, so an escape has to break gVisor before it reaches
 a node shared with other tenants.
 
+**Verified on the live cluster:** Autopilot pre-creates the `gvisor`
+RuntimeClass, and the RuntimeClass carries its own `nodeSelector` and
+`toleration` (`sandbox.gke.io/runtime`) — so the pod spec does not add them, and
+the platform's Spot policy does not refuse them, because that policy refuses
+`gke-spot`/`gke-preemptible` specifically rather than tolerations in general.
+
+**Also on the cluster, and not considered when this was decided:** a `microvm`
+class with the `kata-clh` handler — Kata Containers on Cloud Hypervisor. That is
+a real VM with a real Linux kernel, so it is a *stronger* boundary than gVisor,
+and running a real kernel it is usually *faster* on precisely the syscall-heavy
+work gVisor taxes most. It declares a fixed overhead of 250m CPU and 130Mi per
+pod, which gVisor does not. Whether that fixed cost beats gVisor's variable one
+is a measurement, not an argument, and §8.3b is taking it.
+
 **Consequences that are not optional:**
 
 * **~10–15% slower on syscall-heavy work** — compiles, large file trees, heavy
@@ -569,7 +583,8 @@ compared to discovering the answer halfway through.
 | 1 | ~~Where does the CLI read credentials on Linux?~~ **ANSWERED:** `~/.claude/.credentials.json` (relocatable via `CLAUDE_CONFIG_DIR`), 0600, plaintext JSON | §2.6.3 resolved |
 | 1b | ~~Is an external rewrite picked up mid-session?~~ **ANSWERED: YES.** claudeswitch sends no signal at all and the CLI picks it up; the plaintext store re-reads the file on every read | §2.6.4 hot-swap confirmed; checkpoint-and-resume demoted to fallback |
 | 2 | ~~What is `stream-json`'s schema?~~ **ANSWERED:** captured in full — see §2.7 | §2.7, §2.9 signals 2 and 4, the dashboard |
-| 3 | Does gVisor break any tool in §2.12? | §2.2 — measure `terraform`, `npm install`, a large `git clone` |
+| 3 | Does the sandbox break any tool in §2.12? | §2.2 — benchmark running now, three arms |
+| 3b | **NEW: `microvm` (kata-clh) is also on the cluster.** A real VM with a real Linux kernel: a STRONGER boundary than gVisor, usually FASTER on syscall-heavy work, at a declared 250m CPU + 130Mi per pod | §2.2 was decided before anyone knew this existed. The benchmark settles it |
 | 4 | Real gVisor overhead on our actual workloads? | the 10–15% estimate is from documentation, not measurement |
 | 5 | Autopilot pod cold start, p50 and p99? | if p99 is minutes, short tasks need a different answer |
 | 6 | Firestore contention at 100 admissions/min? | §2.11 — measure before designing the sharding |
