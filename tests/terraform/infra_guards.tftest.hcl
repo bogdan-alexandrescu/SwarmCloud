@@ -330,3 +330,51 @@ run "an_unknown_environment_is_refused" {
 
   expect_failures = [var.environment]
 }
+
+# The quota sweep 403'd on every Cloud Scheduler tick for the entire life of
+# this deployment, and nothing failed. Not a test, not an alert, not a log an
+# operator would look at -- the scheduler job reported its own attempt as made,
+# and the 403 lived only in the broker's request log.
+#
+# What it cost: AIMD quota state never recomputed, so a provider that rate
+# limited a tenant stayed throttled; PARKED work never un-parked. And once
+# subscription-credential refresh was hung off the same tick, it would have
+# been dead on arrival, with a symptom -- credentials quietly expiring -- that
+# points nowhere near an authorization check on a different endpoint.
+#
+# So the binding is asserted here rather than assumed. A caller the broker does
+# not recognise as platform cannot run the sweep, and an empty list recognises
+# nobody.
+run "the_quota_sweep_has_a_caller_the_broker_will_accept" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {}
+  }
+
+  # Keys, not values. The service account email is created by the provider, so
+  # under a mock provider its VALUE is unknown until apply -- and `can()` does
+  # not help, because an unknown value makes the whole condition unknown rather
+  # than false. Map KEYS are known at plan time, and a missing key is exactly
+  # what was wrong: the broker reads absent as an empty list, and an empty list
+  # recognises nobody.
+  assert {
+    condition     = contains(keys(local.service_env["swarm-quota-broker"]), "PLATFORM_SERVICE_ACCOUNTS")
+    error_message = "without PLATFORM_SERVICE_ACCOUNTS the broker recognises no platform caller and /v1/quota/sweep 403s for everyone, including the tick that exists to run it"
+  }
+
+  # No other service gets it. A worker or another control-plane service on this
+  # list could set any tenant's hard max and run the sweep -- the two things the
+  # platform check exists to keep away from tenants.
+  assert {
+    condition = alltrue([
+      for name in ["swarm-api", "swarm-scheduler", "swarm-reconciler"] :
+      !contains(keys(local.service_env[name]), "PLATFORM_SERVICE_ACCOUNTS")
+    ])
+    error_message = "only the quota broker evaluates platform callers; granting the name elsewhere widens who can change a tenant's quota ceiling"
+  }
+}

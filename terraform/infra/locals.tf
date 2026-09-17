@@ -299,7 +299,24 @@ locals {
       # left holding a lease.
       WORKER_IMAGE_TAG = var.image_tag
     })
-    "swarm-quota-broker" = local.common_env
+    "swarm-quota-broker" = merge(local.common_env, {
+      # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a
+      # platform caller, the broker derives "platform" from this list, and the
+      # list was empty -- so the Cloud Scheduler tick got 403 every five
+      # minutes, silently, since the day it was created. Verified in the logs
+      # before the fix: an unbroken run of 403s on /v1/quota/sweep.
+      #
+      # The visible cost was the AIMD quota state never being recomputed and
+      # PARKED tenants never being un-parked. The refresher for subscription
+      # credentials runs on the same tick, so it would have been dead on
+      # arrival too, and its symptom -- credentials quietly stopping -- points
+      # nowhere near the cause.
+      #
+      # This is the Cloud Scheduler tick identity and nothing else. Workers
+      # report quota as their own tenant; being on this list would let any one
+      # of them set another tenant's hard max.
+      PLATFORM_SERVICE_ACCOUNTS = module.iam.tick_service_account
+    })
     "swarm-reconciler" = merge(local.common_env, {
       GKE_CLUSTER     = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION    = var.region
