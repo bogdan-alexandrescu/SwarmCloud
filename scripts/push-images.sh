@@ -75,10 +75,30 @@ for target in "${TARGETS[@]}"; do
   step "Promote ${target}"
   image="${IMAGE_REPO}/${target}"
 
-  digest="$(gcloud artifacts docker images describe "${image}:${TAG}" \
-    --project "${PROJECT_ID}" --format='value(image_summary.digest)' 2>/dev/null || true)"
+  # `images describe` would be the obvious call and is the wrong one: it reads
+  # Container Analysis, so it needs containeranalysis.occurrences.list, and
+  # without that permission it fails with a denial that this script then
+  # reported as "not found -- build it first". The image was there. Someone
+  # following that advice rebuilds it and gets the same message forever.
+  #
+  # `images list` resolves the digest straight from Artifact Registry, which is
+  # the only thing actually being asked.
+  describe_err=""
+  digest="$(gcloud artifacts docker images list "${image}" \
+    --project "${PROJECT_ID}" --include-tags --filter="tags:${TAG}" \
+    --format='value(version)' 2>"${TMPDIR:-/tmp}/push-digest.$$" || true)"
+  describe_err="$(tr -d '\r' <"${TMPDIR:-/tmp}/push-digest.$$" | grep -v '^Listing items' || true)"
+  rm -f "${TMPDIR:-/tmp}/push-digest.$$"
+  digest="$(printf '%s' "${digest}" | head -n1)"
   if [[ -z "${digest}" ]]; then
-    err "${image}:${TAG} not found in Artifact Registry -- build it first"
+    if [[ -n "${describe_err}" ]]; then
+      # Say what actually went wrong. A permission problem and a missing image
+      # need opposite responses, and only one of them is fixed by rebuilding.
+      err "${image}:${TAG}: could not resolve a digest"
+      printf '%s\n' "${describe_err}" | head -n 3 | sed 's/^/     /'
+    else
+      err "${image}:${TAG} not found in Artifact Registry -- build it first"
+    fi
     FAILED+=("${target}")
     continue
   fi
