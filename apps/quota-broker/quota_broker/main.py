@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Body, FastAPI, Header, Query, Request, Response
@@ -28,6 +28,8 @@ from swarm_common.models import ProviderState, QuotaState
 from swarm_common.profiles import RUNNER_PROFILES
 
 from .aimd import quota_derived_limit_for
+from .accounts import due_for_refresh
+from .accountstore import AccountStore
 from .credentials import CredentialRefresher
 from .oauth import HttpTokenEndpoint
 from .secretstore import SecretManagerStore
@@ -248,6 +250,28 @@ def quota_to_api(state: QuotaState) -> dict[str, Any]:
     return payload
 
 
+
+def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
+    """Run one refresh sweep and summarise it, never raising.
+
+    Neither sweep may take the quota sweep down with it: the same tick is what
+    un-parks throttled tenants, so one bad credential must not stall every
+    tenant's quota recovery. Reported per sweep rather than merged, because
+    "credentials are broken" and "the account pool is broken" want different
+    people to do different things.
+    """
+    try:
+        outcomes = run()
+    except Exception as exc:
+        log.error(failure_message, extra={"error": type(exc).__name__, "detail": str(exc)[:200]})
+        return {"error": type(exc).__name__}
+    return {
+        "examined": len(outcomes),
+        "refreshed": sum(1 for o in outcomes if o.refreshed),
+        "reauth_required": [o.tenant_id for o in outcomes if o.reason == "reauth_required"],
+    }
+
+
 def create_app(
     broker: QuotaBroker | None = None,
     *,
@@ -255,6 +279,7 @@ def create_app(
     metrics: BrokerMetrics | None = None,
     credential_refresher: CredentialRefresher | None = None,
     subscription_tenants: Any | None = None,
+    account_store: AccountStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="swarm quota broker", version="0.1.0")
     app.state.broker = broker if broker is not None else build_broker()
@@ -277,6 +302,20 @@ def create_app(
     # See quota_broker.credentials for why exactly one writer is required; the
     # refresh runs on the existing sweep tick rather than a timer of its own,
     # so there is no second thing to schedule, monitor or forget.
+    # The account pool. Registered accounts are swept on the same tick, and
+    # EVERY one is visited -- busy, idle or paused -- because a refresh token
+    # that is never exchanged expires on its own. An "only what is in use"
+    # optimisation here is what turns "no human ever steps in" back into "no
+    # human steps in until the day they urgently need the idle account".
+    if account_store is not None:
+        app.state.account_store = account_store
+    else:
+        # Built from the BROKER's own client, not a second one. A separate
+        # client would carry separate settings, and the first symptom of that
+        # would be an account pool that is mysteriously empty in one process
+        # and populated in another.
+        app.state.account_store = AccountStore(app.state.broker.db)
+
     refresher, tenants = credential_refresher, subscription_tenants
     if refresher is None and _flag("CREDENTIAL_REFRESH_ENABLED", True):
         project_id = os.environ.get("PROJECT_ID", "").strip()
@@ -473,23 +512,31 @@ def create_app(
             # The sweep is what un-parks throttled tenants; if a Secret Manager
             # permission error could 500 this endpoint, one broken credential
             # would stall every tenant's quota recovery.
-            try:
-                pairs = request.app.state.subscription_tenants()
-                outcomes = refresher.sweep(pairs)
-            except Exception as exc:
-                log.error(
-                    "subscription credential sweep failed",
-                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+            # Two sweeps, reported separately. Sharing one try block meant a
+            # bug in either was indistinguishable from a failure of the other,
+            # and the first thing it hid was a missing method on the account
+            # path masking a perfectly good credential result.
+            result["credentials"] = _sweep_block(
+                lambda: refresher.sweep(request.app.state.subscription_tenants()),
+                "subscription credential sweep failed",
+            )
+
+            # Every registered account, whether or not anything is using it.
+            # See quota_broker.accounts.due_for_refresh for why there is no
+            # "in use" filter.
+            store = getattr(request.app.state, "account_store", None)
+            if store is not None:
+                result["accounts"] = _sweep_block(
+                    lambda: refresher.sweep_accounts(
+                        [
+                            (store.secret_for(a), a.label)
+                            for a in due_for_refresh(
+                                store.list(), datetime.now(timezone.utc)
+                            )
+                        ]
+                    ),
+                    "account pool sweep failed",
                 )
-                result["credentials"] = {"error": type(exc).__name__}
-            else:
-                result["credentials"] = {
-                    "examined": len(outcomes),
-                    "refreshed": sum(1 for o in outcomes if o.refreshed),
-                    "reauth_required": [
-                        o.tenant_id for o in outcomes if o.reason == "reauth_required"
-                    ],
-                }
         return result
 
     return app

@@ -216,3 +216,75 @@ def test_a_deployment_with_no_refresher_sweeps_quota_as_before(broker):
 
     assert response.status_code == 200
     assert "credentials" not in response.json()
+
+
+# -- the account pool shares the tick ---------------------------------------
+
+def test_the_account_sweep_and_the_credential_sweep_are_reported_separately(broker):
+    """They shared one try block once, and the first thing that hid was a
+    missing method on the account path masking a perfectly good credential
+    result. "Credentials are broken" and "the pool is broken" want different
+    people to do different things."""
+    from quota_broker.credentials import RefreshOutcome
+
+    class _Refresher:
+        def sweep(self, pairs):
+            return [RefreshOutcome("eng", "anthropic", True, "refreshed")]
+
+        def sweep_accounts(self, secrets):
+            raise RuntimeError("the pool is unreachable")
+
+    class _Store:
+        def list(self):
+            return []
+
+        def secret_for(self, account):
+            return "unused"
+
+    client = TestClient(
+        create_app(
+            broker,
+            identity=WorkerIdentity(required=False),
+            credential_refresher=_Refresher(),
+            subscription_tenants=lambda: [("eng", "anthropic")],
+            account_store=_Store(),
+        ),
+        raise_server_exceptions=False,
+    )
+    body = client.post("/v1/quota/sweep").json()
+
+    # The credential sweep still reports its real result...
+    assert body["credentials"]["refreshed"] == 1
+    # ...and the account failure is visible rather than merged into it.
+    assert body["accounts"] == {"error": "RuntimeError"}
+
+
+def test_a_broken_account_pool_does_not_break_the_quota_sweep(broker):
+    """The tick is also what un-parks throttled tenants."""
+    class _Store:
+        def list(self):
+            raise PermissionError("caller lacks datastore.entities.list")
+
+        def secret_for(self, account):
+            return "unused"
+
+    class _Refresher:
+        def sweep(self, pairs):
+            return []
+
+        def sweep_accounts(self, secrets):
+            return []
+
+    response = TestClient(
+        create_app(
+            broker,
+            identity=WorkerIdentity(required=False),
+            credential_refresher=_Refresher(),
+            subscription_tenants=lambda: [],
+            account_store=_Store(),
+        ),
+        raise_server_exceptions=False,
+    ).post("/v1/quota/sweep")
+
+    assert response.status_code == 200
+    assert response.json()["accounts"] == {"error": "PermissionError"}

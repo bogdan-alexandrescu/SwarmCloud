@@ -91,8 +91,14 @@ class CredentialRefresher:
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def refresh_tenant(self, tenant_id: str, provider: str) -> RefreshOutcome:
+        return self._refresh(
+            f"swarm-tenant-{tenant_id}-{provider}",
+            tenant_id=tenant_id,
+            provider=provider,
+        )
+
+    def _refresh(self, base: str, *, tenant_id: str, provider: str) -> RefreshOutcome:
         now = self._now()
-        base = f"swarm-tenant-{tenant_id}-{provider}"
         refresh_secret = f"{base}{REFRESH_SUFFIX}"
 
         try:
@@ -167,6 +173,40 @@ class CredentialRefresher:
             extra={"tenant_id": tenant_id, "provider": provider, **fresh.redacted()},
         )
         return RefreshOutcome(tenant_id, provider, True, "refreshed", fresh.expires_at)
+
+    def refresh_secret(self, secret_base: str, *, label: str = "") -> RefreshOutcome:
+        """Refresh one named credential pair, whatever it belongs to.
+
+        `refresh_tenant` builds its secret name from a tenant and a provider,
+        which is right for v1's one-credential-per-tenant model and wrong for an
+        account pool, where several credentials belong to the same tenant. This
+        takes the base name directly so the two callers share one implementation
+        rather than drifting into two that must be kept in step.
+        """
+        return self._refresh(secret_base, tenant_id=label or secret_base, provider="account")
+
+    def sweep_accounts(self, secrets: list[tuple[str, str]]) -> list[RefreshOutcome]:
+        """Refresh every account given, INCLUDING ones nobody is using.
+
+        The omission of any "in use" filter is the feature. A refresh token that
+        is never exchanged expires, so a pool where two accounts are busy and
+        three are idle is a pool where the idle three rot until the day they are
+        wanted -- which is the day someone needed capacity in a hurry.
+
+        One account's failure never stops the sweep: the others are exactly what
+        the fleet falls back on when one goes bad.
+        """
+        outcomes: list[RefreshOutcome] = []
+        for secret_base, label in secrets:
+            try:
+                outcomes.append(self.refresh_secret(secret_base, label=label))
+            except Exception as exc:
+                self._log.error(
+                    "account refresh raised; continuing with the rest of the pool",
+                    extra={"account": label, "error": type(exc).__name__},
+                )
+                outcomes.append(RefreshOutcome(label, "account", False, "error"))
+        return outcomes
 
     def sweep(self, tenants: list[tuple[str, str]]) -> list[RefreshOutcome]:
         """Refresh every (tenant, provider) pair that is due."""

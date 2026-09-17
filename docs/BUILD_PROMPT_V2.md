@@ -88,8 +88,45 @@ is a measurement, not an argument, and §8.3b is taking it.
 
 **Consequences that are not optional:**
 
-* **~10–15% slower on syscall-heavy work** — compiles, large file trees, heavy
-  `git` operations. Measure it; do not assume it is negligible.
+* **MEASURED, and the earlier estimate was wrong by an order of magnitude.**
+  This said "~10–15%", quoted from documentation. On our own image, our own
+  workloads, same CPU and memory, differing only in `runtimeClassName`:
+
+  | phase | standard | gVisor | cost |
+  |---|---:|---:|---:|
+  | `find / -type f` | 1,144 ms | 8,932 ms | **7.8×** |
+  | `git clone` (depth 50) | 1,297 ms | 7,315 ms | **5.6×** |
+  | `npm install` (3 pkgs) | 7,415 ms | 11,826 ms | 1.6× |
+  | `uv venv` + 3 installs | 1,991 ms | 2,691 ms | 1.35× |
+  | python import | 125 ms | 175 ms | 1.4× |
+  | tar round-trip | 586 ms | 672 ms | 1.15× |
+  | 2,000 small writes | 131 ms | 163 ms | 1.24× |
+  | **total** | **12.7 s** | **31.8 s** | **2.5×** |
+
+  The shape matters more than the total: **~15–25% on bulk I/O, 5–8× on
+  metadata-heavy traversal**. Many syscalls moving little data is exactly
+  gVisor's weak point, and it is not an edge case here — `find`, `rg`, `fd` and
+  `git status` are what an agent runs constantly between model calls.
+
+  **The decision stands, provisionally.** An agent's wall clock is dominated by
+  inference, so 19 extra seconds of file work against minutes of waiting may be
+  noise. That is a hypothesis, not a finding. **The number that settles it is a
+  real `claude-code` agent doing a real task, sandboxed and not** — until that
+  exists, this is a known risk carried deliberately rather than a solved
+  problem.
+
+* **Kernel confirmed in effect**: `4.19.0-gvisor` against `6.12.94+`. The
+  sandbox is not being silently ignored.
+
+* **Nothing in the toolbox broke.** git clone, npm install, uv venv, tar and
+  2,000 small writes all returned rc=0 under gVisor. §8.3's question is answered.
+
+* **`microvm` (kata-clh) is advertised by the cluster but will not schedule**:
+  `NotTriggerScaleUp`, "20 node(s) didn't match Pod's node affinity/selector".
+  Autopilot declares the RuntimeClass and provisions no capacity for it with a
+  plain pod spec. Advertised is not usable. Given the 2.5×, this is worth
+  revisiting with a compute class — Kata runs a real kernel and should not carry
+  this penalty.
 * **No GPU under gVisor.** A GPU profile would need a separate non-sandboxed node
   pool and its own trust decision.
 * **Docker-in-pod does not work under gVisor.** The `docker` CLI is still in the
@@ -583,9 +620,10 @@ compared to discovering the answer halfway through.
 | 1 | ~~Where does the CLI read credentials on Linux?~~ **ANSWERED:** `~/.claude/.credentials.json` (relocatable via `CLAUDE_CONFIG_DIR`), 0600, plaintext JSON | §2.6.3 resolved |
 | 1b | ~~Is an external rewrite picked up mid-session?~~ **ANSWERED: YES.** claudeswitch sends no signal at all and the CLI picks it up; the plaintext store re-reads the file on every read | §2.6.4 hot-swap confirmed; checkpoint-and-resume demoted to fallback |
 | 2 | ~~What is `stream-json`'s schema?~~ **ANSWERED:** captured in full — see §2.7 | §2.7, §2.9 signals 2 and 4, the dashboard |
-| 3 | Does the sandbox break any tool in §2.12? | §2.2 — benchmark running now, three arms |
+| 3 | ~~Does the sandbox break any tool?~~ **ANSWERED: no.** Every phase rc=0 under gVisor | §2.2 resolved |
+| 3c | ~~Real gVisor overhead?~~ **ANSWERED: 2.5× overall, 5–8× on file traversal** — not the 10–15% assumed | §2.2 — decision held, but now on an explicit hypothesis that agents are inference-bound |
 | 3b | **NEW: `microvm` (kata-clh) is also on the cluster.** A real VM with a real Linux kernel: a STRONGER boundary than gVisor, usually FASTER on syscall-heavy work, at a declared 250m CPU + 130Mi per pod | §2.2 was decided before anyone knew this existed. The benchmark settles it |
-| 4 | Real gVisor overhead on our actual workloads? | the 10–15% estimate is from documentation, not measurement |
+| 4 | Does a REAL agent actually pay that 2.5×, or is it lost in inference latency? | §2.2 — the only measurement that settles root-in-pod |
 | 5 | Autopilot pod cold start, p50 and p99? | if p99 is minutes, short tasks need a different answer |
 | 6 | Firestore contention at 100 admissions/min? | §2.11 — measure before designing the sharding |
 | 7 | Does IAP in front of an internal LB actually give the API a usable `hd` claim? | §2.8 and every multi-user claim |

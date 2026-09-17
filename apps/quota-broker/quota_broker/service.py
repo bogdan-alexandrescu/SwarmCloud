@@ -94,6 +94,17 @@ class QuotaBroker:
         self._now = now
 
     @property
+    def db(self) -> Any:
+        """The Firestore client this broker was built with.
+
+        Exposed because the account pool lives in the same database and must be
+        built from the same client -- not a second one with its own settings.
+        Reaching for `_db` from outside would work and would also be the kind of
+        coupling that breaks quietly when the attribute is renamed.
+        """
+        return self._db
+
+    @property
     def config(self) -> AimdConfig:
         return self._config
 
