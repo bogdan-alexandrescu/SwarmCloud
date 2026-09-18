@@ -327,3 +327,52 @@ def test_an_unreadable_base_secret_is_treated_as_needing_the_token():
 
     assert out.reason == "published"
     assert store.writes == [base]
+
+
+# -- the wire format --------------------------------------------------------
+
+def test_the_token_request_is_form_encoded_to_the_right_host():
+    """Both of these were wrong and both produced a 403 in production.
+
+    JSON to an OAuth token endpoint is answered with 403 -- a status that reads
+    like an authorization failure and is really a content-type one. And
+    console.anthropic.com refuses a refresh that platform.claude.com accepts.
+    Verified against claudeswitch, which does this successfully in production.
+    """
+    import urllib.request
+    from quota_broker.oauth import TOKEN_ENDPOINT, HttpTokenEndpoint
+
+    assert TOKEN_ENDPOINT == "https://platform.claude.com/v1/oauth/token"
+
+    captured = {}
+
+    class _Response:
+        def read(self):
+            return b'{"access_token":"a","expires_in":3600}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        captured["body"] = request.data.decode()
+        captured["content_type"] = request.headers.get("Content-type")
+        return _Response()
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = _urlopen
+    try:
+        HttpTokenEndpoint().exchange("my-refresh-token")
+    finally:
+        urllib.request.urlopen = original
+
+    assert captured["url"] == "https://platform.claude.com/v1/oauth/token"
+    assert captured["content_type"] == "application/x-www-form-urlencoded"
+    assert "grant_type=refresh_token" in captured["body"]
+    assert "refresh_token=my-refresh-token" in captured["body"]
+    assert "client_id=" in captured["body"]
+    # Not JSON, which is the mistake this guards.
+    assert not captured["body"].startswith("{")

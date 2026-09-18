@@ -44,7 +44,10 @@ from typing import Any, Protocol
 #: which is why the flow is PKCE-based and the refresh token is what matters.
 CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
-TOKEN_ENDPOINT = "https://console.anthropic.com/v1/oauth/token"
+#: Verified against claudeswitch, which refreshes these credentials in
+#: production. console.anthropic.com answers a refresh with 403; this host is
+#: the one that works.
+TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 
 #: Refresh this far before expiry. An access token that expires mid-attempt
 #: fails the attempt, and attempts run for up to two hours.
@@ -97,7 +100,13 @@ class HttpTokenEndpoint:
         import urllib.error
         import urllib.request
 
-        body = json.dumps(
+        import urllib.parse
+
+        # FORM-ENCODED, not JSON. RFC 6749 specifies
+        # application/x-www-form-urlencoded for the token endpoint, and sending
+        # JSON here is answered with 403 -- a status that reads like an
+        # authorization failure and is really a content-type one.
+        body = urllib.parse.urlencode(
             {
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
@@ -107,7 +116,10 @@ class HttpTokenEndpoint:
         request = urllib.request.Request(
             self._url,
             data=body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
             method="POST",
         )
         try:
