@@ -128,6 +128,18 @@ variable "gke_enable_private_endpoint" {
   default = false
 }
 
+variable "gke_allow_open_master_authorized_network" {
+  description = <<-EOT
+    Permits 0.0.0.0/0 in gke_master_authorized_cidrs for this environment.
+
+    Default false, which is what keeps prod's control plane closed: prod runs
+    gke_enable_private_endpoint = false and relies on an empty allowlist, so the
+    refusal of 0.0.0.0/0 is its backstop rather than a formality.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "gke_master_authorized_cidrs" {
   type = list(object({
     cidr_block   = string

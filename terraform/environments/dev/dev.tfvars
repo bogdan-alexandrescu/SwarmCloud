@@ -31,19 +31,33 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
-# gke_master_authorized_cidrs is DELIBERATELY EMPTY HERE and set at apply time
-# instead:
+# gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
+# apply time as the operator's own /32. That is no longer what this does.
 #
-#   make infra TF_ARGS="-var gke_master_authorized_cidrs=[{cidr_block=\"$(curl -s ifconfig.me)/32\",display_name=\"operator\"}]"
+# The old note gave two reasons not to commit a value: this repository is
+# PUBLIC, so an operator's home address in git is a personal detail published
+# permanently; and the value rots the moment anyone changes network. The first
+# reason does not apply to 0.0.0.0/0 -- it discloses nothing about anyone. The
+# second is exactly what went wrong: the cluster sat holding a stale operator /32 for
+# an address the operator no longer had, so the allowlist was denying the one
+# person it existed to admit while protecting nothing.
 #
-# Two reasons it is not committed. This repository is PUBLIC, so an operator's
-# home address in git is a personal detail published permanently; and the value
-# rots the moment anyone changes network, at which point the committed answer is
-# worse than no answer because it looks authoritative.
+# Opened on 2026-09-18 by operator decision. This is a NETWORK control only: the
+# GKE API server still requires a Google identity and still enforces RBAC, so
+# this makes the control plane reachable and discoverable from the internet, not
+# unauthenticated. The full argument, including the private-endpoint-plus-IAP
+# alternative that keeps both properties, is next to the removed validation in
+# terraform/modules/gke_autopilot/variables.tf.
 #
-# An empty list means the control plane is reachable only from inside the VPC,
-# which is the correct default and the one prod should keep. Reaching it from a
-# laptop is a dev convenience, and it should read like one.
+# PROD MUST NOT COPY THIS. A prod cluster keeps gke_enable_private_endpoint =
+# true and reaches the control plane from inside the VPC.
+gke_allow_open_master_authorized_network = true
+gke_master_authorized_cidrs = [
+  {
+    cidr_block   = "0.0.0.0/0"
+    display_name = "open-dev-cluster"
+  }
+]
 
 # --- data ------------------------------------------------------------------
 firestore_database      = "swarm"
@@ -103,9 +117,23 @@ pool_limits = {
 
   providers = {
     # Above provider_tenant x tenants, or the shared pool binds before the
-    # per-tenant one and the per-tenant ceiling stops meaning anything.
+    # per-tenant one and the per-tenant ceiling stops meaning anything. The
+    # rule at variables.tf:337 enforces this; it is not a guideline.
+    #
+    #   anthropic  eng + u-bogdan  = 2 x 15 = 30
+    #   openai     eng             = 1 x 15 = 15
     anthropic = 30
-    openai    = 10
+
+    # Raised from 10 only because provider_tenant went to 15 and this is the
+    # floor that implies. It is NOT a measurement: the account-pool reasoning
+    # above is about three Anthropic subscriptions, and there is no equivalent
+    # OpenAI pool behind this number. provider_tenant applies to every provider
+    # uniformly, so lifting it for one lifts the floor for all of them.
+    #
+    # If that uniformity turns out to be wrong, the fix is a per-provider
+    # tenant ceiling, not a smaller number here -- a number below this floor
+    # does not fail at runtime, it fails the plan.
+    openai = 15
   }
 }
 

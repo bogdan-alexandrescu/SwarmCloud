@@ -162,7 +162,10 @@ module "gke_autopilot" {
   release_channel         = var.gke_release_channel
   enable_private_endpoint = var.gke_enable_private_endpoint
   master_authorized_cidrs = var.gke_master_authorized_cidrs
-  deletion_protection     = var.deletion_protection
+  # Opening the control plane is recorded in the environment's tfvars, so it
+  # shows up in a diff rather than as an edit to the rule that guards prod.
+  allow_open_master_authorized_network = var.gke_allow_open_master_authorized_network
+  deletion_protection                  = var.deletion_protection
 
   labels = local.labels
 
@@ -368,16 +371,22 @@ module "scheduler" {
 
   labels = local.labels
 
-  # module.cloud_run explicitly, not just through the endpoint references above.
-  # The OIDC tokens minted here name a CUSTOM audience, and a custom audience is
-  # only accepted once it is present on the receiving service. Without the
-  # ordering pinned, terraform is free to update this subscription first, and
-  # every tick in the gap is rejected until the service catches up.
+  # NOT `depends_on = [module.cloud_run]`, though the ordering it would buy is
+  # real: a custom audience is only accepted once it is present on the receiving
+  # service, so the service must be updated before the subscription mints tokens
+  # naming it.
   #
-  # Pub/Sub retries for 300s and Cloud Scheduler twice, so the gap self-heals
-  # and nothing is lost -- but "self-healing" is a poor thing to discover during
-  # an apply, and the dependency costs nothing.
-  depends_on = [module.project_services, module.cloud_run]
+  # That ordering already exists. `scheduler_push_endpoint` above reads the
+  # service's `uri`, and terraform's graph is built from references rather than
+  # from which values changed -- so the subscription node depends on the service
+  # node whether or not the URL moves, and the service is applied first.
+  #
+  # Adding the explicit dependency anyway is not free, measured on this plan:
+  # a module-level depends_on defers that module's DATA SOURCES to apply time,
+  # so `data.google_project.this` became unknown, the DLQ IAM members' `member`
+  # became unknown with it, and two IAM bindings went from "no change" to
+  # "must be replaced". 1 add / 18 change / 0 destroy became 3 / 18 / 2.
+  depends_on = [module.project_services]
 }
 
 module "monitoring" {
