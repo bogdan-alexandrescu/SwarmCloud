@@ -390,19 +390,58 @@ fi
 BUCKET_METADATA_ROLE_ID="swarmBucketMetadataReader${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
 if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
      --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
-  run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
-    --member "serviceAccount:${GSA_EMAIL}" \
-    --role roles/storage.objectUser \
-    --condition "expression=resource.name.startsWith('projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('${GCS_PREFIX}/'),title=tenant_prefix_only,description=Only this tenant's object prefix, listing included" \
-    >/dev/null
-  ok "storage.objectUser (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, listing included)"
+  # --condition-from-file, NOT --condition. gcloud parses --condition as
+  # comma-separated key=value pairs, and this expression contains a comma
+  # inside api.getAttribute(..., '') -- so gcloud split it mid-expression and
+  # refused the fragment as an unknown key. The description contained an
+  # apostrophe as well. This binding has therefore never been applied by this
+  # script for any tenant, which means those tenants got their GCS access from
+  # terraform or not at all.
+  CONDITION_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-condition.XXXXXX")"
+  trap 'rm -f "${CONDITION_FILE}"' EXIT INT TERM
+  cat >"${CONDITION_FILE}" <<CONDEOF
+title: tenant_prefix_only
+description: Only this tenant's object prefix, listing included
+expression: resource.name.startsWith('projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('${GCS_PREFIX}/')
+CONDEOF
+  # Skip if the binding is already there. terraform/modules/tenancy grants this
+  # same conditioned binding for every tenant it manages, and adding it twice is
+  # not merely redundant: gcloud reads the bucket policy at version 1, the
+  # existing conditions make it version 3, and the write is refused with
+  # "Specified policy version (1) must be at least 3" -- which aborts this
+  # script before it reaches the tenant document, the thing it is actually
+  # needed for.
+  if gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
+       --project "${PROJECT_ID}" --format=json 2>/dev/null \
+       | grep -q "serviceAccount:${GSA_EMAIL}"; then
+    ok "storage access already granted (terraform manages this tenant's binding)"
+    rm -f "${CONDITION_FILE}"
+  else
+    run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+      --member "serviceAccount:${GSA_EMAIL}" \
+      --role roles/storage.objectUser \
+      --condition-from-file "${CONDITION_FILE}" \
+      >/dev/null
+    rm -f "${CONDITION_FILE}"
+    ok "storage.objectUser (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, listing included)"
+  fi
 
   if gcloud iam roles describe "${BUCKET_METADATA_ROLE_ID}" \
        --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
-    run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
-      --member "serviceAccount:${GSA_EMAIL}" \
-      --role "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" >/dev/null
-    ok "${BUCKET_METADATA_ROLE_ID} (storage.buckets.get only -- enough to mount, not to enumerate)"
+    # `--condition None` for the same reason as the project bindings: this
+    # policy contains conditions, so gcloud refuses an unconditioned addition
+    # unless told that is deliberate.
+    if gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
+         --project "${PROJECT_ID}" --format=json 2>/dev/null \
+         | grep -q "${BUCKET_METADATA_ROLE_ID}"; then
+      ok "${BUCKET_METADATA_ROLE_ID} already granted"
+    else
+      run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+        --member "serviceAccount:${GSA_EMAIL}" \
+        --role "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" \
+        --condition None >/dev/null
+      ok "${BUCKET_METADATA_ROLE_ID} (storage.buckets.get only -- enough to mount, not to enumerate)"
+    fi
   else
     warn "custom role ${BUCKET_METADATA_ROLE_ID} does not exist yet; run 'make infra'"
     warn "without it the worker can reach its objects but cannot read the bucket's own metadata,"
@@ -421,8 +460,16 @@ fi
 # Logging and metrics cannot be conditioned per tenant; they are write-only and
 # carry no cross-tenant read capability.
 for role in roles/logging.logWriter roles/monitoring.metricWriter; do
+  # `--condition None` is required, not optional. Once ANY binding in the
+  # project policy carries a condition -- and several here do, deliberately --
+  # gcloud refuses to add an unconditioned one without being told that is what
+  # is meant, and under --quiet that refusal aborts the whole registration
+  # partway. Which it did: the service account and the Firestore role were
+  # created, the telemetry roles were not, and the tenant document was never
+  # updated.
   run gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member "serviceAccount:${GSA_EMAIL}" --role "${role}" --quiet >/dev/null
+    --member "serviceAccount:${GSA_EMAIL}" --role "${role}" \
+    --condition None --quiet >/dev/null
   ok "${role}"
 done
 

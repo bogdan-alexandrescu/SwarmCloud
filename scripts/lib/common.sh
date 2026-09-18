@@ -144,7 +144,14 @@ load_env() {
   # belongs to whoever gets there first.
   FIRESTORE_DATABASE="${FIRESTORE_DATABASE:-swarm}"
 
-  ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-${PROJECT_ID}-swarm-artifacts}"
+  # `swarm-artifacts-<project>`, matching terraform/modules/storage:
+  #   artifact_bucket_name = "${var.name_prefix}-artifacts-${var.bucket_suffix}"
+  # This read `${PROJECT_ID}-swarm-artifacts` -- the same words in the wrong
+  # order -- so every script that touched the bucket looked for one that has
+  # never existed. register-tenant.sh reported "artifact bucket does not exist
+  # yet; run make infra", which is advice that cannot help: `make infra` creates
+  # the bucket under its real name, and the next run says the same thing.
+  ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-swarm-artifacts-${PROJECT_ID}}"
   ARTIFACT_REGISTRY="${ARTIFACT_REGISTRY:-swarm-images}"
   # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately
   # not saga-agents-terraform-state-staging: that bucket belongs to another team
