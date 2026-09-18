@@ -334,6 +334,25 @@ assert_kube_context() {
   die "run scripts/configure-kubectl.sh first; it writes an isolated kubeconfig for the swarm cluster"
 }
 
+# A python that has the platform's own dependencies.
+#
+# Bare `python3` is the system interpreter and does not have google-cloud-*
+# installed, so a script reaching for it gets ModuleNotFoundError halfway
+# through -- after the side effects it already performed. Measured: the account
+# onboarding stored a credential in Secret Manager and then failed to register
+# the account, leaving a secret with nothing pointing at it.
+swarm_python() {
+  if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    printf '%s' "${REPO_ROOT}/.venv/bin/python"
+    return 0
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    printf 'uv run --project %s python' "${REPO_ROOT}"
+    return 0
+  fi
+  die "no project python found. Run: uv sync"
+}
+
 terraform_bin() {
   prefer_local_bin terraform "${SWARM_TERRAFORM:-}" \
     || die "terraform not found; run: make prerequisites"

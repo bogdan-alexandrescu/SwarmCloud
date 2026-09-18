@@ -77,8 +77,67 @@ validate_tenant() {
     || die "tenant '${tenant}' is not a plain tenant id"
 }
 
+# Resolved once: the registration steps need google-cloud-firestore, which the
+# system python does not have.
+SWARM_PY="$(swarm_python)"
+
 secret_base() {
   printf 'swarm-account-%s-%s' "$1" "$2"
+}
+
+# Grant exactly what each identity needs on the two secrets, and nothing more.
+#
+# These secrets are created out of band -- terraform manages the CONTAINER for
+# tenant provider keys but knows nothing about accounts, which are added by an
+# operator at any time -- so the grant has to live with the thing that creates
+# them. create-secrets.sh only WARNS when no binding exists, which is why the
+# first three accounts onboarded with no bindings at all and the broker could
+# not have refreshed any of them.
+#
+# The split is the same one the tenant secrets use, and for the same reason: a
+# refresh token is standing access to the account, an access token expires.
+#
+#   <base>-refresh   broker reads AND writes. The worker is absent.
+#   <base>           broker writes, worker reads.
+grant_access() {
+  local base="$1" refresh_secret="$2"
+  local broker="serviceAccount:swarm-quota-broker@${PROJECT_ID}.iam.gserviceaccount.com"
+  local worker="serviceAccount:swarm-agent-worker-${TENANT}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+  step "Access"
+
+  # --condition=None is required, not cosmetic: without it gcloud prompts for a
+  # condition choice, and a prompt in a script that may run unattended is a hang.
+  _bind() {
+    gcloud secrets add-iam-policy-binding "$1" \
+      --project "${PROJECT_ID}" --member "$2" --role "$3" \
+      --condition=None >/dev/null 2>&1
+  }
+
+  # if/else rather than `&& ok || warn`: with the latter, a failing `ok` would
+  # run the warn too, and the report would contradict itself.
+  _report() {
+    if _bind "$1" "$2" "$3"; then ok "$4"; else warn "could not grant: $4"; fi
+  }
+
+  _report "${refresh_secret}" "${broker}" roles/secretmanager.secretAccessor \
+    "broker may read ${refresh_secret}"
+  _report "${refresh_secret}" "${broker}" roles/secretmanager.secretVersionAdder \
+    "broker may write ${refresh_secret} (rotated tokens)"
+  _report "${base}" "${broker}" roles/secretmanager.secretVersionAdder \
+    "broker may publish access tokens to ${base}"
+
+  # The worker reads the SHORT-LIVED half only. Its absence from the refresh
+  # secret is the isolation property, not an oversight: an agent that could read
+  # a refresh token could mint itself credentials long after its job ended.
+  if gcloud iam service-accounts describe "${worker#serviceAccount:}" \
+       --project "${PROJECT_ID}" --format='value(email)' >/dev/null 2>&1; then
+    _report "${base}" "${worker}" roles/secretmanager.secretAccessor \
+      "tenant worker may read ${base}"
+  else
+    warn "no worker service account for tenant ${TENANT} yet"
+    dim "run: scripts/register-tenant.sh --tenant ${TENANT}"
+  fi
 }
 
 cmd_add() {
@@ -209,6 +268,8 @@ PYEOF
   rm -rf "${work}"
   trap - EXIT INT TERM
 
+  grant_access "${base}" "${refresh_secret}"
+
   step "Registering the account"
   register_account
   hr
@@ -223,7 +284,7 @@ register_account() {
   PROJECT_ID="${PROJECT_ID}" FIRESTORE_DATABASE="${FIRESTORE_DATABASE:-swarm}" \
   SWARM_TENANT="${TENANT}" SWARM_LABEL="${LABEL}" \
   SWARM_PROVIDER="${PROVIDER}" SWARM_LEND_TO="${lend}" \
-  python3 - <<'PYEOF'
+  ${SWARM_PY} - <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "common"))
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "quota-broker"))
@@ -247,7 +308,7 @@ PYEOF
 
 cmd_list() {
   PROJECT_ID="${PROJECT_ID}" FIRESTORE_DATABASE="${FIRESTORE_DATABASE:-swarm}" \
-  SWARM_TENANT="${TENANT}" python3 - <<'PYEOF'
+  SWARM_TENANT="${TENANT}" ${SWARM_PY} - <<'PYEOF'
 import os, sys
 from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "common"))
@@ -289,7 +350,7 @@ cmd_state() {
   validate_tenant "${TENANT}"; validate_label "${LABEL}"
   PROJECT_ID="${PROJECT_ID}" FIRESTORE_DATABASE="${FIRESTORE_DATABASE:-swarm}" \
   SWARM_TENANT="${TENANT}" SWARM_LABEL="${LABEL}" \
-  SWARM_STATE="${state}" SWARM_REASON="${reason}" python3 - <<'PYEOF'
+  SWARM_STATE="${state}" SWARM_REASON="${reason}" ${SWARM_PY} - <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "common"))
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "quota-broker"))
@@ -319,7 +380,7 @@ cmd_remove() {
     "This stops the account being used. The SECRET is left in place."
 
   PROJECT_ID="${PROJECT_ID}" FIRESTORE_DATABASE="${FIRESTORE_DATABASE:-swarm}" \
-  SWARM_TENANT="${TENANT}" SWARM_LABEL="${LABEL}" python3 - <<'PYEOF'
+  SWARM_TENANT="${TENANT}" SWARM_LABEL="${LABEL}" ${SWARM_PY} - <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "common"))
 sys.path.insert(0, os.path.join(os.getcwd(), "apps", "quota-broker"))
