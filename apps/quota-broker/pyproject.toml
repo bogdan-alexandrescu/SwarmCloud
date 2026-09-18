@@ -9,6 +9,13 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
     "google-cloud-firestore>=2.16",
+    # Required by quota_broker.secretstore, which imports it lazily INSIDE a
+    # method. A lazy import keeps it off the startup path and also means a
+    # missing dependency raises at the moment of use rather than at boot -- so
+    # this absence presented as "could not read the refresh credential" on every
+    # sweep, with correct IAM and a correct secret, and the refresher could
+    # never have worked at all.
+    "google-cloud-secret-manager>=2.20",
     "google-auth>=2.30",
     "prometheus-client>=0.20",
 ]

@@ -24,6 +24,7 @@ from prometheus_client import CollectorRegistry, Counter, Gauge, generate_latest
 from prometheus_client.exposition import CONTENT_TYPE_LATEST
 from pydantic import BaseModel, ConfigDict, Field
 
+from swarm_common.logging_setup import configure_logging
 from swarm_common.models import ProviderState, QuotaState
 from swarm_common.profiles import RUNNER_PROFILES
 
@@ -281,6 +282,13 @@ def create_app(
     subscription_tenants: Any | None = None,
     account_store: AccountStore | None = None,
 ) -> FastAPI:
+    # The other three services do this and the broker did not, so every
+    # `extra={...}` field it logged was discarded and its records arrived as
+    # unstructured text. The first thing that cost: a refresher failing on every
+    # sweep with the error type it attached invisible, leaving only a message
+    # that reads like a permissions problem.
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
     app = FastAPI(title="swarm quota broker", version="0.1.0")
     app.state.broker = broker if broker is not None else build_broker()
     app.state.metrics = metrics or BrokerMetrics()
