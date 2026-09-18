@@ -183,8 +183,15 @@ def test_a_rotated_refresh_token_replaces_the_old_one():
 
 # -- when not to act -------------------------------------------------------
 
-def test_a_credential_far_from_expiry_is_left_alone():
-    store = _Store({REFRESH_SECRET: _stored(10)})
+def test_a_credential_far_from_expiry_is_not_exchanged():
+    """The property is about the ENDPOINT, not about writing nothing.
+
+    This test used to seed only the refresh secret and assert `writes == []`,
+    which quietly encoded the onboarding bug: with the worker-facing secret
+    absent, writing nothing is exactly the failure. Seeded as already published,
+    so what it asserts is what it means -- a valid token is not spent.
+    """
+    store = _Store({REFRESH_SECRET: _stored(10), "swarm-tenant-eng-anthropic": "access-old"})
     ep = _Endpoint({"access_token": "x"})
     out = _refresher(store, ep).refresh_tenant("eng", "anthropic")
     assert out.refreshed is False and out.reason == "still_valid"
@@ -262,3 +269,61 @@ def test_an_access_token_pasted_on_its_own_is_refused_with_a_usable_message():
     with pytest.raises(CredentialError) as exc:
         parse_credential("sk-ant-oat01-notjson", now=NOW)
     assert "refreshToken" in str(exc.value)
+
+
+# -- onboarding: valid is not the same as published -------------------------
+
+def test_a_freshly_onboarded_credential_is_published_immediately():
+    """The bug an adversarial review found and reality was about to confirm.
+
+    An operator onboards a credential minted minutes ago. Its access token has
+    hours left, so `needs_refresh` is false and the refresher used to return
+    without writing anything -- leaving the secret the worker actually mounts
+    with NO version, for as long as the credential stayed fresh. Every task for
+    that tenant then failed on a missing secret, caused by a credential that was
+    working perfectly.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Store({f"{base}{REFRESH_SUFFIX}": _stored(8)})   # 8h of life left
+    ep = _Endpoint({"access_token": "unused"})
+
+    out = _refresher(store, ep).refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published"
+    assert ep.calls == [], "the token was valid; exchanging it would waste it"
+    assert store.writes == [base], "only the worker-facing half needed writing"
+    assert store.data[base] == "access-old"
+
+
+def test_a_token_already_published_is_not_written_again():
+    """Writing every sweep would add a secret version every five minutes --
+    288 a day of identical values."""
+    base = "swarm-tenant-eng-anthropic"
+    store = _Store({
+        f"{base}{REFRESH_SUFFIX}": _stored(8),
+        base: "access-old",
+    })
+
+    out = _refresher(store, _Endpoint()).refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "still_valid"
+    assert store.writes == []
+
+
+def test_an_unreadable_base_secret_is_treated_as_needing_the_token():
+    """Publishing one the secret may already have costs a redundant version.
+    NOT publishing one it lacks costs every task for that tenant. The uncertain
+    case takes the cheap mistake."""
+    base = "swarm-tenant-eng-anthropic"
+
+    class _Unreadable(_Store):
+        def access(self, name):
+            if name == base:
+                raise RuntimeError("permission denied")
+            return super().access(name)
+
+    store = _Unreadable({f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    out = _refresher(store, _Endpoint()).refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published"
+    assert store.writes == [base]

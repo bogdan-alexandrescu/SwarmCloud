@@ -162,7 +162,9 @@ def test_an_account_far_from_expiry_costs_no_endpoint_call():
     token endpoint's rate limit for nothing, and the limit is shared with the
     agents actually working."""
     base = _acct_secret("fresh")
-    store = _Store({f"{base}{REFRESH_SUFFIX}": _stored(10)})
+    # Seeded as already published: an account whose worker-facing secret is
+    # EMPTY is a different case, and one where writing nothing is the bug.
+    store = _Store({f"{base}{REFRESH_SUFFIX}": _stored(10), base: "old"})
     ep = _Endpoint({"access_token": "new"})
 
     out = _refresher(store, ep).sweep_accounts([(base, "fresh")])

@@ -131,8 +131,42 @@ class CredentialRefresher:
             return RefreshOutcome(tenant_id, provider, False, "unreadable")
 
         if not credential.needs_refresh(now, self._window):
+            # STILL VALID IS NOT THE SAME AS ALREADY PUBLISHED.
+            #
+            # An operator onboards a credential minted minutes ago, so its access
+            # token has hours left and this path is taken immediately. Returning
+            # here without publishing leaves the base secret -- the one the
+            # worker actually mounts -- with no version at all, for as long as
+            # the token remains fresh. Every task for that tenant fails on a
+            # missing secret, and the cause is a credential that is working
+            # perfectly.
+            #
+            # So the access token is published when the base secret does not
+            # already carry it. Compared rather than written blindly: writing
+            # every sweep would add a secret version every five minutes, which
+            # is 288 a day of identical values.
+            if self._base_is_current(base, credential.access_token):
+                return RefreshOutcome(
+                    tenant_id, provider, False, "still_valid", credential.expires_at
+                )
+            try:
+                self._store.add_version(base, credential.access_token)
+            except Exception as exc:
+                self._log.warning(
+                    "could not publish a still-valid access token",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "provider": provider,
+                        "error": type(exc).__name__,
+                    },
+                )
+                return RefreshOutcome(tenant_id, provider, False, "publish_failed")
+            self._log.info(
+                "published an access token that was already valid",
+                extra={"tenant_id": tenant_id, "provider": provider},
+            )
             return RefreshOutcome(
-                tenant_id, provider, False, "still_valid", credential.expires_at
+                tenant_id, provider, True, "published", credential.expires_at
             )
 
         try:
@@ -184,6 +218,20 @@ class CredentialRefresher:
         rather than drifting into two that must be kept in step.
         """
         return self._refresh(secret_base, tenant_id=label or secret_base, provider="account")
+
+    def _base_is_current(self, base: str, access_token: str) -> bool:
+        """Whether the worker-facing secret already holds this access token.
+
+        A read failure is reported as NOT current, deliberately. Publishing a
+        credential the secret may already have costs one redundant version;
+        NOT publishing one it lacks costs every task for that tenant. The two
+        mistakes are not the same size, so the uncertain case takes the cheap
+        one.
+        """
+        try:
+            return self._store.access(base) == access_token
+        except Exception:
+            return False
 
     def sweep_accounts(self, secrets: list[tuple[str, str]]) -> list[RefreshOutcome]:
         """Refresh every account given, INCLUDING ones nobody is using.
