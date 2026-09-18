@@ -112,12 +112,31 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     if args.timeout:
         spec["timeout_seconds"] = args.timeout
 
+    # Distinct prompts, one per line, for a real fan-out. `--count` repeats one
+    # prompt; this is how a dozen agents each get a different job, which is what
+    # a fan-out actually is.
+    prompts = [args.prompt] * args.count
+    if args.from_file:
+        lines = [
+            line.strip()
+            for line in open(args.from_file, encoding="utf-8")
+            if line.strip() and not line.startswith("#")
+        ]
+        if not lines:
+            raise SystemExit(f"{args.from_file} has no prompts")
+        prompts = lines
+
     app = build_context(db=_db())
     ctx = _context()
     # One submission for the whole batch, not N submissions. The service
     # validates the batch size and admits them together, and N separate calls
     # would be N separate wake-ups of the scheduler.
-    result = app.submissions.submit_tasks(ctx, [TaskCreate(**spec) for _ in range(args.count)])
+    specs = []
+    for prompt in prompts:
+        one = dict(spec)
+        one["input"] = {"prompt": prompt} if prompt else {}
+        specs.append(TaskCreate(**one))
+    result = app.submissions.submit_tasks(ctx, specs)
 
     ids = [t.id for t in result.tasks]
     if args.json:
@@ -280,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("prompt", nargs="?", default="")
     d.add_argument("--repo", default="", help="repository to shallow-clone into the workspace")
     d.add_argument("--count", type=int, default=1, help="dispatch this many identical tasks")
+    d.add_argument("--from-file", default="",
+                   help="one prompt per line; blank lines and # comments ignored")
     d.add_argument("--timeout", type=int, default=0, help="per-task seconds; may only SHORTEN the profile's")
     d.add_argument("--json", action="store_true")
     d.set_defaults(func=cmd_dispatch)
