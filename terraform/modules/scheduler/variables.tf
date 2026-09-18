@@ -170,3 +170,18 @@ variable "paused" {
 variable "labels" {
   type = map(string)
 }
+
+# The OIDC audience each target accepts. Defaults to the target's own URL, which
+# is what a Cloud Run service accepts with no extra configuration. It is set
+# explicitly when the receiving service must ALSO be told its own audience, so
+# that it can check the `aud` claim itself: the URL is unknowable to the service
+# it belongs to, a constant is not. See `push_audiences` in infra/locals.tf.
+variable "scheduler_push_audience" {
+  type    = string
+  default = ""
+}
+
+variable "quota_broker_audience" {
+  type    = string
+  default = ""
+}

@@ -17,6 +17,10 @@ resource "google_cloud_run_v2_service" "this" {
   deletion_protection = var.deletion_protection
   launch_stage        = "GA"
 
+  # Accepted IN ADDITION to the service URL, never instead of it: an existing
+  # caller that presents a URL-audience token keeps working across this change.
+  custom_audiences = each.value.custom_audiences
+
   labels = var.labels
 
   template {

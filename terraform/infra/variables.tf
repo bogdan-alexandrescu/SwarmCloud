@@ -213,6 +213,30 @@ variable "tenants" {
   }
 }
 
+variable "admin_groups" {
+  description = <<-EOT
+    Google groups whose members may act across tenants in swarm-api -- reading
+    another tenant's tasks, and the platform routes that are not tenant-scoped.
+
+    Separate from `tenants` on purpose. A tenant group is a group that OWNS
+    work; an admin group is one that may look at everyone's. Deriving one from
+    the other would make every tenant an administrator the moment it was
+    registered, which is the opposite of invariant 9.
+
+    Empty is the correct default and the current dev setting: with no admin
+    group, no caller is an administrator, and the only cross-tenant identity is
+    the platform tick account, which authenticates as a service account and
+    never through this path.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for g in var.admin_groups : can(regex("^[^@]+@[^@]+$", g))])
+    error_message = "every admin group must be a group email address."
+  }
+}
+
 variable "secret_admin_members" {
   description = <<-EOT
     Fallback identities allowed to ADD a provider-key version for a tenant that

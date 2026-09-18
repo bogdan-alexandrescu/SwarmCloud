@@ -270,10 +270,11 @@ module "cloud_run" {
       # The drain loop is a single serialised pass over admissible work.
       # Concurrent requests on one instance would have them contend on the same
       # Firestore documents and abort each other.
-      concurrency     = 1
-      request_timeout = "540s"
-      env             = local.service_env["swarm-scheduler"]
-      invokers        = { tick = module.iam.tick_member }
+      concurrency      = 1
+      request_timeout  = "540s"
+      env              = local.service_env["swarm-scheduler"]
+      custom_audiences = [local.push_audiences["swarm-scheduler"]]
+      invokers         = { tick = module.iam.tick_member }
     }
     "swarm-quota-broker" = {
       service_account_email = module.iam.service_account_emails["swarm-quota-broker"]
@@ -283,6 +284,7 @@ module "cloud_run" {
       memory                = "512Mi"
       concurrency           = 40
       env                   = local.service_env["swarm-quota-broker"]
+      custom_audiences      = [local.push_audiences["swarm-quota-broker"]]
       invokers = {
         tick      = module.iam.tick_member
         scheduler = module.iam.service_account_members["swarm-scheduler"]
@@ -344,6 +346,11 @@ module "scheduler" {
   wake_topic_name = local.wake_topic
 
   scheduler_push_endpoint = module.cloud_run.service_urls["swarm-scheduler"]
+
+  # The endpoint is still the URL -- that is where the request goes. The
+  # audience is the constant both sides name, so the receiver can verify it.
+  scheduler_push_audience = local.push_audiences["swarm-scheduler"]
+  quota_broker_audience   = local.push_audiences["swarm-quota-broker"]
   reconciler_endpoint     = module.cloud_run.service_urls["swarm-reconciler"]
   quota_broker_endpoint   = module.cloud_run.service_urls["swarm-quota-broker"]
   enable_quota_refresh    = var.enable_quota_refresh

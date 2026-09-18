@@ -277,21 +277,90 @@ locals {
     MAX_ACTIVE_AGENTS     = tostring(var.pool_limits.global)
   }, var.settings_env)
 
+  # A Cloud Run service's OIDC audience is normally its own URL -- which cannot
+  # be written into that same service's environment, because the URL is an
+  # attribute of the resource the environment is part of. Terraform reports that
+  # honestly as a cycle, and the way it was resolved was to not set the variable
+  # at all, leaving both audience checks inert.
+  #
+  # A custom audience is the documented way out: a literal string known before
+  # apply, accepted by Cloud Run IN ADDITION to the service URL, and minted by
+  # the Pub/Sub and Cloud Scheduler OIDC tokens. Both sides then name the same
+  # constant and nothing needs to know a URL.
+  push_audiences = {
+    for name in ["swarm-scheduler", "swarm-quota-broker"] :
+    name => "https://${name}.${var.environment}.swarm.internal"
+  }
+
   service_env = {
     "swarm-api" = merge(local.common_env, {
-      WAKE_TOPIC = local.wake_topic
+      # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
+      # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
+      # which nothing has ever read. swarm_api.deps falls back to NullWaker()
+      # when the value is empty, so every submission silently skipped the
+      # publish and waited for the one-minute Cloud Scheduler safety tick.
+      #
+      # Nothing failed, which is why it survived: the queue still drained, just
+      # up to 60s later than designed, and tail latency is not a thing anyone
+      # alerts on. Renaming the env key is the whole fix -- the topic, the IAM
+      # and the subscription were always correct.
+      DISPATCH_TOPIC = local.wake_topic
+
+      # Neither name appeared anywhere in terraform, so swarm_api.settings read
+      # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
+      # fell through to the personal `u-<email>` tenant.
+      #
+      # That fallback is working, legitimate code -- which is exactly why this
+      # hid. Every request still succeeded and still got *a* tenant; it was just
+      # never the group one. A member of eng@saga.xyz spent their own personal
+      # quota and wrote to their own GCS prefix while the shared tenant this
+      # file provisions sat unused.
+      #
+      # Derived from var.tenants rather than restated: a tenant of kind "group"
+      # IS a tenant group, and keeping a second list in sync by hand is how the
+      # two would drift.
+      TENANT_GROUPS = join(",", sort([for t, v in var.tenants : v.principal if v.kind == "group"]))
+      ADMIN_GROUPS  = join(",", sort(var.admin_groups))
     })
     "swarm-scheduler" = merge(local.common_env, {
-      WAKE_TOPIC   = local.wake_topic
+      # See the swarm-api block: the reader has always been DISPATCH_TOPIC.
+      DISPATCH_TOPIC = local.wake_topic
+
+      # PushVerifier is the second auth layer in front of /v1/push: Cloud Run
+      # IAM proves the caller is authorised, this proves WHICH caller it is.
+      # Neither name was ever set, so the verifier constructed itself disabled
+      # and the comment in scheduler/main.py asserted a control that was not
+      # running. The audience matters independently: google-auth SKIPS the
+      # `aud` claim entirely when none is passed, so without it a token the
+      # tick account minted for ANY other service was accepted here.
+      PUSH_SERVICE_ACCOUNT = module.iam.tick_service_account
+      PUSH_AUDIENCE        = local.push_audiences["swarm-scheduler"]
+
       GKE_CLUSTER  = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION = var.region
       # Required for a client running OUTSIDE the cluster. Without both, the GKE
       # backend falls back to load_incluster_config(), which on Cloud Run fails
       # with "Service host/port is not set" on every reconciliation pass.
-      GKE_ENDPOINT      = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
-      GKE_CA_CERT_B64   = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
-      ARTIFACT_REGISTRY = var.artifact_registry_repository
-      IMAGE_BASE        = local.image_base
+      GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
+      GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
+      # ARTIFACT_REGISTRY_HOST, not ARTIFACT_REGISTRY or IMAGE_BASE. The
+      # scheduler reads only this one (scheduler/settings.py), and the other two
+      # names were read by nothing at all.
+      #
+      # This one was WORKING, which is the interesting part. Unset, the
+      # scheduler falls back to building the host itself out of
+      # `swarm_common.config.Settings.artifact_registry` -- a dataclass default
+      # of "swarm-images" that is never read from the environment -- and
+      # var.artifact_registry_repository also defaults to "swarm-images", so the
+      # two agreed and every dispatch happened to pull the right image.
+      #
+      # `artifact_registry_repository`'s own description says "Must match
+      # swarm_common.config.Settings.artifact_registry", and nothing enforced
+      # that. Changing the repository name in tfvars would have silently sent
+      # every dispatch at a registry path that does not exist, and the symptom
+      # would have been a 404 on the image, pointing at the build rather than at
+      # the variable. Passing the value makes it flow instead of coincide.
+      ARTIFACT_REGISTRY_HOST = local.image_base
       # The agent runtime images carry the same immutable git-SHA tag as the
       # control plane. Without this the dispatcher asked for ":latest", which
       # scripts/build-images.sh never pushes, so every dispatch failed with
@@ -316,10 +385,20 @@ locals {
       # report quota as their own tenant; being on this list would let any one
       # of them set another tenant's hard max.
       PLATFORM_SERVICE_ACCOUNTS = module.iam.tick_service_account
+
+      # WorkerIdentity refuses to start without this when `hardened`, for the
+      # same reason PUSH_AUDIENCE exists: no audience means google-auth does not
+      # check `aud` at all. It was never set, and `hardened` is driven by
+      # ENVIRONMENT -- which is "dev" for saga-agents-staging, a project that is
+      # production-shaped in every way except that label. So the guard written
+      # to make this impossible was itself disarmed in the only place it ran.
+      BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
     "swarm-reconciler" = merge(local.common_env, {
-      GKE_CLUSTER     = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
-      GKE_LOCATION    = var.region
+      # No GKE_CLUSTER/GKE_LOCATION here: the reconciler talks to the cluster
+      # through the endpoint and CA bundle directly (reconciler/backends.py) and
+      # has never read either name. The scheduler does read them; that is why
+      # they are set there and not here.
       GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
       GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
     })

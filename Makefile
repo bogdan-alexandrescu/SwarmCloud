@@ -157,6 +157,7 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@$(SCRIPTS)/lib/auth-guard.sh --self-test
 	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
+	@$(SCRIPTS)/lib/check-env-parity.sh
 	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
 	  uv run --project . pytest tests/unit -q; \
 	else \

@@ -63,6 +63,12 @@ variable "services" {
     concurrency           = optional(number, 80)
     request_timeout       = optional(string, "300s")
     env                   = optional(map(string), {})
+    # Extra OIDC audiences this service accepts, alongside its own URL. Present
+    # so a caller and a receiver can agree on an audience that is a constant
+    # rather than a URL only known after apply -- without it, a service cannot
+    # be told its own audience, because the URL is an attribute of the very
+    # resource whose environment would carry it.
+    custom_audiences = optional(list(string), [])
     # caller label -> IAM member. Keyed by label because the members are service
     # account emails that are unknown until apply.
     invokers          = optional(map(string), {})
