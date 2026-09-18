@@ -180,12 +180,27 @@ def test_the_gcs_grant_keeps_its_prefix_condition(dry_run_transcript: str) -> No
     objects = [b for b in bindings if "roles/storage.objectUser" in b]
     assert objects, "the tenant's object grant disappeared:\n" + dry_run_transcript
 
+    # The expression moved into a file: gcloud parses --condition as
+    # comma-separated key=value pairs, and this expression contains a comma
+    # inside api.getAttribute(..., ''), so gcloud split it mid-expression and
+    # refused the fragment. The script prints the condition it is applying --
+    # which an operator should see anyway, since that condition IS the
+    # isolation -- so the assertions look at the transcript rather than at the
+    # command line.
     for binding in objects:
-        assert f"objects/tenants/eng/" in binding, binding
-        assert "objectListPrefix" in binding, (
-            f"the LIST clause is gone; a worker could enumerate every prefix:\n  {binding}"
+        assert "--condition-from-file" in binding, (
+            "the prefix condition must be passed by file; passing it inline is "
+            f"silently truncated by gcloud at the first comma:\n  {binding}"
         )
         assert "roles/storage.objectAdmin" not in binding, (
             "objectAdmin adds storage.objects.setIamPolicy, which lets a compromised "
             f"worker share its own objects with anyone:\n  {binding}"
         )
+
+    assert "objects/tenants/eng/" in dry_run_transcript, (
+        "the tenant's object prefix is not in the condition:\n" + dry_run_transcript
+    )
+    assert "listing prefix tenants/eng/" in dry_run_transcript, (
+        "the LIST clause is gone; a worker could enumerate every tenant's object "
+        "names even though it could not open them:\n" + dry_run_transcript
+    )

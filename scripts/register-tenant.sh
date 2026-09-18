@@ -404,6 +404,11 @@ title: tenant_prefix_only
 description: Only this tenant's object prefix, listing included
 expression: resource.name.startsWith('projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('${GCS_PREFIX}/')
 CONDEOF
+  # Shown, not hidden. The condition IS the isolation -- it is the only thing
+  # standing between this tenant's service account and every other tenant's
+  # artifacts -- so an operator applying it should see what they are applying,
+  # and a --dry-run that does not show it is not a rehearsal of anything.
+  dim "  condition: objects/${GCS_PREFIX}/ and listing prefix ${GCS_PREFIX}/"
   # Skip if the binding is already there. terraform/modules/tenancy grants this
   # same conditioned binding for every tenant it manages, and adding it twice is
   # not merely redundant: gcloud reads the bucket policy at version 1, the
