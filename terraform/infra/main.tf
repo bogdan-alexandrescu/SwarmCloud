@@ -368,7 +368,16 @@ module "scheduler" {
 
   labels = local.labels
 
-  depends_on = [module.project_services]
+  # module.cloud_run explicitly, not just through the endpoint references above.
+  # The OIDC tokens minted here name a CUSTOM audience, and a custom audience is
+  # only accepted once it is present on the receiving service. Without the
+  # ordering pinned, terraform is free to update this subscription first, and
+  # every tick in the gap is rejected until the service catches up.
+  #
+  # Pub/Sub retries for 300s and Cloud Scheduler twice, so the gap self-heals
+  # and nothing is lost -- but "self-healing" is a poor thing to discover during
+  # an apply, and the dependency costs nothing.
+  depends_on = [module.project_services, module.cloud_run]
 }
 
 module "monitoring" {
