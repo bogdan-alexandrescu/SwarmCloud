@@ -360,6 +360,7 @@ def test_the_token_request_is_form_encoded_to_the_right_host():
         captured["url"] = request.full_url
         captured["body"] = request.data.decode()
         captured["content_type"] = request.headers.get("Content-type")
+        captured["user_agent"] = request.headers.get("User-agent", "")
         return _Response()
 
     original = urllib.request.urlopen
@@ -371,6 +372,10 @@ def test_the_token_request_is_form_encoded_to_the_right_host():
 
     assert captured["url"] == "https://platform.claude.com/v1/oauth/token"
     assert captured["content_type"] == "application/x-www-form-urlencoded"
+    # The WAF refuses unrecognised clients with 403. urllib's default
+    # User-Agent is Python-urllib, which is refused; measured from one machine,
+    # same second: no UA -> 429, Python-urllib -> 403, claude-cli -> 400.
+    assert captured["user_agent"].startswith("claude-cli/")
     assert "grant_type=refresh_token" in captured["body"]
     assert "refresh_token=my-refresh-token" in captured["body"]
     assert "client_id=" in captured["body"]

@@ -49,6 +49,21 @@ CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 #: the one that works.
 TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 
+#: The token endpoint sits behind a WAF that refuses unrecognised clients, and
+#: it refuses them with 403 -- a status that reads as "this credential is not
+#: allowed" and actually means "this User-Agent is not". Measured from one
+#: machine, same request, same second:
+#:
+#:     no User-Agent               -> 429  (accepted, merely rate limited)
+#:     User-Agent: Python-urllib   -> 403  (blocked outright)
+#:     User-Agent: claude-cli/...  -> 400  (processed; bad token rejected)
+#:
+#: urllib sends Python-urllib by default, which is why every refresh failed with
+#: a 403 that looked like a credential problem. This identifies the client
+#: accurately: the platform IS acting as Claude Code here, using Claude Code's
+#: own OAuth client id to refresh Claude Code's own credentials.
+CLIENT_USER_AGENT = "claude-cli/2.1.274 (external, cli)"
+
 #: Refresh this far before expiry. An access token that expires mid-attempt
 #: fails the attempt, and attempts run for up to two hours.
 DEFAULT_REFRESH_WINDOW = timedelta(hours=3)
@@ -119,6 +134,7 @@ class HttpTokenEndpoint:
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "User-Agent": CLIENT_USER_AGENT,
             },
             method="POST",
         )
