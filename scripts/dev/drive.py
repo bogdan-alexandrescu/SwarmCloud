@@ -9,6 +9,7 @@ and reconciler code in-process against the same project, so a fix is seconds.
     uv run python scripts/dev/drive.py reconcile   # one reconciliation pass
     uv run python scripts/dev/drive.py submit                  # a mock task
     uv run python scripts/dev/drive.py submit claude-code "..."  # a real agent
+    uv run python scripts/dev/drive.py submit claude-code "..." <repo-url>
     uv run python scripts/dev/drive.py clean       # delete tasks/leases/attempts
 
 It is a DEVELOPMENT tool: it writes to the real control plane, so it refuses to
@@ -130,6 +131,11 @@ def submit() -> None:
 
     profile = sys.argv[2] if len(sys.argv) > 2 else "mock"
     prompt = sys.argv[3] if len(sys.argv) > 3 else ""
+    # A repository to work in. Shallow-cloned by the worker into the attempt's
+    # workspace before the agent starts, so the agent finds a checkout rather
+    # than an empty directory -- which is the difference between a task that can
+    # do project work and one that can only answer questions.
+    repo = sys.argv[4] if len(sys.argv) > 4 else os.environ.get("SWARM_REPO", "")
 
     email = _caller_email()
 
@@ -157,8 +163,12 @@ def submit() -> None:
     if prompt:
         payload["prompt"] = prompt
 
+    spec: dict = {"runner_profile": profile, "input": payload}
+    if repo:
+        spec["repository_url"] = repo
+
     app = build_context(db=DB)
-    result = app.submissions.submit_tasks(ctx, [TaskCreate(runner_profile=profile, input=payload)])
+    result = app.submissions.submit_tasks(ctx, [TaskCreate(**spec)])
     for task in result.tasks:
         print(f"  {task.id}  {task.state}  tenant={task.tenant_id}  profile={task.runner_profile}")
     print(f"  woke scheduler: {result.woke_scheduler}")
