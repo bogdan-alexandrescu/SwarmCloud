@@ -1,0 +1,164 @@
+/* Dark-first, because this is an operations screen that gets opened at 3am.
+   Light mode follows the system. Everything is a token so a design pass changes
+   one block rather than forty rules. */
+:root {
+  --bg: #0b0d10;
+  --surface: #14181d;
+  --surface-2: #1b2027;
+  --line: #262d36;
+  --text: #e8ecf1;
+  --text-dim: #93a0b0;
+  --text-faint: #64707e;
+
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --info: #58a6ff;
+  --paused: #a371f7;
+
+  --radius: 10px;
+  --gutter: 16px;
+  --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --surface-2: #f0f3f6;
+    --line: #d8dee4;
+    --text: #1f2328;
+    --text-dim: #59636e;
+    --text-faint: #818b98;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --bad: #cf222e;
+    --info: #0969da;
+    --paused: #8250df;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  /* iPhone: keep content clear of the notch and the home indicator. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.app { max-width: 1100px; margin: 0 auto; padding: 24px var(--gutter) 64px; }
+
+/* ---- header ---- */
+.head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.head h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.head .env {
+  font: 500 11px/1.6 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.sub { color: var(--text-dim); font-size: 13px; margin: 0 0 24px; }
+.sub button {
+  background: none; border: none; color: var(--info);
+  font: inherit; cursor: pointer; padding: 0; text-decoration: underline;
+}
+
+/* ---- section ---- */
+.section { margin-bottom: 28px; }
+.section > h2 {
+  font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--text-faint);
+  margin: 0 0 10px;
+}
+
+/* ---- pool grid ---- */
+.grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
+
+.pool {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+  min-width: 0;
+}
+.pool.paused { border-color: color-mix(in srgb, var(--paused) 45%, var(--line)); }
+.pool.full   { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+
+.pool .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pool .name {
+  font: 500 13px/1.3 var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.pool .count { font: 600 13px/1.3 var(--mono); white-space: nowrap; }
+.pool .count .of { color: var(--text-faint); font-weight: 400; }
+
+/* The bar is the whole point of the card: saturation at a glance. */
+.bar { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bar > i { display: block; height: 100%; border-radius: 999px; background: var(--ok); transition: width .3s ease; }
+.bar > i.warn { background: var(--warn); }
+.bar > i.bad  { background: var(--bad); }
+
+.tags { display: flex; gap: 6px; flex-wrap: wrap; min-height: 17px; }
+.tag {
+  font: 500 10px/1.7 var(--mono);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 0 6px; border-radius: 4px;
+  border: 1px solid currentColor;
+}
+.tag.paused { color: var(--paused); }
+.tag.full   { color: var(--bad); }
+.tag.capped { color: var(--warn); }
+
+/* ---- states ---- */
+.state {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  background: var(--surface);
+}
+.state.failed { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+.state h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.state.failed h3 { color: var(--bad); }
+.state p { margin: 0; color: var(--text-dim); font-size: 13.5px; }
+.state pre {
+  margin: 10px 0 0; padding: 10px; overflow-x: auto;
+  background: var(--surface-2); border-radius: 6px;
+  font: 12px/1.5 var(--mono); color: var(--text-dim);
+}
+.state .retry {
+  margin-top: 14px; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 14px; font: 500 13px var(--font); cursor: pointer;
+}
+.state .retry:hover { border-color: var(--text-faint); }
+
+.skeleton { background: var(--surface-2); border-radius: 4px; animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
+
+/* ---- phone ---- */
+/* Two cards per row is still readable at 390pt; one wastes the screen. The
+   card is designed so its three lines survive the narrower column. */
+@media (max-width: 560px) {
+  .app { padding-top: 16px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .pool { padding: 10px 11px; gap: 6px; }
+  .pool .name { font-size: 12px; }
+  body { font-size: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
