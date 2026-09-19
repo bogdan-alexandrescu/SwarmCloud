@@ -36,24 +36,51 @@ info "api ${API_URL:-$(api_url)}"
 # ---------------------------------------------------------------------------
 t_case "Control-plane services are healthy"
 for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}"; do
-  url="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" \
-    --region "${REGION}" --format='value(status.url)' 2>/dev/null || true)"
-  if [[ -z "${url}" ]]; then
-    t_fail "${service}: not deployed"
+  describe_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-describe.XXXXXX")"
+  if ! url="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" \
+      --region "${REGION}" --format='value(status.url)' 2>"${describe_err}")"; then
+    err_detail="$(cat "${describe_err}")"
+    rm -f "${describe_err}"
+    die_if_auth_failure "${err_detail}"
+    if grep -qi 'NOT_FOUND\|could not be found\|does not exist' <<<"${err_detail}"; then
+      t_fail "${service}: not deployed"
+    else
+      t_fail "${service}: could not check deployment status: $(printf '%s' "${err_detail}" | redact | head -n 1)"
+    fi
     continue
   fi
-  code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $(id_token)" "${url%/}/readyz" 2>/dev/null || echo 000)"
-  if [[ "${code}" == "200" ]]; then
-    t_pass "${service} /readyz 200"
+  rm -f "${describe_err}"
+  if [[ -z "${url}" ]]; then
+    t_fail "${service}: describe succeeded but returned no status.url"
+    continue
+  fi
+  readyz_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-readyz.XXXXXX")"
+  if code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $(id_token)" "${url%/}/readyz" 2>"${readyz_err}")"; then
+    rm -f "${readyz_err}"
+    if [[ "${code}" == "200" ]]; then
+      t_pass "${service} /readyz 200"
+    else
+      t_fail "${service} /readyz ${code}"
+    fi
   else
-    t_fail "${service} /readyz ${code}"
+    err_detail="$(cat "${readyz_err}")"
+    rm -f "${readyz_err}"
+    die_if_auth_failure "${err_detail}"
+    t_fail "${service}: /readyz unreachable: $(printf '%s' "${err_detail}" | redact | head -n 1)"
   fi
 done
 
 # ---------------------------------------------------------------------------
 t_case "Caller is authenticated and resolves to a tenant"
-if me="$(api_get "/tenants/me")"; then
+me_body="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-me.XXXXXX")"
+# api_get is called directly (redirected to a file), not inside "$(...)" --
+# a command substitution forks a subshell, which would throw away the
+# API_STATUS the function assigns and leave the `else` branch below reading a
+# stale value from whatever earlier call last ran in this shell.
+if api_get "/tenants/me" >"${me_body}"; then
+  me="$(cat "${me_body}")"
+  rm -f "${me_body}"
   tenant="$(jq -r '.tenant_id // .id // empty' <<<"${me}")"
   email="$(jq -r '.email // .submitted_by // empty' <<<"${me}")"
   if [[ -n "${tenant}" ]]; then
@@ -66,6 +93,7 @@ if me="$(api_get "/tenants/me")"; then
     *) t_fail "identity ${email} is outside saga.xyz" ;;
   esac
 else
+  rm -f "${me_body}"
   t_fail "GET ${API_PREFIX}/tenants/me -> HTTP ${API_STATUS}"
   tenant=""
 fi
@@ -75,29 +103,52 @@ t_case "An unknown runner profile is rejected (invariant 10)"
 if api_post "/tasks" '{"runner_profile":"definitely-not-a-profile","input":{}}' >/dev/null 2>&1; then
   t_fail "the API accepted an unknown runner profile"
 else
-  if [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
-    t_pass "rejected with HTTP ${API_STATUS}"
-  else
-    t_fail "expected a 4xx, got HTTP ${API_STATUS}"
-  fi
+  # 401/403 sit inside the 4xx window but prove nothing about profile
+  # validation -- they are an expired token or a missing IAM binding. Only
+  # 400/422 demonstrate the profile catalogue actually rejected the name.
+  case "${API_STATUS}" in
+    400|422) t_pass "rejected with HTTP ${API_STATUS}" ;;
+    401|403) t_fail "got HTTP ${API_STATUS} -- that is an auth/permission failure, not proof the unknown profile was validated" ;;
+    *)       t_fail "expected HTTP 400 or 422, got HTTP ${API_STATUS}" ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------
 t_case "Caller-supplied image and command are not honoured (invariant 10)"
 injected='{"runner_profile":"mock","input":{},"image":"attacker/evil:latest","command":["/bin/sh","-c","id"],"resource_class":"large"}'
-if evil_id="$(api_post "/tasks" "${injected}" | jq -r '.id // .task_id // empty')" && [[ -n "${evil_id}" ]]; then
-  sleep 2
-  got_class="$(task_field "${evil_id}" '.resource_class // "?"')"
-  expected_class="standard"
-  if [[ "${got_class}" == "${expected_class}" ]]; then
-    t_pass "resource class came from the profile catalogue (${got_class}), not the request"
+evil_body="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-evil.XXXXXX")"
+# api_post is called directly (redirected to a file) so API_STATUS is set in
+# THIS shell, not a subshell -- and jq runs afterward, as its own command, so
+# a curl/API failure can no longer be masked by jq's own exit status the way
+# `api_post ... | jq ...` would mask it under pipefail (the pipeline's status
+# is the rightmost command's).
+if api_post "/tasks" "${injected}" >"${evil_body}"; then
+  evil_id="$(jq -r '.id // .task_id // empty' <"${evil_body}")"
+  rm -f "${evil_body}"
+  if [[ -n "${evil_id}" ]]; then
+    sleep 2
+    got_class="$(task_field "${evil_id}" '.resource_class // "?"')"
+    expected_class="standard"
+    if [[ "${got_class}" == "${expected_class}" ]]; then
+      t_pass "resource class came from the profile catalogue (${got_class}), not the request"
+    else
+      t_fail "request-supplied resource_class leaked through: ${got_class}"
+    fi
+    cancel_all "${evil_id}"
   else
-    t_fail "request-supplied resource_class leaked through: ${got_class}"
+    t_fail "the API accepted the request (HTTP ${API_STATUS}) but the response carried no task id"
   fi
-  cancel_all "${evil_id}"
 else
-  # Rejecting the whole request outright is equally correct.
-  t_pass "request carrying an image/command was rejected outright (HTTP ${API_STATUS})"
+  rm -f "${evil_body}"
+  # Rejecting the whole request outright is equally correct -- but only a
+  # clean 4xx is evidence of that. A 5xx or a transport failure (API_STATUS=0)
+  # proves nothing about whether the injected fields were honoured; the API
+  # may equally have accepted them and then crashed.
+  if [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
+    t_pass "request carrying an image/command was rejected outright (HTTP ${API_STATUS})"
+  else
+    t_fail "request carrying an image/command failed with HTTP ${API_STATUS}, not a clean 4xx rejection"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -156,12 +207,29 @@ t_case "Artifacts landed in the tenant's own prefix"
 TENANT_ID="$(task_field "${TASK_ID}" '.tenant_id // ""')"
 if [[ -n "${TENANT_ID}" && "${TENANT_ID}" != "null" ]]; then
   PREFIX="gs://${ARTIFACT_BUCKET}/tenants/${TENANT_ID}/tasks/${TASK_ID}/"
-  if gcloud storage ls --recursive "${PREFIX}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-    COUNT="$(gcloud storage ls --recursive "${PREFIX}" --project "${PROJECT_ID}" 2>/dev/null | wc -l | tr -d ' ')"
+  ls_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-ls.XXXXXX")"
+  if listing="$(gcloud storage ls --recursive "${PREFIX}" --project "${PROJECT_ID}" 2>"${ls_err}")"; then
+    rm -f "${ls_err}"
+    if [[ -z "${listing}" ]]; then
+      COUNT=0
+    else
+      COUNT="$(printf '%s\n' "${listing}" | wc -l | tr -d ' ')"
+    fi
     t_pass "${COUNT} object(s) under ${PREFIX}"
   else
-    t_info "no objects under ${PREFIX} (a mock run may legitimately produce none)"
-    t_pass "artifact prefix is tenant-scoped"
+    err_detail="$(cat "${ls_err}")"
+    rm -f "${ls_err}"
+    # `gcloud storage ls` on a genuinely empty prefix exits non-zero with this
+    # specific "matched no objects" message. Anything else here -- denied
+    # storage.objects.list, an expired session, a wrong bucket -- is a failed
+    # listing, not an empty one, and must not be read as proof of isolation.
+    if grep -qi 'matched no objects\|no objects or files\|not found' <<<"${err_detail}"; then
+      t_info "no objects under ${PREFIX} (a mock run may legitimately produce none)"
+      t_pass "artifact prefix is tenant-scoped"
+    else
+      die_if_auth_failure "${err_detail}"
+      t_fail "could not list ${PREFIX}: $(printf '%s' "${err_detail}" | redact | head -n 1)"
+    fi
   fi
 else
   t_fail "task has no tenant_id"
@@ -169,11 +237,21 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "No credential material in the API response"
-DETAIL="$(api_get "/tasks/${TASK_ID}" || true)"
-if printf '%s' "${DETAIL}" | grep -Eq 'sk-ant-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|"ANTHROPIC_API_KEY"[[:space:]]*:[[:space:]]*"[^"]'; then
-  t_fail "the task response contains something that looks like a key"
+detail_body="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-detail.XXXXXX")"
+# `|| true` here used to swallow any fetch failure (401/403/500/timeout) into
+# an empty DETAIL, which trivially fails to match the key pattern below and
+# reads as a PASS for a security invariant that was never actually checked.
+if api_get "/tasks/${TASK_ID}" >"${detail_body}"; then
+  DETAIL="$(cat "${detail_body}")"
+  rm -f "${detail_body}"
+  if printf '%s' "${DETAIL}" | grep -Eq 'sk-ant-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|"ANTHROPIC_API_KEY"[[:space:]]*:[[:space:]]*"[^"]'; then
+    t_fail "the task response contains something that looks like a key"
+  else
+    t_pass "no key-shaped strings in the task response"
+  fi
 else
-  t_pass "no key-shaped strings in the task response"
+  rm -f "${detail_body}"
+  t_fail "GET ${API_PREFIX}/tasks/${TASK_ID} -> HTTP ${API_STATUS}; could not inspect the response for credential material"
 fi
 
 [[ "${KEEP}" -eq 1 ]] || cancel_all "${TASK_ID}"

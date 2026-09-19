@@ -113,8 +113,13 @@ t_case "${PARALLEL} tasks race for ${SLOT_LIMIT} slot(s)"
 SUBMIT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swarm-race.XXXXXX")"
 for i in $(seq 1 "${PARALLEL}"); do
   (
+    # submit_task already prints its own diagnosis (the HTTP status and the
+    # redacted response body) to stderr on failure. Capture it per-submission
+    # instead of routing it to /dev/null: `|| true` here only keeps one failed
+    # background submission from aborting the others, it must not also erase
+    # the one place the cause is recorded.
     submit_task "${PROFILE}" "$(jq -nc --argjson i "${i}" '{message:"race", index:$i, sleep_seconds:20}')" \
-      '{"metadata":{"source":"race-test"}}' >"${SUBMIT_DIR}/${i}.id" 2>/dev/null || true
+      '{"metadata":{"source":"race-test"}}' >"${SUBMIT_DIR}/${i}.id" 2>"${SUBMIT_DIR}/${i}.err" || true
   ) &
 done
 wait
@@ -123,6 +128,15 @@ for f in "${SUBMIT_DIR}"/*.id; do
   id="$(cat "${f}")"
   [[ -n "${id}" ]] && TASK_IDS+=("${id}")
 done
+FAILED_SUBMISSIONS=$(( PARALLEL - ${#TASK_IDS[@]} ))
+if [[ "${FAILED_SUBMISSIONS}" -gt 0 ]]; then
+  t_info "${FAILED_SUBMISSIONS} of ${PARALLEL} submission(s) failed; first failure below"
+  for f in "${SUBMIT_DIR}"/*.err; do
+    [[ -s "${f}" ]] || continue
+    redact <"${f}" | head -n 5 | sed 's/^/       /' >&2
+    break
+  done
+fi
 rm -rf "${SUBMIT_DIR}"
 assert_ge "${#TASK_IDS[@]}" "$(( PARALLEL - 1 ))" "tasks accepted concurrently"
 
@@ -154,8 +168,14 @@ t_case "Every attempt carries a distinct, increasing generation"
 BAD_GENERATIONS=0
 CHECKED=0
 for id in ${TASK_IDS[@]+"${TASK_IDS[@]}"}; do
+  # fs_query fails loudly on its own (fs_request -> fs_query propagate a
+  # non-2xx as a non-zero exit, and this is a bare statement under
+  # `set -o pipefail`, not an `if`/`while` condition, so that status is not
+  # suppressed): a denied or expired query aborts the script here with the
+  # real diagnosis already printed, rather than reading as zero attempts.
+  # Only jq's own stderr was ever routed to /dev/null; keep it visible too.
   gens="$(fs_query attempts "$(fs_field_filter task_id EQUAL "$(jq -nc --arg v "${id}" '{stringValue:$v}')")" 50 \
-    | jq -r "${FS_JQ} doc.generation" 2>/dev/null | sort -n | tr '\n' ' ')"
+    | jq -r "${FS_JQ} doc.generation" | sort -n | tr '\n' ' ')"
   [[ -z "${gens// /}" ]] && continue
   CHECKED=$(( CHECKED + 1 ))
   total_count="$(printf '%s' "${gens}" | tr ' ' '\n' | grep -c . || true)"
