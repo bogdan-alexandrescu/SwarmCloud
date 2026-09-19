@@ -396,11 +396,20 @@ variable "service_max_instances" {
     "swarm-scheduler"    = 3
     "swarm-quota-broker" = 3
     "swarm-reconciler"   = 2
+    "swarm-ui"           = 2
   }
 
   validation {
     condition     = alltrue([for k, v in var.service_max_instances : v > 0])
     error_message = "every service needs an explicit positive max-instances."
+  }
+
+  validation {
+    condition = length(setsubtract(
+      ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui"],
+      keys(var.service_max_instances),
+    )) == 0
+    error_message = "service_max_instances must name every control-plane service. A tfvars file written before a service existed omits it, and the failure is an 'Invalid index' at plan time that names a line number rather than the missing key."
   }
 }
 

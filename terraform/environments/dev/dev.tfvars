@@ -159,6 +159,9 @@ service_max_instances = {
   "swarm-scheduler"    = 2
   "swarm-quota-broker" = 2
   "swarm-reconciler"   = 1
+  # Static files behind a CDN-less load balancer; one instance serves the whole
+  # team and scales to zero between visits.
+  "swarm-ui" = 2
 }
 
 settings_env = {

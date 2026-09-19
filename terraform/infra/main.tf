@@ -297,6 +297,21 @@ module "cloud_run" {
         api       = module.iam.service_account_members["swarm-api"]
       }
     }
+    "swarm-ui" = {
+      service_account_email = module.iam.service_account_emails["swarm-api"]
+      image                 = "${local.image_base}/swarm-ui:${var.image_tag}"
+      max_instances         = var.service_max_instances["swarm-ui"]
+      cpu                   = "1"
+      memory                = "512Mi"
+      concurrency           = 80
+      # Static files. No Firestore, no secrets, no tenant data -- it reuses
+      # swarm-api's service account only because nginx never calls Google, and
+      # a dedicated identity with no bindings would be ceremony. If this service
+      # ever needs to call anything, give it its own first.
+      env = {}
+      # Reached only through the load balancer, which presents the IAP identity.
+      invokers = { for member in var.api_invokers : member => member }
+    }
     "swarm-reconciler" = {
       service_account_email = module.iam.service_account_emails["swarm-reconciler"]
       image                 = "${local.image_base}/swarm-reconciler:${var.image_tag}"
@@ -405,8 +420,9 @@ module "frontend" {
   region      = var.region
   name_prefix = var.name_prefix
 
-  service_name = "swarm-api"
-  hostname     = var.frontend_hostname
+  service_name    = "swarm-api"
+  ui_service_name = "swarm-ui"
+  hostname        = var.frontend_hostname
 
   iap_members = var.frontend_iap_members
 

@@ -131,6 +131,69 @@ resource "google_compute_backend_service" "this" {
 }
 
 # --------------------------------------------------------------------------
+# The UI backend
+# --------------------------------------------------------------------------
+# A second Cloud Run service rather than static files inside swarm-api: the UI
+# ships far more often than the API, and coupling them means a button colour
+# redeploys the service that holds the tenant boundary.
+#
+# It sits behind the SAME IAP gate. A static bundle is not secret, but an
+# unauthenticated UI that then fails every API call is a worse experience than
+# one sign-in, and it keeps a single answer to "who may reach this host".
+
+locals {
+  ui_enabled = var.ui_service_name != ""
+}
+
+resource "google_compute_region_network_endpoint_group" "ui" {
+  count = local.ui_enabled ? 1 : 0
+
+  project               = var.project_id
+  name                  = "${local.name}-ui-neg"
+  region                = var.region
+  network_endpoint_type = "SERVERLESS"
+
+  cloud_run {
+    service = var.ui_service_name
+  }
+}
+
+resource "google_compute_backend_service" "ui" {
+  count = local.ui_enabled ? 1 : 0
+
+  project     = var.project_id
+  name        = "${local.name}-ui-backend"
+  description = "managed-by=swarm-terraform; static web UI behind the same IAP gate as the API"
+
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  protocol              = "HTTPS"
+
+  backend {
+    group = google_compute_region_network_endpoint_group.ui[0].id
+  }
+
+  log_config {
+    enable = true
+    # The UI is chatty by comparison and carries no tenant data, so it is
+    # sampled rather than fully logged. The API keeps sample_rate 1.0.
+    sample_rate = 0.1
+  }
+
+  iap {
+    enabled = true
+  }
+}
+
+resource "google_iap_web_backend_service_iam_member" "ui_members" {
+  for_each = local.ui_enabled ? toset(var.iap_members) : toset([])
+
+  project             = var.project_id
+  web_backend_service = google_compute_backend_service.ui[0].name
+  role                = "roles/iap.httpsResourceAccessor"
+  member              = each.value
+}
+
+# --------------------------------------------------------------------------
 # Who may pass IAP
 # --------------------------------------------------------------------------
 
@@ -147,10 +210,41 @@ resource "google_iap_web_backend_service_iam_member" "members" {
 # Routing and TLS
 # --------------------------------------------------------------------------
 
+# The DEFAULT is the UI and the API is matched explicitly, not the other way
+# round. A path this map does not know is a UI route -- React owns the client
+# side -- whereas defaulting to the API would answer an unknown page with a JSON
+# 404 from a service that never meant to serve it.
+#
+# With no UI backend the default is the API, which is how an API-only
+# deployment behaves.
 resource "google_compute_url_map" "this" {
   project         = var.project_id
   name            = "${local.name}-urlmap"
-  default_service = google_compute_backend_service.this.id
+  default_service = local.ui_enabled ? google_compute_backend_service.ui[0].id : google_compute_backend_service.this.id
+
+  dynamic "host_rule" {
+    for_each = local.ui_enabled ? [1] : []
+    content {
+      hosts        = ["*"]
+      path_matcher = "main"
+    }
+  }
+
+  dynamic "path_matcher" {
+    for_each = local.ui_enabled ? [1] : []
+    content {
+      name            = "main"
+      default_service = google_compute_backend_service.ui[0].id
+
+      # Everything the API owns. /healthz and /readyz are the API's, not the
+      # UI's -- the UI has its own at the same path inside nginx, and a health
+      # check that silently answers from the wrong service is worthless.
+      path_rule {
+        paths   = ["/v1", "/v1/*", "/healthz", "/readyz", "/metrics", "/docs", "/openapi.json"]
+        service = google_compute_backend_service.this.id
+      }
+    }
+  }
 }
 
 resource "google_compute_managed_ssl_certificate" "this" {

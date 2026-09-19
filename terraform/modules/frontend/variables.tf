@@ -12,8 +12,21 @@ variable "name_prefix" {
 }
 
 variable "service_name" {
-  description = "The Cloud Run service to put behind the load balancer."
+  description = "The Cloud Run service serving the API. Receives /v1/* and the health paths."
   type        = string
+}
+
+variable "ui_service_name" {
+  description = <<-EOT
+    Cloud Run service serving the static web UI. Receives everything that is not
+    an API path.
+
+    Empty means no UI backend is created and the load balancer sends everything
+    to the API -- which is how this module first shipped, and is still a valid
+    configuration for an API-only deployment.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "hostname" {
