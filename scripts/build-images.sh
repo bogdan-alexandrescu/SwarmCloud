@@ -19,17 +19,25 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler)
+ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui)
 TARGETS=()
 TAG=""
 CREATE_REPO=0
 ASYNC=0
+DIGESTS_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)         TAG="$2"; shift 2 ;;
     --create-repo) CREATE_REPO=1; shift ;;
     --async)       ASYNC=1; shift ;;
+    # Read digests back for a tag that is ALREADY built and write the manifest,
+    # without rebuilding. Exists because the manifest can be lost while the
+    # images are perfectly fine -- a session that expires mid-build loses every
+    # digest read-back but not the six images Cloud Build already pushed. Before
+    # this, recovering a lost manifest meant rebuilding everything to regenerate
+    # a JSON file.
+    --digests-only) DIGESTS_ONLY=1; shift ;;
     -h|--help)     sed -n '2,18p' "$0"; exit 0 ;;
     -*)            die "unknown flag: $1" ;;
     *)             TARGETS+=("$1"); shift ;;
@@ -140,7 +148,17 @@ MANIFEST="${BUILD_DIR}/images-${ENVIRONMENT}.json"
 BUILT=()
 SKIPPED=()
 
-for target in "${TARGETS[@]}"; do
+if [[ "${DIGESTS_ONLY}" -eq 1 ]]; then
+  [[ -n "${TAG}" ]] || die "--digests-only needs an explicit --tag: it describes images that already exist, and the tag is the only thing that says which ones"
+  info "reading back digests for ${TAG} without rebuilding"
+  BUILT=("${TARGETS[@]}")
+  # Emptied so the build loop below is skipped without restructuring it. Expanded
+  # with the ${arr[@]+"${arr[@]}"} guard everywhere, because a plain "${arr[@]}"
+  # on an empty array is an unbound-variable error under `set -u` in bash 3.2.
+  TARGETS=()
+fi
+
+for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
   step "Build ${target}"
   if ! recipe="$(find_recipe "${target}")"; then
     # FAIL, do not skip. A warning here let `make build` report success having
@@ -198,19 +216,65 @@ if [[ "${ASYNC}" -eq 1 ]]; then
 fi
 
 step "Digests"
+# This loop USED TO discard stderr and `continue` on an empty digest, which cost
+# a real deploy on 2026-09-18: the operator's gcloud session expired during a
+# 15-minute build, all six read-backs failed identically, and the script warned
+# six times, wrote a manifest with an EMPTY images array, printed
+# "ok built 6 image(s)" and exited 0. push-images.sh and deploy.sh consume that
+# manifest, so a successful build produced an artifact that promised six images
+# and listed none.
+#
+# Two rules now, and the second matters as much as the first:
+#   1. stderr is CAPTURED, so a dead session is named as a dead session --
+#      die_if_auth_failure is used correctly 140 lines above this, for the
+#      repository probe, and was simply never applied here;
+#   2. a digest that cannot be read is FATAL. There is no useful partial
+#      manifest: one built image missing from it is a service that silently
+#      keeps its old revision on the next deploy.
+DIGEST_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-digest.XXXXXX")"
+trap 'rm -f "${DIGEST_OUT}"' EXIT INT TERM
+
 entries='[]'
+MISSING=()
 for target in ${BUILT[@]+"${BUILT[@]}"}; do
   image="${IMAGE_REPO}/${target}"
-  digest="$(gcloud artifacts docker images describe "${image}:${TAG}" \
-    --project "${PROJECT_ID}" --format='value(image_summary.digest)' 2>/dev/null || true)"
+  digest=""
+  digest_err=""
+  # stdout to a file, stderr into the substitution: a command substitution runs
+  # in a subshell, so anything assigned inside one is lost to the caller.
+  # `artifacts docker images describe` is NOT used here, though it is the
+  # obvious command and was used until 2026-09-18. It returns vulnerability data
+  # alongside the digest, so it calls Container Analysis and needs
+  # `containeranalysis.occurrences.list` -- which the operator running a build
+  # does not necessarily hold. The denial it produces names a permission that
+  # has nothing to do with images, on a project id rendered as an opaque number,
+  # and the old code turned that into "no digest could be read back".
+  #
+  # `tags list` answers the only question being asked -- which digest does this
+  # tag point at -- from Artifact Registry alone.
+  if digest_err="$(gcloud artifacts docker tags list "${image}" \
+       --project "${PROJECT_ID}" --filter="tag:${TAG}" --format='value(version)' \
+       2>&1 >"${DIGEST_OUT}")"; then
+    digest="$(tr -d '[:space:]' <"${DIGEST_OUT}")"
+  else
+    # Exits here if the session is dead, so nothing below can misreport it as a
+    # missing image.
+    die_if_auth_failure "${digest_err}"
+  fi
   if [[ -z "${digest}" ]]; then
-    warn "${target}: built, but no digest could be read back"
+    err "${target}: built, but its digest could not be read back"
+    [[ -z "${digest_err}" ]] || printf '%s\n' "${digest_err}" | head -n 2 | sed 's/^/     /' >&2
+    MISSING+=("${target}")
     continue
   fi
   printf '  %-22s %s\n' "${target}" "${digest}" >&2
   entries="$(jq -c --arg n "${target}" --arg i "${image}" --arg t "${TAG}" --arg d "${digest}" \
     '. + [{name:$n, image:$i, tag:$t, digest:$d, ref:($i + "@" + $d)}]' <<<"${entries}")"
 done
+
+if [[ "${#MISSING[@]}" -gt 0 ]]; then
+  die "no manifest written: ${#MISSING[@]} of ${#BUILT[@]} image(s) built but unreadable (${MISSING[*]-}). The images may well exist; what is not true is that this run can describe them, and a manifest that omits them would deploy the previous revision of each without saying so."
+fi
 
 jq -n --arg tag "${TAG}" --arg at "$(iso_now)" --arg env "${ENVIRONMENT}" \
       --argjson images "${entries}" \

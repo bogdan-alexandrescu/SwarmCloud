@@ -108,16 +108,34 @@ grant_access() {
 
   # --condition=None is required, not cosmetic: without it gcloud prompts for a
   # condition choice, and a prompt in a script that may run unattended is a hang.
-  _bind() {
-    gcloud secrets add-iam-policy-binding "$1" \
-      --project "${PROJECT_ID}" --member "$2" --role "$3" \
-      --condition=None >/dev/null 2>&1
-  }
-
+  #
   # if/else rather than `&& ok || warn`: with the latter, a failing `ok` would
   # run the warn too, and the report would contradict itself.
+  #
+  # stderr is captured (`2>&1 >/dev/null`, same idiom as describe_err above), not
+  # discarded: a discarded stderr is exactly what let an expired session, a
+  # missing secretmanager.setIamPolicy, an absent broker service account and a
+  # policy version conflict all collapse into the identical "could not grant"
+  # line below.
   _report() {
-    if _bind "$1" "$2" "$3"; then ok "$4"; else warn "could not grant: $4"; fi
+    local out rc=0
+    out="$(gcloud secrets add-iam-policy-binding "$1" \
+      --project "${PROJECT_ID}" --member "$2" --role "$3" \
+      --condition=None 2>&1 >/dev/null)" || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then
+      ok "$4"
+      return 0
+    fi
+    # An expired session gets the real diagnosis instead of "could not grant".
+    die_if_auth_failure "${out}"
+    # Anything else is fatal, not a warn-and-continue: this file's own header
+    # blames create-secrets.sh's WARN-only handling for the first three
+    # accounts onboarding with no bindings at all, which the broker could then
+    # never refresh. Reporting this account onboarded with the same kind of
+    # gap would repeat that outage rather than describe it.
+    err "could not grant: $4"
+    printf '%s\n' "${out}" | redact | head -n 3 | sed 's/^/     /' >&2
+    die "onboarding would finish with an incomplete access grant -- exactly what leaves an account the broker can never refresh"
   }
 
   _report "${refresh_secret}" "${broker}" roles/secretmanager.secretAccessor \
@@ -130,13 +148,28 @@ grant_access() {
   # The worker reads the SHORT-LIVED half only. Its absence from the refresh
   # secret is the isolation property, not an oversight: an agent that could read
   # a refresh token could mint itself credentials long after its job ended.
-  if gcloud iam service-accounts describe "${worker#serviceAccount:}" \
-       --project "${PROJECT_ID}" --format='value(email)' >/dev/null 2>&1; then
+  #
+  # stderr captured, not discarded: gcloud's own wording for a denied
+  # iam.serviceAccounts.get is "... (or it may not exist)" (see
+  # scripts/lib/auth-guard.sh's non-auth fixture for exactly this string), so an
+  # expired session, a permission gap or a wrong PROJECT_ID must not be read as
+  # "the tenant just hasn't been registered yet" -- only a real NOT_FOUND means
+  # that.
+  local sa_err
+  if sa_err="$(gcloud iam service-accounts describe "${worker#serviceAccount:}" \
+       --project "${PROJECT_ID}" --format='value(email)' 2>&1 >/dev/null)"; then
     _report "${base}" "${worker}" roles/secretmanager.secretAccessor \
       "tenant worker may read ${base}"
   else
-    warn "no worker service account for tenant ${TENANT} yet"
-    dim "run: scripts/register-tenant.sh --tenant ${TENANT}"
+    die_if_auth_failure "${sa_err}"
+    if printf '%s' "${sa_err}" | grep -q 'NOT_FOUND'; then
+      warn "no worker service account for tenant ${TENANT} yet"
+      dim "run: scripts/register-tenant.sh --tenant ${TENANT}"
+    else
+      err "could not look up the worker service account for tenant ${TENANT}"
+      printf '%s\n' "${sa_err}" | redact | head -n 3 | sed 's/^/     /' >&2
+      die "that is a failure to LOOK UP the service account, not proof it is absent. Check the project (${PROJECT_ID}) and your permissions before assuming tenant ${TENANT} needs (re)registering."
+    fi
   fi
 }
 

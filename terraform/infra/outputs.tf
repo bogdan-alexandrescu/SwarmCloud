@@ -139,3 +139,9 @@ output "workspace_size_gib" {
 output "dashboard_id" {
   value = module.monitoring.dashboard_id
 }
+
+output "frontend_iap_audiences" {
+  description = "Paste into frontend_iap_audiences in tfvars. See that variable for why this is a two-step."
+  value       = var.enable_frontend ? try(module.frontend[0].iap_audiences, []) : []
+}
+

@@ -163,3 +163,51 @@ def test_runner_input_is_the_task_input_plus_identifiers(db, worker_factory, tmp
     # The workspace is destroyed on exit, so assert through what the runner saw.
     summary = db.doc("tasks/task_1")["result_summary"]
     assert summary["runner"]["output"]["prompt"] == "check the input"
+
+
+def test_the_lease_is_heartbeated_before_any_slow_startup_work(db, worker_factory, monkeypatch):
+    """The reconciler measures silence from LEASE ACQUISITION, not from container start.
+
+    So everything before the worker's first heartbeat counts against
+    `heartbeat_grace_seconds` (90): the container cold start, the image pull,
+    the workspace, restoring a checkpoint and a shallow clone.
+
+    On 2026-09-19 that reclaimed one task three times running. Each replacement
+    worker started, found its generation superseded, logged "FENCED: this
+    attempt has been superseded; exiting without running the agent" and exited
+    70 -- invariant 5 behaving exactly as designed, on workers that were never
+    unhealthy. The task never ran.
+
+    This pins the ordering rather than the number of heartbeats: the point is
+    that the lease is proven live BEFORE the slow steps, not that it happens
+    some particular number of times.
+    """
+    seed_attempt(db, pool_active=1, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.01})
+    worker, _config, _exporter = worker_factory()
+
+    order: list[str] = []
+
+    real_heartbeat = worker.control.heartbeat
+
+    def record_heartbeat(*args, **kwargs):
+        order.append("heartbeat")
+        return real_heartbeat(*args, **kwargs)
+
+    real_workspace_create = worker._maybe_clone
+
+    def record_clone(*args, **kwargs):
+        order.append("clone")
+        return real_workspace_create(*args, **kwargs)
+
+    monkeypatch.setattr(worker.control, "heartbeat", record_heartbeat)
+    monkeypatch.setattr(worker, "_maybe_clone", record_clone)
+
+    assert worker.run() == ExitCode.OK
+
+    assert "heartbeat" in order, "the lease was never heartbeated at all"
+    assert "clone" in order, "the test did not exercise the clone step"
+    assert order.index("heartbeat") < order.index("clone"), (
+        "the first heartbeat must come BEFORE the clone: the reconciler's grace "
+        "runs from lease acquisition, so a slow clone reads as a dead worker. "
+        f"observed order: {order[:4]}"
+    )

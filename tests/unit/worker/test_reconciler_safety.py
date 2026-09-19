@@ -239,7 +239,17 @@ def test_healthy_running_task_is_left_completely_alone(db, config):
 
     assert report.findings == 0
     assert report.outcomes == []
-    assert db.writes[before:] == []
+
+    # The property is that a healthy task is not TOUCHED -- not that the pass
+    # is invisible. Every pass now records itself in `reconciler_passes`
+    # (without it the platform's account of runtime faults died with the
+    # instance), so this names the collections whose modification would be the
+    # actual bug rather than counting writes.
+    touched = [
+        (op, path) for op, path, *_ in db.writes[before:]
+        if not path.startswith("reconciler_passes/")
+    ]
+    assert touched == [], f"a healthy task was modified: {touched}"
     assert db.doc("pools/global")["active"] == 2
 
 

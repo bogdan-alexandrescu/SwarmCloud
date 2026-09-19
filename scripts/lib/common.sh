@@ -172,6 +172,10 @@ load_env() {
   SCHEDULER_SERVICE="${SCHEDULER_SERVICE:-swarm-scheduler}"
   QUOTA_SERVICE="${QUOTA_SERVICE:-swarm-quota-broker}"
   RECONCILER_SERVICE="${RECONCILER_SERVICE:-swarm-reconciler}"
+  # The static web UI. Deployed like the others, but it serves files rather than
+  # answering the control plane's health contract -- it has /healthz from nginx
+  # and no /readyz, because there is no downstream for it to be ready FOR.
+  UI_SERVICE="${UI_SERVICE:-swarm-ui}"
 
   API_PREFIX="${API_PREFIX:-/v1}"
   HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"
@@ -478,13 +482,31 @@ api_url() {
     if [[ -n "${from_tf}" ]]; then
       _API_URL="${from_tf%/}"
     else
-      _API_URL="$(gcloud run services describe "${API_SERVICE}" \
-        --project "${PROJECT_ID}" --region "${REGION}" \
-        --format='value(status.url)' 2>/dev/null || true)"
+      # stderr captured, not discarded. An expired session, a missing
+      # run.services.get, a disabled Cloud Run Admin API, a wrong REGION and a
+      # wrong PROJECT_ID all produce the same empty value here, and the message
+      # below used to blame the last one on the list -- sending an operator to
+      # redeploy a healthy control plane in the middle of the incident they were
+      # trying to diagnose.
+      local describe_err=""
+      if ! _API_URL="$(gcloud run services describe "${API_SERVICE}" \
+           --project "${PROJECT_ID}" --region "${REGION}" \
+           --format='value(status.url)' 2>"${TMPDIR:-/tmp}/swarm-apiurl.$$")"; then
+        describe_err="$(cat "${TMPDIR:-/tmp}/swarm-apiurl.$$" 2>/dev/null || true)"
+        _API_URL=""
+      fi
+      rm -f "${TMPDIR:-/tmp}/swarm-apiurl.$$"
+      # Exits here if the session is dead, so nothing below misreports it.
+      [[ -z "${describe_err}" ]] || die_if_auth_failure "${describe_err}"
+      if [[ -z "${_API_URL}" && -n "${describe_err}" ]]; then
+        err "cannot resolve the API URL, and this is why:"
+        printf '%s\n' "${describe_err}" | redact | head -n 3 | sed 's/^/     /' >&2
+        die "that is a failure to LOOK UP ${API_SERVICE}, not proof it is absent. Check the account, the region (${REGION}) and the project (${PROJECT_ID}) before redeploying anything."
+      fi
       _API_URL="${_API_URL%/}"
     fi
   fi
-  [[ -n "${_API_URL}" ]] || die "cannot resolve the API URL; set API_URL in .env or deploy first"
+  [[ -n "${_API_URL}" ]] || die "no API URL: API_URL is unset, terraform has no api_url output, and ${API_SERVICE} was not found in ${REGION}. If the lookup itself failed you would have seen why above; this is the case where it genuinely returned nothing."
   printf '%s' "${_API_URL}"
 }
 
@@ -541,20 +563,83 @@ fs_base() {
     "${PROJECT_ID}" "${FIRESTORE_DATABASE}"
 }
 
+# This USED TO return the response body whatever the status was. curl had no -f
+# and nothing looked at the code, so a 401, 403, 429 or 500 exited 0 and its
+# `{"error": ...}` body was handed back as if it were data. Every reader built on
+# top then turned that into an absence:
+#
+#   fs_list    jq '.documents // []'   -> []      "no pools configured yet"
+#   fs_count   the aggregate branch    -> 0       "0 task(s) hold capacity"
+#   fs_query   select(.document)       -> nothing "none active"
+#
+# So an expired session read as an empty, healthy platform on the one screen an
+# operator trusts during an incident, and turned two concurrency assertions
+# green in the test suite by giving them nothing to count.
+#
+# 404 IS AN ANSWER ONLY WHERE IT MEANS SOMETHING. Callers using fs_get to ask
+# whether ONE document exists read the reply as `if .fields then ... else absent`
+# (register-tenant.sh:234,601,618, failure-test.sh:66, quota-test.sh:61), and for
+# them a 404 is a legitimate "no". They opt in with FS_ALLOW_404.
+#
+# For a COLLECTION it means the opposite: an empty collection answers 200 with no
+# documents, so a 404 on fs_list/fs_query/fs_count means the database or the path
+# is wrong. Passing it through was this fix'"'"'s own first mistake -- a request
+# against a database that does not exist still came back as `[]`, i.e. exactly
+# the bug being fixed, one layer further down.
+#
+# Everything else non-2xx is a failure, says so, and returns non-zero so `set -e`
+# stops the caller instead of letting it read an error body as data.
 fs_request() {
   local method="$1" url="$2" body="${3:-}"
-  local token
+  local token status out rc=0
   token="$(access_token)"
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-fs.XXXXXX")"
   if [[ -n "${body}" ]]; then
-    auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X "${method}" \
+    status="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X "${method}" \
       -H "Content-Type: application/json" \
-      --data-binary "${body}" "${url}"
+      --data-binary "${body}" -o "${out}" -w '%{http_code}' "${url}")" || rc=$?
   else
-    auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X "${method}" "${url}"
+    status="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - -X "${method}" \
+      -o "${out}" -w '%{http_code}' "${url}")" || rc=$?
   fi
+
+  if [[ "${rc}" -ne 0 ]]; then
+    rm -f "${out}"
+    err "Firestore ${method} could not complete (curl exit ${rc}). This is a transport failure, NOT an empty result."
+    return 1
+  fi
+
+  case "${status}" in
+    2*)
+      cat "${out}"
+      rm -f "${out}"
+      ;;
+    404)
+      if [[ -n "${FS_ALLOW_404:-}" ]]; then
+        cat "${out}"
+        rm -f "${out}"
+      else
+        rm -f "${out}"
+        err "Firestore ${method} returned HTTP 404. An empty collection answers 200, so this is a wrong database or path -- NOT an empty result."
+        dim "  database: ${FIRESTORE_DATABASE}  project: ${PROJECT_ID}"
+        return 1
+      fi
+      ;;
+    *)
+      local detail
+      detail="$(head -c 600 "${out}" 2>/dev/null || true)"
+      rm -f "${out}"
+      # Exits here on a dead session, naming it as one.
+      die_if_auth_failure "${detail}"
+      err "Firestore ${method} returned HTTP ${status}. This is NOT an empty result."
+      printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
+      return 1
+      ;;
+  esac
 }
 
-fs_get()    { fs_request GET "$(fs_base)/$1"; }
+# FS_ALLOW_404: a missing document is a legitimate answer to "does this exist?".
+fs_get()    { FS_ALLOW_404=1 fs_request GET "$(fs_base)/$1"; }
 fs_delete() { fs_request DELETE "$(fs_base)/$1" >/dev/null; }
 
 # fs_list COLLECTION [PAGE_SIZE] -> concatenated `documents` arrays, paginated.
@@ -565,7 +650,10 @@ fs_list() {
   while :; do
     url="$(fs_base)/${collection}?pageSize=${page_size}"
     [[ -n "${token}" ]] && url="${url}&pageToken=${token}"
-    page="$(fs_request GET "${url}")"
+    # `|| return 1`, not bare `set -e`: set -e is suppressed throughout an
+    # `if` condition, and status.sh and the test suites call these from
+    # inside one. Without this the caller reads an error as an empty page.
+    page="$(fs_request GET "${url}")" || return 1
     out="$(printf '%s' "${page}" | jq -c '.documents // []')"
     printf '%s\n' "${out}"
     token="$(printf '%s' "${page}" | jq -r '.nextPageToken // ""')"
@@ -574,7 +662,14 @@ fs_list() {
 }
 
 # One decoded document per line.
-fs_list_docs() { fs_list "$1" "${2:-300}" | jq -c "${FS_JQ} .[] | doc"; }
+# The pipeline's status is jq's, so a failing fs_list would be invisible here --
+# the same trap the sweep found in status.sh's gcloud_json. Run fs_list first and
+# check it, then decode.
+fs_list_docs() {
+  local raw
+  raw="$(fs_list "$1" "${2:-300}")" || return 1
+  printf '%s' "${raw}" | jq -c "${FS_JQ} .[] | doc"
+}
 
 # fs_patch DOC_PATH FIELD_MASK_CSV JSON_FIELDS
 fs_patch() {
@@ -598,7 +693,7 @@ fs_count_where() {
     {structuredAggregationQuery:{
        structuredQuery: ({from:[{collectionId:$c}]} + (if $w == null then {} else {where:$w} end)),
        aggregations:[{alias:"n",count:{}}]}}')"
-  result="$(fs_request POST "$(fs_base):runAggregationQuery" "${query}")"
+  result="$(fs_request POST "$(fs_base):runAggregationQuery" "${query}")" || return 1
   printf '%s' "$(printf '%s' "${result}" \
     | jq -r '[.[]?|.result?.aggregateFields?.n?.integerValue//empty]|first // "0"')"
 }
@@ -652,7 +747,9 @@ fs_query() {
   query="$(jq -nc --arg c "${collection}" --argjson w "${where}" --argjson l "${limit}" '
     {structuredQuery: ({from:[{collectionId:$c}], limit:$l}
        + (if $w == null then {} else {where:$w} end))}')"
-  fs_request POST "$(fs_base):runQuery" "${query}" \
+  local rows
+  rows="$(fs_request POST "$(fs_base):runQuery" "${query}")" || return 1
+  printf '%s' "${rows}" \
     | jq -c '.[]? | select(.document != null) | .document'
 }
 

@@ -42,6 +42,11 @@ class ReconcilerConfig:
     #: worker gets reaped between two beats.
     lease_timeout_seconds: int = 120
     heartbeat_grace_seconds: int = 90
+    #: How long a persisted reconciliation pass is kept. A pass runs every
+    #: minute, so this is 10,080 documents a week at the default; the Firestore
+    #: TTL policy on `expires_at` removes them. Long enough to investigate an
+    #: incident from last week, short enough not to become a data set.
+    pass_retention_hours: int = 168
 
     #: How long a task may sit in DISPATCHED/STARTING with no backend execution
     #: before the execution is presumed never to have been created. Image pulls
@@ -83,6 +88,7 @@ class ReconcilerConfig:
             heartbeat_grace_seconds=_int(
                 "HEARTBEAT_GRACE_SECONDS", max(90, settings.heartbeat_interval_seconds * 3)
             ),
+            pass_retention_hours=_int("PASS_RETENTION_HOURS", 168),
             missing_execution_grace_seconds=_int(
                 "MISSING_EXECUTION_GRACE_SECONDS", settings.dispatch_timeout_seconds
             ),

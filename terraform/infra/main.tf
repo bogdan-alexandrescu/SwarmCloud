@@ -32,6 +32,9 @@ module "project_services" {
     "containerscanning.googleapis.com",
     "firestore.googleapis.com",
     "iam.googleapis.com",
+    # The front door. IAP is the outer gate in front of swarm-api; see
+    # terraform/modules/frontend.
+    "iap.googleapis.com",
     "iamcredentials.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
@@ -162,7 +165,10 @@ module "gke_autopilot" {
   release_channel         = var.gke_release_channel
   enable_private_endpoint = var.gke_enable_private_endpoint
   master_authorized_cidrs = var.gke_master_authorized_cidrs
-  deletion_protection     = var.deletion_protection
+  # Opening the control plane is recorded in the environment's tfvars, so it
+  # shows up in a diff rather than as an edit to the rule that guards prod.
+  allow_open_master_authorized_network = var.gke_allow_open_master_authorized_network
+  deletion_protection                  = var.deletion_protection
 
   labels = local.labels
 
@@ -239,6 +245,14 @@ module "secret_manager" {
   depends_on = [module.project_services]
 }
 
+# The IAP service agent's email is `service-<PROJECT NUMBER>@gcp-sa-iap...`, so
+# the number has to come from somewhere. Read rather than hardcoded: a project
+# number pasted into a repository is right until the day someone stands this up
+# in a second project, at which point it is silently wrong.
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
 module "cloud_run" {
   source = "../modules/cloud_run"
 
@@ -259,7 +273,31 @@ module "cloud_run" {
       memory                = "1Gi"
       concurrency           = 80
       env                   = local.service_env["swarm-api"]
-      invokers              = { for member in var.api_invokers : member => member }
+      # THE IAP SERVICE AGENT, EXPLICITLY.
+      #
+      # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
+      # answers every request with "The IAP service account is not provisioned"
+      # -- a 500-class failure that looks like the app being broken rather than
+      # a missing grant.
+      #
+      # Not left to `allUsers`, which currently holds run.invoker and would
+      # cover it by accident. That grant exists for a different reason (Cloud
+      # Run's edge IAM consumes the Authorization header, destroying the only
+      # credential that identifies a tenant), and the day it is tightened IAP
+      # would break for a reason nobody would connect to it.
+      #
+      # The AGENT ITSELF is not created here: it is a Google-managed identity
+      # and `google_project_service_identity` lives only in the google-beta
+      # provider, which this repository does not carry for one resource. It is a
+      # once-per-project command, documented in modules/frontend/main.tf beside
+      # the OAuth brand:
+      #
+      #   gcloud beta services identity create \
+      #     --service=iap.googleapis.com --project=<project>
+      invokers = merge(
+        { for member in var.api_invokers : member => member },
+        { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+      )
     }
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
@@ -270,10 +308,11 @@ module "cloud_run" {
       # The drain loop is a single serialised pass over admissible work.
       # Concurrent requests on one instance would have them contend on the same
       # Firestore documents and abort each other.
-      concurrency     = 1
-      request_timeout = "540s"
-      env             = local.service_env["swarm-scheduler"]
-      invokers        = { tick = module.iam.tick_member }
+      concurrency      = 1
+      request_timeout  = "540s"
+      env              = local.service_env["swarm-scheduler"]
+      custom_audiences = [local.push_audiences["swarm-scheduler"]]
+      invokers         = { tick = module.iam.tick_member }
     }
     "swarm-quota-broker" = {
       service_account_email = module.iam.service_account_emails["swarm-quota-broker"]
@@ -283,11 +322,32 @@ module "cloud_run" {
       memory                = "512Mi"
       concurrency           = 40
       env                   = local.service_env["swarm-quota-broker"]
+      custom_audiences      = [local.push_audiences["swarm-quota-broker"]]
       invokers = {
         tick      = module.iam.tick_member
         scheduler = module.iam.service_account_members["swarm-scheduler"]
         api       = module.iam.service_account_members["swarm-api"]
       }
+    }
+    "swarm-ui" = {
+      service_account_email = module.iam.service_account_emails["swarm-api"]
+      image                 = "${local.image_base}/swarm-ui:${var.image_tag}"
+      max_instances         = var.service_max_instances["swarm-ui"]
+      cpu                   = "1"
+      memory                = "512Mi"
+      concurrency           = 80
+      # Static files. No Firestore, no secrets, no tenant data -- it reuses
+      # swarm-api's service account only because nginx never calls Google, and
+      # a dedicated identity with no bindings would be ceremony. If this service
+      # ever needs to call anything, give it its own first.
+      env = {}
+      # Reached only through the load balancer, which presents the IAP identity.
+      # Same as swarm-api: IAP fronts both backends, so it must be able to
+      # invoke both. See the note on the swarm-api service above.
+      invokers = merge(
+        { for member in var.api_invokers : member => member },
+        { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+      )
     }
     "swarm-reconciler" = {
       service_account_email = module.iam.service_account_emails["swarm-reconciler"]
@@ -344,6 +404,11 @@ module "scheduler" {
   wake_topic_name = local.wake_topic
 
   scheduler_push_endpoint = module.cloud_run.service_urls["swarm-scheduler"]
+
+  # The endpoint is still the URL -- that is where the request goes. The
+  # audience is the constant both sides name, so the receiver can verify it.
+  scheduler_push_audience = local.push_audiences["swarm-scheduler"]
+  quota_broker_audience   = local.push_audiences["swarm-quota-broker"]
   reconciler_endpoint     = module.cloud_run.service_urls["swarm-reconciler"]
   quota_broker_endpoint   = module.cloud_run.service_urls["swarm-quota-broker"]
   enable_quota_refresh    = var.enable_quota_refresh
@@ -361,7 +426,47 @@ module "scheduler" {
 
   labels = local.labels
 
+  # NOT `depends_on = [module.cloud_run]`, though the ordering it would buy is
+  # real: a custom audience is only accepted once it is present on the receiving
+  # service, so the service must be updated before the subscription mints tokens
+  # naming it.
+  #
+  # That ordering already exists. `scheduler_push_endpoint` above reads the
+  # service's `uri`, and terraform's graph is built from references rather than
+  # from which values changed -- so the subscription node depends on the service
+  # node whether or not the URL moves, and the service is applied first.
+  #
+  # Adding the explicit dependency anyway is not free, measured on this plan:
+  # a module-level depends_on defers that module's DATA SOURCES to apply time,
+  # so `data.google_project.this` became unknown, the DLQ IAM members' `member`
+  # became unknown with it, and two IAM bindings went from "no change" to
+  # "must be replaced". 1 add / 18 change / 0 destroy became 3 / 18 / 2.
   depends_on = [module.project_services]
+}
+
+# The external front door: an ALB with IAP in front of swarm-api.
+#
+# Gated by a flag rather than by the presence of a hostname, for the reason the
+# scheduler module's header already records: a `count` that depends on a value
+# unknown until apply cannot be planned at all.
+module "frontend" {
+  count  = var.enable_frontend ? 1 : 0
+  source = "../modules/frontend"
+
+  project_id  = var.project_id
+  region      = var.region
+  name_prefix = var.name_prefix
+
+  project_number  = data.google_project.this.number
+  service_name    = "swarm-api"
+  ui_service_name = "swarm-ui"
+  hostname        = var.frontend_hostname
+
+  iap_members = var.frontend_iap_members
+
+  labels = local.labels
+
+  depends_on = [module.project_services, module.cloud_run]
 }
 
 module "monitoring" {
@@ -376,6 +481,7 @@ module "monitoring" {
   wake_subscription        = module.scheduler.wake_subscription
   dead_letter_subscription = "${module.scheduler.dead_letter_topic}-sub"
   safety_tick_job          = "${var.name_prefix}-scheduler-tick"
+  enable_safety_tick_alert = var.enable_safety_tick_alert
 
   alert_emails                = var.alert_emails
   extra_notification_channels = var.extra_notification_channels

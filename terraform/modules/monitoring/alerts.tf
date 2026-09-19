@@ -43,7 +43,10 @@ resource "google_monitoring_notification_channel" "email" {
 # have been READY for an hour.
 # ---------------------------------------------------------------------------
 resource "google_monitoring_alert_policy" "safety_tick_absent" {
-  count = var.create_alerts ? 1 : 0
+  # Also gated on its own flag: the metric it references must exist before the
+  # policy can be created, and that is runtime state terraform cannot wait for.
+  # See enable_safety_tick_alert.
+  count = var.create_alerts && var.enable_safety_tick_alert ? 1 : 0
 
   project      = var.project_id
   display_name = "swarm-${var.environment}-safety-tick-stopped"

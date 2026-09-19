@@ -109,6 +109,97 @@ class GoogleTokenVerifier:
         return claims
 
 
+class IapAssertionVerifier:
+    """Verifies the JWT Identity-Aware Proxy puts on every request it forwards.
+
+    WHY THIS EXISTS. Behind IAP a browser sends NO Authorization header. IAP has
+    already authenticated the person and forwards the result in
+    `x-goog-iap-jwt-assertion`; there is no Google ID token for a single-page app
+    to obtain and present. Without this, every request from the web UI arrived
+    with nothing to verify and was rejected 401 -- a signed-in user, a valid
+    certificate, a healthy load balancer, and an API that could not see any of
+    it.
+
+    THE AUDIENCE IS NOT OPTIONAL and is a different shape from an ID token's.
+    IAP mints per BACKEND SERVICE:
+
+        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
+
+    Unpinned, google-auth skips the `aud` check entirely, and an assertion
+    minted by IAP for ANY other backend in any project would authenticate here.
+    That is the same failure the ID-token verifier documents above, and it is
+    worse in this direction: an IAP assertion is issued to anyone who can reach
+    any IAP-protected resource.
+
+    Two audiences are accepted because two backend services front this platform
+    -- the API and the UI -- and a request may arrive through either.
+
+    The keys live at a DIFFERENT endpoint from Google's ordinary OAuth certs
+    (`https://www.gstatic.com/iap/verify/public_key`) and are ES256, not RS256,
+    so `verify_oauth2_token` cannot be reused.
+    """
+
+    #: Where IAP publishes its signing keys. Not the OAuth cert endpoint.
+    CERTS_URL = "https://www.gstatic.com/iap/verify/public_key"
+
+    def __init__(self, audiences: tuple[str, ...]) -> None:
+        self._audiences = tuple(a for a in audiences if a)
+        self._request = None
+
+    @property
+    def configured(self) -> bool:
+        """False when no audience is pinned, in which case this verifier is OFF.
+
+        Deliberately not "verify without an audience": see the class docstring.
+        A misconfigured IAP verifier that accepts everything is worse than one
+        that accepts nothing, because nothing is visible.
+        """
+        return bool(self._audiences)
+
+    def _transport(self) -> Any:
+        if self._request is None:
+            from google.auth.transport import requests as google_requests
+
+            self._request = google_requests.Request()
+        return self._request
+
+    def verify(self, assertion: str) -> dict[str, Any]:
+        from google.oauth2 import id_token as google_id_token
+
+        if not self.configured:
+            raise AuthError("IAP audience is not configured")
+
+        last: Exception | None = None
+        for audience in self._audiences:
+            try:
+                claims = google_id_token.verify_token(
+                    assertion,
+                    self._transport(),
+                    audience=audience,
+                    certs_url=self.CERTS_URL,
+                )
+            except ValueError as exc:
+                # Wrong audience for THIS backend is expected when two are
+                # configured; only the last failure is reported.
+                last = exc
+                continue
+
+            # IAP puts the verified identity in `email`, and `sub` carries a
+            # stable `accounts.google.com:<id>` rather than a bare subject.
+            email = str(claims.get("email", ""))
+            if not email:
+                raise AuthError("IAP assertion carries no email claim")
+            # IAP only ever forwards identities it has already authenticated, so
+            # there is no unverified-email case to reject -- but the downstream
+            # code reads `email_verified`, and absent would read as False.
+            claims.setdefault("email_verified", True)
+            return claims
+
+        log.info("IAP assertion rejected (%s): %s", _redact(assertion),
+                 type(last).__name__ if last else "no audience matched")
+        raise AuthError("IAP assertion verification failed")
+
+
 class StaticTokenVerifier:
     """Maps opaque strings to claims. Local development and tests only."""
 
@@ -165,12 +256,35 @@ class Authenticator:
         settings: ApiSettings,
         verifier: TokenVerifier,
         groups: MembershipResolver,
+        iap: Any = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
         self._groups = groups
+        self._iap = iap
 
-    def authenticate(self, authorization: str | None) -> AuthContext:
+    def authenticate(
+        self, authorization: str | None, iap_assertion: str | None = None
+    ) -> AuthContext:
+        # IAP FIRST, when it is present and configured. Behind the load balancer
+        # there is no Authorization header to fall back to -- a browser has no
+        # Google ID token to mint -- so this is the only credential a web caller
+        # ever has. A direct caller from inside the VPC still presents a bearer
+        # and takes the path below.
+        if iap_assertion and self._iap is not None and self._iap.configured:
+            try:
+                return self._from_claims(self._iap.verify(iap_assertion))
+            except Forbidden:
+                raise
+            except AuthError as exc:
+                # Not a fall-through to the bearer path: an assertion that fails
+                # to verify is a caller claiming an identity it cannot prove,
+                # and trying a second mechanism would let a bad assertion be
+                # masked by a good bearer.
+                raise Unauthenticated(str(exc)) from None
+        return self._authenticate_bearer(authorization)
+
+    def _authenticate_bearer(self, authorization: str | None) -> AuthContext:
         # Try every bearer credential the header carries. Cloud Run adds its own
         # Authorization header when IAM authentication is on, so the caller's
         # token is not always the only one -- see bearer_tokens(). Verification
@@ -190,6 +304,17 @@ class Authenticator:
             )
             raise Unauthenticated(str(last) if last else "id token verification failed") from None
 
+        return self._from_claims(claims)
+
+    def _from_claims(self, claims: dict[str, Any]) -> AuthContext:
+        """Verified claims -> AuthContext, whatever verified them.
+
+        Shared by the bearer and IAP paths deliberately. Tenant resolution,
+        domain enforcement, group membership and the admin decision are the part
+        that must NOT differ by how the caller arrived -- two copies of this
+        would be two tenant boundaries, and CONTRACT.md invariant 9 depends on
+        there being one.
+        """
         email = str(claims.get("email", "")).lower()
         subject = str(claims.get("sub", ""))
         try:

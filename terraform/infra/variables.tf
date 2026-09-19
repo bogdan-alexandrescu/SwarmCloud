@@ -128,6 +128,18 @@ variable "gke_enable_private_endpoint" {
   default = false
 }
 
+variable "gke_allow_open_master_authorized_network" {
+  description = <<-EOT
+    Permits 0.0.0.0/0 in gke_master_authorized_cidrs for this environment.
+
+    Default false, which is what keeps prod's control plane closed: prod runs
+    gke_enable_private_endpoint = false and relies on an empty allowlist, so the
+    refusal of 0.0.0.0/0 is its backstop rather than a formality.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "gke_master_authorized_cidrs" {
   type = list(object({
     cidr_block   = string
@@ -210,6 +222,87 @@ variable "tenants" {
   validation {
     condition     = alltrue([for t, v in var.tenants : v.max_active == null || v.max_active > 0])
     error_message = "a tenant's max_active must be positive; omit it to take pool_limits.default_tenant."
+  }
+}
+
+variable "enable_safety_tick_alert" {
+  description = "Create the safety-tick-stopped alert. Requires the Cloud Scheduler metric to already exist in the project; see the module variable of the same name."
+  type        = bool
+  default     = true
+}
+
+variable "enable_frontend" {
+  description = <<-EOT
+    Build the external load balancer and IAP in front of swarm-api.
+
+    A flag rather than `frontend_hostname != ""`, because a count that depends
+    on a value unknown at plan time cannot be planned -- the same reason
+    enable_quota_refresh exists.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "frontend_hostname" {
+  description = "The name the managed certificate is issued for. DNS lives at an external registrar, so the A record is added by hand from the module's ip_address output."
+  type        = string
+  default     = ""
+}
+
+variable "frontend_iap_audiences" {
+  description = <<-EOT
+    Audiences swarm-api accepts on an IAP assertion, one per backend service:
+
+        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
+
+    Declared rather than derived because deriving it from the frontend module is
+    a terraform cycle -- that module consumes the Cloud Run services this value
+    configures. Read it from `terraform output frontend_iap_audiences` once the
+    load balancer exists.
+
+    EMPTY MEANS THE IAP PATH IS OFF, not "accept any audience". An unpinned
+    audience makes google-auth skip the `aud` check, and an IAP assertion is
+    issued to anyone who can reach any IAP-protected resource anywhere.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "frontend_iap_members" {
+  description = <<-EOT
+    Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant
+    boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
+    read to the caller's own tenant.
+
+    `domain:saga.xyz` is the intended shape: it matches what the API already
+    enforces, so there is no second list to drift. An enumeration of individual
+    users is the shape that rots.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "admin_groups" {
+  description = <<-EOT
+    Google groups whose members may act across tenants in swarm-api -- reading
+    another tenant's tasks, and the platform routes that are not tenant-scoped.
+
+    Separate from `tenants` on purpose. A tenant group is a group that OWNS
+    work; an admin group is one that may look at everyone's. Deriving one from
+    the other would make every tenant an administrator the moment it was
+    registered, which is the opposite of invariant 9.
+
+    Empty is the correct default and the current dev setting: with no admin
+    group, no caller is an administrator, and the only cross-tenant identity is
+    the platform tick account, which authenticates as a service account and
+    never through this path.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for g in var.admin_groups : can(regex("^[^@]+@[^@]+$", g))])
+    error_message = "every admin group must be a group email address."
   }
 }
 
@@ -328,11 +421,20 @@ variable "service_max_instances" {
     "swarm-scheduler"    = 3
     "swarm-quota-broker" = 3
     "swarm-reconciler"   = 2
+    "swarm-ui"           = 2
   }
 
   validation {
     condition     = alltrue([for k, v in var.service_max_instances : v > 0])
     error_message = "every service needs an explicit positive max-instances."
+  }
+
+  validation {
+    condition = length(setsubtract(
+      ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui"],
+      keys(var.service_max_instances),
+    )) == 0
+    error_message = "service_max_instances must name every control-plane service. A tfvars file written before a service existed omits it, and the failure is an 'Invalid index' at plan time that names a line number rather than the missing key."
   }
 }
 

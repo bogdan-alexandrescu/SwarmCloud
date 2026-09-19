@@ -200,6 +200,26 @@ class Worker:
         )
         self.control.advance_to_running()
 
+        # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
+        #
+        # It used to happen only once the agent child was running -- after the
+        # workspace, the checkpoint restore and the clone. But the reconciler
+        # measures silence from LEASE ACQUISITION, so everything before this
+        # point counted against `heartbeat_grace_seconds` (90): container cold
+        # start, image pull, workspace setup, restoring a checkpoint and a
+        # shallow clone.
+        #
+        # On 2026-09-19 that reclaimed a task three times in a row. Each
+        # replacement worker started, found its generation superseded, logged
+        # "FENCED: this attempt has been superseded; exiting without running the
+        # agent" and exited 70 -- invariant 5 doing exactly what it exists to
+        # do, on workers that were never unhealthy. The task never ran at all.
+        #
+        # Raising the grace was the other option and is worse: it delays every
+        # genuine reclaim to accommodate startup cost. Heartbeating here makes
+        # the grace measure LIVENESS, which is what it is for.
+        self._heartbeat()
+
         # ---- STEP 3: isolated workspace ---------------------------------
         self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
         ws = self.ws
@@ -208,9 +228,14 @@ class Worker:
         # ---- STEP 4: restore the latest checkpoint ----------------------
         task = self.control.fetch_task()
         self._restore_checkpoint(task.get("latest_checkpoint"))
+        # Restoring a large checkpoint is unbounded; prove liveness after it.
+        self._heartbeat()
 
         # ---- STEP 5: optional shallow clone -----------------------------
         repo_info = self._maybe_clone(task)
+        # A clone is the single slowest step before the agent starts, and the
+        # one most likely to vary with repository size.
+        self._heartbeat()
 
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
@@ -463,11 +488,26 @@ class Worker:
 
         runner_result = _read_json(ws.result_path)
         if runner_result:
+            # Extracted once: it goes into the summary for a human to read AND
+            # onto the attempt as typed fields for a query to reach.
+            usage_summary = _usage_summary(runner_result.get("output"))
+            if usage_summary:
+                # Not fatal. An attempt that ran is not a failed attempt because
+                # its accounting write failed, and this runs on the teardown
+                # path where the lease is about to be released either way.
+                try:
+                    self.control.record_spend(usage_summary)
+                except Exception as exc:  # pragma: no cover - defensive
+                    self.log.warning("could not record spend", error=str(exc))
             summary["runner"] = self._scrub(
                 {
                     "status": runner_result.get("status"),
                     "summary": str(runner_result.get("summary", ""))[:4000],
                     "output": _truncate_json(runner_result.get("output"), 8000),
+                    # Extracted BEFORE the line above discards it. See
+                    # _usage_summary: the truncation dropped token counts on
+                    # precisely the most expensive runs.
+                    "usage": usage_summary,
                     "metrics": runner_result.get("metrics") or {},
                 }
             )
@@ -1046,6 +1086,57 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else {"value": data}
+
+
+def _usage_summary(output: Any) -> dict[str, Any]:
+    """Token and cost numbers, pulled out of a CLI agent's result BEFORE truncation.
+
+    `_truncate_json` replaces the whole result with a preview STRING once it
+    exceeds its limit, so the runs that consumed the most tokens were exactly the
+    runs whose token counts were discarded. The raw file still reaches GCS, but
+    nothing queryable kept the numbers, and a per-tenant spend figure assembled by
+    reading one GCS object per attempt does not survive real volume.
+
+    This is deliberately a small, flat dict of scalars: it stays far below any
+    truncation limit, so it survives whatever the rest of the result does.
+
+    It does NOT add a field to `Attempt` -- `apps/common/swarm_common/` is frozen.
+    These land inside the free-form runner summary. A typed field is a contract
+    change request; see docs/contract-change-requests.md.
+    """
+    if not isinstance(output, dict):
+        return {}
+
+    summary: dict[str, Any] = {}
+
+    usage = output.get("usage")
+    if isinstance(usage, dict):
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ):
+            value = usage.get(key)
+            if isinstance(value, int):
+                summary[key] = value
+        details = usage.get("output_tokens_details")
+        if isinstance(details, dict) and isinstance(details.get("thinking_tokens"), int):
+            summary["thinking_tokens"] = details["thinking_tokens"]
+
+    # bool is a subclass of int, so it is excluded explicitly -- `is_error: true`
+    # arriving as a cost of 1 would be a quietly wrong number, which is the whole
+    # class of bug this file is being edited to avoid.
+    for key in ("total_cost_usd", "num_turns", "duration_ms", "duration_api_ms"):
+        value = output.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            summary[key] = value
+
+    models = output.get("modelUsage")
+    if isinstance(models, dict) and models:
+        summary["models"] = sorted(str(m) for m in models)
+
+    return summary
 
 
 def _truncate_json(value: Any, limit: int) -> Any:

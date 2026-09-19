@@ -29,6 +29,9 @@ from swarm_common.models import ProviderState, QuotaState
 from swarm_common.profiles import RUNNER_PROFILES
 
 from .aimd import quota_derived_limit_for
+from .settings import _int
+from .usage import DEFAULT_MAX_POLLS_PER_SWEEP
+from .usagepoll import UsagePoller
 from .accounts import due_for_refresh
 from .accountstore import AccountStore
 from .credentials import CredentialRefresher
@@ -325,10 +328,14 @@ def create_app(
         app.state.account_store = AccountStore(app.state.broker.db)
 
     refresher, tenants = credential_refresher, subscription_tenants
+    # Bound here rather than only inside the branch below: the usage poller
+    # needs the same store, and reading it conditionally raised
+    # UnboundLocalError in exactly the configuration meant to skip it.
+    secret_store = None
     if refresher is None and _flag("CREDENTIAL_REFRESH_ENABLED", True):
         project_id = os.environ.get("PROJECT_ID", "").strip()
         if project_id:
-            store = SecretManagerStore(project_id)
+            store = secret_store = SecretManagerStore(project_id)
             refresher = CredentialRefresher(store, HttpTokenEndpoint(), logger=log)
             if tenants is None:
                 tenants = store.subscription_tenants
@@ -340,6 +347,27 @@ def create_app(
             )
     app.state.credential_refresher = refresher
     app.state.subscription_tenants = tenants or (lambda: [])
+
+    # The usage poller needs the same Secret Manager store the refresher uses --
+    # it reads each account's CURRENT access token, which the refresh above has
+    # just made fresh. Ordering matters: polling with a token the refresh is
+    # about to replace wastes one of about five calls per five minutes.
+    #
+    # Absent without PROJECT_ID, exactly like the refresher, so an
+    # API-key-only deployment builds neither and the sweep reports neither.
+    poller = None
+    if (
+        refresher is not None
+        and secret_store is not None
+        and getattr(app.state, "account_store", None) is not None
+    ):
+        poller = UsagePoller(
+            secret_store,
+            app.state.account_store,
+            logger=log,
+            max_polls=_int("USAGE_MAX_POLLS_PER_SWEEP", DEFAULT_MAX_POLLS_PER_SWEEP),
+        )
+    app.state.usage_poller = poller
 
     def _authorize(request: Request, authorization: str | None, tenant_id: str) -> str:
         """Confirm the caller may speak for `tenant_id`."""
@@ -545,6 +573,26 @@ def create_app(
                     ),
                     "account pool sweep failed",
                 )
+
+                # Read what each account has LEFT. Separate from the refresh
+                # above and reported separately, for the reason the comment
+                # there gives: sharing a block makes a bug in one
+                # indistinguishable from a failure of the other.
+                #
+                # This is the caller `record_reading` never had. Without it
+                # every account reported full headroom forever, and the assign
+                # floor -- the check that stops an agent starting on an account
+                # with 2% left -- could never fire.
+                #
+                # Budgeted rather than exhaustive: the endpoint allows roughly
+                # five calls per five minutes and shares that with anything else
+                # polling the same accounts. See quota_broker.usagepoll.
+                poller = getattr(request.app.state, "usage_poller", None)
+                if poller is not None:
+                    result["usage"] = _sweep_block(
+                        lambda: [o.__dict__ for o in poller.poll_round(store.list())],
+                        "account usage poll failed",
+                    )
         return result
 
     return app

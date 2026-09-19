@@ -12,3 +12,4 @@ tfplan.json
 dist/
 build/
 *.egg-info/
+.gstack/

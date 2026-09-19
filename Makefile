@@ -108,6 +108,12 @@ infra: ## Plan and apply infrastructure, then point kubectl at the swarm cluster
 	@$(MAKE) tf-apply
 	@$(SCRIPTS)/configure-kubectl.sh || echo "note: the GKE cluster is not reachable yet; the Cloud Run path does not need it"
 
+pool-check: ## Compare live pool ceilings against the terraform output (needs credentials)
+	@# NOT part of `make test`, which is offline by contract. Pool documents carry
+	@# ignore_changes in terraform, so tfvars describes a NEW environment and says
+	@# nothing about a running one; this is the only thing that compares them.
+	@$(SCRIPTS)/pool-limit.sh --check
+
 kubectl-guard: ## Print the export that puts the guarded kubectl ahead of the real one
 	@echo 'export PATH="$(CURDIR)/bin:$$PATH"'
 	@echo '# eval "$$(make kubectl-guard)" -- a bare kubectl then refuses any' >&2
@@ -157,6 +163,7 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@$(SCRIPTS)/lib/auth-guard.sh --self-test
 	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
+	@$(SCRIPTS)/lib/check-env-parity.sh
 	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
 	  uv run --project . pytest tests/unit -q; \
 	else \

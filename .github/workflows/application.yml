@@ -82,6 +82,14 @@ jobs:
         # asserts the copies against the frozen module. It needs no credentials.
         run: ./scripts/lib/check-contract-parity.sh
 
+      - name: the deployment sets every environment variable the control plane reads
+        # Seven name mismatches between terraform and the apps had accumulated
+        # by 2026-09-18, every one of them failing open and silently -- a reader
+        # that gets "" takes its "not configured" branch, which is a quiet
+        # fallback rather than a crash. Nothing here needs credentials: it is a
+        # static comparison of what locals.tf writes against what the apps read.
+        run: ./scripts/lib/check-env-parity.sh
+
       - name: the plan guard still catches offenders
         # The single implementation both `make destroy` and the two Terraform
         # workflows use to decide whether a plan may touch this shared project.

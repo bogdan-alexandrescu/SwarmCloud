@@ -31,19 +31,33 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
-# gke_master_authorized_cidrs is DELIBERATELY EMPTY HERE and set at apply time
-# instead:
+# gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
+# apply time as the operator's own /32. That is no longer what this does.
 #
-#   make infra TF_ARGS="-var gke_master_authorized_cidrs=[{cidr_block=\"$(curl -s ifconfig.me)/32\",display_name=\"operator\"}]"
+# The old note gave two reasons not to commit a value: this repository is
+# PUBLIC, so an operator's home address in git is a personal detail published
+# permanently; and the value rots the moment anyone changes network. The first
+# reason does not apply to 0.0.0.0/0 -- it discloses nothing about anyone. The
+# second is exactly what went wrong: the cluster sat holding a stale operator
+# /32 for an address that person no longer had, so the allowlist was denying the
+# one person it existed to admit while protecting nothing.
 #
-# Two reasons it is not committed. This repository is PUBLIC, so an operator's
-# home address in git is a personal detail published permanently; and the value
-# rots the moment anyone changes network, at which point the committed answer is
-# worse than no answer because it looks authoritative.
+# Opened on 2026-09-18 by operator decision. This is a NETWORK control only: the
+# GKE API server still requires a Google identity and still enforces RBAC, so
+# this makes the control plane reachable and discoverable from the internet, not
+# unauthenticated. The full argument, including the private-endpoint-plus-IAP
+# alternative that keeps both properties, is next to the removed validation in
+# terraform/modules/gke_autopilot/variables.tf.
 #
-# An empty list means the control plane is reachable only from inside the VPC,
-# which is the correct default and the one prod should keep. Reaching it from a
-# laptop is a dev convenience, and it should read like one.
+# PROD MUST NOT COPY THIS. A prod cluster keeps gke_enable_private_endpoint =
+# true and reaches the control plane from inside the VPC.
+gke_allow_open_master_authorized_network = true
+gke_master_authorized_cidrs = [
+  {
+    cidr_block   = "0.0.0.0/0"
+    display_name = "open-dev-cluster"
+  }
+]
 
 # --- data ------------------------------------------------------------------
 firestore_database      = "swarm"
@@ -56,13 +70,51 @@ immutable_image_tags = false
 # --- capacity --------------------------------------------------------------
 # Small on purpose. Dev exists to prove the control plane behaves, not to run
 # the fleet, and a runaway loop here spends real money.
+# CHANGING THESE DOES NOT CHANGE A RUNNING ENVIRONMENT. Verified on
+# 2026-09-19: raising every number here and applying moved the terraform OUTPUT
+# and nothing else -- the live pools stayed at 20/10/5.
+#
+# terraform/modules/firestore/bootstrap.tf carries `ignore_changes = [fields]`
+# on the pool documents, deliberately and for a good reason: `active` is mutated
+# by the admission transaction on every lease, so an apply that rewrote these
+# documents would reset live concurrency counters to zero and instantly
+# oversubscribe every pool. Terraform creates them once and then stops having an
+# opinion.
+#
+# So these values are the ceilings a NEW environment is born with. To change a
+# running one, use the admin API (PUT /v1/admin/limits/...), which is the only
+# path that writes hard_limit without touching `active`. Keep the two in step by
+# hand -- nothing checks that they agree, which is worth knowing before reading
+# the numbers below as a description of production.
+#
+# These are CEILINGS an operator sets, not targets. AIMD explores BELOW them:
+# `SlotPool.effective_limit` is min(hard_limit, adaptive_target,
+# quota_derived_limit), so adaptive logic may only ever lower the number, never
+# raise it. A ceiling set too low is therefore invisible -- the platform simply
+# never discovers it could do more, and reports PROVIDER_CONCURRENCY_LIMIT as
+# though the provider had refused.
+#
+# Measured 2026-09-18: a 12-agent fan-out admitted 5 at a time and held the rest
+# on provider_tenant, with three healthy accounts and no provider anywhere near
+# its own limits. All twelve finished -- QUEUED costs nothing (invariant 1), so
+# the held work drained in later waves rather than being refused. The ceiling
+# cost WALL-CLOCK, not work: one fan-out ran as three serial waves.
+#
+# Worth stating plainly, because the earlier reading of this was that seven
+# tasks were denied, and that would be a different and more urgent problem than
+# the one actually measured.
+#
+# provider_tenant is now sized for the ACCOUNT POOL rather than for one
+# subscription -- three accounts at roughly five concurrent agents each. AIMD
+# still backs off multiplicatively on the first 429, so this is room to search
+# in, not a promise that fifteen will work.
 pool_limits = {
-  global          = 20
-  default_tenant  = 10
-  provider_tenant = 5
+  global          = 40
+  default_tenant  = 20
+  provider_tenant = 15
 
   resource_classes = {
-    standard = 20
+    standard = 40
     browser  = 4
     large    = 2
   }
@@ -70,19 +122,35 @@ pool_limits = {
   runner_profiles = {
     mock        = 20
     generic     = 10
-    claude-code = 10
+    claude-code = 20
     codex       = 10
     browser     = 4
   }
 
   backends = {
-    CLOUD_RUN_JOB = 20
+    CLOUD_RUN_JOB = 40
     GKE_AUTOPILOT = 4
   }
 
   providers = {
-    anthropic = 10
-    openai    = 10
+    # Above provider_tenant x tenants, or the shared pool binds before the
+    # per-tenant one and the per-tenant ceiling stops meaning anything. The
+    # rule at variables.tf:337 enforces this; it is not a guideline.
+    #
+    #   anthropic  eng + u-bogdan  = 2 x 15 = 30
+    #   openai     eng             = 1 x 15 = 15
+    anthropic = 30
+
+    # Raised from 10 only because provider_tenant went to 15 and this is the
+    # floor that implies. It is NOT a measurement: the account-pool reasoning
+    # above is about three Anthropic subscriptions, and there is no equivalent
+    # OpenAI pool behind this number. provider_tenant applies to every provider
+    # uniformly, so lifting it for one lifts the floor for all of them.
+    #
+    # If that uniformity turns out to be wrong, the fix is a per-provider
+    # tenant ceiling, not a smaller number here -- a number below this floor
+    # does not fail at runtime, it fails the plan.
+    openai = 15
   }
 }
 
@@ -91,6 +159,9 @@ service_max_instances = {
   "swarm-scheduler"    = 2
   "swarm-quota-broker" = 2
   "swarm-reconciler"   = 1
+  # Static files behind a CDN-less load balancer; one instance serves the whole
+  # team and scales to zero between visits.
+  "swarm-ui" = 2
 }
 
 settings_env = {
@@ -180,3 +251,46 @@ secret_admin_members = [
 # --- observability ---------------------------------------------------------
 create_alerts = true
 alert_emails  = []
+
+# --- the web UI front door --------------------------------------------------
+# An external ALB with IAP in front of swarm-api. Nothing about the existing
+# services changes: their ingress setting is already exactly what an external
+# load balancer requires, and it was the absence of the load balancer -- not the
+# ingress setting -- that made swarm-api unreachable from a browser.
+enable_frontend   = true
+frontend_hostname = "swarm.saga.xyz"
+
+# The outer gate only. swarm-api stays the tenant boundary: it verifies the
+# token, enforces allowed_domains above, and scopes every read to the caller's
+# own tenant. This matches that domain rather than maintaining a second list,
+# because a hand-maintained list of principals is the shape that rots -- as the
+# GKE allowlist in this same file did.
+frontend_iap_members = ["domain:saga.xyz"]
+
+# The IAP OAuth brand is NOT created by terraform: google_iap_brand cannot be
+# deleted, so terraform could create one and never remove it. It is a
+# once-per-project manual step, documented in terraform/modules/frontend/main.tf.
+
+# OFF because the metric it watches does not exist in this project. Verified
+# 2026-09-19: the tick job is ENABLED and attempting every minute, and the
+# project has zero cloudscheduler.googleapis.com metric descriptors. Creating
+# the policy therefore fails the apply, and leaving it on made every
+# `make deploy` exit 2 -- which teaches everyone to ignore the exit code.
+#
+# Turn it back on once the metric appears; the check is in the module variable's
+# description.
+enable_safety_tick_alert = false
+
+# The audiences IAP mints for this deployment's two backend services. Read from
+# `terraform output frontend_iap_audiences` after the load balancer was created;
+# see the variable's description for why this is declared rather than derived
+# (deriving it is a terraform cycle).
+#
+# Without these, swarm-api has nothing to verify an IAP assertion against and
+# answers 401 to every request from the web UI -- a signed-in user, a valid
+# certificate, a healthy load balancer, and an API that cannot see any of it.
+frontend_iap_audiences = [
+  "/projects/209012342332/global/backendServices/817602226733443034",
+  "/projects/209012342332/global/backendServices/6904312892305383900",
+]
+

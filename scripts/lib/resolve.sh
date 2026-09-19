@@ -37,7 +37,16 @@ case "${KIND}" in
       # kubectl has its own resolver because the requirement is a VERSION, not a
       # path: 1.22 and 1.25 win $PATH here and a 1.22 client silently drops
       # fields it does not understand while reporting success.
-      kubectl)   kubectl_bin 2>/dev/null || true ;;
+      # A subshell, not a bare call: kubectl_bin's failure path is `die`, which
+      # calls `exit`, not `return`. `exit` inside a function terminates the
+      # whole process -- a `||` after a bare call never gets a chance to run,
+      # so the version diagnosis (candidates checked, the 1.22/1.25 explanation,
+      # the SWARM_KUBECTL hint) has to reach stderr before that happens, and
+      # the "|| true" that follows has to be catching a real subshell exit
+      # status, not dead code. Running it in `( )` confines the exit to the
+      # subshell so `|| true` actually applies, while stdout (empty on
+      # failure) and stderr (the diagnosis) both still propagate normally.
+      kubectl)   ( kubectl_bin ) || true ;;
       terraform) prefer_local_bin terraform "${SWARM_TERRAFORM:-}" || true ;;
       tflint)    prefer_local_bin tflint    "${SWARM_TFLINT:-}"    || true ;;
       checkov)   prefer_local_bin checkov   "${SWARM_CHECKOV:-}"   || true ;;

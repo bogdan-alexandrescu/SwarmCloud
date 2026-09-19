@@ -44,9 +44,15 @@ if [[ "${#EXPLICIT[@]}" -gt 0 ]]; then
   TARGETS=("${EXPLICIT[@]}")
 elif [[ "${SCOPE_ALL}" -eq 1 ]]; then
   confirm "This enables EVERY pool, including any paused for reasons this run knows nothing about." "enable-all"
+  # fs_list_docs runs inside a process substitution below, whose exit status
+  # the parent shell never sees -- a permission-denied or expired-session
+  # failure would otherwise drain the `while read` as an empty list, and
+  # "nothing to resume" (line 62) would tell the operator --all found no work
+  # instead of that the listing itself failed.
+  pool_docs="$(fs_list_docs pools)" || die "could not list pools; that is a failure to LIST them, not proof none exist. Check the account, the project (${PROJECT_ID}) and the database (${FIRESTORE_DATABASE}) before assuming --all has nothing to do."
   while IFS= read -r pool_id; do
     [[ -n "${pool_id}" ]] && TARGETS+=("${pool_id}")
-  done < <(fs_list_docs pools | jq -r '.id')
+  done < <(printf '%s' "${pool_docs}" | jq -r '.id')
 elif [[ -f "${STATE_FILE}" ]]; then
   while IFS= read -r pool_id; do
     [[ -n "${pool_id}" ]] && TARGETS+=("${pool_id}")
@@ -81,13 +87,26 @@ done
 
 if [[ "${RESUME_SCHEDULER}" -eq 1 ]]; then
   step "Cloud Scheduler safety tick"
-  if gcloud scheduler jobs describe "${SCHEDULER_JOB}" \
-       --project "${PROJECT_ID}" --location "${REGION}" --format='value(name)' >/dev/null 2>&1; then
+  # stderr captured, not discarded: gcloud reports a denied
+  # cloudscheduler.jobs.get, an expired session, a disabled API or a job that
+  # actually lives outside ${REGION} the same way it reports a real NOT_FOUND
+  # -- exit 1, no stdout. Only a message that actually says NOT_FOUND means the
+  # job is genuinely gone; anything else here means the safety tick has NOT
+  # been resumed even though the pool loop above already succeeded.
+  if describe_err="$(gcloud scheduler jobs describe "${SCHEDULER_JOB}" \
+       --project "${PROJECT_ID}" --location "${REGION}" --format='value(name)' 2>&1 >/dev/null)"; then
     gcloud scheduler jobs resume "${SCHEDULER_JOB}" \
       --project "${PROJECT_ID}" --location "${REGION}" >/dev/null
     ok "resumed ${SCHEDULER_JOB}"
   else
-    info "scheduler job ${SCHEDULER_JOB} not found"
+    die_if_auth_failure "${describe_err}"
+    if grep -q 'NOT_FOUND' <<<"${describe_err}"; then
+      info "scheduler job ${SCHEDULER_JOB} not found"
+    else
+      err "could not look up ${SCHEDULER_JOB}"
+      redact <<<"${describe_err}" | head -n 3 | sed 's/^/     /' >&2
+      die "that is a failure to LOOK UP ${SCHEDULER_JOB}, not proof it is absent. Check the account, the location (${REGION}) and the project (${PROJECT_ID}) -- the safety tick that drives admission has NOT been resumed."
+    fi
   fi
 fi
 
@@ -96,15 +115,26 @@ if [[ "${WAKE}" -eq 1 ]]; then
   # The scheduler drains on a Pub/Sub wake and exits; the Cloud Scheduler tick is
   # only a safety net. Publishing here means a resumed swarm starts admitting in
   # seconds rather than at the next minute boundary.
-  if gcloud pubsub topics describe "${PUBSUB_TOPIC}" \
-       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+  #
+  # Same stderr-capture reasoning as the scheduler-job describe above: this is
+  # the twin probe, and a denied/expired/disabled lookup must not be reported
+  # as "topic not found".
+  if describe_err="$(gcloud pubsub topics describe "${PUBSUB_TOPIC}" \
+       --project "${PROJECT_ID}" --format='value(name)' 2>&1 >/dev/null)"; then
     gcloud pubsub topics publish "${PUBSUB_TOPIC}" \
       --project "${PROJECT_ID}" \
       --message='{"reason":"resume-swarm"}' \
       --attribute="source=resume-swarm,at=$(iso_now)" >/dev/null
     ok "published a wake message to ${PUBSUB_TOPIC}"
   else
-    info "topic ${PUBSUB_TOPIC} not found; the scheduler will pick work up on its next tick"
+    die_if_auth_failure "${describe_err}"
+    if grep -q 'NOT_FOUND' <<<"${describe_err}"; then
+      info "topic ${PUBSUB_TOPIC} not found; the scheduler will pick work up on its next tick"
+    else
+      err "could not look up ${PUBSUB_TOPIC}"
+      redact <<<"${describe_err}" | head -n 3 | sed 's/^/     /' >&2
+      die "that is a failure to LOOK UP ${PUBSUB_TOPIC}, not proof it is absent. Check the account and the project (${PROJECT_ID}) before assuming the swarm has been woken."
+    fi
   fi
 fi
 

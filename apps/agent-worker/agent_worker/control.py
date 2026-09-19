@@ -494,6 +494,44 @@ class ControlPlane:
             merge=True,
         )
 
+    def record_spend(self, usage: dict[str, Any]) -> None:
+        """Token counts and cost, onto the attempt, as typed fields.
+
+        `usage` is what `lifecycle._usage_summary` pulled out of the CLI result
+        BEFORE truncation. Only the keys the frozen `Attempt` declares are
+        written: the summary also carries num_turns, durations and a model list,
+        which belong in the runner summary rather than as columns on an attempt.
+
+        A key the runner did not report is OMITTED, not written as zero. None
+        means "not reported" and zero means "cost nothing", and a mock task is
+        genuinely the second while a result that failed to parse is the first.
+        """
+        if not usage:
+            return
+        fields = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+        # `not isinstance(v, bool)` on every one of them: bool subclasses int in
+        # Python, so `input_tokens: True` would land as a token count of 1. A
+        # silently wrong number is the failure mode this whole field set exists
+        # to avoid, and it is cheaper to exclude the type than to explain the
+        # number later.
+        doc: dict[str, Any] = {
+            key: int(usage[key])
+            for key in fields
+            if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+        }
+        cost = usage.get("total_cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            doc["cost_usd"] = float(cost)
+        if not doc:
+            return
+        doc["tenant_id"] = self.tenant_id
+        self._attempt_ref().set(doc, merge=True)
+
     def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
         self._attempt_ref().set(
             {

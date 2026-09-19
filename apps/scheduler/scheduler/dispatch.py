@@ -472,7 +472,7 @@ class GkeJobDispatcher:
             return self._batch_api
         if self._target is None:
             raise DispatchError(
-                "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_PATH",
+                "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_B64",
                 code="gke_not_configured",
             )
         import google.auth
@@ -667,11 +667,42 @@ class BackendRouter:
         )
 
 
+def _gke_ca_file() -> str:
+    """Materialise the cluster CA bundle, returning a path, or "" if unset.
+
+    The environment carries the bundle base64-encoded (`GKE_CA_CERT_B64`, written
+    by terraform from the cluster's own output) because a Cloud Run environment
+    variable is a string and a CA bundle is a file. This end of it used to read
+    `GKE_CA_CERT_PATH` instead -- a name nothing has ever set, and a different
+    shape besides -- so `target` was always None and every GKE dispatch died on
+    "GKE dispatch is not configured".
+
+    It never looked like a configuration bug: the scheduler treats a dispatch
+    failure as transient, returns the task to READY and retries on the next
+    drain, so the symptom was a browser task that stayed queued forever rather
+    than anything that crashed or alerted. The reconciler read the right name
+    all along (reconciler/backends.py), which is what made this survivable and
+    also what made it invisible -- the two halves disagreed and only one was
+    ever exercised.
+    """
+    import base64
+    import os
+    import tempfile
+
+    ca_b64 = os.environ.get("GKE_CA_CERT_B64", "").strip()
+    if not ca_b64:
+        return ""
+    handle = tempfile.NamedTemporaryFile(prefix="gke-ca-", suffix=".crt", delete=False)
+    handle.write(base64.b64decode(ca_b64))
+    handle.close()
+    return handle.name
+
+
 def build_router(settings: Any) -> BackendRouter:
     import os
 
     endpoint = os.environ.get("GKE_ENDPOINT", "").strip()
-    ca_path = os.environ.get("GKE_CA_CERT_PATH", "").strip()
+    ca_path = _gke_ca_file()
     target = None
     if endpoint and ca_path:
         target = GkeTarget(
