@@ -204,6 +204,59 @@ export interface TaskEvent {
   detail: Record<string, unknown> | null
 }
 
+/**
+ * What the worker puts in `task.result_summary` (lifecycle.py:946-960, written
+ * through control.py:663-664).
+ *
+ * WHY THIS AND NOT `GET /v1/tasks/{id}/artifacts`: that route reads a
+ * Firestore `artifacts` subcollection (store.py:513) that NOTHING IN THIS
+ * REPOSITORY WRITES. `ARTIFACTS = "artifacts"` is declared once in swarm-api's
+ * store and read once, and grep across apps/ finds no writer. The endpoint
+ * therefore returns an empty list for every task forever. A panel built on it
+ * would render "no artifacts" for a run that produced twenty.
+ *
+ * The artifacts are real -- they are uploaded to the tenant's own GCS prefix
+ * and recorded here, by reference. Nothing is inlined and no download URL is
+ * minted: the reader uses their own credentials against GCS, which keeps the
+ * tenant boundary in one place.
+ */
+export interface ResultSummary {
+  artifacts?: ArtifactRef[]
+  artifact_bytes?: number
+  /** `{stdout: "gs://...", stderr: "gs://..."}`. A stream that failed to upload is absent. */
+  logs?: Record<string, string>
+  /** Present only when something was dropped for exceeding max_artifact_bytes. */
+  artifacts_skipped?: string[]
+  checkpoint?: { checkpoint_id?: string; [k: string]: unknown }
+  /** Token and cost numbers live at `runner.usage`, untyped. See the note below. */
+  runner?: { usage?: Record<string, number | string[]>; [k: string]: unknown }
+  [k: string]: unknown
+}
+
+export interface ArtifactRef {
+  name: string
+  bytes: number
+  uri: string
+}
+
+/**
+ * Reads `result_summary.runner.usage` if it is there.
+ *
+ * Three things must stay true of anything rendered from this:
+ *  - only claude-code and codex produce it; mock, generic and browser report
+ *    nothing, and NOTHING IS NOT ZERO. Render an em dash, never $0.00.
+ *  - result_summary is written only by finish(), so a RUNNING agent has no
+ *    figure and a PARKED one never will for the attempt it lost -- that path
+ *    puts the summary in the event detail and in blocked_by instead.
+ *  - it is an untyped dict, so nothing can query or index it. A "top spenders"
+ *    figure is a client-side sum over one page, not an aggregate.
+ */
+export function usageOf(task: Task): Record<string, number | string[]> | null {
+  const runner = (task.result_summary as ResultSummary | null)?.runner
+  const usage = runner?.usage
+  return usage && typeof usage === 'object' ? usage : null
+}
+
 /** `tenant_to_api`, codec.py:283. Thirteen fields, all of them. */
 export interface Tenant {
   tenant_id: string

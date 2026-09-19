@@ -1,5 +1,5 @@
 import { read, type Result } from './fetch'
-import type { Capacity, Task, TaskPage, TaskState, Workflow } from './types'
+import type { Capacity, Task, TaskEvent, TaskPage, TaskState, Workflow } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
 // this product performs, and what "empty" means for each of them -- which is
@@ -85,6 +85,141 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
   return { workflows, taskById: null, statesDetail: 'The task read did not complete.' }
+}
+
+/**
+ * One agent, with its event timeline.
+ *
+ * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is deliberately NOT
+ * called: it reads a Firestore subcollection nothing writes, so it returns []
+ * for every task forever. Artifacts come off `task.result_summary`, which the
+ * worker really populates. See ResultSummary in types.ts.
+ */
+export interface AgentDetail {
+  task: Task
+  /** null means the event read FAILED. An empty array means there are none. */
+  events: TaskEvent[] | null
+  eventsDetail: string | null
+}
+
+export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
+  if (USE_FIXTURES) return fixtureAgentDetail(taskId)
+
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}`
+  const [task, events] = await Promise.all([
+    read<{ task: Task } | Task>(path, () => false),
+    read<{ events: TaskEvent[] }>(`${path}/events`, () => false),
+  ])
+
+  if (task.status === 'loading' || task.status === 'error') return task
+  if (task.status === 'empty') {
+    return {
+      status: 'error',
+      error: {
+        kind: 'not_found',
+        httpStatus: 404,
+        code: 'not_found',
+        message: 'This task does not exist, or it belongs to another tenant.',
+      },
+    }
+  }
+
+  // GET /v1/tasks/{id} returns the task document itself; tolerate a wrapper in
+  // case a caller routes through the create shape.
+  const raw = task.data as { task?: Task } & Task
+  const unwrapped: Task = raw.task ?? raw
+
+  const eventList =
+    events.status === 'ok' ? events.data.events
+    : events.status === 'empty' ? []
+    : null
+
+  return {
+    status: task.status === 'stale' ? 'stale' : 'ok',
+    data: {
+      task: unwrapped,
+      events: eventList,
+      eventsDetail:
+        eventList === null
+          ? events.status === 'error' || events.status === 'stale'
+            ? events.error.message
+            : 'The event read did not complete.'
+          : null,
+    },
+    fetchedAt: task.fetchedAt,
+    error: task.status === 'stale' ? task.error : undefined,
+  } as Result<AgentDetail>
+}
+
+async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
+  const page = await fixtureTasks()
+  const task = page.status === 'ok' ? page.data.tasks.find((t) => t.id === taskId) : undefined
+  if (!task) {
+    return {
+      status: 'error',
+      error: {
+        kind: 'not_found',
+        httpStatus: 404,
+        code: 'not_found',
+        message: 'This task does not exist, or it belongs to another tenant.',
+      },
+    }
+  }
+  const at = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString()
+  const ev = (type: string, minsAgo: number, detail: Record<string, unknown> | null = null) => ({
+    event_id: `${task.id}-${type}`,
+    task_id: task.id,
+    type,
+    at: at(minsAgo),
+    attempt_id: `att-${task.id.slice(-4)}`,
+    lease_id: `lease-${task.id.slice(-4)}`,
+    generation: task.attempt_count,
+    detail,
+  })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task: {
+        ...task,
+        result_summary:
+          task.state === 'SUCCEEDED'
+            ? {
+                artifacts: [
+                  { name: 'report.md', bytes: 8241, uri: 'gs://swarm-artifacts-dev/u-bogdan/report.md' },
+                  { name: 'diff.patch', bytes: 91233, uri: 'gs://swarm-artifacts-dev/u-bogdan/diff.patch' },
+                ],
+                artifact_bytes: 99474,
+                logs: {
+                  stdout: 'gs://swarm-artifacts-dev/u-bogdan/logs/stdout.log',
+                  stderr: 'gs://swarm-artifacts-dev/u-bogdan/logs/stderr.log',
+                },
+                runner: {
+                  usage: {
+                    input_tokens: 8,
+                    output_tokens: 402,
+                    total_cost_usd: 0.0642028,
+                    models: ['claude-opus-5'],
+                  },
+                },
+              }
+            : task.result_summary,
+      },
+      events: [
+        ev('ready', 12),
+        ev('lease_acquired', 10),
+        // The workaround for having no attempts/leases read path: the
+        // DISPATCHED event's detail carries the execution name.
+        ev('dispatched', 9, { execution_name: 'swarm-job-u-bogdan-claude-code-abc12', backend: 'CLOUD_RUN_JOB' }),
+        ev('starting', 8),
+        ev('running', 8),
+        ev('checkpoint_completed', 4, { checkpoint_id: 'ckpt-3' }),
+        ...(task.state === 'SUCCEEDED' ? [ev('succeeded', 1, { exit_code: 0 })] : []),
+        ...(task.state === 'FAILED' ? [ev('failed', 1, { exit_code: 1, error: task.last_error })] : []),
+      ],
+      eventsDetail: null,
+    },
+  }
 }
 
 // --------------------------------------------------------------------------

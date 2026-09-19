@@ -34,7 +34,7 @@ function tabOf(t: Task): Tab {
  * The tab counts come from the ROWS, never from /v1/stats, so the badge and
  * the table can never disagree with each other.
  */
-export function AgentsScreen() {
+export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
   const [tab, setTab] = useState<Tab>('live')
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
@@ -59,6 +59,7 @@ export function AgentsScreen() {
     >
       {(d) => (
         <AgentsBody
+          onOpen={onOpen}
           page={d}
           tab={tab}
           setTab={setTab}
@@ -73,6 +74,7 @@ export function AgentsScreen() {
 }
 
 function AgentsBody({
+  onOpen,
   page,
   tab,
   setTab,
@@ -81,6 +83,7 @@ function AgentsBody({
   grouped,
   setGrouped,
 }: {
+  onOpen: (taskId: string) => void
   page: TaskPage
   tab: Tab
   setTab: (t: Tab) => void
@@ -174,11 +177,11 @@ function AgentsBody({
           </p>
         </div>
       ) : grouped && tab !== 'live' ? (
-        <GroupedRows rows={rows} now={now} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} />
       ) : (
         <div className="rows">
           {rows.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} />
+            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
           ))}
         </div>
       )}
@@ -200,7 +203,15 @@ function AgentsBody({
  * "3 steps" when the workflow has nine and six fell off page one is the same
  * lie in a new place.
  */
-function GroupedRows({ rows, now }: { rows: Task[]; now: number }) {
+function GroupedRows({
+  rows,
+  now,
+  onOpen,
+}: {
+  rows: Task[]
+  now: number
+  onOpen: (taskId: string) => void
+}) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
     for (const t of rows) {
@@ -230,7 +241,7 @@ function GroupedRows({ rows, now }: { rows: Task[]; now: number }) {
             </h2>
             <div className="rows">
               {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} now={now} />
+                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
               ))}
             </div>
           </section>
@@ -240,7 +251,15 @@ function GroupedRows({ rows, now }: { rows: Task[]; now: number }) {
   )
 }
 
-function TaskRow({ task, now }: { task: Task; now: number }) {
+function TaskRow({
+  task,
+  now,
+  onOpen,
+}: {
+  task: Task
+  now: number
+  onOpen: (taskId: string) => void
+}) {
   const holding = CONCURRENCY_STATES.has(task.state)
   const why = whyAgent(task)
   const el = elapsed(task, now)
@@ -252,7 +271,18 @@ function TaskRow({ task, now }: { task: Task; now: number }) {
   const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
 
   return (
-    <div className={`row${holding ? ' holding' : ''}`}>
+    <div
+      className={`row clickable${holding ? ' holding' : ''}`}
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(task.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen(task.id)
+        }
+      }}
+    >
       <span className={`st ${stateTone(task.state)}`}>
         <span aria-hidden>{stateGlyph(task.state)}</span> {task.state}
       </span>
