@@ -38,9 +38,9 @@ gke_enable_private_endpoint = false
 # PUBLIC, so an operator's home address in git is a personal detail published
 # permanently; and the value rots the moment anyone changes network. The first
 # reason does not apply to 0.0.0.0/0 -- it discloses nothing about anyone. The
-# second is exactly what went wrong: the cluster sat holding a stale operator /32 for
-# an address the operator no longer had, so the allowlist was denying the one
-# person it existed to admit while protecting nothing.
+# second is exactly what went wrong: the cluster sat holding a stale operator
+# /32 for an address that person no longer had, so the allowlist was denying the
+# one person it existed to admit while protecting nothing.
 #
 # Opened on 2026-09-18 by operator decision. This is a NETWORK control only: the
 # GKE API server still requires a Google identity and still enforces RBAC, so

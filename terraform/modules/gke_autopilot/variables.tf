@@ -83,8 +83,8 @@ variable "master_authorized_cidrs" {
   # WHY DEV OPTS IN (2026-09-18, operator decision): the allowlist rots. It held
   # one operator's home /32, which changes without warning, and the symptom when
   # it changes is kubectl hanging rather than saying why. That is what happened
-  # here -- the cluster carried a stale operator /32 for an address the operator no
-  # longer had, so the control was denying the one person it existed to admit
+  # here -- the cluster carried a stale operator /32 for an address that person
+  # no longer had, so the control was denying the one person it existed to admit
   # while protecting nothing.
   #
   # The alternative that keeps both properties is a private endpoint reached
