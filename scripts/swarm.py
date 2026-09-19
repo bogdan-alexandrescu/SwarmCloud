@@ -282,11 +282,30 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
+    """Request cancellation of a task.
+
+    Goes through `store.request_cancel`, which is what POST
+    /v1/tasks/{id}/cancel calls (routes/tasks.py). This used to call
+    `submissions.cancel_task`, a method SubmissionService has never had -- so
+    `swarm.py cancel` raised AttributeError every time it was used, and the only
+    way to find that out was to need it.
+    """
     from swarm_api.deps import build_context
 
+    from swarm_api.errors import Conflict
+
     app = build_context(db=_db())
-    app.submissions.cancel_task(_context(), args.task)
-    print(f"  cancelled {args.task}")
+    ctx = _context()
+    try:
+        # request_cancel returns a Task MODEL, not the raw document `_state` reads.
+        task = app.store.request_cancel(ctx.tenant_id, args.task, by=ctx.email)
+    except Conflict as exc:
+        # Already terminal. That is an answer, not a crash -- a CLI that prints a
+        # traceback for "it already finished" teaches its user to distrust it.
+        print(f"  {args.task}  {exc}")
+        return 0
+    state = getattr(task, "state", None)
+    print(f"  {args.task}  {getattr(state, 'value', state)}  (cancellation requested)")
     return 0
 
 
