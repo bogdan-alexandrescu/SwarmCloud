@@ -70,6 +70,23 @@ immutable_image_tags = false
 # --- capacity --------------------------------------------------------------
 # Small on purpose. Dev exists to prove the control plane behaves, not to run
 # the fleet, and a runaway loop here spends real money.
+# CHANGING THESE DOES NOT CHANGE A RUNNING ENVIRONMENT. Verified on
+# 2026-09-19: raising every number here and applying moved the terraform OUTPUT
+# and nothing else -- the live pools stayed at 20/10/5.
+#
+# terraform/modules/firestore/bootstrap.tf carries `ignore_changes = [fields]`
+# on the pool documents, deliberately and for a good reason: `active` is mutated
+# by the admission transaction on every lease, so an apply that rewrote these
+# documents would reset live concurrency counters to zero and instantly
+# oversubscribe every pool. Terraform creates them once and then stops having an
+# opinion.
+#
+# So these values are the ceilings a NEW environment is born with. To change a
+# running one, use the admin API (PUT /v1/admin/limits/...), which is the only
+# path that writes hard_limit without touching `active`. Keep the two in step by
+# hand -- nothing checks that they agree, which is worth knowing before reading
+# the numbers below as a description of production.
+#
 # These are CEILINGS an operator sets, not targets. AIMD explores BELOW them:
 # `SlotPool.effective_limit` is min(hard_limit, adaptive_target,
 # quota_derived_limit), so adaptive logic may only ever lower the number, never

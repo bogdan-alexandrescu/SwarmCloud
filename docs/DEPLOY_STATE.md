@@ -1,45 +1,57 @@
-# Deploy state — read this before the next `make deploy`
+# Deploy state
 
-**As of 2026-09-19, the registry and the running platform disagree, on purpose.**
+**2026-09-19: applied and verified, with two exceptions recorded below.**
 
-    images at tag 2d7e0dff6345   built, scanned, promoted to :dev  ✅
-    terraform                    NOT applied                       ❌
+Tag `2d7e0dff6345` is live on all four control-plane services. 18 of 19 planned
+changes applied.
 
-So `build/deployed-images-dev.json` promises six images that the four Cloud Run
-services are not yet running, and none of the environment fixes below are live.
+## Verified against the live platform
 
-## What is waiting to be applied
+Checked with `gcloud ... --format=json`, deliberately NOT through `status.sh` or
+`smoke-test.sh` — both are in `docs/audits/2026-09-18/13-swallowed-stderr-sweep.md`
+and report "not deployed" when they mean "could not look".
 
 | | |
 |---|---|
-| `DISPATCH_TOPIC` on api + scheduler | the Pub/Sub fast-wake path has never fired |
-| `TENANT_GROUPS` / `ADMIN_GROUPS` on api | group tenant resolution has never engaged |
-| `PUSH_SERVICE_ACCOUNT` / `PUSH_AUDIENCE` | the second auth layer in front of the admission controller is inert |
-| `BROKER_AUDIENCE` | same, for the quota broker |
-| `ARTIFACT_REGISTRY_HOST` | works today only because two defaults coincide |
-| pool ceilings | 20/10/5 live; 40/20/15 committed |
-| GKE authorized networks | `a stale operator /32`, an address nobody holds |
+| `DISPATCH_TOPIC=swarm-scheduler-wake` | api + scheduler; `WAKE_TOPIC` gone |
+| `TENANT_GROUPS=eng@saga.xyz,swarm-smoke@saga.xyz` | group resolution live for the first time |
+| `PUSH_SERVICE_ACCOUNT`, `PUSH_AUDIENCE` | scheduler |
+| `BROKER_AUDIENCE` | quota broker |
+| `ARTIFACT_REGISTRY_HOST` | scheduler; `ARTIFACT_REGISTRY`/`IMAGE_BASE` gone |
+| custom audiences | set on scheduler and broker |
+| GKE `0.0.0.0/0` | `kubectl get nodes` returns a Ready node |
 
-## Why it stopped
+**The quota sweep now returns 200.** It had returned 403 on every tick for the
+life of the deployment. Three consecutive 200s after the apply.
 
-`make deploy` died at `lookup oauth2.googleapis.com: no such host` — a DNS
-failure, before terraform read state. Nothing was applied and no lock was left.
-The retry is clean.
+**Dispatch works end to end.** A mock task reached `DISPATCHED`.
 
-It was briefly believed to have succeeded, because it ran as
-`make deploy > log 2>&1; echo "exit=$?"` and the *wrapper* exited 0. The real
-status, `deploy exit=2`, was in the log the whole time. This is the same class
-of bug as `docs/audits/2026-09-18/13-swallowed-stderr-sweep.md`, committed by
-the person auditing it, on the same day, which is the most useful thing about
-the incident.
+## Exception 1: the alert policy did not create
 
-## To finish
+    Error 404: Cannot find metric(s) that match type =
+    "cloudscheduler.googleapis.com/job/attempt_count"
 
-    gcloud auth login && gcloud auth application-default login
-    make deploy          # read ITS exit status, not a wrapper's
+`module.monitoring.google_monitoring_alert_policy.safety_tick_absent` is the one
+resource in the plan that failed, and it is why `make deploy` exited 2. The
+metric does not exist until Cloud Scheduler has emitted it, and Google's own
+message says it can take ten minutes to become queryable. The ticks are running
+now, so a later `make deploy` should create it with no other change.
 
-Then confirm against the live services rather than against a script — several of
-the scripts that would report on this are themselves in report 13, and will say
-"not deployed" when they mean "could not look".
+Nothing else depends on it. It is an alert, not a control.
 
-Delete this file once the two halves agree again.
+## Exception 2: pool ceilings are NOT what dev.tfvars says
+
+The live pools are still `global=20`, `provider:anthropic=10`,
+`provider_tenant=5`, while `dev.tfvars` says 40/30/15.
+
+This is not drift and not a failed apply. `terraform/modules/firestore/bootstrap.tf`
+puts `ignore_changes = [fields]` on the pool documents on purpose: `active` is
+mutated by the admission transaction on every lease, so an apply that rewrote
+them would zero live concurrency counters and oversubscribe every pool.
+Terraform creates pool documents once and then stops.
+
+So the tfvars numbers are what a NEW environment is born with. Changing a
+running one goes through `PUT /v1/admin/limits/...`, the only path that writes
+`hard_limit` without touching `active`. Nothing checks that the two agree.
+
+This is now written next to the values in `dev.tfvars` as well.
