@@ -61,14 +61,36 @@ fi
 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
 
 step "Cluster lookup"
+DESCRIBE_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-gke-describe.XXXXXX")"
 if ! CLUSTER_JSON="$(gcloud container clusters describe "${GKE_CLUSTER}" \
-      --project "${PROJECT_ID}" --location "${GKE_LOCATION}" --format=json 2>/dev/null)"; then
-  err "cluster ${GKE_CLUSTER} not found in ${GKE_LOCATION}"
+      --project "${PROJECT_ID}" --location "${GKE_LOCATION}" --format=json 2>"${DESCRIBE_ERR_FILE}")"; then
+  DESCRIBE_ERR="$(cat "${DESCRIBE_ERR_FILE}")"
+  rm -f "${DESCRIBE_ERR_FILE}"
+  # A denied container.clusters.get, an expired session, the Kubernetes Engine
+  # API being disabled, and a zonal/regional GKE_LOCATION mismatch all produce
+  # this exact same empty result as a genuinely missing cluster. stderr is the
+  # only thing that tells them apart, so it is captured, not discarded.
+  die_if_auth_failure "${DESCRIBE_ERR}"
+  err "cluster ${GKE_CLUSTER} not found in ${GKE_LOCATION} -- or the lookup itself failed:"
+  printf '%s\n' "${DESCRIBE_ERR}" | redact | head -n 5 | sed 's/^/     /' >&2
   dim "clusters visible in this project:"
-  gcloud container clusters list --project "${PROJECT_ID}" \
-    --format='table(name,location,status,autopilot.enabled:label=AUTOPILOT)' >&2 || true
-  die "run 'make infra' to create the swarm cluster, or pass --cluster/--location"
+  LIST_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-gke-list.XXXXXX")"
+  if ! gcloud container clusters list --project "${PROJECT_ID}" \
+      --format='table(name,location,status,autopilot.enabled:label=AUTOPILOT)' >&2 2>"${LIST_ERR_FILE}"; then
+    LIST_ERR="$(cat "${LIST_ERR_FILE}")"
+    rm -f "${LIST_ERR_FILE}"
+    # If this listing failed too, the empty table an operator would otherwise
+    # see is not "this project has no clusters" -- it is the same broken
+    # session or permission set that just failed the describe above.
+    die_if_auth_failure "${LIST_ERR}"
+    warn "listing clusters also failed; that is not proof this project has none"
+    printf '%s\n' "${LIST_ERR}" | redact | head -n 3 | sed 's/^/     /' >&2
+  else
+    rm -f "${LIST_ERR_FILE}"
+  fi
+  die "run 'make infra' to create the swarm cluster, or pass --cluster/--location -- but check the message above first: this may be an auth problem, not a missing cluster"
 fi
+rm -f "${DESCRIBE_ERR_FILE}"
 
 SERVER_VERSION="$(printf '%s' "${CLUSTER_JSON}" | jq -r '.currentMasterVersion // ""')"
 AUTOPILOT="$(printf '%s' "${CLUSTER_JSON}" | jq -r 'if .autopilot.enabled then "yes" else "no" end')"
@@ -131,11 +153,25 @@ if [[ -n "${CLIENT_MINOR}" && -n "${SERVER_MINOR}" ]]; then
 fi
 
 step "Connectivity"
-if "${KUBECTL_BIN}" get --raw='/readyz' >/dev/null 2>&1; then
+READYZ_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-readyz.XXXXXX")"
+if "${KUBECTL_BIN}" get --raw='/readyz' >/dev/null 2>"${READYZ_ERR_FILE}"; then
   ok "API server reachable"
 else
-  warn "API server did not answer /readyz; a private control plane needs an authorised network or a bastion"
+  READYZ_ERR="$(cat "${READYZ_ERR_FILE}")"
+  rm -f "${READYZ_ERR_FILE}"
+  # A private control plane needing an authorised network or a bastion is only
+  # one of several things a silent /readyz failure means: a missing or failing
+  # gke-gcloud-auth-plugin, an expired gcloud session, RBAC denying the
+  # non-resource URL /readyz, or a cluster still PROVISIONING/REPAIRING all
+  # look identical from a bare exit code. `2>&1` used to discard the one line
+  # that tells them apart.
+  die_if_auth_failure "${READYZ_ERR}"
+  warn "API server did not answer /readyz. This is not necessarily a private control plane needing"
+  warn "an authorised network or a bastion -- it also looks like a missing auth plugin, a denied RBAC"
+  warn "binding, or a cluster still provisioning. The actual error:"
+  printf '%s\n' "${READYZ_ERR}" | redact | head -n 5 | sed 's/^/     /' >&2
 fi
+rm -f "${READYZ_ERR_FILE}"
 
 if NAMESPACES="$("${KUBECTL_BIN}" get namespaces -l managed-by=swarm-terraform \
       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"; then
