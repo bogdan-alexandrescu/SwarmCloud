@@ -21,9 +21,18 @@
 # Run service and a path rule on the URL map; the load balancer sends /v1/* to
 # swarm-api and everything else here.
 
-# --- build -----------------------------------------------------------------
-# Digest pinned like every other base in this repository, resolved 2026-09-19.
+# BOTH ARGs LIVE HERE, ABOVE THE FIRST FROM, AND MUST STAY THERE. An ARG
+# declared after a FROM is scoped to that build STAGE, so the nginx one sitting
+# next to the runtime stage where it reads best was empty by the time the second
+# FROM evaluated it: "base name (${NGINX_IMAGE}) should not be blank". The build
+# ran all the way through npm first, so the failure arrived a minute in.
+#
+# Digests pinned like every other base here, resolved from the registry on
+# 2026-09-19 rather than written from memory.
 ARG NODE_IMAGE=node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+
+# --- build -----------------------------------------------------------------
 FROM ${NODE_IMAGE} AS build
 
 WORKDIR /build
@@ -40,8 +49,7 @@ RUN npm run build
 # --- runtime ---------------------------------------------------------------
 # nginx-unprivileged rather than nginx: it listens on 8080 and runs as a
 # non-root uid out of the box, matching the posture of the other four images
-# without a templated config or a chown pass.
-ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+# without a templated config or a chown pass. Its ARG is at the top of the file.
 FROM ${NGINX_IMAGE}
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
