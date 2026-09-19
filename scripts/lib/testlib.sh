@@ -92,22 +92,59 @@ require_platform() {
   if ! fs_database_exists; then
     die "Firestore database '${FIRESTORE_DATABASE}' does not exist. Run 'make infra' first."
   fi
-  if ! api_reachable; then
-    die "the API at $(api_url) did not answer /readyz. Run 'make deploy', or set API_URL."
+
+  # Not api_reachable(): it runs curl with stderr sent to /dev/null and reads
+  # grep's exit status rather than curl's, so a 403 (missing roles/run.invoker),
+  # a 401 (expired session) and a genuinely undeployed service all collapse to
+  # the same "did not answer" verdict below. Probe directly, the same way
+  # api_url() does above it in common.sh, so the die message names the real
+  # cause instead of sending every one of those cases at 'make deploy'.
+  local ready_err ready_status detail
+  ready_err="$(mktemp "${TMPDIR:-/tmp}/swarm-readyz.XXXXXX")"
+  if ! ready_status="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer $(id_token)" \
+        "$(api_url)/readyz" 2>"${ready_err}")"; then
+    detail="$(cat "${ready_err}")"
+    rm -f "${ready_err}"
+    die_if_auth_failure "${detail}"
+    err "curl could not reach $(api_url)/readyz"
+    printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
+    die "that is a transport failure, not proof the API is undeployed. Check network access and API_URL before running 'make deploy'."
   fi
+  rm -f "${ready_err}"
+
+  case "${ready_status}" in
+    2*) ;;
+    401|403)
+      die "the API at $(api_url)/readyz answered HTTP ${ready_status}. That is an auth/IAM problem -- an expired session, or the caller missing roles/run.invoker -- not a missing deployment. Do not run 'make deploy' for this."
+      ;;
+    *)
+      die "the API at $(api_url)/readyz answered HTTP ${ready_status}, not 2xx. Rule out auth/IAM before running 'make deploy' -- this was not a transport failure and not a 401/403."
+      ;;
+  esac
 }
 
 # submit_task PROFILE [INPUT_JSON] [EXTRA_JSON] -> task id on stdout
 submit_task() {
   local profile="$1" input="${2:-{\}}" extra="${3:-{\}}"
-  local body response id
+  local body response id out
   body="$(jq -nc --arg p "${profile}" --argjson i "${input}" --argjson x "${extra}" \
     '{runner_profile:$p, input:$i} + $x')"
-  if ! response="$(api_post "/tasks" "${body}")"; then
+  # api_post is called directly here, NOT as `response="$(api_post ...)"`: that
+  # form runs api_post in a subshell, so the API_STATUS it sets dies with the
+  # subshell and this function would print whatever API_STATUS held before this
+  # call ran -- the exact command-substitution trap CLAUDE.md documents.
+  # Redirect to a file instead, as fs_request/api_url already do.
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-submit.XXXXXX")"
+  if ! api_post "/tasks" "${body}" >"${out}"; then
+    response="$(cat "${out}")"
+    rm -f "${out}"
     err "POST ${API_PREFIX}/tasks returned HTTP ${API_STATUS}"
     printf '%s\n' "${response}" | redact >&2
     return 1
   fi
+  response="$(cat "${out}")"
+  rm -f "${out}"
   id="$(jq -r '.id // .task_id // .task.id // empty' <<<"${response}")"
   [[ -n "${id}" ]] || { err "no task id in the API response"; printf '%s\n' "${response}" | redact >&2; return 1; }
   printf '%s' "${id}"
@@ -118,9 +155,26 @@ cancel_task() {
 }
 
 # Authoritative read, straight from Firestore.
-task_doc() { fs_get "tasks/$1" | jq -c "${FS_JQ} if .fields then doc else null end"; }
-task_state() { task_doc "$1" | jq -r '.state // "MISSING"'; }
-task_field() { task_doc "$1" | jq -r "$2"; }
+#
+# `|| return 1`, not bare `set -e`: wait_for_state below, and wait_until's
+# predicates, are called as the condition of an `if` in the *-test.sh scripts
+# (`if final="$(wait_for_state ...)"`, `if wait_until ... task_in_state ...`),
+# and set -e is suppressed for the whole call tree evaluated as that condition
+# -- see common.sh's fs_list for the same note. Without an explicit check here,
+# a real Firestore error (403, 500, a dropped connection) is silently read as
+# "no matching state yet" and the caller polls it for the full timeout instead
+# of failing on the first read.
+task_doc() { fs_get "tasks/$1" | jq -c "${FS_JQ} if .fields then doc else null end" || return 1; }
+task_state() {
+  local doc
+  doc="$(task_doc "$1")" || return 1
+  printf '%s' "${doc}" | jq -r '.state // "MISSING"'
+}
+task_field() {
+  local doc
+  doc="$(task_doc "$1")" || return 1
+  printf '%s' "${doc}" | jq -r "$2"
+}
 
 pool_doc() { fs_get "pools/$1" | jq -c "${FS_JQ} if .fields then doc else null end"; }
 pool_active() { pool_doc "$1" | jq -r '.active // 0'; }
@@ -162,7 +216,15 @@ wait_for_state() {
   local task_id="$1" wanted="$2" timeout="${3:-300}"
   local deadline=$(( $(date -u +%s) + timeout )) state
   while :; do
-    state="$(task_state "${task_id}")"
+    # Checked explicitly, not `state="$(task_state ...)"` on its own: callers
+    # invoke wait_for_state as an `if` condition
+    # (`if final="$(wait_for_state ...)"`), which suppresses set -e for
+    # everything evaluated underneath it, including this loop. Without this
+    # check a real Firestore error here reads as "not in the wanted state yet"
+    # and burns the full timeout before reporting a misleading state.
+    if ! state="$(task_state "${task_id}")"; then
+      die "could not read the state of task ${task_id}; see the Firestore error above -- this is a failed read, not evidence the task never reached ${wanted}"
+    fi
     if [[ "${state}" =~ ^(${wanted})$ ]]; then
       printf '%s' "${state}"
       return 0

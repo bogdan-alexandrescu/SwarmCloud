@@ -109,9 +109,12 @@ resource "google_compute_backend_service" "this" {
     group = google_compute_region_network_endpoint_group.this.id
   }
 
-  # Long enough for a slow list query, short enough that a wedged request does
-  # not hold a connection forever. Streaming responses will need revisiting.
-  timeout_sec = 60
+  # NO timeout_sec. A backend service fronting a SERVERLESS NEG rejects it
+  # outright -- "Timeout sec is not supported for a backend service with
+  # Serverless network endpoint groups" -- because the request timeout belongs to
+  # the Cloud Run service, which already has its own (`request_timeout` in
+  # modules/cloud_run, 300s for swarm-api). Setting it here would have been a
+  # second, quieter copy of a value that already exists somewhere authoritative.
 
   log_config {
     enable      = true

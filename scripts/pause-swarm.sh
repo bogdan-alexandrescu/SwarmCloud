@@ -51,9 +51,15 @@ STATE_FILE="${BUILD_DIR}/pause-state-${ENVIRONMENT}.json"
 # Which pools to touch.
 TARGETS=()
 if [[ "${SCOPE_ALL}" -eq 1 ]]; then
+  # A plain `done < <(...)` never checks the process substitution's exit
+  # status -- a denied or expired pools listing would just look like EOF, and
+  # the loop would exhaust TARGETS with no line above ever saying why. Capture
+  # it as a variable first so a real failure hits `|| die` instead.
+  pool_ids="$(fs_list_docs pools | jq -r '.id')" \
+    || die "could not list pools; see the Firestore error above -- this is a failed listing, not an empty pool set"
   while IFS= read -r pool_id; do
     [[ -n "${pool_id}" ]] && TARGETS+=("${pool_id}")
-  done < <(fs_list_docs pools | jq -r '.id')
+  done <<<"${pool_ids}"
 else
   [[ "${SCOPE_GLOBAL}" -eq 1 ]] && TARGETS+=("global")
   for t in ${TENANTS[@]+"${TENANTS[@]}"}; do TARGETS+=("tenant:${t}"); done
@@ -93,14 +99,32 @@ done
 
 if [[ "${PAUSE_SCHEDULER}" -eq 1 ]]; then
   step "Cloud Scheduler safety tick"
+  # `if cmd; then ... else ...` suppresses set -e for the condition itself, so
+  # this cannot rely on the script dying -- it must tell a real NOT_FOUND apart
+  # from an expired session, a missing cloudscheduler.jobs.get, a disabled API
+  # or a job that exists in some other location, all of which describe fails
+  # on identically. Capture stderr instead of throwing it at /dev/null.
+  scheduler_err_file="$(mktemp "${TMPDIR:-/tmp}/swarm-scheduler.XXXXXX")"
   if gcloud scheduler jobs describe "${SCHEDULER_JOB}" \
-       --project "${PROJECT_ID}" --location "${REGION}" --format='value(name)' >/dev/null 2>&1; then
+       --project "${PROJECT_ID}" --location "${REGION}" --format='value(name)' \
+       >/dev/null 2>"${scheduler_err_file}"; then
+    rm -f "${scheduler_err_file}"
     gcloud scheduler jobs pause "${SCHEDULER_JOB}" \
       --project "${PROJECT_ID}" --location "${REGION}" >/dev/null
     ok "paused ${SCHEDULER_JOB}"
   else
-    info "scheduler job ${SCHEDULER_JOB} not found; nothing to pause"
-    PAUSE_SCHEDULER=0
+    scheduler_err="$(cat "${scheduler_err_file}")"
+    rm -f "${scheduler_err_file}"
+    # Exits here, naming it, if the session itself is the problem.
+    die_if_auth_failure "${scheduler_err}"
+    if grep -qi 'not_found\|not found' <<<"${scheduler_err}"; then
+      info "scheduler job ${SCHEDULER_JOB} not found; nothing to pause"
+      PAUSE_SCHEDULER=0
+    else
+      err "could not look up scheduler job ${SCHEDULER_JOB}; this is NOT confirmation it is absent"
+      printf '%s\n' "${scheduler_err}" | redact | head -n 5 | sed 's/^/     /' >&2
+      die "check the account, region (${REGION}) and project (${PROJECT_ID}) before assuming the safety tick was already paused"
+    fi
   fi
 fi
 

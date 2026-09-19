@@ -41,7 +41,8 @@ done
 step "Concurrency invariant: ${PROJECT_ID} / ${ENVIRONMENT}"
 require_platform
 
-GLOBAL_LIMIT="$(pool_doc global | jq -r "${FS_JQ} effective_limit" 2>/dev/null || echo 0)"
+GLOBAL_LIMIT="$(pool_doc global | jq -r "${FS_JQ} effective_limit")" \
+  || die "could not read the global pool from Firestore; see the Firestore error above -- this is a failed read, not proof the pool is unconfigured"
 [[ "${GLOBAL_LIMIT}" -gt 0 ]] || die "the global pool has no limit configured; run 'make infra' first"
 info "global effective limit: ${GLOBAL_LIMIT} units"
 
@@ -122,9 +123,25 @@ assert_le "${FINAL_GLOBAL}" "${GLOBAL_LIMIT}" "global pool active at end"
 # ---------------------------------------------------------------------------
 t_case "Backlog cost nothing while it waited"
 # QUEUED/PARKED/READY must never create infrastructure demand (invariant 1).
-EXECUTIONS="$(gcloud run jobs executions list --project "${PROJECT_ID}" --region "${REGION}" \
-  --format='value(metadata.name)' --limit 500 2>/dev/null | wc -l | tr -d ' ')"
-t_info "cloud run executions visible: ${EXECUTIONS}"
+EXECUTIONS_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-executions.XXXXXX")"
+if EXECUTIONS_RAW="$(gcloud run jobs executions list --project "${PROJECT_ID}" --region "${REGION}" \
+     --format='value(metadata.name)' --limit 500 2>"${EXECUTIONS_ERR}")"; then
+  rm -f "${EXECUTIONS_ERR}"
+  if [[ -z "${EXECUTIONS_RAW}" ]]; then
+    EXECUTIONS=0
+  else
+    EXECUTIONS="$(printf '%s\n' "${EXECUTIONS_RAW}" | wc -l | tr -d ' ')"
+  fi
+  t_info "cloud run executions visible: ${EXECUTIONS}"
+else
+  EXECUTIONS_ERR_DETAIL="$(cat "${EXECUTIONS_ERR}" 2>/dev/null || true)"
+  rm -f "${EXECUTIONS_ERR}"
+  # A denied run.jobs.executions.list or an expired session must not be read as
+  # "zero executions" -- that is the one number this test case exists to check.
+  die_if_auth_failure "${EXECUTIONS_ERR_DETAIL}"
+  warn "could not list Cloud Run job executions; this is a failed listing, not proof that none exist"
+  printf '%s\n' "${EXECUTIONS_ERR_DETAIL}" | redact | head -n 3 | sed 's/^/     /' >&2
+fi
 PEAK_HOLDING_SAMPLE="$(jq -s '[ .[].holding ] | max // 0' "${SAMPLES}")"
 assert_le "${PEAK_HOLDING_SAMPLE}" "${GLOBAL_LIMIT}" "peak tasks holding capacity vs global limit"
 
