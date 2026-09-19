@@ -79,6 +79,11 @@ variable "iap_members" {
   }
 }
 
+variable "project_number" {
+  description = "Needed for the IAP audience, which is built from the project NUMBER rather than its id."
+  type        = string
+}
+
 variable "labels" {
   type = map(string)
 }

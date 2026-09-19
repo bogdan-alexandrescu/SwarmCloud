@@ -51,6 +51,30 @@
 # Google requires the support email to be the address of the caller or a group
 # they own, and rejects anything else with an error that says neither.
 #
+# THE IAP SERVICE AGENT IS A SECOND ONE-TIME STEP
+# -----------------------------------------------
+# IAP invokes Cloud Run as a Google-managed identity,
+# `service-<PROJECT NUMBER>@gcp-sa-iap.iam.gserviceaccount.com`, which does NOT
+# exist until it is asked for. Until then the load balancer answers every
+# request with:
+#
+#     The IAP service account is not provisioned.
+#
+# which reads like the application is broken rather than like a missing grant --
+# it arrives after a successful sign-in, from a working certificate, on a load
+# balancer whose every component is green.
+#
+#     gcloud beta services identity create \
+#       --service=iap.googleapis.com --project=<project>
+#
+# Not created here: `google_project_service_identity` lives only in the
+# google-beta provider, and carrying a second provider for one Google-managed
+# identity costs more than a documented command. The BINDING is terraform's --
+# infra/main.tf grants that agent run.invoker on both backends explicitly, so
+# the grant survives `api_invokers` being tightened.
+#
+# https://cloud.google.com/iap/docs/enabling-cloud-run
+#
 # DNS IS NOT MANAGED HERE
 # -----------------------
 # saga.xyz is at an external registrar. Terraform reserves a global static IP

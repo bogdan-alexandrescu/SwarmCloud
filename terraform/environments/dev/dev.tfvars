@@ -281,3 +281,16 @@ frontend_iap_members = ["domain:saga.xyz"]
 # description.
 enable_safety_tick_alert = false
 
+# The audiences IAP mints for this deployment's two backend services. Read from
+# `terraform output frontend_iap_audiences` after the load balancer was created;
+# see the variable's description for why this is declared rather than derived
+# (deriving it is a terraform cycle).
+#
+# Without these, swarm-api has nothing to verify an IAP assertion against and
+# answers 401 to every request from the web UI -- a signed-in user, a valid
+# certificate, a healthy load balancer, and an API that cannot see any of it.
+frontend_iap_audiences = [
+  "/projects/209012342332/global/backendServices/817602226733443034",
+  "/projects/209012342332/global/backendServices/6904312892305383900",
+]
+

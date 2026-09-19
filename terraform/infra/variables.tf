@@ -249,6 +249,25 @@ variable "frontend_hostname" {
   default     = ""
 }
 
+variable "frontend_iap_audiences" {
+  description = <<-EOT
+    Audiences swarm-api accepts on an IAP assertion, one per backend service:
+
+        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
+
+    Declared rather than derived because deriving it from the frontend module is
+    a terraform cycle -- that module consumes the Cloud Run services this value
+    configures. Read it from `terraform output frontend_iap_audiences` once the
+    load balancer exists.
+
+    EMPTY MEANS THE IAP PATH IS OFF, not "accept any audience". An unpinned
+    audience makes google-auth skip the `aud` check, and an IAP assertion is
+    issued to anyone who can reach any IAP-protected resource anywhere.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "frontend_iap_members" {
   description = <<-EOT
     Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant

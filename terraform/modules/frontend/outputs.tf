@@ -25,3 +25,21 @@ output "certificate_name" {
   description = "Check readiness with: gcloud compute ssl-certificates describe <name> --global --format='value(managed.status)'"
   value       = google_compute_managed_ssl_certificate.this.name
 }
+
+output "iap_audiences" {
+  description = <<-EOT
+    The audiences IAP mints assertions for, one per backend service, in the
+    shape swarm-api must pin:
+
+        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
+
+    Unpinned, google-auth skips the `aud` check and an assertion minted by IAP
+    for ANY backend in ANY project would authenticate -- and an IAP assertion is
+    issued to anyone who can reach any IAP-protected resource.
+  EOT
+  value = compact([
+    "/projects/${var.project_number}/global/backendServices/${google_compute_backend_service.this.generated_id}",
+    local.ui_enabled ? "/projects/${var.project_number}/global/backendServices/${google_compute_backend_service.ui[0].generated_id}" : "",
+  ])
+}
+

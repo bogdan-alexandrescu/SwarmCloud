@@ -245,6 +245,14 @@ module "secret_manager" {
   depends_on = [module.project_services]
 }
 
+# The IAP service agent's email is `service-<PROJECT NUMBER>@gcp-sa-iap...`, so
+# the number has to come from somewhere. Read rather than hardcoded: a project
+# number pasted into a repository is right until the day someone stands this up
+# in a second project, at which point it is silently wrong.
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
 module "cloud_run" {
   source = "../modules/cloud_run"
 
@@ -265,7 +273,31 @@ module "cloud_run" {
       memory                = "1Gi"
       concurrency           = 80
       env                   = local.service_env["swarm-api"]
-      invokers              = { for member in var.api_invokers : member => member }
+      # THE IAP SERVICE AGENT, EXPLICITLY.
+      #
+      # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
+      # answers every request with "The IAP service account is not provisioned"
+      # -- a 500-class failure that looks like the app being broken rather than
+      # a missing grant.
+      #
+      # Not left to `allUsers`, which currently holds run.invoker and would
+      # cover it by accident. That grant exists for a different reason (Cloud
+      # Run's edge IAM consumes the Authorization header, destroying the only
+      # credential that identifies a tenant), and the day it is tightened IAP
+      # would break for a reason nobody would connect to it.
+      #
+      # The AGENT ITSELF is not created here: it is a Google-managed identity
+      # and `google_project_service_identity` lives only in the google-beta
+      # provider, which this repository does not carry for one resource. It is a
+      # once-per-project command, documented in modules/frontend/main.tf beside
+      # the OAuth brand:
+      #
+      #   gcloud beta services identity create \
+      #     --service=iap.googleapis.com --project=<project>
+      invokers = merge(
+        { for member in var.api_invokers : member => member },
+        { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+      )
     }
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
@@ -310,7 +342,12 @@ module "cloud_run" {
       # ever needs to call anything, give it its own first.
       env = {}
       # Reached only through the load balancer, which presents the IAP identity.
-      invokers = { for member in var.api_invokers : member => member }
+      # Same as swarm-api: IAP fronts both backends, so it must be able to
+      # invoke both. See the note on the swarm-api service above.
+      invokers = merge(
+        { for member in var.api_invokers : member => member },
+        { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+      )
     }
     "swarm-reconciler" = {
       service_account_email = module.iam.service_account_emails["swarm-reconciler"]
@@ -420,6 +457,7 @@ module "frontend" {
   region      = var.region
   name_prefix = var.name_prefix
 
+  project_number  = data.google_project.this.number
   service_name    = "swarm-api"
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname

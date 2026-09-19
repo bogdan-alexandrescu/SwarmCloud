@@ -21,6 +21,7 @@ from .auth import (
     AuthContext,
     Authenticator,
     GoogleTokenVerifier,
+    IapAssertionVerifier,
     TokenVerifier,
     require_admin,
 )
@@ -103,7 +104,12 @@ def build_context(
     credentials = credentials or SecretManagerCredentials(settings.project_id)
     waker = waker or (PubSubWaker(settings.dispatch_topic)
                       if settings.dispatch_topic else NullWaker())
-    authenticator = Authenticator(settings, verifier, groups)
+    # OFF unless an audience is pinned. A verifier that accepts an assertion
+    # without checking which backend minted it would accept one issued to any
+    # IAP-protected resource anywhere, so "not configured" must mean "not used"
+    # rather than "used without the check".
+    iap = IapAssertionVerifier(settings.iap_audiences)
+    authenticator = Authenticator(settings, verifier, groups, iap=iap)
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now
     )
@@ -142,6 +148,11 @@ def current_auth(
     serverless_authorization: str | None = Header(
         default=None, alias="X-Serverless-Authorization"
     ),
+    # Identity-Aware Proxy puts the authenticated identity here. A browser behind
+    # IAP sends NO Authorization header at all -- there is no Google ID token a
+    # single-page app can mint -- so for every web caller this is the only
+    # credential that arrives.
+    iap_assertion: str | None = Header(default=None, alias="X-Goog-IAP-JWT-Assertion"),
     ctx: AppContext = Depends(get_context),
 ) -> AuthContext:
     """Authenticate, then rate-limit by principal.
@@ -164,7 +175,7 @@ def current_auth(
     """
     presented = serverless_authorization or authorization
     try:
-        auth = ctx.authenticator.authenticate(presented)
+        auth = ctx.authenticator.authenticate(presented, iap_assertion)
     except Exception as exc:
         ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
         log.warning(

@@ -62,6 +62,7 @@ class ApiSettings:
     #: Admin-registered tenant groups, in priority order. `resolve_tenant` walks
     #: this list and the FIRST match wins, so the order is what makes a user in
     #: several groups land in the same tenant on every request.
+    iap_audiences: tuple[str, ...] = ()
     tenant_groups: tuple[str, ...] = ()
 
     #: Membership in any of these grants the admin surface. Kept separate from
@@ -118,6 +119,11 @@ class ApiSettings:
             )
         return cls(
             core=core,
+            # One per backend service fronting this platform. Terraform sets
+            # it; without it the IAP path is OFF rather than unpinned, because
+            # an unpinned audience accepts an assertion minted by IAP for any
+            # backend in any project.
+            iap_audiences=_csv("IAP_AUDIENCES"),
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),

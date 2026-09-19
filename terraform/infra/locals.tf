@@ -319,6 +319,26 @@ locals {
       # Derived from var.tenants rather than restated: a tenant of kind "group"
       # IS a tenant group, and keeping a second list in sync by hand is how the
       # two would drift.
+      # Behind the load balancer a browser sends NO Authorization header -- IAP
+      # has already authenticated the person and forwards the result in
+      # x-goog-iap-jwt-assertion. Without these pinned, swarm-api has nothing to
+      # verify that against and answers 401 to every request from the web UI:
+      # a signed-in user, a valid certificate, a healthy load balancer, and an
+      # API that cannot see any of it.
+      #
+      # DECLARED, NOT DERIVED, and that is forced rather than chosen. Reading
+      # module.frontend's output here is a terraform CYCLE: the frontend module
+      # needs the Cloud Run services (for the serverless NEG), and this
+      # environment feeds those same services. I wrote "no cycle" in an earlier
+      # version of this comment and terraform disagreed, in detail.
+      #
+      # The audience contains a GCP-GENERATED backend service id, so unlike the
+      # push audiences above it cannot be made a constant known before apply.
+      # So it is an input: read the value from `terraform output
+      # frontend_iap_audiences` after the load balancer exists and put it in
+      # tfvars. The ids are stable for the life of the backend service.
+      IAP_AUDIENCES = join(",", var.frontend_iap_audiences)
+
       TENANT_GROUPS = join(",", sort([for t, v in var.tenants : v.principal if v.kind == "group"]))
       ADMIN_GROUPS  = join(",", sort(var.admin_groups))
     })
