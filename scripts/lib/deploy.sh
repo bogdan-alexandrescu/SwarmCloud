@@ -139,17 +139,39 @@ fi
 
 step "Waiting for revisions to become ready"
 DEADLINE=$(( $(date -u +%s) + WAIT_SECONDS ))
-for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}"; do
+# The UI is included here: a revision that fails to start is a broken deploy
+# whether it serves JSON or JavaScript.
+for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}" "${UI_SERVICE}"; do
   while :; do
-    if ! cloud_run_probe "${service}" 'value(status.conditions.filter("type:Ready").status)'; then
+    # NOT `status.conditions.filter("type:Ready").status`. That expression is
+    # not valid gcloud format syntax and never was:
+    #
+    #   ERROR: Transform function expected
+    #   [service value(status.conditions.filter("type:Ready").status *HERE* )]
+    #
+    # It sat behind `2>/dev/null || true`, so the error was discarded, the probe
+    # returned empty, and empty was read as "the service does not exist". This
+    # readiness wait has therefore NEVER checked readiness -- it reported either
+    # a missing service or nothing at all, for every deploy this script has ever
+    # run. It only became visible when the swallowed stderr was fixed.
+    #
+    # A service is ready when its newest revision is the one serving. Comparing
+    # the two names says that directly, and catches the case a single "Ready"
+    # condition misses: an old revision healthy while the new one failed to
+    # start.
+    if ! cloud_run_probe "${service}" 'value(status.latestReadyRevisionName,status.latestCreatedRevisionName)'; then
       warn "${service} does not exist; skipping readiness wait"
       SKIPPED+=("${service}: does not exist")
       break
     fi
-    ready="${CLOUD_RUN_VALUE}"
-    [[ "${ready}" == "True" ]] && { ok "${service} ready"; break; }
+    ready="$(printf '%s' "${CLOUD_RUN_VALUE}" | awk '{print $1}')"
+    created="$(printf '%s' "${CLOUD_RUN_VALUE}" | awk '{print $2}')"
+    if [[ -n "${ready}" && "${ready}" == "${created}" ]]; then
+      ok "${service} ready (${ready})"
+      break
+    fi
     if [[ "$(date -u +%s)" -ge "${DEADLINE}" ]]; then
-      warn "${service} was not ready within ${WAIT_SECONDS}s (condition: ${ready:-unknown})"
+      warn "${service} was not ready within ${WAIT_SECONDS}s (serving ${ready:-none}, newest ${created:-unknown})"
       SKIPPED+=("${service}: not ready within ${WAIT_SECONDS}s (condition: ${ready:-unknown})")
       break
     fi
@@ -159,6 +181,9 @@ done
 
 if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
   step "Health"
+  # ${UI_SERVICE} is deliberately absent. /readyz is the control plane's
+  # contract -- "my dependencies answer" -- and a static file server has no
+  # dependencies to speak for. Its liveness is the readiness wait above.
   for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}"; do
     if ! cloud_run_probe "${service}" 'value(status.url)'; then
       warn "${service} does not exist; skipping /readyz check"
@@ -198,6 +223,23 @@ if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
     rm -f "${curl_err}"
     if [[ "${code}" == "200" ]]; then
       ok "${service} ${url}"
+    elif [[ "${code}" == "404" ]]; then
+      # A 404 on /readyz from OUTSIDE the VPC is Google's edge refusing the
+      # request, not the service answering. Every control-plane service runs
+      # with ingress internal-and-cloud-load-balancing, so a direct call to its
+      # run.app URL from a workstation cannot reach the container -- the 404 is
+      # produced before the request arrives, and the route exists and works.
+      #
+      # This check has therefore never been able to pass from a developer
+      # machine. It only became visible when the swallowed stderr around it was
+      # fixed, at which point every deploy reported four "unresolved issues"
+      # that were the ingress setting doing its job.
+      #
+      # Reported, never counted as a failure: the readiness wait above already
+      # confirmed the newest revision is serving, which is what a deploy needs
+      # to know from here. Checking /readyz for real means asking from inside
+      # the VPC or through the load balancer.
+      dim "  ${service}: /readyz not reachable from here (404 at the edge; ingress is internal-and-cloud-load-balancing)"
     else
       warn "${service} /readyz returned ${code}"
       SKIPPED+=("${service}: /readyz returned ${code}")

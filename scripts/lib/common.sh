@@ -172,6 +172,10 @@ load_env() {
   SCHEDULER_SERVICE="${SCHEDULER_SERVICE:-swarm-scheduler}"
   QUOTA_SERVICE="${QUOTA_SERVICE:-swarm-quota-broker}"
   RECONCILER_SERVICE="${RECONCILER_SERVICE:-swarm-reconciler}"
+  # The static web UI. Deployed like the others, but it serves files rather than
+  # answering the control plane's health contract -- it has /healthz from nginx
+  # and no /readyz, because there is no downstream for it to be ready FOR.
+  UI_SERVICE="${UI_SERVICE:-swarm-ui}"
 
   API_PREFIX="${API_PREFIX:-/v1}"
   HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"

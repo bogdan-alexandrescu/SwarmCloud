@@ -24,14 +24,28 @@ output "notification_channels" {
   value = local.notification_channels
 }
 
+# Built with a splat rather than [0], so a policy gated OFF contributes nothing
+# instead of failing the whole output.
+#
+# It used to index [0] unconditionally under `var.create_alerts`, which assumed
+# every policy shares that one flag. `safety_tick_absent` now has its own gate
+# (it cannot be created until its Cloud Scheduler metric exists), and the moment
+# it was switched off this output became:
+#
+#     Error: Invalid index
+#     google_monitoring_alert_policy.safety_tick_absent is empty tuple
+#
+# Neither `terraform validate` nor the mock-provider tests catch that: a count
+# only resolves against real variables, so the failure arrives at apply, in a
+# deploy, on an output nobody was thinking about.
 output "alert_policy_names" {
-  value = var.create_alerts ? [
-    google_monitoring_alert_policy.safety_tick_absent[0].display_name,
-    google_monitoring_alert_policy.service_errors[0].display_name,
-    google_monitoring_alert_policy.job_failures[0].display_name,
-    google_monitoring_alert_policy.generation_fenced[0].display_name,
-    google_monitoring_alert_policy.dead_letter_backlog[0].display_name,
-    google_monitoring_alert_policy.wake_backlog[0].display_name,
-    google_monitoring_alert_policy.tasks_dead_lettered[0].display_name,
-  ] : []
+  value = concat(
+    google_monitoring_alert_policy.safety_tick_absent[*].display_name,
+    google_monitoring_alert_policy.service_errors[*].display_name,
+    google_monitoring_alert_policy.job_failures[*].display_name,
+    google_monitoring_alert_policy.generation_fenced[*].display_name,
+    google_monitoring_alert_policy.dead_letter_backlog[*].display_name,
+    google_monitoring_alert_policy.wake_backlog[*].display_name,
+    google_monitoring_alert_policy.tasks_dead_lettered[*].display_name,
+  )
 }
