@@ -158,6 +158,73 @@ export function errorReassurance(e: ApiError): string {
   return 'This is a failure to read the platform. It says nothing about what is running.'
 }
 
+// ---------------------------------------------------------------------------
+// The probe registry, for the data-source strip
+// ---------------------------------------------------------------------------
+// Every read records what happened to it, so the UI can show its own
+// self-report: which route, what status, how long it took, and how old the
+// newest SUCCESSFUL payload is. That last one is the point -- a panel showing
+// a number from four minutes ago while its route has been 500ing for three of
+// them looks identical to a healthy panel unless something says otherwise.
+//
+// A 403 here is information rather than a failure: a non-admin genuinely
+// cannot read /v1/admin/*, and saying so stops the page looking broken. A 401
+// is different -- that is an expired session and needs a re-auth action.
+
+export interface ProbeRecord {
+  path: string
+  /** null when fetch itself rejected, so there was never a response. */
+  lastStatus: number | null
+  lastKind: ApiErrorKind | null
+  lastLatencyMs: number
+  lastAttemptAt: number
+  /** When a read last actually produced a payload. Null if one never has. */
+  lastSuccessAt: number | null
+}
+
+const probes = new Map<string, ProbeRecord>()
+const probeListeners = new Set<() => void>()
+
+function recordProbe(rec: ProbeRecord): void {
+  const prev = probes.get(rec.path)
+  probes.set(rec.path, {
+    ...rec,
+    // A failure must NOT erase the age of the last good payload -- that age is
+    // exactly what the strip exists to show.
+    lastSuccessAt: rec.lastSuccessAt ?? prev?.lastSuccessAt ?? null,
+  })
+  for (const fn of probeListeners) fn()
+}
+
+/**
+ * Let the fixture path register a probe too.
+ *
+ * Without this the strip only ever appears against the live API, which means
+ * it ships having never been looked at -- the same way the headroom rows
+ * silently rendered nothing because the fixture's runner_profiles was `{}`.
+ * A development mode that exercises fewer components than production is a
+ * development mode that hides bugs.
+ */
+export function noteFixtureProbe(path: string, latencyMs: number, ok: boolean): void {
+  recordProbe({
+    path,
+    lastStatus: ok ? 200 : 503,
+    lastKind: ok ? null : 'upstream_degraded',
+    lastLatencyMs: latencyMs,
+    lastAttemptAt: Date.now(),
+    lastSuccessAt: ok ? Date.now() : null,
+  })
+}
+
+export function subscribeProbes(fn: () => void): () => void {
+  probeListeners.add(fn)
+  return () => probeListeners.delete(fn)
+}
+
+export function probeSnapshot(): ProbeRecord[] {
+  return Array.from(probes.values()).sort((a, b) => a.path.localeCompare(b.path))
+}
+
 export interface FetchOptions {
   /** Previous data, if any. A failure with data in hand becomes `stale`. */
   previous?: { data: unknown; fetchedAt: number; serverAt?: string } | null
@@ -182,6 +249,21 @@ export async function read<T>(
       ? { status: 'stale', data: previous.data as T, fetchedAt: previous.fetchedAt, error }
       : { status: 'error', error }
 
+  const startedAt = Date.now()
+  const note = (
+    status: number | null,
+    kind: ApiErrorKind | null,
+    ok: boolean,
+  ): void =>
+    recordProbe({
+      path,
+      lastStatus: status,
+      lastKind: kind,
+      lastLatencyMs: Date.now() - startedAt,
+      lastAttemptAt: Date.now(),
+      lastSuccessAt: ok ? Date.now() : null,
+    })
+
   let res: Response
   try {
     res = await fetch(path, {
@@ -194,6 +276,7 @@ export async function read<T>(
   } catch (err) {
     // DNS, TLS, offline, CORS preflight, abort. Emphatically NOT "no data",
     // and distinct from every 4xx: this one is never the user's fault.
+    note(null, 'unreachable', false)
     return asStale({
       kind: 'unreachable',
       httpStatus: null,
@@ -217,6 +300,7 @@ export async function read<T>(
   const isJson = contentType.includes('application/json')
 
   if (res.ok && !isJson) {
+    note(res.status, 'session_expired', false)
     return asStale({
       kind: 'session_expired',
       httpStatus: res.status,
@@ -245,7 +329,9 @@ export async function read<T>(
       }
     }
     const ra = Number(res.headers.get('retry-after'))
-    return asStale(classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined))
+    const err = classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    note(res.status, err.kind, false)
+    return asStale(err)
   }
 
   let data: T
@@ -253,6 +339,7 @@ export async function read<T>(
     data = (await res.json()) as T
   } catch (err) {
     // 2xx, content-type said JSON, body was not. Truncation or a proxy.
+    note(res.status, 'server_error', false)
     return asStale({
       kind: 'server_error',
       httpStatus: res.status,
@@ -261,6 +348,7 @@ export async function read<T>(
     })
   }
 
+  note(res.status, null, true)
   const fetchedAt = Date.now()
   // `generated_at` when the body carries one: the age that matters is the
   // server's, not the moment the bytes arrived here.

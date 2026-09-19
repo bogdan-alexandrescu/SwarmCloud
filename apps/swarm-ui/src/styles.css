@@ -626,3 +626,54 @@ ol.timeline li::before {
 .ev-type { font: 600 12px var(--mono); color: var(--text); }
 .ev-at { margin-left: 8px; font-size: 11.5px; color: var(--text-faint); }
 .ev-gen { margin-left: 8px; font: 10.5px var(--mono); color: var(--text-faint); }
+
+/* ------------------------------------------------------------------------ */
+/* Data-source strip                                                         */
+/* ------------------------------------------------------------------------ */
+/* The screen's own self-report. What an operator reads when a number looks
+   wrong. The AGE of the newest successful payload is the load-bearing part:
+   without it a panel showing a four-minute-old figure while its route has
+   been failing for three of them looks exactly like a healthy panel. */
+
+.sources {
+  margin-top: 26px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.source-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 6px;
+}
+.source {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--text-faint);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.source.ok   { border-left-color: var(--ok); }
+.source.warn { border-left-color: var(--warn); }
+.source.bad  { border-left-color: var(--bad); }
+/* Informational, not broken: a non-admin genuinely cannot read /v1/admin/*.
+   Styling this as an error is what makes a working page look broken. */
+.source.info { border-left-color: var(--info); }
+
+.s-path   { font: 11.5px var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-status { font: 600 11px var(--mono); color: var(--text); text-align: right; }
+.source.ok   .s-status { color: var(--ok); }
+.source.warn .s-status { color: var(--warn); }
+.source.bad  .s-status { color: var(--bad); }
+.source.info .s-status { color: var(--info); }
+.s-age { grid-column: 1 / -1; font: 10.5px var(--mono); color: var(--text-faint); }
+
+.reauth {
+  display: block; width: 100%;
+  margin-bottom: 8px; padding: 9px 12px;
+  border: 1px solid var(--bad); border-radius: 8px;
+  background: color-mix(in srgb, var(--bad) 12%, var(--surface));
+  color: var(--bad); font-size: 13px; font-weight: 600; cursor: pointer;
+}

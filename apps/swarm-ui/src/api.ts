@@ -1,4 +1,4 @@
-import { read, type Result } from './fetch'
+import { noteFixtureProbe, read, type Result } from './fetch'
 import type { Capacity, Task, TaskEvent, TaskPage, TaskState, Workflow } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -233,6 +233,7 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
+  noteFixtureProbe('/v1/capacity', 400, true)
   const pool = (
     name: string,
     hard: number,
@@ -256,7 +257,41 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
     fetchedAt: Date.now(),
     data: {
       generated_at: new Date().toISOString(),
-      runner_profiles: {},
+      // The real five from the frozen catalogue, with the pool lists
+      // pool_names_for builds for one tenant. Not invented: an empty map here
+      // meant the headroom rows never rendered in development, which is how a
+      // panel ships untested.
+      runner_profiles: {
+        mock: {
+          resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
+        },
+        generic: {
+          resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
+        },
+        'claude-code': {
+          resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
+          pools: [
+            'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
+            'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+          ],
+        },
+        codex: {
+          resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
+          pools: [
+            'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
+            'backend:CLOUD_RUN_JOB', 'provider:openai',
+          ],
+        },
+        browser: {
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          pools: [
+            'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
+            'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+          ],
+        },
+      },
       pools: [
         pool('global', 20, 5),
         pool('tenant:u-bogdan', 40, 5),
@@ -286,6 +321,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
 
 async function fixtureTasks(): Promise<Result<TaskPage>> {
   await new Promise((r) => setTimeout(r, 350))
+  noteFixtureProbe('/v1/tasks', 350, true)
   const now = Date.now()
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
 
@@ -382,6 +418,11 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   await new Promise((r) => setTimeout(r, 300))
+  noteFixtureProbe('/v1/workflows', 300, true)
+  // A route a non-admin genuinely cannot read, so the strip's 403 cell -- the
+  // one that must read as information rather than breakage -- is visible in
+  // development instead of only in production.
+  noteFixtureProbe('/v1/admin/dispatch', 120, false)
 
   // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
   // stops matching, the fixture shows "state unknown" exactly as production

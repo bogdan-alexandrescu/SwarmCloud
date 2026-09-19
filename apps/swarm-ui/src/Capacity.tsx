@@ -4,6 +4,7 @@ import { isPaused } from './fetch'
 import { Screen } from './Shell'
 import {
   POOL_FAMILY_ORDER,
+  headroomFor,
   overCeiling,
   poolKind,
   poolLabel,
@@ -62,6 +63,7 @@ export function CapacityScreen() {
       {(d) => (
         <>
           <Conjunction />
+          <Headroom capacity={d} />
           <div className="view-toggle">
             <button className={asTable ? 'on' : ''} onClick={() => setAsTable(true)}>
               Table
@@ -83,6 +85,88 @@ export function CapacityScreen() {
         </>
       )}
     </Screen>
+  )
+}
+
+/**
+ * Per-runner-profile headroom: how many more agents of each kind could start
+ * right now, and which pool is the one stopping more.
+ *
+ * The number is the minimum across the profile's pools divided by its weight,
+ * because a task must clear all of them at once and each is incremented by
+ * `units` rather than by one.
+ *
+ * It says "for tenant X" in words, every time. The pool list comes from
+ * pool_names_for for the CALLING tenant -- including for an admin -- so an
+ * admin reading these as the platform's capacity is the single most plausible
+ * misreading here. A platform-wide figure does not exist today and is not
+ * faked by substituting another tenant's pools.
+ */
+function Headroom({ capacity }: { capacity: Capacity }) {
+  const profiles = Object.entries(capacity.runner_profiles)
+  if (profiles.length === 0) return null
+
+  const byName = new Map(capacity.pools.map((p) => [p.name, p]))
+  // Any tenant-scoped pool tells us whose view this is. There is no tenant id
+  // on /v1/capacity itself, so it is read off the pool names rather than
+  // assumed or left blank.
+  const tenant = capacity.pools
+    .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
+    .find((t): t is string => Boolean(t))
+
+  return (
+    <section className="section">
+      <h2>
+        Headroom
+        <span className="scope tenant">
+          {tenant ? `for tenant ${tenant}` : 'for your tenant'}
+        </span>
+      </h2>
+      <div className="table-wrap">
+        <table className="pools">
+          <thead>
+            <tr>
+              <th scope="col">Runner profile</th>
+              <th scope="col" className="n">Could start</th>
+              <th scope="col" className="n">Weight</th>
+              <th scope="col">Held back by</th>
+              <th scope="col">Backend</th>
+            </tr>
+          </thead>
+          <tbody>
+            {profiles
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([name, profile]) => {
+                const h = headroomFor(profile, byName)
+                return (
+                  <tr key={name} className={h.agents === 0 ? 'over' : undefined}>
+                    <th scope="row">{name}</th>
+                    <td className="n">{h.agents}</td>
+                    <td className="n">{profile.units}u</td>
+                    <td title={h.binding ?? undefined}>
+                      {h.agents === 0 && h.binding
+                        ? poolLabel(h.binding)
+                        : h.binding
+                          ? poolLabel(h.binding)
+                          : '\u2014'}
+                      {h.missing.length > 0 && (
+                        <span className="client-side"> · {h.missing.length} uncapped</span>
+                      )}
+                    </td>
+                    <td>{profile.backend}</td>
+                  </tr>
+                )
+              })}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">
+        How many more agents of each profile could be admitted right now, for
+        this tenant. A task must clear every pool in its list at once, so this
+        is the minimum across them divided by the profile&apos;s weight — not a
+        platform figure, and not a sum.
+      </p>
+    </section>
   )
 }
 

@@ -71,6 +71,53 @@ export function poolLabel(name: string): string {
 }
 
 /**
+ * How many more agents of one runner profile could be admitted right now.
+ *
+ * The conjunction made arithmetic: a task must clear EVERY pool in its list at
+ * the same moment, so headroom is the minimum across them -- never a sum --
+ * and it is divided by the profile's weight because admission increments each
+ * pool by `units`, not by one.
+ *
+ * TRAP D, and it is the most plausible misreading on the whole screen: the
+ * `pools` list on a runner profile is the CALLING TENANT'S list, including for
+ * an admin, because service.capacity() calls pool_names_for(tenant_id=
+ * ctx.tenant_id) unconditionally. So this number answers "how many more could
+ * I submit", never "how much capacity does the platform have". Every caller of
+ * this function must render the tenant beside the number.
+ *
+ * A pool named in the profile but absent from the response is unconfigured,
+ * which means unlimited by construction -- the global and tenant pools always
+ * exist, so a missing one is a narrow named pool that was never capped. It is
+ * skipped rather than treated as zero.
+ */
+export function headroomFor(
+  profile: RunnerProfile,
+  poolsByName: ReadonlyMap<string, Pool>,
+): { agents: number; binding: string | null; missing: string[] } {
+  let agents = Infinity
+  let binding: string | null = null
+  const missing: string[] = []
+
+  for (const name of profile.pools) {
+    const pool = poolsByName.get(name)
+    if (!pool) {
+      missing.push(name)
+      continue
+    }
+    // A paused pool admits nothing at all, whatever its headroom says.
+    if (pool.enabled === false) return { agents: 0, binding: name, missing }
+    const units = profile.units > 0 ? profile.units : 1
+    const fits = Math.floor(Math.max(0, pool.available) / units)
+    if (fits < agents) {
+      agents = fits
+      binding = name
+    }
+  }
+
+  return { agents: Number.isFinite(agents) ? agents : 0, binding, missing }
+}
+
+/**
  * Whether a pool's number is about the whole platform or only this tenant.
  *
  * Trap E: /v1/stats counts are tenant-scoped while the `global` pool is

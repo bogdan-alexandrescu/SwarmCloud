@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AgentDetailScreen } from './AgentDetail'
 import { AgentsScreen } from './Agents'
 import { CapacityScreen } from './Capacity'
+import { DataSourceStrip } from './DataSources'
 import { Nav } from './Shell'
 import { WorkflowsScreen } from './Workflows'
 
@@ -49,6 +50,7 @@ export function App() {
       {at.screen === 'agents' && <AgentsScreen onOpen={(id) => go(`agents/${encodeURIComponent(id)}`)} />}
       {at.screen === 'workflows' && <WorkflowsScreen />}
       {at.taskId && <AgentDetailScreen taskId={at.taskId} onClose={() => go('agents')} />}
+      <DataSourceStrip />
     </div>
   )
 }
