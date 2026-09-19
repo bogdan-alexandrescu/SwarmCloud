@@ -169,6 +169,32 @@ class Reconciler:
         self._log.info("reconciliation pass complete", **{
             k: v for k, v in report.as_dict().items() if k != "outcomes"
         })
+
+        # Persist the pass. Until this existed the report lived only in a
+        # per-instance dict, and swarm-reconciler runs with min_instance_count =
+        # 0 -- so the platform's entire account of what went wrong at runtime
+        # was discarded whenever the service scaled down.
+        #
+        # Deliberately NOT fatal. A pass that has already terminated executions
+        # and released leases has done real work; failing it here would report
+        # that work as not having happened, and a caller retrying would
+        # re-examine state that is now correct. The write failing is worth
+        # knowing about, which is why it becomes an error on the report rather
+        # than a silent pass.
+        #
+        # A DRY RUN WRITES NOTHING, including this. "dry run changes nothing" is
+        # a guarantee worth keeping absolute: the moment it means "changes
+        # nothing except some bookkeeping", nobody can use it to answer "is it
+        # safe to run this against prod".
+        try:
+            if not self._config.dry_run:
+                self._store.record_pass(
+                    report.as_dict(), retain_hours=self._config.pass_retention_hours
+                )
+        except Exception as exc:
+            self._log.exception("could not persist the reconciliation pass", exc)
+            report.errors.append(f"record_pass: {exc}")
+
         return report
 
     #: Findings that mean "nothing seems to be running" -- and are therefore

@@ -277,3 +277,50 @@ class ControlStore:
                 "detail": event.detail,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Pass history
+    # ------------------------------------------------------------------
+
+    #: Outcomes kept on a pass document. A pass repairing thousands of leases
+    #: would otherwise approach Firestore's 1 MiB document limit, and a write
+    #: that fails because it grew too large loses the WHOLE record of the pass
+    #: that most needed recording.
+    MAX_STORED_OUTCOMES = 50
+
+    def record_pass(self, report: dict[str, Any], *, retain_hours: int) -> str | None:
+        """Persist one reconciliation pass, and return its id.
+
+        WHY THIS EXISTS. The report used to live in a per-instance dict
+        (`service.py`'s `state["last_report"]`) and nowhere else. swarm-reconciler
+        runs with min_instance_count = 0, so a cold instance answered
+        `last_pass_at: null` and every finding the previous pass had made was
+        gone. The reconciler is the component that detects stale leases, dead
+        workers and orphaned executions -- the platform's entire account of what
+        went wrong at runtime -- and it was discarded within minutes.
+
+        Persisting it is what makes an operator screen, or an alert on "no
+        successful pass in N minutes", possible at all.
+
+        Returns None rather than raising: a pass that repaired real damage must
+        not be reported as a failure because its bookkeeping write failed. The
+        error is logged by the caller.
+        """
+        from datetime import timedelta
+
+        outcomes = list(report.get("outcomes") or [])
+        stored = outcomes[: self.MAX_STORED_OUTCOMES]
+
+        pass_id = new_id("pass")
+        doc = {
+            **{k: v for k, v in report.items() if k != "outcomes"},
+            "pass_id": pass_id,
+            "outcomes": stored,
+            "outcome_count": len(outcomes),
+            # Never a silent truncation: a reader must be able to tell a pass
+            # with 50 outcomes from a pass with 4000 whose tail was dropped.
+            "outcomes_truncated": len(outcomes) > len(stored),
+            "expires_at": utcnow() + timedelta(hours=retain_hours),
+        }
+        self._db.collection("reconciler_passes").document(pass_id).set(doc)
+        return pass_id

@@ -246,6 +246,25 @@ resource "google_firestore_index" "this" {
   }
 }
 
+# Reconciliation passes are a record of what the platform repaired, written once
+# a minute. Without a TTL that is ~525,000 documents a year, and the value of a
+# pass decays fast -- it answers "what happened last Tuesday", not "what is
+# true". The reconciler sets `expires_at` from PASS_RETENTION_HOURS.
+resource "google_firestore_field" "reconciler_passes_ttl" {
+  count = var.event_ttl_field == "" ? 0 : 1
+
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = "reconciler_passes"
+  field      = var.event_ttl_field
+
+  ttl_config {}
+
+  # Same reasoning as events: the default single-field index on a TTL field is
+  # not useful and costs write amplification on every pass.
+  index_config {}
+}
+
 # Task events are an audit trail, not durable state. Without a TTL the
 # subcollection grows without bound for the lifetime of the platform.
 resource "google_firestore_field" "events_ttl" {
