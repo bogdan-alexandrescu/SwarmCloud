@@ -84,11 +84,10 @@ function Detail({ detail }: { detail: AgentDetail }) {
         <section className="section">
           <h2>Why</h2>
           <p className="why-full">{why}</p>
-          {task.last_error && task.state !== 'FAILED' && (
-            <pre className="err">{task.last_error}</pre>
-          )}
         </section>
       )}
+
+      {task.last_error && <ErrorBanner text={task.last_error} />}
 
       {/* ---- Timeline ---- */}
       <Timeline events={events} detail={eventsDetail} />
@@ -127,6 +126,35 @@ function Detail({ detail }: { detail: AgentDetail }) {
   )
 }
 
+/**
+ * The error banner. Full text, monospace, NEVER one-line-truncated -- it is
+ * the reason the page was opened.
+ *
+ * Three flavours, distinguished by prefix because each means something
+ * different about who decided the task had failed.
+ */
+function ErrorBanner({ text }: { text: string }) {
+  const reconciled = text.startsWith('reconciled:')
+  // A dispatch failure is written as `<STABLE_CODE> (attempt att_...)`.
+  const dispatch = /^[A-Z][A-Z0-9_]+ \(attempt /.test(text)
+
+  return (
+    <section className="section">
+      <h2>Error</h2>
+      <div className="state failed">
+        <p className="err-origin">
+          {reconciled
+            ? 'Written by the reconciler, which found this attempt in a state it could not repair.'
+            : dispatch
+              ? 'A dispatch failure, recorded by the scheduler. The full message is in the operator logs — this field is truncated at 1000 characters.'
+              : "The agent's own error at finish, or the cancellation reason if it was cancelled before it held capacity."}
+        </p>
+        <pre className="err full">{text}</pre>
+      </div>
+    </section>
+  )
+}
+
 function Timeline({ events, detail }: { events: TaskEvent[] | null; detail: string | null }) {
   if (events === null) {
     return (
@@ -142,20 +170,48 @@ function Timeline({ events, detail }: { events: TaskEvent[] | null; detail: stri
     )
   }
   if (events.length === 0) {
+    // THERE IS NO LEGITIMATE EMPTY STATE HERE, and this is where the whole
+    // rule pays for itself. create_tasks writes the task document and its
+    // `submitted` event in the SAME BATCH (swarm_api/store.py:337-366),
+    // explicitly so a partially written submission cannot leave a task with no
+    // event trail. So a task that exists has at least one event, and a 200
+    // with zero rows is a failed query wearing a success code.
     return (
       <section className="section">
         <h2>Timeline</h2>
-        <p className="muted">
-          The read succeeded and returned no events. Events are written from
-          submission onward, so an agent with none has not been admitted yet.
-        </p>
+        <div className="state failed">
+          <h3>Timeline unavailable</h3>
+          <p>
+            This task must have at least a <code>submitted</code> event — it is
+            written in the same batch as the task itself — and the query
+            returned none. This is a failed read, not an empty history.
+          </p>
+        </div>
       </section>
     )
   }
 
+  // The endpoint orders `at` ASCENDING, applies the page limit and returns NO
+  // page token, so a task with more than 200 events hands back the OLDEST 200
+  // and the newest are unreachable. That is not a corner case: the worker
+  // heartbeats every 30s, so a two-hour attempt writes ~240 heartbeat events
+  // before anything else, and the end of the timeline -- the part the page was
+  // opened for -- is exactly the part the API drops.
+  const truncated = events.length >= 200
+
   return (
     <section className="section">
       <h2>Timeline</h2>
+      {truncated && (
+        <div className="state partial" role="status">
+          <h3>Showing the oldest 200 events</h3>
+          <p>
+            Newer events are not reachable through this endpoint yet — it orders
+            oldest-first, caps the page and returns no page token. The end of
+            this task&apos;s history is missing, not absent.
+          </p>
+        </div>
+      )}
       <ol className="timeline">
         {events.map((e) => (
           <li key={e.event_id}>
@@ -165,6 +221,15 @@ function Timeline({ events, detail }: { events: TaskEvent[] | null; detail: stri
               <span className="ev-gen" title="Fencing generation for this event">
                 gen {e.generation}
               </span>
+            )}
+            {/* Only the reconciler labels itself. THE TEST IS THE VALUE, NOT
+                THE KEY: the worker's quota_exhausted events also carry a
+                detail.source, describing where the quota signal came from, so
+                a presence check badges them as reconciler work. Scheduler-,
+                worker- and API-written events are indistinguishable by payload
+                alone, and the honest label for those rows is the event type. */}
+            {e.detail?.['source'] === 'reconciler' && (
+              <span className="ev-badge">reconciler</span>
             )}
             {e.detail && Object.keys(e.detail).length > 0 && (
               <pre className="ev-detail">{JSON.stringify(e.detail, null, 2)}</pre>
@@ -282,7 +347,18 @@ function Output({
               {Object.entries(logs).map(([label, uri]) => (
                 <div key={label} style={{ display: 'contents' }}>
                   <dt>{label}</dt>
-                  <dd className="mono uri">{uri}</dd>
+                  <dd className="mono uri">
+                    {uri}
+                    {/* No download link, by design: nothing here mints a signed
+                        URL. The caller reads GCS with their own credentials,
+                        which keeps the tenant boundary in one place. */}
+                    <button
+                      className="copy"
+                      onClick={() => navigator.clipboard?.writeText(`gsutil cat ${uri}`)}
+                    >
+                      copy gsutil
+                    </button>
+                  </dd>
                 </div>
               ))}
             </dl>

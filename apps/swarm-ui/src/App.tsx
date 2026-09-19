@@ -4,9 +4,10 @@ import { AgentsScreen } from './Agents'
 import { CapacityScreen } from './Capacity'
 import { DataSourceStrip } from './DataSources'
 import { Nav } from './Shell'
+import { TroubleScreen } from './Trouble'
 import { WorkflowsScreen } from './Workflows'
 
-const SCREENS = ['capacity', 'agents', 'workflows'] as const
+const SCREENS = ['trouble', 'capacity', 'agents', 'workflows'] as const
 type ScreenId = (typeof SCREENS)[number]
 
 interface Route {
@@ -46,6 +47,7 @@ export function App() {
   return (
     <div className="app">
       <Nav at={at.screen} go={go} />
+      {at.screen === 'trouble' && <TroubleScreen />}
       {at.screen === 'capacity' && <CapacityScreen />}
       {at.screen === 'agents' && <AgentsScreen onOpen={(id) => go(`agents/${encodeURIComponent(id)}`)} />}
       {at.screen === 'workflows' && <WorkflowsScreen />}

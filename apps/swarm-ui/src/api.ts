@@ -1,5 +1,8 @@
 import { noteFixtureProbe, read, type Result } from './fetch'
-import type { Capacity, Task, TaskEvent, TaskPage, TaskState, Workflow } from './types'
+import type {
+  Capacity, DispatchControl, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
+  TaskState, Workflow,
+} from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
 // this product performs, and what "empty" means for each of them -- which is
@@ -218,6 +221,116 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
         ...(task.state === 'FAILED' ? [ev('failed', 1, { exit_code: 1, error: task.last_error })] : []),
       ],
       eventsDetail: null,
+    },
+  }
+}
+
+export async function loadStats(): Promise<Result<Stats>> {
+  if (USE_FIXTURES) return fixtureStats()
+  // A successful read always yields twelve numbers, because count_tasks_by_state
+  // iterates the whole enum and writes a key for each. So there is no empty
+  // state here -- and an error must never render as "0 RUNNING", because
+  // "0 RUNNING" and "stats failed" are opposite facts.
+  return read<Stats>('/v1/stats', () => false)
+}
+
+export async function loadDispatchControl(): Promise<Result<DispatchControl>> {
+  if (USE_FIXTURES) return fixtureDispatch()
+  // Admin-gated. A 403 here is information, not a failure.
+  return read<DispatchControl>('/v1/admin/dispatch', () => false)
+}
+
+export async function loadProviders(): Promise<Result<ProvidersPage>> {
+  if (USE_FIXTURES) return fixtureProviders()
+  return read<ProvidersPage>('/v1/providers', (d) => d.providers.length === 0)
+}
+
+/** One page of tasks in one state. Server-side filter, backed by a real index. */
+export async function loadTasksInState(state: TaskState): Promise<Result<TaskPage>> {
+  if (USE_FIXTURES) {
+    const page = await fixtureTasks()
+    if (page.status !== 'ok') return page
+    const tasks = page.data.tasks.filter((t) => t.state === state)
+    return tasks.length === 0
+      ? { status: 'empty', fetchedAt: Date.now() }
+      : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
+  }
+  return read<TaskPage>(
+    `/v1/tasks?state=${encodeURIComponent(state)}&limit=200`,
+    (d) => d.tasks.length === 0,
+  )
+}
+
+async function fixtureStats(): Promise<Result<Stats>> {
+  await new Promise((r) => setTimeout(r, 220))
+  noteFixtureProbe('/v1/stats', 220, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tenant_id: 'u-bogdan',
+      dispatch_paused: false,
+      tasks_by_state: {
+        SUBMITTED: 0, QUEUED: 0, PARKED: 1, READY: 1, LEASED: 1, DISPATCHED: 1,
+        STARTING: 1, RUNNING: 2, SUCCEEDED: 7, FAILED: 1, CANCELLED: 1,
+        DEAD_LETTERED: 0,
+      },
+      limits: { max_batch_size: 100, max_input_bytes: 65536, max_workflow_steps: 50 },
+      generated_at: new Date().toISOString(),
+    },
+  }
+}
+
+async function fixtureDispatch(): Promise<Result<DispatchControl>> {
+  await new Promise((r) => setTimeout(r, 120))
+  // A non-admin genuinely cannot read this, and the board must render that as
+  // information rather than breakage. The fixture exercises that path.
+  noteFixtureProbe('/v1/admin/dispatch', 120, false)
+  return {
+    status: 'error',
+    error: {
+      kind: 'admin_required',
+      httpStatus: 403,
+      code: 'forbidden',
+      message: 'admin group membership is required',
+    },
+  }
+}
+
+async function fixtureProviders(): Promise<Result<ProvidersPage>> {
+  await new Promise((r) => setTimeout(r, 200))
+  noteFixtureProbe('/v1/providers', 200, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tenant_id: 'u-bogdan',
+      generated_at: new Date().toISOString(),
+      providers: [
+        {
+          provider: 'anthropic',
+          credential_registered: true,
+          runner_profiles: ['browser', 'claude-code'],
+          quota: {
+            provider: 'anthropic', tenant_id: 'u-bogdan', state: 'THROTTLED',
+            updated_at: new Date(Date.now() - 40_000).toISOString(),
+            configured_hard_max: 50, adaptive_target: 6, quota_derived_limit: null,
+            requests_remaining: 118, tokens_remaining: null,
+            reset_at: new Date(Date.now() + 900_000).toISOString(),
+            cooldown_until: null,
+            last_429_at: new Date(Date.now() - 240_000).toISOString(),
+            retry_after_seconds: null, success_count: 412, rate_limit_count: 9,
+            effective_limit: 6,
+          },
+        },
+        {
+          provider: 'openai',
+          credential_registered: false,
+          runner_profiles: ['codex'],
+          // No quota document for this tenant yet. UNKNOWN, not zeros.
+          quota: null,
+        },
+      ],
     },
   }
 }

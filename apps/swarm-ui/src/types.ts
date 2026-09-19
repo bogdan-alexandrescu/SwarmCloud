@@ -304,6 +304,86 @@ export function usageOf(task: Task): Record<string, number | string[]> | null {
   return usage && typeof usage === 'object' ? usage : null
 }
 
+/** `SubmissionService.stats`, service.py:271-288. */
+export interface Stats {
+  tenant_id: string
+  /** One key per TaskState -- count_tasks_by_state iterates the whole enum. */
+  tasks_by_state: Record<string, number>
+  dispatch_paused: boolean
+  limits: Record<string, number>
+  generated_at: string
+  /** ADMIN ONLY. Absent for everyone else -- absent is not zero. */
+  platform_tasks_by_state?: Record<string, number>
+}
+
+/** `GET /v1/admin/dispatch`, routes/admin.py:70-75. Admin-gated. */
+export interface DispatchControl {
+  dispatch_paused: boolean
+  updated_at: string | null
+  updated_by: string | null
+  reason: string | null
+}
+
+/** `SubmissionService.providers`, service.py:334-350. */
+export interface ProviderEntry {
+  provider: string
+  /** Provider NAMES only, from tenants/{id}.credentials. Never key material. */
+  credential_registered: boolean
+  runner_profiles: string[]
+  /** null when no quota document exists for this tenant yet. Not zeros. */
+  quota: QuotaState | null
+}
+
+export interface ProvidersPage {
+  tenant_id: string
+  providers: ProviderEntry[]
+  generated_at: string
+}
+
+/**
+ * `ProviderState`, models.py:259-265. SIX values, not five.
+ *
+ * THROTTLED is the one most easily missed and it is the common case during a
+ * squeeze, so a chip that falls through to "unknown" for it mislabels exactly
+ * the condition the panel exists for.
+ *
+ * UNKNOWN means "no worker has reported on this provider recently". That is
+ * not the same as healthy and gets its own grey.
+ */
+export type ProviderStateName =
+  | 'AVAILABLE' | 'THROTTLED' | 'EXHAUSTED' | 'COOLDOWN' | 'DISABLED' | 'UNKNOWN'
+
+export function providerTone(state: string): Tone | 'unknown' {
+  switch (state) {
+    case 'AVAILABLE': return 'ok'
+    case 'THROTTLED': return 'wait'
+    case 'COOLDOWN': return 'wait'
+    case 'EXHAUSTED': return 'bad'
+    case 'DISABLED': return 'bad'
+    default: return 'unknown'
+  }
+}
+
+/**
+ * The two park reasons that need a person. Everything else is the platform
+ * working as designed (CONTRACT.md invariant 1), which is why this panel is
+ * grey and never red: parked work costs nothing.
+ */
+export const NEEDS_A_HUMAN: ReadonlySet<string> = new Set([
+  'CREDENTIAL_MISSING', 'BUDGET_EXHAUSTED',
+])
+
+/**
+ * Reasons that are NOT BlockedReason members. `record_blockers` stores
+ * whatever AdmissionDenied carried, and three of those are bare strings from
+ * the pre-flight checks (admission.py:148,155,157). They mean something quite
+ * different from a capacity refusal, so they get their own group rather than
+ * being swallowed by an enum lookup.
+ */
+export const PRE_CAPACITY_REASONS: ReadonlySet<string> = new Set([
+  'task_missing', 'not_ready', 'cancel_requested',
+])
+
 /** `tenant_to_api`, codec.py:283. Thirteen fields, all of them. */
 export interface Tenant {
   tenant_id: string
