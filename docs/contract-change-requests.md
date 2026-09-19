@@ -99,7 +99,16 @@ should not be restored until it is true.
 
 ## 2. `models.py`: `Attempt` records memory and disk, but not tokens or cost
 
-**Status:** open, raised 2026-09-19 while scoping the SwarmCloud web UI.
+**Status:** APPROVED by the platform owner and APPLIED, 2026-09-19.
+
+The five fields below are now on `Attempt`, and
+`agent_worker.control.record_spend` populates them from the summary
+`_usage_summary` extracts before truncation. A field the runner did not report
+is omitted rather than written as zero -- `None` means "not reported" and `0`
+means "cost nothing", and a mock task is genuinely the second while an
+unparseable result is the first.
+
+The original request follows, unchanged, as the record of what was asked for.
 
 ### What is missing
 

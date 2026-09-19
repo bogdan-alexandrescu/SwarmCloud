@@ -214,6 +214,27 @@ class Attempt:
     oom_near_miss: bool = False
     checkpoints: list[str] = field(default_factory=list)
 
+    # What the attempt SPENT. Added 2026-09-19 as change request #2 in
+    # docs/contract-change-requests.md, approved by the platform owner.
+    #
+    # Until this existed an attempt recorded precisely how much MEMORY and DISK
+    # it used and nothing at all about tokens -- on a platform whose entire cost
+    # is tokens. The numbers were already being captured
+    # (agent_worker.lifecycle._usage_summary) and landed in an untyped runner
+    # summary, where no index can reach them: "spend per tenant last week" meant
+    # scanning and parsing rather than querying.
+    #
+    # All optional, defaulting to None, so every existing document stays valid
+    # and no migration runs. None means NOT REPORTED, which is genuinely
+    # different from zero: a mock task costs nothing on purpose, and a run whose
+    # result could not be parsed costs an unknown amount. A UI that renders
+    # those two the same way is lying about one of them.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cost_usd: float | None = None
+
 
 @dataclass
 class TaskEvent:

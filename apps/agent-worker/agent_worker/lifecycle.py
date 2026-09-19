@@ -488,6 +488,17 @@ class Worker:
 
         runner_result = _read_json(ws.result_path)
         if runner_result:
+            # Extracted once: it goes into the summary for a human to read AND
+            # onto the attempt as typed fields for a query to reach.
+            usage_summary = _usage_summary(runner_result.get("output"))
+            if usage_summary:
+                # Not fatal. An attempt that ran is not a failed attempt because
+                # its accounting write failed, and this runs on the teardown
+                # path where the lease is about to be released either way.
+                try:
+                    self.control.record_spend(usage_summary)
+                except Exception as exc:  # pragma: no cover - defensive
+                    self.log.warning("could not record spend", error=str(exc))
             summary["runner"] = self._scrub(
                 {
                     "status": runner_result.get("status"),
@@ -496,7 +507,7 @@ class Worker:
                     # Extracted BEFORE the line above discards it. See
                     # _usage_summary: the truncation dropped token counts on
                     # precisely the most expensive runs.
-                    "usage": _usage_summary(runner_result.get("output")),
+                    "usage": usage_summary,
                     "metrics": runner_result.get("metrics") or {},
                 }
             )

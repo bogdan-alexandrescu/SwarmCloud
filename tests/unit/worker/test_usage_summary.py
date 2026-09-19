@@ -89,3 +89,60 @@ def test_a_partial_result_yields_what_it_has():
     """An interrupted run still carries whatever the CLI managed to report."""
     usage = _usage_summary({"usage": {"output_tokens": 12}})
     assert usage == {"output_tokens": 12}
+
+
+def _spend_written(usage):
+    """Run the REAL record_spend against a recording double, and return its write.
+
+    Bound off ControlPlane rather than reimplemented, so this tests the shipped
+    code path rather than a copy of it that could drift from it.
+    """
+    from agent_worker.control import ControlPlane
+
+    written: dict = {}
+
+    class Ref:
+        def set(self, doc, merge=False):
+            written.update(doc)
+
+    class Double:
+        tenant_id = "u-test"
+
+        def _attempt_ref(self):
+            return Ref()
+
+    ControlPlane.record_spend(Double(), usage)
+    return written
+
+
+def test_a_field_the_runner_did_not_report_is_omitted_not_zeroed():
+    """None means "not reported"; 0 means "cost nothing". They are different facts.
+
+    A mock task genuinely costs nothing. A run whose result could not be parsed
+    costs an unknown amount. Writing 0 for the second makes a spend report
+    quietly wrong in the direction that looks fine.
+    """
+    written = _spend_written({"output_tokens": 12})
+    assert written["output_tokens"] == 12
+    for absent in ("input_tokens", "cache_read_input_tokens", "cost_usd"):
+        assert absent not in written, f"{absent} was invented as a default"
+
+
+def test_a_real_zero_is_written():
+    """Zero reported is still a fact, and must survive."""
+    written = _spend_written({"input_tokens": 0, "total_cost_usd": 0.0})
+    assert written["input_tokens"] == 0
+    assert written["cost_usd"] == 0.0
+
+
+def test_nothing_is_written_when_there_is_nothing_to_write():
+    """An empty summary must not produce a document with only a tenant_id."""
+    assert _spend_written({}) == {}
+    assert _spend_written({"num_turns": 4, "models": ["x"]}) == {}
+
+
+def test_a_boolean_never_becomes_a_cost():
+    """bool subclasses int; `total_cost_usd: True` must not land as 1.0."""
+    written = _spend_written({"total_cost_usd": True, "input_tokens": True})
+    assert "cost_usd" not in written
+    assert "input_tokens" not in written
