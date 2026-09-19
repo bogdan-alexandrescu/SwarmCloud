@@ -207,7 +207,12 @@ DELETED=0
 
 for collection in "${COLLECTIONS[@]}"; do
   names="${WORK}/${collection}.names"
-  select_docs "${collection}" >"${names}" || true
+  # select_docs's own pipeline already fails loudly (fs_list/fs_query -> fs_request
+  # propagate a non-2xx as a non-zero exit under pipefail); do not paper over that
+  # with `|| true` -- a denied or expired listing must not be read as an empty one.
+  if ! select_docs "${collection}" >"${names}"; then
+    die "could not list documents in '${collection}'; see the Firestore error above -- this is a failed listing, not an empty collection"
+  fi
   n="$(wc -l <"${names}" | tr -d ' ')"
 
   if [[ "${collection}" == "tasks" && "${n}" -gt 0 ]]; then
@@ -218,7 +223,9 @@ for collection in "${COLLECTIONS[@]}"; do
     while IFS= read -r task_name; do
       [[ -n "${task_name}" ]] || continue
       task_id="${task_name##*/}"
-      fs_list "tasks/${task_id}/events" 300 | jq -r '.[]?.name' >>"${events}" || true
+      if ! fs_list "tasks/${task_id}/events" 300 | jq -r '.[]?.name' >>"${events}"; then
+        die "could not list events for task '${task_id}'; see the Firestore error above -- this is a failed listing, not an empty subcollection"
+      fi
     done <"${names}"
     e="$(wc -l <"${events}" | tr -d ' ')"
     if [[ "${e}" -gt 0 ]]; then
@@ -258,9 +265,25 @@ if [[ "${WITH_ARTIFACTS}" -eq 1 ]]; then
     gcloud storage ls "${PREFIX}/" --project "${PROJECT_ID}" 2>/dev/null | head -n 20 >&2 || true
   else
     info "deleting ${PREFIX}/"
-    gcloud storage rm --recursive "${PREFIX}/" --project "${PROJECT_ID}" 2>&1 | redact || \
-      warn "nothing to delete under ${PREFIX}/"
-    ok "artifacts removed"
+    rm_out="${WORK}/artifacts-rm.log"
+    if gcloud storage rm --recursive "${PREFIX}/" --project "${PROJECT_ID}" >"${rm_out}" 2>&1; then
+      redact <"${rm_out}"
+      ok "artifacts removed"
+    else
+      # A denied delete and an empty prefix both land here with a non-zero
+      # exit; only the specific "matched no objects" message from gcloud
+      # storage means the prefix was already empty. Anything else -- an
+      # expired session, missing storage.objects.delete, a wrong project, a
+      # retryable 503 -- must not be reported as a completed purge.
+      die_if_auth_failure "$(cat "${rm_out}")"
+      if grep -qi 'matched no objects\|no objects or files\|not found' "${rm_out}"; then
+        warn "nothing to delete under ${PREFIX}/ (already empty)"
+      else
+        err "gcloud storage rm failed under ${PREFIX}/; this is NOT confirmation the artifacts are gone"
+        redact <"${rm_out}" | head -n 5 | sed 's/^/     /' >&2
+        die "cannot confirm artifacts were removed under ${PREFIX}/"
+      fi
+    fi
   fi
 fi
 
@@ -271,8 +294,18 @@ if [[ "${WITH_SECRETS}" -eq 1 ]]; then
   step "Tenant credentials"
   filter="labels.component=tenant-credential"
   [[ -n "${TENANT}" ]] && filter="${filter} AND labels.tenant=${TENANT}"
-  secrets="$(gcloud secrets list --project "${PROJECT_ID}" --filter "${filter}" \
-    --format='value(name.basename())' 2>/dev/null || true)"
+  secrets_err="${WORK}/secrets-list.err"
+  # A denied secretmanager.secrets.list, an expired session or a malformed
+  # filter must not read as "no matching secrets" -- this is a credential
+  # purge, and reporting one destroyed when it was never even listed is worse
+  # than the script refusing to run.
+  if ! secrets="$(gcloud secrets list --project "${PROJECT_ID}" --filter "${filter}" \
+       --format='value(name.basename())' 2>"${secrets_err}")"; then
+    die_if_auth_failure "$(cat "${secrets_err}")"
+    err "gcloud secrets list failed; this is NOT proof there are no matching tenant secrets"
+    redact <"${secrets_err}" | head -n 5 | sed 's/^/     /' >&2
+    die "cannot confirm tenant secrets are absent; aborting rather than reporting them purged"
+  fi
   if [[ -z "${secrets}" ]]; then
     dim "  no matching secrets"
   else
