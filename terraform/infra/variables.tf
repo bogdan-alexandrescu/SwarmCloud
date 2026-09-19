@@ -225,6 +225,38 @@ variable "tenants" {
   }
 }
 
+variable "enable_frontend" {
+  description = <<-EOT
+    Build the external load balancer and IAP in front of swarm-api.
+
+    A flag rather than `frontend_hostname != ""`, because a count that depends
+    on a value unknown at plan time cannot be planned -- the same reason
+    enable_quota_refresh exists.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "frontend_hostname" {
+  description = "The name the managed certificate is issued for. DNS lives at an external registrar, so the A record is added by hand from the module's ip_address output."
+  type        = string
+  default     = ""
+}
+
+variable "frontend_iap_members" {
+  description = <<-EOT
+    Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant
+    boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
+    read to the caller's own tenant.
+
+    `domain:saga.xyz` is the intended shape: it matches what the API already
+    enforces, so there is no second list to drift. An enumeration of individual
+    users is the shape that rots.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "admin_groups" {
   description = <<-EOT
     Google groups whose members may act across tenants in swarm-api -- reading

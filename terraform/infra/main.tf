@@ -32,6 +32,9 @@ module "project_services" {
     "containerscanning.googleapis.com",
     "firestore.googleapis.com",
     "iam.googleapis.com",
+    # The front door. IAP is the outer gate in front of swarm-api; see
+    # terraform/modules/frontend.
+    "iap.googleapis.com",
     "iamcredentials.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
@@ -387,6 +390,29 @@ module "scheduler" {
   # became unknown with it, and two IAM bindings went from "no change" to
   # "must be replaced". 1 add / 18 change / 0 destroy became 3 / 18 / 2.
   depends_on = [module.project_services]
+}
+
+# The external front door: an ALB with IAP in front of swarm-api.
+#
+# Gated by a flag rather than by the presence of a hostname, for the reason the
+# scheduler module's header already records: a `count` that depends on a value
+# unknown until apply cannot be planned at all.
+module "frontend" {
+  count  = var.enable_frontend ? 1 : 0
+  source = "../modules/frontend"
+
+  project_id  = var.project_id
+  region      = var.region
+  name_prefix = var.name_prefix
+
+  service_name = "swarm-api"
+  hostname     = var.frontend_hostname
+
+  iap_members = var.frontend_iap_members
+
+  labels = local.labels
+
+  depends_on = [module.project_services, module.cloud_run]
 }
 
 module "monitoring" {

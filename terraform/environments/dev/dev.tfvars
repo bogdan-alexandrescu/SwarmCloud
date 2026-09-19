@@ -248,3 +248,23 @@ secret_admin_members = [
 # --- observability ---------------------------------------------------------
 create_alerts = true
 alert_emails  = []
+
+# --- the web UI front door --------------------------------------------------
+# An external ALB with IAP in front of swarm-api. Nothing about the existing
+# services changes: their ingress setting is already exactly what an external
+# load balancer requires, and it was the absence of the load balancer -- not the
+# ingress setting -- that made swarm-api unreachable from a browser.
+enable_frontend   = true
+frontend_hostname = "swarm.saga.xyz"
+
+# The outer gate only. swarm-api stays the tenant boundary: it verifies the
+# token, enforces allowed_domains above, and scopes every read to the caller's
+# own tenant. This matches that domain rather than maintaining a second list,
+# because a hand-maintained list of principals is the shape that rots -- as the
+# GKE allowlist in this same file did.
+frontend_iap_members = ["domain:saga.xyz"]
+
+# The IAP OAuth brand is NOT created by terraform: google_iap_brand cannot be
+# deleted, so terraform could create one and never remove it. It is a
+# once-per-project manual step, documented in terraform/modules/frontend/main.tf.
+
