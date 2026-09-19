@@ -109,6 +109,12 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     }
     if args.repo:
         spec["repository_url"] = args.repo
+        # Without this an agent always got the default branch, which is exactly
+        # wrong for agent work: the change an agent is asked to build on is
+        # usually the one not merged yet. TaskCreate has carried
+        # `repository_ref` all along; nothing exposed it.
+        if args.ref:
+            spec["repository_ref"] = args.ref
     if args.timeout:
         spec["timeout_seconds"] = args.timeout
 
@@ -317,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("profile")
     d.add_argument("prompt", nargs="?", default="")
     d.add_argument("--repo", default="", help="repository to shallow-clone into the workspace")
+    d.add_argument("--ref", default="", help="branch or tag to clone; defaults to the repository's default branch")
     d.add_argument("--count", type=int, default=1, help="dispatch this many identical tasks")
     d.add_argument("--from-file", default="",
                    help="one prompt per line; blank lines and # comments ignored")

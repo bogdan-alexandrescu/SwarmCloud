@@ -468,6 +468,10 @@ class Worker:
                     "status": runner_result.get("status"),
                     "summary": str(runner_result.get("summary", ""))[:4000],
                     "output": _truncate_json(runner_result.get("output"), 8000),
+                    # Extracted BEFORE the line above discards it. See
+                    # _usage_summary: the truncation dropped token counts on
+                    # precisely the most expensive runs.
+                    "usage": _usage_summary(runner_result.get("output")),
                     "metrics": runner_result.get("metrics") or {},
                 }
             )
@@ -1046,6 +1050,57 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else {"value": data}
+
+
+def _usage_summary(output: Any) -> dict[str, Any]:
+    """Token and cost numbers, pulled out of a CLI agent's result BEFORE truncation.
+
+    `_truncate_json` replaces the whole result with a preview STRING once it
+    exceeds its limit, so the runs that consumed the most tokens were exactly the
+    runs whose token counts were discarded. The raw file still reaches GCS, but
+    nothing queryable kept the numbers, and a per-tenant spend figure assembled by
+    reading one GCS object per attempt does not survive real volume.
+
+    This is deliberately a small, flat dict of scalars: it stays far below any
+    truncation limit, so it survives whatever the rest of the result does.
+
+    It does NOT add a field to `Attempt` -- `apps/common/swarm_common/` is frozen.
+    These land inside the free-form runner summary. A typed field is a contract
+    change request; see docs/contract-change-requests.md.
+    """
+    if not isinstance(output, dict):
+        return {}
+
+    summary: dict[str, Any] = {}
+
+    usage = output.get("usage")
+    if isinstance(usage, dict):
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ):
+            value = usage.get(key)
+            if isinstance(value, int):
+                summary[key] = value
+        details = usage.get("output_tokens_details")
+        if isinstance(details, dict) and isinstance(details.get("thinking_tokens"), int):
+            summary["thinking_tokens"] = details["thinking_tokens"]
+
+    # bool is a subclass of int, so it is excluded explicitly -- `is_error: true`
+    # arriving as a cost of 1 would be a quietly wrong number, which is the whole
+    # class of bug this file is being edited to avoid.
+    for key in ("total_cost_usd", "num_turns", "duration_ms", "duration_api_ms"):
+        value = output.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            summary[key] = value
+
+    models = output.get("modelUsage")
+    if isinstance(models, dict) and models:
+        summary["models"] = sorted(str(m) for m in models)
+
+    return summary
 
 
 def _truncate_json(value: Any, limit: int) -> Any:

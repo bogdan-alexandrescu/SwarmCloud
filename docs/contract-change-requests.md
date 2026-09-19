@@ -94,3 +94,69 @@ a collision into a cross-tenant **read and cancel**. It should be fixed whether
 or not this request is accepted, and the comment at `routes/tasks.py:3-6` —
 "there is no request a caller can construct that reads another tenant's task" —
 should not be restored until it is true.
+
+---
+
+## 2. `models.py`: `Attempt` records memory and disk, but not tokens or cost
+
+**Status:** open, raised 2026-09-19 while scoping the SwarmCloud web UI.
+
+### What is missing
+
+`Attempt` (`apps/common/swarm_common/models.py:196-215`) carries
+`peak_rss_bytes` and `peak_disk_bytes`. It carries no token count and no cost.
+
+So the platform records precisely how much MEMORY an agent used and nothing at
+all about what it spent -- on a platform whose entire cost is tokens.
+
+### Why this surfaced now
+
+A per-user activity view ("how many agents, tokens and jobs has each engineer
+used") cannot be assembled. Two separate obstacles, one now fixed:
+
+1. **The numbers were being thrown away.** `lifecycle.py` wrapped the runner
+   result in `_truncate_json(..., 8000)`, which replaces an oversized result
+   with a preview *string*. Long runs exceed 8000 characters, so the attempts
+   that consumed the most tokens were exactly the ones whose token counts were
+   discarded. Fixed on the unfrozen side: `_usage_summary()` now extracts
+   `input_tokens`, `output_tokens`, cache counts, `thinking_tokens`,
+   `total_cost_usd`, `num_turns` and the model list *before* truncation, into
+   the free-form runner summary.
+
+2. **There is still nowhere typed to put them.** The values now reach Firestore
+   inside an untyped dict. Nothing can query them, no index can cover them, and
+   every reader must know the shape by convention.
+
+### The requested change
+
+Add to `Attempt`:
+
+```python
+input_tokens: int | None = None
+output_tokens: int | None = None
+cache_read_input_tokens: int | None = None
+cache_creation_input_tokens: int | None = None
+cost_usd: float | None = None
+```
+
+Optional, defaulting to `None`, so every existing document remains valid and no
+migration is required. `None` means "not reported", which is genuinely different
+from zero -- a mock task reports nothing and did not cost nothing by accident.
+
+### What it costs, and what it buys
+
+**Costs:** five fields on the busiest document in the system, and a small write
+on every attempt teardown.
+
+**Buys:** cost and token usage become queryable per tenant, per profile and over
+time. Today that question can only be answered by reading one GCS object per
+attempt, which is correct and does not survive volume.
+
+### Related work that is NOT part of this request
+
+`submitted_by` is not filterable (`store.py:381-411` accepts `state`,
+`workflow_id` and `runner_profile` only) and no Firestore index covers it
+(`terraform/modules/firestore/indexes.tf`). Per-ENGINEER breakdown needs that
+index regardless of this request. Both are unfrozen and can proceed
+independently.
+
