@@ -1,4 +1,4 @@
-import type { Capacity } from './types'
+import type { Capacity, Task, TaskPage, TaskState, Workflow } from './types'
 
 // THE ONE RULE THIS FILE EXISTS TO ENFORCE
 // ----------------------------------------
@@ -74,6 +74,18 @@ export async function loadCapacity(): Promise<Loaded<Capacity>> {
   return request<Capacity>('/v1/capacity')
 }
 
+export async function loadTasks(): Promise<Loaded<TaskPage>> {
+  if (USE_FIXTURES) return fixtureTasks()
+  // Page size caps at 200 server-side (deps.py). Asking for more is silently
+  // clamped, which would make "200 tasks" look like the whole truth.
+  return request<TaskPage>('/v1/tasks?limit=200')
+}
+
+export async function loadWorkflows(): Promise<Loaded<{ workflows: Workflow[] }>> {
+  if (USE_FIXTURES) return fixtureWorkflows()
+  return request<{ workflows: Workflow[] }>('/v1/workflows?limit=100')
+}
+
 // --------------------------------------------------------------------------
 // Fixtures
 // --------------------------------------------------------------------------
@@ -131,6 +143,111 @@ async function fixtureCapacity(): Promise<Loaded<Capacity>> {
         // Paused, and at a reduced ceiling: the two states this screen must
         // make obvious at a glance.
         pool('tenant:eng', 10, 0, { enabled: false, adaptive_target: 6, effective_limit: 6 }),
+      ],
+    },
+  }
+}
+
+async function fixtureTasks(): Promise<Loaded<TaskPage>> {
+  await new Promise((r) => setTimeout(r, 350))
+  const now = Date.now()
+  const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
+
+  // The fan-out that actually ran on 2026-09-19: fourteen script fixes, one
+  // failure reclaimed three times, plus a workflow. Real shapes, real states.
+  const mk = (
+    id: string,
+    state: TaskState,
+    profile: string,
+    minsAgo: number,
+    extra: Partial<Task> = {},
+  ): Task => ({
+    id,
+    tenant_id: 'u-bogdan',
+    state,
+    runner_profile: profile,
+    resource_class: profile === 'browser' ? 'browser' : 'standard',
+    provider: profile === 'mock' ? null : 'anthropic',
+    priority: 0,
+    created_at: at(minsAgo),
+    updated_at: at(Math.max(0, minsAgo - 6)),
+    started_at: state === 'QUEUED' || state === 'READY' ? null : at(minsAgo - 1),
+    completed_at: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(state) ? at(minsAgo - 6) : null,
+    submitted_by: 'bogdan@saga.xyz',
+    attempt_count: state === 'FAILED' ? 3 : 1,
+    max_attempts: 3,
+    park_reason: null,
+    blocked_by: null,
+    workflow_id: null,
+    step_id: null,
+    depends_on: null,
+    cancel_requested: false,
+    repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    ...extra,
+  })
+
+  return {
+    status: 'ok',
+    fetchedAt: new Date(),
+    data: {
+      tasks: [
+        mk('task_a073aff5', 'RUNNING', 'claude-code', 4),
+        mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+        mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3),
+        mk('task_92eb4807', 'STARTING', 'claude-code', 2),
+        mk('task_460409cd', 'LEASED', 'claude-code', 1),
+        mk('task_950b8e4a', 'READY', 'claude-code', 1),
+        mk('task_e7d210b6', 'QUEUED', 'claude-code', 0),
+        mk('task_8e33a3de', 'FAILED', 'claude-code', 42),
+        mk('task_a3881bec', 'SUCCEEDED', 'claude-code', 58),
+        mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
+        mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
+        mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
+        mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
+        mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
+        mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62),
+        // Part of a workflow, so the graph view has something with edges.
+        mk('task_wf_plan', 'SUCCEEDED', 'claude-code', 30, {
+          workflow_id: 'wf_audit_01', step_id: 'plan', depends_on: [],
+        }),
+        mk('task_wf_scan_a', 'SUCCEEDED', 'claude-code', 24, {
+          workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
+        }),
+        mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
+          workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
+        }),
+        mk('task_wf_report', 'BLOCKED', 'claude-code', 24, {
+          workflow_id: 'wf_audit_01', step_id: 'report',
+          depends_on: ['scan-scripts', 'scan-terraform'],
+          blocked_by: ['scan-terraform'],
+        }),
+      ],
+      next_cursor: null,
+    },
+  }
+}
+
+async function fixtureWorkflows(): Promise<Loaded<{ workflows: Workflow[] }>> {
+  await new Promise((r) => setTimeout(r, 300))
+  return {
+    status: 'ok',
+    fetchedAt: new Date(),
+    data: {
+      workflows: [
+        {
+          workflow_id: 'wf_audit_01',
+          tenant_id: 'u-bogdan',
+          state: 'RUNNING',
+          created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+          updated_at: new Date().toISOString(),
+          submitted_by: 'bogdan@saga.xyz',
+          steps: [
+            { step_id: 'plan', runner_profile: 'claude-code', resource_class: 'standard', depends_on: [], input_from: null, task_id: 'task_wf_plan', state: 'SUCCEEDED' },
+            { step_id: 'scan-scripts', runner_profile: 'claude-code', resource_class: 'standard', depends_on: ['plan'], input_from: 'plan', task_id: 'task_wf_scan_a', state: 'SUCCEEDED' },
+            { step_id: 'scan-terraform', runner_profile: 'claude-code', resource_class: 'standard', depends_on: ['plan'], input_from: 'plan', task_id: 'task_wf_scan_b', state: 'RUNNING' },
+            { step_id: 'report', runner_profile: 'claude-code', resource_class: 'standard', depends_on: ['scan-scripts', 'scan-terraform'], input_from: null, task_id: 'task_wf_report', state: 'BLOCKED' },
+          ],
+        },
       ],
     },
   }

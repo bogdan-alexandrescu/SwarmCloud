@@ -83,3 +83,87 @@ export function limitedBy(pool: Pool): 'adaptive' | 'quota' | null {
   if (adaptive !== null && adaptive === pool.effective_limit) return 'adaptive'
   return null
 }
+
+// --------------------------------------------------------------------------
+// Tasks and workflows
+// --------------------------------------------------------------------------
+
+/** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
+export interface Task {
+  id: string
+  tenant_id: string
+  state: TaskState
+  runner_profile: string
+  resource_class: string
+  provider: string | null
+  priority: number
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  completed_at: string | null
+  submitted_by: string | null
+  attempt_count: number
+  max_attempts: number
+  park_reason: string | null
+  blocked_by: string[] | null
+  workflow_id: string | null
+  step_id: string | null
+  depends_on: string[] | null
+  cancel_requested: boolean
+  repository_url: string | null
+}
+
+/**
+ * `swarm_common.states`. Twelve states, and the groupings below are the ones
+ * that carry meaning rather than being pretty categories.
+ */
+export type TaskState =
+  | 'QUEUED' | 'READY' | 'LEASED' | 'DISPATCHED' | 'STARTING' | 'RUNNING'
+  | 'PARKED' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'DEAD_LETTERED' | 'BLOCKED'
+
+/**
+ * CONTRACT.md invariant 1 and 3: only these four consume capacity. QUEUED,
+ * PARKED and READY cost nothing. A UI that colours "in flight" by intuition
+ * rather than by this set teaches the wrong mental model of what costs money.
+ */
+export const CONCURRENCY_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'LEASED', 'DISPATCHED', 'STARTING', 'RUNNING',
+])
+
+export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
+])
+
+export function stateTone(state: TaskState): 'ok' | 'bad' | 'live' | 'wait' {
+  if (state === 'SUCCEEDED') return 'ok'
+  if (state === 'FAILED' || state === 'DEAD_LETTERED') return 'bad'
+  if (CONCURRENCY_STATES.has(state)) return 'live'
+  return 'wait'
+}
+
+export interface TaskPage {
+  tasks: Task[]
+  next_cursor?: string | null
+}
+
+/** `workflow_to_api`. */
+export interface Workflow {
+  workflow_id: string
+  tenant_id: string
+  state: string
+  created_at: string
+  updated_at: string
+  submitted_by: string | null
+  steps: WorkflowStep[]
+}
+
+export interface WorkflowStep {
+  step_id: string
+  runner_profile: string
+  resource_class: string
+  /** The DAG edges. Real ones -- this is a tree, not a star. */
+  depends_on: string[]
+  input_from: string | null
+  task_id?: string | null
+  state?: string | null
+}

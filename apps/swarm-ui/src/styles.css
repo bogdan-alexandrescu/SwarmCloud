@@ -162,3 +162,79 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ---- nav ---- */
+.nav { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
+.nav button {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-dim); font: 500 14px var(--font);
+  padding: 8px 12px; margin-bottom: -1px; cursor: pointer;
+}
+.nav button:hover { color: var(--text); }
+.nav button.on { color: var(--text); border-bottom-color: var(--info); }
+
+/* ---- filters ---- */
+.filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.filters button {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text-dim); font: 500 12px var(--font);
+  padding: 3px 11px; cursor: pointer; text-transform: capitalize;
+}
+.filters button.on { color: var(--text); border-color: var(--text-faint); background: var(--surface-2); }
+.filters .n { color: var(--text-faint); font-family: var(--mono); font-size: 11px; margin-left: 4px; }
+
+/* ---- task rows ---- */
+.rows { display: flex; flex-direction: column; gap: 4px; }
+.row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1.3fr) 92px 96px 68px minmax(0, 1fr);
+  align-items: center; gap: 10px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 12px;
+}
+.row.holding { border-color: color-mix(in srgb, var(--info) 35%, var(--line)); }
+.row .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-faint); }
+.row .dot.ok { background: var(--ok); }
+.row .dot.bad { background: var(--bad); }
+.row .dot.live { background: var(--info); }
+.row .id { font: 500 12.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .st { font: 600 10px var(--mono); letter-spacing: .04em; color: var(--text-dim); }
+.row .st.ok { color: var(--ok); }
+.row .st.bad { color: var(--bad); }
+.row .st.live { color: var(--info); }
+.row .meta { font: 12px var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .when { color: var(--text-faint); }
+.row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* ---- workflow dag ---- */
+.dag { display: flex; flex-direction: column; }
+.level { display: flex; flex-direction: column; align-items: center; }
+.level .connector { width: 1px; height: 18px; background: var(--line); }
+.level-steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.node {
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 3px solid var(--text-faint);
+  border-radius: 8px; padding: 8px 12px; min-width: 132px;
+}
+.node.ok   { border-left-color: var(--ok); }
+.node.bad  { border-left-color: var(--bad); }
+.node.live { border-left-color: var(--info); }
+.node-id { font: 600 12.5px var(--mono); }
+.node-state { font: 11px var(--mono); color: var(--text-dim); }
+.node-dep {
+  font: 10.5px var(--mono); color: var(--text-faint);
+  margin-top: 3px; max-width: 190px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  /* The task row loses its runner and age columns rather than shrinking into
+     illegibility; both are on the detail view, and state plus id is what a
+     phone glance is actually for. */
+  .row { grid-template-columns: 8px minmax(0, 1fr) 84px; row-gap: 4px; }
+  .row .meta, .row .when { display: none; }
+  .row .badges { grid-column: 2 / -1; justify-content: flex-start; }
+  .nav button { padding: 8px 10px; font-size: 13px; }
+  .level-steps { flex-direction: column; align-items: stretch; }
+  .node { min-width: 0; }
+}
