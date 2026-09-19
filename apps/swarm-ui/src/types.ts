@@ -71,6 +71,59 @@ export function poolLabel(name: string): string {
 }
 
 /**
+ * Whether a pool's number is about the whole platform or only this tenant.
+ *
+ * Trap E: /v1/stats counts are tenant-scoped while the `global` pool is
+ * platform-wide (service.py:276 vs :296-310). Putting "4 agents" from one
+ * beside "7 units" from the other is a scope error dressed as a comparison.
+ * So every number declares its scope and may only sit beside a number of the
+ * same scope.
+ */
+export function poolScope(name: string): 'platform' | 'tenant' {
+  const kind = poolKind(name)
+  if (kind === 'tenant') return 'tenant'
+  // provider:X:tenant:Y is the per-tenant slice of a provider.
+  if (name.includes(':tenant:')) return 'tenant'
+  return 'platform'
+}
+
+/**
+ * The order pools are grouped in, matching `pool_names_for`
+ * (models.py:82-107). The grouping teaches the CONJUNCTION -- a task must
+ * clear every pool in its list at the same moment -- rather than hiding it.
+ */
+export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
+  'global', 'tenant', 'resource', 'runner', 'backend', 'provider',
+]
+
+/**
+ * `active` above `effective_limit`. Not merely "full": it means the pool is
+ * carrying more than its ceiling allows, which admission cannot produce and
+ * which therefore indicates drift -- a limit lowered under running work, or a
+ * counter that was never released. `make pool-check` exists to find this.
+ */
+export function overCeiling(pool: Pool): boolean {
+  return pool.active > pool.effective_limit
+}
+
+/**
+ * Which configured value is BINDING on this pool right now, in words. This is
+ * the "set by" column: knowing a pool is capped at 6 is useless without
+ * knowing whether that is the operator's number, AIMD backing off, or the
+ * provider's quota.
+ */
+export function setBy(pool: Pool): { term: string; detail: string } {
+  const { hard_limit, adaptive_target, quota_derived_limit, effective_limit } = pool
+  if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
+    return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
+  }
+  if (adaptive_target !== null && adaptive_target === effective_limit && adaptive_target < hard_limit) {
+    return { term: 'AIMD back-off', detail: `AIMD lowered this to ${adaptive_target} after provider errors; configured is ${hard_limit}.` }
+  }
+  return { term: 'configured', detail: `The configured hard limit of ${hard_limit} is what applies.` }
+}
+
+/**
  * Why a pool's ceiling is lower than its configured limit, or null if it is not.
  * Worth surfacing: a pool sitting at `effective_limit < hard_limit` is being
  * held down by something, and which something is the whole diagnosis.
