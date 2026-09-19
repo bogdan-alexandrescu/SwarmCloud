@@ -71,8 +71,10 @@ function AgentTable({
         <div className="state">
           <h3>Nothing matches “{filter}”</h3>
           <p>
-            {tasks.length} task{tasks.length === 1 ? '' : 's'} were read; none is in this
-            group. Try “all”.
+            {tasks.length === 1
+              ? '1 task was read'
+              : `${tasks.length} tasks were read`}
+            ; none is in this group. Try “all”.
           </p>
         </div>
       ) : (
