@@ -239,7 +239,8 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
           park_reason: 'DEPENDENCY_INCOMPLETE',
         }),
       ],
-      next_cursor: null,
+      next_page_token: null,
+      tenant_id: 'u-bogdan',
     },
   }
 }

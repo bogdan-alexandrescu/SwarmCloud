@@ -410,9 +410,119 @@ export function whyNotRunning(task: Task): string | null {
   return null
 }
 
+/**
+ * `GET /v1/tasks`, routes/tasks.py:64-95.
+ *
+ * The key is `next_page_token`. This file said `next_cursor`, which the API
+ * has never sent, so paging could never have advanced past the first page.
+ *
+ * `tenant_id` comes back too and is worth keeping: every row is the caller's
+ * own tenant, so the scope belongs in the page header once rather than in a
+ * column on every row.
+ */
 export interface TaskPage {
   tasks: Task[]
-  next_cursor?: string | null
+  next_page_token?: string | null
+  tenant_id?: string
+}
+
+/**
+ * The frozen catalogue, profiles.py:77-81. Bundled client-side because it is
+ * frozen and three entries long; the alternative is a request per render to
+ * learn something that cannot change without a contract change.
+ */
+export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
+  standard: 1,
+  browser: 2,
+  large: 4,
+}
+
+/**
+ * Column 3, "Why". First match wins.
+ *
+ * The CANCELLED cascade case is the subtle one. When a workflow parent fails,
+ * the scheduler cancels the child (scheduler/loop.py:438-442). Do not
+ * string-match its message -- compute it. In this table the parents' states
+ * are not loaded, only `depends_on` ids, so the discriminator that works with
+ * what the row actually has is `cancel_requested`: the scheduler's cascade
+ * writes state, park_reason, blocked_by, completed_at and last_error and
+ * NEVER sets cancel_requested (scheduler/store.py:303-323), while every human
+ * cancel does, including a whole-workflow cancel which fans out through
+ * request_cancel per step. That survives an upstream copy change.
+ */
+export function whyAgent(task: Task): string {
+  if (task.state === 'PARKED') {
+    const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
+    return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
+  }
+  if (task.state === 'READY' && task.blocked_by?.length) {
+    const b = task.blocked_by[0]
+    if (!b) return ''
+    // Only show the fraction when BOTH keys are present. An admission blocker
+    // always carries them; a worker park's arbitrary detail may not.
+    const at =
+      typeof b.active === 'number' && typeof b.limit === 'number'
+        ? ` (${b.active}/${b.limit})`
+        : ''
+    return `${reasonCopy(b.reason)}${at}`
+  }
+  if (task.state === 'FAILED') return task.last_error ?? 'Failed.'
+  if (task.state === 'CANCELLED') {
+    if (!task.cancel_requested && task.depends_on?.length) {
+      return 'An upstream step did not succeed.'
+    }
+    return 'Cancelled by request.'
+  }
+  return ''
+}
+
+/**
+ * Column 6, "Elapsed".
+ *
+ * `started_at` is written on DISPATCHED -> STARTING, so a LEASED or
+ * DISPATCHED task legitimately has none. That must read "queued 4m", never
+ * "0s" and never "Invalid Date" -- and `completed_at` can be null on a row
+ * that went terminal between two polls, so the terminal branch cannot assume
+ * it.
+ */
+export function elapsed(task: Task, now: number): { text: string; ticking: boolean } {
+  const ms = (v: string | null) => (v ? new Date(v).getTime() : NaN)
+  const created = ms(task.created_at)
+  const started = ms(task.started_at)
+  const completed = ms(task.completed_at)
+
+  if (Number.isFinite(completed)) {
+    const from = Number.isFinite(started) ? started : created
+    if (!Number.isFinite(from)) return { text: '\u2014', ticking: false }
+    return { text: duration(completed - from), ticking: false }
+  }
+  if (Number.isFinite(started)) return { text: duration(now - started), ticking: true }
+  if (Number.isFinite(created)) return { text: `queued ${duration(now - created)}`, ticking: true }
+  return { text: '\u2014', ticking: false }
+}
+
+function duration(msSpan: number): string {
+  const s = Math.max(0, Math.round(msSpan / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+/**
+ * The computed workflow rollup, NEVER `workflow.state`. That field is written
+ * once as QUEUED at service.py:258 and no component ever updates it --
+ * nothing in apps/scheduler, apps/reconciler or apps/agent-worker writes the
+ * workflows collection at all. Rendering it would label every finished
+ * workflow "queued" forever.
+ */
+export function rollupState(states: TaskState[]): 'running' | 'succeeded' | 'failed' | 'waiting' {
+  if (states.some((s) => CONCURRENCY_STATES.has(s))) return 'running'
+  if (states.some((s) => s === 'FAILED' || s === 'CANCELLED')) return 'failed'
+  if (states.length > 0 && states.every((s) => s === 'SUCCEEDED')) return 'succeeded'
+  return 'waiting'
 }
 
 /** `workflow_to_api`, codec.py:343-366. Every field it actually sends. */
