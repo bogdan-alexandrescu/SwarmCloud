@@ -200,6 +200,26 @@ class Worker:
         )
         self.control.advance_to_running()
 
+        # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
+        #
+        # It used to happen only once the agent child was running -- after the
+        # workspace, the checkpoint restore and the clone. But the reconciler
+        # measures silence from LEASE ACQUISITION, so everything before this
+        # point counted against `heartbeat_grace_seconds` (90): container cold
+        # start, image pull, workspace setup, restoring a checkpoint and a
+        # shallow clone.
+        #
+        # On 2026-09-19 that reclaimed a task three times in a row. Each
+        # replacement worker started, found its generation superseded, logged
+        # "FENCED: this attempt has been superseded; exiting without running the
+        # agent" and exited 70 -- invariant 5 doing exactly what it exists to
+        # do, on workers that were never unhealthy. The task never ran at all.
+        #
+        # Raising the grace was the other option and is worse: it delays every
+        # genuine reclaim to accommodate startup cost. Heartbeating here makes
+        # the grace measure LIVENESS, which is what it is for.
+        self._heartbeat()
+
         # ---- STEP 3: isolated workspace ---------------------------------
         self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
         ws = self.ws
@@ -208,9 +228,14 @@ class Worker:
         # ---- STEP 4: restore the latest checkpoint ----------------------
         task = self.control.fetch_task()
         self._restore_checkpoint(task.get("latest_checkpoint"))
+        # Restoring a large checkpoint is unbounded; prove liveness after it.
+        self._heartbeat()
 
         # ---- STEP 5: optional shallow clone -----------------------------
         repo_info = self._maybe_clone(task)
+        # A clone is the single slowest step before the agent starts, and the
+        # one most likely to vary with repository size.
+        self._heartbeat()
 
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
