@@ -209,7 +209,21 @@ body {
 /* ---- workflow dag ---- */
 .dag { display: flex; flex-direction: column; }
 .level { display: flex; flex-direction: column; align-items: center; }
-.level .connector { width: 1px; height: 18px; background: var(--line); }
+.level-label {
+  font: 500 10.5px/1 var(--mono);
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-faint);
+  padding: 10px 0 8px;
+  position: relative;
+}
+/* A short rule either side, so the label reads as a divider between depths
+   rather than as a caption belonging to the node under it. */
+.level-label::before, .level-label::after {
+  content: ""; position: absolute; top: 50%;
+  width: 22px; height: 1px; background: var(--line);
+}
+.level-label::before { right: calc(100% + 8px); }
+.level-label::after  { left: calc(100% + 8px); }
 .level-steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .node {
   background: var(--surface); border: 1px solid var(--line);
@@ -235,6 +249,12 @@ body {
   .row .meta, .row .when { display: none; }
   .row .badges { grid-column: 2 / -1; justify-content: flex-start; }
   .nav button { padding: 8px 10px; font-size: 13px; }
+  /* Stacked, siblings would read as a sequence -- the exact thing the level
+     label exists to deny. Indenting by depth makes the hierarchy visible in a
+     single column, so "these two are parallel" survives the narrow viewport. */
+  .level { align-items: stretch; padding-left: calc(var(--depth, 0) * 14px); }
   .level-steps { flex-direction: column; align-items: stretch; }
+  .level-label { align-self: flex-start; }
+  .level-label::before { display: none; }
   .node { min-width: 0; }
 }

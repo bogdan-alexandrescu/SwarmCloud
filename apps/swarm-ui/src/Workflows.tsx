@@ -76,8 +76,19 @@ function WorkflowCard({ workflow }: { workflow: Workflow }) {
       </h2>
       <div className="dag">
         {levels.map((level, i) => (
-          <div className="level" key={i}>
-            {i > 0 && <div className="connector" aria-hidden />}
+          <div className="level" key={i} style={{ ['--depth' as string]: i }}>
+            {/* A single vertical stalk used to sit here. It was decorative and
+                it LIED: one line between levels reads as a linear chain, and
+                this is a DAG -- `plan` forks to two children and they join back
+                into `report`. Stacked on a phone it was worse, rendering four
+                parallel-and-sequential steps as one sequence.
+                The honest signal is the level itself, so the level says what it
+                is; exact edges stay on each node as `← dependency`. */}
+            {i > 0 && (
+              <div className="level-label">
+                {level.length > 1 ? `then ${level.length} in parallel` : 'then'}
+              </div>
+            )}
             <div className="level-steps">
               {level.map((s) => (
                 <StepNode key={s.step_id} step={s} />
