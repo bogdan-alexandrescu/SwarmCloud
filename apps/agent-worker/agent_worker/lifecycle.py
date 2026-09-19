@@ -1088,6 +1088,15 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else {"value": data}
 
 
+#: The keys _usage_summary reads. Used to decide WHICH level of a possibly
+#: nested result actually carries the numbers, rather than assuming one.
+_USAGE_KEYS = ("usage", "total_cost_usd", "num_turns", "duration_ms", "duration_api_ms", "modelUsage")
+
+
+def _has_usage_keys(candidate: dict[str, Any]) -> bool:
+    return any(key in candidate for key in _USAGE_KEYS)
+
+
 def _usage_summary(output: Any) -> dict[str, Any]:
     """Token and cost numbers, pulled out of a CLI agent's result BEFORE truncation.
 
@@ -1107,9 +1116,33 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     if not isinstance(output, dict):
         return {}
 
+    # WHERE THE NUMBERS ACTUALLY ARE.
+    #
+    # A CLI runner does not return the agent's JSON. It returns its own
+    # envelope -- {summary, provider, model, exit_code, structured_output,
+    # limits, metrics} (runners/cliagent.py:342-357) -- and the CLI's own JSON,
+    # which is where `usage`, `total_cost_usd`, `num_turns` and `modelUsage`
+    # live, is nested one level down under `structured_output`.
+    #
+    # This function read only the top level, so on the production path it found
+    # none of those keys and returned {} for every attempt -- while its unit
+    # test, which feeds the raw CLI shape, passed. A test exercising a shape
+    # production never produces is worse than no test: it reports a working
+    # extractor when there is none. tests/unit/worker/test_usage_summary.py now
+    # also feeds the real envelope.
+    #
+    # Preferring whichever level actually carries the keys, rather than always
+    # descending, keeps this correct for a runner that returns the CLI JSON
+    # directly and for one that wraps it.
+    source = output
+    if not _has_usage_keys(source):
+        nested = output.get("structured_output")
+        if isinstance(nested, dict) and _has_usage_keys(nested):
+            source = nested
+
     summary: dict[str, Any] = {}
 
-    usage = output.get("usage")
+    usage = source.get("usage")
     if isinstance(usage, dict):
         for key in (
             "input_tokens",
@@ -1128,11 +1161,11 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     # arriving as a cost of 1 would be a quietly wrong number, which is the whole
     # class of bug this file is being edited to avoid.
     for key in ("total_cost_usd", "num_turns", "duration_ms", "duration_api_ms"):
-        value = output.get(key)
+        value = source.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             summary[key] = value
 
-    models = output.get("modelUsage")
+    models = source.get("modelUsage")
     if isinstance(models, dict) and models:
         summary["models"] = sorted(str(m) for m in models)
 

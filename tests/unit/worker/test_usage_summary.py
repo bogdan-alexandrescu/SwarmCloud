@@ -146,3 +146,83 @@ def test_a_boolean_never_becomes_a_cost():
     written = _spend_written({"total_cost_usd": True, "input_tokens": True})
     assert "cost_usd" not in written
     assert "input_tokens" not in written
+
+
+# ---------------------------------------------------------------------------
+# The shape production actually passes
+# ---------------------------------------------------------------------------
+# Every test above this line feeds `_usage_summary` the raw CLI JSON. That is
+# NOT what the production call site passes. `lifecycle.py:493` passes
+# `runner_result["output"]`, and for a CLI agent that is the runner's own
+# envelope (`runners/cliagent.py:342-357`), with the CLI's JSON nested one
+# level down under `structured_output`.
+#
+# So the extractor returned {} for every real attempt while this file passed.
+# These tests exist so that cannot recur: a test that exercises a shape
+# production never produces reports a working extractor when there is none.
+
+_RAW_CLI_RESULT = {
+    "usage": {
+        "input_tokens": 8,
+        "output_tokens": 402,
+        "cache_read_input_tokens": 91,
+        "output_tokens_details": {"thinking_tokens": 64},
+    },
+    "total_cost_usd": 0.0642028,
+    "num_turns": 4,
+    "duration_ms": 12043,
+    "modelUsage": {"claude-opus-5": {"inputTokens": 8}},
+}
+
+
+def _production_envelope(parsed):
+    """What `runners/cliagent.py` returns as `output`, trimmed to shape."""
+    return {
+        "summary": "did the thing",
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "exit_code": 0,
+        "structured_output": parsed,
+        "limits": {},
+        "metrics": {"duration_seconds": 12.04},
+    }
+
+
+def test_the_envelope_production_passes_yields_the_same_numbers():
+    """The regression this file previously failed to catch."""
+    from agent_worker.lifecycle import _usage_summary
+
+    nested = _usage_summary(_production_envelope(_RAW_CLI_RESULT))
+    flat = _usage_summary(_RAW_CLI_RESULT)
+
+    assert nested == flat, "the envelope must extract identically to the raw result"
+    assert nested["input_tokens"] == 8
+    assert nested["output_tokens"] == 402
+    assert nested["cache_read_input_tokens"] == 91
+    assert nested["thinking_tokens"] == 64
+    assert nested["total_cost_usd"] == 0.0642028
+    assert nested["models"] == ["claude-opus-5"]
+
+
+def test_an_envelope_with_no_structured_output_yields_nothing():
+    """A non-CLI runner reports nothing, and nothing is not zero."""
+    from agent_worker.lifecycle import _usage_summary
+
+    assert _usage_summary(_production_envelope(None)) == {}
+    assert _usage_summary({"exit_code": 0, "summary": "mock ran"}) == {}
+
+
+def test_a_runner_that_returns_the_cli_json_directly_still_works():
+    """Preferring the level that has the keys, rather than always descending."""
+    from agent_worker.lifecycle import _usage_summary
+
+    assert _usage_summary(_RAW_CLI_RESULT)["num_turns"] == 4
+
+
+def test_an_empty_structured_output_does_not_mask_top_level_numbers():
+    """structured_output present but useless must not hide real top-level keys."""
+    from agent_worker.lifecycle import _usage_summary
+
+    mixed = dict(_RAW_CLI_RESULT)
+    mixed["structured_output"] = {"unrelated": 1}
+    assert _usage_summary(mixed)["total_cost_usd"] == 0.0642028
