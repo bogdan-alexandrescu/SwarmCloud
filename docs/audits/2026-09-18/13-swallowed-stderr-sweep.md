@@ -375,3 +375,51 @@ already routing through them were excluded rather than reported.
 * also caused by: The else branch covers three different failures on lines 126-128: no kubectl >= 1.30 resolved, a non-swarm context, and `get --raw=/readyz` failing with its stderr discarded. The last one is the IP-allowlist case: an operator whose IP changed gets a dropped connection or a hang, not a denial. An exp
 
 * leads to: The operator re-runs configure-kubectl.sh, which happily re-fetches credentials and writes a kubeconfig, then sees the same message — the actual fix is adding their IP to the master authorized networks, which nothing here mentions. Note also that none of the three /readyz probes in this repo pass --
+
+---
+
+## Fan-out result, 2026-09-19
+
+Fourteen agents, one per file, dispatched to SwarmCloud against this branch and
+verified locally before landing. **13 of 14 succeeded.** Every landed diff passed
+`shellcheck -x`, `bash -n`, `--help`, the "typed confirmation still present"
+check and `make test`. None was rejected.
+
+The agents were better than expected in one specific way: the purge-data.sh run
+DECLINED two of its six findings, arguing that the common.sh fix already made
+those paths fail loudly and that the call sites were bare statements rather than
+`if` conditions -- and verified it with a minimal repro. Both refusals were
+correct.
+
+### The one that failed, and why it is worth keeping
+
+`register-tenant.sh` failed after three attempts, each reclaimed:
+
+    reconciled: lease silent for 240s (grace 90s, expired=True)
+
+The workers logged:
+
+    FENCED: this attempt has been superseded; exiting without running the agent
+    Container called exit(70)
+
+**Invariant 5 behaved exactly as designed** -- the fenced worker exited without
+running the agent and without touching the lease. The fault is upstream: the
+reconciler reclaimed the lease before the worker had finished cold-starting,
+pulling its image and cloning the repository. The replacement then hit the same
+wall, three times, and the task never ran at all.
+
+`heartbeat_grace_seconds` defaults to 90. A Cloud Run Job cold start plus an
+image pull plus a shallow clone can exceed that under load -- this fan-out ran
+five concurrent. Worth noting that the grace is measured from lease acquisition,
+not from container start, so everything before the worker's first heartbeat
+counts against it.
+
+This is adjacent to report 10's finding 2 (staleness judged once at snapshot
+time and never re-checked before fencing) but not the same bug: here the
+judgement was correct at the time it was made. The question is whether 90
+seconds is the right budget for a worker that has to pull an image before it can
+say anything.
+
+Not fixed. Recorded because a task that silently never runs, three times, is the
+most expensive failure shape on this list.
+
