@@ -29,8 +29,15 @@
 #
 # Digests pinned like every other base here, resolved from the registry on
 # 2026-09-19 rather than written from memory.
+#
+# nginx 1.31.6-alpine, not 1.27: trivy refused to promote the 1.27 build --
+# "unfixed-excluded HIGH,CRITICAL vulnerabilities" -- over zlib 1.3.1-r2
+# (CVE-2026-22184, arbitrary code execution via a buffer overflow in untgz),
+# fixed in 1.3.2-r0. The security gate in scripts/push-images.sh caught it
+# between build and promotion, which is exactly where it should be caught.
+# Bumping the base is the fix; excluding the finding would not be.
 ARG NODE_IMAGE=node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
-ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:b54ac358b83fc6c965793fd271839b4ea4cdb6e99895bb19618cbc2ca152d972
 
 # --- build -----------------------------------------------------------------
 FROM ${NODE_IMAGE} AS build
