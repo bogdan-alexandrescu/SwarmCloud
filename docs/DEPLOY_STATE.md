@@ -58,50 +58,72 @@ This is now written next to the values in `dev.tfvars` as well.
 
 ---
 
-# Front door — applied 2026-09-19, waiting on one DNS record
+---
 
-An external ALB with IAP now stands in front of swarm-api.
+# Front door and web UI — deployed 2026-09-19, waiting on one DNS record
 
-    swarm-ui-http    8.232.87.184:80    -> redirect to https
-    swarm-ui-https   8.232.87.184:443   -> IAP -> swarm-api
-    IAP access       domain:saga.xyz     roles/iap.httpsResourceAccessor
-    certificate      swarm.saga.xyz      PROVISIONING
+    swarm-ui-http    8.232.87.184:80    301 -> https      VERIFIED WORKING
+    swarm-ui-https   8.232.87.184:443   IAP -> services   waiting on the cert
+    IAP              domain:saga.xyz    on BOTH backends
+
+    /v1/*, /healthz, /readyz, /metrics, /docs, /openapi.json  -> swarm-api
+    everything else                                           -> swarm-ui
+
+Five services on tag `10bd382d860b`, all confirmed serving their newest
+revision. `make deploy` exits 0.
 
 ## The one manual step
 
     A   swarm.saga.xyz   ->   8.232.87.184
 
 saga.xyz is at an external registrar, so terraform reserves the address and
-outputs it but cannot create the record. **Until that record resolves, the
-managed certificate stays in PROVISIONING and the host serves a TLS error.**
-That is expected and takes up to an hour. It is indistinguishable from a broken
-deployment unless you know, which is why it is written here.
+outputs it but cannot create the record.
 
-Check with:
+**Until it resolves, port 443 fails the TLS handshake** -- not a 404, not a
+certificate warning, a failed connection -- because the managed certificate is
+still PROVISIONING and the load balancer has nothing to present. Verified
+exactly that on 2026-09-19: `SSL_ERROR_SYSCALL` on 443 while port 80 correctly
+answered `301 -> https://swarm.saga.xyz:443/`.
+
+That failure looks like a broken deployment and is not one. Check with:
 
     gcloud compute ssl-certificates describe swarm-ui-cert --global \
       --project saga-agents-staging --format='value(managed.status)'
 
-## Two IAM roles were granted to get here
+## The IAP brand is shared and is not ours
+
+`projects/209012342332/brands/209012342332`, "AI Agents", support contact
+emanuel@saga.xyz, `orgInternalOnly: true`. One brand per project and it already
+existed, so the consent screen carries that name. Terraform neither creates nor
+modifies it: `google_iap_brand` cannot be deleted, so owning it would make the
+module impossible to destroy cleanly.
+
+## IAM granted to get here
 
 `roles/compute.loadBalancerAdmin` and `roles/iap.admin`, both to
-bogdan@saga.xyz. Neither was held before. The first apply failed on
-`compute.regionNetworkEndpointGroups.create` and the second on
-`iap.webServices.getIamPolicy`; IAP IAM took about 45 seconds to propagate after
-the grant, during which the retry failed identically, which reads as the grant
-not having worked.
+bogdan@saga.xyz, neither held before. IAP IAM took ~45 seconds to propagate; the
+retry in between failed with the identical 403, which reads exactly like the
+grant not having worked.
 
-## The IAP brand is shared, and is not ours
+## Two checks that had never worked, found by fixing a third
 
-`projects/209012342332/brands/209012342332`, titled **"AI Agents"**, support
-contact emanuel@saga.xyz, `orgInternalOnly: true`. Only one brand is permitted
-per project and it already existed, so SwarmCloud's consent screen says "AI
-Agents". Terraform neither creates nor modifies it -- `google_iap_brand` cannot
-be deleted, so owning it would make this module impossible to destroy cleanly.
+Fixing the swallowed stderr in `deploy.sh` surfaced both:
+
+* the readiness wait used an invalid gcloud format transform and had therefore
+  never checked readiness in the life of the script;
+* `/readyz` returns 404 from any workstation, because ingress is
+  internal-and-cloud-load-balancing and the edge refuses the request before it
+  reaches the container. Now reported as "not reachable from here" rather than
+  counted as a failure.
 
 ## Still outstanding
 
-The monitoring alert policy `safety_tick_absent` still fails to create: the
-Cloud Scheduler metric it watches does not exist until Cloud Scheduler has
-emitted it. It is the sole reason `make deploy` exits 2. Nothing depends on it.
+* the DNS A record above;
+* `enable_safety_tick_alert = false` in dev until the Cloud Scheduler metric
+  exists — the project currently has zero `cloudscheduler.googleapis.com`
+  metric descriptors;
+* `register-tenant.sh` keeps its three sweep findings: its agent was reclaimed
+  three times before the heartbeat-ordering fix landed;
+* `destroy.sh:340` still reports the other team's cluster as missing when a
+  session expires.
 
