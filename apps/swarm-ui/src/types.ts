@@ -111,6 +111,90 @@ export interface Task {
   depends_on: string[] | null
   cancel_requested: boolean
   repository_url: string | null
+
+  // The rest of what task_to_api actually sends. This file declared 21 of its
+  // 31 keys, and the ten below are exactly the ones the remaining screens are
+  // built on -- last_error for the trouble board, result_summary for run
+  // output, latest_checkpoint for the attempt timeline, next_eligible_at for
+  // parked work.
+  model: string | null
+  timeout_seconds: number | null
+  /** When a PARKED task becomes eligible again. Null unless it is parked. */
+  next_eligible_at: string | null
+  metadata: Record<string, unknown> | null
+  repository_ref: string | null
+  input: unknown
+  last_error: string | null
+  result_summary: Record<string, unknown> | null
+  latest_checkpoint: string | null
+}
+
+/**
+ * NOT on the task: `current_generation`.
+ *
+ * models.py carries it and it is meaningful -- it increments on admission AND
+ * on a reconciler fence, so `current_generation > attempt_count` is exactly
+ * "a stale worker was fenced out". task_to_api does not send it, so no screen
+ * can show it and no screen should imply it. Attempt.generation is available
+ * per attempt, which is a different and narrower thing.
+ */
+
+/** `_event_to_api`, routes/tasks.py. */
+export interface TaskEvent {
+  event_id: string
+  task_id: string
+  type: string
+  at: string
+  attempt_id: string | null
+  lease_id: string | null
+  generation: number | null
+  detail: Record<string, unknown> | null
+}
+
+/** `tenant_to_api`, codec.py:283. Thirteen fields, all of them. */
+export interface Tenant {
+  tenant_id: string
+  kind: 'group' | 'user' | string
+  principal: string
+  display_name: string | null
+  created_at: string
+  max_active: number
+  capacity_units: number
+  monthly_budget_usd: number | null
+  enabled: boolean
+  /** Providers this tenant has registered a key for. */
+  credentials: string[]
+  /**
+   * null means NO IDENTITY, not an empty string. Render it as such -- a blank
+   * cell here reads as "fine" and it is the opposite.
+   */
+  service_account: string | null
+  gcs_prefix: string | null
+  namespace: string | null
+}
+
+/**
+ * `quota_to_api` = asdict(QuotaState) + the state enum value + effective_limit.
+ * Every nullable field here is genuinely unknown rather than zero, which is
+ * why they are typed `| null` and must render as an em dash.
+ */
+export interface QuotaState {
+  provider: string
+  tenant_id: string
+  state: 'HEALTHY' | 'COOLDOWN' | 'EXHAUSTED' | 'DISABLED' | string
+  updated_at: string
+  configured_hard_max: number
+  adaptive_target: number | null
+  quota_derived_limit: number | null
+  requests_remaining: number | null
+  tokens_remaining: number | null
+  reset_at: string | null
+  cooldown_until: string | null
+  last_429_at: string | null
+  retry_after_seconds: number | null
+  success_count: number
+  rate_limit_count: number
+  effective_limit: number
 }
 
 /**

@@ -184,6 +184,20 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     depends_on: null,
     cancel_requested: false,
     repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    model: profile === 'mock' ? null : 'claude-opus-5',
+    timeout_seconds: 3600,
+    // Only a PARKED task has one. Left null elsewhere on purpose: a date here
+    // on a RUNNING task would imply a retry that is not scheduled.
+    next_eligible_at: state === 'PARKED' ? at(minsAgo - 15) : null,
+    metadata: null,
+    repository_ref: 'main',
+    input: null,
+    last_error: state === 'FAILED' ? 'exit status 1: pytest collected 2 failures' : null,
+    result_summary: state === 'SUCCEEDED' ? { artifacts: 1, checkpoints: 2 } : null,
+    latest_checkpoint:
+      state === 'SUCCEEDED' || state === 'PARKED'
+        ? 'gs://swarm-artifacts-dev/u-bogdan/checkpoints/ckpt-3.tar.zst'
+        : null,
     ...extra,
   })
 
