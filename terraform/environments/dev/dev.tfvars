@@ -185,12 +185,23 @@ tenants = {
   # The mock runner needs no provider key, so this tenant can smoke-test the
   # whole path before anybody registers a credential.
   smoke = {
-    kind           = "group"
-    principal      = "swarm-smoke@saga.xyz"
-    display_name   = "Smoke tests"
-    providers      = []
-    max_active     = 2
-    capacity_units = 4
+    kind      = "group"
+    principal = "swarm-smoke@saga.xyz"
+    # NO SUCH GROUP EXISTS. Verified 2026-09-19:
+    #   gcloud identity groups describe swarm-smoke@saga.xyz
+    #   -> "There is no such a group"
+    # while eng@saga.xyz resolves to groups/01gf8i8328uclsx.
+    #
+    # Nothing signs in as this tenant -- the smoke suite dispatches through
+    # Firestore in-process, the same way scripts/swarm.py does -- so the group
+    # was never created and never needed. Left in TENANT_GROUPS it made EVERY
+    # authenticated request 503, because a lookup that cannot be answered is
+    # fatal by design.
+    directory_group = false
+    display_name    = "Smoke tests"
+    providers       = []
+    max_active      = 2
+    capacity_units  = 4
   }
 
   # A personal fallback tenant. swarm_common.identity maps a caller who is in

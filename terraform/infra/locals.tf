@@ -339,8 +339,14 @@ locals {
       # tfvars. The ids are stable for the life of the backend service.
       IAP_AUDIENCES = join(",", var.frontend_iap_audiences)
 
-      TENANT_GROUPS = join(",", sort([for t, v in var.tenants : v.principal if v.kind == "group"]))
-      ADMIN_GROUPS  = join(",", sort(var.admin_groups))
+      # `directory_group` as well as `kind`: a tenant can be group-KINDED for
+      # naming and isolation while its principal is not a resolvable directory
+      # group. Listing one that does not exist 503s every request, not just that
+      # tenant's -- see the variable's description.
+      TENANT_GROUPS = join(",", sort([
+        for t, v in var.tenants : v.principal if v.kind == "group" && v.directory_group
+      ]))
+      ADMIN_GROUPS = join(",", sort(var.admin_groups))
     })
     "swarm-scheduler" = merge(local.common_env, {
       # See the swarm-api block: the reader has always been DISPATCH_TOPIC.

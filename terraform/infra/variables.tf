@@ -205,13 +205,29 @@ variable "tenants" {
     files are written as though it does.
   EOT
   type = map(object({
-    kind           = string
-    principal      = string
-    display_name   = optional(string, "")
-    providers      = optional(list(string), [])
-    max_active     = optional(number)
-    capacity_units = optional(number, 40)
-    ksa_name       = optional(string, "swarm-agent-worker")
+    kind      = string
+    principal = string
+    # Whether `principal` is a group that actually EXISTS in the directory and
+    # that swarm-api can resolve membership for.
+    #
+    # Separate from `kind` because they answer different questions. `kind`
+    # decides how the tenant id is derived and how its namespace and service
+    # account are named; this decides whether the group is put in TENANT_GROUPS
+    # for swarm-api to check at sign-in.
+    #
+    # It exists because those came apart on 2026-09-19. `smoke` was declared
+    # kind = "group" with principal swarm-smoke@saga.xyz, and no such group had
+    # ever been created. A FAILED GROUP LOOKUP IS FATAL BY DESIGN -- a
+    # higher-priority group being unknown could file a caller's work under the
+    # wrong tenant -- so that one phantom group made every authenticated request
+    # to the API answer 503, for every user, including ones in groups that do
+    # exist.
+    directory_group = optional(bool, true)
+    display_name    = optional(string, "")
+    providers       = optional(list(string), [])
+    max_active      = optional(number)
+    capacity_units  = optional(number, 40)
+    ksa_name        = optional(string, "swarm-agent-worker")
     # Identities allowed to add a version to THIS tenant's provider-key secrets.
     # Empty falls back to var.secret_admin_members, which must be a platform
     # admin group rather than any tenant's own group -- see the validation there.
