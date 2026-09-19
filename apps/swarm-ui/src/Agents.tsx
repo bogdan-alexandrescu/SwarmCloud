@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { loadTasks } from './api'
 import { Screen, timeAgo } from './Shell'
-import { CONCURRENCY_STATES, TERMINAL_STATES, stateTone, type Task } from './types'
+import { CONCURRENCY_STATES, TERMINAL_STATES, stateTone, whyNotRunning, type Task } from './types'
 
 type Filter = 'live' | 'waiting' | 'done' | 'all'
 
@@ -90,6 +90,7 @@ function AgentTable({
 
 function TaskRow({ task }: { task: Task }) {
   const holding = CONCURRENCY_STATES.has(task.state)
+  const why = whyNotRunning(task)
   return (
     <div className={`row${holding ? ' holding' : ''}`}>
       <span className={`dot ${stateTone(task.state)}`} aria-hidden />
@@ -114,12 +115,13 @@ function TaskRow({ task }: { task: Task }) {
           </span>
         )}
         {task.cancel_requested && <span className="tag full">cancelling</span>}
-        {task.state === 'BLOCKED' && task.blocked_by?.length ? (
-          <span className="tag capped" title={`waiting on ${task.blocked_by.join(', ')}`}>
-            blocked
-          </span>
-        ) : null}
       </span>
+      {/* Why this agent is not running. This used to be gated on
+          `task.state === 'BLOCKED'` -- a state that does not exist in the
+          frozen contract -- so it never rendered once. It is the most useful
+          thing on the row: TENANT_LIMIT means only an admin can help, while a
+          global or resource-class limit means waiting is the answer. */}
+      {why && <span className="why">{why}</span>}
     </div>
   )
 }

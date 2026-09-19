@@ -258,3 +258,57 @@ body {
   .level-label::before { display: none; }
   .node { min-width: 0; }
 }
+
+/* ------------------------------------------------------------------------ */
+/* Partial reads, unknown states, and "why is this not running"              */
+/* ------------------------------------------------------------------------ */
+/* These exist because the app distinguishes four things that all look like an
+   empty screen if you let them: a read in flight, a read that succeeded with
+   nothing, a read that failed, and a read that PARTLY succeeded. The partial
+   case is the subtlest and gets the loudest treatment, because its rows look
+   completely normal. */
+
+.state.partial {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  background: color-mix(in srgb, var(--warn) 7%, var(--surface));
+}
+.state.partial h3 { color: var(--warn); }
+
+.rollup {
+  margin: 0 0 10px;
+  font: 12px var(--mono);
+  color: var(--text-dim);
+}
+/* A count computed over a partial join is struck through rather than hidden:
+   hiding it invites the reader to compute their own from the nodes, which has
+   exactly the same defect. */
+.rollup.untrusted {
+  color: var(--warn);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--warn) 60%, transparent);
+}
+
+/* An unread state is NOT a muted state. Dashed, amber, and it says so in the
+   node -- the one thing it must never be mistaken for is "idle". */
+.node.unknown {
+  border-left-color: var(--warn);
+  border-left-style: dashed;
+  background: color-mix(in srgb, var(--warn) 6%, var(--surface));
+}
+.node.wait { border-left-color: var(--text-faint); }
+.node-meta {
+  margin-top: 3px;
+  font: 11px var(--mono);
+  color: var(--text-faint);
+}
+
+/* The blocked/park reason, on its own line under the row. Full width because
+   the copy is a sentence -- "Your tenant is at its own limit" is the whole
+   point and truncating it to "Your tenant is at..." defeats it. */
+.row .why {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--warn);
+  line-height: 1.4;
+}

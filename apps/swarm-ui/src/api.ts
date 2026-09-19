@@ -81,9 +81,61 @@ export async function loadTasks(): Promise<Loaded<TaskPage>> {
   return request<TaskPage>('/v1/tasks?limit=200')
 }
 
-export async function loadWorkflows(): Promise<Loaded<{ workflows: Workflow[] }>> {
-  if (USE_FIXTURES) return fixtureWorkflows()
-  return request<{ workflows: Workflow[] }>('/v1/workflows?limit=100')
+/**
+ * Workflows plus the task documents their steps point at.
+ *
+ * Two requests, because `GET /v1/workflows` returns steps with NO state
+ * (codec.py:354-365) -- a step's state only exists on the task it created. The
+ * list endpoint does not join for us the way `GET /v1/workflows/{id}` does, so
+ * the join happens here, once.
+ *
+ * The second request is allowed to fail on its own. When it does the board
+ * still renders -- the DAG shape, the dependencies and the step names are all
+ * in the first response -- but `taskById` is null and every node says its state
+ * could not be read. That is the point: a failed join must not look like a
+ * workflow full of idle steps.
+ */
+export interface WorkflowBoard {
+  workflows: Workflow[]
+  /** null means the task read failed; an EMPTY map means it succeeded with no tasks. */
+  taskById: Map<string, Task> | null
+  /** Why states are missing, for the banner. null when the join succeeded. */
+  statesDetail: string | null
+}
+
+export async function loadWorkflowBoard(): Promise<Loaded<WorkflowBoard>> {
+  if (USE_FIXTURES) return fixtureWorkflowBoard()
+
+  const [wf, tasks] = await Promise.all([
+    request<{ workflows: Workflow[] }>('/v1/workflows?limit=100'),
+    request<TaskPage>('/v1/tasks?limit=200'),
+  ])
+
+  // The workflow read is the one that decides whether there is a screen at all.
+  if (wf.status !== 'ok') return wf
+
+  if (tasks.status !== 'ok') {
+    return {
+      status: 'ok',
+      fetchedAt: wf.fetchedAt,
+      data: {
+        workflows: wf.data.workflows,
+        taskById: null,
+        statesDetail:
+          tasks.status === 'failed'
+            ? tasks.detail
+            : 'The task read did not complete.',
+      },
+    }
+  }
+
+  const taskById = new Map<string, Task>()
+  for (const t of tasks.data.tasks) taskById.set(t.id, t)
+  return {
+    status: 'ok',
+    fetchedAt: wf.fetchedAt,
+    data: { workflows: wf.data.workflows, taskById, statesDetail: null },
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -216,10 +268,12 @@ async function fixtureTasks(): Promise<Loaded<TaskPage>> {
         mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
           workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
         }),
-        mk('task_wf_report', 'BLOCKED', 'claude-code', 24, {
+        // PARKED, not "BLOCKED". There is no BLOCKED task state -- a step
+        // waiting on a dependency is PARKED with DEPENDENCY_INCOMPLETE.
+        mk('task_wf_report', 'PARKED', 'claude-code', 24, {
           workflow_id: 'wf_audit_01', step_id: 'report',
           depends_on: ['scan-scripts', 'scan-terraform'],
-          blocked_by: ['scan-terraform'],
+          park_reason: 'DEPENDENCY_INCOMPLETE',
         }),
       ],
       next_cursor: null,
@@ -227,12 +281,37 @@ async function fixtureTasks(): Promise<Loaded<TaskPage>> {
   }
 }
 
-async function fixtureWorkflows(): Promise<Loaded<{ workflows: Workflow[] }>> {
+async function fixtureWorkflowBoard(): Promise<Loaded<WorkflowBoard>> {
   await new Promise((r) => setTimeout(r, 300))
+
+  // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
+  // stops matching, the fixture shows "state unknown" exactly as production
+  // would, instead of quietly carrying a state of its own.
+  const tasks = await fixtureTasks()
+  const taskById = new Map<string, Task>()
+  if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
+
+  const step = (
+    step_id: string,
+    depends_on: string[],
+    task_id: string | null,
+    input_from: string | null = null,
+  ) => ({
+    step_id,
+    runner_profile: 'claude-code',
+    resource_class: 'standard',
+    depends_on,
+    input_from,
+    timeout_seconds: 3600,
+    task_id,
+  })
+
   return {
     status: 'ok',
     fetchedAt: new Date(),
     data: {
+      taskById,
+      statesDetail: null,
       workflows: [
         {
           workflow_id: 'wf_audit_01',
@@ -241,11 +320,17 @@ async function fixtureWorkflows(): Promise<Loaded<{ workflows: Workflow[] }>> {
           created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
           updated_at: new Date().toISOString(),
           submitted_by: 'bogdan@saga.xyz',
+          priority: 0,
+          on_step_failure: 'FAIL_WORKFLOW',
+          cancel_requested: false,
           steps: [
-            { step_id: 'plan', runner_profile: 'claude-code', resource_class: 'standard', depends_on: [], input_from: null, task_id: 'task_wf_plan', state: 'SUCCEEDED' },
-            { step_id: 'scan-scripts', runner_profile: 'claude-code', resource_class: 'standard', depends_on: ['plan'], input_from: 'plan', task_id: 'task_wf_scan_a', state: 'SUCCEEDED' },
-            { step_id: 'scan-terraform', runner_profile: 'claude-code', resource_class: 'standard', depends_on: ['plan'], input_from: 'plan', task_id: 'task_wf_scan_b', state: 'RUNNING' },
-            { step_id: 'report', runner_profile: 'claude-code', resource_class: 'standard', depends_on: ['scan-scripts', 'scan-terraform'], input_from: null, task_id: 'task_wf_report', state: 'BLOCKED' },
+            step('plan', [], 'task_wf_plan'),
+            step('scan-scripts', ['plan'], 'task_wf_scan_a', 'plan'),
+            step('scan-terraform', ['plan'], 'task_wf_scan_b', 'plan'),
+            step('report', ['scan-scripts', 'scan-terraform'], 'task_wf_report'),
+            // No task_id: the workflow has not reached it. Renders as
+            // "not started", which is NOT the same as "state unknown".
+            step('publish', ['report'], null),
           ],
         },
       ],
