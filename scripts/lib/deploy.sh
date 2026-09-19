@@ -79,11 +79,66 @@ MANIFEST="${BUILD_DIR}/deployed-images-${ENVIRONMENT}.json"
 [[ -f "${MANIFEST}" ]] || die "no ${MANIFEST}; run 'make build push' first"
 
 TAG="$(jq -r '.tag' "${MANIFEST}")"
+# The channel the promote step actually tagged, not an assumption that it
+# matches the environment name -- assert_tag_is_complete compares against it.
+CHANNEL="$(jq -r '.channel // empty' "${MANIFEST}")"
+[[ -n "${CHANNEL}" ]] || die "${MANIFEST} records no channel; re-run 'make push'"
 step "Deploy ${TAG} to ${ENVIRONMENT}"
 jq -r '.images[] | "    \(.name)  \(.digest)"' "${MANIFEST}" >&2
 
 image_ref() {
   jq -r --arg n "$1" '.images[] | select(.name == $n) | .ref // empty' "${MANIFEST}"
+}
+
+# A uniform `image_tag` is applied to EVERY image the terraform root
+# references -- not only the ones that happen to be in the manifest. Building a
+# subset therefore mints a tag that most images do not carry, and terraform
+# plans revisions pointing at images that do not exist. Cloud Run then refuses
+# them one service at a time, minutes into an apply, after other resources have
+# already changed.
+#
+# Observed 2026-09-19: `build-images.sh swarm-ui` alone produced tag
+# 7f6a80cb32d5; the apply created six unservable revisions before failing.
+# Traffic stayed on the previous revisions -- Cloud Run's doing, not ours -- so
+# it cost an apply rather than an outage. It is not worth relying on that.
+#
+# The expected set is derived from the registry rather than restated here: any
+# image already carrying the channel tag is part of this platform and must
+# carry the new tag too. An unreadable registry is NOT an empty one, so a
+# failed listing aborts instead of passing.
+assert_tag_is_complete() {
+  local tag="$1" channel="$2" tmp count
+
+  tmp="$(mktemp -d)"
+  if ! gcloud artifacts docker tags list "${IMAGE_REPO}" \
+        --project="${PROJECT_ID}" --format='value(tag,image)' \
+        >"${tmp}/all" 2>"${tmp}/err"; then
+    err "could not list tags in ${IMAGE_REPO}"
+    redact <"${tmp}/err" | head -n 5 | sed 's/^/     /' >&2
+    rm -rf "${tmp}"
+    die "refusing to deploy without confirming ${tag} covers every image -- a registry we cannot read is not an empty one"
+  fi
+
+  awk -v t="${channel}" '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/chan"
+  awk -v t="${tag}"     '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/have"
+
+  if [[ ! -s "${tmp}/chan" ]]; then
+    info "no image carries :${channel} yet; treating ${tag} as the first deploy"
+    rm -rf "${tmp}"
+    return 0
+  fi
+
+  comm -23 "${tmp}/chan" "${tmp}/have" >"${tmp}/missing"
+  if [[ -s "${tmp}/missing" ]]; then
+    err "tag ${tag} is incomplete -- on :${channel} but with no :${tag}:"
+    sed 's/^/     /' "${tmp}/missing" >&2
+    rm -rf "${tmp}"
+    die "terraform applies ONE image_tag to every service and job, so this would point those at an image that does not exist. Build every target ('make build push' with no TARGET) before deploying."
+  fi
+
+  count="$(wc -l <"${tmp}/chan" | tr -d ' ')"
+  rm -rf "${tmp}"
+  ok "tag ${tag} covers all ${count} image(s) on :${channel}"
 }
 
 TF_ROOT="${REPO_ROOT}/terraform/infra"
@@ -103,6 +158,7 @@ if [[ -n "${TF_VAR_NAME}" ]]; then
     REFS_JSON="$(jq -c '[.images[] | {key:.name, value:.ref}] | from_entries' "${MANIFEST}")"
     VAR_ARGS+=(-var="image_refs=${REFS_JSON}")
   else
+    assert_tag_is_complete "${TAG}" "${CHANNEL}"
     VAR_ARGS+=(-var="image_tag=${TAG}")
   fi
   tf_var_args
