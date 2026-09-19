@@ -271,3 +271,13 @@ frontend_iap_members = ["domain:saga.xyz"]
 # deleted, so terraform could create one and never remove it. It is a
 # once-per-project manual step, documented in terraform/modules/frontend/main.tf.
 
+# OFF because the metric it watches does not exist in this project. Verified
+# 2026-09-19: the tick job is ENABLED and attempting every minute, and the
+# project has zero cloudscheduler.googleapis.com metric descriptors. Creating
+# the policy therefore fails the apply, and leaving it on made every
+# `make deploy` exit 2 -- which teaches everyone to ignore the exit code.
+#
+# Turn it back on once the metric appears; the check is in the module variable's
+# description.
+enable_safety_tick_alert = false
+

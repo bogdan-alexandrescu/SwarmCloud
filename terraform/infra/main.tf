@@ -443,6 +443,7 @@ module "monitoring" {
   wake_subscription        = module.scheduler.wake_subscription
   dead_letter_subscription = "${module.scheduler.dead_letter_topic}-sub"
   safety_tick_job          = "${var.name_prefix}-scheduler-tick"
+  enable_safety_tick_alert = var.enable_safety_tick_alert
 
   alert_emails                = var.alert_emails
   extra_notification_channels = var.extra_notification_channels

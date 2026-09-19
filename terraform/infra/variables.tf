@@ -225,6 +225,12 @@ variable "tenants" {
   }
 }
 
+variable "enable_safety_tick_alert" {
+  description = "Create the safety-tick-stopped alert. Requires the Cloud Scheduler metric to already exist in the project; see the module variable of the same name."
+  type        = bool
+  default     = true
+}
+
 variable "enable_frontend" {
   description = <<-EOT
     Build the external load balancer and IAP in front of swarm-api.
