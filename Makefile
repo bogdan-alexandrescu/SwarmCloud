@@ -108,6 +108,12 @@ infra: ## Plan and apply infrastructure, then point kubectl at the swarm cluster
 	@$(MAKE) tf-apply
 	@$(SCRIPTS)/configure-kubectl.sh || echo "note: the GKE cluster is not reachable yet; the Cloud Run path does not need it"
 
+pool-check: ## Compare live pool ceilings against the terraform output (needs credentials)
+	@# NOT part of `make test`, which is offline by contract. Pool documents carry
+	@# ignore_changes in terraform, so tfvars describes a NEW environment and says
+	@# nothing about a running one; this is the only thing that compares them.
+	@$(SCRIPTS)/pool-limit.sh --check
+
 kubectl-guard: ## Print the export that puts the guarded kubectl ahead of the real one
 	@echo 'export PATH="$(CURDIR)/bin:$$PATH"'
 	@echo '# eval "$$(make kubectl-guard)" -- a bare kubectl then refuses any' >&2
