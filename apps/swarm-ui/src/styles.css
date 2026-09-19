@@ -312,3 +312,43 @@ body {
   color: var(--warn);
   line-height: 1.4;
 }
+
+/* ------------------------------------------------------------------------ */
+/* Stale: real data that is no longer current                               */
+/* ------------------------------------------------------------------------ */
+/* The state that is easy to omit and expensive to miss. A refresh that fails
+   while data is on screen must not blank it and must not silently do nothing
+   -- either one lets an operator read a frozen number as a live one. The rows
+   stay, dimmed, with their age in the header. */
+
+.stale-body {
+  opacity: .6;
+  /* Not pointer-events:none -- the data is real and still worth reading and
+     copying. The dimming is a claim about its AGE, not its validity. */
+  filter: saturate(.7);
+}
+
+.state.stale-note {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  background: color-mix(in srgb, var(--warn) 7%, var(--surface));
+}
+.state.stale-note h3 { color: var(--warn); }
+
+/* The "checked at" time on an empty state. Muted, because an empty state is
+   calm by design -- what must be loud is UNREADABLE, not zero. */
+.checked-at {
+  margin-top: 8px !important;
+  font: 11.5px var(--mono);
+  color: var(--text-faint) !important;
+}
+
+.sub button[disabled] {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* At phone width the checked-at time moves below the message rather than
+   sitting beside it. */
+@media (max-width: 420px) {
+  .checked-at { display: block; }
+}

@@ -1,84 +1,26 @@
+import { read, type Result } from './fetch'
 import type { Capacity, Task, TaskPage, TaskState, Workflow } from './types'
 
-// THE ONE RULE THIS FILE EXISTS TO ENFORCE
-// ----------------------------------------
-// A failed request must never be representable as empty data.
-//
-// That is not a general principle here, it is this platform's defining bug. On
-// 2026-09-18 a sweep of its operational scripts confirmed 56 places where a
-// probe failure was rendered as an absence: `status.sh` printed "no swarm
-// services deployed" when a session had expired, and finished on "nothing needs
-// attention". The same day a build wrote a manifest listing zero images and
-// reported "ok built 6 image(s)".
-//
-// So `load` returns a discriminated union and there is no way to reach the rows
-// without saying what you will do when there are none AND what you will do when
-// the answer never arrived. A component cannot accidentally render `[]` for a
-// 403, because a 403 never produces an array.
+// The fetch contract lives in fetch.ts. This file is only the list of reads
+// this product performs, and what "empty" means for each of them -- which is
+// per-endpoint and cannot be guessed: a capacity response with no pools and a
+// task page with no tasks are both non-empty objects.
 
-export type Loaded<T> =
-  | { status: 'loading' }
-  | { status: 'ok'; data: T; fetchedAt: Date }
-  /**
-   * The request did not produce an answer. `detail` is for the person reading
-   * the screen, and must say what failed rather than what it implies -- "could
-   * not read capacity" not "no capacity configured".
-   */
-  | { status: 'failed'; detail: string; hint?: string }
+export type { Result, ApiError } from './fetch'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. */
 const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
-async function request<T>(path: string): Promise<Loaded<T>> {
-  try {
-    const res = await fetch(path, {
-      headers: { accept: 'application/json' },
-      // Behind IAP the browser already holds the session cookie; nothing here
-      // handles tokens, and nothing here should.
-      credentials: 'same-origin',
-    })
-
-    if (res.status === 401 || res.status === 403) {
-      return {
-        status: 'failed',
-        detail: `The API refused this request (HTTP ${res.status}).`,
-        hint: 'Your IAP session may have expired. Reloading the page will re-authenticate.',
-      }
-    }
-    if (!res.ok) {
-      let body = ''
-      try {
-        body = (await res.text()).slice(0, 200)
-      } catch {
-        // A body we cannot read is not a body that changes the diagnosis.
-      }
-      return {
-        status: 'failed',
-        detail: `The API returned HTTP ${res.status}.`,
-        hint: body || undefined,
-      }
-    }
-    return { status: 'ok', data: (await res.json()) as T, fetchedAt: new Date() }
-  } catch (err) {
-    // Network failure, DNS, CORS, an aborted request. Emphatically NOT "no data".
-    return {
-      status: 'failed',
-      detail: 'Could not reach the API.',
-      hint: err instanceof Error ? err.message : undefined,
-    }
-  }
-}
-
-export async function loadCapacity(): Promise<Loaded<Capacity>> {
+export async function loadCapacity(): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
-  return request<Capacity>('/v1/capacity')
+  return read<Capacity>('/v1/capacity', (d) => d.pools.length === 0)
 }
 
-export async function loadTasks(): Promise<Loaded<TaskPage>> {
+export async function loadTasks(): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
-  // Page size caps at 200 server-side (deps.py). Asking for more is silently
-  // clamped, which would make "200 tasks" look like the whole truth.
-  return request<TaskPage>('/v1/tasks?limit=200')
+  // Page size caps at 200 server-side (deps.py:194-199). Asking for more is
+  // silently clamped, which would make "200 tasks" look like the whole truth.
+  return read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0)
 }
 
 /**
@@ -103,39 +45,46 @@ export interface WorkflowBoard {
   statesDetail: string | null
 }
 
-export async function loadWorkflowBoard(): Promise<Loaded<WorkflowBoard>> {
+export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    request<{ workflows: Workflow[] }>('/v1/workflows?limit=100'),
-    request<TaskPage>('/v1/tasks?limit=200'),
+    read<{ workflows: Workflow[] }>('/v1/workflows?limit=100', (d) => d.workflows.length === 0),
+    read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0),
   ])
 
-  // The workflow read is the one that decides whether there is a screen at all.
-  if (wf.status !== 'ok') return wf
+  // The workflow read decides whether there is a screen at all.
+  if (wf.status === 'loading' || wf.status === 'error') return wf
+  if (wf.status === 'stale') {
+    return { status: 'stale', data: emptyBoard(wf.data.workflows), fetchedAt: wf.fetchedAt, error: wf.error }
+  }
+  if (wf.status === 'empty') return wf
 
-  if (tasks.status !== 'ok') {
+  // A task read that did not produce rows is not the same as one that failed.
+  // `empty` is a real answer -- no tasks exist -- so the join is complete and
+  // every step is legitimately "not started". Only a FAILURE leaves states
+  // unknown, and only that sets statesDetail.
+  if (tasks.status === 'error' || tasks.status === 'stale') {
     return {
       status: 'ok',
       fetchedAt: wf.fetchedAt,
-      data: {
-        workflows: wf.data.workflows,
-        taskById: null,
-        statesDetail:
-          tasks.status === 'failed'
-            ? tasks.detail
-            : 'The task read did not complete.',
-      },
+      serverAt: wf.serverAt,
+      data: { workflows: wf.data.workflows, taskById: null, statesDetail: tasks.error.message },
     }
   }
 
   const taskById = new Map<string, Task>()
-  for (const t of tasks.data.tasks) taskById.set(t.id, t)
+  if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
   return {
     status: 'ok',
     fetchedAt: wf.fetchedAt,
+    serverAt: wf.serverAt,
     data: { workflows: wf.data.workflows, taskById, statesDetail: null },
   }
+}
+
+function emptyBoard(workflows: Workflow[]): WorkflowBoard {
+  return { workflows, taskById: null, statesDetail: 'The task read did not complete.' }
 }
 
 // --------------------------------------------------------------------------
@@ -147,7 +96,7 @@ export async function loadWorkflowBoard(): Promise<Loaded<WorkflowBoard>> {
 // found. A fixture that shows a tidy platform teaches the wrong thing about
 // what this screen is for.
 
-async function fixtureCapacity(): Promise<Loaded<Capacity>> {
+async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   const pool = (
     name: string,
@@ -169,7 +118,7 @@ async function fixtureCapacity(): Promise<Loaded<Capacity>> {
 
   return {
     status: 'ok',
-    fetchedAt: new Date(),
+    fetchedAt: Date.now(),
     data: {
       generated_at: new Date().toISOString(),
       runner_profiles: {},
@@ -200,7 +149,7 @@ async function fixtureCapacity(): Promise<Loaded<Capacity>> {
   }
 }
 
-async function fixtureTasks(): Promise<Loaded<TaskPage>> {
+async function fixtureTasks(): Promise<Result<TaskPage>> {
   await new Promise((r) => setTimeout(r, 350))
   const now = Date.now()
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
@@ -240,7 +189,7 @@ async function fixtureTasks(): Promise<Loaded<TaskPage>> {
 
   return {
     status: 'ok',
-    fetchedAt: new Date(),
+    fetchedAt: Date.now(),
     data: {
       tasks: [
         mk('task_a073aff5', 'RUNNING', 'claude-code', 4),
@@ -281,7 +230,7 @@ async function fixtureTasks(): Promise<Loaded<TaskPage>> {
   }
 }
 
-async function fixtureWorkflowBoard(): Promise<Loaded<WorkflowBoard>> {
+async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   await new Promise((r) => setTimeout(r, 300))
 
   // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
@@ -308,7 +257,7 @@ async function fixtureWorkflowBoard(): Promise<Loaded<WorkflowBoard>> {
 
   return {
     status: 'ok',
-    fetchedAt: new Date(),
+    fetchedAt: Date.now(),
     data: {
       taskById,
       statesDetail: null,
