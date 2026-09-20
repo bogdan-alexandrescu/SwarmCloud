@@ -42,7 +42,22 @@ resource "google_cloud_run_v2_service" "this" {
     }
 
     vpc_access {
-      egress = var.vpc_egress
+      # PER SERVICE, defaulting to the module-wide setting.
+      #
+      # swarm-api is the reason. It calls the quota broker, whose ingress is
+      # internal-and-cloud-load-balancing, at the broker's public run.app
+      # hostname. Under PRIVATE_RANGES_ONLY that hostname resolves outside any
+      # private range, so the request never enters the VPC, arrives at the
+      # broker as EXTERNAL traffic, and is refused -- as an HTML 404, which
+      # reads like a missing route and is not one. The worker jobs already run
+      # ALL_TRAFFIC, which is exactly why they can reach the broker and
+      # swarm-api could not.
+      #
+      # Overridden per service rather than raised module-wide so the scheduler,
+      # the reconciler and the broker keep the narrower egress they have today.
+      # One service needed this; widening all four would be a change nobody
+      # asked for to three of them.
+      egress = coalesce(each.value.vpc_egress, var.vpc_egress)
 
       # Direct VPC egress rather than a Serverless VPC Access connector: no
       # connector instances to size, patch or pay for while idle.

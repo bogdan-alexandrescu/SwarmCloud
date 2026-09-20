@@ -271,8 +271,16 @@ module "cloud_run" {
       max_instances         = var.service_max_instances["swarm-api"]
       cpu                   = "1"
       memory                = "1Gi"
-      concurrency           = 80
-      env                   = local.service_env["swarm-api"]
+      # The ONLY control-plane service that calls another one. It proxies every
+      # account-pool request to the quota broker, whose ingress is
+      # internal-and-cloud-load-balancing; under PRIVATE_RANGES_ONLY the
+      # broker's public hostname is not a private range, so the call leaves the
+      # VPC, arrives as external traffic and is refused with an HTML 404. The
+      # worker jobs already run ALL_TRAFFIC, which is why they could reach the
+      # broker and this could not.
+      vpc_egress  = "ALL_TRAFFIC"
+      concurrency = 80
+      env         = local.service_env["swarm-api"]
       # THE IAP SERVICE AGENT, EXPLICITLY.
       #
       # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
