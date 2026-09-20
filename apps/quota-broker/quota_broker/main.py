@@ -31,10 +31,11 @@ from swarm_common.profiles import RUNNER_PROFILES
 from .aimd import quota_derived_limit_for
 from .settings import _int
 from .usage import DEFAULT_MAX_POLLS_PER_SWEEP
+from .oauth import CredentialError, parse_credential
 from .usagepoll import UsagePoller
-from .accounts import due_for_refresh
+from .accounts import DEFAULT_STALE_AFTER, AccountState, due_for_refresh
 from .accountstore import AccountStore
-from .credentials import CredentialRefresher
+from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
 from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
@@ -91,6 +92,43 @@ class SuccessReport(StrictModel):
     requests_remaining: int | None = Field(default=None, ge=0)
     tokens_remaining: int | None = Field(default=None, ge=0)
     reset_at: datetime | None = None
+
+
+class AccountRegister(StrictModel):
+    """Register an account, credential included.
+
+    THE CREDENTIAL IS TAKEN AS PASTED, not as three parsed fields, and
+    `oauth.parse_credential` is what reads it. That function already accepts
+    Claude Code's keychain item verbatim -- `claudeAiOauth` wrapper and all --
+    "because pasting that item verbatim is the obvious thing for an operator to
+    do". Asking a UI to take it apart first would mean a second implementation
+    of that shape, and the two would disagree the first time the shape changed.
+
+    It must be a PAIR. `claude setup-token` mints one long-lived token with no
+    refresh token beside it; when it expires a human logs in again. The pair
+    Claude Code itself keeps can be exchanged for a new pair indefinitely,
+    which is what makes "the only manual step is the first one" true rather
+    than aspirational. Registration parses it here so a credential that cannot
+    be refreshed is refused at the moment of pasting -- not discovered at the
+    next sweep, long afterwards, with nothing pointing at the cause.
+    """
+
+    owner_tenant: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    provider: str = Field(default="anthropic", max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+    #: Write-only. No response model in this service contains it and no route
+    #: returns it -- the same rule tenants.py states for provider keys.
+    credential: str = Field(min_length=8, max_length=16384)
+
+
+class AccountLending(StrictModel):
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountStateChange(StrictModel):
+    state: str = Field(min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=512)
 
 
 class RateLimitReport(StrictModel):
@@ -247,6 +285,53 @@ def build_broker(
     return QuotaBroker(db, settings=settings)
 
 
+def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, Any]:
+    """One account, shaped for a human to read.
+
+    THE COLUMNS ARE `cs status`'s, deliberately. An operator who already reads
+    that output on their laptop should not have to learn a second vocabulary
+    for the same five facts about the same five accounts. So: the label, each
+    window's utilisation, when the binding one clears, and the state.
+
+    NO CREDENTIAL MATERIAL, and not even its length. `Credential.redacted()`
+    exposes `access_token_len`, which is fine in a debug log and is not fine on
+    a page -- a length is a real hint about a secret and nobody reading this
+    screen needs it.
+
+    `stale` is computed rather than stored, because a reading's age is what
+    decides whether to trust it: `cs status` marks a projected figure with `~`
+    for exactly this reason, and a number shown without that mark is a claim
+    that it is current.
+    """
+    now = now or datetime.now(timezone.utc)
+    windows: dict[str, Any] = {}
+    for name, reading in (getattr(account, "windows", {}) or {}).items():
+        windows[name] = {
+            "utilization": round(float(reading.utilization), 4),
+            "resets_at": reading.resets_at.isoformat(),
+            "reset": reading.is_reset(now),
+        }
+    observed_at = getattr(account, "observed_at", None)
+    stale = True
+    if observed_at is not None:
+        stale = (now - observed_at) > DEFAULT_STALE_AFTER
+    return {
+        "account_id": account.account_id,
+        "owner_tenant": account.owner_tenant,
+        "label": account.label,
+        "provider": account.provider,
+        "state": account.state.value,
+        "reason": account.reason,
+        "lend_to": list(account.lend_to),
+        "assigned": account.assigned,
+        "windows": windows,
+        "observed_at": observed_at.isoformat() if observed_at else None,
+        #: True when no reading has arrived recently enough to be trusted.
+        #: Distinct from "utilisation is zero", which is a measurement.
+        "stale": stale,
+    }
+
+
 def quota_to_api(state: QuotaState) -> dict[str, Any]:
     payload = quota_to_firestore(state)
     payload["effective_limit"] = state.effective_limit
@@ -347,6 +432,11 @@ def create_app(
             )
     app.state.credential_refresher = refresher
     app.state.subscription_tenants = tenants or (lambda: [])
+    # Registering an account writes two secrets, so the account routes need the
+    # same store the refresher and the poller use. Exposed on app.state rather
+    # than rebuilt, so all three are provably the same writer -- which is the
+    # property that keeps a rotating credential from being corrupted.
+    app.state.secret_store = secret_store
 
     # The usage poller needs the same Secret Manager store the refresher uses --
     # it reads each account's CURRENT access token, which the refresh above has
@@ -524,6 +614,198 @@ def create_app(
         state = request.app.state.broker.set_hard_max(name, tenant_id, body.hard_max)
         request.app.state.metrics.observe(state)
         return {"quota": quota_to_api(state)}
+
+    # ----------------------------------------------------------------------
+    # The account pool
+    # ----------------------------------------------------------------------
+    #
+    # WHY THESE LIVE HERE AND NOT IN swarm-api. This service is the platform's
+    # single writer for subscription credentials, and that is not a layering
+    # preference -- refreshing an OAuth credential REVOKES the previous one, so
+    # two writers racing on the same account brick it. swarm-api proxies to
+    # these routes rather than touching Secret Manager itself, which keeps the
+    # number of writers at one by construction rather than by agreement.
+
+    def _accounts(request: Request) -> Any:
+        store = getattr(request.app.state, "account_store", None)
+        if store is None:
+            raise BrokerValidationError("this deployment has no account store configured")
+        return store
+
+    @app.get("/v1/accounts")
+    def list_accounts(
+        request: Request,
+        tenant_id: str | None = Query(default=None),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        store = _accounts(request)
+        scope = tenant_id if is_platform else caller_tenant
+        if scope:
+            # `for_tenant` returns owned AND lent-to accounts, which is the set
+            # a tenant may actually run on -- not the set it owns.
+            accounts = store.for_tenant(scope)
+        else:
+            accounts = store.list()
+        return {
+            "accounts": [account_to_api(a) for a in accounts],
+            "tenant_id": scope,
+        }
+
+    @app.post("/v1/accounts", status_code=201)
+    def register_account(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        store = _accounts(request)
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        # Parsed BEFORE anything is written. A credential with no refresh token
+        # cannot be kept alive, and the whole promise of this feature is that
+        # the operator logs in once. Refusing it here costs them one error
+        # message; accepting it costs them a pool entry that looks healthy and
+        # dies silently at its first expiry.
+        try:
+            credential = parse_credential(body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+
+        account = store.register(
+            body.owner_tenant,
+            body.label,
+            provider=body.provider,
+            lend_to=body.lend_to,
+        )
+        base = store.secret_for(account)
+
+        # TWO SECRETS, and the split is the security boundary. `{base}-refresh`
+        # holds the pair and is read only by this service, the single writer.
+        # `{base}` holds ONLY the access token and is what the tenant's pod
+        # reads into CLAUDE_CODE_OAUTH_TOKEN -- so a compromised pod has a
+        # credential that expires, not one that can mint successors forever.
+        #
+        # Stored as pasted rather than re-serialised: `parse_credential` is the
+        # reader, and writing back a normalised shape would make this the only
+        # place that decides what that shape is.
+        secrets.add_version(f"{base}{REFRESH_SUFFIX}", body.credential)
+        secrets.add_version(base, credential.access_token)
+
+        return {
+            "account": account_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    @app.put("/v1/accounts/{account_id}/lending")
+    def set_lending(
+        request: Request,
+        account_id: str,
+        body: AccountLending,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        updated = store.register(
+            account.owner_tenant,
+            account.label,
+            provider=account.provider,
+            lend_to=body.lend_to,
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/state")
+    def set_account_state(
+        request: Request,
+        account_id: str,
+        body: AccountStateChange,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            state = AccountState(body.state.upper())
+        except ValueError:
+            raise BrokerValidationError(
+                f"unknown account state {body.state!r}; "
+                f"known: {', '.join(s.value for s in AccountState)}"
+            ) from None
+        store.set_state(account_id, state, body.reason)
+        return {"account": account_to_api(store.get(account_id))}
+
+    @app.post("/v1/accounts/{account_id}/refresh")
+    def refresh_account(
+        request: Request,
+        account_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Exchange this account's credential now, instead of waiting for the sweep.
+
+        The sweep already does this on a timer and is what makes the pool
+        self-maintaining. This exists because a timer gives an operator no way
+        to ANSWER the question "did that work?" -- they paste a credential,
+        and then wait an unknown number of minutes to find out whether it was
+        accepted. A button that reports back closes that loop.
+
+        It goes through the same CredentialRefresher as the sweep rather than
+        exchanging the token inline. Two code paths that both rotate a
+        credential is precisely how a rotating credential gets corrupted: this
+        service is the single writer, and "single" has to mean one
+        implementation as well as one process.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+
+        refresher = getattr(request.app.state, "credential_refresher", None)
+        if refresher is None:
+            raise BrokerValidationError(
+                "this deployment has no credential refresher configured"
+            )
+        outcome = refresher.refresh_secret(store.secret_for(account), label=account.label)
+        result = outcome.as_dict()
+
+        # A refresh that fails because the refresh token is gone is not a
+        # transient error and must not be retried by the sweep every five
+        # minutes. Recording it against the account is what turns "it keeps
+        # failing" into "this one needs a human", which is the only thing an
+        # operator can act on.
+        if result.get("reason") in ("reauth_required", "unreadable"):
+            store.set_state(
+                account_id,
+                AccountState.REAUTH_REQUIRED,
+                f"refresh failed: {result.get('reason')}",
+            )
+        return {"refresh": result, "account": account_to_api(store.get(account_id))}
+
+    @app.delete("/v1/accounts/{account_id}")
+    def remove_account(
+        request: Request,
+        account_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        # The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
+        # is irreversible and takes its version history with it, and an account
+        # removed by mistake is then unrecoverable rather than re-registerable.
+        # Cleaning up secrets is the reconciler's job, on its own schedule.
+        store.remove(account_id)
+        return {"removed": account_id, "secret": "retained"}
 
     @app.post("/v1/quota/sweep")
     def sweep(
