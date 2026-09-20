@@ -225,6 +225,15 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
         <button className="retry" onClick={() => window.location.reload()}>
           Reload to sign in
         </button>
+      ) : error.kind === 'rate_limited' ? (
+        // A COUNTDOWN, NEVER A RETRY BUTTON. The server has just told us how
+        // long to wait; offering "Try again" invites someone to hammer the
+        // wall they were told about, and the token bucket is 20 rps per
+        // principal per instance -- every open tab counts against it.
+        <p className="checked-at">
+          Retrying is disabled for {error.retryAfterSeconds ?? 'a few'} more
+          seconds, because the API asked us to wait that long.
+        </p>
       ) : (
         <button className="retry" onClick={onRetry}>
           Try again
