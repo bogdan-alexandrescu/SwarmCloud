@@ -347,6 +347,7 @@ locals {
         for t, v in var.tenants : v.principal if v.kind == "group" && v.directory_group
       ]))
       ADMIN_GROUPS = join(",", sort(var.admin_groups))
+      ADMIN_USERS  = join(",", sort(var.admin_users))
     })
     "swarm-scheduler" = merge(local.common_env, {
       # See the swarm-api block: the reader has always been DISPATCH_TOPIC.

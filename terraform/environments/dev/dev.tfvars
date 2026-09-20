@@ -331,3 +331,10 @@ frontend_iap_audiences = [
   "/projects/209012342332/global/backendServices/6904312892305383900",
 ]
 
+
+# Admin by email, because admin-by-group is unreachable here: swarm-api cannot
+# read Cloud Identity groups, so the admin set is empty and every operator
+# screen 403s for everyone. See the variable's description and
+# docs/audits/2026-09-20/session-handover.md. Empty this the moment the
+# Workspace Group Reader role lands.
+admin_users = ["bogdan@saga.xyz"]

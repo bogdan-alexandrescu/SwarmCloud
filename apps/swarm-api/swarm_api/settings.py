@@ -69,6 +69,22 @@ class ApiSettings:
     #: tenant groups so an admin still belongs to a normal tenant for their own
     #: tasks.
     admin_groups: tuple[str, ...] = ()
+    #: Admin by EMAIL rather than by group membership.
+    #:
+    #: An escape hatch, and it exists because admin is otherwise unreachable
+    #: here: `is_admin` is computed from Cloud Identity group membership, and
+    #: this platform's service account cannot read groups at all -- the Groups
+    #: API does not authorize through GCP IAM, and a *.gserviceaccount.com
+    #: identity is not a Workspace principal. With no resolvable groups,
+    #: `admin_set` is empty and NOBODY is an admin, which 403s every operator
+    #: screen.
+    #:
+    #: It is strictly worse operationally than a group: changing it needs a
+    #: deploy. It is NOT weaker authentication -- the email still comes from
+    #: the verified IAP assertion, the same source the group lookup would have
+    #: started from. Delete it in the same change that grants swarm-api a
+    #: Workspace Group Reader role.
+    admin_users: tuple[str, ...] = ()
 
     #: Cloud Identity membership checks are a network round trip on the request
     #: path, so answers are cached briefly per (caller, group).
@@ -126,6 +142,7 @@ class ApiSettings:
             iap_audiences=_csv("IAP_AUDIENCES"),
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
+            admin_users=_csv("ADMIN_USERS"),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),

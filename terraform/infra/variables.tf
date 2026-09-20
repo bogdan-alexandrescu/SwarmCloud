@@ -298,6 +298,30 @@ variable "frontend_iap_members" {
   default     = []
 }
 
+variable "admin_users" {
+  description = <<-EOT
+    Individual email addresses granted admin, as an ESCAPE HATCH.
+
+    Admin is otherwise decided by Cloud Identity group membership, and
+    swarm-api cannot read groups: the Groups API does not authorize through
+    GCP IAM, and a *.gserviceaccount.com identity is not a Workspace
+    principal, so every membership lookup returns
+    "Error(2028): Permission denied". With no resolvable groups the admin set
+    is empty and NOBODY is an admin, which 403s every operator screen on the
+    platform.
+
+    Strictly worse than a group operationally -- changing this needs a deploy
+    -- and not a weakening of authentication: the email is the one from the
+    verified IAP assertion, which is the same source a group lookup would
+    have started from.
+
+    Empty this in the same change that grants swarm-api a Workspace Group
+    Reader role. See docs/audits/2026-09-20/session-handover.md.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "admin_groups" {
   description = <<-EOT
     Google groups whose members may act across tenants in swarm-api -- reading

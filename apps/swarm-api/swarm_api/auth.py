@@ -348,7 +348,16 @@ class Authenticator:
         tenant_id = resolve_tenant(principal, self._settings.tenant_groups)
         tenant_principal = self._tenant_principal(member_groups, email)
         admin_set = {g.lower() for g in self._settings.admin_groups}
-        is_admin = any(g.lower() in admin_set for g in member_groups)
+        # Group membership OR an explicitly named email. The second is the
+        # escape hatch described on ApiSettings.admin_users: with no readable
+        # groups, `admin_set` is empty and the first test can never be true,
+        # so every operator screen 403s for everyone. The email is the one
+        # from the verified assertion, not something the caller supplied.
+        admin_users = {u.lower() for u in self._settings.admin_users}
+        is_admin = (
+            any(g.lower() in admin_set for g in member_groups)
+            or email.lower() in admin_users
+        )
         return AuthContext(
             principal=principal,
             tenant_id=tenant_id,

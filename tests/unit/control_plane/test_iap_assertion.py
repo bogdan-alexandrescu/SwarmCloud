@@ -77,6 +77,7 @@ class _Settings:
 
     tenant_groups: tuple = ()
     admin_groups: tuple = ()
+    admin_users: tuple = ()
 
 
 def test_a_bad_assertion_does_not_fall_through_to_the_bearer_path():
@@ -135,3 +136,67 @@ def test_an_assertion_from_outside_the_allowed_domain_is_forbidden_not_unauthent
 
     with pytest.raises(Forbidden):
         auth.authenticate(None, "good.assertion")
+
+
+# -- admin by email, the escape hatch -------------------------------------
+
+class _AdminUserSettings(_Settings):
+    admin_users: tuple = ("bogdan@saga.xyz",)
+
+
+class _MemberGroups:
+    """A group resolver that DOES answer, unlike production today."""
+
+    def __init__(self, groups):
+        self._groups = groups
+
+    def groups_for(self, email, candidates):
+        return self._groups
+
+
+def _ctx(settings, groups=()):
+    iap = _Iap(claims={"email": "bogdan@saga.xyz", "sub": "accounts.google.com:1"})
+    auth = Authenticator(settings, _Verifier(), _MemberGroups(groups), iap=iap)
+    return auth.authenticate(None, "good.assertion")
+
+
+def test_nobody_is_admin_when_no_groups_resolve_and_no_users_are_named():
+    """The state the platform was actually in, and why this exists.
+
+    is_admin is computed from Cloud Identity group membership. swarm-api
+    cannot read groups -- the Groups API does not authorize through GCP IAM
+    and a service account is not a Workspace principal -- so member_groups is
+    empty, admin_set is empty, and every operator screen 403s for everyone.
+    """
+    assert _ctx(_Settings()).is_admin is False
+
+
+def test_a_named_email_is_admin_without_any_group():
+    assert _ctx(_AdminUserSettings()).is_admin is True
+
+
+def test_the_email_comes_from_the_assertion_not_from_the_caller():
+    """The escape hatch must not be a way to claim admin.
+
+    The address tested is the one the verified IAP assertion carried, which is
+    the same source a group lookup would have started from.
+    """
+    class _Other(_Settings):
+        admin_users: tuple = ("someone-else@saga.xyz",)
+
+    assert _ctx(_Other()).is_admin is False
+
+
+def test_matching_is_case_insensitive():
+    class _Upper(_Settings):
+        admin_users: tuple = ("BOGDAN@SAGA.XYZ",)
+
+    assert _ctx(_Upper()).is_admin is True
+
+
+def test_group_membership_still_grants_admin_on_its_own():
+    """The escape hatch is additive. It must not replace the group path."""
+    class _ByGroup(_Settings):
+        admin_groups: tuple = ("swarm-admins@saga.xyz",)
+
+    assert _ctx(_ByGroup(), groups=("swarm-admins@saga.xyz",)).is_admin is True
