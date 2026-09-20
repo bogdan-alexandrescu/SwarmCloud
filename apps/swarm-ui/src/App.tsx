@@ -4,12 +4,18 @@ import { ActivityScreen, TenantsScreen } from './Activity'
 import { AgentsScreen } from './Agents'
 import { CapacityScreen } from './Capacity'
 import { ControlRoomScreen } from './ControlRoom'
+import { HoldersScreen } from './Holders'
+import { PlatformCountsScreen } from './PlatformCounts'
+import { QuotaDetailScreen } from './QuotaDetail'
 import { DataSourceStrip } from './DataSources'
 import { Nav } from './Shell'
 import { TroubleScreen } from './Trouble'
 import { WorkflowsScreen } from './Workflows'
 
-const SCREENS = ['home', 'trouble', 'capacity', 'agents', 'workflows', 'activity', 'tenants'] as const
+const SCREENS = [
+  'home', 'trouble', 'capacity', 'holders', 'agents', 'workflows',
+  'activity', 'quota', 'counts', 'tenants',
+] as const
 type ScreenId = (typeof SCREENS)[number]
 
 interface Route {
@@ -52,6 +58,9 @@ export function App() {
       {at.screen === 'home' && <ControlRoomScreen />}
       {at.screen === 'trouble' && <TroubleScreen />}
       {at.screen === 'capacity' && <CapacityScreen />}
+      {at.screen === 'holders' && <HoldersScreen />}
+      {at.screen === 'quota' && <QuotaDetailScreen />}
+      {at.screen === 'counts' && <PlatformCountsScreen />}
       {at.screen === 'agents' && <AgentsScreen onOpen={(id) => go(`agents/${encodeURIComponent(id)}`)} />}
       {at.screen === 'workflows' && <WorkflowsScreen />}
       {at.screen === 'activity' && <ActivityScreen />}

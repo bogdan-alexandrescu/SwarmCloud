@@ -273,9 +273,12 @@ export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
     ['home', 'Home'],
     ['trouble', 'Trouble'],
     ['capacity', 'Capacity'],
+    ['holders', 'Holders'],
     ['agents', 'Agents'],
     ['workflows', 'Workflows'],
     ['activity', 'Activity'],
+    ['quota', 'Quota'],
+    ['counts', 'Counts'],
     ['tenants', 'Tenants'],
   ] as const
   return (

@@ -56,6 +56,14 @@ resource "google_cloud_run_v2_job" "verify" {
 
   labels = merge(local.labels, { component = "verify" })
 
+  # Mirrors what the worker jobs and services do (both modules take
+  # var.deletion_protection). Omitting it meant the provider's default of
+  # `true` applied, and the first apply after a FAILED create could not
+  # replace the half-made job: "cannot destroy job without setting
+  # deletion_protection=false". A gate that cannot be redeployed after a bad
+  # build is a gate that stays broken.
+  deletion_protection = var.deletion_protection
+
   template {
     template {
       service_account = google_service_account.verify.email

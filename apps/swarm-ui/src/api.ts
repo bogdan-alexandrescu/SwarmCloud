@@ -1,7 +1,8 @@
 import { noteFixtureProbe, read, type Result } from './fetch'
 import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, Pool, TaskState, TaskWindow, Tenant, Workflow,
+  AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, TaskState, TaskWindow, Tenant,
+  Workflow,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -618,6 +619,49 @@ async function fixtureHolders(): Promise<Result<HoldersBoard>> {
     status: 'ok',
     fetchedAt: Date.now(),
     data: { page: l.data, pools: c.data.pools, poolsDetail: null },
+  }
+}
+
+/** `GET /v1/admin/quota`. Admin-gated, so a 403 renders as information. */
+export async function loadAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
+  if (USE_FIXTURES) return fixtureAdminQuota()
+  return read<{ quota: QuotaState[] }>('/v1/admin/quota', (d) => d.quota.length === 0)
+}
+
+async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
+  await new Promise((r) => setTimeout(r, 170))
+  noteFixtureProbe('/v1/admin/quota', 170, true)
+  const q = (
+    provider: string,
+    tenant: string,
+    state: string,
+    extra: Partial<QuotaState> = {},
+  ): QuotaState => ({
+    provider, tenant_id: tenant, state,
+    updated_at: new Date(Date.now() - 60_000).toISOString(),
+    configured_hard_max: 50, adaptive_target: null, quota_derived_limit: null,
+    requests_remaining: null, tokens_remaining: null, reset_at: null,
+    cooldown_until: null, last_429_at: null, retry_after_seconds: null,
+    success_count: 120, rate_limit_count: 0, effective_limit: 50,
+    ...extra,
+  })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      // One of every treatment, so none of them ships unlooked-at: a healthy
+      // row, THROTTLED (the one a fallthrough would mislabel), an effective
+      // limit of 0 that is a FACT, and UNKNOWN which is not healthy.
+      quota: [
+        q('anthropic', 'eng', 'AVAILABLE', { requests_remaining: 4210 }),
+        q('anthropic', 'u-bogdan', 'THROTTLED', {
+          adaptive_target: 6, effective_limit: 6, rate_limit_count: 9,
+          last_429_at: new Date(Date.now() - 240_000).toISOString(),
+        }),
+        q('openai', 'eng', 'EXHAUSTED', { effective_limit: 0, rate_limit_count: 41 }),
+        q('openai', 'u-bogdan', 'UNKNOWN', { effective_limit: 0, success_count: 0 }),
+      ],
+    },
   }
 }
 
