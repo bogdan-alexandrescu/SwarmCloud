@@ -95,6 +95,16 @@ from .secrets import (
 #: provider that is flapping.
 MAX_IN_WORKER_RETRIES = 3
 
+#: How many times an attempt may reload its credential and restart in place.
+#:
+#: Two, not three, and not unbounded. A credential that was ROTATED under a
+#: running agent is fixed by exactly one reload; a second covers the unlucky
+#: case of a rotation landing again during the restart. Beyond that the
+#: credential is not rotating, it is broken -- and retrying a broken credential
+#: forever would turn one bad account into an attempt that never fails and
+#: never finishes, holding its lease the whole time.
+MAX_CREDENTIAL_RELOADS = 2
+
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
@@ -290,6 +300,7 @@ class Worker:
 
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
+        credential_reloads = 0
         while True:
             attempt_number += 1
             result = self._run_child_supervised(child_env)
@@ -297,6 +308,43 @@ class Worker:
                 return result                      # cancelled / fenced / parked
             quota = self._quota_from_child(result)
             if quota is None:
+                # A REFUSED credential, which is not a failed attempt. The
+                # platform refreshes accounts on a timer whether or not an
+                # agent is holding one, and refreshing an OAuth credential
+                # revokes the previously issued token -- so a long attempt can
+                # have its token pulled out from under it. The secret already
+                # holds the replacement; re-reading it costs one API call and
+                # saves the attempt.
+                refusal = self._credential_refusal()
+                if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
+                    credential_reloads += 1
+                    self.log.warning(
+                        "credential refused; reloading it and restarting in place",
+                        provider=refusal.get("provider"),
+                        marker=refusal.get("marker"),
+                        reload=credential_reloads,
+                    )
+                    self.control.emit(
+                        EventType.RETRYING,
+                        {
+                            "cause": "credential_reloaded",
+                            "provider": refusal.get("provider"),
+                            "reload": credential_reloads,
+                        },
+                    )
+                    ws.credential_path.unlink(missing_ok=True)
+                    # Rebuilt, not patched: `_build_child_env` is the one place
+                    # that knows which env names this profile's credential maps
+                    # to, and `access()` always reads `latest`, so this picks up
+                    # whatever the refresher wrote.
+                    child_env = self._build_child_env()
+                    continue
+                if refusal is not None:
+                    self.log.error(
+                        "credential still refused after reloading; this account "
+                        "needs re-authentication rather than another attempt",
+                        provider=refusal.get("provider"),
+                    )
                 break
             decision = decide(
                 quota,
@@ -1021,6 +1069,19 @@ class Worker:
                 self.log.debug(
                     "could not publish a live log tail", stream=label, error=str(exc)
                 )
+
+    def _credential_refusal(self) -> dict[str, Any] | None:
+        """The runner's `credential.json`, if it wrote one.
+
+        Deliberately separate from the quota signal. The two arrive from the
+        same provider over the same connection and mean opposite things: one
+        says wait, the other says this will never work again.
+        """
+        ws = self.ws
+        if ws is None or not ws.credential_path.exists():
+            return None
+        data = _read_json(ws.credential_path)
+        return data if isinstance(data, dict) else {}
 
     # -- git: harvest, and publish when the forge allows it -----------------
     def _harvest_git(self, *, publish: bool) -> dict[str, Any] | None:

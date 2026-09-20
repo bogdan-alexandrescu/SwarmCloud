@@ -64,6 +64,18 @@ class Workspace:
         """Written by a runner that hit a provider rate limit."""
         return self.work / "quota.json"
 
+    @property
+    def credential_path(self) -> Path:
+        """Written by a runner whose credential was refused.
+
+        Separate from `quota_path` because the two mean opposite things and
+        have opposite remedies. A rate limit means "the same credential will
+        work later, wait"; a refused credential means "this credential will
+        never work again, get the current one". Parking on the second would
+        wait out a reset that is not coming.
+        """
+        return self.work / "credential.json"
+
     def disk_bytes(self) -> int:
         """Bytes on disk under the workspace, symlinks not followed."""
         total = 0

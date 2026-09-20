@@ -40,6 +40,10 @@ EXIT_FAILED = 1
 #: Reserved: the provider rate-limited us. The worker reads quota.json for the
 #: wait, then decides between a short in-worker retry and parking the task.
 EXIT_QUOTA_EXHAUSTED = 77
+#: The credential this runner was given is no longer usable. Distinct from
+#: EXIT_FAILED because the worker's response is different: re-read the
+#: secret and restart, rather than burn one of the task's three attempts.
+EXIT_CREDENTIAL_REVOKED = 78
 #: The runner was asked to stop (SIGTERM) and stopped cleanly.
 EXIT_TERMINATED = 143
 
@@ -63,6 +67,28 @@ class QuotaExhaustedSignal(RuntimeError):
         self.detail = detail
 
 
+class CredentialRevokedSignal(RuntimeError):
+    """The provider refused this credential outright.
+
+    NOT a QuotaExhaustedSignal, although both arrive as an HTTP error from the
+    same provider. A rate limit means "the same credential will work later";
+    this means "this credential will never work again". Parking on it would
+    wait out a reset that is not coming, and burning an attempt on it would
+    spend the task's retries on something a re-read fixes in a second.
+
+    It exists because refreshing an OAuth credential REVOKES the previously
+    issued one, and the platform refreshes accounts on a timer regardless of
+    whether an agent is holding them -- so a long attempt can have its token
+    pulled out from under it through no fault of its own.
+    """
+
+    def __init__(self, provider: str, detail: str = "", marker: str = "") -> None:
+        super().__init__(f"{provider} refused the credential: {detail or 'no detail'}")
+        self.provider = provider
+        self.detail = detail
+        self.marker = marker
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -74,6 +100,10 @@ class RunnerContext:
     input_path: Path
     result_path: Path
     quota_path: Path
+    #: Optional so that every existing construction of this context keeps
+    #: working. `from_env` always sets it; anything that does not gets the
+    #: sibling of `quota_path`, which is where it would have been anyway.
+    credential_path: Path | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     stop_requested: bool = False
 
@@ -87,6 +117,9 @@ class RunnerContext:
             input_path=Path(env.get("SWARM_INPUT") or (work / "input.json")),
             result_path=Path(env.get("SWARM_RESULT") or (work / "result.json")),
             quota_path=Path(env.get("SWARM_QUOTA_SIGNAL") or (work / "quota.json")),
+            credential_path=Path(
+                env.get("SWARM_CREDENTIAL_SIGNAL") or (work / "credential.json")
+            ),
         )
         ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
         if ctx.input_path.exists():
@@ -159,6 +192,23 @@ class RunnerContext:
             )
         )
 
+    @property
+    def credential_signal_path(self) -> Path:
+        return self.credential_path or (self.quota_path.parent / "credential.json")
+
+    def write_credential_signal(self, signal_: "CredentialRevokedSignal") -> None:
+        self.credential_signal_path.write_text(
+            json.dumps(
+                {
+                    "provider": signal_.provider,
+                    "detail": signal_.detail,
+                    "marker": signal_.marker,
+                    "observed_at": _now(),
+                },
+                indent=2,
+            )
+        )
+
     def install_signal_handlers(self) -> None:
         """Turn SIGTERM into a flag so a runner can stop at its next safe point.
 
@@ -204,6 +254,16 @@ def run_runner(body: Callable[[RunnerContext], dict[str, Any]], *, name: str) ->
         )
         print(f"[{name}] provider quota exhausted: {exc}", file=sys.stderr)
         return EXIT_QUOTA_EXHAUSTED
+    except CredentialRevokedSignal as exc:
+        ctx.write_credential_signal(exc)
+        ctx.write_result(
+            status="credential_revoked",
+            summary=str(exc),
+            error=str(exc),
+            output={"provider": exc.provider},
+        )
+        print(f"[{name}] credential refused: {exc}", file=sys.stderr)
+        return EXIT_CREDENTIAL_REVOKED
     except RunnerFailure as exc:
         ctx.write_result(status="failed", summary=str(exc), error=str(exc))
         print(f"[{name}] failed: {exc}", file=sys.stderr)
