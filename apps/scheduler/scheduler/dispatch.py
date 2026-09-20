@@ -192,13 +192,28 @@ def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = N
 
 
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
-    """The ONLY thing the environment carries is identifiers.
+    """The ONLY thing the environment carries is identifiers and endpoints.
 
     No image, no command, no resource spec. A worker launched with a doctored
     environment still reads what to run from the frozen catalogue keyed by
     RUNNER_PROFILE, which is invariant 10 enforced at the last possible moment.
+
+    QUOTA_BROKER_URL IS HERE BECAUSE THERE IS NOWHERE ELSE IT COULD GO. This
+    function is the single source of a worker's execution environment for both
+    dispatchers below, so a name it does not carry is a name no worker ever
+    sees. The account pool was complete on both sides and entirely inert
+    because of that: nothing set it, `WorkerConfig.quota_broker_url` was always
+    None, and every worker took the "no broker configured" branch. It is not an
+    execution parameter -- it names a platform service, the same way
+    ARTIFACT_BUCKET does -- and it still cannot be influenced by a caller,
+    because it comes from the scheduler's own settings.
+
+    OMITTED RATHER THAN SET EMPTY when the deployment has no pool. A Cloud Run
+    execution override MERGES with the Job's own environment, so an empty value
+    here would override a URL that terraform had baked into the Job and turn a
+    wired deployment back into an unwired one.
     """
-    return {
+    env = {
         "TASK_ID": task.id,
         "ATTEMPT_ID": lease.attempt_id,
         "LEASE_ID": lease.lease_id,
@@ -218,6 +233,17 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         ),
         "TASK_TIMEOUT_SECONDS": str(task.timeout_seconds),
     }
+    broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
+    if broker_url:
+        env["QUOTA_BROKER_URL"] = broker_url
+        # The audience defaults to the URL inside the worker's client, which is
+        # what Cloud Run checks when a service declares no custom audience.
+        # This deployment's broker declares one, so the token minted for the
+        # URL alone would be rejected by the broker's own `aud` check.
+        audience = str(getattr(settings, "quota_broker_audience", "") or "").strip()
+        if audience:
+            env["QUOTA_BROKER_AUDIENCE"] = audience
+    return env
 
 
 def image_uri(settings: Any, profile: RunnerProfile) -> str:
@@ -269,6 +295,21 @@ class CloudRunJobDispatcher:
     def job_name(self, job_id: str) -> str:
         return f"{self.parent}/jobs/{job_id}"
 
+    def _pool_can_serve(self, tenant: Tenant, profile: RunnerProfile) -> bool:
+        """Whether this tenant's credential for `profile` comes from the pool.
+
+        Both halves matter. A deployment with no broker has no pool, so a
+        missing per-tenant key is simply a missing key. A tenant that HAS
+        registered a key keeps its secret mounted whether or not a pool exists,
+        because the pool is an addition to that tenant's options and not a
+        replacement for them.
+        """
+        if not str(getattr(self._settings, "quota_broker_url", "") or "").strip():
+            return False
+        if not profile.provider:
+            return False
+        return profile.provider not in (tenant.credentials or [])
+
     def _build_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
     ) -> Any:
@@ -284,6 +325,29 @@ class CloudRunJobDispatcher:
         ]
         for secret_env in profile.secrets:
             if not profile.provider:
+                continue
+            if self._pool_can_serve(tenant, profile):
+                # A POOL ACCOUNT IS THIS TENANT'S CREDENTIAL, so there is no
+                # per-tenant secret to project and naming one would be naming a
+                # secret that does not exist. Cloud Run resolves a
+                # `secretKeyRef` when the JOB is created, so that fails the
+                # create outright and the tenant cannot be dispatched at all --
+                # not "runs without a key", but "never starts". The pool could
+                # not replace the per-tenant secret for anyone, which is most
+                # of the point of having it.
+                #
+                # Narrow on purpose: only when this deployment HAS a pool and
+                # this tenant has registered no key of its own. Without a pool,
+                # a tenant with no key cannot run this profile however the job
+                # is shaped, and the existing behaviour -- mount it, fail
+                # loudly -- is left exactly as it was.
+                #
+                # The worker resolves its own credential either way, from
+                # Secret Manager or from the pool, so this mount has always
+                # been a convenience rather than the thing the agent runs on. A
+                # tenant with neither a key nor a usable account still parks as
+                # CREDENTIAL_MISSING, in the worker, where the reason can be
+                # written onto the task.
                 continue
             # The tenant's OWN secret, by the one spelling the frozen contract
             # defines. A shared secret here would break invariant 9.

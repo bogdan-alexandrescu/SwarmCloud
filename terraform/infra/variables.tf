@@ -284,6 +284,38 @@ variable "frontend_iap_audiences" {
   default     = []
 }
 
+variable "quota_broker_url" {
+  description = <<-EOT
+    Base URL of the swarm-quota-broker Cloud Run service, for the SCHEDULER's
+    environment. The scheduler never calls the broker; it passes this through
+    to every worker it dispatches (scheduler.dispatch.worker_env), and a worker
+    with no QUOTA_BROKER_URL uses no account pool at all.
+
+    Declared rather than derived, for the same reason frontend_iap_audiences
+    is: the scheduler's environment is an INPUT to the Cloud Run module and the
+    broker's URL is an OUTPUT of it, so referencing it is a cycle terraform
+    refuses to plan. Worker JOBS are unaffected -- locals.tf derives the same
+    value for them, because that module reads the Cloud Run outputs rather than
+    feeding them.
+
+    Read it from `terraform output quota_broker_url` after the first apply and
+    put it in <env>.tfvars. The `quota_broker_url_is_wired` check fails while it
+    is empty or stale.
+
+    EMPTY MEANS "NO POOL ON THE GKE PATH", not "guess". A guessed URL is the
+    worst outcome available here: a 404 is a configuration refusal, and a
+    worker that is refused PARKS rather than running on the wrong credential,
+    so a wrong guess would park every browser and GPU task in the fleet.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.quota_broker_url == "" || startswith(var.quota_broker_url, "https://")
+    error_message = "quota_broker_url must be an https:// base URL, or empty."
+  }
+}
+
 variable "frontend_iap_members" {
   description = <<-EOT
     Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant

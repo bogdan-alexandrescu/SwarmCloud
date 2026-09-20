@@ -252,10 +252,31 @@ locals {
       # agent_worker.config reads the image and the command from the frozen
       # catalogue by NAME and refuses to take them from the environment at all
       # (invariant 10).
+      # QUOTA_BROKER_URL is what makes the account pool exist at runtime.
+      # Without it `WorkerConfig.quota_broker_url` is None, the worker builds
+      # no AccountBroker, and every agent runs on the one shared per-tenant
+      # secret -- the exact contention the pool was built to remove -- with
+      # nothing anywhere saying so.
+      #
+      # DERIVED HERE, and it can be: this module reads module.cloud_run's
+      # outputs and nothing in module.cloud_run reads local.jobs, so there is
+      # no cycle. The same value cannot be derived for the SCHEDULER's own
+      # environment, which lives inside module.cloud_run and would have to read
+      # a URL that is an attribute of the resource it is part of -- see
+      # var.quota_broker_url and the check block in main.tf.
+      #
+      # The dispatcher's per-execution overrides MERGE with this, and
+      # `worker_env()` omits the name entirely when the scheduler has no URL,
+      # so a Cloud Run Job keeps the value below either way.
       env = merge(local.common_env, {
         RUNNER_PROFILE = job.runner_profile
         TENANT_ID      = job.tenant_id
         WORKSPACE_ROOT = "/workspace"
+
+        QUOTA_BROKER_URL = module.cloud_run.service_urls["swarm-quota-broker"]
+        # The broker declares a custom audience, so a token minted for the
+        # service URL alone is one its own `aud` check rejects.
+        QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
       })
     }
   }
@@ -395,6 +416,22 @@ locals {
       # `404 Image '...agent-runtime-base:latest' not found` and the task was
       # left holding a lease.
       WORKER_IMAGE_TAG = var.image_tag
+
+      # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, which
+      # is the single source of a worker's execution environment for both
+      # backends. The GKE path has no terraform-managed Job to carry it, so
+      # without this every browser/GPU worker runs with no pool.
+      #
+      # DECLARED, NOT DERIVED, and that is forced rather than chosen -- exactly
+      # like IAP_AUDIENCES above. This environment is an input to
+      # module.cloud_run, and the broker's URL is an output of it; referencing
+      # it here is a cycle terraform refuses to plan. So: apply once, read
+      # `terraform output quota_broker_url`, put it in tfvars. The check block
+      # in main.tf fails loudly while this is empty or stale, because the
+      # failure it prevents -- a pool that is configured everywhere except in
+      # the one place that matters -- is completely silent at runtime.
+      QUOTA_BROKER_URL      = var.quota_broker_url
+      QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
     "swarm-quota-broker" = merge(local.common_env, {
       # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a

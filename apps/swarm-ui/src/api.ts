@@ -3,6 +3,7 @@ import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, TaskState, TaskWindow, Tenant,
   Workflow,
+  Account, AccountStateName, AccountsPage, RefreshResponse,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -965,4 +966,425 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
       ],
     },
   }
+}
+
+// --------------------------------------------------------------------------
+// The account pool
+// --------------------------------------------------------------------------
+// swarm-api PROXIES these to quota-broker and does not implement them. That is
+// not a layering preference: refreshing an OAuth credential REVOKES the token
+// it replaces, so the broker is the platform's single writer for subscription
+// credentials and two writers racing on one account brick it. Nothing in this
+// file may reach Secret Manager, mint a token, or "helpfully" retry a refresh.
+
+/**
+ * Everything the Accounts screen needs, in one load.
+ *
+ * Two reads, and only the first decides whether there is a screen:
+ *
+ *  - `/v1/accounts` IS the screen. A failure here is a failure. It also
+ *    supplies the owner: `routes/accounts.py` echoes `tenant_id` from the
+ *    VERIFIED TOKEN rather than from the broker's answer, precisely so a page
+ *    can never be told it is looking at a tenant it is not. That makes it the
+ *    right value to register under and to display, and strictly better than
+ *    `/v1/tenants/me` -- it is the same value the register route will file the
+ *    account under, not a second read that could disagree with it.
+ *  - `/v1/admin/tenants` is only for offering lending suggestions. A non-admin
+ *    genuinely cannot read it, so its absence is information and lending falls
+ *    back to typed tenant ids with that said on screen.
+ */
+export interface AccountsBoard {
+  page: AccountsPage
+  /** null means the tenant list was not readable. An EMPTY array means there are none. */
+  tenants: Tenant[] | null
+  tenantsDetail: string | null
+}
+
+export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
+  if (USE_FIXTURES) return fixtureAccountsBoard()
+
+  const [accounts, tenants] = await Promise.all([
+    // `() => false`, NOT `accounts.length === 0`, and the reason is the whole
+    // point of the screen: Screen renders `empty` INSTEAD of its children, so
+    // an empty pool would hide the register form -- the one control that fixes
+    // an empty pool. Zero accounts is handled inside the body as a state panel
+    // sitting above a form that is still there.
+    read<AccountsPage>('/v1/accounts', () => false),
+    read<{ tenants: Tenant[] }>('/v1/admin/tenants', () => false),
+  ])
+
+  if (accounts.status === 'loading' || accounts.status === 'error' || accounts.status === 'empty') {
+    return accounts as Result<AccountsBoard>
+  }
+
+  const tenantList =
+    tenants.status === 'ok' || tenants.status === 'stale' ? tenants.data.tenants
+    : tenants.status === 'empty' ? []
+    : null
+  const tenantsDetail =
+    tenantList === null
+      ? tenants.status === 'error' || tenants.status === 'stale'
+        ? tenants.error.message
+        : 'The tenant list read did not complete.'
+      : null
+
+  return {
+    status: accounts.status,
+    fetchedAt: accounts.fetchedAt,
+    // Only an `ok` read carries the server's own `generated_at`; a `stale` one
+    // is by definition not reporting a fresh server time, and Screen reads the
+    // age off `fetchedAt` in that case.
+    ...(accounts.status === 'ok' ? { serverAt: accounts.serverAt } : {}),
+    data: { page: accounts.data, tenants: tenantList, tenantsDetail },
+  } as Result<AccountsBoard>
+}
+
+/** What `POST /v1/accounts` answers with on 201. Carries NO key material. */
+export interface RegisterResponse {
+  account: Account
+  /** When the pasted credential's ACCESS half expires. The pair outlives it. */
+  expires_at: string
+  note: string
+}
+
+/**
+ * Register -- or re-authenticate -- one account.
+ *
+ * `credential` is the operator's pasted keychain item, sent VERBATIM. It is
+ * not parsed, normalised, trimmed into fields or logged here: `parse_credential`
+ * in the broker is the one reader of that shape, and a second implementation in
+ * TypeScript would disagree with it the first time the shape changed. The
+ * broker parses it BEFORE any write, so a credential with no refresh token is
+ * refused at the moment of pasting with a 422.
+ *
+ * `owner_tenant` IS DELIBERATELY NOT SENT. `routes/accounts.py` files the
+ * account under the tenant on the verified token and reads the body field for
+ * one purpose only -- to compare it and answer 403 when it differs. Sending a
+ * value therefore buys nothing and adds a way to be refused for a mismatch
+ * that is not the operator's mistake. The route's own words: "the owner comes
+ * from the verified token, so the field can be omitted".
+ *
+ * RE-REGISTERING AN EXISTING LABEL IS THE RE-AUTHENTICATE PATH, and it
+ * deliberately PRESERVES state (accountstore.py:106-124) so that re-registering
+ * cannot silently un-pause an account somebody paused. The consequence the
+ * caller has to handle: an account in REAUTH_REQUIRED is STILL in
+ * REAUTH_REQUIRED after a successful re-register, and nothing will be assigned
+ * to it until its state is put back.
+ */
+export async function registerAccount(body: {
+  label: string
+  provider: string
+  lend_to: string[]
+  credential: string
+}): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureRegister(body)
+  return write('/v1/accounts', 'POST', body)
+}
+
+/** `PUT /v1/accounts/{id}/lending`. The whole list, not a delta. */
+export async function setAccountLending(
+  accountId: string,
+  lendTo: string[],
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureLending(accountId, lendTo)
+  return write(`/v1/accounts/${encodeURIComponent(accountId)}/lending`, 'PUT', { lend_to: lendTo })
+}
+
+/** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
+export async function setAccountState(
+  accountId: string,
+  state: AccountStateName,
+  reason: string,
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureState(accountId, state, reason)
+  return write(`/v1/accounts/${encodeURIComponent(accountId)}/state`, 'PUT', { state, reason })
+}
+
+/**
+ * `POST /v1/accounts/{id}/refresh`.
+ *
+ * A 200 HERE DOES NOT MEAN THE REFRESH WORKED. The route reports the outcome
+ * in the body -- `refresh.refreshed` and `refresh.reason` -- and answers 200
+ * for `reauth_required` exactly as it does for `refreshed`. Treating the status
+ * as the answer would put "succeeded" on screen for the one case that needs a
+ * human, which is this repository's defining bug wearing a different hat.
+ */
+export async function refreshAccount(accountId: string): Promise<Result<RefreshResponse>> {
+  const res = USE_FIXTURES
+    ? await fixtureRefresh(accountId)
+    : await write(`/v1/accounts/${encodeURIComponent(accountId)}/refresh`, 'POST')
+  if (res.status !== 'ok') return res as Result<RefreshResponse>
+
+  const body = res.data
+  if (!isRecord(body) || !isRecord(body.refresh) || typeof body.refresh.refreshed !== 'boolean') {
+    // A 200 whose body does not say what happened is not a success. Something
+    // MAY have been rotated, and the previous access token may already be
+    // revoked, so this must not read as "nothing happened" either.
+    return {
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 200,
+        code: null,
+        message:
+          'The refresh route answered without saying whether the credential was exchanged. ' +
+          'Refreshing revokes the previous access token, so the account may have been rotated anyway — reload before trying again.',
+      },
+    }
+  }
+  return { status: 'ok', data: body as unknown as RefreshResponse, fetchedAt: res.fetchedAt }
+}
+
+/**
+ * `DELETE /v1/accounts/{id}`.
+ *
+ * Removes the Firestore document. The SECRET IS RETAINED, deliberately:
+ * deleting a Secret Manager secret is irreversible and takes its version
+ * history with it, so an account removed by mistake stays re-registerable.
+ * The screen has to say that, because "remove" otherwise reads as "destroy".
+ */
+export async function removeAccount(accountId: string): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureRemove(accountId)
+  return write(`/v1/accounts/${encodeURIComponent(accountId)}`, 'DELETE')
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+// --------------------------------------------------------------------------
+// Account fixtures
+// --------------------------------------------------------------------------
+// Mutable on purpose: registering, refreshing, lending and removing all take
+// effect here, so the screen can be worked on -- and its failure treatments
+// actually looked at -- before the proxy route exists. A fixture that only
+// serves reads means every write path ships having never been seen.
+//
+// The set below carries ONE OF EVERY TREATMENT, because a tidy fixture teaches
+// the wrong thing about what this screen is for: a live account, a stale one
+// (`~`), one whose five-hour window has already reset, one that has never been
+// observed at all, one in REAUTH_REQUIRED, and one the provider reports only a
+// five-hour window for.
+
+const ISO = (msFromNow: number): string => new Date(Date.now() + msFromNow).toISOString()
+
+function fixtureAccount(
+  owner: string,
+  label: string,
+  extra: Partial<Account> = {},
+): Account {
+  return {
+    account_id: `${owner}:${label}`,
+    owner_tenant: owner,
+    label,
+    provider: 'anthropic',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    assigned: 0,
+    windows: {},
+    observed_at: ISO(-4 * 60_000),
+    stale: false,
+    ...extra,
+  }
+}
+
+let fixtureAccounts: Account[] = [
+  fixtureAccount('u-bogdan', 'primary', {
+    assigned: 2,
+    windows: {
+      five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
+      seven_day: { utilization: 0.63, resets_at: ISO(70 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'overflow', {
+    // Observed two hours ago: past DEFAULT_STALE_AFTER, so every figure on this
+    // row is marked `~` and nothing on it may be read as current.
+    observed_at: ISO(-2 * 3600_000),
+    stale: true,
+    windows: {
+      five_hour: { utilization: 0.88, resets_at: ISO(19 * 3600_000 + 43 * 60_000), reset: false },
+      seven_day: { utilization: 0.12, resets_at: ISO(94 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'weekly-burn', {
+    state: 'PAUSED',
+    reason: 'held back for the release run on Monday',
+    windows: {
+      // Already past its reset: the figure describes a window that has refilled.
+      five_hour: { utilization: 0.97, resets_at: ISO(-6 * 60_000), reset: true },
+      seven_day: { utilization: 0.94, resets_at: ISO(70 * 3600_000), reset: false },
+    },
+  }),
+  fixtureAccount('u-bogdan', 'never-polled', {
+    // Registered, never observed. Utilisation is UNKNOWN, emphatically not 0%.
+    observed_at: null,
+    stale: true,
+    windows: {},
+  }),
+  fixtureAccount('u-bogdan', 'retired-laptop', {
+    state: 'REAUTH_REQUIRED',
+    reason: 'refresh failed: reauth_required',
+    lend_to: ['eng'],
+    observed_at: ISO(-3 * 86_400_000),
+    stale: true,
+    windows: {
+      five_hour: { utilization: 0.2, resets_at: ISO(-2 * 86_400_000), reset: true },
+      seven_day: { utilization: 0.55, resets_at: ISO(-86_400_000), reset: true },
+    },
+  }),
+  fixtureAccount('eng', 'shared', {
+    assigned: 3,
+    lend_to: ['u-bogdan'],
+    windows: {
+      // Only one window came back. The 7D column says so rather than showing 0%.
+      five_hour: { utilization: 0.56, resets_at: ISO(3600_000 + 12 * 60_000), reset: false },
+    },
+  }),
+]
+
+/** The tenant the fixture's verified token would carry. */
+const FIXTURE_TENANT = 'u-bogdan'
+
+async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
+  await new Promise((r) => setTimeout(r, 210))
+  noteFixtureProbe('/v1/accounts', 210, true)
+  // The admin tenant list is the one read a non-admin genuinely cannot do, and
+  // the fixture exercises that branch rather than the happy one -- otherwise
+  // the "no picker, and here is why" copy ships unlooked-at.
+  noteFixtureProbe('/v1/admin/tenants', 90, false, 'admin_required')
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      // `eng:shared` is in the list because it is LENT to this tenant, which is
+      // what `for_tenant` returns. It is deliberately not removable, pausable
+      // or refreshable from here, and the fixture is what makes that path
+      // visible in development.
+      page: { accounts: fixtureAccounts.map((a) => ({ ...a })), tenant_id: FIXTURE_TENANT },
+      tenants: null,
+      tenantsDetail: 'Admin group membership is required for this endpoint.',
+    },
+  }
+}
+
+function fixtureRefused(message: string): Result<unknown> {
+  return {
+    status: 'error',
+    error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed', message },
+  }
+}
+
+async function fixtureRegister(body: {
+  label: string
+  provider: string
+  lend_to: string[]
+  credential: string
+}): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 320))
+  // The fixture applies the SAME refusal the broker does, so the 422 copy on
+  // this screen is exercised by pasting a setup-token rather than only in
+  // production. parse_credential's rule: no refreshToken, no registration.
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.credential)
+  } catch {
+    return fixtureRefused(
+      'the stored credential is not JSON; a subscription credential needs accessToken, refreshToken and expiresAt',
+    )
+  }
+  const outer = isRecord(parsed) ? parsed : {}
+  const inner = isRecord(outer.claudeAiOauth) ? outer.claudeAiOauth : outer
+  if (!inner.refreshToken && !inner.refresh_token) {
+    return fixtureRefused('the stored credential has no refresh token')
+  }
+  // The owner is the token's tenant, never anything in the body -- the same
+  // rule routes/accounts.py enforces.
+  const existing = fixtureAccounts.find(
+    (a) => a.account_id === `${FIXTURE_TENANT}:${body.label}`,
+  )
+  const account: Account = existing
+    // Re-registering preserves state and readings, exactly as accountstore.py does.
+    ? { ...existing, lend_to: body.lend_to, provider: body.provider }
+    : fixtureAccount(FIXTURE_TENANT, body.label, {
+        provider: body.provider,
+        lend_to: body.lend_to,
+        observed_at: null,
+        stale: true,
+        windows: {},
+      })
+  fixtureAccounts = existing
+    ? fixtureAccounts.map((a) => (a.account_id === account.account_id ? account : a))
+    : [...fixtureAccounts, account]
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      account,
+      expires_at: ISO(7 * 3600_000),
+      note: 'stored write-only; no route in this service returns key material',
+    } satisfies RegisterResponse,
+  }
+}
+
+async function fixtureLending(accountId: string, lendTo: string[]): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  fixtureAccounts = fixtureAccounts.map((a) =>
+    a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
+  )
+  return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixtureState(
+  accountId: string,
+  state: AccountStateName,
+  reason: string,
+): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  fixtureAccounts = fixtureAccounts.map((a) =>
+    a.account_id === accountId ? { ...a, state, reason } : a,
+  )
+  return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixtureRefresh(accountId: string): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 620))
+  const account = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!account) return fixtureRefused(`no account '${accountId}'`)
+
+  // REAUTH_REQUIRED keeps failing on purpose: it is the one outcome an operator
+  // has to act on, and the only way to see that copy is for a fixture to
+  // produce it.
+  if (account.state === 'REAUTH_REQUIRED') {
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        refresh: {
+          tenant_id: account.label, provider: 'account',
+          refreshed: false, reason: 'reauth_required', expires_at: null,
+        },
+        account,
+      } satisfies RefreshResponse,
+    }
+  }
+  const refreshed: Account = { ...account, observed_at: new Date().toISOString(), stale: false }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? refreshed : a))
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      refresh: {
+        tenant_id: account.label, provider: 'account',
+        refreshed: true, reason: 'refreshed', expires_at: ISO(8 * 3600_000),
+      },
+      account: refreshed,
+    } satisfies RefreshResponse,
+  }
+}
+
+async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 200))
+  fixtureAccounts = fixtureAccounts.filter((a) => a.account_id !== accountId)
+  return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId, secret: 'retained' } }
 }

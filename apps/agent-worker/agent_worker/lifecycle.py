@@ -49,7 +49,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,21 @@ from swarm_common.models import ProviderState, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import workspace as workspace_mod
+from .accountlease import (
+    ACCOUNT_TOKEN_ENV,
+    ACCOUNT_UNREADABLE,
+    BROKER_REFUSED,
+    NO_RECENT_READING,
+    POOL_PAUSED,
+    AccountBroker,
+    AccountUnreadable,
+    Assignment,
+    BrokerRefused,
+    BrokerUnavailable,
+    NoAccount,
+    NoAccountAvailable,
+    credential_env_from_account,
+)
 from .checkpoint import CheckpointManager, CheckpointRecord
 from .config import WorkerConfig
 from .control import ControlPlane, ControlSignals
@@ -105,6 +120,39 @@ MAX_IN_WORKER_RETRIES = 3
 #: never finishes, holding its lease the whole time.
 MAX_CREDENTIAL_RELOADS = 2
 
+#: How long to park when the account pool has nothing and cannot say when it
+#: will. Used ONLY as the fallback: when the broker reports the instant the
+#: binding window clears, the task waits until exactly that instant instead.
+#:
+#: Fifteen minutes rather than one: the pool is empty because other agents are
+#: using it, and a task that wakes every minute to be told the same thing is a
+#: dispatch, an image pull and a lease for nothing. Rather than five, because a
+#: five-hour window releases capacity in bursts.
+NO_ACCOUNT_RETRY_SECONDS = 900
+
+#: How long to park when the pool's readings have all gone STALE.
+#:
+#: A different number from the one above because it is a different claim.
+#: "Spent" is a fact about the accounts and clears when the provider's window
+#: rolls over, hours away. "Not observed recently" says nothing about whether
+#: there is room -- only that nobody has looked lately -- and the broker's own
+#: usage poll looks on every sweep tick, nominally every five minutes. Parking
+#: for fifteen would leave a pool with plenty of headroom idle for three sweeps
+#: after it had already refreshed its readings.
+STALE_READING_RETRY_SECONDS = 300
+
+#: How many different accounts one attempt will try before it gives up and
+#: parks. Three, not one: a freshly onboarded account whose secret has no
+#: version yet, and a borrowed account this worker was never granted access
+#: to, both look identical at `choose()` -- which is deterministic, so asking
+#: again without excluding the one that failed returns the same answer.
+#:
+#: Bounded, and small, because every miss is a Secret Manager call and a
+#: round trip to the broker while this worker holds a concurrency slot. If
+#: three different accounts in a row cannot be read, the pool needs a person,
+#: not a fourth try.
+MAX_ACCOUNT_TRIES = 3
+
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
@@ -128,6 +176,10 @@ class WorkerDeps:
     db: Any
     metrics_exporter: Any
     secret_client: SecretManagerClient | None = None
+    #: The account pool client. None means "build one from the config, if the
+    #: config names a broker" -- which is what the entrypoint does. Injected in
+    #: tests so no unit test needs a metadata server or a network.
+    account_broker: Any | None = None
 
 
 @dataclass
@@ -167,6 +219,28 @@ class Worker:
         self._clone_base: str | None = None
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
+        # The account this attempt holds, if the pool gave it one. Set once and
+        # kept: a credential reload must re-read the SAME account's secret, not
+        # move the agent onto a different subscription mid-run.
+        self._account: Assignment | None = None
+        self._account_released = False
+        # Once this attempt has decided it is NOT running on the pool, it stays
+        # decided. `_build_child_env` is called again on the credential-reload
+        # path, and asking the broker a second time there could move a running
+        # agent from the tenant secret onto a pool account halfway through its
+        # run -- or, if the pool had emptied in the meantime, raise
+        # NoAccountAvailable from a call site that is not a parking one.
+        self._account_declined: str | None = None
+        # Accounts this attempt was given and could not read. Sent back to the
+        # broker as `exclude` so the next ask does not return the same one.
+        self._account_rejected: list[str] = []
+        self._account_broker = deps.account_broker
+        if self._account_broker is None and config.quota_broker_url:
+            self._account_broker = AccountBroker(
+                config.quota_broker_url,
+                logger=deps.logger,
+                audience=config.quota_broker_audience,
+            )
 
     # ------------------------------------------------------------------
     # entrypoint
@@ -280,6 +354,10 @@ class Worker:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
             return self._park_credential_missing(exc)
+        except NoAccountAvailable as exc:
+            # The pool is this tenant's way of running and it is momentarily
+            # empty. A wait, not a failure -- see `_park_no_account`.
+            return self._park_no_account(exc)
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -337,7 +415,20 @@ class Worker:
                     # that knows which env names this profile's credential maps
                     # to, and `access()` always reads `latest`, so this picks up
                     # whatever the refresher wrote.
-                    child_env = self._build_child_env()
+                    #
+                    # GUARDED LIKE STEP 6, because it is the same call and it
+                    # can raise the same two exceptions. Unguarded, a pool that
+                    # had emptied or an account whose secret had become
+                    # unreadable since the agent started would leave
+                    # NoAccountAvailable -- a plain RuntimeError -- to reach
+                    # run()'s generic handler and write TaskState.FAILED, which
+                    # is the one outcome this whole path exists to avoid.
+                    try:
+                        child_env = self._build_child_env()
+                    except CredentialMissing as exc:
+                        return self._park_credential_missing(exc)
+                    except NoAccountAvailable as exc:
+                        return self._park_no_account(exc)
                     continue
                 if refusal is not None:
                     self.log.error(
@@ -851,17 +942,383 @@ class Worker:
                     f"runner {profile.name} needs the {profile.provider} credential but no "
                     "Secret Manager client is configured"
                 )
-            tenant = load_tenant(self.db, self.cfg.tenant_id)
-            resolved = resolve_credentials(
-                tenant=tenant,
-                provider=profile.provider,
-                secret_env_names=profile.secrets,
-                any_of=profile.secrets_any_of,
-                client=self.secret_client,
-                logger=self.log,
-            )
-            base.update(resolved.env)
+            # THE POOL FIRST, THE TENANT SECRET AS THE FALLBACK, and never the
+            # other way round. An assigned account is a subscription chosen for
+            # its headroom; the tenant secret is the one credential every agent
+            # of this tenant shares. Falling back to it is correct when there is
+            # no pool and wrong whenever there is one, so the order is fixed.
+            account_env = self._pool_credential_env(profile)
+            if account_env is not None:
+                base.update(account_env)
+            else:
+                tenant = load_tenant(self.db, self.cfg.tenant_id)
+                resolved = resolve_credentials(
+                    tenant=tenant,
+                    provider=profile.provider,
+                    secret_env_names=profile.secrets,
+                    any_of=profile.secrets_any_of,
+                    client=self.secret_client,
+                    logger=self.log,
+                )
+                base.update(resolved.env)
         return ws.child_env(base)
+
+    # -- the account pool --------------------------------------------------
+    def _pool_credential_env(self, profile: Any) -> dict[str, str] | None:
+        """The child env an assigned account supplies, or None for the tenant secret.
+
+        THE LOOP IS THE POINT. `choose()` is deterministic, so an account this
+        worker cannot read is one it would be handed again on every retry --
+        and the three real ways that happens (a freshly onboarded account whose
+        secret has no version yet, an account lent by a tenant that never
+        granted this worker's service account access to it, an empty version)
+        are all invisible to the broker, which knows about Firestore documents
+        and not about IAM. So: hand the unusable one back, say WHY, ask again
+        excluding it, and park if nothing works.
+
+        Parking rather than failing, because none of this is the task's fault
+        and an unusable pool must cost nothing. Failing would burn all three
+        attempts on the same account in a row.
+        """
+        for _ in range(MAX_ACCOUNT_TRIES):
+            account = self._lease_account(profile)
+            if account is None:
+                return None
+            try:
+                return self._account_credential_env(profile, account)
+            except AccountUnreadable as exc:
+                self._reject_account(account, exc)
+        raise NoAccountAvailable(
+            NoAccount(reason=ACCOUNT_UNREADABLE),
+            profile.provider or "unknown",
+        )
+
+    def _lease_account(self, profile: Any) -> Assignment | None:
+        """The account this attempt runs on, or None to use the tenant secret.
+
+        None is returned -- rather than raised -- for every case that means
+        "the pool is not how this runs":
+
+          * no broker is configured, which is every deployment that has not
+            adopted the pool;
+          * the profile does not declare `CLAUDE_CODE_OAUTH_TOKEN`, so it wants
+            a metered API key and an account has none to give;
+          * the broker is unreachable or answers unusably, which must degrade
+            to the behaviour that worked yesterday rather than fail a task;
+          * the tenant has no account registered at all.
+
+        `NoAccountAvailable` is raised for the cases that are genuinely a wait
+        or genuinely broken: accounts exist and every one is spent, paused,
+        draining or unobserved; or the broker REFUSED this worker. The caller
+        parks in both cases -- an attempt is never failed over the pool.
+        """
+        if self._account is not None:
+            # Already held. Re-reading it is what the credential-reload path
+            # wants; re-ASSIGNING would double-count this agent on the pool and
+            # could move it onto a different subscription halfway through a run.
+            return self._account
+        if self._account_declined is not None:
+            # Decided once, at step 6, and not revisited. See the field.
+            return None
+        if self._account_broker is None:
+            return self._decline_pool("no_broker_configured")
+        if ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
+            self.log.info(
+                "runner profile does not accept a subscription token; using the "
+                "tenant credential rather than the account pool",
+                runner_profile=profile.name,
+                declared=sorted(profile.secrets or ()),
+            )
+            return self._decline_pool("profile_takes_no_subscription")
+
+        provider = profile.provider
+        try:
+            outcome = self._account_broker.assign(
+                provider, exclude=tuple(self._account_rejected)
+            )
+        except BrokerRefused as exc:
+            # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
+            # configured and this worker may not use it -- almost always a
+            # missing `run.invoker` grant for this tenant's worker service
+            # account, or a URL that is not the broker. Falling back here would
+            # put every agent back on the one shared tenant subscription while
+            # the pool's own dashboards showed it healthy and idle, which is
+            # the failure nobody would ever find. Parking costs nothing and
+            # puts the cause in the task's own blocked_by.
+            self.log.error(
+                "the quota broker refused this worker; the account pool is "
+                "configured and this tenant cannot use it",
+                provider=provider,
+                error=str(exc),
+            )
+            raise NoAccountAvailable(
+                NoAccount(reason=BROKER_REFUSED), provider or "unknown"
+            ) from None
+        except BrokerUnavailable as exc:
+            # DEGRADE, DO NOT FAIL. The broker being down is not the task's
+            # fault and the tenant secret still works; turning an outage in a
+            # control-plane service into failed attempts across every tenant is
+            # a much larger incident than the one that started it.
+            self.log.warning(
+                "could not reach the quota broker for an account; falling back "
+                "to the tenant credential",
+                provider=provider,
+                error=str(exc),
+            )
+            return self._decline_pool("broker_unreachable")
+        except Exception as exc:  # pragma: no cover - defence in depth
+            self.log.warning(
+                "the account pool client raised; falling back to the tenant credential",
+                provider=provider,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return self._decline_pool("broker_client_error")
+
+        if isinstance(outcome, NoAccount):
+            if outcome.is_pool_absent:
+                self.log.info(
+                    "no account is registered for this tenant; using the tenant credential",
+                    provider=provider,
+                )
+                return self._decline_pool("no_accounts_registered")
+            raise NoAccountAvailable(outcome, provider or "unknown")
+
+        self._account = outcome
+        self._account_released = False
+        self.log.info(
+            "account assigned from the pool",
+            account_id=outcome.account_id,
+            provider=provider,
+            # Whether this tenant borrowed it. Worth a field of its own: a
+            # deployment leaning on borrowed capacity looks healthy right up to
+            # the day the lender revokes the loan.
+            borrowed=bool(outcome.owner_tenant and outcome.owner_tenant != self.cfg.tenant_id),
+        )
+        self.control.emit(
+            EventType.RUNNING,
+            {
+                "cause": "account_assigned",
+                "account_id": outcome.account_id,
+                "provider": provider,
+            },
+        )
+        return outcome
+
+    def _decline_pool(self, cause: str) -> None:
+        """Record that this attempt is NOT on the pool, once and for good.
+
+        Returns None so call sites can `return self._decline_pool(...)`. The
+        stickiness is the behaviour: `_build_child_env` runs again whenever a
+        credential is reloaded mid-attempt, and a second ask there could move a
+        running agent onto a pool account it did not start on, or raise from a
+        call site whose job is to restart the child rather than to park.
+        """
+        self._account_declined = cause
+        return None
+
+    def _account_credential_env(self, profile: Any, account: Assignment) -> dict[str, str]:
+        """Read the ASSIGNED account's secret and shape it for the child.
+
+        `{base}` holds only the access token -- the `{base}-refresh` half that
+        can mint successors is readable by the broker alone -- so what lands in
+        the child's environment expires on its own. Read on EVERY call, which
+        is what makes the credential-reload path work: `access()` always takes
+        `latest`, so a token the refresher rotated under a running agent is
+        picked up by re-reading the same name.
+
+        EVERY WAY THIS CAN FAIL BECOMES `AccountUnreadable`, including the ones
+        that arrive as a raw google-cloud exception. `access()` raises NotFound
+        for a secret with no version -- which is exactly the state
+        `scripts/account.sh` leaves a freshly added account in until the
+        broker's next sweep publishes the access token -- and PermissionDenied
+        for an account lent by a tenant that never granted this worker's
+        service account `secretmanager.secretAccessor` on it. Both used to
+        travel straight out of here into `run()`'s generic handler and fail the
+        attempt; both are "this account, not this task", so the caller hands it
+        back and asks for another.
+        """
+        assert self.secret_client is not None
+        try:
+            payload = self.secret_client.access(account.secret)
+            env = credential_env_from_account(
+                payload,
+                secret_env_names=profile.secrets,
+                secret_name=account.secret,
+            )
+        except Exception as exc:
+            raise AccountUnreadable(
+                account.account_id, f"{type(exc).__name__}: {exc}"
+            ) from None
+        for value in env.values():
+            self.log.register_secret(value)
+        self.log.info(
+            "account credentials resolved",
+            account_id=account.account_id,
+            secret=account.secret,
+            variables=sorted(env),
+        )
+        return env
+
+    def _reject_account(self, account: Assignment, exc: AccountUnreadable) -> None:
+        """Hand back an account this worker cannot read, and remember not to ask for it.
+
+        Three things, and all three matter. The hold goes back, or the pool
+        counts an agent that never started. The id joins `exclude`, or the next
+        ask returns the same account, because `choose()` is deterministic. And
+        the reason travels with the release, so the broker can stop offering
+        this account to THIS tenant for a while and an operator can see the
+        difference between an account nobody wants and an account nobody can
+        read.
+        """
+        self.log.error(
+            "the assigned account cannot be read; handing it back and asking "
+            "for another",
+            account_id=account.account_id,
+            secret=account.secret,
+            error=exc.detail,
+        )
+        self.control.emit(
+            EventType.RETRYING,
+            {
+                "cause": "account_unreadable",
+                "account_id": account.account_id,
+                "provider": self.cfg.provider,
+            },
+        )
+        self._account_rejected.append(account.account_id)
+        self._account = None
+        self._account_released = False
+        self._give_back(account, unusable=exc.detail)
+
+    def _give_back(self, account: Assignment, *, unusable: str = "") -> None:
+        """One release call, and it never raises.
+
+        A failed release costs one over-counted hold until it EXPIRES. It is an
+        expiry and not a reconciler: `apps/reconciler/` has no account code at
+        all, and a comment here used to claim it did -- which is worse than no
+        comment, because the next person reads it as a reason not to build the
+        backstop. The real one is in the broker: every hold carries a deadline
+        and the quota sweep prunes the expired ones, so a worker that is
+        SIGKILLed, OOM-killed or preempted costs a few stale minutes on one
+        account's counter rather than a slot that never comes back.
+        """
+        if self._account_broker is None:
+            return
+        try:
+            self._account_broker.release(
+                account.account_id, account.assignment_id, unusable=unusable
+            )
+            self.log.info(
+                "account released",
+                account_id=account.account_id,
+                unusable=bool(unusable),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "could not release the account; its hold expires on its own and "
+                "the broker's quota sweep prunes it",
+                account_id=account.account_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    def _release_account(self) -> None:
+        """Give the account back, on whatever path this attempt is leaving by.
+
+        CALLED FROM `_cleanup`, which is the `finally` of `run()`, because that
+        is the ONE place every exit runs through: success, failure, a park on
+        quota or on a missing credential, a cancellation, a crash, and a
+        mid-run fencing exit. Releasing at each of those sites instead would
+        mean a new exit path is a leaked assignment, discovered weeks later as
+        an account that `choose()` has quietly stopped picking.
+
+        Never raises. An exception here would replace the attempt's real
+        outcome with this one.
+        """
+        account, self._account = self._account, None
+        if account is None or self._account_released or self._account_broker is None:
+            return
+        self._account_released = True
+        self._give_back(account)
+
+    def _park_no_account(self, exc: NoAccountAvailable) -> Outcome:
+        """The pool cannot serve this attempt. Park -- it costs nothing.
+
+        NOT A FAILURE, for any of the reasons that land here. The tenant did
+        nothing wrong, the credential is fine, and one of the three attempts
+        must not be spent on a queue -- nor on a missing IAM grant, which no
+        number of retries will produce. Parking gives the slot and the memory
+        back and the scheduler returns the task by itself.
+
+        THE WAIT DEPENDS ON WHAT IS ACTUALLY BEING WAITED FOR, and the reasons
+        are not interchangeable:
+
+          * a reset instant from the broker's `Account.next_reset` -- wake
+            exactly then, rather than polling;
+          * `no_recent_reading` -- nothing says the accounts are spent, only
+            that nobody has looked lately, and the broker's usage poll looks
+            every sweep. Minutes, not a quarter of an hour;
+          * `pool_paused` -- waiting on a PERSON. There is no instant to wake
+            at, so the long fallback;
+          * `broker_refused` / `account_unreadable` -- a configuration error.
+            It parks as CREDENTIAL_MISSING rather than as quota, because the
+            honest summary is "an admin has to fix something", not "come back
+            when there is room".
+        """
+        reason = exc.decision.reason
+        configuration_error = reason in (BROKER_REFUSED, ACCOUNT_UNREADABLE)
+        fallback_seconds = (
+            STALE_READING_RETRY_SECONDS
+            if reason == NO_RECENT_READING
+            else NO_ACCOUNT_RETRY_SECONDS
+        )
+        next_eligible = _parse_iso(exc.decision.next_reset_at) or (
+            utcnow() + timedelta(seconds=fallback_seconds)
+        )
+        self.log.warning(
+            "the account pool cannot serve this attempt; parking",
+            provider=exc.provider,
+            reason=reason,
+            waiting_on=(
+                "an administrator" if configuration_error
+                else "a person" if reason == POOL_PAUSED
+                else "the broker's next usage poll" if reason == NO_RECENT_READING
+                else "a quota window"
+            ),
+            next_eligible_at=next_eligible.isoformat(),
+        )
+        self._checkpoint("no-account")
+        summary = self._upload_outputs()
+        self._export_metrics()
+        detail = {
+            "provider": exc.provider,
+            "account_pool_reason": exc.decision.reason,
+            **summary,
+        }
+        self.control.emit(
+            EventType.QUOTA_EXHAUSTED,
+            {**detail, "next_eligible_at": next_eligible, "park_phase": "account_assign"},
+        )
+        self.control.park(
+            # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
+            # the tenant HAS credentials, they are simply all spent or all
+            # unobserved, and sending an operator to look at that wastes their
+            # time. CREDENTIAL_MISSING when it will NOT recover on its own --
+            # a broker that refused this worker, or an account whose secret
+            # nobody granted it access to, is a configuration error, and that
+            # ParkReason is the one that means "an admin must act".
+            #
+            # A ParkReason naming the pool would be more honest than either;
+            # ParkReason is in the frozen contract, so that is a request in the
+            # report, not a change.
+            reason=(
+                ParkReason.CREDENTIAL_MISSING
+                if configuration_error
+                else ParkReason.PROVIDER_QUOTA_EXHAUSTED
+            ),
+            next_eligible_at=next_eligible,
+            detail={**detail, "park_phase": "account_assign"},
+        )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_credential_missing(self, exc: CredentialMissing) -> Outcome:
         """No key for this provider. Park; it costs nothing while an admin fixes it."""
@@ -1509,6 +1966,12 @@ class Worker:
                     self._child.finish()
             except Exception:
                 pass
+        # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
+        # the account back while an agent could still be making calls on it
+        # would let the broker hand the same subscription to another agent and
+        # count one where there are two. This is the single release point for
+        # every exit path -- see `_release_account`.
+        self._release_account()
         if self.ws is not None:
             workspace_mod.destroy(self.ws)
 
@@ -1537,6 +2000,22 @@ def _execution_name() -> str | None:
         if value:
             return value
     return None
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """An ISO instant from the broker, or None.
+
+    None on anything unparseable rather than an exception: this decides only
+    WHEN a parked task wakes up, and a broker that grows a new timestamp format
+    must not turn a free park into a failed attempt. The caller has a default.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

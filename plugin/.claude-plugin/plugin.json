@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "sc",
+  "version": "0.1.0",
+  "description": "SwarmCloud at a glance from inside a session: the account pool and its quota windows, which pool actually binds each runner profile, what is running, and what is wrong. Read-only. Requires the swarm-mcp bridge in this repository.",
+  "author": {
+    "name": "SwarmCloud"
+  },
+  "license": "MIT"
+}

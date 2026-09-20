@@ -1,8 +1,13 @@
 # The bridge that makes SwarmCloud usable from a laptop the way a local
 # subagent is. It runs on the OPERATOR's machine, never in Cloud Run, which is
-# why it carries no dependency at all: urllib for the API, subprocess for
+# why it carries no THIRD-PARTY dependency: urllib for the API, subprocess for
 # `gcloud` and `git`. Adding an SDK here would mean an operator has to install
 # something before they can look at their own platform.
+#
+# The one dependency is `swarm-common`, this repository's frozen contract, and
+# it is here so that nothing in this package restates it. The part that is
+# used (`swarm_common.states`) is enum-only: no client, no credentials, no
+# network, so the offline tests stay offline.
 [project]
 name = "swarm-mcp"
 version = "0.1.0"
@@ -13,6 +18,9 @@ dependencies = ["swarm-common"]
 [project.scripts]
 swarm = "swarm_mcp.cli:main"
 swarm-mcp = "swarm_mcp.server:main"
+# `sc` is read-only and deliberately short: a status command that has to be
+# looked up is one nobody runs at the moment it would have helped.
+sc = "swarm_mcp.sc:main"
 
 [build-system]
 requires = ["hatchling"]

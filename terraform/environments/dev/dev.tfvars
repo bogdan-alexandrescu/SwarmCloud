@@ -343,6 +343,20 @@ frontend_iap_audiences = [
   "/projects/209012342332/global/backendServices/6904312892305383900",
 ]
 
+# The quota broker's URL, for the SCHEDULER's environment only -- it passes it
+# through to every worker it dispatches, and a worker with no QUOTA_BROKER_URL
+# uses no account pool at all. Read from `terraform output quota_broker_url`,
+# and declared here for the same reason frontend_iap_audiences is: the
+# scheduler's environment is an input to the Cloud Run module and this URL is
+# an output of it, so referencing it is a cycle. Cloud Run JOBS do not need
+# this -- locals.tf derives the same value for them.
+#
+# Unset, the pool is INERT and nothing says so at runtime: every agent runs on
+# the one shared per-tenant subscription while the pool's own listing shows a
+# healthy, idle set of accounts. The `quota_broker_url_is_wired` check is what
+# makes that visible at plan time; this is what makes it unnecessary.
+quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
+
 
 # Admin by email, because admin-by-group is unreachable here: swarm-api cannot
 # read Cloud Identity groups, so the admin set is empty and every operator

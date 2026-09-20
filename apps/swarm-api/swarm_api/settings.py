@@ -133,6 +133,25 @@ class ApiSettings:
     #: the nudge; the Cloud Scheduler safety tick still drains the queue.
     dispatch_topic: str = ""
 
+    #: Base URL of the quota broker, which owns the account pool.
+    #:
+    #: The account routes in this API are a PROXY: refreshing an OAuth
+    #: credential revokes the one it replaces, so the broker is the platform's
+    #: single writer for subscription credentials and this service never writes
+    #: one itself. Empty therefore means the account routes REFUSE with a 503 --
+    #: there is no local path to fall back to, and inventing one would be the
+    #: second writer the design exists to prevent.
+    quota_broker_url: str = ""
+    #: Audience for the ID token this service mints to call that broker.
+    #:
+    #: NOT THE SAME VALUE AS THE URL, and assuming it was fails only once
+    #: deployed. terraform gives the broker service a CUSTOM AUDIENCE
+    #: (`https://swarm-quota-broker.<env>.swarm.internal`, infra/locals.tf
+    #: `push_audiences`) and the broker verifies `aud` against exactly that
+    #: string, which is not its Cloud Run URL. Empty falls back to the URL,
+    #: which is right for a plain service and for a local broker.
+    quota_broker_audience: str = ""
+
     #: Maximum page size a caller may request on any list endpoint.
     max_page_size: int = 200
     default_page_size: int = 50
@@ -186,6 +205,8 @@ class ApiSettings:
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
+            quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
+            quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),
             default_page_size=_int("DEFAULT_PAGE_SIZE", 50),
             rate_limit_burst=_int("RATE_LIMIT_BURST", max(40, core.requests_per_second * 2)),

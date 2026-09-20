@@ -1003,3 +1003,233 @@ export function stepState(
   if (!task) return { kind: 'unknown', taskId: step.task_id }
   return { kind: 'state', state: task.state, task }
 }
+
+// ---------------------------------------------------------------------------
+// The account pool  (Settings -> Accounts)
+// ---------------------------------------------------------------------------
+// Shapes returned by `account_to_api` in
+// apps/quota-broker/quota_broker/main.py, which swarm-api proxies verbatim.
+//
+// NO KEY MATERIAL APPEARS HERE, and there is deliberately no field for its
+// length either. `Credential.redacted()` exposes `access_token_len`, which is
+// fine in a debug log and is not fine in a browser: a length is a real hint
+// about a secret and nothing on this screen needs it. If a field like that
+// ever turns up in the payload, it does not get a home in this file.
+
+/** `AccountState` in quota_broker/accounts.py. Four members, no others. */
+export type AccountStateName = 'AVAILABLE' | 'PAUSED' | 'DRAINING' | 'REAUTH_REQUIRED'
+
+/**
+ * One rate-limit window as the provider reported it.
+ *
+ * `utilization` is 0-1, NOT a percentage -- 0.87 is 87%. Multiplying is this
+ * file's job precisely once, in `readingOf`, so no component can forget.
+ */
+export interface AccountWindow {
+  utilization: number
+  resets_at: string
+  /**
+   * The server's own answer to "has this window already passed its reset",
+   * computed at response time. Trusted rather than recomputed here: the
+   * browser's clock is not the platform's, and a reading that flips between
+   * reset and not-reset depending on whose clock is read is worse than either.
+   */
+  reset: boolean
+}
+
+export interface Account {
+  /** `<owner_tenant>:<label>`. Opaque; never split for display. */
+  account_id: string
+  owner_tenant: string
+  label: string
+  provider: string
+  /** Widened to `string`: an unknown state must render as unknown, not crash. */
+  state: AccountStateName | string
+  /** Why it is in that state, written for the human who has to act on it. */
+  reason: string
+  /** Tenants the owner has explicitly lent this account to. Empty is the default. */
+  lend_to: string[]
+  /** Agents currently holding it. Advisory -- the lease is authoritative. */
+  assigned: number
+  /**
+   * Keyed by the PROVIDER's window names, not a fixed pair. accounts.py:143
+   * says so explicitly: "the windows are the provider's to define, and a new
+   * one appearing must not need a schema change to be recorded". So this
+   * screen reads `five_hour` and `seven_day` by name for its two columns and
+   * lists anything else it finds rather than dropping it on the floor.
+   */
+  windows: Record<string, AccountWindow>
+  /** When a reading last arrived. NULL MEANS NONE HAS, which is not zero. */
+  observed_at: string | null
+  /**
+   * True when no reading is recent enough to trust (DEFAULT_STALE_AFTER, 30
+   * minutes). Computed server-side because a reading's age is what decides
+   * whether to believe it, and the server owns the clock.
+   */
+  stale: boolean
+}
+
+/** `GET /v1/accounts`. `tenant_id` is the scope the server actually applied. */
+export interface AccountsPage {
+  accounts: Account[]
+  /** null when a platform caller asked for every tenant. */
+  tenant_id: string | null
+}
+
+/** `RefreshOutcome.as_dict()` in quota_broker/credentials.py. */
+export interface RefreshResult {
+  tenant_id: string
+  provider: string
+  /** THE ONLY FIELD THAT SAYS IT WORKED. The HTTP status does not. */
+  refreshed: boolean
+  /** One of the nine reasons in credentials.py. Never rendered raw. */
+  reason: string
+  expires_at: string | null
+}
+
+/** `POST /v1/accounts/{id}/refresh`. A 200 carries a FAILED refresh too. */
+export interface RefreshResponse {
+  refresh: RefreshResult
+  account: Account
+}
+
+export const FIVE_HOUR = 'five_hour'
+export const SEVEN_DAY = 'seven_day'
+
+/**
+ * Colour for a state chip.
+ *
+ * Returns its own union rather than `Tone`, because two of these are not tones
+ * the rest of the app has: PAUSED is deliberate and gets the purple every
+ * other paused thing here gets, and an unrecognised state gets grey rather
+ * than falling through to a colour that would assert something.
+ */
+export type AccountTone = 'ok' | 'paused' | 'wait' | 'bad' | 'unknown'
+
+export function accountTone(state: string): AccountTone {
+  switch (state) {
+    case 'AVAILABLE': return 'ok'
+    case 'PAUSED': return 'paused'
+    case 'DRAINING': return 'wait'
+    case 'REAUTH_REQUIRED': return 'bad'
+    default: return 'unknown'
+  }
+}
+
+/** The one state only a person can clear. The sweep stops trying on it. */
+export function needsAHuman(a: Account): boolean {
+  return a.state === 'REAUTH_REQUIRED'
+}
+
+/**
+ * What is actually known about one window, as five cases that must not render
+ * alike.
+ *
+ * This is the whole screen in one function. A missing reading is not zero; a
+ * stale reading is not a current one; a window that has already reset is
+ * describing a window that no longer exists. `cs status` marks the last two
+ * with `~` for exactly this reason, and a figure printed without that mark is
+ * a claim that it is current.
+ */
+export type AccountReading =
+  /** No reading has EVER arrived for this account. Not zero -- unmeasured. */
+  | { kind: 'never' }
+  /** Readings exist, but not for this window. The provider did not report it. */
+  | { kind: 'absent' }
+  /** The window passed its reset, so the figure describes a window that refilled. */
+  | { kind: 'reset'; pct: number; resetsAt: string }
+  /** A real figure, too old to trust. Shown, marked, never presented as current. */
+  | { kind: 'stale'; pct: number; resetsAt: string; observedAt: string }
+  /** Measured, recent, and safe to read as a fact. */
+  | { kind: 'live'; pct: number; resetsAt: string; observedAt: string }
+
+export function readingOf(a: Account, key: string): AccountReading {
+  if (a.observed_at === null) return { kind: 'never' }
+  const w = a.windows[key]
+  if (!w || typeof w.utilization !== 'number' || !Number.isFinite(w.utilization)) {
+    return { kind: 'absent' }
+  }
+  const pct = Math.max(0, Math.min(100, w.utilization * 100))
+  // `reset` outranks `stale`: a fresh reading of a window that has since
+  // refilled is still describing the window before it.
+  if (w.reset) return { kind: 'reset', pct, resetsAt: w.resets_at }
+  if (a.stale) return { kind: 'stale', pct, resetsAt: w.resets_at, observedAt: a.observed_at }
+  return { kind: 'live', pct, resetsAt: w.resets_at, observedAt: a.observed_at }
+}
+
+/** True for the two cases `cs status` prefixes with `~`. */
+export function isProjected(r: AccountReading): boolean {
+  return r.kind === 'stale' || r.kind === 'reset'
+}
+
+/**
+ * The window that will actually stop you, which is what CLEARS is about.
+ *
+ * The BINDING window, not the five-hour and not an average: an account at 5%
+ * on its five-hour and 90% on its weekly is stopped by the weekly, and
+ * averaging them to 47% would send agents at an account that is about to
+ * refuse. `Account._binding_remaining` in accounts.py picks the same way, and
+ * treats a window past its reset as full again -- so a window that has reset
+ * cannot be the binding one while another still has room.
+ *
+ * Returns null when there is nothing to pick from, which is a real answer:
+ * CLEARS then renders as an em dash rather than a time nobody measured.
+ */
+export function bindingWindow(a: Account): { key: string; window: AccountWindow } | null {
+  let best: { key: string; window: AccountWindow } | null = null
+  let leastRemaining = Infinity
+  for (const [key, w] of Object.entries(a.windows)) {
+    if (!w || typeof w.utilization !== 'number' || !Number.isFinite(w.utilization)) continue
+    const remaining = w.reset ? 1 : Math.max(0, 1 - w.utilization)
+    if (remaining < leastRemaining) {
+      leastRemaining = remaining
+      best = { key, window: w }
+    }
+  }
+  return best
+}
+
+/**
+ * A duration the way somebody reads a clock, not the way a computer counts it.
+ *
+ * Ported field-for-field from `shortDur` in claudeswitch's
+ * internal/render/status.go, including the zero-padded minutes, because this
+ * column and that one are meant to be the same column. "81h49m" is arithmetic;
+ * "3d 10h" is an answer.
+ */
+export function humaniseUntil(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+  if (ms <= 0) return 'now'
+  const s = Math.floor(ms / 1000)
+  const m = Math.floor(s / 60)
+  const h = Math.floor(m / 60)
+  if (h >= 48) return `${Math.floor(h / 24)}d ${h % 24}h`
+  if (h >= 1) return `${h}h ${String(m % 60).padStart(2, '0')}m`
+  if (m >= 1) return `${m}m`
+  return `${s}s`
+}
+
+/** Time until an ISO instant, humanised. Null in, em dash out. */
+export function clearsIn(iso: string | null | undefined, now: number): string {
+  if (!iso) return '—'
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return '—'
+  return humaniseUntil(t - now)
+}
+
+/**
+ * The five-cell bar, as `miniBar` in claudeswitch's internal/render/width.go
+ * draws it: round to the nearest fifth, clamp, `▰` filled and `▱`
+ * empty.
+ *
+ * Returned as a count rather than a string so the component can draw real
+ * elements -- a screen reader hearing five geometric-shape glyphs learns
+ * nothing, and the percentage beside it is the accessible version of the
+ * same fact.
+ */
+export const BAR_CELLS = 5
+
+export function barFilled(pct: number): number {
+  const filled = Math.round((pct / 100) * BAR_CELLS)
+  return Math.max(0, Math.min(BAR_CELLS, filled))
+}

@@ -101,6 +101,29 @@ class SchedulerSettings:
     #: so one shared spelling here is correct and is not a cross-tenant hole.
     worker_ksa_name: str = "swarm-agent-worker"
 
+    #: Base URL of the quota broker, passed THROUGH to every worker as
+    #: QUOTA_BROKER_URL. The scheduler never calls it; it is the only component
+    #: that writes a worker's execution environment, so it is the only place
+    #: this can be handed over.
+    #:
+    #: Without it the account pool is inert in production and nothing says so:
+    #: `WorkerConfig.quota_broker_url` stays None, `Worker.__init__` builds no
+    #: AccountBroker, and `_lease_account` returns None on its first branch for
+    #: every task ever dispatched. The feature was fully implemented, fully
+    #: tested -- every worker test injects `WorkerDeps.account_broker`, which is
+    #: exactly what hid it -- and reached zero agents.
+    #:
+    #: Empty means "this deployment has no pool", which is the documented
+    #: backwards-compatible default and not a guess at a URL.
+    quota_broker_url: str = ""
+    #: OIDC audience the worker asks the metadata server for. Cloud Run checks
+    #: `aud` against the service URL unless the service declares a custom
+    #: audience -- and this one does (`custom_audiences` in terraform, which is
+    #: how the broker's own `BROKER_AUDIENCE` check is satisfied), so the URL
+    #: alone would mint a token the broker rejects. Empty falls back to the URL,
+    #: which is correct for a deployment with no custom audience.
+    quota_broker_audience: str = ""
+
     project_id: str = ""
     region: str = "us-central1"
     artifact_registry_host: str = ""
@@ -136,6 +159,8 @@ class SchedulerSettings:
             gke_location=os.environ.get("GKE_LOCATION", core.region),
             worker_ksa_name=os.environ.get("WORKER_KSA_NAME", "").strip()
             or "swarm-agent-worker",
+            quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
+            quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             project_id=core.project_id,
             region=core.region,
             artifact_registry_host=registry,

@@ -16,7 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import Body, FastAPI, Header, Query, Request, Response
@@ -33,7 +34,19 @@ from .settings import _int
 from .usage import DEFAULT_MAX_POLLS_PER_SWEEP
 from .oauth import CredentialError, parse_credential
 from .usagepoll import UsagePoller
-from .accounts import DEFAULT_STALE_AFTER, AccountState, due_for_refresh
+from .accounts import (
+    DEFAULT_HOLD_TTL,
+    DEFAULT_STALE_AFTER,
+    AccountState,
+    Hold,
+    Unavailable,
+    choose,
+    due_for_refresh,
+    eligibility,
+    holds_from_firestore,
+    holds_to_firestore,
+)
+from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import AccountStore
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
@@ -129,6 +142,49 @@ class AccountLending(StrictModel):
 class AccountStateChange(StrictModel):
     state: str = Field(min_length=1, max_length=32)
     reason: str = Field(default="", max_length=512)
+
+
+class AccountAssign(StrictModel):
+    """Ask for an account to run on. Carries a PROVIDER and nothing else.
+
+    THERE IS NO TENANT FIELD AND THERE MUST NOT BE ONE. The tenant is derived
+    from the caller's service account, exactly as every other route here
+    derives it, because `Account.may_serve` is what enforces invariant 9 for
+    the pool: an account is reachable by its owner and by the tenants its
+    owner named in `lend_to`, and by nobody else. A tenant taken from the body
+    would make that check a formality -- any worker could name any tenant and
+    be handed that tenant's subscription credential, which is the one thing
+    per-tenant isolation exists to prevent.
+    """
+
+    provider: str = Field(default="anthropic", max_length=64)
+
+    #: Accounts this caller has ALREADY been handed during this attempt and
+    #: could not use. Safe to take from the body in a way a tenant is not: it
+    #: can only ever narrow what this caller is offered, never widen it, and
+    #: `may_serve` still decides the set it narrows. Without it `choose()` is
+    #: deterministic and would return the same unreadable account on every ask
+    #: until the task ran out of attempts.
+    exclude: list[str] = Field(default_factory=list, max_length=20)
+
+
+class AccountRelease(StrictModel):
+    """Give back one named assignment.
+
+    `assignment_id` is REQUIRED. Releasing used to need nothing but
+    `may_serve`, so any tenant an account was lent to could decrement the
+    owner's counter as often as it liked -- and `choose()` sorts on that
+    number, so an account with five live agents could sort as idle and take a
+    sixth. The id is proof that this caller held what it is giving back.
+    """
+
+    assignment_id: str = Field(min_length=1, max_length=128)
+    #: Set when the account was assigned and its secret could not be read --
+    #: no version yet, or no `secretAccessor` grant for this tenant. Recorded
+    #: against (account, this tenant) so the next agent is not sent at the same
+    #: wall, and so an operator can see the difference between an account
+    #: nobody wants and one nobody can read.
+    unusable: str = Field(default="", max_length=200)
 
 
 class RateLimitReport(StrictModel):
@@ -329,7 +385,213 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         #: True when no reading has arrived recently enough to be trusted.
         #: Distinct from "utilisation is zero", which is a measurement.
         "stale": stale,
+        #: Tenants that were handed this account and reported they could not
+        #: read its secret. An account nobody can read is not the same thing as
+        #: an account nobody wants, and until this was surfaced the two looked
+        #: identical on the listing: full headroom, zero agents, and every task
+        #: for that tenant quietly failing.
+        "unreadable_by": sorted(getattr(account, "unreadable_by", {}) or {}),
+        #: Null means NEVER assigned, which is the shape of "this account is
+        #: registered and no worker can reach the broker at all".
+        "last_assigned_at": (
+            last_assigned.isoformat()
+            if isinstance(last_assigned := getattr(account, "last_assigned_at", None),
+                          datetime)
+            else None
+        ),
     }
+
+
+def _txn_snapshot(result: Any) -> Any:
+    """One DocumentSnapshot out of a Firestore transactional get.
+
+    `Transaction.get()` returns a GENERATOR in google-cloud-firestore, because
+    the same method takes a Query as well as a DocumentReference. Treating the
+    result as a snapshot raises `AttributeError: 'generator' object has no
+    attribute 'exists'` against the real client while every in-memory double
+    hands back a snapshot directly -- so no unit test can catch it. The frozen
+    `swarm_common.admission` carries the same adapter for the same reason; this
+    is a five-line adapter rather than an import of another module's private
+    name.
+    """
+    if hasattr(result, "exists"):
+        return result
+    try:
+        return next(iter(result))
+    except StopIteration:  # pragma: no cover - a get always yields one result
+        raise RuntimeError("transactional get returned no snapshot") from None
+
+
+def _live_holds(data: dict[str, Any], now: datetime) -> list[Hold]:
+    return [h for h in holds_from_firestore(data.get("holds")) if not h.is_expired(now)]
+
+
+def _hold_payload(holds: list[Hold]) -> dict[str, Any]:
+    """`assigned` is written from `holds` and never independently of it.
+
+    One statement, one place, so the projection cannot drift from the thing it
+    projects. `assigned` is what `choose()` sorts on and what an operator reads
+    as "agents on this account"; a second writer for it is how it stopped
+    meaning that.
+    """
+    return {"holds": holds_to_firestore(holds), "assigned": len(holds)}
+
+
+def acquire_hold(
+    db: Any,
+    account_id: str,
+    *,
+    tenant_id: str,
+    now: datetime,
+    ttl: timedelta = DEFAULT_HOLD_TTL,
+) -> tuple[str, int] | None:
+    """Record one agent's claim on an account. Returns (assignment_id, assigned).
+
+    A TRANSACTION AND NOT A READ-MODIFY-WRITE, for the reason `accountstore`
+    states: several processes move this at once, and a lost write makes an
+    account look permanently busier or emptier than it is -- which quietly
+    pushes every new agent onto the other accounts, or stacks them all onto
+    this one.
+
+    EXPIRED HOLDS ARE DROPPED ON THE WAY THROUGH, which is what makes the count
+    self-correcting rather than monotonically wrong. A worker that is SIGKILLed
+    or preempted never releases and nothing else in this repository knows its
+    assignment existed, so without an expiry the count would only ever climb.
+
+    None when the account no longer exists -- an operator may remove one
+    between the listing and this call, and nothing was counted.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+    assignment_id = uuid.uuid4().hex
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        holds = _live_holds(snap.to_dict() or {}, now)
+        holds.append(
+            Hold(assignment_id=assignment_id, tenant_id=tenant_id, expires_at=now + ttl)
+        )
+        txn.update(ref, {**_hold_payload(holds), "last_assigned_at": now})
+        return len(holds)
+
+    assigned = _apply(transaction)
+    return None if assigned is None else (assignment_id, assigned)
+
+
+def release_hold(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    tenant_id: str | None,
+    now: datetime,
+    unusable: str = "",
+) -> tuple[int | None, bool]:
+    """Give one named assignment back. Returns (assigned, whether it was held).
+
+    NAMED, and that is the fix. This used to decrement a bare counter on proof
+    of nothing but `may_serve`, so any tenant an account was lent to could
+    drive the owner's count to zero as often as it liked -- and `choose()`
+    sorts on that number, so an account with five live agents could look idle
+    and take a sixth. A release now removes the hold it was issued, and a
+    caller that never held one changes nothing.
+
+    IDEMPOTENT, because a release genuinely arrives twice: a worker releases on
+    its exit path, and the same assignment can be released again after the
+    response was lost. The second call finds no matching hold and says so
+    rather than taking someone else's slot away.
+
+    `unusable` records, against this TENANT only, that the account was handed
+    over and its secret could not be read. Per tenant because that is the only
+    honest scope: a borrower that was never granted `secretAccessor` on a lent
+    secret has learned nothing about the owner, and a global mark would let one
+    tenant pause another's account.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[int | None, bool]:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None, False
+        data = snap.to_dict() or {}
+        holds = _live_holds(data, now)
+        held = [
+            h
+            for h in holds
+            if h.assignment_id == assignment_id
+            # A platform caller has no tenant, so it matches on the id alone;
+            # a worker must match both, or a forged id would let one tenant
+            # release another's hold.
+            and (tenant_id is None or h.tenant_id == tenant_id)
+        ]
+        remaining = [h for h in holds if h not in held]
+        payload = _hold_payload(remaining)
+        if unusable and held:
+            reports = dict(data.get("unreadable_by") or {})
+            reports[held[0].tenant_id or (tenant_id or "")] = now
+            payload["unreadable_by"] = reports
+        txn.update(ref, payload)
+        return len(remaining), bool(held)
+
+    return _apply(transaction)
+
+
+def prune_holds(
+    db: Any,
+    account_id: str,
+    *,
+    now: datetime,
+    forget_unreadable_after: timedelta = DEFAULT_STALE_AFTER,
+) -> int:
+    """Drop expired holds and aged-out unreadable reports. Returns how many went.
+
+    THIS IS THE BACKSTOP, and it is in the broker rather than in the
+    reconciler: `apps/reconciler/` has no account code at all, and comments
+    here used to claim it did. A claimed safety net that does not exist is
+    worse than none, because the next person reads it as a reason not to build
+    one. The quota sweep calls this for every account on every tick, so a
+    worker killed without warning costs one over-counted hold until the hold's
+    own deadline passes and this call notices.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return 0
+        data = snap.to_dict() or {}
+        holds = holds_from_firestore(data.get("holds"))
+        live = [h for h in holds if not h.is_expired(now)]
+        reports = {
+            tenant: when
+            for tenant, when in (data.get("unreadable_by") or {}).items()
+            if isinstance(when, datetime)
+            and now - (when if when.tzinfo else when.replace(tzinfo=timezone.utc))
+            <= forget_unreadable_after
+        }
+        dropped = len(holds) - len(live)
+        stale_reports = len(data.get("unreadable_by") or {}) - len(reports)
+        if not dropped and not stale_reports and data.get("assigned") == len(live):
+            return 0
+        payload = _hold_payload(live)
+        payload["unreadable_by"] = reports
+        txn.update(ref, payload)
+        return dropped
+
+    return _apply(transaction)
 
 
 def quota_to_api(state: QuotaState) -> dict[str, Any]:
@@ -338,6 +600,63 @@ def quota_to_api(state: QuotaState) -> dict[str, Any]:
     payload["quota_derived_limit_now"] = quota_derived_limit_for(state)
     return payload
 
+
+
+def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
+    """Expire abandoned holds across the whole pool. One transaction per account.
+
+    Per account rather than one batch, because each is an independent
+    read-modify-write against a document a live assign or release may be
+    touching at the same moment, and a batch would have to lose one of them.
+    The pool is tens of accounts, not thousands.
+    """
+    reclaimed = 0
+    touched = 0
+    accounts = store.list()
+    for account in accounts:
+        dropped = prune_holds(db, account.account_id, now=now)
+        if dropped:
+            reclaimed += dropped
+            touched += 1
+            log.warning(
+                "reclaimed assignments whose worker never released them",
+                extra={"account_id": account.account_id, "reclaimed": dropped},
+            )
+
+    # THE ONE ALARM FOR A POOL NOTHING CAN REACH.
+    #
+    # The failure this names has no other symptom. A worker with no
+    # QUOTA_BROKER_URL never calls; a worker whose service account is missing
+    # from this service's `run.invoker` list is rejected by Cloud Run before
+    # the application runs, and its client is written to fall back rather than
+    # fail. Either way nothing errors, nothing is logged here, the listing
+    # shows a healthy idle pool, and every agent runs on the one shared
+    # per-tenant subscription -- which is the contention the pool exists to
+    # remove.
+    #
+    # It can only be said from HERE, because only the broker knows both halves:
+    # that accounts are registered, and that nothing has ever asked for one. A
+    # deployment that has simply not adopted the pool has no accounts and gets
+    # no warning, which is why this is not a plan-time check on a variable.
+    never_used = [a for a in accounts if a.last_assigned_at is None]
+    if accounts and len(never_used) == len(accounts):
+        log.warning(
+            "accounts are registered and none has ever been assigned; the "
+            "workers cannot reach this service. Check that the scheduler sets "
+            "QUOTA_BROKER_URL on the jobs it dispatches and that each tenant's "
+            "worker service account holds roles/run.invoker on swarm-quota-broker",
+            extra={"accounts": len(accounts)},
+        )
+
+    return {
+        # `pruned`, not `accounts`: this block sits beside the refresher's own
+        # `accounts` summary in the sweep response and the two count different
+        # things.
+        "pruned": touched,
+        "reclaimed": reclaimed,
+        "registered": len(accounts),
+        "never_assigned": len(never_used),
+    }
 
 
 def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
@@ -358,6 +677,40 @@ def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
         "examined": len(outcomes),
         "refreshed": sum(1 for o in outcomes if o.refreshed),
         "reauth_required": [o.tenant_id for o in outcomes if o.reason == "reauth_required"],
+    }
+
+
+def _poll_block(run: Any, failure_message: str) -> dict[str, Any]:
+    """Summarise one usage-poll round, never raising.
+
+    ITS OWN SUMMARISER, and it has to be. This used to hand
+    `[o.__dict__ for o in poller.poll_round(...)]` to `_sweep_block`, which
+    reads `o.refreshed` and `o.reason` off each element -- attributes a
+    PollOutcome does not have and a plain dict certainly does not. The
+    AttributeError is raised while building the RETURN value, outside that
+    function's try block, so it escaped and 500'd the whole sweep as soon as
+    the poll returned anything at all.
+
+    That is not a cosmetic bug in a summary line: /v1/quota/sweep is the tick
+    that un-parks throttled tenants, refreshes every account's credential and
+    -- now -- reclaims the holds of workers that were killed before they could
+    release. All of it stopped the moment one account was polled.
+    """
+    try:
+        outcomes = run()
+    except Exception as exc:
+        log.error(failure_message, extra={"error": type(exc).__name__, "detail": str(exc)[:200]})
+        return {"error": type(exc).__name__}
+    return {
+        "examined": len(outcomes),
+        "polled": sum(1 for o in outcomes if o.polled),
+        # The account id and the reason, never the secret name or the token --
+        # see UsagePoller, which is careful about the same thing.
+        "skipped": [
+            {"account_id": o.account_id, "reason": o.reason}
+            for o in outcomes
+            if not o.polled
+        ],
     }
 
 
@@ -803,9 +1156,252 @@ def create_app(
         # The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
         # is irreversible and takes its version history with it, and an account
         # removed by mistake is then unrecoverable rather than re-registerable.
-        # Cleaning up secrets is the reconciler's job, on its own schedule.
+        # The secret is left to a PERSON, deliberately, and nothing collects it
+        # later: `apps/reconciler/` has no account code, so a comment here that
+        # named it as the cleanup would have been describing a job nobody runs.
+        # The response says "retained" so the caller knows there is one left.
         store.remove(account_id)
         return {"removed": account_id, "secret": "retained"}
+
+    # ----------------------------------------------------------------------
+    # Assignment: which account a starting agent runs on, and giving it back.
+    #
+    # These two are the pool's hot path and the only routes a WORKER calls.
+    # Everything above is an operator's. They are deliberately the thinnest
+    # possible pair -- pick, count, hand back the secret NAME; then un-count --
+    # because the broker is the single writer of credentials and a worker that
+    # could do more than this would be a second one.
+
+    def _assignment_tenant(request: Request, authorization: str | None) -> str:
+        """The tenant this caller may be assigned an account for.
+
+        Derived from the caller's identity and never from the request. A
+        PLATFORM caller is refused rather than allowed everything: it has no
+        tenant, so `may_serve` has nothing to check, and "the platform" is not
+        a tenant that any account was ever lent to. Refusing is the same rule
+        as "'not configured' must mean refuse, never accept-anything" -- the
+        alternative would hand out an arbitrary tenant's subscription
+        credential to whatever ran the sweep tick.
+        """
+        try:
+            caller_tenant, _is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not caller_tenant:
+            request.app.state.metrics.auth_failures.labels(kind="no_tenant").inc()
+            raise BrokerAuthError(
+                "an account is assigned to a tenant, and this caller has none; "
+                "accounts are assigned to a tenant's worker service account"
+            )
+        return caller_tenant
+
+    @app.post("/v1/accounts/assign")
+    def assign_account(
+        request: Request,
+        body: AccountAssign | None = Body(default=None),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Lease the best account this tenant may run on, or say why there is none.
+
+        NOT FINDING ONE IS A 200, and that is the whole shape of this route.
+        `accounts.choose` already documents why it returns None rather than an
+        exhausted account: the caller's correct response is to PARK, which
+        costs nothing and resumes by itself the moment an account frees up,
+        while a 4xx or 5xx here would cost the task one of its three attempts
+        for a condition nobody did anything wrong to cause. An error would also
+        be indistinguishable, at the caller, from the broker being down -- and
+        those two want opposite responses.
+
+        The `reason` is what makes the 200 actionable, and it separates two
+        situations that look identical from the outside:
+
+          * `no_accounts_registered` -- this tenant has no account it may use
+            at all. The pool is not how this deployment runs, so the caller
+            falls back to its per-tenant secret. This is what keeps every
+            existing deployment working unchanged.
+          * `no_account_available` -- accounts exist and none can take a new
+            agent right now. The pool IS how this tenant runs, so the caller
+            parks and comes back.
+
+        `next_reset_at` is the instant the earliest blocking window clears, and
+        `reason` says which kind of wait this is. The two are computed by
+        `accounts.eligibility`, with the SAME arguments `choose()` was just
+        called with, so they cannot disagree about what "unavailable" meant --
+        which they did: `choose()` rejects on `headroom()`, which halves an
+        aged reading, while the instant was computed from the raw remaining
+        with no staleness at all. An account blocked only by that halving was
+        rejected here and reported no blocking window, so the route answered
+        "none available, and no idea when" and the worker fell back to its long
+        poll for precisely the case the known-instant design was written for.
+
+        A null `next_reset_at` therefore does NOT mean one thing, and the
+        reason is what separates them: `pool_paused` is waiting on a person,
+        `no_recent_reading` is waiting on the broker's own next usage poll --
+        minutes, not hours -- and neither is a claim that the accounts are
+        spent.
+        """
+        tenant_id = _assignment_tenant(request, authorization)
+        # Built per call rather than as a default argument: a model instance in
+        # a signature default is shared by every request that omits the body.
+        asked = body or AccountAssign()
+        provider = _known_provider(asked.provider)
+        exclude = tuple(a for a in asked.exclude if a)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+
+        # `for_tenant` is owned AND lent-to, which is exactly the set invariant
+        # 9 permits; the provider filter is this request's.
+        candidates = [a for a in store.for_tenant(tenant_id) if a.provider == provider]
+
+        chosen = choose(candidates, tenant_id, now, exclude=exclude)
+        if chosen is None:
+            reason, next_reset = eligibility(
+                candidates, tenant_id, now, exclude=exclude
+            )
+            return {
+                "account_id": None,
+                "assignment_id": None,
+                "secret": None,
+                "account": None,
+                "reason": reason.value,
+                "next_reset_at": next_reset.isoformat() if next_reset else None,
+            }
+
+        # The account store is built from the broker's own Firestore client,
+        # deliberately (see create_app), so this is the same client and the
+        # same database the listing above read from.
+        held = acquire_hold(
+            request.app.state.broker.db,
+            chosen.account_id,
+            tenant_id=tenant_id,
+            now=now,
+        )
+        if held is None:
+            # Removed between the read and the hold. Nothing was counted, so
+            # there is nothing to undo and nothing to hand out.
+            return {
+                "account_id": None,
+                "assignment_id": None,
+                "secret": None,
+                "account": None,
+                "reason": Unavailable.NO_ACCOUNT_AVAILABLE.value,
+                "next_reset_at": None,
+            }
+        assignment_id, assigned = held
+
+        current = store.get(chosen.account_id) or chosen
+        log.info(
+            "assigned an account",
+            extra={
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "tenant_id": tenant_id,
+                "provider": provider,
+                "borrowed": chosen.owner_tenant != tenant_id,
+                "assigned": assigned,
+            },
+        )
+        return {
+            "account_id": chosen.account_id,
+            # The HOLD this worker now has. It carries it back on release, so a
+            # release can only ever give back the assignment it was issued
+            # for, and the hold expires on its own if the worker is killed
+            # before it can release anything.
+            "assignment_id": assignment_id,
+            # THE NAME, NEVER THE VALUE. `{base}` holds only the access token
+            # and the caller reads it from Secret Manager under its own service
+            # account -- so the credential travels over Google's authorized
+            # path rather than through this response body, and this service
+            # keeps the property that no route of its returns key material.
+            "secret": store.secret_for(chosen),
+            "account": account_to_api(current, now=now),
+            "reason": "",
+            "next_reset_at": None,
+        }
+
+    @app.post("/v1/accounts/{account_id}/release")
+    def release_account(
+        request: Request,
+        account_id: str,
+        body: AccountRelease,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Give one named assignment back. Idempotent.
+
+        TWO CHECKS, NOT ONE. `may_serve` still gates the route -- an account
+        lent from tenant A to tenant B is assigned to B's agents, so B is who
+        releases it, and requiring the OWNER would leave every borrowed
+        assignment counted forever and the account sorting last in `choose()`
+        for good. But `may_serve` alone is not proof that this caller held
+        anything: it was the only check here, so any tenant an account was lent
+        to could decrement the owner's counter as often as it liked. The
+        assignment id is the second check, and the hold it names records which
+        tenant it was issued to.
+
+        Releasing twice is not an error and does not take someone else's slot:
+        the second call finds no matching hold and says so. That genuinely
+        happens -- a worker releases on its exit path and the same call is
+        retried after a lost response.
+
+        A worker that never releases at all is covered by the hold's own
+        expiry, pruned by the quota sweep. It is NOT covered by the reconciler,
+        which has no account code; this docstring used to say otherwise.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            # Removed while an agent was still on it. There is no hold left to
+            # give back, and refusing would make the worker's exit path look
+            # like a failure for something an operator did on purpose.
+            return {
+                "account_id": account_id,
+                "assigned": None,
+                "account": None,
+                "reason": "account_removed",
+            }
+
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not is_platform and not (caller_tenant and account.may_serve(caller_tenant)):
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            raise BrokerAuthError(
+                "caller may not release an account it could not have been assigned"
+            )
+
+        now = datetime.now(timezone.utc)
+        assigned, was_held = release_hold(
+            request.app.state.broker.db,
+            account_id,
+            assignment_id=body.assignment_id,
+            tenant_id=None if is_platform else caller_tenant,
+            now=now,
+            unusable=body.unusable,
+        )
+        if body.unusable and was_held:
+            log.error(
+                "a worker could not read the account it was assigned",
+                extra={
+                    "account_id": account_id,
+                    "tenant_id": caller_tenant,
+                    "owner_tenant": account.owner_tenant,
+                    "borrowed": bool(caller_tenant)
+                    and caller_tenant != account.owner_tenant,
+                    "detail": body.unusable,
+                },
+            )
+        return {
+            "account_id": account_id,
+            "assigned": assigned,
+            "account": account_to_api(store.get(account_id) or account),
+            # "" when the hold was found and released; `not_held` when it was
+            # not, which is what a duplicate release and a forged id both look
+            # like. Not an error either way -- but not silence either.
+            "reason": "" if was_held else "not_held",
+        }
 
     @app.post("/v1/quota/sweep")
     def sweep(
@@ -817,6 +1413,38 @@ def create_app(
             request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
             raise BrokerAuthError("only the platform may run a quota sweep")
         result = request.app.state.broker.sweep()
+
+        # THE HOLD BACKSTOP, and it runs on its own -- not inside the refresher
+        # block below, because it has nothing to do with credentials and must
+        # still happen on a deployment that has no refresher configured.
+        #
+        # A worker releases its account on its own exit path, which covers
+        # every orderly exit. It does not cover SIGKILL, an OOM kill, a node
+        # preemption or a Cloud Run task kill, and nothing else in this
+        # repository knows the assignment existed: `apps/reconciler/` has no
+        # account code at all. Without this, `assigned` would drift upward
+        # forever -- and it is `choose()`'s load-spreading tiebreak and the
+        # number an operator reads as "agents on this account", so the pool's
+        # spreading would degrade permanently and silently.
+        account_store = getattr(request.app.state, "account_store", None)
+        if account_store is not None:
+            # Guarded like the two sweeps below and for the same reason -- this
+            # tick is what un-parks throttled tenants, and one unreadable
+            # account document must not stall every tenant's quota recovery.
+            # Its own try block rather than `_sweep_block`, which summarises a
+            # list of refresh outcomes and has nothing to say about holds.
+            try:
+                result["holds"] = _prune_all_holds(
+                    request.app.state.broker.db,
+                    account_store,
+                    datetime.now(timezone.utc),
+                )
+            except Exception as exc:  # pragma: no cover - defence in depth
+                log.error(
+                    "account hold sweep failed",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+                )
+                result["holds"] = {"error": type(exc).__name__}
 
         # The same scheduled tick refreshes subscription credentials, because
         # this service is the platform's single writer for them -- see
@@ -871,8 +1499,8 @@ def create_app(
                 # polling the same accounts. See quota_broker.usagepoll.
                 poller = getattr(request.app.state, "usage_poller", None)
                 if poller is not None:
-                    result["usage"] = _sweep_block(
-                        lambda: [o.__dict__ for o in poller.poll_round(store.list())],
+                    result["usage"] = _poll_block(
+                        lambda: poller.poll_round(store.list()),
                         "account usage poll failed",
                     )
         return result
@@ -902,6 +1530,9 @@ __all__ = [
     "BrokerValidationError",
     "ProviderState",
     "WorkerIdentity",
+    "acquire_hold",
     "build_broker",
+    "prune_holds",
+    "release_hold",
     "create_app",
 ]

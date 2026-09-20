@@ -8,11 +8,16 @@ accounts a component that can read them.
 
 CONCURRENCY
 -----------
-`assigned` is incremented by the scheduler as agents start and decremented as
-they finish, from more than one process. Those are transactions, not
-read-modify-writes, because the count is what `choose()` uses to spread load: a
-lost decrement makes an account look permanently busier than it is and quietly
-pushes work onto the others until someone notices the imbalance.
+`assigned` moves as agents start and finish, from more than one process. Those
+are transactions, not read-modify-writes, because the count is what `choose()`
+uses to spread load: a lost decrement makes an account look permanently busier
+than it is and quietly pushes work onto the others until someone notices the
+imbalance.
+
+It is a projection of `holds` rather than a free-standing counter, and the
+transactions in `quota_broker.main` are the only things that write either. See
+`accounts.Hold`: a worker that is killed outright never releases, so a bare
+counter could only ever drift upward.
 
 The credential itself has exactly ONE writer -- the refresher -- for the reason
 given at length in quota_broker.credentials: refresh tokens rotate, and two
@@ -117,6 +122,14 @@ class AccountStore:
                 lend_to=lend,
                 windows=current.windows,
                 observed_at=current.observed_at,
+                # CARRIED OVER, because this is a `set` and not an update: a
+                # re-registration is how lending is changed, it happens while
+                # agents are running, and dropping the holds here would reset
+                # every live count to zero and stack the next several agents
+                # onto an account that already has four.
+                holds=current.holds,
+                unreadable_by=dict(current.unreadable_by),
+                last_assigned_at=current.last_assigned_at,
                 assigned=current.assigned,
                 reason=current.reason,
             )

@@ -134,6 +134,25 @@ class WorkerConfig:
     git_author_name: str = "swarmcloud agent"
     git_author_email: str = "swarmcloud-agent@users.noreply.github.com"
 
+    # --- the account pool ----------------------------------------------------
+    # Base URL of the quota broker, which is the platform's single writer of
+    # subscription credentials and the only thing that may hand out an account.
+    #
+    # UNSET MEANS "THIS DEPLOYMENT HAS NO POOL", and that is the backwards
+    # compatibility guarantee written down as a default. Without it the worker
+    # resolves its tenant's own `swarm-tenant-<tenant>-<provider>` secret
+    # exactly as it always has -- no call, no new failure mode, no behaviour
+    # change for any deployment that has not registered an account. This is
+    # deliberately NOT "not configured means try localhost": "not configured"
+    # must mean refuse, and here refusing means declining to use the pool
+    # rather than guessing at where it lives.
+    quota_broker_url: str | None = None
+    #: OIDC audience for the broker. Cloud Run checks a token's `aud` against
+    #: the service URL unless the service declares a custom audience -- which
+    #: this deployment's does (`custom_audiences` in terraform) -- so it is set
+    #: explicitly rather than inferred, and falls back to the URL.
+    quota_broker_audience: str | None = None
+
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
     model: str | None = None
@@ -241,6 +260,10 @@ class WorkerConfig:
             live_logs_enabled=_bool_env("LIVE_LOGS_ENABLED", True),
             live_log_interval_seconds=_int_env("LIVE_LOG_INTERVAL_SECONDS", 5),
             live_log_tail_bytes=_int_env("LIVE_LOG_TAIL_BYTES", 256 * 1024),
+            quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip() or None,
+            quota_broker_audience=(
+                os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip() or None
+            ),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
         )

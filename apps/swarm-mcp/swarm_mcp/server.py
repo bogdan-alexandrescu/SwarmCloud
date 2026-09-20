@@ -136,6 +136,82 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["task_ids", "branch"],
         },
     },
+    # -- cluster state -----------------------------------------------------
+    #
+    # These return the SAME text `sc` prints, at a fixed 80 columns with no
+    # colour. Not JSON: the marks are the contract here -- `~12%` is a
+    # projection and an em dash is "not measured" -- and a JSON dump of
+    # `{"utilization": 0.12, "stale": true}` invites a reader to quote the
+    # number and drop the flag, which is precisely the mistake the marks exist
+    # to prevent.
+    {
+        "name": "swarm_overview",
+        "description": (
+            "The whole cluster on one screen: the account pool and its quota "
+            "windows, which pool actually binds each runner profile, what is "
+            "running and queued, and what is wrong. Read the marks: a bare "
+            "percentage is measured, '~' means projected from an older reading "
+            "and must not be quoted as current, and an em dash means NOT "
+            "MEASURED -- never report it as zero."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "width": {"type": "integer", "default": 80, "description": "Column budget."}
+            },
+        },
+    },
+    {
+        "name": "swarm_accounts",
+        "description": (
+            "The subscription account pool, in the columns `cs status` uses: "
+            "account, 5-hour and 7-day utilisation with bars, when the binding "
+            "window clears, and state (available / paused / draining / reauth "
+            "needed). Carries no credential material of any kind. A stale "
+            "reading is marked '~' and an unread one is an em dash."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"width": {"type": "integer", "default": 80}},
+        },
+    },
+    {
+        "name": "swarm_capacity",
+        "description": (
+            "Pool ceilings, and for each runner profile WHICH pool actually "
+            "binds it. Admission is all-or-nothing across every required pool, "
+            "so the ceiling a profile feels is the tightest of them -- not the "
+            "global one, which is the one people quote. ROOM is how many more "
+            "tasks of that profile fit before the binding pool refuses."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"width": {"type": "integer", "default": 80}},
+        },
+    },
+    {
+        "name": "swarm_agents",
+        "description": (
+            "Agents running and queued, with why each queued one is waiting. "
+            "Returns immediately; it does not follow anything. For live output "
+            "run `swarm tail <id>` in a background shell."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"width": {"type": "integer", "default": 80}},
+        },
+    },
+    {
+        "name": "swarm_trouble",
+        "description": (
+            "Everything wrong right now, worst first: paused dispatch, accounts "
+            "needing re-auth, stale quota readings, exhausted windows, full or "
+            "paused pools, parked and dead-lettered tasks. A subsystem that "
+            "could not be READ is itself reported -- silence about one is how "
+            "an operator concludes it is fine."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     {
         "name": "swarm_cancel",
         "description": "Cancel running tasks. Their work is still checkpointed and harvestable.",
@@ -169,6 +245,52 @@ def _describe(task: dict[str, Any]) -> dict[str, Any]:
     if task.get("last_error"):
         out["error"] = task["last_error"]
     return out
+
+
+def _overview_view(snap, style):
+    from . import render
+
+    return render.render_overview(snap, style)
+
+
+def _accounts_view(snap, style):
+    from . import render
+
+    return [render.section("accounts", render.accounts_subtitle(snap.accounts, style), style)] + \
+        render.render_accounts(snap.accounts, style, snap.now, error=snap.accounts_error)
+
+
+def _capacity_view(snap, style):
+    from . import render
+
+    return [render.section("capacity", render.capacity_subtitle(snap.capacity, style), style)] + \
+        render.render_capacity(snap.capacity, style, error=snap.capacity_error)
+
+
+def _agents_view(snap, style):
+    from . import render
+
+    return [render.section("agents", render.agents_subtitle(snap.tasks, style), style)] + \
+        render.render_agents(snap.tasks, style, snap.now, error=snap.tasks_error)
+
+
+def _trouble_view(snap, style):
+    from . import render
+
+    findings = render.find_trouble(snap, style)
+    return [render.section("trouble", f"{len(findings)} finding(s)" if findings else "", style)] + \
+        render.render_trouble(findings, style)
+
+
+#: tool name -> (renderer, which fetches it needs). Every one of these goes
+#: through `sc.collect`, so the tool and the terminal command cannot drift.
+_SC_VIEWS = {
+    "swarm_overview": (_overview_view, "overview"),
+    "swarm_accounts": (_accounts_view, "accounts"),
+    "swarm_capacity": (_capacity_view, "capacity"),
+    "swarm_agents": (_agents_view, "agents"),
+    "swarm_trouble": (_trouble_view, "trouble"),
+}
 
 
 def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
@@ -257,6 +379,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             base=args.get("base"),
         )
         return result.render()
+
+    if name in _SC_VIEWS:
+        from . import render
+        from .sc import NEEDS, collect
+
+        style = render.Style(width=int(args.get("width") or 80), color=False, unicode=True)
+        view, needs = _SC_VIEWS[name]
+        snap = collect(client, NEEDS[needs])
+        return render.join(view(snap, style))
 
     if name == "swarm_cancel":
         for task_id in args["task_ids"]:

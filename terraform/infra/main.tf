@@ -323,11 +323,33 @@ module "cloud_run" {
       concurrency           = 40
       env                   = local.service_env["swarm-quota-broker"]
       custom_audiences      = [local.push_audiences["swarm-quota-broker"]]
-      invokers = {
-        tick      = module.iam.tick_member
-        scheduler = module.iam.service_account_members["swarm-scheduler"]
-        api       = module.iam.service_account_members["swarm-api"]
-      }
+      # THE TENANT WORKER SERVICE ACCOUNTS ARE ON THIS LIST, and without them
+      # the account pool cannot work at all. `/v1/accounts/assign` and
+      # `/v1/accounts/{id}/release` are called by WORKERS -- they are the only
+      # two routes here that are -- and Cloud Run rejects a caller that holds
+      # no `run.invoker` before the application ever runs. The broker's own
+      # identity check (`worker_sa_pattern`, pinned to this project) is what
+      # decides WHICH tenant a worker is; this grant is only what lets the
+      # request arrive so that check can run.
+      #
+      # It is not a widening: every route above is authorised per account by
+      # `_authorize`/`may_serve`, so a worker on this list can still only be
+      # assigned an account its own tenant owns or was lent.
+      #
+      # Keyed by tenant id rather than by the member string, for the reason the
+      # cloud_run module's own comment gives: a service account email is not
+      # known until apply and cannot appear in a for_each key.
+      invokers = merge(
+        {
+          tick      = module.iam.tick_member
+          scheduler = module.iam.service_account_members["swarm-scheduler"]
+          api       = module.iam.service_account_members["swarm-api"]
+        },
+        {
+          for tenant_id, member in module.tenancy.worker_members :
+          "worker-${tenant_id}" => member
+        },
+      )
     }
     "swarm-ui" = {
       service_account_email = module.iam.service_account_emails["swarm-api"]
@@ -490,4 +512,38 @@ module "monitoring" {
   labels = local.labels
 
   depends_on = [module.project_services]
+}
+
+# ---------------------------------------------------------------------------
+# The account pool is wired, or terraform says so
+# ---------------------------------------------------------------------------
+#
+# The failure this exists to prevent is completely silent at runtime. With
+# QUOTA_BROKER_URL unset on the scheduler, `WorkerConfig.quota_broker_url` is
+# None, `Worker.__init__` builds no AccountBroker, and `_lease_account` returns
+# None on its first branch for every task -- so every agent runs on the one
+# shared per-tenant subscription, which is the exact contention the pool was
+# built to remove. Nothing fails. Nothing logs. The pool's own listing shows a
+# healthy, idle set of accounts, because it is idle.
+#
+# A `check` and not a `precondition`, deliberately: on a fresh project the
+# broker does not exist yet, so the value cannot be known on the first apply
+# and a hard failure would make the configuration unbootstrappable. A check
+# reports on every plan and apply without blocking either, which is the right
+# shape for "apply once, read the output, put it in tfvars" -- the same
+# two-step frontend_iap_audiences already uses.
+#
+# ONLY THE MISMATCH IS ASSERTED HERE, and the emptiness is not, which is not an
+# oversight. `terraform test` treats a failed check as a failed run, and the
+# suite in tests/terraform plans this root with no tfvars at all -- so an
+# assertion that the variable is set would fail every one of those runs for a
+# value they have no reason to supply. The "this deployment is silently inert"
+# alarm therefore lives where it can tell the difference between "no pool" and
+# "a pool nobody is using": the broker's own sweep warns when accounts are
+# registered and nothing has ever been assigned from them.
+check "quota_broker_url_is_wired" {
+  assert {
+    condition     = var.quota_broker_url == "" || var.quota_broker_url == module.cloud_run.service_urls["swarm-quota-broker"]
+    error_message = "quota_broker_url does not match the deployed swarm-quota-broker URL. A stale value is worse than an empty one: a request to it is refused rather than unanswered, and a worker that is refused PARKS every task rather than falling back. Run `terraform output quota_broker_url` and update tfvars."
+  }
 }

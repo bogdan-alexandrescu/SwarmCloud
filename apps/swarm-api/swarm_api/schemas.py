@@ -129,3 +129,74 @@ class TenantLimitsRequest(StrictModel):
     #: and echoed back but never enforced, and ParkReason.BUDGET_EXHAUSTED would
     #: never be reached. The route rejects it; see routes/admin.py.
     monthly_budget_usd: float | None = Field(default=None, ge=0)
+
+
+# --------------------------------------------------------------------------
+# The account pool (proxied to the quota broker)
+# --------------------------------------------------------------------------
+
+#: The one kind of credential the account pool handles.
+#:
+#: An account in this pool is a CLAUDE SUBSCRIPTION: a rotating OAuth pair the
+#: quota broker refreshes on a timer, where refreshing REVOKES the token it
+#: replaces. There is no API-key account and no credential-kind selector --
+#: nothing in the pool's write path, the broker's refresher or the worker's
+#: lease would know what to do with one. A tenant's own provider API key is a
+#: different thing entirely and has a different route
+#: (`POST /v1/tenants/me/credentials`), which this constant does not touch.
+SUBSCRIPTION_PROVIDER = "anthropic"
+
+
+class AccountCreate(StrictModel):
+    """Register a Claude subscription into the CALLER's pool.
+
+    A SUBSCRIPTION, and nothing else: see `SUBSCRIPTION_PROVIDER` above. There
+    is no `api_key` field here and no kind selector, because the pool has one
+    kind of member.
+
+    THE OWNER IS THE TENANT ON THE VERIFIED TOKEN, always. `owner_tenant` below
+    is read for one purpose only -- to be compared against it -- and its value
+    is never what the account is filed under, so there is no ordering of
+    validation in which a body field could put a live credential into somebody
+    else's pool.
+
+    It is accepted at all because the broker's own route takes that field (this
+    API mirrors the broker's contract) and because the refusal can then explain
+    itself: a caller naming another tenant is told the rule, rather than getting
+    a bare `extra_forbidden` from `extra="forbid"` and guessing.
+    """
+
+    #: Optional, and only ever equal to the caller's own tenant. See above.
+    owner_tenant: str | None = Field(default=None, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    #: Not a choice: `SUBSCRIPTION_PROVIDER` is the only accepted value. The
+    #: field survives so a caller naming anything else gets a 422 that says why
+    #: rather than a bare `extra_forbidden`, and so the body still mirrors the
+    #: broker's own contract. `routes/accounts.py` does the comparison.
+    provider: str = Field(default=SUBSCRIPTION_PROVIDER, max_length=64)
+    #: Tenants this account will lend spare capacity to. Isolation is the
+    #: default (CONTRACT.md invariant 9); this is the narrowing, with a name on
+    #: it, and only the owner can set it.
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+    #: Write-only, and taken AS PASTED -- Claude Code's keychain item, including
+    #: its `claudeAiOauth` wrapper. `quota_broker.oauth.parse_credential` is the
+    #: single reader of that shape; parsing it here would be a second definition
+    #: of it, and the two would disagree the first time it changed.
+    #:
+    #: No response model in this service contains this field and no route in
+    #: this API can return key material -- the same rule the tenant credential
+    #: route states.
+    credential: str = Field(min_length=8, max_length=16384)
+
+
+class AccountLending(StrictModel):
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountStateChange(StrictModel):
+    #: AVAILABLE | PAUSED | DRAINING | REAUTH_REQUIRED. Deliberately not an enum
+    #: here: the broker owns the state machine and answers an unknown value with
+    #: a 422 listing what it accepts, and a second copy of that list in this
+    #: service is one more thing that can drift out of step with it.
+    state: str = Field(min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=512)

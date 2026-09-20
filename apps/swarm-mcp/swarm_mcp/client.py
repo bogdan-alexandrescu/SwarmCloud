@@ -28,7 +28,22 @@ _TOKEN_TTL_SECONDS = 45 * 60
 
 
 class SwarmError(RuntimeError):
-    """Something the operator needs to read, not a stack trace."""
+    """Something the operator needs to read, not a stack trace.
+
+    `status` is the HTTP code when this came from a response rather than from
+    a subprocess or a missing variable, and `edge` says the body was Google's
+    HTML rather than the API's JSON. Both are carried as DATA because the
+    caller has to tell "this deployment has no such route" (a 404 from the
+    API) from "the API is broken" and from "the edge refused you before the
+    API saw it" (a 404 from Google) -- and sniffing those three apart by
+    searching the message string is how the distinction quietly stops working
+    the first time the message is reworded.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, edge: bool = False) -> None:
+        super().__init__(message)
+        self.status = status
+        self.edge = edge
 
 
 def _run(argv: list[str], *, timeout: int = 60) -> str:
@@ -77,10 +92,15 @@ def resolve_api_url() -> str:
 _HTML = ("<html", "<!doctype html", "<HTML")
 
 
+def _is_edge_page(body: str) -> bool:
+    """True when this body is Google's HTML, not the API's JSON."""
+    return body.strip().lower().startswith(_HTML)
+
+
 def _explain(status: int, body: str) -> str:
     """Turn an edge's HTML refusal into the sentence it was trying to be."""
     stripped = body.strip()
-    if not stripped.lower().startswith(_HTML):
+    if not _is_edge_page(body):
         try:
             parsed = json.loads(stripped)
             return str(parsed.get("detail") or parsed.get("message") or stripped[:300])
@@ -245,7 +265,9 @@ class SwarmClient:
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             raise SwarmError(
-                f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}"
+                f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}",
+                status=exc.code,
+                edge=_is_edge_page(raw),
             ) from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc

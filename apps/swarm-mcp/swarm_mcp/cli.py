@@ -253,6 +253,48 @@ def cmd_cancel(client: SwarmClient, args) -> int:
     return EXIT_OK
 
 
+# -- cluster state ---------------------------------------------------------
+#
+# `sc` is its own console script, because a status command wants a short name.
+# It is ALSO reachable as `swarm sc ...` so that a session which already knows
+# about `swarm` does not have to be told about a second binary. Both spellings
+# parse with the same parser and run the same functions -- two implementations
+# of "what is the cluster doing" is how a CLI and a tool start disagreeing.
+
+
+#: Subcommands that belong to `sc`. They are routed on the first token, BEFORE
+#: argparse sees the line, because `nargs=REMAINDER` is not enough on its own:
+#: argparse still tries to match a LEADING option against the subparser, so
+#: `swarm accounts` works while `swarm accounts --width 60` dies on
+#: "unrecognized arguments". Routing on the token keeps both spellings honest
+#: and leaves every pre-existing subcommand's path byte-for-byte unchanged.
+SC_COMMANDS = ("sc", "accounts", "agents", "capacity", "trouble")
+
+
+def _delegate_to_sc(raw: list[str]) -> int:
+    from . import sc as _sc
+
+    # `swarm sc accounts` and `swarm accounts` must mean the same thing, so the
+    # bare `sc` word is dropped and everything else is passed through verbatim.
+    return _sc.main(raw[1:] if raw and raw[0] == "sc" else raw)
+
+
+def cmd_sc(_client, args) -> int:
+    """The argparse route into `sc`, which `main()` normally gets to first.
+
+    It registers the subcommands so `swarm --help` lists them, and it runs the
+    SAME delegation rather than a second copy of it. An earlier version parsed
+    the line again here and called the command function directly with the
+    caller's client -- a second implementation of the routing, differing from
+    the live one in which client it used and in whether `sc`'s exit codes
+    survived, and unreachable, so whichever of the two a reader edited there
+    was an even chance it was the dead one.
+
+    It takes no client for the same reason: `sc` builds and closes its own.
+    """
+    return _delegate_to_sc([args.command] + list(args.argv))
+
+
 # -- setup and diagnosis ---------------------------------------------------
 #
 # These two exist because of how this platform fails for a NEWCOMER. Every
@@ -426,6 +468,19 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("task_ids", nargs="+")
     c.set_defaults(func=cmd_cancel)
 
+    sc_cmd = sub.add_parser(
+        "sc", help="cluster state: accounts, capacity, agents, trouble (same as the `sc` command)"
+    )
+    sc_cmd.add_argument(
+        "argv", nargs=argparse.REMAINDER, help="an `sc` subcommand and its flags"
+    )
+    sc_cmd.set_defaults(func=cmd_sc, no_client=True)
+
+    for alias in ("accounts", "agents", "capacity", "trouble"):
+        alias_parser = sub.add_parser(alias, help=f"shorthand for `sc {alias}`")
+        alias_parser.add_argument("argv", nargs=argparse.REMAINDER)
+        alias_parser.set_defaults(func=cmd_sc, no_client=True)
+
     doc = sub.add_parser("doctor", help="which auth tier this machine is on, and what it reaches")
     doc.set_defaults(func=cmd_doctor, no_client=True)
 
@@ -438,6 +493,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] in SC_COMMANDS:
+        # `sc` owns its own error handling and exit codes (3 means "something
+        # is down"), so this hands the whole line over rather than wrapping it.
+        return _delegate_to_sc(raw)
+
     args = build_parser().parse_args(argv)
     try:
         # `doctor` and `init` exist to explain why a connection cannot be made,

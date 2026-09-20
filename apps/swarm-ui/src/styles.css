@@ -986,3 +986,179 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
 }
 .limit-edit button:disabled { opacity: .4; cursor: not-allowed; }
 .limit-edit button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
+
+/* ------------------------------------------------------------------------ */
+/* Settings -> Accounts                                                      */
+/* ------------------------------------------------------------------------ */
+/* The pool table is `cs status`'s five columns and nothing else, so nothing
+   below widens it: the controls live in a row you open. Two treatments carry
+   the whole screen and neither may be decorative --
+
+     .acct-projected   a figure that is stale or describes a window that has
+                       already reset. Grey, and its `~` is amber, so the mark
+                       survives being printed, photographed or read by someone
+                       who cannot separate the two colours.
+     .acct-unmeasured  NOTHING WAS MEASURED. Draws no bar at all, because an
+                       empty five-cell bar and a measured 0% are the same
+                       picture.
+
+   EVERY SELECTOR BELOW IS SCOPED, to an `.acct-*` class or an `#acct-*` id.
+   The generic names these two treatments want -- `.projected`, `.unmeasured`,
+   `.tag.bad` -- are class grabs: `.tag.bad` alone repaints the provider-state
+   chips on Quota detail and Trouble, which are other people's screens, from a
+   rule added for this one. A screen may not restyle a screen it does not own,
+   and it is not enough that nobody has claimed the name yet.                   */
+
+.settings-tabs { margin-bottom: 18px; }
+
+/* ---- the pool table ---- */
+table.pools.accounts thead th { letter-spacing: .06em; }
+table.pools.accounts td.acct-window,
+table.pools.accounts td.n { white-space: nowrap; }
+
+.acct-open {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; border: none; background: none;
+  color: var(--text); font: 500 13px var(--font); cursor: pointer;
+}
+.acct-open:hover { color: var(--info); }
+.acct-open:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 4px; }
+.acct-caret { color: var(--text-faint); font-size: 11px; width: 10px; }
+
+.acct-pct { font-variant-numeric: tabular-nums; }
+/* The mark stays legible even when the figure beside it is greyed: colour is
+   never the only signal, and this is the signal. */
+.acct-tilde { color: var(--warn); font-weight: 700; margin-right: 1px; }
+.acct-window.acct-projected .acct-pct,
+.acct-projected { color: var(--text-faint); }
+.acct-unmeasured, .acct-unmeasured .acct-pct { color: var(--text-faint); }
+
+/* A second line under a cell: why, never decoration. */
+.acct-why {
+  display: block; margin-top: 2px;
+  font: 11px var(--mono); color: var(--text-faint);
+  white-space: normal; font-style: normal;
+}
+
+/* ---- the five-cell bar, as `miniBar` draws it ---- */
+.acct-bar { display: inline-flex; gap: 2px; margin-left: 7px; vertical-align: middle; }
+.acct-bar > i {
+  display: block; width: 5px; height: 10px; border-radius: 1px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.acct-bar > i.on { background: var(--info); border-color: var(--info); }
+/* Fully spent is a FACT, not a threshold somebody chose in this file. */
+.acct-bar.spent > i.on { background: var(--bad); border-color: var(--bad); }
+.acct-bar.acct-projected > i.on { background: var(--text-faint); border-color: var(--text-faint); }
+
+/* The state chip in the pool table, and ONLY there. REAUTH_REQUIRED and
+   DISABLED both tone as `bad`, and `.tag.bad` has no rule in this stylesheet --
+   adding one globally would have repainted chips on screens this lane does not
+   own. `.acct-state` is what makes it this table's chip. */
+.tag.acct-state.bad { color: var(--bad); }
+
+/* ---- warnings, the block `cs status` prints under its table ---- */
+.acct-warnings {
+  margin: 12px 0 0; padding: 0 0 0 18px;
+  font-size: 12.5px; line-height: 1.6; color: var(--warn);
+}
+.acct-warnings li { margin-bottom: 4px; }
+
+/* ---- one account, opened ---- */
+tr.acct-detail-row > td { padding: 0; background: var(--surface); }
+.acct-detail {
+  display: grid; gap: 18px;
+  padding: 16px 14px 20px;
+  border-left: 3px solid var(--info);
+}
+.acct-facts { max-width: 560px; }
+
+.acct-extra-windows h4, .acct-action h4 {
+  margin: 0 0 6px;
+  font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-faint);
+}
+.acct-extra-windows .split-row { grid-template-columns: minmax(0, 1fr) 72px 86px; }
+
+.acct-action { display: grid; gap: 8px; justify-items: start; }
+.acct-action > * { max-width: 620px; }
+/* Removal is the one control on this screen that cannot be undone from here,
+   so it is separated rather than sitting flush with the rest. */
+.acct-action.danger {
+  margin-top: 4px; padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--bad) 35%, var(--line));
+}
+
+.acct-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 0; }
+.acct-action button, .acct-buttons button {
+  padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--text-dim);
+  font: 500 12.5px var(--font); cursor: pointer;
+}
+.acct-action button:not(:disabled):hover,
+.acct-buttons button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
+.acct-action button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
+.acct-action button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.acct-action button.danger:not(:disabled):hover { border-color: var(--bad); color: var(--bad); }
+
+/* Inputs and textareas are scoped to this screen rather than styled globally:
+   other screens' forms belong to other tracks and a global rule would restyle
+   them without anybody asking. */
+/* A value the form states rather than asks for: the one provider, the one
+   credential kind. It reads as a field so that it is not mistaken for prose. */
+.acct-fixed { margin: 0; font: 12.5px var(--mono); color: var(--text); }
+
+.acct-wide { width: 100%; max-width: 420px; }
+.acct-action input, #acct-label, #acct-lend {
+  padding: 5px 9px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+  font: 12.5px var(--mono);
+}
+.acct-action input:disabled { opacity: .5; cursor: not-allowed; }
+.acct-action textarea, #acct-cred {
+  width: 100%; max-width: 620px; padding: 9px 11px; resize: vertical;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--text);
+  font: 12px/1.5 var(--mono);
+}
+.acct-action textarea:focus-visible, #acct-cred:focus-visible,
+.acct-action input:focus-visible, #acct-label:focus-visible, #acct-lend:focus-visible {
+  outline: 2px solid var(--info); outline-offset: 1px;
+}
+#acct-label, #acct-lend { display: block; margin-bottom: 2px; }
+
+/* A write that SUCCEEDED. Green, because "nothing to do" and "exchanged" are
+   both good answers and neither may be painted as a failure. */
+.state.acct-ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  background: color-mix(in srgb, var(--ok) 6%, var(--surface));
+  margin-top: 4px;
+}
+.state.acct-ok h3 { color: var(--ok); }
+
+/* ---- the instructions, which are part of the product ---- */
+.acct-instructions h3 {
+  margin: 20px 0 6px; font-size: 13.5px; font-weight: 600; color: var(--text);
+}
+.acct-instructions h3:first-of-type { margin-top: 4px; }
+.acct-instructions p { margin: 0 0 8px; font-size: 13px; line-height: 1.6; color: var(--text-dim); }
+.acct-instructions ul, .acct-instructions ol {
+  margin: 0 0 10px; padding-left: 20px;
+  font-size: 13px; line-height: 1.6; color: var(--text-dim);
+}
+.acct-instructions li { margin-bottom: 6px; }
+.acct-instructions strong { color: var(--text); }
+.acct-instructions code {
+  font: 11.5px var(--mono); padding: 1px 4px; border-radius: 4px;
+  background: var(--surface-2); overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  /* The bar is the one thing that can go: the percentage beside it is the
+     same fact, and `~` and the em dash both survive. Dropping the figure
+     instead would leave a picture with no number under it. */
+  .acct-bar { display: none; }
+  .acct-detail { padding: 12px 10px 16px; }
+  .acct-wide { max-width: none; }
+}
