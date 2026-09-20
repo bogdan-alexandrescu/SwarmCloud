@@ -370,6 +370,24 @@ locals {
       ADMIN_GROUPS            = join(",", sort(var.admin_groups))
       ADMIN_USERS             = join(",", sort(var.admin_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
+
+      # swarm-api PROXIES every account-pool call to the broker and never
+      # writes a subscription credential itself, so without this the Settings
+      # page cannot list or register an account at all.
+      #
+      # DECLARED, NOT DERIVED, for exactly the reason the scheduler's copy is
+      # (see var.quota_broker_url): this environment is an input to
+      # module.cloud_run and the broker's URL is an output of it, so
+      # referencing it here is a cycle terraform refuses to plan. The worker
+      # JOBS can derive it because they live outside that module.
+      #
+      # Unlike the silent failure the scheduler's comment warns about, an unset
+      # value here is LOUD: BrokerClient refuses to start and /v1/accounts
+      # answers 503 naming this variable. That is deliberate -- an account pool
+      # that half-exists is worse than one that is plainly absent -- and it is
+      # what the deployed API returned before this line was added.
+      QUOTA_BROKER_URL      = var.quota_broker_url
+      QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
     "swarm-scheduler" = merge(local.common_env, {
       # See the swarm-api block: the reader has always been DISPATCH_TOPIC.
