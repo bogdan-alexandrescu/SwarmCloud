@@ -16,6 +16,9 @@ Draining and disabling are different operations and both exist on purpose:
 
 from __future__ import annotations
 
+import os
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 
 from swarm_common.models import ProviderState
@@ -35,6 +38,23 @@ from ..schemas import (
 from ..validation import known_providers
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+
+def _heartbeat_grace_seconds(core: Any) -> int:
+    """Resolve the grace EXACTLY as ReconcilerConfig.from_env does.
+
+    `reconciler/config.py:82-85` reads HEARTBEAT_GRACE_SECONDS and otherwise
+    derives max(90, heartbeat_interval_seconds * 3). If this diverges, the UI
+    colours a row amber at a threshold the reconciler does not act on, which
+    is worse than showing no threshold at all.
+    """
+    raw = os.environ.get("HEARTBEAT_GRACE_SECONDS")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return max(90, core.heartbeat_interval_seconds * 3)
 
 
 def _check_provider(provider: str) -> str:
@@ -306,28 +326,82 @@ def list_pools(
 def list_leases(
     tenant_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
+    state: str | None = Query(default=None, description="LEASED or DISPATCHED"),
+    overdue_only: bool = Query(default=False, description="dispatch_deadline already passed"),
     limit: int | None = Query(default=None, ge=1),
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Who is holding capacity right now.
+    """Who is holding capacity right now, and who never started.
 
     P1. The documents, the decoder and the `leases-tenant-created` index all
     existed; only this route was missing, and its absence is why nothing could
     answer "which agents are actually holding a slot" -- the question an
     operator asks first during a capacity incident.
 
-    Note what this is NOT: a lease's `state` is only ever LEASED or
-    DISPATCHED, because the worker advances the TASK through STARTING and
-    RUNNING and never writes those to the lease. It is exposed as
-    `dispatch_state` for that reason. Liveness is `heartbeat_at`, which is
-    also returned.
+    ONE ROUTE, NOT TWO. "Silent workers" and "admitted but never dispatched"
+    are the same query with different filters, so `state` and `overdue_only`
+    are parameters rather than a second endpoint.
+
+    THE THRESHOLDS COME BACK WITH THE DATA, and that is the point of this
+    shape. 90 and 120 are the reconciler's `heartbeat_grace_seconds` and
+    `lease_timeout_seconds`; a `const GRACE = 90` in a front end is exactly
+    the restatement drift `scripts/lib/check-contract-parity.sh` exists to
+    catch in shell and jq. And the grace is NOT a constant -- the reconciler
+    reads HEARTBEAT_GRACE_SECONDS and otherwise derives
+    `max(90, heartbeat_interval_seconds * 3)` -- so this resolves it the same
+    way from the same Settings rather than becoming a third copy of the
+    number.
+
+    `last_error` is denormalised onto each row. The alternative is a caller
+    issuing one task read per lease, which is an N+1 waiting to be written as
+    a loop. On a dispatch failure it is a stable code plus the attempt id,
+    deliberately not the upstream message, because a Cloud Run or Kubernetes
+    error echoes the tenant service account, the job name and the secret
+    names.
     """
     leases = ctx.store.list_leases(
         tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
     )
+    now = ctx.now()
+    if state is not None:
+        wanted = state.strip().upper()
+        leases = [x for x in leases if x.state.value == wanted]
+    if overdue_only:
+        leases = [x for x in leases if x.dispatch_overdue(now)]
+
+    # One batched read for the error text, not one per row.
+    errors: dict[str, str | None] = {}
+    for lease in leases:
+        if lease.task_id in errors:
+            continue
+        try:
+            errors[lease.task_id] = ctx.store.get_task(lease.tenant_id, lease.task_id).last_error
+        except Exception:
+            # A lease whose task is gone is itself a finding -- the reconciler
+            # calls it task_missing. Do not let it fail the whole listing.
+            errors[lease.task_id] = None
+
+    rows = []
+    for lease in leases:
+        row = lease_to_api(lease)
+        row["last_error"] = errors.get(lease.task_id)
+        # Written out rather than `heartbeat_at ?? created_at`: the fallback is
+        # a real timestamp for a lease that has never beaten, never 0 and
+        # never now.
+        beat = lease.heartbeat_at if lease.heartbeat_at is not None else lease.created_at
+        row["silent_seconds"] = max(0, int((now - beat).total_seconds()))
+        row["heartbeat_ever"] = lease.heartbeat_at is not None
+        rows.append(row)
+
+    core = ctx.settings.core
     return {
-        "leases": [lease_to_api(lease) for lease in leases],
+        "leases": rows,
+        "thresholds": {
+            "heartbeat_grace_seconds": _heartbeat_grace_seconds(core),
+            "lease_timeout_seconds": core.lease_timeout_seconds,
+        },
+        "evaluated_at": now,
         "active_only": active_only,
         "tenant_id": tenant_id,
         # Weighted UNITS, not agents -- admission increments by the resource

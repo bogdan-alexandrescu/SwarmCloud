@@ -162,3 +162,48 @@ def test_the_api_shape_carries_what_result_summary_cannot(db):
     for key in ("exit_code", "error", "peak_rss_bytes", "execution_name", "backend"):
         assert key in body
     assert body["exit_code"] == 1
+
+
+# -- the thresholds must not become a third copy of the number -------------
+
+def test_the_api_resolves_the_grace_exactly_as_the_reconciler_does(monkeypatch):
+    """90 and 120 live in the reconciler. The API must not restate them.
+
+    `scripts/lib/check-contract-parity.sh` exists because every shell and jq
+    restatement of the frozen contract in this repository has drifted at
+    least once. A `const GRACE = 90` in the front end would be the same bug
+    one layer further out, which is why the threshold ships with the data --
+    and why this test compares the two resolutions directly rather than
+    asserting 90.
+    """
+    from reconciler.config import ReconcilerConfig
+    from swarm_api.routes.admin import _heartbeat_grace_seconds
+    from swarm_common.config import Settings
+
+    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.delenv("HEARTBEAT_GRACE_SECONDS", raising=False)
+
+    # The default derivation, max(90, interval * 3).
+    core = Settings.from_env()
+    assert _heartbeat_grace_seconds(core) == ReconcilerConfig.from_env(core).heartbeat_grace_seconds
+
+    # And when an operator overrides it, both must move together.
+    monkeypatch.setenv("HEARTBEAT_GRACE_SECONDS", "301")
+    core2 = Settings.from_env()
+    assert _heartbeat_grace_seconds(core2) == 301
+    assert ReconcilerConfig.from_env(core2).heartbeat_grace_seconds == 301
+
+
+def test_a_long_heartbeat_interval_raises_the_grace_in_both(monkeypatch):
+    """The derivation is max(90, interval*3), not a constant 90."""
+    from reconciler.config import ReconcilerConfig
+    from swarm_api.routes.admin import _heartbeat_grace_seconds
+    from swarm_common.config import Settings
+
+    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.delenv("HEARTBEAT_GRACE_SECONDS", raising=False)
+    monkeypatch.setenv("HEARTBEAT_INTERVAL_SECONDS", "45")
+
+    core = Settings.from_env()
+    assert _heartbeat_grace_seconds(core) == 135
+    assert ReconcilerConfig.from_env(core).heartbeat_grace_seconds == 135
