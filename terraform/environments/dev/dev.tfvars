@@ -174,12 +174,38 @@ allowed_domains = ["saga.xyz"]
 tenants = {
   # A Google group. swarm_common.identity turns eng@saga.xyz into `eng`.
   eng = {
-    kind           = "group"
-    principal      = "eng@saga.xyz"
-    display_name   = "Engineering"
-    providers      = ["anthropic", "openai"]
-    max_active     = 10
-    capacity_units = 20
+    kind      = "group"
+    principal = "eng@saga.xyz"
+    # TEMPORARILY OFF. The group EXISTS -- groups/01gf8i8328uclsx -- and this
+    # is not the phantom-group problem that `smoke` had. swarm-api simply
+    # cannot READ it.
+    #
+    # Cloud Identity's Groups API does not use GCP IAM at all. It authorizes
+    # through Admin, Non-admin or Namespace modes, none of which a
+    # *.gserviceaccount.com identity satisfies: the service account is not a
+    # principal in saga.xyz, so every mode falls through to
+    # "Error(2028): Permission denied for resource eng@saga.xyz (or it may not
+    # exist)". Verified 2026-09-20: roles/cloudidentity.groupsReader is an
+    # ALPHA role with NO includedPermissions, and zero cloudidentity
+    # permissions are testable at the organization -- granting it changed
+    # nothing, as it cannot.
+    #
+    # The documented fix is a WORKSPACE change, not a GCP one: a Group Reader
+    # admin role assigned to the service account through the Admin SDK, or
+    # domain-wide delegation. Both were blocked today -- the Admin SDK needs
+    # an OAuth scope Google refuses to issue to the gcloud client in this
+    # domain.
+    #
+    # Until one of those lands, a failed lookup is fatal by design, so leaving
+    # this true makes EVERY authenticated request 503 for EVERY user. Turning
+    # it off costs the group-to-tenant mapping: callers resolve to their
+    # personal `u-<user>` tenant instead of `eng`. Set it back to true in the
+    # same commit as the Workspace change.
+    directory_group = false
+    display_name    = "Engineering"
+    providers       = ["anthropic", "openai"]
+    max_active      = 10
+    capacity_units  = 20
   }
 
   # The mock runner needs no provider key, so this tenant can smoke-test the
