@@ -201,7 +201,19 @@ tenants = {
     # it off costs the group-to-tenant mapping: callers resolve to their
     # personal `u-<user>` tenant instead of `eng`. Set it back to true in the
     # same commit as the Workspace change.
-    directory_group = false
+    # BACK ON as of 2026-09-20: domain-wide delegation was authorised in the
+    # Admin console for swarm-api's OAuth client id, scoped to
+    # cloud-identity.groups.readonly, and swarm_api.groups now acts as
+    # groups_impersonate_user when it reads membership. Before that the
+    # service account could not read this group at all -- not for want of an
+    # IAM role, but because the Groups API does not use GCP IAM and a service
+    # account is not a Workspace principal.
+    #
+    # If this starts 503ing every authenticated request again, the delegation
+    # grant is the first thing to check: a failed lookup is fatal by design,
+    # because a higher-priority group being unknown could file a caller's work
+    # under the wrong tenant.
+    directory_group = true
     display_name    = "Engineering"
     providers       = ["anthropic", "openai"]
     max_active      = 10
@@ -338,3 +350,10 @@ frontend_iap_audiences = [
 # docs/audits/2026-09-20/session-handover.md. Empty this the moment the
 # Workspace Group Reader role lands.
 admin_users = ["bogdan@saga.xyz"]
+
+# Domain-wide delegation was authorised in the Admin console on 2026-09-20 for
+# this service account's OAuth client id, scoped to
+# cloud-identity.groups.readonly. swarm-api acts as this user when it reads
+# group membership, because a service account is not a Workspace principal and
+# the Groups API does not authorize through GCP IAM at all.
+groups_impersonate_user = "bogdan@saga.xyz"

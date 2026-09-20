@@ -85,6 +85,19 @@ class ApiSettings:
     #: started from. Delete it in the same change that grants swarm-api a
     #: Workspace Group Reader role.
     admin_users: tuple[str, ...] = ()
+    #: The Workspace user this service account acts AS when reading groups.
+    #:
+    #: Cloud Identity's Groups API does not authorize through GCP IAM -- a
+    #: service account is not a Workspace principal and every lookup returns
+    #: Error(2028). Domain-wide delegation, authorised in the Admin console
+    #: against this service account's OAuth client id and scoped to
+    #: cloud-identity.groups.readonly, lets it act as a real user that the
+    #: API will answer.
+    #:
+    #: Empty disables delegation, which is correct for local development where
+    #: google.auth.default() returns user credentials that cannot delegate
+    #: anyway.
+    groups_impersonate_user: str = ""
 
     #: Cloud Identity membership checks are a network round trip on the request
     #: path, so answers are cached briefly per (caller, group).
@@ -143,6 +156,7 @@ class ApiSettings:
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=_csv("ADMIN_USERS"),
+            groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),

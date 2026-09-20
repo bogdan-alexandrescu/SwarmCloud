@@ -99,7 +99,9 @@ def build_context(
         settings.core.api_audience, require_audience=settings.hardened
     )
     groups = groups or CloudIdentityGroups(
-        settings.project_id, ttl_seconds=settings.group_cache_ttl_seconds
+        settings.project_id,
+        impersonate_user=settings.groups_impersonate_user,
+        ttl_seconds=settings.group_cache_ttl_seconds,
     )
     credentials = credentials or SecretManagerCredentials(settings.project_id)
     waker = waker or (PubSubWaker(settings.dispatch_topic)

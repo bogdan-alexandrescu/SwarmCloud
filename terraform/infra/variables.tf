@@ -298,6 +298,30 @@ variable "frontend_iap_members" {
   default     = []
 }
 
+variable "groups_impersonate_user" {
+  description = <<-EOT
+    The Workspace user swarm-api acts AS when it reads Cloud Identity groups.
+
+    Required because the Groups API does not authorize through GCP IAM. It
+    authorizes through admin, non-admin or namespace modes, and a
+    *.gserviceaccount.com identity is a principal in none of them -- every
+    lookup returns "Error(2028): Permission denied", which reads like a
+    missing role and is not one. Verified 2026-09-20:
+    roles/cloudidentity.groupsReader is an ALPHA role with no included
+    permissions, and granting it at the organization changed nothing.
+
+    Domain-wide delegation is the documented route. It is authorised in the
+    Google Admin console against this service account's OAuth client id
+    (116078917197392888097) and scoped to
+    https://www.googleapis.com/auth/cloud-identity.groups.readonly -- read
+    group membership, and nothing else.
+
+    Empty disables delegation.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "admin_users" {
   description = <<-EOT
     Individual email addresses granted admin, as an ESCAPE HATCH.

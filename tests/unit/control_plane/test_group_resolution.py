@@ -235,3 +235,65 @@ def test_group_priority_is_deterministic_for_multi_group_members(session):
 def test_a_project_id_is_required():
     with pytest.raises(ValueError):
         CloudIdentityGroups("", session=FakeSession({}))
+
+
+# -- domain-wide delegation ------------------------------------------------
+
+def test_impersonation_is_applied_when_the_credentials_support_it(monkeypatch):
+    """A service account must act AS a Workspace user to read groups at all.
+
+    Cloud Identity's Groups API does not authorize through GCP IAM: a
+    *.gserviceaccount.com identity is a principal in none of its three
+    authorization modes, so every lookup returns Error(2028) no matter what
+    IAM role is granted.
+    """
+    from swarm_api import groups as groups_mod
+
+    applied = {}
+
+    class _Creds:
+        def with_subject(self, subject):
+            applied["subject"] = subject
+            return self
+
+    class _FakeAuth:
+        @staticmethod
+        def default(scopes=None):
+            return _Creds(), "proj"
+
+    monkeypatch.setitem(__import__("sys").modules, "google.auth", _FakeAuth)
+    monkeypatch.setattr(
+        groups_mod, "CloudIdentityGroups", groups_mod.CloudIdentityGroups, raising=False
+    )
+
+    g = groups_mod.CloudIdentityGroups("proj", impersonate_user="bogdan@saga.xyz")
+    assert g._impersonate_user == "bogdan@saga.xyz"
+
+
+def test_blank_impersonation_is_normalised_to_none():
+    """An unset env var arrives as "" and must not become a subject of ""."""
+    from swarm_api.groups import CloudIdentityGroups
+
+    for value in ("", "   ", None):
+        g = CloudIdentityGroups("proj", impersonate_user=value)
+        assert g._impersonate_user is None, f"{value!r} should disable delegation"
+
+
+def test_impersonation_does_not_crash_when_credentials_cannot_delegate():
+    """Every developer machine hits this path.
+
+    google.auth.default() returns USER credentials locally, which have no
+    with_subject. The service must degrade to an undelegated session -- the
+    caller then sees the same Error(2028) it would have seen anyway -- rather
+    than failing to construct.
+    """
+    from swarm_api.groups import CloudIdentityGroups
+
+    # A session supplied explicitly means _ensure_session never builds one, so
+    # this asserts the constructor itself is safe with impersonation set.
+    class _Session:
+        def get(self, *a, **k):
+            raise AssertionError("not called")
+
+    g = CloudIdentityGroups("proj", session=_Session(), impersonate_user="someone@saga.xyz")
+    assert g._impersonate_user == "someone@saga.xyz"
