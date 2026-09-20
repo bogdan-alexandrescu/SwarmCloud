@@ -27,6 +27,7 @@ export type ApiErrorKind =
   | 'conflict'
   | 'invalid'
   | 'rate_limited'
+  | 'tenant_unresolved'
   | 'upstream_degraded'
   | 'server_error'
   | 'unreachable'
@@ -117,7 +118,22 @@ function classify(status: number, env: ErrorEnvelope | null, retryAfter: number 
   if (status === 409) return { ...base, kind: 'conflict' }
   if (status === 422) return { ...base, kind: 'invalid' }
   if (status === 429) return { ...base, kind: 'rate_limited', retryAfterSeconds: retryAfter }
-  if (status === 503) return { ...base, kind: 'upstream_degraded' }
+  if (status === 503) {
+    // A 503 was previously ALWAYS reported as "we could not confirm which team
+    // you belong to", because group resolution is this deployment's dominant
+    // 503. It is not the only one, and on a deployment with no groups
+    // configured at all it describes a failure that cannot happen -- which
+    // matters now that SwarmCloud is meant to run outside an organisation,
+    // where `tenant_groups` is empty by design and the caller's tenant is
+    // always their own.
+    //
+    // The API says which it is, so the API is asked rather than the status
+    // code guessed from.
+    if (lower.includes('group membership') || lower.includes('tenant could not be resolved')) {
+      return { ...base, kind: 'tenant_unresolved' }
+    }
+    return { ...base, kind: 'upstream_degraded' }
+  }
   return { ...base, kind: 'server_error' }
 }
 
@@ -133,7 +149,8 @@ export function errorHeading(e: ApiError): string {
     case 'conflict': return 'That conflicts with what is already registered'
     case 'invalid': return 'That request was not valid'
     case 'rate_limited': return 'Refreshing paused'
-    case 'upstream_degraded': return 'We could not confirm which team you belong to'
+    case 'tenant_unresolved': return 'We could not confirm which team you belong to'
+    case 'upstream_degraded': return 'A service the API depends on did not answer'
     case 'server_error': return 'The API failed on this request'
     case 'unreachable': return 'SwarmCloud is unreachable'
   }

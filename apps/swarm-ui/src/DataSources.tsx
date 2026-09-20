@@ -73,6 +73,10 @@ function describe(p: ProbeRecord): { tone: 'ok' | 'warn' | 'bad' | 'info'; label
       return { tone: 'bad', label: 'session expired' }
     case 'rate_limited':
       return { tone: 'warn', label: '429 · paused' }
+    case 'tenant_unresolved':
+      // Same status, different thing to do about it, so it gets its own label
+      // rather than falling through to the generic one.
+      return { tone: 'warn', label: '503 · tenant unresolved' }
     case 'upstream_degraded':
       return { tone: 'warn', label: '503 · degraded' }
     case 'unreachable':
