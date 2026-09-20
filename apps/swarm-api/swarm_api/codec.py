@@ -212,6 +212,80 @@ def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
     )
 
 
+def lease_to_api(lease: Lease) -> dict[str, Any]:
+    """Public JSON shape for a lease. No credential material, no backend spec.
+
+    `dispatch_overdue` and `expired` are COMPUTED here rather than left to the
+    caller. Both are one-line predicates on the model, and both are exactly
+    the kind of thing a UI gets subtly wrong -- `dispatch_overdue` is only
+    meaningful while the lease is still LEASED, because nothing ever writes
+    STARTING or RUNNING to a lease document. Computing them server-side means
+    every caller agrees with the reconciler.
+    """
+    return {
+        "lease_id": lease.lease_id,
+        "task_id": lease.task_id,
+        "attempt_id": lease.attempt_id,
+        "tenant_id": lease.tenant_id,
+        "generation": lease.generation,
+        "pools": lease.pools,
+        "units": lease.units,
+        # Only ever LEASED or DISPATCHED. The worker advances the TASK through
+        # STARTING and RUNNING and never touches this field, so a UI must not
+        # label this column "state" -- see docs/web-ui/02, trap B.
+        "dispatch_state": lease.state.value,
+        "created_at": lease.created_at,
+        "dispatch_deadline": lease.dispatch_deadline,
+        "expires_at": lease.expires_at,
+        "heartbeat_at": lease.heartbeat_at,
+        "released_at": lease.released_at,
+        "release_reason": lease.release_reason,
+        # `is_released` is a @property while `is_expired` and
+        # `dispatch_overdue` are methods. Mixed, on a frozen model, so it
+        # cannot be tidied -- calling the property returns a bool and then
+        # tries to call it, which fails at runtime rather than at import.
+        "released": lease.is_released,
+        "expired": lease.is_expired(),
+        "dispatch_overdue": lease.dispatch_overdue(),
+    }
+
+
+def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
+    """Public JSON shape for one attempt.
+
+    This is the per-attempt record that `result_summary` cannot give you:
+    result_summary is written once, at terminal state, so a task that failed
+    twice and succeeded on the third try carries only the third attempt's
+    numbers. The first two live here.
+    """
+    return {
+        "attempt_id": attempt.attempt_id,
+        "task_id": attempt.task_id,
+        "tenant_id": attempt.tenant_id,
+        "generation": attempt.generation,
+        "lease_id": attempt.lease_id,
+        "backend": attempt.backend,
+        "execution_name": attempt.execution_name,
+        "created_at": attempt.created_at,
+        "started_at": attempt.started_at,
+        "completed_at": attempt.completed_at,
+        "exit_code": attempt.exit_code,
+        "error": attempt.error,
+        "peak_rss_bytes": attempt.peak_rss_bytes,
+        "peak_disk_bytes": attempt.peak_disk_bytes,
+        "oom_near_miss": attempt.oom_near_miss,
+        "checkpoints": attempt.checkpoints,
+        # Null until the worker fix ships in an agent-runtime-base image and
+        # attempts run on it. NULL IS NOT ZERO: a caller must render an em
+        # dash, never $0.00, or a run with no measurement reads as a free one.
+        "input_tokens": attempt.input_tokens,
+        "output_tokens": attempt.output_tokens,
+        "cache_read_input_tokens": attempt.cache_read_input_tokens,
+        "cache_creation_input_tokens": attempt.cache_creation_input_tokens,
+        "cost_usd": attempt.cost_usd,
+    }
+
+
 def pool_to_api(pool: SlotPool) -> dict[str, Any]:
     return {
         "name": pool.name,

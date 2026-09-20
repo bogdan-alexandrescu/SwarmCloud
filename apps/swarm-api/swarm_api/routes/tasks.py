@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from swarm_common.states import TaskState
 
 from ..auth import AuthContext
-from ..codec import task_to_api
+from ..codec import attempt_to_api, task_to_api
 from ..deps import AppContext, current_auth, get_context, paged_limit
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
@@ -129,6 +129,36 @@ def list_events(
 ) -> dict:
     events = ctx.store.list_events(auth.tenant_id, task_id, limit=paged_limit(ctx, limit))
     return {"task_id": task_id, "events": [_event_to_api(e) for e in events]}
+
+
+@router.get("/{task_id}/attempts")
+def list_attempts(
+    task_id: str,
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Every attempt for one task, newest first.
+
+    P4, and the thing that makes a retried task legible. `result_summary` is
+    written once, by `finish()`, at terminal state -- so a task that failed
+    twice and succeeded on the third attempt carries ONLY attempt three's
+    numbers, and the first two attempts' exit codes, errors and peak RSS were
+    unreachable through any API.
+
+    Tenant-scoped like events and artifacts, not admin-gated: these are the
+    caller's own attempts.
+    """
+    # Resolve the task first so a wrong id is a 404 about the TASK rather than
+    # an empty attempt list, which would read as "this task never ran".
+    ctx.store.get_task(auth.tenant_id, task_id)
+    attempts = ctx.store.list_attempts(
+        auth.tenant_id, task_id, limit=paged_limit(ctx, limit)
+    )
+    return {
+        "task_id": task_id,
+        "attempts": [attempt_to_api(a) for a in attempts],
+    }
 
 
 @router.get("/{task_id}/artifacts")

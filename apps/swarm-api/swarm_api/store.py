@@ -44,6 +44,8 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.models import (
+    Attempt,
+    Lease,
     ProviderState,
     QuotaState,
     SlotPool,
@@ -57,8 +59,10 @@ from swarm_common.models import (
 from swarm_common.states import EventType, TaskState, assert_transition
 
 from .codec import (
+    attempt_from_dict,
     event_from_dict,
     event_to_firestore,
+    lease_from_dict,
     pool_from_dict,
     quota_from_dict,
     task_from_dict,
@@ -78,6 +82,7 @@ TENANTS = "tenants"
 POOLS = "pools"
 QUOTA = "quota"
 LEASES = "leases"
+ATTEMPTS = "attempts"
 CONTROL = "control"
 EVENTS = "events"
 ARTIFACTS = "artifacts"
@@ -666,6 +671,70 @@ class Store:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
         query = query.limit(limit)
         return [quota_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def list_leases(
+        self,
+        tenant_id: str | None = None,
+        *,
+        active_only: bool = True,
+        limit: int = 200,
+    ) -> list[Lease]:
+        """Leases, newest first.
+
+        THIS IS THE READ PATH THAT DID NOT EXIST. The documents were always
+        written (`agent_worker/control.py`), the decoder was always here
+        (`codec.lease_from_dict`) and the index was always declared
+        (`leases-tenant-created`, tenant_id ASC + created_at DESC). Only this
+        method and its route were missing, and their absence is what made
+        "which agents are holding capacity right now" unanswerable -- the
+        single highest-value gap in the operator UI.
+
+        `active_only` filters to leases that have not been released. It is a
+        CLIENT-SIDE filter on purpose: `released_at == None` plus an ordered
+        `created_at` would need a third composite index for a predicate that
+        is true of almost every row in the window anyway. If that stops being
+        true, add the index rather than paging blindly.
+
+        `tenant_id` None means every tenant, which is why the route is
+        admin-gated. Passing a tenant id uses the declared composite index;
+        passing None orders on created_at alone, which a single-field index
+        already covers.
+        """
+        query: Any = self._db.collection(LEASES)
+        if tenant_id is not None:
+            query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
+        query = query.limit(limit)
+        leases = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
+        if active_only:
+            leases = [lease for lease in leases if not lease.is_released]
+        return leases
+
+    def list_attempts(
+        self,
+        tenant_id: str,
+        task_id: str | None = None,
+        *,
+        limit: int = 200,
+    ) -> list[Attempt]:
+        """Attempts, newest first, for one tenant or one task.
+
+        Same story as leases: written, decodable and indexed
+        (`attempts-task-created`, `attempts-tenant-created`), never readable.
+
+        This is what makes a retried task legible. `result_summary` is written
+        once, by `finish()`, so a task that failed twice and succeeded on the
+        third attempt carries only attempt three's numbers. The earlier two
+        exist only here -- with their exit codes, their errors and their peak
+        RSS -- and until now nothing could read them.
+        """
+        query: Any = self._db.collection(ATTEMPTS)
+        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        if task_id is not None:
+            query = query.where(filter=FieldFilter("task_id", "==", task_id))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
+        query = query.limit(limit)
+        return [attempt_from_dict(snap.to_dict()) for snap in query.stream()]
 
     def set_provider_enabled(self, provider: str, enabled: bool) -> None:
         """Enable/disable a provider platform-wide.

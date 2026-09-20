@@ -16,14 +16,14 @@ Draining and disabling are different operations and both exist on purpose:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from swarm_common.models import ProviderState
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 
 from ..auth import AuthContext
-from ..codec import pool_to_api, tenant_to_api
-from ..deps import AppContext, admin_auth, get_context
+from ..codec import lease_to_api, pool_to_api, quota_to_api, tenant_to_api
+from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import ValidationFailed
 from ..schemas import (
     DrainRequest,
@@ -300,6 +300,62 @@ def list_pools(
 ) -> dict:
     pools = sorted(ctx.store.list_pools(), key=lambda p: p.name)
     return {"pools": [pool_to_api(p) for p in pools]}
+
+
+@router.get("/leases")
+def list_leases(
+    tenant_id: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Who is holding capacity right now.
+
+    P1. The documents, the decoder and the `leases-tenant-created` index all
+    existed; only this route was missing, and its absence is why nothing could
+    answer "which agents are actually holding a slot" -- the question an
+    operator asks first during a capacity incident.
+
+    Note what this is NOT: a lease's `state` is only ever LEASED or
+    DISPATCHED, because the worker advances the TASK through STARTING and
+    RUNNING and never writes those to the lease. It is exposed as
+    `dispatch_state` for that reason. Liveness is `heartbeat_at`, which is
+    also returned.
+    """
+    leases = ctx.store.list_leases(
+        tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
+    )
+    return {
+        "leases": [lease_to_api(lease) for lease in leases],
+        "active_only": active_only,
+        "tenant_id": tenant_id,
+        # Weighted UNITS, not agents -- admission increments by the resource
+        # class's units, so this and len(leases) are different numbers.
+        "units_held": sum(lease.units for lease in leases),
+    }
+
+
+@router.get("/quota")
+def list_quota(
+    tenant_id: str | None = Query(default=None),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Provider quota state, per provider per tenant.
+
+    P2. `Store.list_quota` already existed and was already used by
+    `/v1/providers` for the caller's own tenant; this exposes it across
+    tenants for an operator.
+
+    `effective_limit: 0` is a FACT, not a missing value -- QuotaState returns
+    0 deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN.
+    """
+    states = ctx.store.list_quota(tenant_id)
+    return {
+        "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
+        "tenant_id": tenant_id,
+    }
 
 
 @router.get("/tenants")
