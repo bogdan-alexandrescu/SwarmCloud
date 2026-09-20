@@ -22,12 +22,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from swarm_common.models import ProviderState
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..auth import AuthContext
 from ..codec import lease_to_api, pool_to_api, quota_to_api, tenant_to_api
 from ..deps import AppContext, admin_auth, get_context, paged_limit
-from ..errors import ValidationFailed
+from ..errors import NotFound, ValidationFailed
 from ..schemas import (
     DrainRequest,
     LimitRequest,
@@ -145,6 +145,68 @@ def set_provider_limit(
     name = _check_provider(provider)
     pool = ctx.store.upsert_pool(f"provider:{name}", hard_limit=body.limit)
     ctx.metrics.admin_actions.labels(action="limit_provider").inc()
+    return {"pool": pool_to_api(pool)}
+
+
+@router.put("/limits/provider/{provider}/tenant/{tenant_id}")
+def set_provider_tenant_limit(
+    provider: str,
+    tenant_id: str,
+    body: LimitRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The per-tenant slice of a provider's concurrency.
+
+    Separate from /limits/provider/{provider}, and the distinction is the one
+    that matters when you are trying to raise a ceiling: a lease takes BOTH
+    pools, so capacity is the lower of them. Raising the provider-wide pool to
+    40 while this stays at 5 gives you 5, which is exactly what happened on
+    2026-09-20 and is why this route exists.
+
+    Verified against the tenant document rather than accepted blind: an
+    upsert on a misspelt tenant id would silently create a pool that nothing
+    ever reads, and it would look like the limit had been set.
+    """
+    name = _check_provider(provider)
+    # get_tenant returns None rather than raising, so this must be checked
+    # explicitly -- calling it and discarding the result would be the exact
+    # silent pass the docstring above claims to prevent.
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    pool = ctx.store.upsert_pool(f"provider:{name}:tenant:{tenant_id}", hard_limit=body.limit)
+    ctx.metrics.admin_actions.labels(action="limit_provider_tenant").inc()
+    return {"pool": pool_to_api(pool)}
+
+
+@router.put("/limits/backend/{backend}")
+def set_backend_limit(
+    backend: str,
+    body: LimitRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The ceiling on a whole execution backend.
+
+    Missing until 2026-09-20, which made backend:CLOUD_RUN_JOB unraisable
+    through the API -- every other pool in a lease's list had a route and this
+    one did not, so it silently became the binding constraint the moment the
+    others were raised.
+
+    AUTO is rejected: it is a routing instruction on a runner profile, not a
+    backend anything executes on, so a pool named backend:AUTO would never be
+    taken by any lease and setting it would be a no-op that looked like a
+    change.
+    """
+    name = backend.strip().upper()
+    real = {b.value for b in Backend} - {Backend.AUTO.value}
+    if name not in real:
+        raise ValidationFailed(
+            f"unknown backend {backend!r}",
+            detail={"known_backends": sorted(real)},
+        )
+    pool = ctx.store.upsert_pool(f"backend:{name}", hard_limit=body.limit)
+    ctx.metrics.admin_actions.labels(action="limit_backend").inc()
     return {"pool": pool_to_api(pool)}
 
 

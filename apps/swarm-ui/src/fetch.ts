@@ -384,6 +384,106 @@ export async function read<T>(
 }
 
 /**
+ * A mutation. Same contract as `read`, same classification, same rules.
+ *
+ * It shares `classify` and the content-type check deliberately: an expired
+ * IAP session arrives as a 200 carrying HTML on a PUT exactly as it does on a
+ * GET, and a second copy of that check is how the two would drift apart.
+ *
+ * There is no `empty` for a write. A mutation that succeeded returns `ok`
+ * whether or not the body carried anything, because the question "did this
+ * take effect" is answered by the status, not by the payload's length.
+ */
+export async function write(
+  path: string,
+  method: 'POST' | 'PUT' | 'DELETE',
+  body?: unknown,
+): Promise<Result<unknown>> {
+  const startedAt = Date.now()
+  const note = (status: number | null, kind: ApiErrorKind | null, ok: boolean): void =>
+    recordProbe({
+      path,
+      lastStatus: status,
+      lastKind: kind,
+      lastLatencyMs: Date.now() - startedAt,
+      lastAttemptAt: Date.now(),
+      lastSuccessAt: ok ? Date.now() : null,
+    })
+
+  let res: Response
+  try {
+    res = await fetch(path, {
+      method,
+      headers: {
+        accept: 'application/json',
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      credentials: 'same-origin',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch (err) {
+    note(null, 'unreachable', false)
+    return {
+      status: 'error',
+      error: {
+        kind: 'unreachable',
+        httpStatus: null,
+        code: null,
+        message: err instanceof Error ? err.message : 'The request did not complete.',
+      },
+    }
+  }
+
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json')
+
+  if (res.ok && !isJson) {
+    note(res.status, 'session_expired', false)
+    return {
+      status: 'error',
+      error: {
+        kind: 'session_expired',
+        httpStatus: res.status,
+        code: null,
+        message:
+          'The API answered with a page instead of data, which is how an expired sign-in arrives. Your change was NOT saved. Reload to sign in again.',
+      },
+    }
+  }
+
+  if (!res.ok) {
+    let env: { code?: unknown; message?: unknown; detail?: unknown } | null = null
+    if (isJson) {
+      try {
+        const parsed: unknown = await res.json()
+        if (isRecord(parsed)) {
+          env =
+            typeof parsed.message === 'string'
+              ? (parsed as { code?: unknown; message?: unknown; detail?: unknown })
+              : { message: typeof parsed.detail === 'string' ? parsed.detail : undefined }
+        }
+      } catch {
+        // A body we cannot read does not change the diagnosis.
+      }
+    }
+    const ra = Number(res.headers.get('retry-after'))
+    const error = classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    note(res.status, error.kind, false)
+    return { status: 'error', error }
+  }
+
+  let data: unknown = null
+  try {
+    data = isJson ? await res.json() : null
+  } catch {
+    // The write SUCCEEDED; only the echo was unreadable. Reporting an error
+    // here would tell someone their change failed when it did not.
+    data = null
+  }
+  note(res.status, null, true)
+  return { status: 'ok', data, fetchedAt: Date.now() }
+}
+
+/**
  * `enabled` is compared explicitly, never coerced.
  *
  * CLAUDE.md records `false // true` returning `true` in jq as a bug that has

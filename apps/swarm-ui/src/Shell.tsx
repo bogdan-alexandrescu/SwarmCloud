@@ -280,6 +280,7 @@ export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
     ['quota', 'Quota'],
     ['counts', 'Counts'],
     ['tenants', 'Tenants'],
+    ['settings', 'Settings'],
   ] as const
   return (
     <nav className="nav">

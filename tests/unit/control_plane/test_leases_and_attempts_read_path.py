@@ -207,3 +207,42 @@ def test_a_long_heartbeat_interval_raises_the_grace_in_both(monkeypatch):
     core = Settings.from_env()
     assert _heartbeat_grace_seconds(core) == 135
     assert ReconcilerConfig.from_env(core).heartbeat_grace_seconds == 135
+
+
+# -- the two limit routes that did not exist -------------------------------
+
+def test_backend_auto_is_refused_as_a_limit_target():
+    """AUTO is a routing instruction, not a backend anything runs on.
+
+    A pool named backend:AUTO would be taken by no lease, so setting it would
+    be a no-op that looked exactly like a change -- which is the failure this
+    whole codebase is organised against.
+    """
+    from swarm_common.profiles import Backend
+
+    real = {b.value for b in Backend} - {Backend.AUTO.value}
+    assert real == {"CLOUD_RUN_JOB", "GKE_AUTOPILOT"}
+    assert "AUTO" not in real
+
+
+def test_the_per_tenant_provider_pool_has_its_own_name():
+    """Raising provider:anthropic does not raise provider:anthropic:tenant:X.
+
+    A lease takes BOTH, so capacity is the lower. This is the arithmetic that
+    made five the real ceiling on 2026-09-20 while every other pool said 40.
+    """
+    from swarm_common.models import pool_names_for
+
+    names = pool_names_for(
+        tenant_id="u-bogdan",
+        provider="anthropic",
+        runner_profile="claude-code",
+        resource_class="standard",
+        backend="CLOUD_RUN_JOB",
+    )
+    assert "provider:anthropic" in names
+    assert "provider:anthropic:tenant:u-bogdan" in names, (
+        "the per-tenant slice must be a distinct pool, or raising the "
+        "provider-wide one would be enough and it is not"
+    )
+    assert "backend:CLOUD_RUN_JOB" in names

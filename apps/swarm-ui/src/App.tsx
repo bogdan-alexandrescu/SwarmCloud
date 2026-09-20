@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AgentDetailScreen } from './AgentDetail'
 import { ActivityScreen, TenantsScreen } from './Activity'
+import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
 import { CapacityScreen } from './Capacity'
 import { ControlRoomScreen } from './ControlRoom'
@@ -14,7 +15,7 @@ import { WorkflowsScreen } from './Workflows'
 
 const SCREENS = [
   'home', 'trouble', 'capacity', 'holders', 'agents', 'workflows',
-  'activity', 'quota', 'counts', 'tenants',
+  'activity', 'quota', 'counts', 'tenants', 'settings',
 ] as const
 type ScreenId = (typeof SCREENS)[number]
 
@@ -65,6 +66,7 @@ export function App() {
       {at.screen === 'workflows' && <WorkflowsScreen />}
       {at.screen === 'activity' && <ActivityScreen />}
       {at.screen === 'tenants' && <TenantsScreen />}
+      {at.screen === 'settings' && <AdminSettingsScreen />}
       {at.taskId && <AgentDetailScreen taskId={at.taskId} onClose={() => go('agents')} />}
       <DataSourceStrip />
     </div>

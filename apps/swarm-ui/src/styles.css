@@ -969,3 +969,20 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
 .legend-kv dt.silent        { color: var(--warn); }
 .legend-kv dt.presumed-dead { color: var(--bad); }
 .q-row .client-side { flex-basis: 100%; }
+
+/* ---- admin limit editor ---- */
+.limit-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.limit-edit input {
+  width: 74px; padding: 3px 7px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+  font: 12px var(--mono); font-variant-numeric: tabular-nums;
+}
+.limit-edit input:disabled { opacity: .5; cursor: not-allowed; }
+.limit-edit button {
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--text-dim);
+  font-size: 12px; cursor: pointer;
+}
+.limit-edit button:disabled { opacity: .4; cursor: not-allowed; }
+.limit-edit button:not(:disabled):hover { color: var(--text); border-color: var(--info); }

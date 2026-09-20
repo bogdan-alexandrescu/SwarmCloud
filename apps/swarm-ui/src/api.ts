@@ -1,4 +1,4 @@
-import { noteFixtureProbe, read, type Result } from './fetch'
+import { noteFixtureProbe, read, write, type Result } from './fetch'
 import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, TaskState, TaskWindow, Tenant,
@@ -665,6 +665,50 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
       ],
     },
   }
+}
+
+/**
+ * Set a pool's hard limit, routing by the pool's own name.
+ *
+ * The API has one route per pool KIND rather than one generic route, so the
+ * name has to be decomposed. Two of these did not exist until 2026-09-20 --
+ * backend, and the per-tenant slice of a provider -- which is precisely why
+ * backend:CLOUD_RUN_JOB and provider:anthropic:tenant:u-bogdan became the
+ * binding constraints the moment every other pool was raised.
+ */
+export async function setPoolLimit(poolName: string, limit: number): Promise<Result<unknown>> {
+  const parts = poolName.split(':')
+  let path: string | null = null
+
+  if (poolName === 'global') path = '/v1/admin/limits/global'
+  else if (parts[0] === 'tenant' && parts[1]) path = `/v1/admin/limits/tenant/${encodeURIComponent(parts[1])}`
+  else if (parts[0] === 'resource' && parts[1]) path = `/v1/admin/limits/resource/${encodeURIComponent(parts[1])}`
+  else if (parts[0] === 'runner' && parts[1]) path = `/v1/admin/limits/runner/${encodeURIComponent(parts[1])}`
+  else if (parts[0] === 'backend' && parts[1]) path = `/v1/admin/limits/backend/${encodeURIComponent(parts[1])}`
+  else if (parts[0] === 'provider' && parts[1] && parts[2] === 'tenant' && parts[3])
+    path = `/v1/admin/limits/provider/${encodeURIComponent(parts[1])}/tenant/${encodeURIComponent(parts[3])}`
+  else if (parts[0] === 'provider' && parts[1]) path = `/v1/admin/limits/provider/${encodeURIComponent(parts[1])}`
+
+  if (path === null) {
+    // Fail loudly rather than POSTing somewhere plausible. A limit that
+    // silently went nowhere is worse than one that refused.
+    return {
+      status: 'error',
+      error: {
+        kind: 'invalid',
+        httpStatus: null,
+        code: null,
+        message: `No admin route covers a pool named "${poolName}".`,
+      },
+    }
+  }
+
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 200))
+    return { status: 'ok', fetchedAt: Date.now(), data: { pool: poolName, limit } }
+  }
+
+  return write(path, 'PUT', { limit })
 }
 
 // --------------------------------------------------------------------------
