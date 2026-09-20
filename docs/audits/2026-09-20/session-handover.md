@@ -73,9 +73,18 @@ Order of work:
 4. Then `make concurrency-test race-test`, which is the first real evidence
    for contract invariants 2 and 3.
 
-The org-level `roles/cloudidentity.groupsReader` binding was revoked on
-2026-09-20 after being confirmed inert, so a future reader does not mistake
-it for deliberate, working access.
+The org-level `roles/cloudidentity.groupsReader` binding was confirmed inert
+on 2026-09-20 and agreed for removal, so a future reader does not mistake it
+for deliberate, working access:
+
+```
+gcloud organizations remove-iam-policy-binding 1089083879749 \
+  --member=serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com \
+  --role=roles/cloudidentity.groupsReader
+```
+
+Check whether it is still present before relying on this line; it was not yet
+confirmed removed when this was written.
 
 ## Findings filed today
 
