@@ -67,7 +67,14 @@ from .errors import (
     TenantMismatchError,
     WorkerError,
 )
-from .gitops import GitError, shallow_clone
+from .forge import ForgeError, probe_repository, open_pull_request
+from .gitops import (
+    GitError,
+    commit_dirty,
+    push_branch,
+    shallow_clone,
+    summarize_work,
+)
 from .metrics import ResourceSampler
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult
@@ -93,6 +100,14 @@ MAX_IN_WORKER_RETRIES = 3
 HEARTBEAT_EVENT_EVERY = 5
 
 REPO_DIR_NAME = "repo"
+
+#: Worker-owned scratch INSIDE the checkpointed work directory. It has to be
+#: inside `work/` so a resumed attempt still knows which commit its clone
+#: landed on, and outside `work/repo/` so nothing it holds can turn up in the
+#: agent's own diff.
+WORKER_STATE_DIR = ".swarm"
+CLONE_BASE_FILE = "clone-base"
+PATCH_NAME = "swarm-work.patch"
 
 
 @dataclass
@@ -138,6 +153,8 @@ class Worker:
         self._sampler: ResourceSampler | None = None
         self._last_checkpoint: CheckpointRecord | None = None
         self._restored_from: CheckpointRecord | None = None
+        self._repo_url: str | None = None
+        self._clone_base: str | None = None
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
 
@@ -481,7 +498,9 @@ class Worker:
         assert ws is not None
 
         self._checkpoint("final")
-        summary = self._upload_outputs()
+        # The ONLY call that passes publish=True. The agent exited on its own
+        # here; the other five call sites are parks and crashes.
+        summary = self._upload_outputs(publish=True)
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         self._export_metrics()
@@ -636,10 +655,19 @@ class Worker:
         if not url:
             return None
         destination = ws.work / REPO_DIR_NAME
+        self._repo_url = url
         if destination.exists() and any(destination.iterdir()):
-            # Restored from a checkpoint that already contains the clone.
+            # Restored from a checkpoint that already contains the clone. The
+            # base commit is read back from the marker the FIRST attempt wrote,
+            # because by now the agent's own commits sit on top of it and HEAD
+            # no longer answers "what did this repository look like on arrival".
             self.log.info("repository already present from checkpoint; skipping clone")
-            return {"path": REPO_DIR_NAME, "from_checkpoint": True}
+            self._clone_base = self._read_clone_base()
+            return {
+                "path": REPO_DIR_NAME,
+                "from_checkpoint": True,
+                "commit": self._clone_base,
+            }
         ref = self.cfg.repository_ref or task.get("repository_ref")
         try:
             clone = shallow_clone(
@@ -658,12 +686,44 @@ class Worker:
             )
         except GitError as exc:
             raise WorkerError(f"repository clone failed: {exc}") from exc
+        self._repo_url = clone.url
+        self._clone_base = clone.commit
+        self._write_clone_base(clone.commit)
         return {
             "path": REPO_DIR_NAME,
             "url": clone.url,
             "ref": clone.ref,
             "commit": clone.commit,
         }
+
+    def _clone_base_path(self) -> Path | None:
+        ws = self.ws
+        if ws is None:
+            return None
+        return ws.work / WORKER_STATE_DIR / CLONE_BASE_FILE
+
+    def _write_clone_base(self, commit: str | None) -> None:
+        path = self._clone_base_path()
+        if path is None or not commit:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(commit.strip() + "\n")
+        except OSError as exc:
+            # Losing the marker costs the harvest its diff base on a RESUMED
+            # attempt only; the first attempt still has `clone.commit` in
+            # memory. Not worth failing a run that is otherwise fine.
+            self.log.warning("could not record the clone base", error=str(exc))
+
+    def _read_clone_base(self) -> str | None:
+        path = self._clone_base_path()
+        if path is None or not path.exists():
+            return None
+        try:
+            text = path.read_text(errors="replace").strip()
+        except OSError:
+            return None
+        return text or None
 
     def _git_token(self) -> str | None:
         """The TENANT's own clone token, or None.
@@ -903,10 +963,289 @@ class Worker:
                     "could not redact a file before upload", path=str(path), error=str(exc)
                 )
 
-    def _upload_outputs(self) -> dict[str, Any]:
+    # -- git: harvest, and publish when the forge allows it -----------------
+    def _harvest_git(self, *, publish: bool) -> dict[str, Any] | None:
+        """Describe the agent's changes, and publish them when permitted.
+
+        Returns the dict that becomes `result_summary["git"]`, or None when
+        there is no repository to describe. It NEVER raises: an attempt that
+        ran is not a failed attempt because its epilogue could not talk to
+        GitHub, and this runs on the teardown path where the lease is about to
+        be released either way. Every failure becomes a readable string in the
+        returned dict instead.
+
+        `publish` is False on all three park paths. A parked attempt resumes
+        from its checkpoint and will reach the terminal path later, so pushing
+        a branch and opening a pull request for work that is still in progress
+        would put a half-finished change in front of a reviewer -- and do it
+        again on every quota bounce.
+        """
+        ws = self.ws
+        cfg = self.cfg
+        if ws is None or not cfg.git_harvest_enabled:
+            return None
+        repo = ws.work / REPO_DIR_NAME
+        if not (repo / ".git").exists():
+            return None
+
+        base = self._clone_base or self._read_clone_base()
+        out: dict[str, Any] = {"base": base}
+        if base is None:
+            out["note"] = (
+                "the clone base is unknown, so no diff could be computed; "
+                "uncommitted files are still listed"
+            )
+
+        try:
+            work = summarize_work(
+                repo=repo,
+                base=base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                patch_path=ws.artifacts / PATCH_NAME,
+                max_patch_bytes=cfg.max_patch_bytes,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+        except GitError as exc:
+            self.log.warning("could not harvest the agent's git changes", error=str(exc))
+            out["error"] = self._scrub(str(exc)[:500])
+            return out
+
+        out.update(
+            {
+                "head": work.head,
+                "commits": [
+                    {
+                        "sha": c.sha,
+                        "subject": self._scrub(c.subject[:200]),
+                        "author": c.author,
+                        "committed_at": c.committed_at,
+                        "files_changed": c.files_changed,
+                        "insertions": c.insertions,
+                        "deletions": c.deletions,
+                        "binary_files": c.binary_files,
+                    }
+                    for c in work.commits[:100]
+                ],
+                "commit_count": len(work.commits),
+                "insertions": work.insertions,
+                "deletions": work.deletions,
+                "dirty": [self._scrub(path) for path in work.dirty],
+                "dirty_count": len(work.dirty),
+                "dirty_truncated": work.dirty_truncated,
+                "patch": work.patch_name,
+                "patch_bytes": work.patch_bytes,
+                "patch_omitted": work.patch_omitted,
+            }
+        )
+        if work.patch_omitted:
+            out["patch_note"] = (
+                f"the diff was {work.patch_bytes} bytes, over the "
+                f"{cfg.max_patch_bytes} cap, and was discarded rather than "
+                "truncated -- a truncated patch applies cleanly and silently "
+                "drops the rest of the change"
+            )
+
+        if work.is_empty:
+            out["published"] = False
+            out["publish_reason"] = "the agent changed nothing in the repository"
+            return out
+
+        out.update(self._publish_git(repo=repo, work_head=work.head, publish=publish))
+        return out
+
+    def _publish_git(
+        self, *, repo: Path, work_head: str | None, publish: bool
+    ) -> dict[str, Any]:
+        """The push-and-pull-request half. Gated on the forge, not on hope."""
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+
+        if not publish:
+            return {
+                "published": False,
+                "publish_reason": "this attempt parked; publishing waits for the run to finish",
+            }
+        if not cfg.git_publish_enabled:
+            return {"published": False, "publish_reason": "publishing is disabled for this worker"}
+
+        url = self._repo_url or cfg.repository_url
+        if not url:
+            return {"published": False, "publish_reason": "the repository URL is unknown"}
+
+        token = self._git_token()
+        try:
+            access = probe_repository(url=url, token=token)
+        except ForgeError as exc:
+            return {
+                "published": False,
+                "publish_reason": f"could not reach the forge: {self._scrub(str(exc)[:300])}",
+            }
+        if access is None:
+            return {
+                "published": False,
+                "publish_reason": "this repository is not on a forge this worker can publish to",
+            }
+
+        out: dict[str, Any] = {
+            "repository": access.ref.full_name,
+            "default_branch": access.default_branch or None,
+            "can_push": access.can_push,
+        }
+        if not access.can_push:
+            # THE EXPECTED PATH TODAY, and the reason it reads as a fact rather
+            # than a failure. The tenant's secret holds a clone token; the forge
+            # was asked and said no. The patch above is the deliverable.
+            out["published"] = False
+            out["publish_reason"] = access.reason
+            self.log.info("not publishing: no write permission", reason=access.reason)
+            return out
+
+        if not token:  # pragma: no cover - can_push implies a token
+            out["published"] = False
+            out["publish_reason"] = "no credential"
+            return out
+
+        branch = f"{cfg.git_branch_prefix}{cfg.task_id}"
+        protected = (access.default_branch,) if access.default_branch else ()
+
+        auto_committed = False
+        try:
+            new_sha = commit_dirty(
+                repo=repo,
+                message=(
+                    f"swarm: uncommitted changes from {cfg.task_id}\n\n"
+                    "Staged by the worker at the end of the attempt so that work "
+                    "the agent edited but did not commit is not lost between the "
+                    "workspace and this branch."
+                ),
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+            if new_sha:
+                auto_committed = True
+                work_head = new_sha
+            pushed = push_branch(
+                repo=repo,
+                url=url,
+                branch=branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+                protected=protected,
+            )
+        except GitError as exc:
+            out["published"] = False
+            out["auto_committed"] = auto_committed
+            out["publish_reason"] = self._scrub(str(exc)[:500])
+            self.log.warning("could not publish the branch", error=str(exc))
+            return out
+
+        out.update(
+            {
+                "branch": branch,
+                "pushed_head": pushed or work_head,
+                "auto_committed": auto_committed,
+            }
+        )
+
+        if not access.default_branch:
+            out["published"] = True
+            out["publish_reason"] = (
+                "the branch was pushed; no pull request was opened because the "
+                "repository's default branch could not be read"
+            )
+            return out
+
+        title = f"[swarm] {cfg.task_id}"
+        body = self._pull_request_body(branch=branch, auto_committed=auto_committed)
+        try:
+            pr = open_pull_request(
+                access=access,
+                token=token,
+                head=branch,
+                base=access.default_branch,
+                title=title,
+                body=body,
+            )
+        except ForgeError as exc:
+            out["published"] = True
+            out["publish_reason"] = (
+                f"the branch was pushed but no pull request was opened: "
+                f"{self._scrub(str(exc)[:300])}"
+            )
+            return out
+
+        out.update(
+            {
+                "published": True,
+                "pull_request": {
+                    "number": pr.number,
+                    "url": pr.url,
+                    "state": pr.state,
+                    "created": pr.created,
+                },
+                "publish_reason": (
+                    "opened" if pr.created else "an open pull request already existed and was reused"
+                ),
+            }
+        )
+        self.log.info("pull request ready", number=pr.number, url=pr.url, created=pr.created)
+        return out
+
+    def _pull_request_body(self, *, branch: str, auto_committed: bool) -> str:
+        """The body a reviewer reads. Provenance first, prompt second.
+
+        The prompt is truncated hard and scrubbed. It is UNTRUSTED text that
+        ends up rendered as markdown on a public-facing page, so the one thing
+        it must not do is arrive at full length with whatever the submitter
+        decided to put in it.
+        """
+        cfg = self.cfg
+        lines = [
+            "Opened by SwarmCloud. This branch is written only by this task.",
+            "",
+            f"- task: `{cfg.task_id}`",
+            f"- attempt: `{cfg.attempt_id}`",
+            f"- tenant: `{cfg.tenant_id}`",
+            f"- runner profile: `{cfg.profile.name}`",
+            f"- branch: `{branch}`",
+        ]
+        if self._clone_base:
+            lines.append(f"- base commit: `{self._clone_base}`")
+        if self._last_checkpoint is not None:
+            lines.append(f"- checkpoint: `{self._last_checkpoint.uri}`")
+        if auto_committed:
+            lines += [
+                "",
+                "One commit on this branch was made by the worker, not the agent: "
+                "the agent left changes uncommitted and they would otherwise not "
+                "have reached this branch at all.",
+            ]
+        return "\n".join(lines)
+
+    def _upload_outputs(self, *, publish: bool = False) -> dict[str, Any]:
         ws = self.ws
         if ws is None:
             return {}
+        # BEFORE the redaction pass, not after: the harvest writes a patch into
+        # `artifacts/`, and `_redact_before_upload` is what scrubs everything
+        # in there. A patch produced afterwards would be the one file in the
+        # upload that never had a provider key taken out of it.
+        try:
+            git_summary = self._harvest_git(publish=publish)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.log.exception("the git harvest raised; continuing without it", exc)
+            git_summary = {"error": "the git harvest failed unexpectedly"}
         self._redact_before_upload()
         artifacts: list[dict[str, Any]] = []
         skipped: list[str] = []
@@ -948,6 +1287,8 @@ class Worker:
             "artifact_bytes": total,
             "logs": logs,
         }
+        if git_summary is not None:
+            summary["git"] = git_summary
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
         if self._last_checkpoint is not None:

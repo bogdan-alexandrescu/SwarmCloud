@@ -275,9 +275,71 @@ export interface ResultSummary {
   /** Present only when something was dropped for exceeding max_artifact_bytes. */
   artifacts_skipped?: string[]
   checkpoint?: { checkpoint_id?: string; [k: string]: unknown }
+  /**
+   * What the agent did to the repository, and what happened to it.
+   * `lifecycle.py::_harvest_git`. Absent when the task cloned nothing.
+   *
+   * THE FIELD THAT MATTERS MOST HERE IS `publish_reason`, and it is present on
+   * success as well as failure. "No pull request" has at least six distinct
+   * causes -- the token cannot push, the attempt parked, the agent changed
+   * nothing, the forge is unknown, the push was rejected, the PR call failed --
+   * and they need completely different responses. A panel that rendered a
+   * missing PR as a single "none" would be the same failure the rest of this
+   * UI is built to avoid.
+   */
+  git?: GitSummary
   /** Token and cost numbers live at `runner.usage`, untyped. See the note below. */
   runner?: { usage?: Record<string, number | string[]>; [k: string]: unknown }
   [k: string]: unknown
+}
+
+export interface GitCommit {
+  sha: string
+  subject: string
+  author: string
+  committed_at: string
+  files_changed: number
+  insertions: number
+  deletions: number
+  /** git prints `-` for both counts on a binary change; those are counted here
+   *  instead of folded into a 0/0 line count that would read as "changed
+   *  nothing". */
+  binary_files: number
+}
+
+export interface GitSummary {
+  /** The commit the clone landed on. Null when a resumed attempt lost its marker. */
+  base?: string | null
+  head?: string | null
+  commits?: GitCommit[]
+  commit_count?: number
+  insertions?: number
+  deletions?: number
+  /** Changed-but-uncommitted paths. The COMMON case: most agents never commit. */
+  dirty?: string[]
+  dirty_count?: number
+  dirty_truncated?: boolean
+  /** Artifact name of the patch, matched against `artifacts[]` to get its URI. */
+  patch?: string | null
+  patch_bytes?: number
+  /** True when a patch was produced and DISCARDED for exceeding the cap. A
+   *  truncated patch applies cleanly and silently drops the rest of the
+   *  change, so none is written. Not the same as "no patch". */
+  patch_omitted?: boolean
+  patch_note?: string
+  note?: string
+  error?: string
+  repository?: string
+  default_branch?: string | null
+  can_push?: boolean
+  branch?: string
+  pushed_head?: string
+  /** True when the WORKER made one of the commits, because the agent left work
+   *  uncommitted and it would otherwise never have reached the branch. */
+  auto_committed?: boolean
+  published?: boolean
+  publish_reason?: string
+  pull_request?: { number: number; url: string; state: string; created: boolean }
 }
 
 export interface ArtifactRef {

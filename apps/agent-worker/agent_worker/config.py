@@ -27,6 +27,20 @@ def _require(name: str) -> str:
     return value
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    """Read a boolean the way an operator expects it to read.
+
+    `0`, `false`, `no` and `off` are all false, case-insensitively. Anything
+    else non-empty is true. An UNSET variable falls back to the default rather
+    than to false, so adding a switch cannot quietly turn off a behaviour that
+    every existing deployment already has.
+    """
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no", "off")
+
+
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -83,6 +97,25 @@ class WorkerConfig:
     repository_url: str | None = None
     repository_ref: str | None = None
     git_clone_timeout_seconds: int = 300
+
+    # Harvest and publish. The DEFAULTS here encode the split the whole feature
+    # rests on: harvesting is on because it is read-only and costs one git
+    # invocation, while publishing is on but cannot act -- it is gated at
+    # runtime on the forge confirming the token carries the push bit, so a
+    # platform whose tenants hold clone-only tokens (the state today) gets the
+    # harvest path and an explicit reason, not a failure and not a silent skip.
+    git_harvest_enabled: bool = True
+    git_publish_enabled: bool = True
+    git_harvest_timeout_seconds: int = 120
+    #: A patch larger than this is DISCARDED rather than truncated: a truncated
+    #: patch applies cleanly and silently drops the rest of the change, which is
+    #: a worse outcome than having no patch at all.
+    max_patch_bytes: int = 16 * 1024 * 1024
+    #: The worker derives the branch from the task id and re-checks this prefix
+    #: inside `push_branch`. The agent never supplies a branch name.
+    git_branch_prefix: str = "swarm/"
+    git_author_name: str = "swarmcloud agent"
+    git_author_email: str = "swarmcloud-agent@users.noreply.github.com"
 
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
@@ -183,6 +216,11 @@ class WorkerConfig:
             control_poll_seconds=_int_env("CONTROL_POLL_SECONDS", 10),
             repository_url=repo,
             repository_ref=ref,
+            git_harvest_enabled=_bool_env("GIT_HARVEST_ENABLED", True),
+            git_publish_enabled=_bool_env("GIT_PUBLISH_ENABLED", True),
+            git_harvest_timeout_seconds=_int_env("GIT_HARVEST_TIMEOUT_SECONDS", 120),
+            max_patch_bytes=_int_env("MAX_PATCH_BYTES", 16 * 1024 * 1024),
+            git_branch_prefix=os.environ.get("GIT_BRANCH_PREFIX", "").strip() or "swarm/",
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
         )

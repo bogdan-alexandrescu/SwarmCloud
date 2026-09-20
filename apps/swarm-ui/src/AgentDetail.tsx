@@ -12,6 +12,7 @@ import {
   whyAgent,
   type ArtifactRef,
   type AttemptRow,
+  type GitSummary,
   type ResultSummary,
   type Task,
   type TaskEvent,
@@ -462,6 +463,8 @@ function Output({
         </p>
       ) : (
         <>
+          <GitOutcome git={summary.git} artifacts={artifacts} />
+
           {artifacts.length > 0 ? (
             <table className="pools">
               <thead>
@@ -574,5 +577,183 @@ function Usage({ usage, profile }: { usage: Record<string, number | string[]> | 
         </>
       )}
     </dl>
+  )
+}
+
+/**
+ * What happened to the code, if the task had any.
+ *
+ * WHY THIS PANEL LEADS WITH A REASON RATHER THAN A LINK. A pull request is
+ * absent for at least six different causes, and they need completely different
+ * responses from the person reading this:
+ *
+ *   the tenant's token has no push permission   -> grant write scope
+ *   the attempt parked                          -> wait; it is not finished
+ *   the agent changed nothing                   -> the run did nothing useful
+ *   the host is not a forge we can publish to   -> apply the patch by hand
+ *   the push was rejected (non-fast-forward)    -> something else moved the branch
+ *   the pull request call failed                -> the branch IS pushed; retry the PR
+ *
+ * The first is the expected one today and is not a failure, so it is rendered
+ * as a fact with its reason, never as an error. Collapsing all six into "no
+ * pull request" would be exactly the truth bug the rest of this UI exists to
+ * avoid.
+ *
+ * DIRTY FILES ARE SHOWN EVEN WHEN THERE ARE NO COMMITS, because that is the
+ * common case: most agents edit files and never run `git commit`. A panel that
+ * only counted commits would report "no changes" for the majority of real runs.
+ */
+function GitOutcome({
+  git,
+  artifacts,
+}: {
+  git: GitSummary | undefined
+  artifacts: ArtifactRef[]
+}) {
+  if (!git) return null
+
+  const commits = git.commits ?? []
+  const dirty = git.dirty ?? []
+  const pr = git.pull_request
+  // The patch is an ordinary artifact; matching by name is what turns the
+  // recorded name into the GCS uri without minting a second copy of it.
+  const patch = git.patch ? artifacts.find((a) => a.name === git.patch) : undefined
+
+  return (
+    <div className="section panel git-outcome">
+      <h3>Code</h3>
+
+      {git.error ? (
+        <p className="warn-text">
+          The change could not be read from the workspace: {git.error}. This says
+          nothing about whether the agent did work — only that git could not be
+          asked.
+        </p>
+      ) : null}
+
+      <dl className="kv">
+        <dt>Commits</dt>
+        <dd>
+          {commits.length === 0 ? (
+            <span className="muted">
+              none
+              {dirty.length > 0 && ' — the agent edited files without committing'}
+            </span>
+          ) : (
+            <>
+              {git.commit_count ?? commits.length} on top of{' '}
+              <span className="mono">{git.base ? git.base.slice(0, 10) : '—'}</span>
+              {typeof git.insertions === 'number' && typeof git.deletions === 'number' && (
+                <span className="muted small">
+                  {' '}
+                  · +{git.insertions} −{git.deletions}
+                </span>
+              )}
+            </>
+          )}
+        </dd>
+
+        {dirty.length > 0 && (
+          <>
+            <dt>Uncommitted</dt>
+            <dd>
+              {git.dirty_count ?? dirty.length} file
+              {(git.dirty_count ?? dirty.length) === 1 ? '' : 's'}
+              {git.dirty_truncated && (
+                <span className="muted small"> · list truncated</span>
+              )}
+            </dd>
+          </>
+        )}
+
+        <dt>Patch</dt>
+        <dd>
+          {patch ? (
+            <span className="mono uri">{patch.uri}</span>
+          ) : git.patch_omitted ? (
+            <span className="warn-text">
+              discarded at {num(git.patch_bytes)} bytes — over the cap. It was
+              not truncated: a truncated patch applies cleanly and silently
+              drops the rest of the change.
+            </span>
+          ) : (
+            <span className="muted">none — nothing differed from the clone</span>
+          )}
+        </dd>
+
+        <dt>Pull request</dt>
+        <dd>
+          {pr ? (
+            <>
+              <a href={pr.url} target="_blank" rel="noreferrer">
+                #{pr.number}
+              </a>{' '}
+              <span className={`tag ${pr.state === 'open' ? 'ok' : 'wait'}`}>{pr.state}</span>
+              {pr.created === false && (
+                <span className="muted small"> · already existed, reused</span>
+              )}
+            </>
+          ) : (
+            <span className="muted">
+              none — {git.publish_reason ?? 'no reason was recorded'}
+            </span>
+          )}
+        </dd>
+
+        {git.branch && (
+          <>
+            <dt>Branch</dt>
+            <dd className="mono">{git.branch}</dd>
+          </>
+        )}
+      </dl>
+
+      {git.auto_committed && (
+        <p className="muted small">
+          One commit on this branch was made by the worker, not the agent: the
+          agent left changes uncommitted and they would otherwise not have
+          reached the branch at all.
+        </p>
+      )}
+
+      {commits.length > 0 && (
+        <div className="table-wrap">
+          <table className="pools">
+            <thead>
+              <tr>
+                <th scope="col">Commit</th>
+                <th scope="col">Subject</th>
+                <th scope="col" className="n">Files</th>
+                <th scope="col" className="n">+/−</th>
+              </tr>
+            </thead>
+            <tbody>
+              {commits.map((c) => (
+                <tr key={c.sha}>
+                  <th scope="row" className="mono">{c.sha.slice(0, 10)}</th>
+                  <td>{c.subject}</td>
+                  <td className="n">
+                    {c.files_changed}
+                    {c.binary_files > 0 && (
+                      <span className="muted small"> ({c.binary_files} binary)</span>
+                    )}
+                  </td>
+                  <td className="n">
+                    +{c.insertions} −{c.deletions}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {(git.commit_count ?? 0) > commits.length && (
+        <p className="muted small">
+          {git.commit_count} commits were made; the newest {commits.length} are
+          listed. The patch above carries all of them.
+        </p>
+      )}
+    </div>
   )
 }
