@@ -317,11 +317,26 @@ class Authenticator:
         """
         email = str(claims.get("email", "")).lower()
         subject = str(claims.get("sub", ""))
-        try:
-            domain = assert_allowed_domain(email, self._settings.core.allowed_domains)
-        except AuthError as exc:
-            # Correct identity, wrong organisation: that is a 403, not a 401.
-            raise Forbidden(str(exc)) from None
+        # ALLOWED_USERS is checked first and is purely additive. Authorisation
+        # is otherwise by hosted domain, which is right for an organisation and
+        # collapses for anyone without one: a single developer on a personal
+        # project would have to set allowed_domains=["gmail.com"] to let
+        # themselves in, which authorises every Google account on earth to run
+        # agents on their billing account. The safe configuration has to be
+        # expressible or the unsafe one gets used.
+        #
+        # The address comes from the verified token either way, so this decides
+        # WHICH verified identities are admitted, never whether the identity was
+        # verified.
+        allowed_users = {u.lower() for u in getattr(self._settings, "allowed_users", ())}
+        if email and email in allowed_users:
+            domain = email.rsplit("@", 1)[1] if "@" in email else ""
+        else:
+            try:
+                domain = assert_allowed_domain(email, self._settings.core.allowed_domains)
+            except AuthError as exc:
+                # Correct identity, wrong organisation: that is a 403, not a 401.
+                raise Forbidden(str(exc)) from None
 
         candidates = tuple(
             dict.fromkeys(self._settings.tenant_groups + self._settings.admin_groups)

@@ -85,6 +85,32 @@ class ApiSettings:
     #: started from. Delete it in the same change that grants swarm-api a
     #: Workspace Group Reader role.
     admin_users: tuple[str, ...] = ()
+    #: Authorise these exact addresses, regardless of their domain.
+    #:
+    #: WHY THIS EXISTS, and it is not the same idea as `admin_users` above.
+    #: That one decides who is an ADMIN among callers already authorised;
+    #: this decides who is a CALLER at all, and it is the difference between
+    #: this platform being deployable outside a Google Workspace or not.
+    #:
+    #: Authorisation is otherwise by hosted domain, which is exactly right for
+    #: an organisation: `allowed_domains = ["saga.xyz"]` means the people in
+    #: that organisation. It collapses for anyone else. A single developer on a
+    #: personal project has no domain of their own, so the only value that
+    #: would let them in is `["gmail.com"]` -- which authorises every Google
+    #: account on earth to run agents on their billing account. The safe
+    #: configuration has to be expressible, or the unsafe one gets used.
+    #:
+    #: It is ADDITIVE and never subtractive: an address here is admitted even
+    #: when its domain is not listed, and a domain that IS listed still works.
+    #: Setting only this and leaving `allowed_domains` empty is the solo
+    #: deployment; setting only domains is the organisation; setting both
+    #: admits a named contractor alongside the company.
+    #:
+    #: It is not weaker authentication. The address still comes from a verified
+    #: Google ID token or IAP assertion -- the same source the domain check
+    #: reads -- so this changes WHICH verified identities are admitted, never
+    #: whether the identity was verified.
+    allowed_users: tuple[str, ...] = ()
     #: The Workspace user this service account acts AS when reading groups.
     #:
     #: Cloud Identity's Groups API does not authorize through GCP IAM -- a
@@ -156,6 +182,7 @@ class ApiSettings:
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=_csv("ADMIN_USERS"),
+            allowed_users=_csv("ALLOWED_USERS"),
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
