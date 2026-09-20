@@ -238,6 +238,7 @@ export function timeAgo(when: Date | string | number): string {
 
 export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
   const tabs = [
+    ['home', 'Home'],
     ['trouble', 'Trouble'],
     ['capacity', 'Capacity'],
     ['agents', 'Agents'],

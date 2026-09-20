@@ -3,12 +3,13 @@ import { AgentDetailScreen } from './AgentDetail'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AgentsScreen } from './Agents'
 import { CapacityScreen } from './Capacity'
+import { ControlRoomScreen } from './ControlRoom'
 import { DataSourceStrip } from './DataSources'
 import { Nav } from './Shell'
 import { TroubleScreen } from './Trouble'
 import { WorkflowsScreen } from './Workflows'
 
-const SCREENS = ['trouble', 'capacity', 'agents', 'workflows', 'activity', 'tenants'] as const
+const SCREENS = ['home', 'trouble', 'capacity', 'agents', 'workflows', 'activity', 'tenants'] as const
 type ScreenId = (typeof SCREENS)[number]
 
 interface Route {
@@ -20,7 +21,7 @@ interface Route {
 function fromHash(): Route {
   const h = window.location.hash.replace(/^#/, '')
   const [head = '', ...rest] = h.split('/')
-  const screen = (SCREENS as readonly string[]).includes(head) ? (head as ScreenId) : 'capacity'
+  const screen = (SCREENS as readonly string[]).includes(head) ? (head as ScreenId) : 'home'
   // Task ids are opaque and may contain characters that were encoded on the
   // way in, so rejoin the tail rather than assuming a single segment.
   const tail = rest.join('/')
@@ -48,6 +49,7 @@ export function App() {
   return (
     <div className="app">
       <Nav at={at.screen} go={go} />
+      {at.screen === 'home' && <ControlRoomScreen />}
       {at.screen === 'trouble' && <TroubleScreen />}
       {at.screen === 'capacity' && <CapacityScreen />}
       {at.screen === 'agents' && <AgentsScreen onOpen={(id) => go(`agents/${encodeURIComponent(id)}`)} />}

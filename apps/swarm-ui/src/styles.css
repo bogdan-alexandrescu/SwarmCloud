@@ -855,3 +855,69 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   .wb-controls { margin-left: 0; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ---- liveness badge ---- */
+/* The dot is never the only carrier of meaning: the word is always present,
+   because a colour-only badge fails for colour-blind operators and in a
+   screenshot pasted into an incident channel. */
+.liveness { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.liveness > i { width: 8px; height: 8px; border-radius: 999px; background: var(--text-faint); flex: none; }
+.liveness.live > i { background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+.liveness.quiet > i { background: var(--warn); }
+.liveness.silent > i { background: var(--bad); }
+.liveness.finished > i { background: var(--text-faint); }
+.liveness.not-started > i { background: transparent; border: 1.5px solid var(--text-faint); }
+.lv-word { font: 600 11px var(--mono); letter-spacing: .04em; }
+.liveness.live .lv-word { color: var(--ok); }
+.liveness.quiet .lv-word { color: var(--warn); }
+.liveness.silent .lv-word { color: var(--bad); }
+.lv-copy { color: var(--text-faint); font-size: 11.5px; }
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+
+/* ---- header bars ---- */
+.bar {
+  margin-bottom: 10px; padding: 9px 12px;
+  border-radius: var(--radius); border: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.5;
+}
+.bar.amber { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); color: var(--warn); }
+.bar.red   { border-color: var(--bad);  background: color-mix(in srgb, var(--bad) 10%, var(--surface)); color: var(--bad); }
+.blocker { padding: 2px 0; }
+.blocker code { font-size: 11.5px; background: transparent; color: var(--text-dim); }
+.blocker-copy { margin-left: 6px; color: var(--text-dim); font-style: italic; }
+
+@media (max-width: 640px) {
+  /* The caption moves behind the tooltip; the word stays. */
+  .lv-copy { display: none; }
+}
+
+/* ---- control room ---- */
+.banner.pill { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.banner.pill.ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--surface)); color: var(--ok); }
+/* Hatched: "we could not read whether it is paused" is a third state, and it
+   must not look like either of the other two. */
+.banner.pill.unknown {
+  color: var(--text-dim);
+  background: repeating-linear-gradient(
+    45deg, var(--surface), var(--surface) 6px, var(--surface-2) 6px, var(--surface-2) 12px
+  );
+}
+.pill-refresh {
+  margin-left: auto; padding: 3px 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--text-dim);
+  font-size: 12px; cursor: pointer;
+}
+.tile.alert { border-color: var(--bad); }
+.tile.alert .t-value { color: var(--bad); }
+.pool-group.bad    > h2 { color: var(--bad); }
+.pool-group.warn   > h2 { color: var(--warn); }
+.pool-group.paused > h2 { color: var(--paused); }
+.pool-group .split-row { grid-template-columns: minmax(0, 1fr) 110px 62px 100px; }
+.sr-by { font: 11px var(--mono); color: var(--text-faint); text-align: right; }
+.sr-bar > i.bad { background: var(--bad); }
+
+@media (max-width: 640px) {
+  .pool-group .split-row { grid-template-columns: minmax(0, 1fr) 62px; }
+  .pool-group .sr-bar, .pool-group .sr-by { display: none; }
+}

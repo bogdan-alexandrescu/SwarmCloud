@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { loadAgentDetail, type AgentDetail } from './api'
 import { num } from './fetch'
+import { LivenessBadge } from './Liveness'
 import { Screen, timeAgo } from './Shell'
 import {
   TERMINAL_STATES,
@@ -54,6 +55,7 @@ function Detail({ detail }: { detail: AgentDetail }) {
           <span className={`st ${stateTone(task.state)}`}>
             <span aria-hidden>{stateGlyph(task.state)}</span> {task.state}
           </span>
+          <LivenessBadge task={task} events={events} now={now} />
         </h2>
         <dl className="kv">
           <dt>Elapsed</dt>
@@ -78,6 +80,50 @@ function Detail({ detail }: { detail: AgentDetail }) {
           )}
         </dl>
       </section>
+
+      {task.park_reason && (
+        <div className="bar amber">
+          <strong>{task.park_reason}</strong>
+          {task.next_eligible_at && (
+            <> — eligible again {new Date(task.next_eligible_at).toLocaleString()}</>
+          )}
+        </div>
+      )}
+
+      {/* NOT the same thing as park_reason, and this is the case a header
+          that only renders park_reason gets wrong. record_blockers writes
+          blocked_by while deliberately leaving the task READY -- the platform
+          being busy is not a durable condition -- so READY with blockers and
+          no park reason is the commonest "why is nothing happening", and it
+          would otherwise show as a bare READY chip with no explanation. */}
+      {task.blocked_by && task.blocked_by.length > 0 && (
+        <div className="bar amber">
+          {task.blocked_by.map((b, i) => (
+            <div className="blocker" key={`${b.reason}-${i}`}>
+              {b.pool && <code>{b.pool}</code>} <strong>{b.reason}</strong>
+              {typeof b.active === 'number' && typeof b.limit === 'number' && (
+                <> · {b.active} active / {b.limit} limit</>
+              )}
+              <span className="blocker-copy">
+                {b.reason === 'TENANT_LIMIT'
+                  ? 'Yours to raise.'
+                  : b.reason === 'GLOBAL_CONCURRENCY_LIMIT'
+                    ? 'The platform is full.'
+                    : b.reason === 'MANUAL_PAUSE'
+                      ? 'This pool was paused by an operator — a decision, not congestion.'
+                      : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {task.cancel_requested && !TERMINAL_STATES.has(task.state) && (
+        <div className="bar red">
+          Cancellation requested. The lease is released by the worker or the
+          reconciler, not by the API.
+        </div>
+      )}
 
       {/* ---- Why ---- */}
       {why && (
