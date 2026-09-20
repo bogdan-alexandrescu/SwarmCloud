@@ -95,8 +95,7 @@ tf-init: ## terraform init for this environment (state prefix infra/$(ENVIRONMEN
 
 tf-plan: ## terraform plan (review every create in a shared project)
 	@test -f $(VAR_FILE) || { echo "no $(VAR_FILE); ENVIRONMENT=$(ENVIRONMENT) has no inputs"; exit 1; }
-	@mkdir -p build
-	@$(TERRAFORM) -chdir=$(TF_ROOT) plan -input=false -lock-timeout=120s $(TF_VAR_ARGS) -out=$(CURDIR)/build/$(ENVIRONMENT).tfplan
+	@$(SCRIPTS)/plan.sh
 
 tf-apply: ## terraform apply the plan from tf-plan
 	@test -f build/$(ENVIRONMENT).tfplan || { echo "run 'make tf-plan' first"; exit 1; }

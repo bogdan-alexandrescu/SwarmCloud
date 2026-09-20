@@ -473,6 +473,35 @@ cloud_run_service_uri() {
   rm -f "${out}"
 }
 
+#: The container image a Cloud Run service is CURRENTLY serving. Prints it, or
+#: fails if the service cannot be read.
+#:
+#: Needed because `image_tag` is applied on every terraform apply -- neither
+#: cloud_run module ignores the image, deliberately -- so any plan that does not
+#: set it plans to move every service and job to the variable's default. Asking
+#: the running service is the only answer that is true after a deploy from CI,
+#: from another machine, or after a rollback.
+cloud_run_image() {
+  local service="$1" out rc=0
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-runimg.XXXXXX")"
+  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+    -H "Authorization: Bearer $(access_token)" \
+    "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/services/${service}" \
+    >"${out}" 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    redact <"${out}" >&2
+    rm -f "${out}"
+    return 1
+  fi
+  if jq -e '.error' <"${out}" >/dev/null 2>&1; then
+    jq -r '.error.message // "unknown error"' <"${out}" | redact >&2
+    rm -f "${out}"
+    return 1
+  fi
+  jq -r '.template.containers[0].image // empty' <"${out}"
+  rm -f "${out}"
+}
+
 #: Count Cloud Run job executions in the project. Prints the count, or fails.
 #: Zero is an ANSWER here; an unreadable listing is a failure, because that
 #: number is the whole point of the invariant-1 check that calls it.
