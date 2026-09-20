@@ -157,7 +157,11 @@ function SubLine<T>({
         </>
       )
     case 'error':
-      return <>Could not read. {retryBtn}</>
+      return state.error.kind === 'admin_required' ? (
+        <>Admin only.</>
+      ) : (
+        <>Could not read. {retryBtn}</>
+      )
   }
 }
 
@@ -186,6 +190,25 @@ function StaleBanner({ error, fetchedAt }: { error: ApiError; fetchedAt: number 
  */
 export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
   const reload = error.kind === 'session_expired' || error.kind === 'unauthenticated'
+
+  // AN ADMIN GATE IS NOT A FAILURE. A non-admin genuinely cannot read
+  // /v1/admin/*, and painting that red -- with "this is a failure to read the
+  // platform" under it -- tells someone their platform is broken when they
+  // are simply not an admin. The Trouble board got this right panel-by-panel
+  // and every screen using this component got it wrong.
+  if (error.kind === 'admin_required') {
+    return (
+      <div className="state admin-gate" role="status">
+        <h3>{errorHeading(error)}</h3>
+        <p>
+          You are not in an admin group, so this screen has nothing to show
+          you. Nothing is wrong with the platform, and nothing failed.
+        </p>
+        <p className="checked-at">{error.message}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="state failed">
       <h3>{errorHeading(error)}</h3>

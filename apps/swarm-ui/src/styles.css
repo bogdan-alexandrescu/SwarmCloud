@@ -921,3 +921,11 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   .pool-group .split-row { grid-template-columns: minmax(0, 1fr) 62px; }
   .pool-group .sr-bar, .pool-group .sr-by { display: none; }
 }
+
+/* An admin gate is information, not breakage. Blue, no retry button, and no
+   "this is a failure to read the platform" line -- nothing failed. */
+.state.admin-gate {
+  border-color: color-mix(in srgb, var(--info) 45%, var(--line));
+  background: color-mix(in srgb, var(--info) 6%, var(--surface));
+}
+.state.admin-gate h3 { color: var(--info); }
