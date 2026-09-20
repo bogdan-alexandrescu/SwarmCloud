@@ -85,22 +85,30 @@ def repo(tmp_path):
 
 
 def _patch_for(repo, mutate):
-    """Produce a real patch by mutating the tree, exactly as a worker would.
+    """Produce a real patch the way a worker would, via a commit.
 
-    `add --intent-to-add` first, for the same reason `summarize_work` does it:
-    without it a plain `git diff` silently omits every file the agent CREATED,
-    which is most of what an agent creates. Leaving it out here produced an
-    empty patch that applied without error and changed nothing -- the exact
-    false success the harvest was written to avoid.
+    COMMITTED, not diffed from the working tree, and the difference is not
+    stylistic. git decides a file is unchanged from its stat information, so a
+    file written twice inside one filesystem timestamp tick is "racily clean"
+    and `git diff` reports nothing. Generating the fixture by writing, diffing
+    and restoring hit that about one run in five: the patch came back empty,
+    `git apply` succeeded on it, and the assertion failed somewhere unrelated
+    to what was being tested. Commits are content-addressed, so no stat is
+    consulted and the fixture is the same every time.
+
+    `add --intent-to-add` is still needed inside the commit, for the same
+    reason `summarize_work` needs it: without it a diff omits every file the
+    agent CREATED, which is most of what an agent creates.
     """
-    before = (repo / "types.ts").read_text()
     mutate(repo)
-    _git(repo, "add", "--all", "--intent-to-add", "--", ".")
+    _git(repo, "add", "--all", "--", ".")
+    _git(repo, "commit", "--quiet", "-m", "scratch fixture")
     out = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--binary"], capture_output=True, check=True
+        ["git", "-C", str(repo), "diff", "--binary", "HEAD~1", "HEAD"],
+        capture_output=True,
+        check=True,
     ).stdout
-    _git(repo, "reset", "--quiet")
-    (repo / "types.ts").write_text(before)
+    _git(repo, "reset", "--hard", "--quiet", "HEAD~1")
     return out
 
 
