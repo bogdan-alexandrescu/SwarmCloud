@@ -954,3 +954,18 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   background: color-mix(in srgb, var(--info) 6%, var(--surface));
 }
 .state.admin-gate h3 { color: var(--info); }
+
+/* ---- lease panels ---- */
+/* Colour comes from the classification the API's thresholds produced, never
+   from a number in this file. */
+table.pools tbody tr.silent        { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9%, transparent); }
+.silent { font-variant-numeric: tabular-nums; font-weight: 600; }
+.silent.alive         { color: var(--text-dim); }
+.silent.silent        { color: var(--warn); }
+.silent.presumed-dead { color: var(--bad); }
+.legend-kv { margin-top: 12px; }
+.legend-kv dt.alive         { color: var(--text-dim); }
+.legend-kv dt.silent        { color: var(--warn); }
+.legend-kv dt.presumed-dead { color: var(--bad); }
+.q-row .client-side { flex-basis: 100%; }

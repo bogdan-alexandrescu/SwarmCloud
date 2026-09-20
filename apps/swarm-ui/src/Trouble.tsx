@@ -7,6 +7,7 @@ import {
   loadTasksInState,
 } from './api'
 import { errorHeading, isPaused, num, type ApiError, type Result } from './fetch'
+import { LeasesPanel } from './Leases'
 import { timeAgo } from './Shell'
 import {
   NEEDS_A_HUMAN,
@@ -29,10 +30,10 @@ import {
  * Seven independent fetches. One failing must not blank the page, and the page
  * must not look complete when one has — so the header counts failures.
  *
- * NOT BUILT, and deliberately: "silent workers" (§1.2) and "admitted but never
- * dispatched" (§1.3). Both need the `leases` collection, which has no API read
- * path at all. They are the freshest failure signals on the platform and they
- * are unreachable; a panel faked from task state would be guessing.
+ * "Silent workers" and "admitted but never dispatched" now exist -- they were
+ * blocked on the `leases` read path, which did not exist until P1. They share
+ * ONE request and one error state, and LeasesPanel owns both, which is why it
+ * is not in the seven counted above.
  */
 export function TroubleScreen() {
   const stats = usePanel(loadStats)
@@ -44,6 +45,8 @@ export function TroubleScreen() {
   const providers = usePanel(loadProviders)
 
   const panels = [stats, dispatch, failed, parked, ready, capacity, providers]
+  // LeasesPanel owns its own fetch and its own error state, so it is not in
+  // this list -- it reports "both lease panels are blind" itself.
   // A 403 on an admin panel is not a failure. The disambiguation is
   // POSITIONAL, not textual: Forbidden is also raised for the wrong
   // organisation and carries the same code.
@@ -94,6 +97,11 @@ export function TroubleScreen() {
       </div>
 
       <PlatformBanner stats={stats.state} dispatch={dispatch.state} failures={failures} />
+
+      {/* Placed FIRST among the panels: the spec calls this the freshest
+          failure signal on the platform, and it is the one that sees a
+          problem before the reconciler does. */}
+      <LeasesPanel />
 
       <Panel title="Failures that need a human" p={failed} onRetry={failed.retry}>
         {(page, meta) => <Failures page={page} meta={meta} />}

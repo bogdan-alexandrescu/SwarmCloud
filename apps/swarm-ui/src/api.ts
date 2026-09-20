@@ -1,7 +1,7 @@
 import { noteFixtureProbe, read, type Result } from './fetch'
 import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  TaskState, TaskWindow, Tenant, Workflow,
+  AttemptRow, LeasePage, LeaseRow, TaskState, TaskWindow, Tenant, Workflow,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -459,6 +459,114 @@ async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
       message: 'admin group membership is required',
     },
   }
+}
+
+/**
+ * Unreleased leases. The freshest failure signal on the platform: it sees a
+ * silent worker up to five minutes before the reconciler acts on it.
+ *
+ * Admin-gated, so a 403 here renders as information.
+ */
+export async function loadLeases(): Promise<Result<LeasePage>> {
+  if (USE_FIXTURES) return fixtureLeases()
+  return read<LeasePage>('/v1/admin/leases?active_only=true&limit=200', (d) => d.leases.length === 0)
+}
+
+/** Every attempt of one task, newest first. Tenant-scoped. */
+export async function loadAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
+  if (USE_FIXTURES) return fixtureAttempts(taskId)
+  return read<{ attempts: AttemptRow[] }>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/attempts`,
+    (d) => d.attempts.length === 0,
+  )
+}
+
+async function fixtureLeases(): Promise<Result<LeasePage>> {
+  await new Promise((r) => setTimeout(r, 180))
+  noteFixtureProbe('/v1/admin/leases', 180, true)
+  const iso = (secAgo: number) => new Date(Date.now() - secAgo * 1000).toISOString()
+  const row = (
+    id: string,
+    silent: number,
+    extra: Partial<LeaseRow> = {},
+  ): LeaseRow => ({
+    lease_id: id,
+    task_id: `task_${id}`,
+    attempt_id: `att_${id}`,
+    tenant_id: 'u-bogdan',
+    generation: 1,
+    pools: ['global', 'tenant:u-bogdan'],
+    units: 1,
+    dispatch_state: 'DISPATCHED',
+    created_at: iso(600),
+    dispatch_deadline: iso(300),
+    expires_at: iso(-120),
+    heartbeat_at: iso(silent),
+    released_at: null,
+    release_reason: null,
+    released: false,
+    expired: false,
+    dispatch_overdue: false,
+    silent_seconds: silent,
+    heartbeat_ever: true,
+    last_error: null,
+    ...extra,
+  })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      // One of each classification, so all three treatments are visible while
+      // working on this screen rather than only the happy one.
+      leases: [
+        row('d1', 400, { expired: true, expires_at: iso(60) }),
+        row('c1', 140),
+        row('b1', 20),
+        row('a1', 0, {
+          dispatch_state: 'LEASED',
+          dispatch_overdue: true,
+          heartbeat_ever: false,
+          heartbeat_at: null,
+          silent_seconds: 480,
+          last_error: 'BACKEND_REJECTED (attempt att_a1)',
+        }),
+      ],
+      thresholds: { heartbeat_grace_seconds: 90, lease_timeout_seconds: 120 },
+      evaluated_at: new Date().toISOString(),
+      active_only: true,
+      tenant_id: null,
+      units_held: 4,
+    },
+  }
+}
+
+async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
+  await new Promise((r) => setTimeout(r, 160))
+  const iso = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+  const mk = (n: number, exit: number | null): AttemptRow => ({
+    attempt_id: `att_${taskId.slice(-4)}_${n}`,
+    task_id: taskId,
+    tenant_id: 'u-bogdan',
+    generation: n,
+    lease_id: `lease_${n}`,
+    backend: 'CLOUD_RUN_JOB',
+    execution_name: `swarm-job-u-bogdan-claude-code-${n}`,
+    created_at: iso(40 - n * 10),
+    started_at: iso(39 - n * 10),
+    completed_at: exit === null ? null : iso(35 - n * 10),
+    exit_code: exit,
+    error: exit ? 'exit status 1' : null,
+    peak_rss_bytes: 1_842_000_000,
+    peak_disk_bytes: null,
+    oom_near_miss: n === 2,
+    checkpoints: [],
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_input_tokens: null,
+    cache_creation_input_tokens: null,
+    cost_usd: null,
+  })
+  return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(3, 0), mk(2, 1), mk(1, 1)] } }
 }
 
 // --------------------------------------------------------------------------

@@ -1,5 +1,5 @@
-import { useCallback } from 'react'
-import { loadAgentDetail, type AgentDetail } from './api'
+import { useCallback, useEffect, useState } from 'react'
+import { loadAgentDetail, loadAttempts, type AgentDetail } from './api'
 import { num } from './fetch'
 import { LivenessBadge } from './Liveness'
 import { Screen, timeAgo } from './Shell'
@@ -11,6 +11,7 @@ import {
   usageOf,
   whyAgent,
   type ArtifactRef,
+  type AttemptRow,
   type ResultSummary,
   type Task,
   type TaskEvent,
@@ -141,6 +142,9 @@ function Detail({ detail }: { detail: AgentDetail }) {
       {/* ---- Placement ---- */}
       <Placement events={events} task={task} />
 
+      {/* ---- Attempts ---- */}
+      <Attempts taskId={task.id} attemptCount={task.attempt_count} />
+
       {/* ---- Output ---- */}
       <Output summary={summary} task={task} usage={usage} />
 
@@ -197,6 +201,110 @@ function ErrorBanner({ text }: { text: string }) {
         </p>
         <pre className="err full">{text}</pre>
       </div>
+    </section>
+  )
+}
+
+/**
+ * Every attempt, not just the last one.
+ *
+ * This is the panel `result_summary` cannot provide. It is written once, by
+ * finish(), at terminal state -- so a task that failed twice and succeeded on
+ * the third carries ONLY attempt three's numbers. The first two attempts'
+ * exit codes, errors and peak RSS live on the attempt documents, and until
+ * the P1 read path existed nothing could reach them.
+ */
+function Attempts({ taskId, attemptCount }: { taskId: string; attemptCount: number }) {
+  const [rows, setRows] = useState<AttemptRow[] | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    loadAttempts(taskId).then((r) => {
+      if (!live) return
+      if (r.status === 'ok' || r.status === 'stale') setRows(r.data.attempts)
+      else if (r.status === 'empty') setRows([])
+      else if (r.status === 'error') setFailed(r.error.message)
+    })
+    return () => {
+      live = false
+    }
+  }, [taskId])
+
+  if (failed !== null) {
+    return (
+      <section className="section">
+        <h2>Attempts</h2>
+        <div className="state partial" role="status">
+          <h3>Attempt history could not be read</h3>
+          <p>This is a failed read, not a task that never ran. {failed}</p>
+        </div>
+      </section>
+    )
+  }
+  if (rows === null) return <div className="skeleton" style={{ height: 60 }} />
+
+  return (
+    <section className="section">
+      <h2>Attempts</h2>
+      {rows.length === 0 ? (
+        <p className="muted">
+          No attempt documents. A task that has never been admitted has none —
+          this is not the same as an attempt that failed.
+        </p>
+      ) : (
+        <>
+          {rows.length < attemptCount && (
+            <p className="warn-text">
+              The task records {attemptCount} attempts and {rows.length}{' '}
+              {rows.length === 1 ? 'document' : 'documents'} came back. The rest
+              are missing, not absent.
+            </p>
+          )}
+          <div className="table-wrap">
+            <table className="pools">
+              <thead>
+                <tr>
+                  <th scope="col" className="n">Gen</th>
+                  <th scope="col">Backend</th>
+                  <th scope="col" className="n">Exit</th>
+                  <th scope="col">Error</th>
+                  <th scope="col" className="n">Peak RSS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((a) => (
+                  <tr key={a.attempt_id} className={a.exit_code ? 'over' : undefined}>
+                    <td className="n">{a.generation}</td>
+                    <td>
+                      {a.backend}
+                      {a.oom_near_miss && (
+                        <span className="tag full" title="Came close to the memory ceiling">
+                          OOM near miss
+                        </span>
+                      )}
+                    </td>
+                    {/* null exit code means still running or never finished,
+                        which is not the same as exit 0. */}
+                    <td className="n">{a.exit_code === null ? '\u2014' : a.exit_code}</td>
+                    <td>{a.error ?? '\u2014'}</td>
+                    <td className="n">
+                      {a.peak_rss_bytes === null
+                        ? '\u2014'
+                        : `${(a.peak_rss_bytes / 1e9).toFixed(2)} GB`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted small">
+            Token and cost columns are omitted rather than shown empty: they
+            are null on every attempt that ran before the worker capture was
+            fixed, and null is not zero.
+          </p>
+        </>
+      )}
     </section>
   )
 }

@@ -376,6 +376,107 @@ export function hasUsage(task: Task): boolean {
   return u !== null && Object.keys(u).length > 0
 }
 
+/**
+ * `lease_to_api`. One row of "who is holding capacity right now".
+ *
+ * NOTE `dispatch_state`, not `state`. Nothing ever writes STARTING or RUNNING
+ * to a lease -- the worker advances the TASK through those and touches the
+ * lease only to heartbeat -- so a column labelled "state" would show
+ * DISPATCHED for an agent that has been running for an hour.
+ */
+export interface LeaseRow {
+  lease_id: string
+  task_id: string
+  attempt_id: string
+  tenant_id: string
+  generation: number
+  pools: string[]
+  units: number
+  dispatch_state: 'LEASED' | 'DISPATCHED' | string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  released_at: string | null
+  release_reason: string | null
+  released: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+  /** Computed server-side. Falls back to created_at when never beaten. */
+  silent_seconds: number
+  heartbeat_ever: boolean
+  /** Denormalised from the task, so this is not an N+1. */
+  last_error: string | null
+}
+
+/**
+ * THE THRESHOLDS ARRIVE WITH THE DATA and the UI must colour from them.
+ *
+ * 90 and 120 are the reconciler's, and the grace is not even a constant --
+ * it derives from the heartbeat interval. A `const GRACE = 90` here would be
+ * the restatement drift check-contract-parity.sh exists to catch, one layer
+ * further out, and it would colour a row amber at a threshold the reconciler
+ * does not act on.
+ */
+export interface LeasePage {
+  leases: LeaseRow[]
+  thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
+  evaluated_at: string
+  active_only: boolean
+  tenant_id: string | null
+  /** Weighted units, not agents. */
+  units_held: number
+}
+
+/** How a lease row reads, given the thresholds the API just sent. */
+export type Liveliness = 'alive' | 'silent' | 'presumed-dead'
+
+export function leaseLiveliness(
+  row: LeaseRow,
+  thresholds: LeasePage['thresholds'],
+): { kind: Liveliness; copy: string } {
+  // Past expires_at is a SECOND, INDEPENDENT signal, not a later stage of the
+  // first: the lease TTL has run out as well as the heartbeat going quiet.
+  if (row.expired) {
+    return {
+      kind: 'presumed-dead',
+      copy: 'The lease TTL has run out as well. This slot is held by something that is almost certainly gone.',
+    }
+  }
+  if (row.silent_seconds >= thresholds.heartbeat_grace_seconds) {
+    return {
+      kind: 'silent',
+      copy: 'This is already the reconciler\u2019s trigger. Its next pass will reclaim this lease, and that pass is up to five minutes away.',
+    }
+  }
+  return { kind: 'alive', copy: 'Beating normally. Nothing will touch this.' }
+}
+
+/** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
+export interface AttemptRow {
+  attempt_id: string
+  task_id: string
+  tenant_id: string
+  generation: number
+  lease_id: string
+  backend: string
+  execution_name: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+  error: string | null
+  peak_rss_bytes: number | null
+  peak_disk_bytes: number | null
+  oom_near_miss: boolean
+  checkpoints: string[]
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_input_tokens: number | null
+  cache_creation_input_tokens: number | null
+  cost_usd: number | null
+}
+
 /** `SubmissionService.stats`, service.py:271-288. */
 export interface Stats {
   tenant_id: string
