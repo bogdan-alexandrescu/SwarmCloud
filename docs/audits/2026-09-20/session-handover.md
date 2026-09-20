@@ -53,6 +53,30 @@ fooled us earlier today.
    read `eng@saga.xyz`. Blocked today because Google refuses the Admin SDK
    OAuth scope to the gcloud client in this domain.
 
+## Agreed next step
+
+**Restore the verification gate first.** Decided 2026-09-20. It is the only
+part of the original QA ask that is completely untested, and CLAUDE.md keeps
+instructing people to run a gate that always fails for an unrelated reason --
+which turns it from a check into a ritual.
+
+Order of work:
+
+1. Obtain the IAP OAuth client id (needs brand-owner rights) and record it
+   where `API_AUDIENCE` can pick it up.
+2. Surface the frontend module's `url` as a root output in
+   `terraform/infra/outputs.tf` so `tf_output api_url` resolves. Track C's
+   file -- request it rather than edit it.
+3. Confirm `make smoke` passes. No script change should be required:
+   `id_token()` already has the `SWARM_IMPERSONATE_SA` + `API_AUDIENCE`
+   branch.
+4. Then `make concurrency-test race-test`, which is the first real evidence
+   for contract invariants 2 and 3.
+
+The org-level `roles/cloudidentity.groupsReader` binding was revoked on
+2026-09-20 after being confirmed inert, so a future reader does not mistake
+it for deliberate, working access.
+
 ## Findings filed today
 
 * `tag-vs-digest.md` — Terraform deploys by tag, so a rebuilt tag leaves a
