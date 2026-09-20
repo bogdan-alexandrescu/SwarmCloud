@@ -242,6 +242,8 @@ export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
     ['capacity', 'Capacity'],
     ['agents', 'Agents'],
     ['workflows', 'Workflows'],
+    ['activity', 'Activity'],
+    ['tenants', 'Tenants'],
   ] as const
   return (
     <nav className="nav">

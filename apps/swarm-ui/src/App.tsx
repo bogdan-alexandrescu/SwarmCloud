@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AgentDetailScreen } from './AgentDetail'
+import { ActivityScreen, TenantsScreen } from './Activity'
 import { AgentsScreen } from './Agents'
 import { CapacityScreen } from './Capacity'
 import { DataSourceStrip } from './DataSources'
@@ -7,7 +8,7 @@ import { Nav } from './Shell'
 import { TroubleScreen } from './Trouble'
 import { WorkflowsScreen } from './Workflows'
 
-const SCREENS = ['trouble', 'capacity', 'agents', 'workflows'] as const
+const SCREENS = ['trouble', 'capacity', 'agents', 'workflows', 'activity', 'tenants'] as const
 type ScreenId = (typeof SCREENS)[number]
 
 interface Route {
@@ -51,6 +52,8 @@ export function App() {
       {at.screen === 'capacity' && <CapacityScreen />}
       {at.screen === 'agents' && <AgentsScreen onOpen={(id) => go(`agents/${encodeURIComponent(id)}`)} />}
       {at.screen === 'workflows' && <WorkflowsScreen />}
+      {at.screen === 'activity' && <ActivityScreen />}
+      {at.screen === 'tenants' && <TenantsScreen />}
       {at.taskId && <AgentDetailScreen taskId={at.taskId} onClose={() => go('agents')} />}
       <DataSourceStrip />
     </div>

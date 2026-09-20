@@ -1,7 +1,7 @@
 import { noteFixtureProbe, read, type Result } from './fetch'
 import type {
-  Capacity, DispatchControl, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  TaskState, Workflow,
+  Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
+  TaskState, TaskWindow, Tenant, Workflow,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -331,6 +331,132 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
           quota: null,
         },
       ],
+    },
+  }
+}
+
+export async function loadMe(): Promise<Result<Me>> {
+  if (USE_FIXTURES) return fixtureMe()
+  return read<Me>('/v1/tenants/me', () => false)
+}
+
+/**
+ * A row-bounded window, assembled by following page tokens.
+ *
+ * NEVER LET A CLAMP READ AS AN END OF DATA. `paged_limit` silently takes
+ * min(requested, 200), so a client asking for limit=500 gets 200 rows and a
+ * next_page_token with no error and no warning. The only honest end-of-data
+ * signal is a null next_page_token, so that -- not a short page -- is what
+ * stops this loop.
+ */
+export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>> {
+  if (USE_FIXTURES) return fixtureWindow(budget)
+
+  const tasks: Task[] = []
+  let token: string | null = null
+  let pages = 0
+  let moreExist = false
+
+  while (tasks.length < budget) {
+    const qs = new URLSearchParams({ limit: '200' })
+    if (token) qs.set('page_token', token)
+    const page: Result<TaskPage> = await read<TaskPage>(
+      `/v1/tasks?${qs.toString()}`,
+      () => false,
+    )
+    if (page.status === 'error') {
+      // Partial data plus a failure is still a failure to describe a window:
+      // a span computed from half the rows would be wrong in a way nothing on
+      // screen could reveal.
+      if (tasks.length === 0) return page
+      moreExist = true
+      break
+    }
+    if (page.status === 'loading') break
+    pages++
+    if (page.status === 'empty') break
+    if (page.status === 'ok' || page.status === 'stale') {
+      tasks.push(...page.data.tasks)
+      token = page.data.next_page_token ?? null
+      if (!token) break
+    }
+  }
+  if (token) moreExist = true
+
+  const trimmed = tasks.slice(0, budget)
+  const times = trimmed
+    .map((t) => t.created_at)
+    .filter(Boolean)
+    .sort()
+  return {
+    status: trimmed.length === 0 ? 'empty' : 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tasks: trimmed,
+      moreExist: moreExist || trimmed.length < tasks.length,
+      pages,
+      from: times[0] ?? null,
+      to: times[times.length - 1] ?? null,
+    },
+  } as Result<TaskWindow>
+}
+
+async function fixtureMe(): Promise<Result<Me>> {
+  await new Promise((r) => setTimeout(r, 150))
+  noteFixtureProbe('/v1/tenants/me', 150, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tenant: {
+        tenant_id: 'u-bogdan', kind: 'user', principal: 'bogdan@saga.xyz',
+        display_name: 'Bogdan', created_at: new Date(Date.now() - 86_400_000 * 9).toISOString(),
+        max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
+        credentials: ['anthropic'], service_account: 'swarm-agent-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
+        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-u-bogdan',
+      },
+      principal: {
+        email: 'bogdan@saga.xyz', domain: 'saga.xyz',
+        groups: ['eng@saga.xyz'], is_admin: false,
+      },
+    },
+  }
+}
+
+async function fixtureWindow(budget: number): Promise<Result<TaskWindow>> {
+  const page = await fixtureTasks()
+  if (page.status !== 'ok') return page as Result<TaskWindow>
+  const tasks = page.data.tasks.slice(0, budget)
+  const times = tasks.map((t) => t.created_at).sort()
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tasks,
+      moreExist: true,
+      pages: 1,
+      from: times[0] ?? null,
+      to: times[times.length - 1] ?? null,
+    },
+  }
+}
+
+/** `GET /v1/admin/tenants`, admin-gated. A 403 here is information. */
+export async function loadTenants(): Promise<Result<{ tenants: Tenant[] }>> {
+  if (USE_FIXTURES) return fixtureTenants()
+  return read<{ tenants: Tenant[] }>('/v1/admin/tenants', (d) => d.tenants.length === 0)
+}
+
+async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
+  await new Promise((r) => setTimeout(r, 140))
+  noteFixtureProbe('/v1/admin/tenants', 140, false)
+  return {
+    status: 'error',
+    error: {
+      kind: 'admin_required',
+      httpStatus: 403,
+      code: 'forbidden',
+      message: 'admin group membership is required',
     },
   }
 }

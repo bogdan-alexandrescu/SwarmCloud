@@ -781,3 +781,77 @@ button.copy {
   font: 10.5px var(--mono); cursor: pointer;
 }
 button.copy:hover { color: var(--text); border-color: var(--text-faint); }
+
+/* ------------------------------------------------------------------------ */
+/* Activity                                                                  */
+/* ------------------------------------------------------------------------ */
+
+.window-bar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 14px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+}
+.wb-span strong { font-size: 13.5px; }
+/* The span the rows actually covered, never a claimed date range. */
+.wb-detail { display: block; margin-top: 2px; font: 11.5px var(--mono); color: var(--text-dim); }
+.wb-controls { margin-left: auto; display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-dim); }
+.wb-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.wb-controls select {
+  padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text); font-size: 12.5px;
+}
+.wb-more { flex-basis: 100%; margin: 4px 0 0; }
+
+.chart {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 150px; padding-top: 8px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.chart .col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 26px; flex: 1; }
+.stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
+.stackcol > i { display: block; width: 100%; min-height: 0; }
+.stackcol > i.succeeded { background: var(--ok); }
+.stackcol > i.failed    { background: var(--bad); }
+.stackcol > i.cancelled { background: var(--text-faint); }
+/* Hatched, so "still open" never reads as an outcome. */
+.stackcol > i.open {
+  background: repeating-linear-gradient(
+    45deg, var(--surface-2), var(--surface-2) 3px, var(--line) 3px, var(--line) 6px
+  );
+}
+.col-label { font: 10px var(--mono); color: var(--text-faint); white-space: nowrap; }
+.chart-legend { margin: 10px 0 0; font-size: 11.5px; color: var(--text-faint); line-height: 1.7; }
+.chart-legend .k { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: baseline; }
+.chart-legend .k.succeeded { background: var(--ok); }
+.chart-legend .k.failed    { background: var(--bad); }
+.chart-legend .k.cancelled { background: var(--text-faint); }
+.chart-legend .k.open      { background: var(--surface-2); border: 1px solid var(--line); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.tile {
+  padding: 11px 13px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--surface);
+}
+.t-label { display: block; font: 10.5px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.t-value { display: block; margin: 4px 0 5px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.t-sub { display: block; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); }
+/* "not recorded" is a sentence, not a number. A zero here would read as
+   "this engineer spent nothing", which is worse than saying nothing. */
+.tile.blocked { border-style: dashed; }
+.tile.blocked .t-value { font-size: 15px; color: var(--text-faint); font-weight: 500; }
+.coverage { display: block; height: 4px; margin-bottom: 5px; border-radius: 999px; background: var(--surface-2); }
+.coverage > i { display: block; height: 100%; border-radius: 999px; background: var(--info); }
+
+.split-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) 46px; align-items: center; gap: 10px; padding: 3px 0; }
+.sr-name { font: 12px var(--mono); color: var(--text-dim); }
+.sr-bar { height: 9px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.sr-bar > i { display: block; height: 100%; background: var(--info); }
+.sr-n { font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 640px) {
+  .window-bar { position: static; }
+  .wb-controls { margin-left: 0; }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

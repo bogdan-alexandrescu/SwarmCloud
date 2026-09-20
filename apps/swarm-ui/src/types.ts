@@ -304,6 +304,78 @@ export function usageOf(task: Task): Record<string, number | string[]> | null {
   return usage && typeof usage === 'object' ? usage : null
 }
 
+/** `GET /v1/tenants/me`, routes/tenants.py:24-38. */
+export interface Me {
+  tenant: Tenant
+  principal: {
+    email: string
+    domain: string
+    groups: string[]
+    is_admin: boolean
+  }
+}
+
+/**
+ * A row-bounded window of tasks, plus what span those rows turned out to
+ * cover.
+ *
+ * THE ONE DESIGN RULE for activity: bound by ROWS, label by the SPAN those
+ * rows actually covered. The platform can serve "the most recent N tasks for
+ * this tenant" cheaply and exactly; it cannot serve "everything in August" at
+ * all -- list_tasks applies exactly one inequality, decoded from the page
+ * token. So the control says "Last 500 tasks" and the header reports
+ * "14 Sep 09:12 -> 19 Sep 08:44 (4d 23h)". If the tenant is busy that span is
+ * six hours; if quiet, three months. Both are true. "Last 7 days" would be a
+ * lie the moment the window truncates.
+ */
+export interface TaskWindow {
+  tasks: Task[]
+  /** True when a next_page_token remained, so older tasks exist beyond this. */
+  moreExist: boolean
+  /** How many pages were actually fetched, for the provenance line. */
+  pages: number
+  /** Oldest and newest created_at in the window, or null when empty. */
+  from: string | null
+  to: string | null
+}
+
+export type Bucket = 'hour' | 'day' | 'week' | 'month'
+
+/**
+ * Floor a timestamp to a bucket boundary IN THE VIEWER'S LOCAL ZONE.
+ *
+ * A day boundary silently in UTC moves seven hours of a Pacific engineer's
+ * work into the wrong day, which is the kind of wrong that never gets
+ * reported because it looks plausible.
+ */
+export function bucketStart(iso: string, bucket: Bucket): number | null {
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return null
+  const d = new Date(t)
+  d.setMinutes(0, 0, 0)
+  if (bucket === 'hour') return d.getTime()
+  d.setHours(0)
+  if (bucket === 'day') return d.getTime()
+  if (bucket === 'week') {
+    // ISO-8601: weeks start Monday.
+    const dow = (d.getDay() + 6) % 7
+    d.setDate(d.getDate() - dow)
+    return d.getTime()
+  }
+  d.setDate(1)
+  return d.getTime()
+}
+
+/**
+ * Usage is only meaningful when PRESENT AND NON-EMPTY. `?? 0` here would
+ * render "this engineer spent nothing", which is worse than omitting the
+ * number -- a zero reads as a fact.
+ */
+export function hasUsage(task: Task): boolean {
+  const u = usageOf(task)
+  return u !== null && Object.keys(u).length > 0
+}
+
 /** `SubmissionService.stats`, service.py:271-288. */
 export interface Stats {
   tenant_id: string
