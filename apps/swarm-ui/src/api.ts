@@ -128,8 +128,10 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
     }
   }
 
-  // GET /v1/tasks/{id} returns the task document itself; tolerate a wrapper in
-  // case a caller routes through the create shape.
+  // GET /v1/tasks/{id} returns {"task": {...}} (routes/tasks.py), NOT the bare
+  // document -- verified against the live API. The fallback stays because the
+  // create and cancel routes return the same wrapper and a caller could route
+  // through either, but the wrapper is the norm rather than the exception.
   const raw = task.data as { task?: Task } & Task
   const unwrapped: Task = raw.task ?? raw
 

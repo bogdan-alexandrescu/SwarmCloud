@@ -423,10 +423,105 @@ tf_output() {
 _ACCESS_TOKEN=""
 access_token() {
   if [[ -z "${_ACCESS_TOKEN}" ]]; then
-    _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
-      || die "no gcloud credentials; run: gcloud auth login"
+    if [[ -n "${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]]; then
+      # Inside Cloud Run. The metadata server issues an access token for the
+      # attached service account, so no gcloud and no key file.
+      local meta="http://metadata.google.internal/computeMetadata/v1/instance/service_accounts/default/token"
+      _ACCESS_TOKEN="$(curl -sf -H 'Metadata-Flavor: Google' "${meta}" 2>/dev/null \
+        | jq -r '.access_token // empty')" \
+        || die "the metadata server refused an access token"
+      [[ -n "${_ACCESS_TOKEN}" ]] || die "the metadata server returned no access token"
+    else
+      _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
+        || die "no gcloud credentials; run: gcloud auth login"
+    fi
   fi
   printf '%s' "${_ACCESS_TOKEN}"
+}
+
+# --------------------------------------------------------------------------
+# REST equivalents of two gcloud calls, so the verification image needs no SDK
+# --------------------------------------------------------------------------
+# The Cloud SDK base image ships a python-cryptography with unfixed HIGH and
+# CRITICAL CVEs, and `make push` refuses to promote it -- correctly. Rather
+# than allow-list the scan or pin a package the base will overwrite, the two
+# things the tests actually needed gcloud for are done over REST with the
+# token above. Both fail CLOSED and distinguish "absent" from "could not
+# look", which is the whole reason these helpers are worth their lines.
+
+#: The https URI of a Cloud Run service, or empty with a reason on stderr.
+cloud_run_service_uri() {
+  local service="$1" out rc=0
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-runuri.XXXXXX")"
+  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+    -H "Authorization: Bearer $(access_token)" \
+    "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/services/${service}" \
+    >"${out}" 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    redact <"${out}" >&2
+    rm -f "${out}"
+    return 1
+  fi
+  # A 404 arrives as a JSON error body with status 200 from curl's point of
+  # view, so the body is what decides -- not curl's exit code.
+  if jq -e '.error' <"${out}" >/dev/null 2>&1; then
+    jq -r '.error.message // "unknown error"' <"${out}" | redact >&2
+    rm -f "${out}"
+    return 1
+  fi
+  jq -r '.uri // empty' <"${out}"
+  rm -f "${out}"
+}
+
+#: Count Cloud Run job executions in the project. Prints the count, or fails.
+#: Zero is an ANSWER here; an unreadable listing is a failure, because that
+#: number is the whole point of the invariant-1 check that calls it.
+cloud_run_execution_count() {
+  local out rc=0
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-execs.XXXXXX")"
+  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+    -H "Authorization: Bearer $(access_token)" \
+    "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/-/executions?pageSize=500" \
+    >"${out}" 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    redact <"${out}" >&2
+    rm -f "${out}"
+    return 1
+  fi
+  if jq -e '.error' <"${out}" >/dev/null 2>&1; then
+    jq -r '.error.message // "unknown error"' <"${out}" | redact >&2
+    rm -f "${out}"
+    return 1
+  fi
+  jq -r '(.executions // []) | length' <"${out}"
+  rm -f "${out}"
+}
+
+#: Count objects under a GCS prefix. Prints the count, or fails with a reason.
+#: An empty listing is a SUCCESS with count 0; only an unreadable one fails.
+gcs_object_count() {
+  local bucket="$1" prefix="$2" out rc=0
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-gcsls.XXXXXX")"
+  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+    -H "Authorization: Bearer $(access_token)" \
+    --get --data-urlencode "prefix=${prefix}" \
+    "https://storage.googleapis.com/storage/v1/b/${bucket}/o" \
+    >"${out}" 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    redact <"${out}" >&2
+    rm -f "${out}"
+    return 1
+  fi
+  if jq -e '.error' <"${out}" >/dev/null 2>&1; then
+    jq -r '.error.message // "unknown error"' <"${out}" | redact >&2
+    rm -f "${out}"
+    return 1
+  fi
+  # `items` is ABSENT, not empty, when nothing matches -- so `// []` here is
+  # correct and is not the `?? 0` trap: the request succeeded and the answer
+  # is genuinely zero.
+  jq -r '(.items // []) | length' <"${out}"
+  rm -f "${out}"
 }
 
 # A Google ID token for the API.

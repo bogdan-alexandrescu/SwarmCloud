@@ -37,12 +37,15 @@ info "api ${API_URL:-$(api_url)}"
 t_case "Control-plane services are healthy"
 for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}"; do
   describe_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-describe.XXXXXX")"
-  if ! url="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" \
-      --region "${REGION}" --format='value(status.url)' 2>"${describe_err}")"; then
+  # REST rather than `gcloud run services describe`, so this suite runs in an
+  # image with no Cloud SDK -- see cloud_run_service_uri in lib/common.sh for
+  # why that matters. Same distinction preserved: a service that is ABSENT and
+  # a lookup that could not be MADE are different failures.
+  if ! url="$(cloud_run_service_uri "${service}" 2>"${describe_err}")"; then
     err_detail="$(cat "${describe_err}")"
     rm -f "${describe_err}"
     die_if_auth_failure "${err_detail}"
-    if grep -qi 'NOT_FOUND\|could not be found\|does not exist' <<<"${err_detail}"; then
+    if grep -qi 'NOT_FOUND\|could not be found\|does not exist\|not found' <<<"${err_detail}"; then
       t_fail "${service}: not deployed"
     else
       t_fail "${service}: could not check deployment status: $(printf '%s' "${err_detail}" | redact | head -n 1)"
@@ -206,30 +209,25 @@ fi
 t_case "Artifacts landed in the tenant's own prefix"
 TENANT_ID="$(task_field "${TASK_ID}" '.tenant_id // ""')"
 if [[ -n "${TENANT_ID}" && "${TENANT_ID}" != "null" ]]; then
-  PREFIX="gs://${ARTIFACT_BUCKET}/tenants/${TENANT_ID}/tasks/${TASK_ID}/"
+  OBJ_PREFIX="tenants/${TENANT_ID}/tasks/${TASK_ID}/"
+  PREFIX="gs://${ARTIFACT_BUCKET}/${OBJ_PREFIX}"
   ls_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-ls.XXXXXX")"
-  if listing="$(gcloud storage ls --recursive "${PREFIX}" --project "${PROJECT_ID}" 2>"${ls_err}")"; then
+  # REST rather than `gcloud storage ls`, for the same reason as above. The
+  # distinction that mattered with gcloud still matters and is now simpler to
+  # express: the JSON API returns 200 with `items` ABSENT for an empty prefix,
+  # so zero objects is an ANSWER, while a denied listing or an expired session
+  # is an error body that fails this helper.
+  if COUNT="$(gcs_object_count "${ARTIFACT_BUCKET}" "${OBJ_PREFIX}" 2>"${ls_err}")"; then
     rm -f "${ls_err}"
-    if [[ -z "${listing}" ]]; then
-      COUNT=0
-    else
-      COUNT="$(printf '%s\n' "${listing}" | wc -l | tr -d ' ')"
+    if [[ "${COUNT}" -eq 0 ]]; then
+      t_info "no objects under ${PREFIX} (a mock run may legitimately produce none)"
     fi
     t_pass "${COUNT} object(s) under ${PREFIX}"
   else
     err_detail="$(cat "${ls_err}")"
     rm -f "${ls_err}"
-    # `gcloud storage ls` on a genuinely empty prefix exits non-zero with this
-    # specific "matched no objects" message. Anything else here -- denied
-    # storage.objects.list, an expired session, a wrong bucket -- is a failed
-    # listing, not an empty one, and must not be read as proof of isolation.
-    if grep -qi 'matched no objects\|no objects or files\|not found' <<<"${err_detail}"; then
-      t_info "no objects under ${PREFIX} (a mock run may legitimately produce none)"
-      t_pass "artifact prefix is tenant-scoped"
-    else
-      die_if_auth_failure "${err_detail}"
-      t_fail "could not list ${PREFIX}: $(printf '%s' "${err_detail}" | redact | head -n 1)"
-    fi
+    die_if_auth_failure "${err_detail}"
+    t_fail "could not list ${PREFIX}: $(printf '%s' "${err_detail}" | redact | head -n 1)"
   fi
 else
   t_fail "task has no tenant_id"

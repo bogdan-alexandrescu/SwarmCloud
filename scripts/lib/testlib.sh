@@ -88,7 +88,11 @@ t_summary() {
 # ---------------------------------------------------------------------------
 
 require_platform() {
-  require_cmd gcloud jq curl
+  # NOT gcloud. The suites reach Cloud Run and GCS over REST via
+  # cloud_run_service_uri and gcs_object_count, so they run in an image with
+  # no Cloud SDK -- whose base ships unfixed HIGH/CRITICAL CVEs that `make
+  # push` rightly refuses to promote.
+  require_cmd jq curl
   if ! fs_database_exists; then
     die "Firestore database '${FIRESTORE_DATABASE}' does not exist. Run 'make infra' first."
   fi

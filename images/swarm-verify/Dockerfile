@@ -28,29 +28,29 @@
 # secret, and works identically in CI -- the ingress setting already permits
 # internal traffic.
 #
-# GCLOUD IS IN THIS IMAGE, and the first version of this file argued it should
-# not be. That argument was wrong, and wrong in an instructive way: it
-# considered only the ID token, which the metadata server does supply, and did
-# not check what else the scripts call. They call plenty --
-# `gcloud run services describe` to resolve a service URL (smoke-test.sh:40)
-# and `gcloud storage ls` to prove the attempt's artifacts actually reached
-# GCS (smoke-test.sh:211), which is a substantive part of what smoke verifies,
-# not incidental. testlib.sh:91 requires it outright.
+# NO GCLOUD IN THIS IMAGE, and this is the second answer to that question.
 #
-# The image was built without it, the job ran, and all three targets failed
-# with "required command not found: gcloud" -- a container problem wearing the
-# costume of a platform problem, which is the exact confusion this whole gate
-# exists to remove.
+# The first version argued for no gcloud on the strength of the ID token
+# alone, without checking what else the scripts called -- they called
+# `gcloud run services describe` and `gcloud storage ls`, and all three
+# targets failed with "required command not found: gcloud". A container
+# problem wearing the costume of a platform problem, which is the exact
+# confusion this gate exists to remove.
 #
-# The metadata-server branch in id_token() stays and is still worth having: it
-# means no key file and no `gcloud auth` inside the container. But it removes
-# one use of gcloud, not the need for it.
+# The second version added the Cloud SDK base, and `make push` refused to
+# promote it: that image ships a python-cryptography with unfixed HIGH and
+# CRITICAL CVEs. The scan gate was right, and allow-listing it would have
+# traded a real security control for convenience in an image that exists to
+# enforce correctness.
+#
+# So the three gcloud calls were replaced with REST, in
+# cloud_run_service_uri, gcs_object_count and cloud_run_execution_count
+# (scripts/lib/common.sh). Each preserves the distinction that mattered:
+# "absent" and "could not look" stay different answers. access_token() and
+# id_token() both take their credentials from the metadata server when
+# K_SERVICE or CLOUD_RUN_JOB is set, so nothing here needs a key file either.
 
-# The official Cloud SDK alpine image: gcloud, and a base small enough that
-# the rest is a short apk install. Pinned by tag rather than digest to match
-# how every other image here is pinned; the build is reproducible through the
-# tag recorded in the manifest.
-FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine
+FROM alpine:3.20
 
 # bash because every script declares `#!/usr/bin/env bash` and relies on
 # arrays and `set -o pipefail`; ash would silently mis-execute them.

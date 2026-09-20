@@ -124,14 +124,12 @@ assert_le "${FINAL_GLOBAL}" "${GLOBAL_LIMIT}" "global pool active at end"
 t_case "Backlog cost nothing while it waited"
 # QUEUED/PARKED/READY must never create infrastructure demand (invariant 1).
 EXECUTIONS_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-executions.XXXXXX")"
-if EXECUTIONS_RAW="$(gcloud run jobs executions list --project "${PROJECT_ID}" --region "${REGION}" \
-     --format='value(metadata.name)' --limit 500 2>"${EXECUTIONS_ERR}")"; then
+# REST rather than `gcloud run jobs executions list`, so this suite runs in an
+# image with no Cloud SDK. The distinction it protects is unchanged: zero
+# executions is an ANSWER, an unreadable listing is a FAILURE, and only the
+# first one says anything about invariant 1.
+if EXECUTIONS="$(cloud_run_execution_count 2>"${EXECUTIONS_ERR}")"; then
   rm -f "${EXECUTIONS_ERR}"
-  if [[ -z "${EXECUTIONS_RAW}" ]]; then
-    EXECUTIONS=0
-  else
-    EXECUTIONS="$(printf '%s\n' "${EXECUTIONS_RAW}" | wc -l | tr -d ' ')"
-  fi
   t_info "cloud run executions visible: ${EXECUTIONS}"
 else
   EXECUTIONS_ERR_DETAIL="$(cat "${EXECUTIONS_ERR}" 2>/dev/null || true)"
