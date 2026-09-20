@@ -70,35 +70,144 @@ def resolve_api_url() -> str:
     return url.rstrip("/")
 
 
+
+#: Google's edges answer before the application does, and they answer in HTML.
+#: Printing that page verbatim buries the one useful line under a document, and
+#: the code alone is worse: a 404 here almost never means "no such route".
+_HTML = ("<html", "<!doctype html", "<HTML")
+
+
+def _explain(status: int, body: str) -> str:
+    """Turn an edge's HTML refusal into the sentence it was trying to be."""
+    stripped = body.strip()
+    if not stripped.lower().startswith(_HTML):
+        try:
+            parsed = json.loads(stripped)
+            return str(parsed.get("detail") or parsed.get("message") or stripped[:300])
+        except json.JSONDecodeError:
+            return stripped[:300] or f"HTTP {status}"
+
+    if status == 404:
+        return (
+            "an HTML 404 from Google's edge, not from the API. This is what "
+            "Cloud Run returns when a service's INGRESS refuses the caller -- "
+            "`internal-and-cloud-load-balancing` rejects a direct or proxied "
+            "call from outside the VPC. Reach it through its load balancer, or "
+            "deploy the solo profile, which does not restrict ingress"
+        )
+    if status in (401, 403):
+        return (
+            "an HTML sign-in page, so IAP rejected this before the API saw it. "
+            "A bearer token minted for anything other than the IAP OAuth client "
+            "id reads as `Invalid JWT audience`; set SWARM_IAP_CLIENT_ID and "
+            "SWARM_IMPERSONATE_SA, and check your account is on the IAP list"
+        )
+    return f"an HTML error page from Google's edge (HTTP {status}), not from the API"
+
+
 @dataclass
 class _Token:
     value: str
     minted_at: float
 
 
+def service_name() -> str:
+    return os.environ.get("API_SERVICE", "").strip() or "swarm-api"
+
+
+def region() -> str:
+    return os.environ.get("REGION", "").strip() or "us-central1"
+
+
+def project_id() -> str:
+    value = os.environ.get("PROJECT_ID", "").strip()
+    if not value:
+        value = _run(["gcloud", "config", "get-value", "project"])
+    if not value or value == "(unset)":
+        raise SwarmError("no project: set PROJECT_ID, or run `gcloud config set project`")
+    return value
+
+
 class SwarmClient:
-    def __init__(self, base_url: str | None = None, *, audience: str | None = None) -> None:
-        self.base_url = (base_url or resolve_api_url()).rstrip("/")
-        self._audience = audience or os.environ.get("API_AUDIENCE", "").strip() or None
+    """A connection to one SwarmCloud, over whichever tier this machine has.
+
+    THE TIER IS DETECTED, NOT CONFIGURED. The commonest failure for someone
+    trying this for the first time is not choosing the wrong tier -- it is not
+    knowing tiers exist, and reading "Invalid JWT audience" as a bug in the
+    platform rather than as "your laptop cannot mint that kind of token".
+
+    On the PROXY tier this object owns a subprocess, so it is a context manager.
+    Using it without `with` still works for a single call; the proxy is then
+    reaped when the process exits.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        audience: str | None = None,
+        connect: bool = True,
+    ) -> None:
+        from . import auth as _auth  # local: avoids a circular import at module load
+
+        self.detection = _auth.detect()
+        self.tier = self.detection.tier
+        self._proxy: _auth.Proxy | None = None
         self._token: _Token | None = None
+        self._explicit_url = base_url or os.environ.get("SWARM_API_URL", "").strip() or None
+
+        if self.tier is _auth.Tier.IAP:
+            # The audience IAP accepts is its OAuth client id, never the
+            # service URL. Getting this wrong is the "Invalid JWT audience"
+            # that sends people looking at their IAM policy.
+            self._audience = os.environ.get("SWARM_IAP_CLIENT_ID", "").strip()
+        else:
+            self._audience = audience or os.environ.get("API_AUDIENCE", "").strip() or None
+
+        self.base_url = ""
+        if connect:
+            self.connect()
+
+    # -- connection --------------------------------------------------------
+    def connect(self) -> None:
+        from . import auth as _auth
+
+        if self.tier is _auth.Tier.PROXY and not self._explicit_url:
+            self._proxy = _auth.Proxy(service_name(), region(), project_id())
+            self.base_url = self._proxy.start().rstrip("/")
+        else:
+            self.base_url = (self._explicit_url or resolve_api_url()).rstrip("/")
+        if not self._audience:
+            self._audience = self.base_url
+
+    def close(self) -> None:
+        if self._proxy is not None:
+            self._proxy.stop()
+            self._proxy = None
+
+    def __enter__(self) -> "SwarmClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     # -- identity ----------------------------------------------------------
+    @property
+    def sends_own_token(self) -> bool:
+        """False on the proxy tier, where gcloud supplies the Authorization
+        header itself. Sending a second one would replace the only credential
+        Cloud Run will accept with one it will not."""
+        from . import auth as _auth
+
+        return self.tier is not _auth.Tier.PROXY
+
     def _id_token(self) -> str:
-        override = os.environ.get("SWARM_ID_TOKEN", "").strip()
-        if override:
-            return override
+        from . import auth as _auth
+
         now = time.monotonic()
         if self._token is not None and now - self._token.minted_at < _TOKEN_TTL_SECONDS:
             return self._token.value
-        argv = ["gcloud", "auth", "print-identity-token"]
-        impersonate = os.environ.get("SWARM_IMPERSONATE_SA", "").strip()
-        if impersonate:
-            argv += [
-                f"--impersonate-service-account={impersonate}",
-                f"--audiences={self._audience or self.base_url}",
-                "--include-email",
-            ]
-        value = _run(argv)
+        value = _auth.id_token_for(self._audience or self.base_url, tier=self.tier)
         if not value:
             raise SwarmError("no ID token available; run: gcloud auth login")
         self._token = _Token(value=value, minted_at=now)
@@ -124,7 +233,8 @@ class SwarmClient:
         url = f"{self.base_url}{path}"
         body = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", f"Bearer {self._id_token()}")
+        if self.sends_own_token:
+            req.add_header("Authorization", f"Bearer {self._id_token()}")
         req.add_header("Accept", "application/json")
         if body is not None:
             req.add_header("Content-Type", "application/json")
@@ -134,23 +244,9 @@ class SwarmClient:
                 return json.loads(raw) if raw.strip() else None
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            detail = raw[:400]
-            try:
-                parsed = json.loads(raw)
-                detail = str(parsed.get("detail") or parsed.get("message") or detail)
-            except json.JSONDecodeError:
-                pass
-            if exc.code in (401, 403):
-                # The single most common failure on a laptop, and the least
-                # self-explanatory: IAP answers before the API does, so the
-                # body is an HTML sign-in page rather than anything about
-                # permissions.
-                detail = (
-                    f"{detail} -- if this is an HTML page, IAP rejected the "
-                    "request before the API saw it; check `gcloud auth login` "
-                    "and that your account is on the IAP access list"
-                )
-            raise SwarmError(f"{method} {path} -> {exc.code}: {detail}") from exc
+            raise SwarmError(
+                f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}"
+            ) from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
 

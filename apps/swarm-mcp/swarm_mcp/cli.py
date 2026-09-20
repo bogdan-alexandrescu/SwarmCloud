@@ -24,7 +24,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .client import SwarmClient, SwarmError
+from .auth import REACHES, WHY_NOT, Tier, detect
+from .client import SwarmClient, SwarmError, project_id, region, service_name
 from .patches import (
     apply_patch,
     download,
@@ -252,6 +253,130 @@ def cmd_cancel(client: SwarmClient, args) -> int:
     return EXIT_OK
 
 
+# -- setup and diagnosis ---------------------------------------------------
+#
+# These two exist because of how this platform fails for a NEWCOMER. Every
+# other command assumes a working connection; when there is not one, the error
+# is "Invalid JWT audience" or a 403 with an HTML body, and neither says the
+# true thing, which is usually "your laptop cannot mint that kind of token, and
+# here is the one that it can".
+
+
+def cmd_doctor(_client, args) -> int:
+    """Say which tier this machine is on and what that tier can reach."""
+    detection = detect()
+    print(f"tier        {detection.tier.value}")
+    print(f"            {detection.detail}")
+    print(f"reaches     {', '.join(REACHES[detection.tier])} deployments")
+
+    for profile in ("solo", "team"):
+        why = WHY_NOT.get((detection.tier, profile))
+        if why:
+            print(f"not {profile:<8}{why}")
+
+    for name, verdict in detection.considered:
+        print(f"  checked   {name}: {verdict}")
+
+    print()
+    try:
+        print(f"project     {project_id()}")
+        print(f"service     {service_name()} / {region()}")
+    except SwarmError as exc:
+        print(f"project     UNKNOWN -- {exc}")
+        return EXIT_FAIL
+
+    # The reachability check is last and is allowed to fail: everything above
+    # is still worth printing when the API is down, and is exactly what someone
+    # needs in order to say WHY it is down.
+    try:
+        with SwarmClient() as client:
+            endpoint = client.base_url
+            me = client.request("GET", "/v1/me")
+            print(f"api         {endpoint}")
+            print(f"identity    {me.get('email') or '(not reported)'}")
+            print(f"tenant      {me.get('tenant_id')}")
+            groups = me.get("groups") or []
+            print(f"groups      {', '.join(groups) if groups else 'none -- personal tenant'}")
+            print(f"admin       {me.get('is_admin')}")
+    except SwarmError as exc:
+        print("api         UNREACHABLE")
+        for line in str(exc).split(" -- "):
+            print(f"            {line.strip()}")
+        return EXIT_FAIL
+    return EXIT_OK
+
+
+def cmd_init(_client, args) -> int:
+    """First run: check what is present, write .env, name what is missing."""
+    ok = True
+
+    account = ""
+    try:
+        account = _run_quiet(["gcloud", "config", "get-value", "account"])
+    except SwarmError:
+        pass
+    if account and account != "(unset)":
+        print(f"  ok   authenticated as {account}")
+    else:
+        print("  --   not authenticated. Run: gcloud auth login")
+        ok = False
+
+    project = ""
+    try:
+        project = project_id()
+        print(f"  ok   project {project}")
+    except SwarmError as exc:
+        print(f"  --   {exc}")
+        ok = False
+
+    url = ""
+    if project:
+        try:
+            from .client import resolve_api_url
+
+            url = resolve_api_url()
+            print(f"  ok   {service_name()} found at {url}")
+        except SwarmError as exc:
+            print(f"  --   {service_name()} not found in {region()}: {exc}")
+            print("       deploy it first, then run `swarm init` again")
+            ok = False
+
+    detection = detect()
+    print(f"  ok   tier {detection.tier.value} (reaches {', '.join(REACHES[detection.tier])})")
+
+    if not ok:
+        return EXIT_FAIL
+
+    target = Path(args.write or ".env")
+    lines = [
+        "# Written by `swarm init`. Safe to commit? NO -- it names your project.",
+        f"PROJECT_ID={project}",
+        f"REGION={region()}",
+        f"API_SERVICE={service_name()}",
+    ]
+    # SWARM_API_URL is deliberately NOT written on the proxy tier: the proxy
+    # binds a fresh port every run, so a recorded URL would be wrong by the
+    # next invocation and would silently take precedence over starting one.
+    if detection.tier is not Tier.PROXY:
+        lines.append(f"SWARM_API_URL={url}")
+    if target.exists() and not args.force:
+        print(f"  --   {target} exists; not overwriting (use --force)")
+        print()
+        print("\n".join(lines))
+        return EXIT_OK
+    target.write_text("\n".join(lines) + "\n")
+    print(f"  ok   wrote {target}")
+    print()
+    print("Try:  swarm dispatch \"say hello\" --profile mock")
+    return EXIT_OK
+
+
+def _run_quiet(argv):
+    from .client import _run
+
+    return _run(argv)
+
+
 # -- entry point -----------------------------------------------------------
 
 
@@ -301,13 +426,27 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("task_ids", nargs="+")
     c.set_defaults(func=cmd_cancel)
 
+    doc = sub.add_parser("doctor", help="which auth tier this machine is on, and what it reaches")
+    doc.set_defaults(func=cmd_doctor, no_client=True)
+
+    ini = sub.add_parser("init", help="first-run setup: check, write .env, say what is missing")
+    ini.add_argument("--write", default=None, help="where to write (default: .env)")
+    ini.add_argument("--force", action="store_true")
+    ini.set_defaults(func=cmd_init, no_client=True)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.func(SwarmClient(), args)
+        # `doctor` and `init` exist to explain why a connection cannot be made,
+        # so making one first would be the one thing guaranteed to stop them
+        # running when they are needed.
+        if getattr(args, "no_client", False):
+            return args.func(None, args)
+        with SwarmClient() as client:
+            return args.func(client, args)
     except SwarmError as exc:
         print(f"swarm: {exc}", file=sys.stderr)
         return EXIT_FAIL
