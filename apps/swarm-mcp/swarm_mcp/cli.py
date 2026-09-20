@@ -291,7 +291,7 @@ def cmd_doctor(_client, args) -> int:
     try:
         with SwarmClient() as client:
             endpoint = client.base_url
-            me = client.request("GET", "/v1/me")
+            me = client.request("GET", "/v1/tenants/me")
             print(f"api         {endpoint}")
             print(f"identity    {me.get('email') or '(not reported)'}")
             print(f"tenant      {me.get('tenant_id')}")

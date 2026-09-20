@@ -112,18 +112,27 @@ class CloudIdentityGroups:
             # and is scoped to cloud-identity.groups.readonly: read group
             # membership, nothing else, no write, no mail, no files.
             #
-            # `with_subject` exists only on service account credentials. On a
-            # developer's machine `google.auth.default()` returns USER
-            # credentials, which have no such method -- so this degrades to the
-            # undelegated session rather than crashing the service, and the
-            # caller sees the same 2028 it would have seen anyway.
-            if self._impersonate_user and hasattr(credentials, "with_subject"):
-                credentials = credentials.with_subject(self._impersonate_user)
-            elif self._impersonate_user:
-                log.warning(
-                    "impersonation requested for %s but these credentials cannot delegate; "
-                    "group lookups will use the service account's own identity and will fail",
-                    self._impersonate_user,
+            # `with_subject` exists ONLY on credentials loaded from a
+            # service-account key file. This originally guarded on it directly,
+            # on the assumption that the other case was a developer's user
+            # credentials -- but the production case is Cloud Run, whose
+            # metadata credentials have no `with_subject` either. So the
+            # delegation branch never fired where it mattered, and every lookup
+            # fell back to the service account's own identity and 403'd with
+            # Error(2028), which reads exactly like the missing-role problem
+            # delegation was introduced to solve. Observed live on 2026-09-20.
+            #
+            # `delegation.delegate` keeps the key-file path and adds the
+            # keyless one: build the assertion, have Google sign it with the key
+            # we are not allowed to hold, exchange it for a token that acts as
+            # the subject. See swarm_api/delegation.py.
+            if self._impersonate_user:
+                from . import delegation
+
+                credentials = delegation.delegate(
+                    credentials,
+                    subject=self._impersonate_user,
+                    scopes=[GROUPS_READONLY_SCOPE],
                 )
 
             self._session = AuthorizedSession(credentials)
