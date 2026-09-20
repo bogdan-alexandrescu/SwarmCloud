@@ -74,16 +74,52 @@ class DelegationError(Exception):
     """Delegation could not be established. Names the cause, never 'denied'."""
 
 
-def service_account_email(credentials: Any) -> str | None:
-    """Whose identity is this? Asked of the credentials, then of the metadata.
+def _usable(email: Any) -> bool:
+    """Is this an address we can put in an `iss` claim?
 
     Compute and Cloud Run credentials report `service_account_email` as the
-    literal string "default" until they have been refreshed, which is useless
-    as an `iss` claim -- so that answer is rejected rather than signed with.
+    literal string "default" until they have been refreshed. Signing an
+    assertion whose issuer is "default" fails at the token endpoint with a
+    message about the assertion rather than about the identity, so it is
+    rejected here, where the cause is still visible.
+    """
+    return isinstance(email, str) and bool(email) and email != "default" and "@" in email
+
+
+def service_account_email(credentials: Any) -> str | None:
+    """Whose identity is this? Asked three ways, cheapest first.
+
+    THE MIDDLE ONE IS THE IMPORTANT ONE AND WAS MISSING. On Cloud Run
+    `google.auth.default()` returns compute-engine credentials whose
+    `service_account_email` is "default" until `refresh()` is called -- that
+    refresh is what asks the metadata server and fills the attribute in. The
+    first attempt at this went straight to a hand-rolled urllib call against
+    metadata.google.internal instead, which failed silently and produced
+
+        cannot delegate to bogdan@saga.xyz: these credentials are not a
+        service account and no metadata server answered
+
+    on a machine whose metadata server was working perfectly. Letting
+    google-auth do its own metadata lookup avoids re-deriving the address, the
+    required header, the timeout and the retry policy -- four things it already
+    knows and this module has no business restating.
     """
     email = getattr(credentials, "service_account_email", None)
-    if isinstance(email, str) and email and email != "default" and "@" in email:
+    if _usable(email):
         return email
+
+    try:
+        from google.auth.transport.requests import Request
+
+        credentials.refresh(Request())
+        email = getattr(credentials, "service_account_email", None)
+        if _usable(email):
+            return email
+    except Exception as exc:
+        # Logged, never swallowed. A silent None here is indistinguishable from
+        # "not running on GCP", and telling those apart is the whole diagnosis.
+        log.warning("could not refresh credentials to learn their identity: %s", exc)
+
     try:
         import urllib.request
 
@@ -92,10 +128,11 @@ def service_account_email(credentials: Any) -> str | None:
             "/instance/service_accounts/default/email",
             headers={"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(request, timeout=2) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             value = response.read().decode().strip()
-        return value or None
-    except Exception:  # pragma: no cover - not on GCP
+        return value if _usable(value) else None
+    except Exception as exc:
+        log.warning("the metadata server did not name this identity: %s", exc)
         return None
 
 

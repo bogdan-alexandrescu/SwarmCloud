@@ -252,3 +252,56 @@ def test_an_exchange_that_returns_no_token_is_an_error_not_a_none_token():
     session = _Session(exchange=_Response(200, {"expires_in": 3600}))
     with pytest.raises(DelegationError, match="no access_token"):
         _creds(session).refresh(None)
+
+
+def test_credentials_reporting_default_are_refreshed_to_learn_their_identity():
+    """THE SECOND REGRESSION TEST, for the miss that cost a deploy cycle.
+
+    Cloud Run's credentials report `service_account_email` as "default" until
+    `refresh()` is called -- that refresh is what asks the metadata server and
+    fills the attribute in. The first attempt skipped it and went straight to a
+    hand-rolled urllib call, which failed and logged
+
+        cannot delegate ... no metadata server answered
+
+    on a machine whose metadata server was working perfectly.
+    """
+    class _CloudRunLike:
+        def __init__(self):
+            self.service_account_email = "default"
+            self.refreshed = 0
+
+        def refresh(self, request):
+            self.refreshed += 1
+            self.service_account_email = SA
+
+    creds = _CloudRunLike()
+    assert delegation.service_account_email(creds) == SA
+    assert creds.refreshed == 1, "the attribute was read without ever refreshing"
+
+
+def test_an_already_known_identity_is_not_refreshed_needlessly():
+    """A refresh is a network round trip on a request path."""
+    class _Known:
+        service_account_email = SA
+
+        def refresh(self, request):  # pragma: no cover - must not be called
+            raise AssertionError("refreshed despite already knowing the identity")
+
+    assert delegation.service_account_email(_Known()) == SA
+
+
+def test_a_refresh_that_raises_is_logged_and_not_swallowed(caplog):
+    """A silent None is indistinguishable from "not running on GCP", and
+    telling those two apart is the entire diagnosis."""
+    class _Broken:
+        service_account_email = "default"
+
+        def refresh(self, request):
+            raise RuntimeError("metadata server said no")
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger=delegation.log.name):
+        delegation.service_account_email(_Broken())
+    assert any("metadata server said no" in r.getMessage() for r in caplog.records)
