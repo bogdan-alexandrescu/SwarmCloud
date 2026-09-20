@@ -1,7 +1,7 @@
 import { noteFixtureProbe, read, type Result } from './fetch'
 import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, TaskState, TaskWindow, Tenant, Workflow,
+  AttemptRow, LeasePage, LeaseRow, Pool, TaskState, TaskWindow, Tenant, Workflow,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -567,6 +567,58 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
     cost_usd: null,
   })
   return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(3, 0), mk(2, 1), mk(1, 1)] } }
+}
+
+/**
+ * Leases plus the pool counters they should agree with.
+ *
+ * Two reads, because the drift check needs both sides. The LEASE read decides
+ * whether there is a screen; a failed pool read leaves the holder table fully
+ * trustworthy and only the comparison unavailable, so it degrades to `pools:
+ * null` with the reason rather than failing the screen.
+ */
+export interface HoldersBoard {
+  page: LeasePage
+  /** null means the pool read FAILED. An empty array means there are none. */
+  pools: Pool[] | null
+  poolsDetail: string | null
+}
+
+export async function loadHolders(): Promise<Result<HoldersBoard>> {
+  if (USE_FIXTURES) return fixtureHolders()
+
+  const [leases, capacity] = await Promise.all([
+    read<LeasePage>('/v1/admin/leases?active_only=true&limit=200', (d) => d.leases.length === 0),
+    read<Capacity>('/v1/capacity', () => false),
+  ])
+
+  if (leases.status === 'loading' || leases.status === 'error' || leases.status === 'empty') {
+    return leases as Result<HoldersBoard>
+  }
+
+  const pools = capacity.status === 'ok' || capacity.status === 'stale' ? capacity.data.pools : null
+  const detail =
+    pools === null
+      ? capacity.status === 'error' || capacity.status === 'stale'
+        ? capacity.error.message
+        : 'The pool read did not complete.'
+      : null
+
+  return {
+    status: leases.status,
+    fetchedAt: leases.fetchedAt,
+    data: { page: leases.data, pools, poolsDetail: detail },
+  } as Result<HoldersBoard>
+}
+
+async function fixtureHolders(): Promise<Result<HoldersBoard>> {
+  const [l, c] = await Promise.all([fixtureLeases(), fixtureCapacity()])
+  if (l.status !== 'ok' || c.status !== 'ok') return l as Result<HoldersBoard>
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { page: l.data, pools: c.data.pools, poolsDetail: null },
+  }
 }
 
 // --------------------------------------------------------------------------

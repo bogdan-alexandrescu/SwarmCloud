@@ -1,0 +1,64 @@
+# Checked-in build config for swarm-verify.
+#
+# It exists because the repository's `.dockerignore` excludes `scripts/`, and
+# it excludes it ON PURPOSE: no application image should carry operational
+# tooling, and every other image here is an application. A generated config
+# runs `docker build` from the repository root, so the exclusion applies and
+# `COPY scripts/` fails with "file not found in build context" -- which is
+# exactly what happened on 2026-09-20 and is the correct behaviour of a rule
+# that should stay.
+#
+# So this image assembles its own context instead of weakening the root rule.
+# Relaxing `.dockerignore` would put operational scripts into swarm-api,
+# swarm-scheduler and every worker image to serve one target that is not an
+# application at all.
+#
+# `find_recipe()` prefers images/<target>/cloudbuild.yaml over the Dockerfile,
+# so this file is what runs. `build-images.sh` passes exactly `_IMAGE`, `_TAG`
+# and `_TARGET` -- NOT `_DOCKERFILE`, despite what a comment in that script
+# suggests. Cloud Build rejects a template referencing a substitution it was
+# not given AND a substitution the template does not use, so the Dockerfile
+# path is written literally and ALLOW_LOOSE covers the unused `_TARGET`.
+#
+# `$$` is a literal dollar for the shell; `${_VAR}` is a Cloud Build
+# substitution resolved before the shell ever sees it.
+
+steps:
+  - id: assemble-context
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        # A context containing ONLY what this image needs. Built under /workspace
+        # so the docker step below sees it, and deliberately NOT the repo root,
+        # which is where .dockerignore applies.
+        rm -rf /workspace/verify-ctx
+        mkdir -p /workspace/verify-ctx
+        cp -R scripts /workspace/verify-ctx/scripts
+        cp Makefile /workspace/verify-ctx/Makefile
+        cp images/swarm-verify/Dockerfile /workspace/verify-ctx/Dockerfile
+        # Fail here, loudly, rather than producing an image whose entrypoint is
+        # missing and discovering it at 3am when the gate is finally run.
+        test -f /workspace/verify-ctx/scripts/smoke-test.sh
+        test -f /workspace/verify-ctx/scripts/concurrency-test.sh
+        test -f /workspace/verify-ctx/scripts/race-test.sh
+        test -f /workspace/verify-ctx/scripts/lib/common.sh
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_IMAGE}:${_TAG}
+      - /workspace/verify-ctx
+
+images:
+  - ${_IMAGE}:${_TAG}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  # build-images.sh passes _TARGET to every recipe uniformly; this template has
+  # no use for it, and without this Cloud Build refuses the submit.
+  substitution_option: ALLOW_LOOSE

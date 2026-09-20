@@ -119,11 +119,22 @@ assert_tag_is_complete() {
     die "refusing to deploy without confirming ${tag} covers every image -- a registry we cannot read is not an empty one"
   fi
 
-  awk -v t="${channel}" '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/chan"
+  awk -v t="${channel}" '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/onchannel"
+
+  # ALSO every image the terraform root REFERENCES. Without this the guard has
+  # a blind spot it was bitten by on 2026-09-20: a NEW image, declared in
+  # terraform but never yet promoted, is not on the channel, so it is not in
+  # the expected set, so the guard passes -- and the apply then fails on
+  # "Image ... not found" twelve minutes in, having already changed other
+  # resources. The original failure this guard was built for (a PARTIAL build
+  # of images that already exist) is the other direction, and both are real.
+  grep -rhoE '\$\{local\.image_base\}/[a-z0-9-]+' "${REPO_ROOT}/terraform/infra" 2>/dev/null \
+    | sed 's|.*/||' | sort -u >"${tmp}/declared" || true
+  cat "${tmp}/onchannel" "${tmp}/declared" 2>/dev/null | sort -u >"${tmp}/chan"
   awk -v t="${tag}"     '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/have"
 
   if [[ ! -s "${tmp}/chan" ]]; then
-    info "no image carries :${channel} yet; treating ${tag} as the first deploy"
+    info "no image is on :${channel} or referenced by terraform; treating ${tag} as the first deploy"
     rm -rf "${tmp}"
     return 0
   fi
