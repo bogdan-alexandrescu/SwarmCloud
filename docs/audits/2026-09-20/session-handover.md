@@ -40,6 +40,29 @@ fooled us earlier today.
 * **Stale, session-expiry, 429 and dark/light contrast.** Built and reasoned
   about; not exercised against the live deployment.
 
+## Forced-failure sweep, results
+
+Each state was forced by patching `window.fetch` in the live page, so these
+are real renderings, not reasoning about the code.
+
+| State | Result |
+|---|---|
+| Expired session (200 carrying HTML) | "Your session expired — The API answered with a page instead of data." NOT an empty list. This is the failure that started the session |
+| Stale (503 on refresh, data in hand) | 20 pool rows stayed on screen, dimmed, header "not refreshed · showing just now", banner naming the error |
+| 429 with Retry-After | countdown, no retry control — **after a fix**; it previously offered an enabled "Try again" beside a disabled "paused 30s" |
+| 404 on a task id | "This task does not exist, or it belongs to another tenant. The API returns the same answer for both." |
+| Contrast, both themes | **failed AA at 3.10:1 light / 3.24:1 dark** — fixed to 5.16 / 5.77 |
+
+Not yet swept: keyboard navigation and focus visibility, the drawer's escape
+and back behaviour, `prefers-reduced-motion` on the pulsing liveness dot, and
+the workflow DAG at phone width **with a real workflow** — the live tenant
+has none, so that view has only ever been seen against fixtures.
+
+One copy issue left unfixed and recorded instead: `errorHeading` maps every
+503 to "We could not confirm which team you belong to", which is the group
+resolution wording. It is right for this platform's dominant 503 and wrong
+for any other upstream failure.
+
 ## Three things that need you
 
 1. **IAP OAuth client id.** `gcloud iap oauth-clients list
