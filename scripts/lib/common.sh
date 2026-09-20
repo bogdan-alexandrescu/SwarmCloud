@@ -447,6 +447,19 @@ id_token() {
       --impersonate-service-account="${SWARM_IMPERSONATE_SA}" \
       --audiences="${API_AUDIENCE:-$(api_url)}" --include-email 2>/dev/null)" \
       || die "could not mint an ID token by impersonating ${SWARM_IMPERSONATE_SA}"
+  elif [[ -n "${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]]; then
+    # Running INSIDE Cloud Run. The metadata server mints an ID token for the
+    # attached service account directly, so the container needs no gcloud and
+    # no key file -- which is the whole reason the verification targets can run
+    # from in here at all.
+    #
+    # K_SERVICE is set on a service, CLOUD_RUN_JOB on a job. Testing both means
+    # this works whether the tests run as a job or as a probe endpoint.
+    local aud="${API_AUDIENCE:-$(api_url)}"
+    local meta="http://metadata.google.internal/computeMetadata/v1/instance/service_accounts/default/identity"
+    _ID_TOKEN="$(curl -sf -H 'Metadata-Flavor: Google' \
+      "${meta}?audience=${aud}&format=full" 2>/dev/null)" \
+      || die "the metadata server refused an ID token for audience ${aud}"
   else
     _ID_TOKEN="$(gcloud auth print-identity-token 2>/dev/null)" \
       || die "no ID token available; run: gcloud auth login"

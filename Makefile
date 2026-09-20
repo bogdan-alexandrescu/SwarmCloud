@@ -273,3 +273,6 @@ purge-data: ## Delete swarm runtime data (Firestore, artifacts), never infrastru
 clean: ## Remove local build artifacts (never touches the cloud)
 	@rm -rf build/*.tfplan build/*.json build/*.jsonl build/kubeconfig-*.yaml build/cloudbuild-*.yaml build/rendered
 	@echo "cleaned build/"
+
+verify-remote: ## Run the verification gate INSIDE the VPC (smoke, concurrency, race)
+	@$(SCRIPTS)/verify-remote.sh
