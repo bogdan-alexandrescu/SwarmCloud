@@ -58,6 +58,7 @@ log = logging.getLogger(__name__)
 IAM_CREDENTIALS_ROOT = "https://iamcredentials.googleapis.com/v1"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
 
 #: Google caps a delegated assertion at one hour. Asking for more is rejected,
 #: and asking for exactly 3600 leaves no room for clock skew between us and the
@@ -194,11 +195,25 @@ class DelegatedCredentials(google.auth.credentials.Credentials):
         )
         response = session.post(url, json={"payload": json.dumps(claims)}, timeout=10)
         if response.status_code == 403:
+            body = _body(response)
+            # TWO DIFFERENT 403s, and the first version of this message
+            # confidently named the wrong one. A missing binding and an
+            # under-scoped token both come back 403 PERMISSION_DENIED from the
+            # same endpoint; only `reason` tells them apart, and they are fixed
+            # in completely different places -- one in IAM, one in the code
+            # that asked for the credentials.
+            if "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in body:
+                raise DelegationError(
+                    "the credentials used to sign carry the wrong OAuth scopes. "
+                    f"signJwt needs {CLOUD_PLATFORM}; a token requested with only "
+                    "a narrow scope cannot call it. This is a bug in the caller, "
+                    f"not a missing IAM binding. ({body})"
+                )
             raise DelegationError(
                 f"{self._service_account} may not sign as itself. Grant "
                 "roles/iam.serviceAccountTokenCreator on that service account "
                 "TO that same service account -- being the identity does not "
-                f"imply permission to sign as it. ({_body(response)})"
+                f"imply permission to sign as it. ({body})"
             )
         if response.status_code != 200:
             raise DelegationError(
@@ -246,6 +261,7 @@ def delegate(
     subject: str,
     scopes: Sequence[str],
     session_factory: Any = None,
+    signer_credentials: Any = None,
 ) -> Any:
     """Credentials acting as `subject`, by whichever route is available.
 
@@ -268,9 +284,25 @@ def delegate(
         )
         return credentials
 
+    # THE SIGNER IS NOT THE CALLER'S CREDENTIALS, and conflating them cost a
+    # deploy cycle. `credentials` here was obtained with only the Cloud Identity
+    # groups scope, because that is what the group lookup needs. `signJwt` is a
+    # different API and requires cloud-platform, so signing with the narrow
+    # token returns 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT -- indistinguishable at
+    # a glance from the missing-binding 403, and fixed somewhere else entirely.
+    signer = signer_credentials
+    if signer is None:
+        try:
+            import google.auth
+
+            signer, _ = google.auth.default(scopes=[CLOUD_PLATFORM])
+        except Exception as exc:
+            log.warning("could not obtain cloud-platform credentials to sign with: %s", exc)
+            signer = credentials
+
     log.info("delegating group lookups to %s as %s via signJwt", subject, email)
     return DelegatedCredentials(
-        source=credentials,
+        source=signer,
         service_account=email,
         subject=subject,
         scopes=scopes,

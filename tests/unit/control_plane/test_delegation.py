@@ -305,3 +305,54 @@ def test_a_refresh_that_raises_is_logged_and_not_swallowed(caplog):
     with caplog.at_level(logging.WARNING, logger=delegation.log.name):
         delegation.service_account_email(_Broken())
     assert any("metadata server said no" in r.getMessage() for r in caplog.records)
+
+
+# -- the signer is not the caller's credentials ----------------------------
+
+
+def test_the_two_kinds_of_signing_403_are_told_apart(caplog):
+    """A missing IAM binding and an under-scoped token both return 403
+    PERMISSION_DENIED from the same endpoint. Only `reason` distinguishes them,
+    and they are fixed in completely different places -- one in IAM, one in the
+    code that asked for the credentials.
+
+    The first version of this message confidently named the binding for both,
+    which sent the investigation to the IAM console for a scope bug in this
+    file. Exactly the failure the unauthorized_client wording was written to
+    avoid, reproduced one function away from it.
+    """
+    scope_403 = _Session(
+        sign=_Response(403, text='{"error":{"status":"PERMISSION_DENIED",'
+                                 '"details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}')
+    )
+    iam_403 = _Session(sign=_Response(403, text='{"error":{"status":"PERMISSION_DENIED"}}'))
+
+    with pytest.raises(DelegationError) as scope_err:
+        _creds(scope_403).refresh(None)
+    with pytest.raises(DelegationError) as iam_err:
+        _creds(iam_403).refresh(None)
+
+    assert "wrong OAuth scopes" in str(scope_err.value)
+    assert "bug in the caller" in str(scope_err.value)
+    assert "roles/iam.serviceAccountTokenCreator" in str(iam_err.value)
+    # The scope message must NOT send anyone to the IAM console.
+    assert "serviceAccountTokenCreator" not in str(scope_err.value)
+
+
+def test_signing_uses_cloud_platform_credentials_not_the_narrow_lookup_ones():
+    """THE REGRESSION TEST. The credentials passed in are scoped for the Cloud
+    Identity lookup; signJwt is a different API needing cloud-platform, so
+    signing with the caller's narrow token is a guaranteed 403."""
+    narrow = _MetadataCredentials()
+    signer = object()
+
+    result = delegate(
+        narrow, subject=USER, scopes=[SCOPE], signer_credentials=signer
+    )
+
+    assert isinstance(result, DelegatedCredentials)
+    assert result._source is signer, "signed with the narrow lookup credentials"
+
+
+def test_cloud_platform_is_the_scope_signjwt_needs():
+    assert delegation.CLOUD_PLATFORM == "https://www.googleapis.com/auth/cloud-platform"
