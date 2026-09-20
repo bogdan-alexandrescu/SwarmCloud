@@ -464,10 +464,27 @@ locals {
       # arrival too, and its symptom -- credentials quietly stopping -- points
       # nowhere near the cause.
       #
-      # This is the Cloud Scheduler tick identity and nothing else. Workers
-      # report quota as their own tenant; being on this list would let any one
-      # of them set another tenant's hard max.
-      PLATFORM_SERVICE_ACCOUNTS = module.iam.tick_service_account
+      # The Cloud Scheduler tick, and swarm-api. NOT workers: they report quota
+      # as their own tenant, and being on this list would let any one of them
+      # set another tenant's hard max.
+      #
+      # swarm-api is here because it PROXIES the account-pool routes for a
+      # browser, so it has to be able to act for whichever tenant the signed-in
+      # caller resolved to -- it is not itself a tenant, and the broker's
+      # WorkerIdentity derives a tenant from the caller's service account name,
+      # which for swarm-api yields "caller is not a swarm worker service
+      # account" and a 403 on every account request.
+      #
+      # This is safe only because swarm-api resolves the caller's tenant ITSELF,
+      # through `ctx.submissions.tenant_for(auth)`, and sends that resolved
+      # value as `owner_tenant` -- it never forwards a tenant the browser
+      # supplied. swarm-api is the tenant boundary for these routes; the broker
+      # is the single writer. If that ever stops being true, this line is the
+      # one that turns it into a cross-tenant hole.
+      PLATFORM_SERVICE_ACCOUNTS = join(",", [
+        module.iam.tick_service_account,
+        module.iam.service_account_emails["swarm-api"],
+      ])
 
       # WorkerIdentity refuses to start without this when `hardened`, for the
       # same reason PUSH_AUDIENCE exists: no audience means google-auth does not
