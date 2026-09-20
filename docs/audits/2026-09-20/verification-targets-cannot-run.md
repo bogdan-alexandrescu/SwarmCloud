@@ -83,6 +83,39 @@ what `swarm-api` verifies an assertion against. It is NOT the OAuth client id
 a caller needs to mint a token with. The two are different values and only
 one of them is currently written down.
 
+## Correction: this is smaller than it first looked
+
+Two things I got wrong on the first pass, both of which shrink the fix.
+
+**The auth plumbing already exists.** `id_token()`
+(`scripts/lib/common.sh:441`) already has the IAP-shaped branch:
+
+```bash
+elif [[ -n "${SWARM_IMPERSONATE_SA:-}" ]]; then
+  _ID_TOKEN="$(gcloud auth print-identity-token \
+    --impersonate-service-account="${SWARM_IMPERSONATE_SA}" \
+    --audiences="${API_AUDIENCE:-$(api_url)}" --include-email ...)"
+```
+
+So a service account plus `API_AUDIENCE` set to the IAP OAuth client id is
+already supported. No change to the token path is needed. Only the plain-user
+branch lacks an audience, and that branch cannot work with IAP by
+construction.
+
+**`api_url()` step 2 can never succeed.** It calls `tf_output api_url`, and
+**no output named `api_url` is declared** — `terraform/infra/outputs.tf`
+declares twenty outputs and that is not one of them. The frontend module does
+expose `url` (`terraform/modules/frontend/outputs.tf:6`) and `iap_audiences`
+(`:29`), but the root never surfaces either. So the lookup always returns
+empty and always falls through to the blocked `*.run.app` address.
+
+That makes the minimum fix: surface the frontend `url` as a root output so
+`tf_output api_url` resolves, and record the IAP OAuth client id so
+`API_AUDIENCE` has a value. The first is Track C's file. The second needs
+someone who can read the brand — `gcloud iap oauth-clients list
+projects/209012342332/brands/209012342332` is PERMISSION_DENIED for an
+ordinary project editor.
+
 ## Options, none of which is free
 
 1. **Give the scripts an IAP-capable identity.** A service account with
