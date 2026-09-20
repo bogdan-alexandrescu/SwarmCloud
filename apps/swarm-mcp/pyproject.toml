@@ -1,0 +1,19 @@
+# The bridge that makes SwarmCloud usable from a laptop the way a local
+# subagent is. It runs on the OPERATOR's machine, never in Cloud Run, which is
+# why it carries no dependency at all: urllib for the API, subprocess for
+# `gcloud` and `git`. Adding an SDK here would mean an operator has to install
+# something before they can look at their own platform.
+[project]
+name = "swarm-mcp"
+version = "0.1.0"
+description = "Local bridge: drive SwarmCloud from Claude Code the way you drive a local agent."
+requires-python = ">=3.11"
+dependencies = ["swarm-common"]
+
+[project.scripts]
+swarm = "swarm_mcp.cli:main"
+swarm-mcp = "swarm_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

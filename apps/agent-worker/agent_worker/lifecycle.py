@@ -355,6 +355,7 @@ class Worker:
         next_heartbeat = now + cfg.heartbeat_interval_seconds
         next_checkpoint = now + cfg.checkpoint_interval_seconds
         next_poll = now + cfg.control_poll_seconds
+        next_live_log = now + cfg.live_log_interval_seconds
 
         while True:
             slice_ = max(
@@ -363,6 +364,7 @@ class Worker:
                     next_heartbeat - time.monotonic(),
                     next_checkpoint - time.monotonic(),
                     next_poll - time.monotonic(),
+                    next_live_log - time.monotonic(),
                     self._deadline - time.monotonic(),
                     5.0,
                 ),
@@ -381,6 +383,10 @@ class Worker:
             if now >= next_checkpoint:
                 self._checkpoint("periodic")
                 next_checkpoint = now + cfg.checkpoint_interval_seconds
+
+            if now >= next_live_log:
+                self._publish_live_logs()
+                next_live_log = now + cfg.live_log_interval_seconds
 
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
@@ -961,6 +967,59 @@ class Worker:
             except OSError as exc:  # a read-only or vanished file must not fail the attempt
                 self.log.warning(
                     "could not redact a file before upload", path=str(path), error=str(exc)
+                )
+
+    # -- live logs ----------------------------------------------------------
+    def _publish_live_logs(self) -> None:
+        """Publish a bounded, scrubbed TAIL of each stream while the agent runs.
+
+        WHY A TAIL AND NOT THE FILE. GCS has no append. Publishing the whole
+        stream would rewrite up to `max_stdout_bytes` every interval, so the
+        cost of watching a run would grow with the length of the run -- the
+        opposite of what a tail is for. A fixed window keeps it flat.
+
+        WHY IT IS SCRUBBED HERE TOO. `_redact_before_upload` runs once, on the
+        way out. Anything published DURING the run has not been through it, so
+        a provider key echoed into stdout would reach GCS in the clear and stay
+        there: the object is overwritten by the next flush, but "it is gone
+        five seconds later" is not a property anyone should rely on for a
+        credential. The tail is scrubbed on every flush instead.
+
+        It NEVER raises. A failed flush costs the watcher five seconds of
+        staleness; failing the attempt over it would trade a running agent for
+        a cosmetic feature.
+        """
+        ws = self.ws
+        cfg = self.cfg
+        if ws is None or not cfg.live_logs_enabled:
+            return
+        for label, path in (("stdout", ws.stdout_path), ("stderr", ws.stderr_path)):
+            try:
+                if not path.exists():
+                    continue
+                size = path.stat().st_size
+                if size == 0:
+                    continue
+                with path.open("rb") as handle:
+                    if size > cfg.live_log_tail_bytes:
+                        handle.seek(size - cfg.live_log_tail_bytes)
+                    chunk = handle.read()
+                text = chunk.decode("utf-8", errors="replace")
+                if self.log.has_secrets:
+                    text = self.log.scrub_text(text)
+                # The byte offset the window starts at, so a reader can tell a
+                # gap (it polled too slowly and the window moved past what it
+                # had) from a continuation. Without it a tailer silently
+                # stitches two non-adjacent pieces of output together.
+                header = f"#swarm-tail offset={max(0, size - len(chunk))} size={size}\n"
+                self.store.upload_bytes(
+                    f"{cfg.log_prefix}/live/{label}.tail.log",
+                    (header + text).encode("utf-8"),
+                    content_type="text/plain; charset=utf-8",
+                )
+            except Exception as exc:  # pragma: no cover - never fail a run for this
+                self.log.debug(
+                    "could not publish a live log tail", stream=label, error=str(exc)
                 )
 
     # -- git: harvest, and publish when the forge allows it -----------------

@@ -10,6 +10,7 @@ dependencies = [
     "swarm-quota-broker",
     "swarm-agent-worker",
     "swarm-reconciler",
+    "swarm-mcp",
 ]
 
 [tool.uv]
@@ -22,6 +23,9 @@ swarm-scheduler = { path = "apps/scheduler", editable = true }
 swarm-quota-broker = { path = "apps/quota-broker", editable = true }
 swarm-agent-worker = { path = "apps/agent-worker", editable = true }
 swarm-reconciler = { path = "apps/reconciler", editable = true }
+# Local-only: the operator-side bridge. It is in the workspace so its tests
+# run in `make test` like everything else, NOT because anything deploys it.
+swarm-mcp = { path = "apps/swarm-mcp", editable = true }
 
 [dependency-groups]
 dev = [

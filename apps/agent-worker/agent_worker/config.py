@@ -93,6 +93,23 @@ class WorkerConfig:
     max_artifact_bytes: int = 512 * 1024 * 1024
     max_checkpoint_bytes: int = 2 * 1024 * 1024 * 1024
 
+    # --- live logs -----------------------------------------------------------
+    # The complete streams are uploaded once, at exit. That is correct for the
+    # record and useless for watching: a twenty-minute task is a twenty-minute
+    # blind spot. A bounded TAIL is published on a short timer instead.
+    #
+    # THE COST IS WORTH SEEING BEFORE TUNING THIS. One object write per stream
+    # per interval per running agent. At 5s and 40 concurrent agents that is
+    # 16 writes/second, ~1.4M class-A operations a day, which is real money at
+    # GCS list prices. Raise the interval before raising the concurrency.
+    #
+    # It is a TAIL and not the whole file on purpose: GCS has no append, so
+    # publishing the full stream would rewrite up to `max_stdout_bytes` every
+    # interval. A window keeps the cost flat in the length of the run.
+    live_logs_enabled: bool = True
+    live_log_interval_seconds: int = 5
+    live_log_tail_bytes: int = 256 * 1024
+
     # --- git -----------------------------------------------------------------
     repository_url: str | None = None
     repository_ref: str | None = None
@@ -221,6 +238,9 @@ class WorkerConfig:
             git_harvest_timeout_seconds=_int_env("GIT_HARVEST_TIMEOUT_SECONDS", 120),
             max_patch_bytes=_int_env("MAX_PATCH_BYTES", 16 * 1024 * 1024),
             git_branch_prefix=os.environ.get("GIT_BRANCH_PREFIX", "").strip() or "swarm/",
+            live_logs_enabled=_bool_env("LIVE_LOGS_ENABLED", True),
+            live_log_interval_seconds=_int_env("LIVE_LOG_INTERVAL_SECONDS", 5),
+            live_log_tail_bytes=_int_env("LIVE_LOG_TAIL_BYTES", 256 * 1024),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
         )
