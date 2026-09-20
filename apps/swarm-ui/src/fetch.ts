@@ -185,6 +185,15 @@ export interface ProbeRecord {
 const probes = new Map<string, ProbeRecord>()
 const probeListeners = new Set<() => void>()
 
+// useSyncExternalStore compares snapshots BY IDENTITY. A getSnapshot that
+// builds a new array every call therefore looks like a change on every render,
+// and React loops until it bails with "Maximum update depth exceeded"
+// (minified error #185) -- which is exactly what the first load of this UI did.
+//
+// So the snapshot is cached and only rebuilt when a probe actually changes.
+let snapshot: ProbeRecord[] = []
+let snapshotStale = true
+
 function recordProbe(rec: ProbeRecord): void {
   const prev = probes.get(rec.path)
   probes.set(rec.path, {
@@ -193,6 +202,7 @@ function recordProbe(rec: ProbeRecord): void {
     // exactly what the strip exists to show.
     lastSuccessAt: rec.lastSuccessAt ?? prev?.lastSuccessAt ?? null,
   })
+  snapshotStale = true
   for (const fn of probeListeners) fn()
 }
 
@@ -205,11 +215,21 @@ function recordProbe(rec: ProbeRecord): void {
  * A development mode that exercises fewer components than production is a
  * development mode that hides bugs.
  */
-export function noteFixtureProbe(path: string, latencyMs: number, ok: boolean): void {
+export function noteFixtureProbe(
+  path: string,
+  latencyMs: number,
+  ok: boolean,
+  // Which failure to simulate. Defaulted to a 403 because that is the cell
+  // whose treatment is easiest to get wrong -- it must read as information,
+  // not breakage -- and a fixture that always produced a 503 meant that path
+  // was never once looked at in development.
+  kind: ApiErrorKind = 'admin_required',
+): void {
+  const status = ok ? 200 : kind === 'admin_required' ? 403 : 503
   recordProbe({
     path,
-    lastStatus: ok ? 200 : 503,
-    lastKind: ok ? null : 'upstream_degraded',
+    lastStatus: status,
+    lastKind: ok ? null : kind,
     lastLatencyMs: latencyMs,
     lastAttemptAt: Date.now(),
     lastSuccessAt: ok ? Date.now() : null,
@@ -222,7 +242,11 @@ export function subscribeProbes(fn: () => void): () => void {
 }
 
 export function probeSnapshot(): ProbeRecord[] {
-  return Array.from(probes.values()).sort((a, b) => a.path.localeCompare(b.path))
+  if (snapshotStale) {
+    snapshot = Array.from(probes.values()).sort((a, b) => a.path.localeCompare(b.path))
+    snapshotStale = false
+  }
+  return snapshot
 }
 
 export interface FetchOptions {
