@@ -8,7 +8,14 @@
   --line: #262d36;
   --text: #e8ecf1;
   --text-dim: #93a0b0;
-  --text-faint: #64707e;
+  /* Raised from #64707e, which measured 3.24:1 against --surface-2 and 3.53:1
+     against --surface -- both below the 4.5:1 WCAG AA floor for normal text,
+     and this token is used almost exclusively at 10.5-12px where the
+     large-text exemption does not apply. It carries the data-source ages,
+     the provenance lines and the "of the last N" labels: the small print
+     that says how much to trust the big numbers, so it is the worst thing on
+     the screen to make hard to read. Now 4.86:1 at worst. */
+  --text-faint: #828d9b;
 
   --ok: #3fb950;
   --warn: #d29922;
@@ -30,7 +37,11 @@
     --line: #d8dee4;
     --text: #1f2328;
     --text-dim: #59636e;
-    --text-faint: #818b98;
+    /* Darkened from #818b98, which measured 3.10:1 at worst against the light
+       surfaces -- below the 4.5:1 AA floor, and this token is used at
+       10.5-12px throughout. Now 4.93:1 at worst. Light mode was the failing
+       case here; dark mode needed the opposite correction. */
+    --text-faint: #606a77;
     --ok: #1a7f37;
     --warn: #9a6700;
     --bad: #cf222e;
