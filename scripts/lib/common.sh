@@ -508,7 +508,14 @@ access_token() {
     if [[ -n "${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]]; then
       # Inside Cloud Run. The metadata server issues an access token for the
       # attached service account, so no gcloud and no key file.
-      local meta="http://metadata.google.internal/computeMetadata/v1/instance/service_accounts/default/token"
+      # `service-accounts`, HYPHENATED. The underscore spelling below it for two
+      # months returns "404 page not found" -- the metadata server's answer for
+      # an unknown path, not for a refused one -- so `curl -sf` failed and this
+      # died with "the metadata server refused an access token". Measured from
+      # inside the job on 2026-09-22: service_accounts -> 404,
+      # service-accounts -> 200. It is the whole reason the in-VPC gate could
+      # never authenticate.
+      local meta="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
       _ACCESS_TOKEN="$(curl -sf -H 'Metadata-Flavor: Google' "${meta}" 2>/dev/null \
         | jq -r '.access_token // empty')" \
         || die "the metadata server refused an access token"
@@ -662,7 +669,8 @@ id_token() {
     # K_SERVICE is set on a service, CLOUD_RUN_JOB on a job. Testing both means
     # this works whether the tests run as a job or as a probe endpoint.
     local aud="${API_AUDIENCE:-$(api_url)}"
-    local meta="http://metadata.google.internal/computeMetadata/v1/instance/service_accounts/default/identity"
+    # Hyphenated, for the same reason as access_token above.
+    local meta="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
     _ID_TOKEN="$(curl -sf -H 'Metadata-Flavor: Google' \
       "${meta}?audience=${aud}&format=full" 2>/dev/null)" \
       || die "the metadata server refused an ID token for audience ${aud}"
@@ -1039,8 +1047,17 @@ fs_field_filter() {
 fs_database_exists() {
   local out rc=0 code
   out="$(mktemp "${TMPDIR:-/tmp}/swarm-fsdb.XXXXXX")"
+  # The token is captured FIRST, as a plain assignment. Inline as
+  # `-H "Authorization: Bearer $(access_token)"` it runs in a subshell, so
+  # access_token's `die` kills only that subshell and curl goes out with an
+  # empty bearer -- which is exactly what happened on 2026-09-22: the metadata
+  # failure was real, and this function then asked Firestore anyway and
+  # reported the 401 as its own reason. The command-substitution trap CLAUDE.md
+  # names, in code written to fix a different instance of it.
+  local token
+  token="$(access_token)" || return 2
   curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
-    -H "Authorization: Bearer $(access_token)" \
+    -H "Authorization: Bearer ${token}" \
     "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}" \
     >"${out}" 2>&1 || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
