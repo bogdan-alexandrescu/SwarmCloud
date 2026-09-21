@@ -13,13 +13,14 @@ import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
+import { RuntimesScreen } from './Runtimes'
 import { timeAgo } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { WorkflowsScreen } from './Workflows'
 
 /**
- * THE NAVIGATION, AND WHY IT IS FIVE THINGS.
+ * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
  *
  * It was eleven: Home, Trouble, Capacity, Holders, Agents, Workflows,
  * Activity, Quota, Counts, Tenants, Settings. Six of those were one table
@@ -36,12 +37,19 @@ import { WorkflowsScreen } from './Workflows'
  * Variables) both name the noun and let the tabs be the views, and this now
  * does the same:
  *
- *   Overview · Agents · Pools · History · Admin
+ *   Overview · Agents · Runtimes · Pools · History · Admin
  *
  * "Pools" because the section lists pools; "History" because it is what
  * already happened. The QUESTION each section answers is still here, printed
  * under the tabs, where it is a test for what belongs in the section rather
  * than a name anyone has to memorise.
+ *
+ * That test is also what lets the list grow again honestly. It was five when
+ * the redesign landed; "Runtimes" is the sixth, and the note on that entry
+ * argues it against all five questions rather than against the count. A
+ * section added because a screen existed would be the eleven-item nav coming
+ * back; a section added because no existing question covers the screen is the
+ * test working.
  *
  * THERE IS NO PROBLEM SECTION, AT ANY LEVEL. Neither Temporal nor Nomad has
  * one, and this platform has no alerting engine and no incident model, so a
@@ -113,6 +121,32 @@ const SECTIONS: SectionDef[] = [
       { id: 'new', label: 'New agent' },
       { id: 'new-workflow', label: 'New workflow' },
     ],
+  },
+  {
+    // WHY THIS IS A SECTION AND NOT A TAB, given the redesign above went to
+    // some trouble to get the nav down to five.
+    //
+    // The sections' `question` fields are the membership test, and this screen
+    // fails all five of them. It is not about health (Overview), not about what
+    // is running (Agents), not about room (Pools), not about the past
+    // (History) and changes nothing (Admin). The closest fit was a sixth tab
+    // under Pools beside "Runner profiles" — and those two would then be
+    // adjacent tabs whose labels are near-synonyms while answering different
+    // questions, which is how someone ends up reading per-tenant headroom as a
+    // platform figure. They stay apart, and each names the other in prose.
+    //
+    // It is a noun, like the rest, and it is the noun the API and the caller
+    // already use: the route is `/v1/runtimes` and the field a submission
+    // carries is `runner_profile`. It sits before Pools because "what is this
+    // thing and how big is one" is the question you answer before "how many
+    // fit".
+    //
+    // ONE PANE, so the tab strip does not render.
+    id: 'runtimes',
+    label: 'Runtimes',
+    question:
+      'What kinds of agent can this platform run, where does each one run, and how big is one?',
+    tabs: [{ id: 'catalogue', label: 'Runtimes' }],
   },
   {
     // `capacity` was the old id and still resolves; see SECTION_ALIASES.
@@ -458,6 +492,9 @@ function SectionBody({
       return <SubmitScreen />
     case 'agents/new-workflow':
       return <SubmitWorkflowScreen />
+
+    case 'runtimes/catalogue':
+      return <RuntimesScreen />
 
     case 'pools/pools':
       return <CapacityScreen />

@@ -240,8 +240,10 @@ function Legend() {
         <dt>Callers pick a profile by name</dt>
         <dd>
           The API accepts <code>runner_profile</code> and nothing else — never an image,
-          a command, a resource spec or a backend. The image and command behind each name
-          live in the frozen catalogue and are not served, so they are absent rather than copied in.
+          a command, a resource spec or a backend. What a name <em>means</em> — its image,
+          its declared and resolved backend, its credentials, its ceiling and its size — is
+          served by <code>/v1/runtimes</code> and drawn under Runtimes. Only the command is
+          served nowhere, so it is absent here rather than copied in.
         </dd>
       </dl>
     </section>

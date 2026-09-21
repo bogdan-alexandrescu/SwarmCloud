@@ -4,7 +4,7 @@ import { noteFixtureProbe, read, write, type Result } from './fetch'
 import { TERMINAL_STATES } from './types'
 import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, ResourceClassSpec, TaskState,
+  AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, ResourceClassSpec, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow,
   Account, AccountStateName, AccountsPage, RefreshResponse,
@@ -304,6 +304,158 @@ async function fixtureResourceClasses(): Promise<Result<{ resource_classes: Reso
         browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
         large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
       },
+    },
+  }
+}
+
+/**
+ * THE RUNTIME CATALOGUE AND THE BACKENDS IT LANDS ON.
+ *
+ * THREE READS, AND THE FAILURES ARE NOT POOLED. Only `/v1/runtimes` can decide
+ * there is no screen: it is the catalogue, and without it there is nothing to
+ * draw. The other two each degrade to a `null` field with the reason beside it,
+ * because a backend whose pool read failed and a backend with no ceiling
+ * configured produce the same blank cell unless something keeps them apart --
+ * which is the bug this whole UI exists to avoid.
+ *
+ * `/v1/capacity` supplies the `backend:*` pool counters, so the topology panel
+ * can say how loaded each backend is rather than only that it exists.
+ * `/v1/resource-classes` supplies the WHOLE sizing catalogue, including a class
+ * no runtime references -- which `/v1/runtimes` cannot show, since it only ever
+ * reports the class each runtime resolved to.
+ */
+export interface RuntimeTopology {
+  /** Keyed by runner-profile name, exactly as a caller must spell it. */
+  runtimes: Record<string, Runtime>
+  /** null means the capacity read FAILED. An empty array means there are none. */
+  pools: Pool[] | null
+  poolsDetail: string | null
+  /** null means the class-catalogue read failed or served nothing. */
+  classes: ResourceClasses | null
+  classesDetail: string | null
+}
+
+export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
+  if (USE_FIXTURES) return fixtureRuntimeTopology()
+
+  const [runtimes, capacity, classes] = await Promise.all([
+    read<{ runtimes: Record<string, Runtime> }>(
+      '/v1/runtimes',
+      (d) => Object.keys(d.runtimes ?? {}).length === 0,
+    ),
+    read<Capacity>('/v1/capacity', () => false),
+    loadResourceClasses(),
+  ])
+
+  if (runtimes.status !== 'ok' && runtimes.status !== 'stale') {
+    return runtimes as Result<RuntimeTopology>
+  }
+
+  const poolsOk = capacity.status === 'ok' || capacity.status === 'stale'
+  const classesOk = classes.status === 'ok' || classes.status === 'stale'
+
+  return {
+    status: runtimes.status,
+    fetchedAt: runtimes.fetchedAt,
+    data: {
+      runtimes: runtimes.data.runtimes,
+      pools: poolsOk ? capacity.data.pools : null,
+      poolsDetail: poolsOk
+        ? null
+        : capacity.status === 'error'
+          ? capacity.error.message
+          : 'The capacity read did not complete.',
+      classes: classesOk ? classes.data.resource_classes : null,
+      classesDetail: classesOk
+        ? null
+        : classes.status === 'error'
+          ? classes.error.message
+          : classes.status === 'empty'
+            ? 'The catalogue route answered with no classes at all, which a healthy API cannot do — every runtime resolves to one.'
+            : 'The resource-class read did not complete.',
+    },
+    error: runtimes.status === 'stale' ? runtimes.error : undefined,
+  } as Result<RuntimeTopology>
+}
+
+/**
+ * THE ONE FIXTURE IN THIS FILE THAT DELIBERATELY IS NOT REAL, and the reason is
+ * the whole point of the screen it feeds.
+ *
+ * README.md says "fixtures are real" and every other fixture here honours that.
+ * This one must not. The shipped catalogue lives in `swarm_common.profiles`,
+ * `check-contract-parity.sh` does not read TypeScript, and a fixture is a copy
+ * nothing ever compares -- so pasting the real five profiles and their real
+ * cpu/memory/disk/unit figures in here would plant exactly the drift the route
+ * exists to remove, in the file that reads the route. `RESOURCE_UNITS` in
+ * types.ts is that mistake already made once; it is recorded in
+ * docs/contract-change-requests.md and is not being made twice.
+ *
+ * So these names are obviously invented, and they are shaped to exercise every
+ * branch the screen has rather than to resemble production:
+ *   * two distinct resolved backends, so the topology panel groups;
+ *   * one runtime whose DECLARED backend is AUTO, so the declared/resolved
+ *     split is drawn at all -- no shipped profile is AUTO, which means live
+ *     data would never once exercise it;
+ *   * one runtime needing no provider, one needing all of its credentials, one
+ *     accepting any single one of several;
+ *   * three sizes and a duplicated image, so "what sets this apart" has both
+ *     unique and shared facts to report;
+ *   * a class in `resource_classes` that no runtime uses, so the sizing panel's
+ *     "nothing routes here" row is seen in development.
+ */
+const FIXTURE_RUNTIMES: Record<string, Runtime> = {
+  'demo-scribe': {
+    name: 'demo-scribe', image: 'demo-runtime-base',
+    backend: 'CLOUD_RUN_JOB', resolved_backend: 'CLOUD_RUN_JOB',
+    provider: 'demo-vendor', secrets: ['DEMO_API_KEY', 'DEMO_OAUTH_TOKEN'], secrets_any_of: true,
+    timeout_seconds: 7200, resource_class: 'demo-small',
+    resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
+  },
+  'demo-probe': {
+    name: 'demo-probe', image: 'demo-runtime-base',
+    backend: 'CLOUD_RUN_JOB', resolved_backend: 'CLOUD_RUN_JOB',
+    provider: null, secrets: [], secrets_any_of: false,
+    timeout_seconds: 300, resource_class: 'demo-small',
+    resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
+  },
+  'demo-viewport': {
+    name: 'demo-viewport', image: 'demo-runtime-viewport',
+    backend: 'GKE_AUTOPILOT', resolved_backend: 'GKE_AUTOPILOT',
+    provider: 'demo-vendor', secrets: ['DEMO_API_KEY'], secrets_any_of: false,
+    timeout_seconds: 5400, resource_class: 'demo-medium',
+    resources: { name: 'demo-medium', cpu: 6, memory_gib: 15, disk_gib: 7, units: 2 },
+  },
+  'demo-wide': {
+    name: 'demo-wide', image: 'demo-runtime-wide',
+    // Declared AUTO, resolved by the platform. Nothing in the shipped
+    // catalogue is AUTO, so without this the split ships unexercised.
+    backend: 'AUTO', resolved_backend: 'CLOUD_RUN_JOB',
+    provider: 'other-vendor', secrets: ['OTHER_API_KEY', 'OTHER_REGION'], secrets_any_of: false,
+    timeout_seconds: 10800, resource_class: 'demo-wide',
+    resources: { name: 'demo-wide', cpu: 7, memory_gib: 30, disk_gib: 15, units: 4 },
+  },
+}
+
+async function fixtureRuntimeTopology(): Promise<Result<RuntimeTopology>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe('/v1/runtimes', 60, true)
+  const capacity = await fixtureCapacity()
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      runtimes: FIXTURE_RUNTIMES,
+      pools: capacity.status === 'ok' ? capacity.data.pools : null,
+      poolsDetail:
+        capacity.status === 'ok' ? null : 'The fixture capacity read did not complete.',
+      classes: Object.fromEntries(
+        // Every class the invented runtimes resolve to, plus one nothing routes
+        // to -- the row the sizing panel has to be able to draw.
+        [...Object.values(FIXTURE_RUNTIMES).map((r) => [r.resources.name, r.resources] as const),
+         ['demo-idle', { name: 'demo-idle', cpu: 1, memory_gib: 2, disk_gib: 1, units: 1 }] as const],
+      ),
+      classesDetail: null,
     },
   }
 }

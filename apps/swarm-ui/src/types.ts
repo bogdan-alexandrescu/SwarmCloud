@@ -569,6 +569,58 @@ export interface ResourceClassSpec {
   units: number
 }
 
+/**
+ * One entry of `GET /v1/runtimes` -- `routes/platform.py:90-181`.
+ *
+ * WHAT A RUNNER PROFILE NAME MEANS, served rather than copied. Invariant 10
+ * makes the name a caller's ENTIRE vocabulary: they send `runner_profile` and
+ * nothing else, so `claude-code` on its own does not say where it runs, how big
+ * it is, how long it may run, or which credential it spends. This is the route
+ * that answers that, and it is the remedy `docs/contract-change-requests.md`
+ * ends on -- "where one reader is TypeScript, nothing ends it today, and a
+ * route that serves the value is the only remedy this repository has actually
+ * made work". Nothing below is a value; every field is a hole the API fills.
+ */
+export interface Runtime {
+  /** The exact string to send as `runner_profile`. */
+  name: string
+  image: string
+  /**
+   * DECLARED. `AUTO` is a value the frozen `Backend` enum permits, and a caller
+   * shown only "AUTO" learns nothing about where the task runs.
+   */
+  backend: string
+  /**
+   * What `resolve_backend` turned `backend` into -- never `AUTO`. Shown
+   * alongside `backend` rather than instead of it, because a caller shown only
+   * this one cannot tell that the PLATFORM, not the profile, chose it.
+   */
+  resolved_backend: string
+  /**
+   * null is not "unknown": the runtime consumes no external provider's quota,
+   * so it runs for a tenant who has registered no credential at all.
+   */
+  provider: string | null
+  /** Environment variable NAMES. The route reads no environment and no secret store. */
+  secrets: string[]
+  /**
+   * true  -> the names in `secrets` are INTERCHANGEABLE; supply exactly one.
+   * false -> all of them are required.
+   * The list without this flag is actively misleading -- it would tell a tenant
+   * who pays for a Claude subscription to buy metered API access as well.
+   */
+  secrets_any_of: boolean
+  timeout_seconds: number
+  resource_class: string
+  /**
+   * The class resolved inline. Field-identical to a `/v1/resource-classes`
+   * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
+   * two routes never disagree -- so the same type is reused rather than a
+   * second one declared that could drift from it.
+   */
+  resources: ResourceClassSpec
+}
+
 /** GiB, binary. The ceilings are GiB, so a GB (1e9) denominator would overstate
  *  every utilisation figure by 7.4% -- against a ceiling with no burst headroom
  *  that is the difference between "fine" and "near miss". */
