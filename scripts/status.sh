@@ -95,35 +95,20 @@ gcloud_json() {
   printf '%s' "${out:-[]}"
 }
 
-# fs_database_exists (common.sh) discards its own stderr (`>/dev/null 2>&1`),
-# so a permission-denied or expired-session lookup of the database itself is
-# indistinguishable from a genuinely absent one, and this used to render as
-# "does not exist yet -- run 'make infra'" either way. common.sh is frozen for
-# this fix, so this repeats the same gcloud call with stderr captured -- the
-# same shape as api_url()'s own describe call in common.sh -- to tell the two
-# apart. Prints "true" or "false" on a confirmed answer; on an unconfirmed one
-# it reports the failure and returns non-zero, which the caller must check.
+# Whether the Firestore database exists, for a screen that must not turn a
+# failed lookup into a diagnosis. The three-valued fs_database_exists in
+# common.sh is the single source of that distinction; this used to repeat the
+# gcloud call here with stderr captured, which is exactly the restatement that
+# drifts. Prints "true" or "false" on a confirmed answer; on an unconfirmed one
+# the reason is already on stderr and this returns non-zero.
 firestore_database_status() {
-  local err_file err_body rc=0
-  err_file="$(mktemp "${TMPDIR:-/tmp}/swarm-status-fsdb.XXXXXX")"
-  if ! gcloud firestore databases describe --database="${FIRESTORE_DATABASE}" \
-       --project="${PROJECT_ID}" --format='value(name)' >/dev/null 2>"${err_file}"; then
-    rc=1
-  fi
-  err_body="$(cat "${err_file}" 2>/dev/null || true)"
-  rm -f "${err_file}"
-  if [[ "${rc}" -eq 0 ]]; then
-    printf 'true'
-    return 0
-  fi
-  die_if_auth_failure "${err_body}"
-  if printf '%s' "${err_body}" | grep -qi 'not_found\|not found'; then
-    printf 'false'
-    return 0
-  fi
-  err "could not determine whether the Firestore database '${FIRESTORE_DATABASE}' exists:"
-  printf '%s\n' "${err_body}" | redact | head -n 3 | sed 's/^/     /' >&2
-  return 1
+  local rc=0
+  fs_database_exists || rc=$?
+  case "${rc}" in
+    0) printf 'true';  return 0 ;;
+    1) printf 'false'; return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # GKE reachability and pod listing, as one JSON object:

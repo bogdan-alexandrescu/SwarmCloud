@@ -239,7 +239,14 @@ run() {
 # no trace beyond one changed field.
 #
 # Checked before anything is created, so a mistyped principal costs nothing.
-if fs_database_exists; then
+# A lookup that FAILED must not read as "no tenant document yet": that is the
+# path that silently skips the collision guard below and lets a mistyped id
+# take over another tenant's service account, secrets and GCS prefix. Only a
+# confirmed-absent database (exit 1) is allowed to skip it.
+PREFLIGHT_RC=0
+fs_database_exists || PREFLIGHT_RC=$?
+[[ "${PREFLIGHT_RC}" -le 1 ]] || die "cannot confirm Firestore database '${FIRESTORE_DATABASE}' exists (reason above), so the check that this tenant id is not already taken cannot run. Refusing to register."
+if [[ "${PREFLIGHT_RC}" -eq 0 ]]; then
   EXISTING_DOC="$(fs_get "tenants/${TENANT_ID}" | jq -c "${FS_JQ} if .fields then doc else null end")"
   if [[ -n "${EXISTING_DOC}" && "${EXISTING_DOC}" != "null" ]]; then
     EXISTING_PRINCIPAL="$(jq -r '.principal // ""' <<<"${EXISTING_DOC}")"
@@ -567,8 +574,18 @@ fi
 
 # --- 6. control-plane documents ----------------------------------------------
 step "Control plane"
-if ! fs_database_exists; then
-  warn "Firestore database '${FIRESTORE_DATABASE}' does not exist; run 'make infra' first"
+# require_fs_database is not used here: the cloud resources above were already
+# created, so the operator needs to be told that BEFORE the exit code, and both
+# non-zero cases end the same way.
+FS_RC=0
+fs_database_exists || FS_RC=$?
+if [[ "${FS_RC}" -ne 0 ]]; then
+  if [[ "${FS_RC}" -eq 1 ]]; then
+    warn "Firestore database '${FIRESTORE_DATABASE}' does not exist; run 'make infra' first"
+  else
+    warn "could not confirm Firestore database '${FIRESTORE_DATABASE}' exists (reason above)"
+    warn "that is a failure to look, not proof it is absent -- do not run 'make infra' on this alone"
+  fi
   warn "the cloud resources above were created, but the tenant is not yet known to the scheduler"
   exit 1
 fi

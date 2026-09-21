@@ -72,7 +72,7 @@ info "database     ${FIRESTORE_DATABASE}"
 if [[ "${FIRESTORE_DATABASE}" == "(default)" || "${FIRESTORE_DATABASE}" == "default" ]]; then
   die "refusing to purge the (default) Firestore database; the swarm uses the named '${FIRESTORE_DATABASE}' database and (default) belongs to the rest of this shared project"
 fi
-fs_database_exists || die "Firestore database '${FIRESTORE_DATABASE}' does not exist"
+require_fs_database purge
 
 # --- guard 2: never a shared bucket ------------------------------------------
 if [[ "${WITH_ARTIFACTS}" -eq 1 ]] && is_shared_resource "${ARTIFACT_BUCKET}"; then

@@ -929,9 +929,75 @@ fs_field_filter() {
     '{fieldFilter:{field:{fieldPath:$f},op:$o,value:$v}}'
 }
 
+#: Whether the Firestore database exists.
+#:
+#: THREE ANSWERS, NOT TWO. The exit code is the answer:
+#:
+#:     0  present
+#:     1  absent -- a definite 404 from the Firestore Admin API
+#:     2  could not tell -- the reason is already on stderr
+#:
+#: The two-valued version of this was a lie with a long reach. It ran
+#: `gcloud firestore databases describe` with `>/dev/null 2>&1`, so an expired
+#: session, a missing datastore.databases.get, a disabled API, a wrong REGION
+#: and a genuinely absent database all returned the same `false` -- and every
+#: caller rendered that one false as "does not exist. Run 'make infra' first".
+#: scripts/status.sh had already diagnosed this and repeated the call locally
+#: with stderr captured rather than fixing it here, which is the restatement
+#: this file exists to prevent.
+#:
+#: REST, not gcloud, for the second reason: this is the ONLY gcloud call left
+#: on the verification suites' path, and images/swarm-verify carries no Cloud
+#: SDK on purpose (the SDK base ships unfixed HIGH/CRITICAL CVEs and `make
+#: push` refuses to promote it). `require_platform` called this first, so the
+#: in-VPC gate died on its opening guard with "Firestore database 'swarm' does
+#: not exist" against a database holding live tenants -- a missing binary
+#: wearing the costume of a missing platform, which is precisely the confusion
+#: the gate was built to remove.
 fs_database_exists() {
-  gcloud firestore databases describe --database="${FIRESTORE_DATABASE}" \
-    --project="${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1
+  local out rc=0 code
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-fsdb.XXXXXX")"
+  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+    -H "Authorization: Bearer $(access_token)" \
+    "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}" \
+    >"${out}" 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    err "could not ask whether Firestore database ${FIRESTORE_DATABASE} exists:"
+    redact <"${out}" | head -n 3 | sed 's/^/     /' >&2
+    rm -f "${out}"
+    return 2
+  fi
+  # A 404 arrives as a JSON error body with a 200 from curl's point of view, so
+  # the body decides -- not curl's exit code.
+  if jq -e '.error' <"${out}" >/dev/null 2>&1; then
+    code="$(jq -r '.error.code // 0' <"${out}")"
+    if [[ "${code}" == "404" ]]; then
+      rm -f "${out}"
+      return 1
+    fi
+    err "could not ask whether Firestore database ${FIRESTORE_DATABASE} exists:"
+    jq -r '.error.message // "unknown error"' <"${out}" | redact | head -n 3 | sed 's/^/     /' >&2
+    rm -f "${out}"
+    return 2
+  fi
+  rm -f "${out}"
+  return 0
+}
+
+#: Die unless the Firestore database is present, naming the REAL cause.
+#:
+#: ACTION is what the caller was about to do ("pause", "purge"), so the absent
+#: case reads as a sentence. Exists so that the difference between "absent" and
+#: "could not look" is stated once rather than in each of the five scripts that
+#: used `fs_database_exists || die "... does not exist"` and so flattened it.
+require_fs_database() {
+  local action="${1:-continue}" rc=0
+  fs_database_exists || rc=$?
+  case "${rc}" in
+    0) return 0 ;;
+    1) die "Firestore database ${FIRESTORE_DATABASE} does not exist in ${PROJECT_ID}; nothing to ${action}. Run 'make infra' first." ;;
+    *) die "cannot confirm Firestore database ${FIRESTORE_DATABASE} exists, so refusing to ${action}. The reason is above; that is a failure to LOOK, not proof the database is absent -- check the account and the project (${PROJECT_ID}) before running 'make infra'." ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------

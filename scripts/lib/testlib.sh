@@ -93,9 +93,12 @@ require_platform() {
   # no Cloud SDK -- whose base ships unfixed HIGH/CRITICAL CVEs that `make
   # push` rightly refuses to promote.
   require_cmd jq curl
-  if ! fs_database_exists; then
-    die "Firestore database '${FIRESTORE_DATABASE}' does not exist. Run 'make infra' first."
-  fi
+  # Three answers, not two. This guard used to run `gcloud firestore databases
+  # describe` with its stderr discarded, in an image that carries no Cloud SDK
+  # on purpose -- so every in-VPC run of this gate died here with "does not
+  # exist. Run 'make infra' first" against a database holding live tenants.
+  # fs_database_exists is REST now and separates absent from unreadable.
+  require_fs_database "run ${SUITE_NAME:-the verification suites}"
 
   # Not api_reachable(): it runs curl with stderr sent to /dev/null and reads
   # grep's exit status rather than curl's, so a 403 (missing roles/run.invoker),

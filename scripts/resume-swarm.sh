@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_cmd gcloud jq curl
-fs_database_exists || die "Firestore database '${FIRESTORE_DATABASE}' does not exist; nothing to resume"
+require_fs_database resume
 
 STATE_FILE="${BUILD_DIR}/pause-state-${ENVIRONMENT}.json"
 
