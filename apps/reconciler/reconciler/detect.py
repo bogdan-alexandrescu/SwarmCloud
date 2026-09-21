@@ -331,7 +331,37 @@ def detect_orphan_executions(
 
         reason: str | None = None
         kind = FindingKind.ORPHAN_EXECUTION
-        if execution.task_id is None or task is None:
+
+        # NO task_id AT ALL IS NOT AN ORPHAN. It means this is not a worker
+        # execution, and this service has no authority over it.
+        #
+        # These were one condition, and the difference is the whole blast
+        # radius. The dispatcher sets TASK_ID on every worker execution it
+        # creates, so an execution WITHOUT one was created by something else.
+        # The Cloud Run backend selects jobs by the `swarm-` name prefix plus a
+        # platform label, and `swarm-verify` -- the verification gate, created
+        # by terraform with managed-by=swarm-terraform -- matches both. On
+        # 2026-09-21 this cancelled the gate's own executions four times, at
+        # about four minutes each, while the task the gate was waiting on took
+        # five minutes seventeen: the one run that would have proved the
+        # platform works was killed by the platform.
+        #
+        # It is worse than an own goal. saga-agents-staging is SHARED, and the
+        # only things between this loop and another team's Cloud Run job are a
+        # name prefix and a label neither of which they are obliged to avoid. A
+        # reconciler that cannot attribute compute to a task must not terminate
+        # it -- that is what its authority is FOR.
+        if execution.task_id is None:
+            log = getattr(config, "logger", None)
+            if log is not None:
+                log.info(
+                    "ignoring an execution that carries no task id; not a worker execution",
+                    execution=getattr(execution, "name", ""),
+                    parent=getattr(execution, "parent", ""),
+                )
+            continue
+
+        if task is None:
             reason = "execution carries no task this control plane knows about"
         elif task.is_terminal:
             reason = f"task is already {task.state.value}"

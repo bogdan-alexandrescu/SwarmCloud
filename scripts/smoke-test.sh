@@ -129,10 +129,32 @@ if api_get "/tenants/me" >"${me_body}"; then
   else
     t_fail "no tenant in the response: $(printf '%s' "${me}" | redact | head -c 200)"
   fi
-  case "${email}" in
-    *@saga.xyz|"") t_pass "hosted domain accepted" ;;
-    *) t_fail "identity ${email} is outside saga.xyz" ;;
-  esac
+  # WHAT THIS STEP CAN HONESTLY ASSERT.
+  #
+  # It used to hardcode `*@saga.xyz`, which is a restatement of ALLOWED_DOMAINS
+  # and was false by construction for the only identity that can run this
+  # suite: swarm-verify is a service account, and a service account cannot be a
+  # principal in a Workspace domain. ALLOWED_USERS exists precisely so that
+  # identity is admitted, so the suite was failing the platform for doing what
+  # it was configured to do.
+  #
+  # The property worth testing is different and stronger: the API must
+  # attribute the caller to the identity the caller actually IS. A control
+  # plane that resolved a caller to somebody else's identity would hand them
+  # somebody else's tenant, secrets and GCS prefix -- and every other assertion
+  # in this suite would still pass.
+  actual_identity="$(metadata_identity)"
+  if [[ -z "${email}" ]]; then
+    t_fail "the API reported no identity for an authenticated caller"
+  elif [[ -z "${actual_identity}" ]]; then
+    # Running outside Cloud Run: there is nothing to compare against, and
+    # inventing a comparison would be worse than declining one.
+    t_pass "identity ${email} reported (not running on Cloud Run; no independent identity to compare)"
+  elif [[ "${email}" == "${actual_identity}" ]]; then
+    t_pass "the API attributed this caller to ${email}, which is who it runs as"
+  else
+    t_fail "the API attributed this caller to ${email} but it runs as ${actual_identity}"
+  fi
 else
   rm -f "${me_body}"
   t_fail "GET ${API_PREFIX}/tenants/me -> HTTP ${API_STATUS}"

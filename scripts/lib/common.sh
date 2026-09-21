@@ -562,6 +562,15 @@ cloud_run_service_uri() {
   rm -f "${out}"
 }
 
+#: The identity this process runs as, straight from the metadata server.
+#: Empty outside Cloud Run, which callers must treat as "unknown", never as a
+#: mismatch.
+metadata_identity() {
+  [[ -n "${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]] || return 0
+  local meta="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
+  curl -sf -m 10 -H 'Metadata-Flavor: Google' "${meta}" 2>/dev/null || true
+}
+
 #: Whether a Cloud Run service's latest revision is READY. Prints "True",
 #: "False" or "Unknown", or fails with a reason on stderr.
 #:
