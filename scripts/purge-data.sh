@@ -123,14 +123,38 @@ fi
 if [[ "${DRY_RUN}" -eq 0 && "${NO_BACKUP}" -eq 0 ]]; then
   step "Backup"
   BACKUP_URI="gs://${ARTIFACT_BUCKET}/backups/purge-$(date -u +%Y%m%dT%H%M%SZ)"
+  # WHY THIS PROBE KEEPS ITS STDERR. It stands immediately before an
+  # irreversible Firestore purge, and the remedy its own message offers is
+  # `--no-backup` -- delete anyway. `describe >/dev/null 2>&1` cannot tell an
+  # absent bucket from an expired session, a wrong PROJECT_ID or a caller
+  # without storage.buckets.get, so an operator whose token had died was told
+  # the bucket was gone and invited to purge with no backup at all.
+  # docs/audits/2026-09-18/04-script-error-messages.md, finding 1 -- the one it
+  # ranked most misleading, because the wrong action it suggests is unrecoverable.
+  BUCKET_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-purge-bucket.XXXXXX")"
   if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
-       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>"${BUCKET_ERR}"; then
+    rm -f "${BUCKET_ERR}"
     info "exporting Firestore to ${BACKUP_URI} (this is synchronous and can take minutes)"
     gcloud firestore export "${BACKUP_URI}" \
       --project "${PROJECT_ID}" --database "${FIRESTORE_DATABASE}" 2>&1 | redact
     ok "backup written to ${BACKUP_URI}"
   else
-    die "artifact bucket gs://${ARTIFACT_BUCKET} does not exist, so no backup can be taken; pass --no-backup to accept that"
+    BUCKET_DETAIL="$(cat "${BUCKET_ERR}")"
+    rm -f "${BUCKET_ERR}"
+    die_if_auth_failure "${BUCKET_DETAIL}"
+    case "${BUCKET_DETAIL}" in
+      # gcloud answered, and its answer was NOT_FOUND. Only here is absence a
+      # fact rather than an assumption, so only here may --no-backup be offered.
+      *404*|*"not found"*|*"does not exist"*|*NOT_FOUND*)
+        die "artifact bucket gs://${ARTIFACT_BUCKET} does not exist, so no backup can be taken; pass --no-backup to accept that"
+        ;;
+      *)
+        err "could not determine whether gs://${ARTIFACT_BUCKET} exists:"
+        printf '%s\n' "${BUCKET_DETAIL}" | redact | head -n 3 | sed 's/^/     /' >&2
+        die "that is a failure to LOOK UP the bucket, not proof it is absent. Do NOT reach for --no-backup on the strength of this: check the account, the project (${PROJECT_ID}) and storage.buckets.get, then re-run."
+        ;;
+    esac
   fi
 fi
 

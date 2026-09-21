@@ -58,12 +58,20 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
 
 log = logging.getLogger(__name__)
 
-_NAME_SAFE = re.compile(r"[^a-z0-9-]+")
+#: IMPORTED, not restated. This was a fourth private copy of `[^a-z0-9-]+`
+#: (here, reconciler/detect.py, kubernetes/render.py and identity.py itself),
+#: and the reconciler's `sanitised()` reverse-maps a Job label back to the
+#: Firestore id this function produced -- so the two escaping rules agreeing is
+#: what lets a running execution be matched to its task at all. If they drift,
+#: the reconciler either kills a live execution it read as orphaned or never
+#: finds a genuinely orphaned one. kubernetes/render.py already imports this
+#: symbol for the same reason. docs/audits/2026-09-18/08, finding 1.
 
 #: The image creates uid/gid 10001 with HOME=/home/swarm and runs as it
 #: (images/agent-runtime-base/Dockerfile). The pod spec repeats the number so

@@ -222,10 +222,32 @@ jobs:
           # Worker pods must never SELECT or TOLERATE spot nodes. The admission
           # policies in kubernetes/policies/ mention the same label in order to
           # REJECT it, so only the templates are checked here.
-          if [ -d kubernetes/worker-templates ] \
-             && grep -rnIE 'cloud\.google\.com/gke-spot' kubernetes/worker-templates 2>/dev/null; then
-            echo "::error::a worker template requests Spot capacity"
+          #
+          # The directory MUST exist. It used to be an `if [ -d ... ] && grep`,
+          # which is the shape this repository keeps being bitten by: a renamed
+          # or missing directory reads exactly like a clean one, and invariant 6
+          # is then asserted by a check that never opened a file. Absence is a
+          # failure of the check, not a pass.
+          if [ ! -d kubernetes/worker-templates ]; then
+            echo "::error::kubernetes/worker-templates is missing; this check cannot run"
+            echo "::error::If the templates moved, point this step at the new path."
             fail=1
+          else
+            # grep's three answers are kept apart: 0 found, 1 clean, anything
+            # else could not look. Collapsing the third into the second is how a
+            # check reports a clean tree it never read.
+            set +e
+            grep -rnIE 'cloud\.google\.com/gke-spot' kubernetes/worker-templates
+            status=$?
+            set -e
+            if [ "${status}" -eq 0 ]; then
+              echo "::error::a worker template requests Spot capacity"
+              fail=1
+            elif [ "${status}" -ne 1 ]; then
+              echo "::error::grep exited ${status} over kubernetes/worker-templates;"
+              echo "::error::this check could not run, which is a failure and not a pass"
+              fail=1
+            fi
           fi
           if [ "${fail}" -eq 0 ]; then echo "no spot configuration"; fi
           exit "${fail}"

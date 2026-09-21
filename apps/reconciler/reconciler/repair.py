@@ -393,6 +393,11 @@ class Reconciler:
                 repaired = self._store.repair_task_state(
                     finding.task_id,
                     to_state=TaskState.READY,
+                    # Only the task this finding is actually about. A snapshot is
+                    # minutes old by the time slow terminations ahead of it are
+                    # done, and the task may legitimately be on a newer lease by
+                    # now -- see `repair_task_state`.
+                    expected_lease_id=finding.lease_id,
                     error=f"reconciled: {finding.reason}",
                     next_eligible_at=utcnow(),
                 )

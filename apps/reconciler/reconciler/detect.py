@@ -28,6 +28,13 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Iterable
 
+#: The slug character class is IMPORTED, never restated. `sanitised()` below
+#: undoes what the dispatcher's `sanitize_name` did, so the two escaping
+#: rules are one rule -- a private copy here is the half that would
+#: silently stop round-tripping, and the reconciler would then either kill
+#: a live execution it read as orphaned or never find a real orphan.
+#: docs/audits/2026-09-18/08-frozen-contract-restatements.md, finding 1.
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
@@ -79,9 +86,6 @@ class Finding:
             FindingKind.ORPHAN_EXECUTION,
             FindingKind.OBSOLETE_GENERATION,
         ) or (self.execution is not None and self.execution.is_active)
-
-
-_NAME_SAFE = re.compile(r"[^a-z0-9-]+")
 
 
 def sanitised(value: str) -> str:

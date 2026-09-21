@@ -245,6 +245,7 @@ class ControlStore:
         task_id: str,
         *,
         to_state: TaskState,
+        expected_lease_id: str | None = None,
         error: str | None = None,
         next_eligible_at: datetime | None = None,
     ) -> TaskState | None:
@@ -253,6 +254,21 @@ class ControlStore:
         Re-reads inside the transaction and refuses an illegal transition rather
         than forcing one: if a worker wrote SUCCEEDED between the snapshot and
         now, the correct repair is no repair.
+
+        `expected_lease_id` is the lease the FINDING was about, and this refuses
+        when the task has since moved to a different one -- the same "re-read and
+        refuse on mismatch" discipline `invalidate_generation` applies to the
+        generation. Without it, a finding about an old attempt reset a task whose
+        NEW attempt was running: `invalidate_generation` and `release_lease` both
+        correctly no-op on a superseded finding, and then this forced RUNNING ->
+        READY and cleared `current_lease_id` out from under a live, heartbeating
+        lease. The next drain admitted a second worker on the same repository --
+        invariant 5 broken through the machinery that enforces it -- and the
+        unhooked lease held capacity nothing would return.
+
+        None means "no expectation", for findings that carry no lease (an orphan
+        execution whose lease was released long ago). A task holding no lease has
+        nothing to strand, so those still repair.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -266,6 +282,16 @@ class ControlStore:
             except (ValueError, TypeError):
                 return None
             if current in TERMINAL_STATES:
+                return None
+            held = data.get("current_lease_id") or None
+            if held is not None and held != expected_lease_id:
+                self._log.info(
+                    "refusing to repair a task that has moved to another lease",
+                    task_id=task_id,
+                    holds_lease=held,
+                    finding_lease=expected_lease_id,
+                    state=current.value,
+                )
                 return None
             target = to_state
             if target is TaskState.READY:

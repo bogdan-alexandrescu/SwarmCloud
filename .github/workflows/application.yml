@@ -263,11 +263,20 @@ jobs:
             exit 1
           fi
           export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
-          if [ -d tests/integration ] && ls tests/integration/test_*.py >/dev/null 2>&1; then
-            uv run pytest tests/integration -q
-          else
-            echo "no integration tests present"
-          fi
+          # NO "if the directory exists" GUARD. This job is the only place in the
+          # repository where the emulator-backed tests run -- `make test` is
+          # offline by design and never touches tests/integration -- so a guard
+          # that turns "I could not find them" into a green step is a gate that
+          # reports success having looked at nothing. Renaming the directory, or
+          # a checkout that lands short, used to print "no integration tests
+          # present" and exit 0, and the last-slot admission race (the one thing
+          # that needs REAL transaction semantics rather than a mock) would merge
+          # with CI green. docs/audits/2026-09-18/01-github-workflows.md, #1.
+          #
+          # pytest fails this step by itself in each of the three ways that
+          # matter: exit 4 if the path does not exist, exit 5 if it collects
+          # nothing, exit 1 if a test fails.
+          uv run pytest tests/integration -q
 
   manifests:
     name: kubernetes manifests

@@ -50,6 +50,14 @@ class SchedulerMetrics:
             ["backend"],
             registry=self.registry,
         )
+        self.admission_rollbacks = Counter(
+            "swarm_scheduler_admission_rollbacks_total",
+            "Leases returned because the work AFTER a committed admission raised "
+            "something other than a DispatchError -- a credential refresh, a "
+            "Firestore write. Unlabelled on purpose: the cause is in the log "
+            "line, and any value above zero is worth reading it for.",
+            registry=self.registry,
+        )
         self.parked = Counter(
             "swarm_scheduler_parked_total",
             "Tasks parked during a drain, by park reason.",

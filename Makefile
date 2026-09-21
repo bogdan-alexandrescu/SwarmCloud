@@ -163,11 +163,14 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
 	@$(SCRIPTS)/lib/check-env-parity.sh
-	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
-	  uv run --project . pytest tests/unit -q; \
-	else \
-	  echo "no unit tests in tests/unit yet"; \
-	fi
+	@# NO "if the directory exists" GUARD on either suite below. `make test` is
+	@# the gate CLAUDE.md names before anyone may say a change is done, and a
+	@# guard that turns "I could not find the tests" into a green run is a gate
+	@# that passes hardest when it is most broken -- the class this repository
+	@# keeps producing. pytest already fails on each case that matters: exit 4
+	@# for a path that is not there, exit 5 for a path that collects nothing,
+	@# exit 1 for a failing test. Nothing here needs to second-guess it.
+	@uv run --project . pytest tests/unit -q
 	@# tests/integration is OFFLINE -- it drives the real scripts end to end with
 	@# a fake gcloud and a fake curl on PATH under --dry-run, creating nothing and
 	@# needing no credentials. It was in no target, and it rotted exactly as the
@@ -175,11 +178,7 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@# error is not an empty result") correctly taught fs_request to check the
 	@# status code, the fake curl had never honoured `-o`/`-w`, and all three
 	@# files errored in their fixture for 95 commits with nothing to report it.
-	@if [ -d tests/integration ] && [ -n "$$(find tests/integration -name 'test_*.py' -print -quit)" ]; then \
-	  uv run --project . pytest tests/integration -q; \
-	else \
-	  echo "no offline integration tests in tests/integration yet"; \
-	fi
+	@uv run --project . pytest tests/integration -q
 	@$(MAKE) tf-test
 
 tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no credentials)
@@ -187,11 +186,23 @@ tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no 
 	@# existed and was wired into nothing -- not make test, not make lint, not any
 	@# workflow -- so it sat outside the gate CLAUDE.md names as the completeness
 	@# check and would have rotted the first time a module changed.
-	@if [ -n "$(TERRAFORM)" ] && [ -d tests/terraform ]; then \
+	@# The two reasons this can not run are kept apart. One message for both was
+	@# the audit-04 shape: "terraform not found, or no tests/terraform" sent a
+	@# reader to install a binary they already had when the suite had actually
+	@# been renamed out from under the target. A missing BINARY is a workstation
+	@# without terraform, and skipping is right -- the terraform.yml job still
+	@# runs it. A missing SUITE is the 86 assertions silently not running, and is
+	@# a failure.
+	@if [ ! -d tests/terraform ]; then \
+	  echo "tests/terraform is missing: the 86 mock-provider assertions cannot run." >&2; \
+	  echo "If the suite moved, point tf-test at it -- do not let it skip." >&2; \
+	  exit 1; \
+	elif [ -z "$(TERRAFORM)" ]; then \
+	  echo "terraform is not installed, so tests/terraform did NOT run here."; \
+	  echo "The terraform.yml workflow runs it on every push."; \
+	else \
 	  $(TERRAFORM) -chdir=tests/terraform init -input=false >/dev/null && \
 	  $(TERRAFORM) -chdir=tests/terraform test; \
-	else \
-	  echo "terraform not found, or no tests/terraform; skipping"; \
 	fi
 
 ## ---------------------------------------------------------------------------

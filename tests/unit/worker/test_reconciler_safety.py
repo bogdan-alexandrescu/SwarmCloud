@@ -229,6 +229,12 @@ def test_obsolete_generation_execution_is_terminated(db, config):
     # The live lease of generation 5 is untouched.
     assert db.doc("leases/lease_1")["released_at"] is None
     assert db.doc("pools/global")["active"] == 2
+    # And so is the TASK. This assertion is the one this test was missing: the
+    # lease document survived, but step 4 used to reset the task to READY and
+    # clear `current_lease_id`, unhooking that very lease. See
+    # test_repair_respects_the_current_lease.py.
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("tasks/task_1")["current_lease_id"] == "lease_1"
 
 
 def test_healthy_running_task_is_left_completely_alone(db, config):
