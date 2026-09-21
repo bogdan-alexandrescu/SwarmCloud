@@ -17,14 +17,16 @@ import {
   clearsIn,
   elapsed,
   headroomFor,
+  isProjected,
   leaseLiveliness,
   needsAHuman,
   overCeiling,
   poolLabel,
   providerTone,
+  readingOf,
   stateGlyph,
   stateTone,
-  whyAgent,
+  type AccountReading,
   type AccountsPage,
   type Capacity,
   type LeasePage,
@@ -37,12 +39,14 @@ import {
 } from './types'
 
 /**
- * OVERVIEW -> NOW. The landing screen, and the one-stop shop.
+ * OVERVIEW. The landing screen, and the one-stop shop.
  *
- * It answers five questions on one laptop screen, and every one of them ends
- * in a link to the screen that goes deeper. Nothing here is a dead end and
- * nothing here is the last word: this screen's job is to tell you which of the
- * other four sections to open, in the first three seconds.
+ * It answers five questions on one laptop screen, and each ends in a link to
+ * the screen that goes deeper -- except the derived checks, which have no
+ * deeper screen because there is no problem board and should not be one; every
+ * row of that pane links to the OBJECT it is about instead. Nothing here is a
+ * dead end and nothing here is the last word: this screen's job is to tell you
+ * which of the other four sections to open, in the first three seconds.
  *
  *   1. CAPACITY -- used against available, and WHICH pool binds each runner
  *      profile. The conjunction is the whole trap: a task must clear every
@@ -56,11 +60,13 @@ import {
  *   5. THE SUBSCRIPTION POOL's headroom, which is the ceiling that binds
  *      first in practice and used to be buried three clicks down.
  *
- * SIX READS, INDEPENDENTLY. One failing must not blank the page and must not
- * leave the page looking complete -- so each panel owns its own state and the
- * header counts what did not arrive. This is the shape Trouble already uses;
- * `Screen` is deliberately not used here because it has exactly one load and
- * one failure, and this screen has six of each.
+ * SEVEN READS, INDEPENDENTLY -- six routes plus the spend rollup fanned out
+ * over them. One failing must not blank the page and must not leave the page
+ * looking complete, so each panel owns its own state and the line under the
+ * title counts what landed, what is still in flight, what failed and what was
+ * refused for want of admin. Those are four different things and the line says
+ * which. `Screen` is deliberately not used here because it has exactly one
+ * load and one failure, and this screen has seven of each.
  *
  * WHAT THIS SCREEN DOES NOT DRAW, and why it is not a placeholder:
  *   - infrastructure cost in dollars. There is no billing integration of any
@@ -84,8 +90,13 @@ export function OverviewScreen() {
   // queries -- and the spend rollup is a fan-out of one request per sampled
   // task. Polling either would make the screen that is open all day the most
   // expensive thing on the platform, and would spend the caller's 20 rps
-  // bucket on figures that change slowly. Both carry their own read age in the
-  // tile foot so a stale one is visible rather than merely old.
+  // bucket on figures that change slowly.
+  //
+  // BOTH THEREFORE CARRY THEIR READ AGE, on the tile and, for spend, in the
+  // panel as well. A figure that does not re-poll sitting beside five that
+  // refresh every twenty seconds is indistinguishable from them unless it says
+  // how old it is, and the one that goes stale is the one denominated in
+  // dollars.
   const [live, setLive] = useState(0)
   const [heavy, setHeavy] = useState(0)
   const refresh = useCallback(() => {
@@ -106,10 +117,6 @@ export function OverviewScreen() {
   const stats = useRead(loadStats, heavy)
 
   const spend = useSpend(dataOf(tasks), heavy)
-
-  // Runtimes tick on their own rather than only when a read lands. An agent
-  // that has been running for four minutes should say so a second later.
-  const now = useNow()
 
   // Typed as `Result<unknown>` because this list only ever asks about a read's
   // OUTCOME, never its payload. Leaving it to inference makes it a union of six
@@ -134,12 +141,24 @@ export function OverviewScreen() {
     )
   }
 
-  // An admin gate is not a failure and must not be counted as one. The lease
-  // read is the only admin route on this screen and a non-admin legitimately
-  // cannot make it.
-  const broken = reads.filter(
-    (r) => r.status === 'error' && r.error.kind !== 'admin_required',
+  // FOUR OUTCOMES, COUNTED SEPARATELY, because they are four different facts
+  // about this screen and collapsing any two of them produces a sentence that
+  // is false at first paint.
+  //
+  //   - landed: a reading arrived (`empty` is a reading: it is a real zero).
+  //   - pending: still in flight. On first paint that is ALL of them, and
+  //     "all 7 reads landed" printed then is the screen's own provenance line
+  //     lying about the screen.
+  //   - refused: 403 on the one admin route here. Not a failure -- a non-admin
+  //     legitimately cannot make it -- but it did not land either, and the
+  //     Leases check below reports itself blind at the same moment.
+  //   - failed: everything else.
+  const landed = reads.filter(
+    (r) => r.status === 'ok' || r.status === 'empty' || r.status === 'stale',
   ).length
+  const pending = reads.filter((r) => r.status === 'loading').length
+  const refused = reads.filter((r) => isKind(r, 'admin_required')).length
+  const broken = reads.length - landed - pending - refused
 
   const checks = useMemo(
     () => deriveChecks({ capacity, tasks, leases, providers, accounts, stats }),
@@ -157,18 +176,21 @@ export function OverviewScreen() {
           that it fits without scrolling. */}
       <div className="ov-topline">
         <div className="head">
-          <h1>Now</h1>
-          <span className="env">dev</span>
+          {/* NO ENVIRONMENT BADGE. Every other screen carries a hardcoded
+              "dev" here; nothing in this app reads an environment, and on the
+              one screen whose whole claim is that each figure declares where
+              it came from, a word nobody measured is the loudest thing on it.
+              It comes back when the API reports its own environment. */}
+          <h1>Overview</h1>
         </div>
         <p className="sub">
-          <Scope tasks={tasks} /> ·{' '}
-          {broken > 0 ? (
-            <strong className="ov-broken">
-              {broken} of {reads.length} reads failed
-            </strong>
-          ) : (
-            <>all {reads.length} reads landed</>
-          )}{' '}
+          <Scope tasks={tasks} /> · <Provenance
+            total={reads.length}
+            landed={landed}
+            pending={pending}
+            refused={refused}
+            broken={broken}
+          />{' '}
           <button onClick={refresh}>refresh</button>
         </p>
       </div>
@@ -187,21 +209,21 @@ export function OverviewScreen() {
             spans both columns and is the first panel under the tiles; when
             every check came back clear it collapses into one column and gets
             out of the way. A control plane whose problem list is the same size
-            whether or not there are problems teaches you to stop looking. */}
+            whether or not there are problems teaches you to stop looking.
+
+            This is the one pane with no "open →" of its own, and that is not an
+            oversight: there is no problem board to open. Every row carries the
+            link to the object it is about, and the rows that do not fit expand
+            in place rather than pointing at a screen that does not exist. */}
         <section className="section panel" style={found > 0 ? { gridColumn: '1 / -1' } : undefined}>
-          <PanelHead
-            title="Needs attention"
-            count={found}
-            href="#overview/attention"
-            cta="full trouble board"
-          />
+          <PanelHead title="Needs attention" count={found} />
           <AttentionBody checks={checks} />
         </section>
 
         <section className="section panel">
           <PanelHead
             title="Capacity, by what binds it"
-            href="#capacity/profiles"
+            href="#pools/profiles"
             cta="all pools"
           />
           <CapacityBody state={capacity} />
@@ -209,16 +231,16 @@ export function OverviewScreen() {
 
         <section className="section panel">
           <PanelHead title="Running now" href="#agents/running" cta="all agents" />
-          <RunningBody tasks={tasks} stats={stats} now={now} />
+          <RunningBody tasks={tasks} stats={stats} />
         </section>
 
         <section className="section panel">
-          <PanelHead title="Spend" href="#activity/timeline" cta="activity" />
+          <PanelHead title="Spend" href="#history/timeline" cta="history" />
           <SpendBody state={spend} tasks={tasks} />
         </section>
 
         <section className="section panel">
-          <PanelHead title="Subscription pool" href="#capacity/accounts" cta="all accounts" />
+          <PanelHead title="Subscription pool" href="#pools/accounts" cta="all accounts" />
           <AccountsBody state={accounts} />
         </section>
       </div>
@@ -266,8 +288,20 @@ function useRead<T>(load: () => Promise<Result<T>>, nonce: number): Result<T> {
  * would fire twelve requests every twenty seconds and make the landing screen
  * the thing that rate-limits the person who opened it.
  *
- * So the page is read through a ref, and the effect fires on exactly two
- * things: the first page arriving, and a person pressing refresh.
+ * So the fan-out fires on exactly two things: the first page arriving, and the
+ * first page to arrive AFTER a person presses refresh.
+ *
+ * THAT SECOND CLAUSE IS THE WHOLE CARE HERE. `refresh` bumps `heavy` and
+ * `live` in the same tick, so at the instant of the press the task page in
+ * hand is still the pre-refresh one -- summing it would answer the refresh
+ * with the sample the refresh was asked to replace, and every task created
+ * since would sit outside a panel whose provenance line claims to cover "the N
+ * most recently created tasks that have run". Firing on the page's identity
+ * alone is the opposite mistake: the page object is new on every 20-second
+ * poll, which would put a twelve-request fan-out on a timer.
+ *
+ * So the trigger is: a page whose identity differs from the one held when
+ * `heavy` last moved, and which has not already been summed for this `heavy`.
  */
 function useSpend(page: TaskPage | null, heavy: number): Result<SpendRollup> {
   const [state, setState] = useState<Result<SpendRollup>>({
@@ -276,24 +310,58 @@ function useSpend(page: TaskPage | null, heavy: number): Result<SpendRollup> {
   })
   const latest = useRef<TaskPage | null>(null)
   latest.current = page
-  const ready = page !== null
+
+  /** The page in hand when `heavy` last changed. Anything else is newer. */
+  const atPress = useRef<TaskPage | null>(null)
+  /** The `heavy` a rollup has been decided for. Never decided twice. */
+  const summedFor = useRef<number | null>(null)
 
   useEffect(() => {
-    const p = latest.current
-    if (!p) return
+    atPress.current = latest.current
+  }, [heavy])
+
+  // DECIDING IS SEPARATE FROM RUNNING, and it has to be. The decision depends
+  // on the task page, which is a new object every twenty seconds; the fan-out
+  // must not be. With one effect for both, an ordinary poll landing while the
+  // twelve requests were in flight would tear them down and start them again
+  // -- turning a slow API into a fan-out that restarts for ever, which is the
+  // exact failure this hook exists to avoid. So the cheap effect picks the
+  // job, and the expensive one is keyed to the job alone.
+  const [job, setJob] = useState<{ heavy: number; page: TaskPage } | null>(null)
+
+  useEffect(() => {
+    if (page === null) return
+    if (summedFor.current === heavy) return
+    // The refresh has been pressed and the new task page has not landed yet.
+    // The next render that brings one re-runs this effect.
+    if (page === atPress.current) return
+
+    summedFor.current = heavy
+    setJob({ heavy, page })
+  }, [heavy, page])
+
+  useEffect(() => {
+    if (job === null) return
     let live = true
-    loadSpend(p).then((r) => {
+    loadSpend(job.page).then((r) => {
       if (live) setState(r)
     })
     return () => {
       live = false
     }
-  }, [heavy, ready])
+  }, [job])
 
   return state
 }
 
-/** A clock that ticks, so "running for 4m 12s" is true a second later. */
+/**
+ * A clock that ticks, so "running for 4m 12s" is true a second later.
+ *
+ * SCOPE IT TO THE CELL THAT USES IT. This screen is the one the platform
+ * expects to be left open all day, and a 1Hz clock held at the top of it
+ * re-renders every panel, every tile and the injected <style> element once a
+ * second to move one table column. It is called from `Runtime` alone.
+ */
 function useNow(): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -349,19 +417,95 @@ function Scope({ tasks }: { tasks: Result<TaskPage> }) {
   )
 }
 
+/**
+ * How much of this screen is actually a reading, in one clause.
+ *
+ * "all 7 reads landed" is the sentence this has to earn, and it is only true
+ * when nothing is in flight, nothing failed and nothing was refused. Printed
+ * before that it is the page vouching for itself while every panel is still a
+ * skeleton -- which is the single most misleading thing a control plane can
+ * say, because it is said in the place a reader checks to find out whether to
+ * trust the rest.
+ */
+function Provenance({
+  total,
+  landed,
+  pending,
+  refused,
+  broken,
+}: {
+  total: number
+  landed: number
+  pending: number
+  refused: number
+  broken: number
+}) {
+  if (broken > 0) {
+    return (
+      <strong className="ov-broken">
+        {broken} of {total} reads failed
+        {pending > 0 && ` · ${pending} still arriving`}
+        {refused > 0 && ` · ${refused} admin only`}
+      </strong>
+    )
+  }
+  if (pending > 0) {
+    return (
+      <>
+        {landed} of {total} reads landed · {pending} still arriving
+        {refused > 0 && ` · ${refused} admin only`}
+      </>
+    )
+  }
+  // Nothing failed and nothing is outstanding, but a refused read is not a
+  // landed one. Saying "all 7 landed" here would contradict the Leases check
+  // below, which is simultaneously reporting itself blind.
+  if (refused > 0) {
+    return (
+      <>
+        {landed} of {total} reads landed ·{' '}
+        <span className="ov-info">
+          {refused} needs admin, so {refused === 1 ? 'one check' : `${refused} checks`} below could
+          not run
+        </span>
+      </>
+    )
+  }
+  return (
+    <>
+      all {total} reads landed
+    </>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // The metric strip
 // ---------------------------------------------------------------------------
 
 /**
- * Five tiles, five doorways. Each is an anchor, because the answer to every
- * one of these numbers is on another screen and making the number itself the
- * link removes a step.
+ * Five tiles, four doorways. Four of them are anchors, because the answer to
+ * the number is on another screen and making the number itself the link
+ * removes a step; "Needs attention" is not, because its answer is the pane
+ * directly below it and a link to the screen you are on is a click that does
+ * nothing.
  *
- * Every tile has three renderings and they must not converge: a figure, "not
- * recorded" (the platform does not have it) and "unreadable" (the platform may
- * well have it, we did not get it). The primitive encodes the difference --
- * `.is-absent` versus `.is-unread` -- so no tile has to remember.
+ * Every tile has FOUR renderings and they must not converge:
+ *
+ *   - a figure;
+ *   - "reading…", a pulsing bar: the read is in flight and there is nothing to
+ *     say yet;
+ *   - "not recorded", dashed and grey: the platform genuinely has no such
+ *     figure;
+ *   - the error, dashed and amber: the platform may well have it, we did not
+ *     get it.
+ *
+ * The last three are all "no number", and the temptation is to let a tile fall
+ * from one into the next. It must not: "not recorded" is a claim ABOUT THE
+ * PLATFORM, and printing it over a request that is still in flight tells the
+ * reader the figure does not exist when what is true is that it has not
+ * arrived. Against a real API that lasts as long as the request, and a hung
+ * request leaves the claim on screen for ever. So `reading` is a prop, it
+ * outranks `absent`, and every caller passes it.
  */
 function MetricStrip({
   capacity,
@@ -391,6 +535,7 @@ function MetricStrip({
 
   const blind = checks.filter((c) => c.status === 'blind').length
   const ran = checks.filter((c) => c.status === 'clear' || c.status === 'found').length
+  const reading = checks.filter((c) => c.status === 'reading').length
 
   const pool = accountHeadroom(accounts)
   const sp = dataOf(spend)
@@ -404,12 +549,13 @@ function MetricStrip({
         unit="agents"
         sub="LEASED, DISPATCHED, STARTING, RUNNING — the states that reserve capacity"
         foot={footFor(stats, 'counted')}
+        reading={stats.status === 'loading'}
         unread={stats.status === 'error' ? errorHeading(stats.error) : null}
         tone={inFlight !== null && inFlight > 0 ? 'good' : undefined}
       />
 
       <Tile
-        href="#capacity/pools"
+        href="#pools/pools"
         label="Units held"
         value={global ? global.active : null}
         unit={global ? `of ${global.effective_limit}` : undefined}
@@ -417,6 +563,7 @@ function MetricStrip({
         // class's weight, so 8 may be two large agents or eight standard ones.
         sub="weighted units on the platform-wide global pool — not a count of agents"
         foot={footFor(capacity, 'read')}
+        reading={capacity.status === 'loading'}
         unread={capacity.status === 'error' ? errorHeading(capacity.error) : null}
         absent={
           capacity.status !== 'error' && cap !== null && global === null
@@ -427,30 +574,49 @@ function MetricStrip({
       />
 
       <Tile
-        href="#overview/attention"
+        // THE ONE TILE THAT IS NOT A DOORWAY, because its answer is on this
+        // screen: the pane below holds the same checks in full, and each of
+        // its rows links to the object it is about. It used to point at the
+        // trouble board; a link to the page you are already on is a click that
+        // does nothing, which is worse than no link.
         label="Needs attention"
         value={ran === 0 ? null : found}
         unit={found === 1 ? 'thing' : 'things'}
+        // DERIVED FROM THE CHECKS THEMSELVES, never from a list typed out
+        // here. The hand-written version named five sources for six checks and
+        // the one it left out, dispatch, is the loudest problem this screen
+        // can draw -- a reader told "1 thing" over a caption with no dispatch
+        // in it does not expect a platform-wide pause.
+        // "nothing found in …" is a result and is only said once something has
+        // actually looked. While the checks are still reading, the line names
+        // what they are reading and nothing more.
         sub={
-          found > 0
-            ? 'derived from lease, quota, account, pool and failure state'
-            : 'nothing in lease, quota, account, pool or failure state'
+          ran > 0 && found === 0
+            ? `nothing found in ${sourceList(checks)}`
+            : `derived from ${sourceList(checks)}`
         }
         // THE FOOT IS THE HONEST PART. A "0" with two checks blind is a
         // reassurance nobody earned, so the count of checks that could not run
         // sits under the figure every time rather than only when it is
         // convenient.
         foot={
-          ran === 0
-            ? 'no check could run'
-            : `${ran} of ${checks.length} checks ran${blind > 0 ? ` · ${blind} could not` : ''}`
+          ran === 0 && reading > 0
+            ? `${reading} of ${checks.length} checks still reading${blind > 0 ? ` · ${blind} could not run` : ''}`
+            : ran === 0
+              ? `all ${checks.length} checks were blind`
+              : `${ran} of ${checks.length} checks ran${blind > 0 ? ` · ${blind} could not` : ''}${reading > 0 ? ` · ${reading} still reading` : ''}`
         }
-        unread={ran === 0 ? 'no check ran' : null}
-        tone={found > 0 ? 'alert' : blind === 0 ? 'good' : undefined}
+        // Three states, not two. Every check still in flight is a READING;
+        // every check blind with none in flight is a failure to read; and the
+        // amber "no check ran" treatment over a page that has been open for
+        // 200ms was the second of those printed over the first.
+        reading={ran === 0 && reading > 0}
+        unread={ran === 0 && reading === 0 && blind > 0 ? 'no check could run' : null}
+        tone={found > 0 ? 'alert' : ran > 0 && blind === 0 && reading === 0 ? 'good' : undefined}
       />
 
       <Tile
-        href="#activity/timeline"
+        href="#history/timeline"
         label="Token spend"
         value={sp && sp.costUsd !== null ? money(sp.costUsd) : null}
         sub={
@@ -458,9 +624,14 @@ function MetricStrip({
             ? `${sp.attemptsWithCost} of ${sp.attempts} attempts, over the ${sp.tasksSampled} most recent tasks that ran`
             : 'summed from the attempts of the most recent tasks that ran'
         }
-        // Said on the tile, not only in the panel: this is the number someone
-        // screenshots, and "spend" with no qualifier reads as the bill.
-        foot="token cost only · infra cost is not recorded"
+        // THE AGE IS NOT OPTIONAL ON THIS ONE. Spend is the only read on the
+        // screen that does not re-poll -- it moves when someone presses
+        // refresh and at no other time -- so without its age a figure hours
+        // old sits beside five that refreshed twenty seconds ago and looks
+        // exactly like them. The scope caveat stays too: this is the number
+        // someone screenshots, and "spend" with no qualifier reads as the bill.
+        foot={`${footFor(spend, 'summed') ?? 'not summed yet'} · refresh only · token cost, never infra`}
+        reading={spend.status === 'loading'}
         unread={spend.status === 'error' ? errorHeading(spend.error) : null}
         absent={
           spend.status === 'empty'
@@ -472,18 +643,31 @@ function MetricStrip({
       />
 
       <Tile
-        href="#capacity/accounts"
+        href="#pools/accounts"
         label="Subscription headroom"
         value={pool.pct === null ? null : Math.round(pool.pct)}
         unit={pool.pct === null ? undefined : '% left'}
         sub={pool.sub}
         foot={pool.foot}
+        reading={pool.reading}
         unread={accounts.status === 'error' ? errorHeading(accounts.error) : null}
         absent={pool.absent}
         tone={pool.pct !== null && pool.pct < 15 ? 'alert' : undefined}
       />
     </div>
   )
+}
+
+/**
+ * The checks' own labels, as an English list.
+ *
+ * Read off `checks` rather than written out, so a seventh check cannot leave
+ * the caption describing six.
+ */
+function sourceList(checks: Check[]): string {
+  const names = checks.map((c) => c.label.toLowerCase())
+  if (names.length <= 1) return names[0] ?? 'nothing'
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
 /** "read 40s ago", or nothing at all when there is no reading to date. */
@@ -499,43 +683,70 @@ function Tile({
   unit,
   sub,
   foot,
+  reading,
   unread,
   absent,
   tone,
 }: {
-  href: string
+  /** Omitted only where the answer is already on this screen. */
+  href?: string | undefined
   label: string
-  /** The figure. null means there is none, and `unread`/`absent` say which. */
+  /** The figure. null means there is none, and the three props below say why. */
   value: number | string | null
   unit?: string | undefined
   sub: string
   foot?: string | undefined
+  /** True while the read is IN FLIGHT. Not an absence -- not yet anything. */
+  reading?: boolean | undefined
   /** Set when the READ failed: the platform may have this, we did not get it. */
   unread?: string | null
   /** Set when the platform genuinely has no such figure. */
   absent?: string | null
   tone?: 'alert' | 'good' | undefined
 }) {
-  // Order matters. A failed read outranks everything: it must never fall
-  // through to a figure from an earlier state or to a reassuring absence.
-  const state = unread ? 'unread' : value === null ? 'absent' : 'value'
+  // ORDER MATTERS, AND THIS IS THE ORDER.
+  //
+  // A failed read outranks everything: it must never fall through to a figure
+  // from an earlier state or to a reassuring absence. `reading` comes next and
+  // outranks BOTH the figure and the absence -- a tile with a figure in hand
+  // is not re-drawn as a skeleton mid-refresh (callers only pass `reading` for
+  // a first load, where `value` is null anyway), and a tile with nothing in
+  // hand must say "reading", never "not recorded", which is a statement about
+  // the platform rather than about this request.
+  const state = unread ? 'unread' : reading ? 'reading' : value === null ? 'absent' : 'value'
   const cls =
     state === 'unread'
       ? 'is-unread'
-      : state === 'absent'
-        ? 'is-absent'
-        : tone === 'alert'
-          ? 'is-alert'
-          : tone === 'good'
-            ? 'is-good'
-            : ''
+      : state === 'reading'
+        ? 'ov-reading'
+        : state === 'absent'
+          ? 'is-absent'
+          : tone === 'alert'
+            ? 'is-alert'
+            : tone === 'good'
+              ? 'is-good'
+              : ''
+
+  // An <a> with no href is not a link and is not focusable, so a tile with
+  // nowhere to go is a plain element rather than an anchor that looks like one.
+  // The hover and focus rules are scoped to `a.ov-tile` and simply do not
+  // apply to it.
+  const Box = href === undefined ? 'div' : 'a'
 
   return (
-    <a className={`ctl-metric ov-tile ${cls}`} href={href}>
+    <Box className={`ctl-metric ov-tile ${cls}`} href={href}>
       <span className="ctl-metric-label">{label}</span>
       <span className="ctl-metric-value">
         {state === 'unread' ? (
           unread
+        ) : state === 'reading' ? (
+          // The bar is decoration and carries no meaning a screen reader could
+          // use; the word beside it is the state, so the word is the thing
+          // that is announced.
+          <>
+            <span className="skeleton ov-bar" aria-hidden />
+            <span className="ov-reading-word">reading…</span>
+          </>
         ) : state === 'absent' ? (
           absent ?? 'not recorded'
         ) : (
@@ -547,7 +758,7 @@ function Tile({
       </span>
       <span className="ctl-metric-sub">{sub}</span>
       {foot && <span className="ctl-metric-foot">{foot}</span>}
-    </a>
+    </Box>
   )
 }
 
@@ -568,8 +779,16 @@ function PanelHead({
 }: {
   title: string
   count?: number
-  href: string
-  cta: string
+  /**
+   * Omitted by exactly one panel, "Needs attention", and the reason is that
+   * there is no screen that is a deeper version of it: it is derived from six
+   * reads across four sections, each of its rows already links to the object
+   * it is about, and the rows that do not fit expand in place. Every OTHER
+   * panel draws one table and has a screen that draws the whole of it, so
+   * leaving this off is a decision rather than a default.
+   */
+  href?: string | undefined
+  cta?: string | undefined
 }) {
   return (
     <div className="ov-h">
@@ -577,9 +796,11 @@ function PanelHead({
         {title}
         {typeof count === 'number' && count > 0 && <span className="ov-count">{count}</span>}
       </h2>
-      <a className="ov-link" href={href}>
-        {cta} →
-      </a>
+      {href !== undefined && cta !== undefined && (
+        <a className="ov-link" href={href}>
+          {cta} →
+        </a>
+      )}
     </div>
   )
 }
@@ -824,11 +1045,9 @@ const RUNNING_ROWS = 4
 function RunningBody({
   tasks,
   stats,
-  now,
 }: {
   tasks: Result<TaskPage>
   stats: Result<Stats>
-  now: number
 }) {
   if (tasks.status === 'loading') return <Reading />
   if (tasks.status === 'error') {
@@ -894,7 +1113,7 @@ function RunningBody({
         </thead>
         <tbody>
           {shown.map((t) => (
-            <RunningRow key={t.id} task={t} now={now} />
+            <RunningRow key={t.id} task={t} />
           ))}
         </tbody>
         <caption>
@@ -918,19 +1137,19 @@ function startKey(t: Task): number {
   return Number.isFinite(v) ? v : Number.MAX_SAFE_INTEGER
 }
 
-function RunningRow({ task, now }: { task: Task; now: number }) {
-  const e = elapsed(task, now)
-  const why = whyAgent(task)
+function RunningRow({ task }: { task: Task }) {
   return (
     <tr>
       <th scope="row">
         <a className="ov-link" href={`#agents/task/${encodeURIComponent(task.id)}`}>
           {task.runner_profile}
         </a>
-        <span className="ctl-sub">
-          {task.id}
-          {why ? ` · ${why}` : ''}
-        </span>
+        {/* The id, and only the id. `whyAgent` used to be appended here and
+            could never print: it answers for PARKED, READY, FAILED and
+            CANCELLED, and every row in this table is LEASED, DISPATCHED,
+            STARTING or RUNNING by construction. A call that always returns ''
+            reads as a "why" column that is mysteriously always empty. */}
+        <span className="ctl-sub">{task.id}</span>
       </th>
       <td>
         {/* The word is mandatory; the dot is decoration. Roughly 8% of male
@@ -940,11 +1159,23 @@ function RunningRow({ task, now }: { task: Task; now: number }) {
           {stateGlyph(task.state)} {task.state}
         </span>
       </td>
-      {/* A LEASED task has no started_at -- lifecycle writes it on
-          DISPATCHED -> STARTING -- so `elapsed` says "queued 4m", never "0s". */}
-      <td className="is-num">{e.text}</td>
+      <td className="is-num">
+        <Runtime task={task} />
+      </td>
     </tr>
   )
+}
+
+/**
+ * The one cell on this screen that has to move on its own, and therefore the
+ * one place the 1Hz clock lives.
+ *
+ * A LEASED task has no `started_at` -- lifecycle writes it on
+ * DISPATCHED -> STARTING -- so `elapsed` says "queued 4m", never "0s".
+ */
+function Runtime({ task }: { task: Task }) {
+  const now = useNow()
+  return <>{elapsed(task, now).text}</>
 }
 
 function chipTone(state: TaskState): string {
@@ -1044,7 +1275,23 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       {s.failedReads > 0 && (
         <p className="warn-text">
           {s.failedReads} of {s.tasksSampled} attempt reads failed, so their
-          spend is in none of these figures: {s.failedDetail}
+          spend is in none of these figures.{' '}
+          {/* ONE MESSAGE IS ONE FAILURE'S. The rollup keeps only the first
+              error it saw (api.ts, loadSpend), so attaching that sentence to
+              all N of them would present a 404, a 429 and a 500 as three
+              instances of whichever resolved first -- and send the operator
+              after the wrong cause twice. It is attributed to the one read it
+              came from, and the others are named as unexplained rather than
+              explained wrongly. */}
+          {s.failedReads === 1 ? (
+            <>It failed with: {s.failedDetail ?? 'no message was recorded'}</>
+          ) : (
+            <>
+              One of them failed with: {s.failedDetail ?? 'no message was recorded'} — the
+              other {s.failedReads - 1} may have failed for other reasons, which this
+              rollup does not carry. Open an agent to see its own attempts.
+            </>
+          )}
         </p>
       )}
 
@@ -1060,6 +1307,16 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
             · {new Date(s.from).toLocaleString()} → {new Date(s.to).toLocaleString()}
           </>
         )}
+      </p>
+      {/* THE AGE OF THE SUM, not of the tasks it covers. The line above is the
+          span of `created_at` across the sample, which moves with the sample
+          and not with the read; this is when the fan-out actually ran. They
+          differ by however long ago someone last pressed refresh, because this
+          is the one panel on the screen that does not re-poll. */}
+      <p className="provenance">
+        summed {timeAgo(state.fetchedAt)} · this figure does not re-poll — it
+        moves only when you press refresh, unlike the capacity, task, lease,
+        provider and account reads, which re-run every 20 seconds
       </p>
       <p className="provenance">
         {/* Both halves matter. The first says the sum is incomplete; the second
@@ -1108,43 +1365,76 @@ function money(v: number): string {
  * too stale to trust is excluded from the figure and counted in the line
  * underneath -- excluded rather than treated as full, because "we do not know"
  * is not "there is room".
+ *
+ * AND A WINDOW THAT HAS ALREADY RESET IS ONE OF THE THINGS WE DO NOT KNOW.
+ * `bindingWindow` scores a `reset: true` window as FULL -- deliberately, so a
+ * window that refilled cannot be the binding one while another still has room
+ * -- which means it comes back as binding precisely when every window has
+ * reset, or on a tie. Its `utilization` then describes the window BEFORE the
+ * reset. Reading it raw drew "10 % left" in the red under-15% tone for an
+ * account whose five-hour window had just cleared, while the Accounts screen
+ * said "cleared" for the same account and the same window. `readingOf` is the
+ * one place that distinction is encoded, so it is asked rather than
+ * re-derived: only a `live` reading is a figure.
  */
 function accountHeadroom(state: Result<AccountsPage>): {
   pct: number | null
   sub: string
   foot: string | undefined
+  reading: boolean
   absent: string | null
 } {
   if (state.status === 'loading') {
-    return { pct: null, sub: 'reading the subscription pool', foot: undefined, absent: 'reading…' }
+    return {
+      pct: null,
+      sub: 'reading the subscription pool',
+      foot: undefined,
+      reading: true,
+      absent: null,
+    }
   }
   if (state.status === 'error') {
-    return { pct: null, sub: 'the subscription pool could not be read', foot: undefined, absent: null }
+    return {
+      pct: null,
+      sub: 'the subscription pool could not be read',
+      foot: undefined,
+      reading: false,
+      absent: null,
+    }
   }
   if (state.status === 'empty') {
     return {
       pct: null,
       sub: 'no account is registered, so the subscription pool supplies nothing',
       foot: 'read succeeded · a real zero',
+      reading: false,
       absent: 'no accounts',
     }
   }
 
   const accounts = state.data.accounts
-  let best: { pct: number; key: string; resetsAt: string } | null = null
+  let best: { pct: number; key: string } | null = null
   let usable = 0
+  let cleared = 0
 
   for (const a of accounts) {
     // PAUSED and DRAINING are deliberate operator states, not faults -- but
     // they do not serve, so they are not counted as headroom either.
     if (a.state !== 'AVAILABLE') continue
-    if (a.observed_at === null || a.stale) continue
     const w = bindingWindow(a)
     if (!w) continue
+    const r = readingOf(a, w.key)
+    if (r.kind === 'reset') {
+      // The account may well have a full window. Nothing has measured it
+      // since it refilled, and a projection is not headroom.
+      cleared++
+      continue
+    }
+    if (r.kind !== 'live') continue
     usable++
-    const left = Math.max(0, Math.min(100, (1 - w.window.utilization) * 100))
+    const left = Math.max(0, Math.min(100, 100 - r.pct))
     if (best === null || left > best.pct) {
-      best = { pct: left, key: w.key, resetsAt: w.window.resets_at }
+      best = { pct: left, key: w.key }
     }
   }
 
@@ -1152,8 +1442,12 @@ function accountHeadroom(state: Result<AccountsPage>): {
   if (best === null) {
     return {
       pct: null,
-      sub: `${accounts.length} accounts registered, none with a current reading`,
-      foot: 'a missing reading is not 0% used',
+      sub:
+        cleared > 0
+          ? `${accounts.length} accounts registered · ${cleared} binding window${cleared === 1 ? ' has' : 's have'} reset since the last reading`
+          : `${accounts.length} accounts registered, none with a current reading`,
+      foot: 'a missing reading is not 0% used, and a window that has cleared has not been read since',
+      reading: false,
       absent: 'nothing measured',
     }
   }
@@ -1163,8 +1457,9 @@ function accountHeadroom(state: Result<AccountsPage>): {
     sub: `best of ${usable} usable account${usable === 1 ? '' : 's'} · its ${best.key.replace('_', '-')} window binds`,
     foot:
       unusable > 0
-        ? `${unusable} account${unusable === 1 ? '' : 's'} excluded — paused, stale or needing sign-in`
+        ? `${unusable} account${unusable === 1 ? '' : 's'} excluded — paused, stale, cleared or needing sign-in`
         : 'every registered account has a current reading',
+    reading: false,
     absent: null,
   }
 }
@@ -1203,35 +1498,76 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
     <>
       <div className="ov-card">
         {accounts.map(({ a, w }) => {
-          const trusted = a.observed_at !== null && !a.stale && w !== null
-          const pct = trusted && w ? Math.min(100, Math.max(0, w.window.utilization * 100)) : 0
+          // FIVE KINDS OF READING, AND ONLY ONE OF THEM IS A CURRENT FIGURE.
+          // `readingOf` is the same function the Accounts screen uses, so the
+          // two screens cannot disagree about the same account: an account
+          // whose binding window has reset reads "~90% · cleared" here and
+          // "cleared" there, rather than a confident red 90% on one screen and
+          // "cleared" on the other.
+          // `bindingWindow` returns null when no window carried a usable
+          // figure, and the two reasons for that are different sentences:
+          // nobody has ever polled this account, or the poll landed and
+          // reported no window. `readingOf` makes the same split, so the
+          // no-window case is spelled the same way here.
+          const r: AccountReading =
+            a.observed_at === null
+              ? { kind: 'never' }
+              : w === null
+                ? { kind: 'absent' }
+                : readingOf(a, w.key)
+          // `null`, never 0: the width of a bar nobody measured is not zero,
+          // it does not exist. Narrowing on `pct !== null` below is also what
+          // keeps `r.pct` reachable without a cast.
+          const pct =
+            r.kind === 'live' || r.kind === 'stale' || r.kind === 'reset' ? r.pct : null
+          const projected = isProjected(r)
+          const windowName = w?.key.replace(/_/g, '-') ?? null
           return (
             <div className="ctl-util" key={a.account_id}>
               <span className="ctl-util-name" title={a.account_id}>
                 <b>{a.label}</b> · {a.assigned} assigned
               </span>
-              {/* Never observed, or too old to trust: hatched with no fill.
-                  A plain empty track here would claim 0% used, which for an
-                  account nobody has polled is a number nobody measured. */}
-              <span className={`ctl-util-track${trusted ? '' : ' is-unknown'}`}>
-                {trusted && (
+              {/* Never observed, or no reading for the binding window: hatched
+                  with no fill. A plain empty track here would claim 0% used,
+                  which for an account nobody has polled is a number nobody
+                  measured. A PROJECTED reading does get a bar -- the figure is
+                  real -- but a grey one, never the red or amber that says a
+                  ceiling is being approached now. */}
+              <span className={`ctl-util-track${pct === null ? ' is-unknown' : ''}`}>
+                {pct !== null && (
                   <i
                     className={`ctl-util-fill ${
-                      a.state !== 'AVAILABLE'
-                        ? 'is-paused'
-                        : pct > 90
-                          ? 'is-bad'
-                          : pct > 75
-                            ? 'is-warn'
-                            : ''
+                      projected
+                        ? 'ov-projected'
+                        : a.state !== 'AVAILABLE'
+                          ? 'is-paused'
+                          : pct > 90
+                            ? 'is-bad'
+                            : pct > 75
+                              ? 'is-warn'
+                              : ''
                     }`}
                     style={{ width: `${pct}%` }}
                   />
                 )}
               </span>
-              <span className="ctl-util-figure">
-                {trusted ? (
-                  `${Math.round(pct)}%`
+              <span
+                className="ctl-util-figure"
+                title={
+                  r.kind === 'reset' && windowName
+                    ? `The ${windowName} window, the binding one, passed its reset ${timeAgo(r.resetsAt)}. It has cleared; no reading taken since has arrived, so this figure describes the window before it.`
+                    : r.kind === 'stale'
+                      ? `Read ${timeAgo(r.observedAt)}, which is past the broker's staleness window. The figure is real and describes an earlier moment.`
+                      : undefined
+                }
+              >
+                {pct !== null ? (
+                  <>
+                    {/* The same mark `cs status` and the Accounts screen use
+                        for a figure that is real but not current. */}
+                    {projected && <span className="ov-tilde">~</span>}
+                    {Math.round(pct)}%
+                  </>
                 ) : (
                   <span className="ctl-em">—</span>
                 )}
@@ -1239,13 +1575,17 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
               <span className="ctl-util-by">
                 {needsAHuman(a)
                   ? 'sign in again'
-                  : a.observed_at === null
+                  : r.kind === 'never'
                     ? 'never polled'
-                    : a.stale
-                      ? `stale ${timeAgo(a.observed_at)}`
-                      : a.state !== 'AVAILABLE'
-                        ? a.state.toLowerCase()
-                        : (w?.key.replace('_', '-') ?? '—')}
+                    : r.kind === 'absent'
+                      ? 'no window reported'
+                      : r.kind === 'reset'
+                        ? 'cleared'
+                        : r.kind === 'stale'
+                          ? `stale ${timeAgo(r.observedAt)}`
+                          : a.state !== 'AVAILABLE'
+                            ? a.state.toLowerCase()
+                            : (windowName ?? '—')}
               </span>
             </div>
           )
@@ -1256,7 +1596,8 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
         {total > accounts.length && (
           <> · showing the {accounts.length} that most need looking at</>
         )}{' '}
-        · utilisation is of the BINDING window, never an average of the two
+        · utilisation is of the BINDING window, never an average of the two · ~
+        marks a figure that is real but not current
         {state.data.tenant_id ? ` · scope ${state.data.tenant_id}` : ' · every tenant'}
       </p>
     </>
@@ -1285,6 +1626,21 @@ interface Problem {
   headline: string
   detail: string
   href: string
+  /**
+   * What the link says, when "open" would land somewhere the reader may not be
+   * able to use.
+   *
+   * The quota problems are the case this exists for. `quotaCheck` reads
+   * `/v1/providers`, which every caller can read, precisely so the check does
+   * not render as "admin only" on the screen most people land on -- and then
+   * the only screen that goes deeper is `/v1/admin/quota`. Sending a non-admin
+   * to a blue admin-only panel behind a bare "open →" is the dead end this
+   * panel exists to avoid, so the link says what it is BEFORE the click, which
+   * is the same rule the section nav follows for its admin tabs. The problem's
+   * own detail already carries the full quota document, so nobody depends on
+   * the click.
+   */
+  linkLabel?: string
 }
 
 type Check =
@@ -1333,8 +1689,22 @@ function dispatchCheck(stats: Result<Stats>): Check {
   const label = 'Dispatch'
   if (stats.status === 'loading') return { label, status: 'reading' }
   if (stats.status === 'error') return { label, status: 'blind', ...blindness(stats.error) }
-  const st = dataOf(stats)
-  if (st === null) return { label, status: 'clear', note: 'nothing to read' }
+  // AN UNKNOWN IS NOT A CLEAR. `loadStats` passes `() => false` as its empty
+  // predicate -- a successful read always yields twelve counts -- so this is
+  // unreachable today. It is still `blind` rather than `clear`, because the
+  // day that predicate changes, a `clear` here would be counted in "N of 6
+  // checks ran" and would feed "all N came back clear": a reassurance derived
+  // from a read that returned nothing. The other five checks all route an
+  // unknown this way.
+  if (stats.status === 'empty') {
+    return {
+      label,
+      status: 'blind',
+      why: 'The read succeeded but carried no counts, so whether dispatch is paused was not established.',
+      admin: false,
+    }
+  }
+  const st = stats.data
   if (st.dispatch_paused) {
     return {
       label,
@@ -1385,7 +1755,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       headline: `${dead.length} lease${dead.length === 1 ? ' is' : 's are'} past the TTL`,
       detail:
         'The lease timeout has run out as well as the heartbeat going quiet. Capacity is held by something that is almost certainly gone.',
-      href: '#capacity/holders',
+      href: '#pools/holders',
     })
   }
   if (silent.length > 0) {
@@ -1394,7 +1764,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       n: silent.length,
       headline: `${silent.length} worker${silent.length === 1 ? '' : 's'} silent past the grace period`,
       detail: `No heartbeat for ${page.thresholds.heartbeat_grace_seconds}s or more. This is already the reconciler's trigger, and its next pass is up to five minutes away.`,
-      href: '#capacity/holders',
+      href: '#pools/holders',
     })
   }
   if (overdue.length > 0) {
@@ -1404,7 +1774,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       headline: `${overdue.length} lease${overdue.length === 1 ? ' was' : 's were'} admitted but never dispatched`,
       detail:
         'Capacity was reserved and the backend was never handed the work. These hold units while doing nothing.',
-      href: '#capacity/holders',
+      href: '#pools/holders',
     })
   }
 
@@ -1458,7 +1828,8 @@ function quotaCheck(providers: Result<ProvidersPage>): Check {
             // floors at zero, so it would render every pending reset as
             // "just now" -- the opposite of what it says.
             : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, Date.now())}` : ''}. Work on this provider parks rather than fails.`,
-        href: '#capacity/quota',
+        href: '#pools/quota',
+        linkLabel: 'quota, all tenants · admin',
       })
     } else if (tone === 'wait') {
       problems.push({
@@ -1466,7 +1837,8 @@ function quotaCheck(providers: Result<ProvidersPage>): Check {
         n: 1,
         headline: `${p.provider} is ${q.state}`,
         detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at)}` : ''}. Throughput is reduced, not stopped.`,
-        href: '#capacity/quota',
+        href: '#pools/quota',
+        linkLabel: 'quota, all tenants · admin',
       })
     }
   }
@@ -1507,7 +1879,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       n: reauth.length,
       headline: `${reauth.length} account${reauth.length === 1 ? ' needs' : 's need'} signing in again`,
       detail: `${reauth.map((a) => a.label).join(', ')} — the broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.`,
-      href: '#capacity/accounts',
+      href: '#pools/accounts',
     })
   }
   if (never.length > 0) {
@@ -1516,7 +1888,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       n: never.length,
       headline: `${never.length} account${never.length === 1 ? ' has' : 's have'} never been polled`,
       detail: `${never.map((a) => a.label).join(', ')} — no reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.`,
-      href: '#capacity/accounts',
+      href: '#pools/accounts',
     })
   }
   if (stale.length > 0) {
@@ -1525,7 +1897,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       n: stale.length,
       headline: `${stale.length} account reading${stale.length === 1 ? ' is' : 's are'} too old to trust`,
       detail: `${stale.map((a) => a.label).join(', ')} — the last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.`,
-      href: '#capacity/accounts',
+      href: '#pools/accounts',
     })
   }
 
@@ -1567,7 +1939,7 @@ function poolCheck(capacity: Result<Capacity>): Check {
       n: over.length,
       headline: `${over.length} pool${over.length === 1 ? '' : 's'} holding more than the ceiling allows`,
       detail: `${over.map((p) => poolLabel(p.name)).join(', ')} — admission cannot produce this, so it is a ceiling lowered under running work or a slot never released. Running "make pool-check" resolves which.`,
-      href: '#capacity/pools',
+      href: '#pools/pools',
     })
   }
   if (paused.length > 0) {
@@ -1625,13 +1997,19 @@ function failureCheck(tasks: Result<TaskPage>): Check {
           exhausted.length > 0
             ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`
             : `All still have attempts left and may retry. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
-        href: '#overview/attention',
+        // A failed agent is a row in the agent list, not an entry on a board
+        // of its own. The list's Recent tab holds the terminal states; its tab
+        // is component state rather than part of the hash, so this lands on
+        // the list and the label says where to go from there rather than
+        // promising a filter the address bar cannot carry.
+        href: '#agents/running',
+        linkLabel: 'agents · Recent tab',
       },
     ],
   }
 }
 
-/** How many problems the landing screen lists before it links to the rest. */
+/** How many problems are open by default. The rest are one click away, here. */
 const ATTENTION_ROWS = 4
 
 /**
@@ -1683,30 +2061,27 @@ function AttentionBody({ checks }: { checks: Check[] }) {
       {problems.length > 0 && (
         <ul className="ov-list">
           {problems.slice(0, ATTENTION_ROWS).map((p, i) => (
-            <li className="ov-item" key={`${p.headline}-${i}`}>
-              <span className={`ctl-chip ${p.severity === 'bad' ? 'is-bad' : 'is-warn'}`}>
-                <i aria-hidden />
-                {p.severity === 'bad' ? 'act' : 'watch'}
-              </span>
-              <p>
-                <b>{p.headline}</b> — {p.detail}
-              </p>
-              <a className="ov-link" href={p.href}>
-                open →
-              </a>
-            </li>
+            <ProblemRow key={`${p.headline}-${i}`} problem={p} />
           ))}
         </ul>
       )}
-      {/* Cut, never dropped. A list silently truncated to the top four is a
-          list that hides the fifth problem. */}
+      {/* Cut, never dropped — and the rest open HERE. This used to link to a
+          trouble board, which no longer exists and should not: there is no
+          problem section at any level, so the overflow cannot be somebody
+          else's problem. A <details> keeps the landing screen short without
+          the fifth problem being a link to nowhere, and it needs no state of
+          its own. */}
       {problems.length > ATTENTION_ROWS && (
-        <p className="provenance">
-          {problems.length - ATTENTION_ROWS} more, worst first —{' '}
-          <a className="ov-link" href="#overview/attention">
-            the full trouble board →
-          </a>
-        </p>
+        <details className="ov-more">
+          <summary>
+            {problems.length - ATTENTION_ROWS} more, worst first
+          </summary>
+          <ul className="ov-list">
+            {problems.slice(ATTENTION_ROWS).map((p, i) => (
+              <ProblemRow key={`${p.headline}-more-${i}`} problem={p} />
+            ))}
+          </ul>
+        </details>
       )}
 
       {/* NEVER OPTIONAL. A short problem list over four blind checks and a
@@ -1734,6 +2109,24 @@ function AttentionBody({ checks }: { checks: Check[] }) {
         </p>
       )}
     </>
+  )
+}
+
+/** One problem, with the link it goes out by. */
+function ProblemRow({ problem: p }: { problem: Problem }) {
+  return (
+    <li className="ov-item">
+      <span className={`ctl-chip ${p.severity === 'bad' ? 'is-bad' : 'is-warn'}`}>
+        <i aria-hidden />
+        {p.severity === 'bad' ? 'act' : 'watch'}
+      </span>
+      <p>
+        <b>{p.headline}</b> — {p.detail}
+      </p>
+      <a className="ov-link" href={p.href}>
+        {p.linkLabel ?? 'open'} →
+      </a>
+    </li>
   )
 }
 
@@ -1887,6 +2280,46 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    heading has already said what this is about, so the padding comes down. */
 .ov-tight { padding: var(--ctl-s3); }
 .ov-skel { height: 76px; border-radius: var(--radius); }
+
+/* READING. The third absence, and it must not look like either of the other
+   two: .ctl-metric.is-absent is dashed and grey and says the platform has no
+   such figure, .ctl-metric.is-unread is dashed and amber and says the read
+   failed. This one is neither — the request is still out — so the tile keeps
+   its ordinary solid border and the value slot holds a bar that is visibly
+   still moving. */
+.ov-tile.ov-reading .ctl-metric-value {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-faint);
+  letter-spacing: 0;
+}
+.ov-bar { flex: 0 0 auto; width: 46px; height: 12px; }
+.ov-reading-word { font: 11px var(--mono); }
+
+/* A figure that is REAL but not CURRENT: its window reset, or the poll is past
+   the staleness window. Grey, never the red or amber that says a ceiling is
+   being approached now, and the tilde beside it is the same mark that cs
+   status and the Accounts screen use for the same two cases. */
+.ov-card .ctl-util-fill.ov-projected { background: var(--ctl-absent); }
+.ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
+
+/* The problems that did not fit. A disclosure rather than a link out, because
+   there is no board to link to. */
+.ov-more { margin-top: var(--ctl-s2); }
+.ov-more > summary {
+  cursor: pointer;
+  font: 11px var(--mono);
+  color: var(--info);
+  list-style: none;
+}
+.ov-more > summary::-webkit-details-marker { display: none; }
+.ov-more > summary::before { content: '▸ '; }
+.ov-more[open] > summary::before { content: '▾ '; }
+.ov-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
+.ov-more > .ov-list { margin-top: var(--ctl-s2); }
 
 .ov-broken { color: var(--bad); }
 /* An admin gate is information, not breakage -- so the line that reports only

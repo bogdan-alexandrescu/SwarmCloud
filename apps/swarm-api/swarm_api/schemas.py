@@ -147,6 +147,27 @@ class TenantLimitsRequest(StrictModel):
 SUBSCRIPTION_PROVIDER = "anthropic"
 
 
+class AccountSignInStart(StrictModel):
+    """Begin adding an account by signing in to Claude in a browser.
+
+    No credential here, which is the whole point: the person signs in with
+    Anthropic and we never see anything but the short code their callback page
+    displays afterwards.
+    """
+
+    label: str = Field(min_length=1, max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountSignInFinish(StrictModel):
+    """Finish it, with what the callback page showed."""
+
+    state: str = Field(min_length=8, max_length=256)
+    #: Taken as pasted. The callback renders the code followed by a hash and
+    #: the state, and people paste what is on screen; the broker splits it.
+    code: str = Field(min_length=4, max_length=2048)
+
+
 class AccountCreate(StrictModel):
     """Register a Claude subscription into the CALLER's pool.
 

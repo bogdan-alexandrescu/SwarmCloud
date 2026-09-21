@@ -1228,11 +1228,30 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
 // --------------------------------------------------------------------------
 // The account pool
 // --------------------------------------------------------------------------
-// swarm-api PROXIES these to quota-broker and does not implement them. That is
-// not a layering preference: refreshing an OAuth credential REVOKES the token
-// it replaces, so the broker is the platform's single writer for subscription
+// These are quota-broker's routes, reached through swarm-api. That is not a
+// layering preference: refreshing an OAuth credential REVOKES the token it
+// replaces, so the broker is the platform's single writer for subscription
 // credentials and two writers racing on one account brick it. Nothing in this
 // file may reach Secret Manager, mint a token, or "helpfully" retry a refresh.
+//
+// WHICH OF THEM SWARM-API ACTUALLY PASSES THROUGH, because this file used to
+// say "all of them" and that is not true. `routes/accounts.py` registers
+// GET "", POST "", POST /{id}/refresh, PUT /{id}/lending, PUT /{id}/state and
+// DELETE /{id}; the `AccountPool` protocol in `brokerclient.py` -- which is
+// "deliberately not a generic HTTP client", so there is no fallthrough -- has
+// a method for each of those and for nothing else.
+//
+// THE TWO SIGN-IN ROUTES ARE NOT AMONG THEM. quota-broker serves
+// `POST /v1/accounts/authorize` (quota_broker/main.py:1190) and
+// `POST /v1/accounts/exchange` (main.py:1221), and swarm-api proxies neither,
+// so against a deployed API both answer 405 -- the only route it has at that
+// path is `DELETE /{account_id}`, and "authorize" reads as an account id.
+// That gap is in swarm-api, which this track does not own and must not patch.
+// It is reported rather than worked around: the calls below are made at the
+// paths the routes are meant to live at, and `SignInFailure` in Accounts.tsx
+// names a 404/405 from them as a missing proxy rather than as a fault in the
+// operator's request. Adding a paste box back here to route around it would
+// reinstate the flow this screen exists to remove.
 
 /**
  * Everything the Accounts screen needs, in one load.
@@ -1255,6 +1274,19 @@ export interface AccountsBoard {
   /** null means the tenant list was not readable. An EMPTY array means there are none. */
   tenants: Tenant[] | null
   tenantsDetail: string | null
+  /**
+   * WHEN THIS BOARD WAS READ, as a browser instant.
+   *
+   * Carried on the data because `Screen` hands `children` the data alone, and
+   * anything below that compares a server-supplied instant against
+   * `Date.now()` needs it. This board only reloads on a mutation, so a row
+   * whose window resets while the page sits open produces a reset instant in
+   * the past with nothing wrong anywhere -- and a screen that cannot say how
+   * old the figure is has to guess at a cause for that. It is not a
+   * measurement of the platform's clock and must not be used as one: it is the
+   * age of what is on screen, which is the part that IS measurable here.
+   */
+  readAt: number
 }
 
 export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
@@ -1292,7 +1324,10 @@ export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
     // is by definition not reporting a fresh server time, and Screen reads the
     // age off `fetchedAt` in that case.
     ...(accounts.status === 'ok' ? { serverAt: accounts.serverAt } : {}),
-    data: { page: accounts.data, tenants: tenantList, tenantsDetail },
+    // `accounts.fetchedAt` rather than `Date.now()`: on a `stale` read this is
+    // the instant of the read that produced these rows, which is older, and it
+    // is the rows' age that a reader needs.
+    data: { page: accounts.data, tenants: tenantList, tenantsDetail, readAt: accounts.fetchedAt },
   } as Result<AccountsBoard>
 }
 
@@ -1313,9 +1348,11 @@ export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
  * direction -- the request carries a code, and the response carries an
  * account and an expiry.
  *
- * `POST /v1/accounts`, the keychain route, still exists in the API. It is
- * deliberately not called from anywhere in this app: keeping one paste box
- * "just in case" is how the flow that was removed comes back.
+ * `POST /v1/accounts`, the keychain route, still exists in the API -- and as
+ * the note above records, it is the only add-route swarm-api serves today. It
+ * is still deliberately not called from anywhere in this app: keeping one
+ * paste box "just in case" is how the flow that was removed comes back, and
+ * the missing proxy is a gap to report, not a reason to reinstate it.
  */
 export async function beginAccountSignIn(body: {
   owner_tenant: string
@@ -1383,10 +1420,25 @@ export async function beginAccountSignIn(body: {
  * first time the page changed -- by refusing a paste the platform would have
  * accepted. So nothing is split, trimmed into fields or normalised here.
  *
- * A FAILED EXCHANGE LEAVES THE SIGN-IN OPEN, on purpose: the broker deletes
- * the pending record only once an account exists, so a mistyped code costs one
- * paste rather than the whole sign-in. The caller has to keep the paste field
- * on screen after a failure for that to be worth anything.
+ * A FAILED EXCHANGE DOES NOT ALWAYS LEAVE THE SIGN-IN OPEN, and this comment
+ * used to say that it did. Four refusals, reading main.py:1244-1300:
+ *
+ *  - a paste whose state belongs to ANOTHER sign-in is refused before the
+ *    pending record is even read, so this one is untouched and still open;
+ *  - a token-endpoint refusal -- a mistyped, spent or expired code -- happens
+ *    after the record is read and before `ref.delete()`, which runs only once
+ *    an account exists, so that one is still open too;
+ *  - "this sign-in has expired or was already completed" is raised BECAUSE the
+ *    record is not there;
+ *  - "this sign-in took too long" calls `ref.delete()` and then raises.
+ *
+ * The last two are terminal: no code pasted against that `state` can ever be
+ * redeemed, and telling somebody to paste again is an unbounded loop with a
+ * fresh code refused every time. So a caller must tell the four apart before
+ * it writes the next instruction; `exchangeRefusal` in Accounts.tsx is where
+ * that is decided, and it matches the broker's own wording positively so that
+ * an unrecognised refusal promises nothing rather than promising the
+ * commonest thing.
  */
 export async function finishAccountSignIn(body: {
   state: string
@@ -1609,6 +1661,7 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       page: { accounts: fixtureAccounts.map((a) => ({ ...a })), tenant_id: FIXTURE_TENANT },
       tenants: null,
       tenantsDetail: 'Admin group membership is required for this endpoint.',
+      readAt: Date.now(),
     },
   }
 }

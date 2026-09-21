@@ -85,6 +85,8 @@ from ..schemas import (
     SUBSCRIPTION_PROVIDER,
     AccountCreate,
     AccountLending,
+    AccountSignInFinish,
+    AccountSignInStart,
     AccountStateChange,
 )
 
@@ -222,6 +224,55 @@ def register_account(
         "note": (
             "stored write-only; no read path in this API can return key material"
         ),
+    }
+
+
+@router.post("/authorize")
+def begin_sign_in(
+    body: AccountSignInStart,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Start a browser sign-in and hand back the URL to open.
+
+    THE SEAM THAT WAS MISSING. The broker grew these routes and the UI grew the
+    calls, and for one deploy there was nothing in between: the browser asked
+    swarm-api for a route swarm-api did not have. That is the third time in one
+    day that both ends of a path were built and the middle was not, which is
+    why this docstring says so rather than describing what a proxy is.
+
+    The tenant comes from the verified token, never from the body -- the same
+    rule every other route here follows, and the reason the body has no
+    owner_tenant field at all.
+    """
+    return pool.begin_sign_in(
+        owner_tenant=_tenant_id(ctx, auth),
+        label=body.label,
+        provider=SUBSCRIPTION_PROVIDER,
+        lend_to=list(body.lend_to),
+    )
+
+
+@router.post("/exchange", status_code=status.HTTP_201_CREATED)
+def finish_sign_in(
+    body: AccountSignInFinish,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Redeem the code and register the account.
+
+    The caller's tenant is resolved here and checked by the broker against the
+    pending sign-in it issued, so a code cannot be completed into a tenant other
+    than the one that started it.
+    """
+    _tenant_id(ctx, auth)
+    result = pool.finish_sign_in(state=body.state, code=body.code)
+    return {
+        "account": result.get("account"),
+        "expires_at": result.get("expires_at"),
+        "note": "stored write-only; no read path in this API can return key material",
     }
 
 

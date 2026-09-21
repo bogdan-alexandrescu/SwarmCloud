@@ -67,8 +67,8 @@ Five sections. Each is a question someone arrives with, not a route.
 |---|---|---|
 | **Overview** | Is the platform healthy right now, and if not, what is the first thing to look at? | Now (Control room) · Needs attention (Trouble) |
 | **Agents** | What is running, what is waiting, what did it produce — and why has mine not moved? | Agents · Workflows · New agent · New workflow |
-| **Capacity** | Is there room to run more, which ceiling is the binding one, and what is holding what there is? | Pools · Runner profiles · Holders · Accounts · Provider quota |
-| **Activity** | What has this platform done over time, who used it, and what did it cost? | Timeline · Platform counts |
+| **Pools** | Is there room to run more, which ceiling is the binding one, and what is holding what there is? | Pools · Runner profiles · Holders · Accounts · Provider quota |
+| **History** | What has this platform done over time, who used it, and what did it cost? | Timeline · Platform counts |
 | **Admin** | Change a ceiling, or see who is registered to use this platform. | Pool limits · Tenants |
 
 Plus **Reference** — the API surface — in the nav's utility corner, not among
@@ -82,7 +82,7 @@ section rather than for quietly widening one.
 
 ### Why these five
 
-**Overview keeps two panes rather than merging into one.** The control room's
+**Overview merges into one pane.** (Superseded 2026-09-21: see the note below.) The control room's
 value is that it is short — a dispatch pill, four counters, and the pools that
 need looking at. Trouble is seven independent reads that each have to be able
 to fail alone. Merging them produces a long screen that is slow to load and
@@ -367,3 +367,35 @@ Not verified, and worth someone's eye before this is called done:
 - Two write screens, `Submit` and `SubmitWorkflow`, are reachable from the
   product for the first time. They were written to ship and have never been
   clicked through against a live API.
+
+
+---
+
+## Superseded, 2026-09-21
+
+Three decisions in this document were changed by the owner after it was
+written, and the code is the authority for all three. Recorded here rather
+than silently edited, because a reader who followed a citation to this file
+deserves to see what moved and why.
+
+**Capacity is called Pools; Activity is called History.** Researched against
+Temporal (Namespaces, Workflows, Schedules, Settings, Archive) and Nomad
+(Jobs, Clients, Servers, Topology, Storage), both of which name sections after
+the OBJECT they contain rather than after the question they answer. "Capacity"
+and "Activity" are questions; "Pools" and "History" are things you can click
+expecting to find a list of exactly that.
+
+**There is no problem section, at any level, and nothing is called Trouble.**
+Neither reference console has one: failures surface as FILTERS inside the
+object list. The derived checks are a pane at the top of Overview. The owner's
+objection to the name was that it "sounds more confusing than it should be",
+and the research agreed with the instinct -- the conventional words are earned
+ones. "Alerts" means an alerting engine, "Incidents" an incident model,
+"Issues" a tracker, "Events" an event stream. This platform has none of those,
+so using any of them would claim machinery that does not exist.
+
+**Overview is one pane, not two.** The argument above for keeping "Now" and
+"Needs attention" separate was that Home's value is being short. That held
+while both were top-level; once the problem surface stopped being a
+destination, two panes on one section was a split with nothing on either side
+of it.

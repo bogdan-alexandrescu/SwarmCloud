@@ -6,17 +6,16 @@ import { AgentDetailScreen } from './AgentDetail'
 import { AgentsScreen } from './Agents'
 import { AttemptTimelineScreen } from './AttemptTimeline'
 import { CapacityScreen } from './Capacity'
-import { ControlRoomScreen } from './ControlRoom'
 import { DataSourceStrip } from './DataSources'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
 import { HoldersScreen } from './Holders'
+import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { timeAgo } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
-import { TroubleScreen } from './Trouble'
 import { WorkflowsScreen } from './Workflows'
 
 /**
@@ -29,15 +28,35 @@ import { WorkflowsScreen } from './Workflows'
  * lived in three separate top-level items and "why has my agent not moved"
  * lived in two others.
  *
- * Each section below is a QUESTION someone actually arrives with, and its
- * tabs are the readings that answer it. The full reasoning, including what
- * was considered and rejected, is docs/web-ui/redesign.md — that file is the
- * place to argue with this, not this array.
+ * SECTIONS ARE NAMED AFTER OBJECTS, NOT QUESTIONS. An earlier pass labelled
+ * them with the question each one answers ("Capacity", "Activity"), which
+ * reads well once and then has to be re-read every time: a label that is a
+ * paraphrase cannot be predicted from the thing you are looking for. Temporal
+ * (Workflows, Schedules, Namespaces) and Nomad (Jobs, Clients, Servers,
+ * Variables) both name the noun and let the tabs be the views, and this now
+ * does the same:
  *
- * NO SCREEN WAS DELETED. Every one of the eleven is still reachable, and four
- * finished screens that no route had ever pointed at — the runner-profile
- * catalogue, both submit forms and the attempt timeline — are reachable for
- * the first time. Every old hash still resolves; see LEGACY below.
+ *   Overview · Agents · Pools · History · Admin
+ *
+ * "Pools" because the section lists pools; "History" because it is what
+ * already happened. The QUESTION each section answers is still here, printed
+ * under the tabs, where it is a test for what belongs in the section rather
+ * than a name anyone has to memorise.
+ *
+ * THERE IS NO PROBLEM SECTION, AT ANY LEVEL. Neither Temporal nor Nomad has
+ * one, and this platform has no alerting engine and no incident model, so a
+ * section called "Trouble", "Alerts" or "Incidents" would claim machinery that
+ * does not exist. The checks this UI derives live as a pane at the top of
+ * Overview, re-derived on every read; a failed agent is a row in the Agents
+ * list (its Recent tab) like any other row. The Trouble board consequently has
+ * no route — see the note on `LEGACY`.
+ *
+ * Four finished screens that no route had ever pointed at — the runner-profile
+ * catalogue, both submit forms and the attempt timeline — are reachable, and
+ * so, for the first time, is the Overview screen itself. Every old hash still
+ * resolves; see LEGACY and SECTION_ALIASES below. The full reasoning is
+ * docs/web-ui/redesign.md — that file is the place to argue with this, not
+ * this array.
  */
 interface TabDef {
   id: string
@@ -54,9 +73,19 @@ interface TabDef {
 }
 
 interface SectionDef {
+  /**
+   * The id is the first hash segment, so it is also the address people paste.
+   * Renaming one is a breaking change to a link someone saved; the previous
+   * spelling therefore lives on in SECTION_ALIASES rather than being dropped.
+   */
   id: string
+  /** The OBJECT this section is about. A noun, never a question. */
   label: string
-  /** Printed under the tabs. The test for adding a screen to a section. */
+  /**
+   * Printed under the tabs. Not the name — the test for whether a screen
+   * belongs in this section, kept in the file the sections are declared in so
+   * it is read by whoever adds the next one.
+   */
   question: string
   tabs: TabDef[]
 }
@@ -67,10 +96,11 @@ const SECTIONS: SectionDef[] = [
     label: 'Overview',
     question:
       'Is the platform healthy right now, and if not, what is the first thing to look at?',
-    tabs: [
-      { id: 'now', label: 'Now' },
-      { id: 'attention', label: 'Needs attention' },
-    ],
+    // ONE PANE, so the tab strip does not render at all. The second pane here
+    // used to be "Needs attention", a problem board; the checks it drew are
+    // now a pane at the top of this screen, which is where someone landing on
+    // the platform reads them without a click.
+    tabs: [{ id: 'now', label: 'Overview' }],
   },
   {
     id: 'agents',
@@ -85,8 +115,9 @@ const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    id: 'capacity',
-    label: 'Capacity',
+    // `capacity` was the old id and still resolves; see SECTION_ALIASES.
+    id: 'pools',
+    label: 'Pools',
     question:
       'Is there room to run more, which ceiling is the binding one, and what is holding what there is?',
     tabs: [
@@ -105,8 +136,9 @@ const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    id: 'activity',
-    label: 'Activity',
+    // `activity` was the old id and still resolves; see SECTION_ALIASES.
+    id: 'history',
+    label: 'History',
     question: 'What has this platform done over time, who used it, and what did it cost?',
     tabs: [
       { id: 'timeline', label: 'Timeline' },
@@ -142,25 +174,47 @@ const REFERENCE = 'reference'
  * needed. Each lands on the pane that answers what the old screen answered,
  * and the address bar is rewritten to the new form so the next copy of the
  * link is the current one.
+ *
+ * `capacity` and `activity` are NOT here although they were old top-level
+ * hashes: they are section ids that were renamed, and SECTION_ALIASES resolves
+ * them first, with their tail intact. An entry here as well would be dead and
+ * would read as the place those two are handled.
  */
 const LEGACY: Record<string, { section: string; tab: string }> = {
   home: { section: 'overview', tab: 'now' },
-  trouble: { section: 'overview', tab: 'attention' },
-  capacity: { section: 'capacity', tab: 'pools' },
-  holders: { section: 'capacity', tab: 'holders' },
-  quota: { section: 'capacity', tab: 'quota' },
+  // The Trouble board has no route any more: there is no problem section at
+  // any level. The hash still resolves, and it resolves to the screen that
+  // carries the derived checks it used to hold.
+  trouble: { section: 'overview', tab: 'now' },
+  holders: { section: 'pools', tab: 'holders' },
+  quota: { section: 'pools', tab: 'quota' },
   agents: { section: 'agents', tab: 'running' },
   workflows: { section: 'agents', tab: 'workflows' },
-  activity: { section: 'activity', tab: 'timeline' },
-  counts: { section: 'activity', tab: 'counts' },
+  counts: { section: 'history', tab: 'counts' },
   tenants: { section: 'admin', tab: 'tenants' },
   settings: { section: 'admin', tab: 'limits' },
+}
+
+/**
+ * Section ids that were renamed, old spelling to new.
+ *
+ * Distinct from LEGACY, and it has to be: LEGACY maps a whole old hash to one
+ * destination, which is right for `#holders` (a section that became a tab) and
+ * wrong for `#capacity/holders` — that one has a TAIL, and folding it through
+ * LEGACY would drop the tail and land on the section's first pane. Here the
+ * head is rewritten and the tail keeps its meaning, so every `#capacity/<tab>`
+ * and `#activity/<tab>` link written before the rename still opens the pane it
+ * named.
+ */
+const SECTION_ALIASES: Record<string, string> = {
+  capacity: 'pools',
+  activity: 'history',
 }
 
 /** `#settings/<tail>` from the two-pane Settings screen. */
 const LEGACY_SETTINGS: Record<string, { section: string; tab: string }> = {
   limits: { section: 'admin', tab: 'limits' },
-  accounts: { section: 'capacity', tab: 'accounts' },
+  accounts: { section: 'pools', tab: 'accounts' },
 }
 
 /** Which pane of one agent is open. */
@@ -222,7 +276,7 @@ function fromHash(): Route {
     return { sectionId: to.section, tab: to.tab, ...blank }
   }
 
-  const section = sectionOf(head)
+  const section = sectionOf(SECTION_ALIASES[head] ?? head)
   if (section) {
     const wanted = tail.join('/')
     const tab = section.tabs.find((t) => t.id === wanted)
@@ -394,9 +448,7 @@ function SectionBody({
 
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
-      return <ControlRoomScreen />
-    case 'overview/attention':
-      return <TroubleScreen />
+      return <OverviewScreen />
 
     case 'agents/running':
       return <AgentsScreen onOpen={openAgent} />
@@ -407,20 +459,20 @@ function SectionBody({
     case 'agents/new-workflow':
       return <SubmitWorkflowScreen />
 
-    case 'capacity/pools':
+    case 'pools/pools':
       return <CapacityScreen />
-    case 'capacity/profiles':
+    case 'pools/profiles':
       return <ProfilesScreen />
-    case 'capacity/holders':
+    case 'pools/holders':
       return <HoldersScreen />
-    case 'capacity/accounts':
+    case 'pools/accounts':
       return <AccountsScreen />
-    case 'capacity/quota':
+    case 'pools/quota':
       return <QuotaDetailScreen />
 
-    case 'activity/timeline':
+    case 'history/timeline':
       return <ActivityScreen />
-    case 'activity/counts':
+    case 'history/counts':
       return <PlatformCountsScreen />
 
     case 'admin/limits':
@@ -529,7 +581,7 @@ function ReferenceScreen() {
     <>
       <div className="head">
         <h1>API surface</h1>
-        <span className="env">dev</span>
+        
       </div>
       <p className="sub">What this UI reads, and how those reads are going.</p>
 

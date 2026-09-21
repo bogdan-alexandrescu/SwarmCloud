@@ -113,11 +113,15 @@ const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, signin: { kind:
  * WHAT THIS SCREEN MAY NOT DO. quota-broker is the platform's single writer for
  * subscription credentials, because refreshing an OAuth credential REVOKES the
  * token it replaces and two writers racing on one account brick it. Every
- * button here is a call to a broker route through swarm-api's proxy. Nothing
- * in this file reads a secret, exchanges a token, retries a refresh on its own
- * initiative, or renders key material -- not even its length. It does not hold
- * the PKCE verifier either: that stays server-side, keyed by `state`, because a
- * verifier the client holds is a PKCE flow that proves nothing.
+ * button here is a call to a broker route, addressed to swarm-api -- which
+ * proxies the list, the register, the refresh, the lending and the state
+ * routes, AND NOT THE TWO SIGN-IN ROUTES: see the note above
+ * `loadAccountsBoard` in api.ts, and `SignInFailure` below, which is what a
+ * 405 from those reaches. Nothing in this file reads a secret, exchanges a
+ * token, retries a refresh on its own initiative, or renders key material --
+ * not even its length. It does not hold the PKCE verifier either: that stays
+ * server-side, keyed by `state`, because a verifier the client holds is a PKCE
+ * flow that proves nothing.
  */
 export function AccountsScreen() {
   // Bumping this remounts Screen, which re-runs `load`. Every mutation here
@@ -407,6 +411,7 @@ function Pool({
                 account={a}
                 board={board}
                 now={now}
+                readAt={board.readAt}
                 open={isOpen(a)}
                 onToggle={() => toggle(a)}
                 ui={ui}
@@ -417,7 +422,12 @@ function Pool({
           </tbody>
         </table>
       </div>
-      <Warnings accounts={accounts} scope={board.page.tenant_id} now={now} />
+      <Warnings
+        accounts={accounts}
+        scope={board.page.tenant_id}
+        now={now}
+        readAt={board.readAt}
+      />
       <p className="provenance">
         {accounts.length} rows returned &middot; 5H and 7D are the provider&rsquo;s
         own windows, reported by workers &middot; a figure marked ~ is projected,
@@ -431,6 +441,7 @@ function PoolRows({
   account,
   board,
   now,
+  readAt,
   open,
   onToggle,
   ui,
@@ -440,6 +451,8 @@ function PoolRows({
   account: Account
   board: AccountsBoard
   now: number
+  /** When the board these rows came from was read. See `AccountsBoard.readAt`. */
+  readAt: number
   open: boolean
   onToggle: () => void
   ui: Persisted
@@ -466,7 +479,7 @@ function PoolRows({
         </th>
         <WindowCell reading={five} window="five-hour" />
         <WindowCell reading={seven} window="seven-day" />
-        <ClearsCell account={account} now={now} />
+        <ClearsCell account={account} now={now} readAt={readAt} />
         <td>
           <span className={`tag acct-state ${tone}`}>{account.state}</span>
           <StateNote account={account} />
@@ -572,7 +585,15 @@ function Bar({ pct, projected }: { pct: number; projected: boolean }) {
  * 90% on its weekly is stopped by the weekly, and refilling the five-hour does
  * nothing for it.
  */
-function ClearsCell({ account, now }: { account: Account; now: number }) {
+function ClearsCell({
+  account,
+  now,
+  readAt,
+}: {
+  account: Account
+  now: number
+  readAt: number
+}) {
   const binding = bindingWindow(account)
   if (binding === null) {
     return (
@@ -598,6 +619,28 @@ function ClearsCell({ account, now }: { account: Account; now: number }) {
         title={`The ${windowName} window, the binding one, passed its reset ${timeAgo(binding.window.resets_at)}. It has cleared; no reading taken since has arrived, so the figures on this row still describe the window before it.`}
       >
         cleared
+      </td>
+    )
+  }
+  // THE INSTANT HAS PASSED AND THIS BOARD DID NOT CALL IT RESET. Two different
+  // things put a row here and NOTHING ON THIS SCREEN MEASURES WHICH: the window
+  // may have cleared in the time between the read and this render, or the
+  // instant and this browser's clock may simply not agree. `reset` was computed
+  // server-side when the board was serialised; `now` is this browser's clock
+  // at render; there is no second reading of the platform's clock to difference
+  // them against. So the tooltip reports the two things that WERE measured --
+  // the instant is behind us, and the board is this old -- and names no cause.
+  // `clearsIn` prints "now" here, which is a countdown that has run out rather
+  // than a claim that anything cleared, and the projected mark says the figure
+  // is not a reading.
+  const resetsAt = new Date(binding.window.resets_at).getTime()
+  if (Number.isFinite(resetsAt) && resetsAt <= now) {
+    return (
+      <td
+        className="n acct-projected"
+        title={`The ${windowName} window is the binding one, and the reset instant the platform gave for it is already in the past. The board this row came from was read ${timeAgo(readAt)} and had not marked the window reset. This page does not compare its clock with the platform's, so it cannot tell you whether the window has cleared since that read -- reload, and the platform answers.`}
+      >
+        now
       </td>
     )
   }
@@ -645,10 +688,13 @@ function Warnings({
   accounts,
   scope,
   now,
+  readAt,
 }: {
   accounts: Account[]
   scope: string | null
   now: number
+  /** When the board was read. The age of a figure is part of the figure. */
+  readAt: number
 }) {
   const lines: string[] = []
   for (const a of accounts) {
@@ -686,8 +732,18 @@ function Warnings({
     if (binding && !binding.window.reset) {
       const ms = new Date(binding.window.resets_at).getTime() - now
       if (Number.isFinite(ms) && ms < 0) {
+        // WHAT IS MEASURED HERE AND WHAT IS NOT. Measured: the instant the
+        // platform gave for this window is now behind us, and the board that
+        // said the window had not reset was read `readAt` ago. NOT measured:
+        // any difference between this browser's clock and the platform's --
+        // there is no second reading of the platform's clock to difference
+        // against, and `reset` was computed when the board was serialised
+        // rather than now. This line used to name clock skew as the cause;
+        // ordinary elapsed time on a board that only reloads on a mutation
+        // produces the same condition with perfectly synchronised clocks, so
+        // it now names no cause at all and says what to do instead.
         lines.push(
-          `${a.account_id} has a reset instant in the past that the platform did not mark as reset, so this browser's clock and the platform's disagree. Treat CLEARS on that row as approximate.`,
+          `${a.account_id}: the ${binding.key.replace(/_/g, '-')} window's reset instant has passed, and the board this row came from -- read ${timeAgo(readAt)} -- had not marked that window reset. Nothing here compares the two clocks, so this page cannot tell you whether it has cleared since that read: reload, and the platform answers. Until then CLEARS on that row is a countdown that has run out, not a reading.`,
         )
       }
     }
@@ -1423,7 +1479,14 @@ type SignIn =
       /** What happened when the sign-in page was asked to open, if it was. */
       opened: 'not_yet' | 'opened' | 'blocked'
       sending: boolean
-      /** The last exchange refusal. The sign-in is still open; paste again. */
+      /**
+       * The last exchange refusal, if there was one.
+       *
+       * The sign-in is STILL `open` as far as this page is concerned, which is
+       * not the same as the platform still holding it: two of the four
+       * refusals mean the pending record is gone. `exchangeRefusal` tells them
+       * apart, and it is what decides whether the paste field stays live.
+       */
       failed: ApiError | null
     }
   | {
@@ -1460,7 +1523,150 @@ function isRouteMissing(e: ApiError): boolean {
   return e.httpStatus === 404 || e.httpStatus === 405
 }
 
-function SignInFailure({ error, what }: { error: ApiError; what: string }) {
+/**
+ * WHICH OF THE EXCHANGE'S REFUSALS THIS IS. Four causes are not one cause.
+ *
+ * `POST /v1/accounts/exchange` refuses for four reasons and only two of them
+ * leave the sign-in redeemable (main.py:1244-1300, and the same four are in
+ * `fixtureFinishSignIn`):
+ *
+ *  - `other_sign_in` -- the pasted code names a different sign-in. Refused
+ *    BEFORE the pending record is read, so this one is untouched.
+ *  - `code_refused` -- the token endpoint rejected the code. The record is
+ *    deleted only once an account exists, so this one survives it.
+ *  - `sign_in_gone` -- the record is absent, or was deleted for age. TERMINAL:
+ *    no code pasted against this `state` can ever be redeemed, and a fresh
+ *    code from the same page is checked against the same missing record.
+ *
+ * MATCHED ON THE BROKER'S OWN WORDING, AND POSITIVELY. Substring matching is
+ * fragile, so an unrecognised message falls through to `unknown`, which
+ * promises nothing -- rather than being forced into the bucket that happens to
+ * be commonest, which is how "paste again" ended up printed over a sign-in
+ * that had already ended. `classify` in fetch.ts makes the same trade for the
+ * three unrelated 403s.
+ */
+type Refusal = 'route_missing' | 'sign_in_gone' | 'other_sign_in' | 'code_refused' | 'unknown'
+
+function exchangeRefusal(e: ApiError): Refusal {
+  if (isRouteMissing(e)) return 'route_missing'
+  const m = e.message.toLowerCase()
+  if (m.includes('already completed') || m.includes('took too long')) return 'sign_in_gone'
+  if (m.includes('different sign-in')) return 'other_sign_in'
+  if (m.includes('code was not accepted')) return 'code_refused'
+  return 'unknown'
+}
+
+/**
+ * What to do about a refused exchange, which is a different sentence for each
+ * of the four. The one thing it may never do is tell somebody to paste again
+ * into a sign-in the platform has already finished with.
+ */
+function ExchangeAdvice({
+  refusal,
+  mode,
+  onStartOver,
+}: {
+  refusal: Refusal
+  /** Which control opened this sign-in, so the advice names the right one. */
+  mode: 'add' | 'reauth'
+  onStartOver: () => void
+}) {
+  // A missing route is a deployment fault and `SignInFailure` has just said so
+  // at length. Adding "paste again" under it would be advice about a request
+  // that never reached a handler.
+  if (refusal === 'route_missing') return null
+
+  if (refusal === 'sign_in_gone') {
+    return (
+      <>
+        <p className="warn-text">
+          <strong>This sign-in is over, and pasting cannot reopen it.</strong>{' '}
+          The platform holds one pending record per sign-in, and the one this
+          page started is gone &mdash; redeemed already, or held past its
+          deadline and deleted. What is missing is the record the code is
+          checked against, not the code, so a fresh code from the same page is
+          refused in exactly the same way. Nothing was created and nothing was
+          changed.
+        </p>
+        <p className="muted small">
+          <em>start over</em> above asks the platform for a new sign-in; the
+          button below does the same thing.{' '}
+          {mode === 'add'
+            ? 'The label and the lending list went with the record, so they are yours to set again.'
+            : 'The account in the row is untouched — its credential, its readings and its state are exactly as they were before this sign-in was started.'}
+        </p>
+        <p className="acct-buttons">
+          <button type="button" onClick={onStartOver}>
+            start over
+          </button>
+        </p>
+      </>
+    )
+  }
+
+  if (refusal === 'other_sign_in') {
+    return (
+      <p className="muted small">
+        <strong>That code belongs to a different sign-in.</strong> The platform
+        compares the part after the <code>#</code> with the sign-in this page
+        started, and they did not match &mdash; the usual cause is a second tab,
+        opened from its own{' '}
+        <em>{mode === 'add' ? 'Add account' : 'Sign in again'}</em>, showing its
+        own code. That
+        check runs before the platform reads anything, so{' '}
+        <strong>this sign-in is untouched and still open</strong>: paste the
+        code from the page <em>this</em> panel opened.
+      </p>
+    )
+  }
+
+  if (refusal === 'code_refused') {
+    return (
+      <p className="muted small">
+        <strong>The code was refused, and this sign-in is still open.</strong>{' '}
+        The platform deletes the sign-in only once an account exists, so a code
+        that was mistyped, already spent or too old costs one paste and nothing
+        else. Paste again above, or press <em>Open the sign-in page again</em>{' '}
+        for a fresh one &mdash; the label and the lending list are held by this
+        sign-in, so nothing needs re-entering.
+      </p>
+    )
+  }
+
+  return (
+    <p className="muted small">
+      <strong>
+        The platform refused the exchange, and what it said above is all it
+        said.
+      </strong>{' '}
+      This page cannot tell from that whether the sign-in is still open: the two
+      refusals that end one name themselves, and this is neither. Pasting again
+      costs nothing and will say; <em>start over</em> above begins a fresh
+      sign-in if it does not.
+    </p>
+  )
+}
+
+function SignInFailure({
+  error,
+  what,
+  onRetry,
+}: {
+  error: ApiError
+  what: string
+  /**
+   * A retry that actually re-sends this request, or nothing.
+   *
+   * OMITTED FOR THE EXCHANGE, deliberately: the code that failed was taken out
+   * of the field before the request left, so there is nothing left to re-send
+   * and a retry would post an empty paste. Every failure panel on this screen
+   * used to render `FailedPanel`'s "Try again" wired to `() => undefined` --
+   * the most prominent control on the panel, producing no request, no spinner
+   * and no message, which is indistinguishable from a platform that swallowed
+   * the retry.
+   */
+  onRetry?: () => void
+}) {
   if (isRouteMissing(error)) {
     return (
       <div className="ctl-empty is-partial" role="status">
@@ -1484,7 +1690,23 @@ function SignInFailure({ error, what }: { error: ApiError; what: string }) {
       </div>
     )
   }
-  return <FailedPanel error={error} onRetry={() => undefined} />
+  if (onRetry) return <FailedPanel error={error} onRetry={onRetry} />
+  // NO `FailedPanel` WITHOUT A RETRY. It renders "Try again" for every error
+  // kind but four, so the only way to show a failure with no retry is to show
+  // it here. The route and the status are printed because this failure is
+  // about one request rather than about the screen, and the caller renders the
+  // controls that DO something directly under it.
+  return (
+    <div className="state failed" role="status">
+      <h3>{errorHeading(error)}</h3>
+      <p>{error.message}</p>
+      <p className="checked-at">
+        {what}
+        {error.httpStatus !== null ? ` · HTTP ${error.httpStatus}` : ''}
+        {error.code ? ` · ${error.code}` : ''}
+      </p>
+    </div>
+  )
 }
 
 /**
@@ -1686,6 +1908,15 @@ function SignInSteps({
   const [code, setCode] = useState('')
   const host = callbackHostOf(at.auth.authorize_url)
   const hint = pastedCodeHint(code)
+  // WHAT THE LAST REFUSAL WAS, and whether it ended the sign-in. `dead` gates
+  // the two controls that cannot work any more: the paste field, because the
+  // record its code would be checked against is gone, and `Open the sign-in
+  // page again`, because it reopens THIS `authorize_url` carrying THAT dead
+  // `state` -- a fresh code refused exactly like the last one. Leaving both
+  // live is an unbounded loop with `start over`, the one control that fixes
+  // it, sitting unmentioned beside them.
+  const refusal = at.failed ? exchangeRefusal(at.failed) : null
+  const dead = refusal === 'sign_in_gone'
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -1698,9 +1929,13 @@ function SignInSteps({
     set({ ...at, sending: true, failed: null })
     const res = await finishAccountSignIn({ state: at.auth.state, code: pasted })
     if (res.status !== 'ok') {
-      // STILL `open`. The broker keeps the pending record on a failed exchange
-      // precisely so a retry is one paste rather than a whole sign-in, and
-      // dropping back to `idle` here would throw that away.
+      // STILL `open`, AND THE INSTRUCTION UNDER IT IS WHAT MAKES THAT MEAN
+      // ANYTHING. Two of the four refusals leave the pending record in place --
+      // a mismatched paste is refused before it is read, and a token-endpoint
+      // refusal happens before `ref.delete()` -- so dropping back to `idle`
+      // would throw away a sign-in that is still redeemable. The other two are
+      // terminal, and `dead` above is what stops this screen inviting a paste
+      // into one of those forever.
       set({ ...at, sending: false, failed: failureOf(res) })
       return
     }
@@ -1736,7 +1971,12 @@ function SignInSteps({
         <div className="acct-buttons">
           <button
             type="button"
-            disabled={at.sending}
+            disabled={at.sending || dead}
+            title={
+              dead
+                ? 'The platform is no longer holding this sign-in, so this page would hand you a code nothing here can redeem. Start over instead.'
+                : undefined
+            }
             onClick={() => set({ ...at, opened: openSignInPage(at.auth.authorize_url) })}
           >
             {at.opened === 'not_yet' ? 'Sign in to Claude ↗' : 'Open the sign-in page again ↗'}
@@ -1750,7 +1990,10 @@ function SignInSteps({
             start over
           </button>
         </div>
-        {at.opened === 'blocked' && (
+        {/* `!dead` for the second half of the sentence: the popup was still
+            blocked, but "the sign-in is still open" stopped being true the
+            moment the platform said it had finished with it. */}
+        {at.opened === 'blocked' && !dead && (
           <p className="warn-text">
             This browser refused to open the tab, which is what a popup blocker
             or an extension does. Nothing failed on the platform and the sign-in
@@ -1772,21 +2015,25 @@ function SignInSteps({
           <em>this</em> sign-in rather than another tab&rsquo;s. Pasting only the
           part before the <code>#</code> works too.
         </p>
-        <Deadline auth={at.auth} startedAt={at.startedAt} />
+        {/* NOT WHEN THE SIGN-IN IS OVER. This counts down the platform's hold
+            on a pending record that no longer exists, and its expired branch
+            says the paste field is still live -- which is exactly what `dead`
+            has just stopped being true. */}
+        {!dead && <Deadline auth={at.auth} startedAt={at.startedAt} />}
         <input
           type="text"
           className="mono acct-wide"
           value={code}
           spellCheck={false}
           autoComplete="off"
-          disabled={at.sending}
-          placeholder="paste the code here"
+          disabled={at.sending || dead}
+          placeholder={dead ? 'this sign-in has ended — start over' : 'paste the code here'}
           aria-label="The code the Claude callback page displayed"
           onChange={(e) => setCode(e.target.value)}
         />
         {hint && <p className="muted small">{hint}</p>}
         <p className="acct-buttons">
-          <button type="submit" disabled={at.sending || code.trim() === ''}>
+          <button type="submit" disabled={at.sending || dead || code.trim() === ''}>
             {at.sending
               ? 'redeeming…'
               : mode === 'add'
@@ -1794,24 +2041,62 @@ function SignInSteps({
                 : 'Replace the credential'}
           </button>
         </p>
-        {at.failed && (
+        {at.failed && refusal !== null && (
           <>
+            {/* NO RETRY BUTTON ON THIS ONE. The code was taken out of the field
+                before the request left, so there is nothing to re-send; what
+                follows names the controls that do work, per refusal. */}
             <SignInFailure error={at.failed} what="POST /v1/accounts/exchange" />
-            {!isRouteMissing(at.failed) && (
-              <p className="muted small">
-                <strong>This sign-in is still open.</strong> The platform keeps it
-                until an account actually exists, so a mistyped code costs one
-                paste and nothing else: paste again above. If the code had already
-                been used or had expired, press <em>Open the sign-in page
-                again</em> for a fresh one &mdash; the label is still reserved by
-                this sign-in, so nothing needs re-entering.
-              </p>
-            )}
+            <ExchangeAdvice
+              refusal={refusal}
+              mode={mode}
+              onStartOver={() => set({ kind: 'idle' })}
+            />
           </>
         )}
       </form>
     </>
   )
+}
+
+/**
+ * PUTTING THE STATE BACK IS A SECOND CALL, and it is the same second call
+ * wherever the sign-in was started from.
+ *
+ * Registering an existing label REPLACES the credential and deliberately
+ * PRESERVES the state (accountstore.py:110-125), so that a credential
+ * replacement cannot silently un-pause an account somebody paused. The
+ * consequence is that an account in REAUTH_REQUIRED is STILL in
+ * REAUTH_REQUIRED after a perfectly successful sign-in, and nothing will be
+ * assigned to it.
+ *
+ * THE ADD FORM REACHES THAT CASE AS READILY AS THE ROW DOES -- signing in
+ * under a label that already exists is one of the ways to fix such an account,
+ * and the form says so -- so it may not hardcode "nothing to put back" and
+ * then render the result green. That is this repository's defining bug reached
+ * from the screen's primary control.
+ *
+ * THE EVIDENCE IS THE REGISTERED DOCUMENT, not the row this page was looking
+ * at before: the exchange response carries the account the store wrote, so its
+ * `state` is the one that decides. Null out means there was nothing to
+ * restore, which is a different thing from a restore that failed, and
+ * `SignInDone` renders the two differently again.
+ */
+async function restoreStateIfNeeded(
+  registered: Account,
+): Promise<Extract<SignIn, { kind: 'done' }>['restore']> {
+  if (!needsAHuman(registered)) return null
+  const back = await setAccountState(
+    registered.account_id,
+    'AVAILABLE',
+    'signed in again from the Accounts screen',
+  )
+  return back.status === 'ok'
+    ? { ok: true }
+    : {
+        ok: false,
+        error: back.status === 'error' || back.status === 'stale' ? back.error : null,
+      }
 }
 
 // ---------------------------------------------------------------------------
@@ -1873,8 +2158,9 @@ function AddAccount({
   // tenant's namespace, so warning that its name is taken would be wrong.
   const replacing = accounts.some((a) => a.owner_tenant === owner && a.label === trimmed)
 
-  const start = async (e: FormEvent) => {
-    e.preventDefault()
+  // NO EVENT ARGUMENT, so the failure panel can call it too. A "Try again"
+  // that cannot re-send the request it is offered for is worse than no button.
+  const start = async () => {
     if (trimmed === '') return
     const lendTo = splitTenants(lend).filter((t) => t !== owner)
     set({ kind: 'starting' })
@@ -1955,8 +2241,15 @@ function AddAccount({
             at={state}
             mode="add"
             set={set}
-            onExchanged={(account, expiresAt) => {
-              set({ kind: 'done', account, expiresAt, restore: null })
+            onExchanged={async (account, expiresAt) => {
+              // `restore: null` was hardcoded here, which reported a green
+              // "Signed in" for an account the store had handed back still in
+              // REAUTH_REQUIRED -- unassignable, with nothing on screen saying
+              // so. The registered account says whether there is anything to
+              // put back; the row's `Sign in again` has always done this and
+              // the primary control has to do the same.
+              const restore = await restoreStateIfNeeded(account)
+              set({ kind: 'done', account, expiresAt, restore })
               setLabel('')
               setLend('')
               reload()
@@ -1964,7 +2257,12 @@ function AddAccount({
           />
         </>
       ) : (
-        <form onSubmit={(e) => void start(e)}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void start()
+          }}
+        >
           {/* NOT A PICKER, AND NOT A SILENT DEFAULT EITHER. There is one kind of
               credential in this pool, so there is nothing to choose; but a value
               the request carries and the form never mentions is a decision made
@@ -2045,7 +2343,11 @@ function AddAccount({
             </button>
           </p>
           {state.kind === 'start_failed' && (
-            <SignInFailure error={state.error} what="POST /v1/accounts/authorize" />
+            <SignInFailure
+              error={state.error}
+              what="POST /v1/accounts/authorize"
+              onRetry={() => void start()}
+            />
           )}
         </form>
       )}
@@ -2119,10 +2421,52 @@ function SignInDone({
             signing in again.
           </p>
         ))}
-      <p className="checked-at">
-        It appears in the pool with no reading yet &mdash; that is{' '}
-        <em>unmeasured</em>, not idle. The first worker to run on it reports one.
-      </p>
+      {/* WHAT THE POOL WILL SHOW FOR IT, READ OFF THE ACCOUNT THE EXCHANGE
+          RETURNED. This panel is shared by the add form and by every
+          `Sign in again`/`Replace the credential`, and re-registering carries
+          `windows`, `observed_at`, `holds` and `assigned` through
+          (accountstore.py:110-125). An unconditional "no reading yet" is
+          therefore false for every re-authentication and for every add under a
+          label that already exists -- and the table one panel above would be
+          showing live 5H/7D figures for the same account at the same moment.
+          The fact was in hand and was never consulted. */}
+      {state.account.observed_at === null ? (
+        <p className="checked-at">
+          It appears in the pool with no reading yet &mdash; that is{' '}
+          <em>unmeasured</em>, not idle. The first worker to run on it reports
+          one.
+        </p>
+      ) : (
+        <p className="checked-at">
+          Its readings were kept: the last one arrived{' '}
+          {timeAgo(state.account.observed_at)}
+          {state.account.stale
+            ? ', which is older than the 30 minutes a reading is trusted for, so the table above marks its figures ~'
+            : ''}
+          . Signing in replaces the credential and nothing else &mdash; the id,
+          the readings and the lending list are the same ones that table is
+          showing.
+        </p>
+      )}
+      {/* NOT AVAILABLE, AND NOTHING PUT IT BACK. `restore === null` means there
+          was nothing to restore -- this account is not in REAUTH_REQUIRED --
+          which is not the same as "it will take work now". PAUSED and DRAINING
+          are preserved through a re-registration on purpose, and AVAILABLE is
+          the only member of ASSIGNABLE_STATES, so a green receipt over a
+          paused account would be a success claimed for something that will not
+          run. */}
+      {restore === null && state.account.state !== 'AVAILABLE' && (
+        <p className="warn-text">
+          <strong>
+            It is in {state.account.state}, and AVAILABLE is the only state an
+            agent is started on.
+          </strong>{' '}
+          The credential is in place; the state was left exactly as it was,
+          which is deliberate &mdash; replacing a credential does not un-pause
+          an account somebody paused. Its row has <em>move to AVAILABLE</em> for
+          when it should take work again.
+        </p>
+      )}
       <p className="acct-buttons">
         <button type="button" onClick={onAgain}>
           done
@@ -2195,30 +2539,10 @@ function Reauth({
   }
 
   const finish = async (registered: Account, expiresAt: string | null) => {
-    if (!broken) {
-      // The state was left exactly as it was, deliberately. Nothing to report
-      // and nothing to put back, so `restore` stays null.
-      set({ kind: 'done', account: registered, expiresAt, restore: null })
-      reload()
-      return
-    }
-    const back = await setAccountState(
-      account.account_id,
-      'AVAILABLE',
-      'signed in again from the Accounts screen',
-    )
-    set({
-      kind: 'done',
-      account: registered,
-      expiresAt,
-      restore:
-        back.status === 'ok'
-          ? { ok: true }
-          : {
-              ok: false,
-              error: back.status === 'error' || back.status === 'stale' ? back.error : null,
-            },
-    })
+    // The REGISTERED account decides, not `broken` -- which was read off the
+    // row before the sign-in and can disagree with what the store wrote.
+    const restore = await restoreStateIfNeeded(registered)
+    set({ kind: 'done', account: registered, expiresAt, restore })
     reload()
   }
 
@@ -2266,7 +2590,11 @@ function Reauth({
             </button>
           </div>
           {state.kind === 'start_failed' && (
-            <SignInFailure error={state.error} what="POST /v1/accounts/authorize" />
+            <SignInFailure
+              error={state.error}
+              what="POST /v1/accounts/authorize"
+              onRetry={() => void start()}
+            />
           )}
         </>
       )}

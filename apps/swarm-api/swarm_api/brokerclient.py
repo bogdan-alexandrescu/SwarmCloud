@@ -202,6 +202,33 @@ class AccountPool(Protocol):
 
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]: ...
 
+    def begin_sign_in(
+        self, *, owner_tenant: str, label: str, provider: str, lend_to: list[str]
+    ) -> dict[str, Any]:
+        """Start a browser sign-in. Returns the URL and the state that keys it.
+
+        The PKCE verifier stays in the broker, keyed by that state. It is never
+        returned here and must never be: a verifier the client holds is a PKCE
+        flow that proves nothing.
+        """
+        return self._call(
+            "POST",
+            "/v1/accounts/authorize",
+            body={
+                "owner_tenant": owner_tenant,
+                "label": label,
+                "provider": provider,
+                "lend_to": lend_to,
+            },
+        )
+
+    def finish_sign_in(self, *, state: str, code: str) -> dict[str, Any]:
+        """Redeem the code the callback page displayed, and register the account."""
+        return self._call(
+            "POST",
+            "/v1/accounts/exchange",
+            body={"state": state, "code": code},
+        )
     def refresh(self, account_id: str) -> dict[str, Any]: ...
 
     def remove(self, account_id: str) -> dict[str, Any]: ...
@@ -452,6 +479,33 @@ class BrokerClient:
             payload={"state": state, "reason": reason},
         )
 
+    def begin_sign_in(
+        self, *, owner_tenant: str, label: str, provider: str, lend_to: list[str]
+    ) -> dict[str, Any]:
+        """Start a browser sign-in. Returns the URL and the state that keys it.
+
+        The PKCE verifier stays in the broker, keyed by that state. It is never
+        returned here and must never be: a verifier the client holds is a PKCE
+        flow that proves nothing.
+        """
+        return self._call(
+            "POST",
+            "/v1/accounts/authorize",
+            body={
+                "owner_tenant": owner_tenant,
+                "label": label,
+                "provider": provider,
+                "lend_to": lend_to,
+            },
+        )
+
+    def finish_sign_in(self, *, state: str, code: str) -> dict[str, Any]:
+        """Redeem the code the callback page displayed, and register the account."""
+        return self._call(
+            "POST",
+            "/v1/accounts/exchange",
+            body={"state": state, "code": code},
+        )
     def refresh(self, account_id: str) -> dict[str, Any]:
         return self._call(
             "POST", f"/v1/accounts/{quote(account_id, safe='')}/refresh", payload={}

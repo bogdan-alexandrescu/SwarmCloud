@@ -5,6 +5,7 @@ import { LivenessBadge } from './Liveness'
 import { Screen, timeAgo } from './Shell'
 import {
   GIB,
+  REASON_COPY,
   TERMINAL_STATES,
   attemptOutcome,
   attemptRan,
@@ -12,6 +13,7 @@ import {
   checkpointsFor,
   elapsed,
   newestHeartbeat,
+  reasonCopy,
   restoredFrom,
   stateGlyph,
   stateTone,
@@ -113,8 +115,8 @@ function Run({ run }: { run: AgentRun }) {
       {task.last_error && <ErrorBanner text={task.last_error} />}
       <Attempts run={run} now={now} />
       <Output run={run} />
-      <Input task={task} />
-      <Timeline events={events} detail={run.eventsDetail} attempts={run.attempts} />
+      <Input run={run} />
+      <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </>
   )
 }
@@ -369,7 +371,12 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
   if (attempts === null) {
     return (
       <div className="ctl-metrics">
-        <Metric label="Elapsed" value={el.text} sub="From the task document, which loaded." />
+        <Metric
+          label="Elapsed"
+          value={el.text}
+          sub={elapsedNote(task)}
+          foot="from the task document, which loaded"
+        />
         <Metric
           label="Attempts"
           value={`${task.attempt_count} / ${task.max_attempts}`}
@@ -384,25 +391,28 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
   }
 
   const cls = classes?.[task.resource_class] ?? null
+  const noCeiling = ceilingNote(run)
   const measured = attempts.filter((a) => a.peak_rss_bytes !== null)
   const peak = measured.length === 0 ? null : Math.max(...measured.map((a) => a.peak_rss_bytes ?? 0))
   const spent = attempts.filter((a) => a.cost_usd !== null)
   const cost = spent.length === 0 ? null : spent.reduce((t, a) => t + (a.cost_usd ?? 0), 0)
-  const counted = attempts.filter((a) => a.input_tokens !== null || a.output_tokens !== null)
-  const tok =
-    counted.length === 0
-      ? null
-      : counted.reduce((t, a) => t + (a.input_tokens ?? 0) + (a.output_tokens ?? 0), 0)
+  // EACH HALF IS SUMMED SEPARATELY. `record_spend` writes only the keys the
+  // runner actually reported, so an attempt can carry input tokens and no
+  // output. Selecting on "either field is set" and then summing
+  // `(input ?? 0) + (output ?? 0)` counted that missing half as a zero and
+  // captioned the tile "in + out" -- the absent-measurement-as-zero rule
+  // broken one level above the tiles that keep it. A half no attempt reported
+  // is now left out of the total, and the caption says which halves are in it.
+  const withIn = attempts.filter((a) => a.input_tokens !== null)
+  const withOut = attempts.filter((a) => a.output_tokens !== null)
+  const tokIn = withIn.length === 0 ? null : withIn.reduce((t, a) => t + (a.input_tokens ?? 0), 0)
+  const tokOut = withOut.length === 0 ? null : withOut.reduce((t, a) => t + (a.output_tokens ?? 0), 0)
   const ckpts = attempts.reduce((t, a) => t + a.checkpoints.length, 0)
   const nearMiss = attempts.some((a) => a.oom_near_miss)
 
   return (
     <div className="ctl-metrics">
-      <Metric
-        label="Elapsed"
-        value={el.text}
-        sub={task.completed_at === null ? 'Still running.' : `Finished ${timeAgo(task.completed_at)}.`}
-      />
+      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task)} />
       <Metric
         label="Attempts"
         value={`${attempts.length}`}
@@ -426,15 +436,16 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           label="Peak memory"
           value={bytesLabel(peak)}
           sub={
-            cls === null
-              ? 'The ceiling for this class could not be read.'
-              : `of ${cls.memory_gib} GiB granted · worst of ${plural(measured.length, 'measured attempt')}`
+            noCeiling ??
+            (cls === null
+              ? 'The ceiling for this class is unknown.'
+              : `of ${cls.memory_gib} GiB granted · worst of ${plural(measured.length, 'measured attempt')}`)
           }
           foot={nearMiss ? 'OOM near miss on at least one attempt' : undefined}
           tone={nearMiss ? 'alert' : undefined}
         />
       )}
-      {tok === null ? (
+      {tokIn === null && tokOut === null ? (
         <Metric
           label="Tokens"
           value="not reported"
@@ -444,9 +455,15 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
       ) : (
         <Metric
           label="Tokens"
-          value={tok.toLocaleString()}
-          unit="in + out"
-          sub={`Summed over ${plural(counted.length, 'attempt')} of ${attempts.length} that reported.`}
+          value={((tokIn ?? 0) + (tokOut ?? 0)).toLocaleString()}
+          unit={
+            tokIn !== null && tokOut !== null
+              ? 'in + out'
+              : tokIn !== null
+                ? 'input only'
+                : 'output only'
+          }
+          sub={tokenRollupNote(attempts.length, withIn.length, withOut.length)}
         />
       )}
       {cost === null ? (
@@ -477,6 +494,74 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
   )
 }
 
+/**
+ * Why there is no ceiling to read a measurement against -- or null when there
+ * is one.
+ *
+ * `classes[task.resource_class]` is null for THREE different reasons and only
+ * two of them are read failures: the catalogue read failed, this deployment
+ * has no catalogue route at all, or the catalogue came back perfectly well and
+ * does not contain the class this task names. The third is a class that was
+ * renamed or retired after the task was submitted, and reporting it as a read
+ * failure sends its reader to check an API that is answering correctly.
+ * `AttemptResources` draws the same three as panels; this is the one-line form
+ * a metric tile can carry.
+ */
+function ceilingNote(run: AgentRun): string | null {
+  const { task, classes, classesRouteMissing } = run
+  if (classes === null) {
+    return classesRouteMissing
+      ? 'This API does not serve the resource-class catalogue, so the ceiling is unknown.'
+      : 'The resource-class catalogue could not be read, so the ceiling is unknown.'
+  }
+  if (classes[task.resource_class] === undefined) {
+    return `The catalogue has no class called ${task.resource_class} — it was renamed or retired, so there is no ceiling to compare with.`
+  }
+  return null
+}
+
+/** Which halves of the token total were reported, and by how many attempts. */
+function tokenRollupNote(total: number, withIn: number, withOut: number): string {
+  if (withIn === total && withOut === total) {
+    return `Both halves, summed over all ${plural(total, 'attempt')}.`
+  }
+  const head =
+    withIn === 0
+      ? 'No attempt reported input'
+      : `Input from ${withIn} of ${plural(total, 'attempt')}`
+  const tail = withOut === 0 ? 'none reported output' : `output from ${withOut}`
+  return `${head}, ${tail}. A half no attempt reported is left out of this total rather than counted as zero.`
+}
+
+/**
+ * What the elapsed figure is a measure of, which is not the same thing in
+ * every state.
+ *
+ * "Still running" on a PARKED task was the first version of this and it is a
+ * flat lie: a parked attempt released its capacity and nothing is executing.
+ * `elapsed()` keeps counting wall time from `started_at` regardless -- that is
+ * the Agents table's behaviour and is not changed here -- so the sentence
+ * under the figure is what has to say which clock it is.
+ */
+function elapsedNote(task: Task): string {
+  if (TERMINAL_STATES.has(task.state)) {
+    if (task.completed_at !== null) return `Finished ${timeAgo(task.completed_at)}.`
+    // NO completion time, and `elapsed()` does not stop for that: it falls
+    // through to `now - started_at` and keeps counting to the current clock.
+    // So the figure beside this sentence is not the length of the run, and it
+    // grows on every render -- which the sentence has to say, because nothing
+    // else on the tile can.
+    return task.started_at === null
+      ? 'Finished, with neither a start nor a completion time recorded — the figure counts from submission to now.'
+      : 'Finished, with no completion time recorded — the figure counts to now, not to the end of the run, and keeps growing.'
+  }
+  if (task.state === 'PARKED') {
+    return 'Parked — wall time, not work. Nothing is executing and no capacity is held.'
+  }
+  if (task.started_at === null) return 'Time spent waiting. Nothing has started.'
+  return 'Still running.'
+}
+
 function Alerts({ task }: { task: Task }) {
   const live = !TERMINAL_STATES.has(task.state)
 
@@ -488,6 +573,7 @@ function Alerts({ task }: { task: Task }) {
           {task.next_eligible_at && (
             <> — eligible again {new Date(task.next_eligible_at).toLocaleString()}</>
           )}
+          <span className="blocker-copy">{reasonText(task.park_reason)}</span>
         </div>
       )}
 
@@ -508,15 +594,14 @@ function Alerts({ task }: { task: Task }) {
                   · {b.active} active / {b.limit} limit
                 </>
               )}
-              <span className="blocker-copy">
-                {b.reason === 'TENANT_LIMIT'
-                  ? 'Yours to raise.'
-                  : b.reason === 'GLOBAL_CONCURRENCY_LIMIT'
-                    ? 'The platform is full.'
-                    : b.reason === 'MANUAL_PAUSE'
-                      ? 'This pool was paused by an operator — a decision, not congestion.'
-                      : ''}
-              </span>
+              {/* ONE table of copy, in types.ts, shared with the agents list
+                  and the trouble board. The three cases hand-rolled here
+                  covered three of the twelve BlockedReasons; the other nine --
+                  PROVIDER_CONCURRENCY_LIMIT, RESOURCE_CLASS_LIMIT,
+                  RUNNER_LIMIT and BACKEND_LIMIT among them -- rendered an
+                  empty span in the banner whose entire job is "why is nothing
+                  happening". */}
+              <span className="blocker-copy">{reasonText(b.reason)}</span>
             </div>
           ))}
         </div>
@@ -531,6 +616,22 @@ function Alerts({ task }: { task: Task }) {
       )}
     </>
   )
+}
+
+/**
+ * The sentence for a park reason or a blocker reason.
+ *
+ * `REASON_COPY` is the single table, shared with the agents list and the
+ * trouble board. `reasonCopy` falls back to the raw string, which is right in
+ * a table cell and wrong here: the enum token is already printed in bold
+ * beside this, so the fallback would print it twice. An unrecognised reason
+ * therefore gets a sentence about THIS SCREEN not knowing it -- a fact about
+ * the UI rather than an invented explanation of the platform's state.
+ */
+function reasonText(reason: string): string {
+  return REASON_COPY[reason] !== undefined
+    ? reasonCopy(reason)
+    : 'This screen has no copy for that reason — it is printed above exactly as the platform recorded it.'
 }
 
 function Why({ task }: { task: Task }) {
@@ -593,18 +694,37 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
   }
 
   if (attempts.length === 0) {
-    // A REAL ZERO, and which real zero depends on the state. A task waiting
-    // for capacity has never been admitted and correctly has no attempt
-    // document; a FINISHED task with none is a hole in the record.
+    // A REAL ZERO, and which real zero depends on the COUNTER, not on the
+    // state. `create_attempt` runs at dispatch and `attempt_count` is
+    // incremented inside the admission transaction, so ANY task whose counter
+    // is above zero and whose query returned nothing has a hole in the record
+    // -- a RUNNING one as much as a finished one. Gating this on `finished &&`
+    // sent every live task with that hole into the branch below, which
+    // interpolates its state into a sentence asserting the opposite.
     const finished = TERMINAL_STATES.has(task.state)
     return (
       <section className="section">
         <h2>Attempts</h2>
-        {finished && task.attempt_count > 0 ? (
-          <Absent kind="partial" heading="This task finished, and no attempt document came back">
+        {task.attempt_count > 0 ? (
+          <Absent
+            kind="partial"
+            heading={
+              finished
+                ? 'This task finished, and no attempt document came back'
+                : 'The task counts attempts, and no document came back'
+            }
+          >
             The task counts {plural(task.attempt_count, 'attempt')} and the query
-            returned none. The documents are missing, which is not the same as
+            returned none. An attempt document is written when capacity is
+            reserved, so these documents are missing, which is not the same as
             never having run.
+            {!finished && (
+              <>
+                {' '}
+                This task is <code>{task.state}</code>, so the attempt it counts
+                should be readable right now.
+              </>
+            )}
           </Absent>
         ) : (
           <Absent kind="zero" heading="Nothing has been admitted yet">
@@ -822,19 +942,36 @@ function AttemptResources({ a, run }: { a: AttemptRow; run: AgentRun }) {
   const cls: ResourceClassSpec | null = classes?.[task.resource_class] ?? null
   const hb = newestHeartbeat(a, events)
 
+  // THE ATTEMPT HAS ENDED OR IT HAS NOT, and the same fallback figure means
+  // two different things either way. A running attempt has no final peak YET.
+  // An attempt that ended without `record_resource_usage` -- a kill, a
+  // reconciler reclaim of a stale generation, an ordinary crash -- has
+  // `completed_at` set and `peak_rss_bytes` null, and no final figure is ever
+  // coming. Both used to get the same "live reading ... written when the
+  // attempt ends" sentence, which told the second one's reader to wait for a
+  // number that does not exist.
+  const ended = a.completed_at !== null
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =
     a.peak_rss_bytes !== null
       ? 'at exit'
       : liveRss !== null && hb !== null
-        ? `heartbeat ${timeAgo(hb.at)}`
+        ? `${ended ? 'last' : 'latest'} heartbeat ${timeAgo(hb.at)}`
         : a.started_at === null
           ? 'never ran'
-          : 'not yet written'
+          : ended
+            ? 'never written'
+            : 'not yet written'
 
   const diskBy =
-    a.peak_disk_bytes !== null ? 'at exit' : a.started_at === null ? 'never ran' : 'not yet written'
+    a.peak_disk_bytes !== null
+      ? 'at exit'
+      : a.started_at === null
+        ? 'never ran'
+        : ended
+          ? 'never written'
+          : 'not yet written'
 
   return (
     <div className="section" style={SUB}>
@@ -916,11 +1053,36 @@ function AttemptResources({ a, run }: { a: AttemptRow; run: AgentRun }) {
           of this section. Four lines of them repeated under every attempt made
           a three-attempt run unreadable, and a note nobody reads is not a
           note. Only what VARIES per attempt stays here. */}
-      {hb !== null && a.peak_rss_bytes === null && (
+      {/* THE AGE GOES IN THE SENTENCE, not only in the `by` column: that
+          column is display:none below 560px, so on a phone the sentence is the
+          only thing left carrying it. */}
+      {a.peak_rss_bytes === null && liveRss !== null && hb !== null && (
         <p className="muted small">
-          The memory figure is a live reading from the newest heartbeat event on
-          this page ({timeAgo(hb.at)}), not the final high-water mark — that is
-          written when the attempt ends.
+          {ended ? (
+            <>
+              This attempt ended without a final peak being written, so the
+              memory figure is the last heartbeat reading before it stopped (
+              {timeAgo(hb.at)}). <code>record_resource_usage</code> never ran —
+              a kill, a reclaim or a crash ends an attempt without it — so
+              there is no final high-water mark and none is coming.
+            </>
+          ) : (
+            <>
+              The memory figure is a live reading from the newest heartbeat
+              event on this page ({timeAgo(hb.at)}), not the final high-water
+              mark — that is written when the attempt ends. The event page is
+              oldest-first and capped, so on a long attempt the newest reading
+              available here can be far older than the agent.
+            </>
+          )}
+        </p>
+      )}
+      {a.peak_rss_bytes === null && liveRss === null && ended && a.started_at !== null && (
+        <p className="muted small">
+          This attempt ended with no peak memory recorded, and no heartbeat
+          carrying one is on this page. What it used is unknown — which is why
+          the figure is an em dash rather than a zero, and no later write will
+          fill it in.
         </p>
       )}
     </div>
@@ -1019,8 +1181,10 @@ function AttemptSpend({ a, profile }: { a: AttemptRow; profile: string }) {
  *
  * TWO RECORDS, NEITHER COMPLETE. `attempt.checkpoints` is `list[str]` -- ids
  * and nothing else. The `checkpoint_completed` event carries the uri and the
- * size. So a row with an id and no location is the ordinary paging case, not a
- * broken checkpoint, and the table says so per row instead of drawing a blank.
+ * size. So a row with an id and no location is not a broken checkpoint -- and
+ * the table says per row WHICH of the two reasons it is: the event is off this
+ * page, or the event read FAILED and nothing whatever is known about it. Those
+ * two were one sentence, which reported a failed read as benign paging.
  *
  * CONTENTS ARE NOT RECORDED ANYWHERE. Nothing writes a manifest of what is in
  * a checkpoint archive, so this panel cannot list files and does not pretend
@@ -1085,7 +1249,11 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                   <td className="is-num">{r.bytes === null ? <Em /> : bytesLabel(r.bytes)}</td>
                   <td>
                     {r.uri === null ? (
-                      <span className="muted">— its event is not on this page</span>
+                      <span className="muted">
+                        {eventsRead
+                          ? '— its event is not on this page'
+                          : '— unknown: the event read failed'}
+                      </span>
                     ) : (
                       <>
                         <span className="mono uri">{r.uri}</span>
@@ -1107,8 +1275,11 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
             <caption>
               Ids come from the attempt document; size and location come from
               each checkpoint&apos;s own event.
-              {missingLocation > 0 &&
-                ` ${missingLocation} of ${rows.length} have no event on this page — the events route is oldest-first, capped, and returns no page token, so a long attempt's later checkpoints fall off the end.`}
+              {!eventsRead
+                ? ` The event read failed, so no size and no location could be attached to any of these ${rows.length} ids. They are unknown rather than missing, and nothing here says whether the checkpoints themselves are fine.`
+                : missingLocation > 0
+                  ? ` ${missingLocation} of ${rows.length} have no event on this page — the events route is oldest-first, capped, and returns no page token, so a long attempt's later checkpoints fall off the end.`
+                  : ''}
             </caption>
           </table>
         </div>
@@ -1126,6 +1297,22 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
 function LatestCheckpointNote({ run, attempts }: { run: AgentRun; attempts: AttemptRow[] }) {
   const latest = run.task.latest_checkpoint
   if (latest === null) return null
+  // WITH NO EVENTS THERE IS NOTHING TO MATCH AGAINST. A checkpoint's uri is
+  // recorded only on its event, so a failed event read leaves every row with
+  // `uri: null`, nothing matches, and this note fired for every task --
+  // explaining a comparison that never happened with two causes that were not
+  // what happened.
+  if (run.events === null) {
+    return (
+      <p className="muted small">
+        The task&apos;s restore pointer is{' '}
+        <span className="mono uri">{latest}</span>. The event read failed and a
+        checkpoint&apos;s uri is only ever recorded on its event, so nothing
+        listed above can be compared with it. Whether it matches a checkpoint
+        of these attempts is unknown.
+      </p>
+    )
+  }
   const known = attempts.some((a) =>
     checkpointsFor(a, run.events).some((r) => r.uri === latest),
   )
@@ -1157,11 +1344,15 @@ function Output({ run }: { run: AgentRun }) {
   const artifactsRaw = summary?.artifacts
   const artifacts: ArtifactRef[] = Array.isArray(artifactsRaw) ? (artifactsRaw as ArtifactRef[]) : []
   const artifactsMalformed = artifactsRaw !== undefined && !Array.isArray(artifactsRaw)
-  const logsRaw = summary?.logs
-  const logs: Record<string, string> =
-    typeof logsRaw === 'object' && logsRaw !== null && !Array.isArray(logsRaw)
-      ? (logsRaw as Record<string, string>)
-      : {}
+  // THE SAME CAUTION AS THE ARTIFACT LIST, for the same reason: an older
+  // worker or a fixture can put a list -- or a string -- in `logs`. Silently
+  // substituting `{}` made `Logs` print "no log stream was uploaded for this
+  // attempt", a claim about the RUN, for a record that is merely malformed,
+  // and dropped the stdout/stderr URIs the reader came for without a word.
+  const logsRaw: unknown = summary?.logs
+  const logsOk = typeof logsRaw === 'object' && logsRaw !== null && !Array.isArray(logsRaw)
+  const logs: Record<string, unknown> = logsOk ? (logsRaw as Record<string, unknown>) : {}
+  const logsMalformed = logsRaw !== undefined && !logsOk
   const terminal = TERMINAL_STATES.has(task.state)
 
   return (
@@ -1172,11 +1363,19 @@ function Output({ run }: { run: AgentRun }) {
           result_summary, which finish() writes ONCE at terminal state. On a
           retried task it is the last attempt's output and nothing else, and a
           panel that does not say so gets read as the run's. */}
-      {attempts !== null && attempts.length > 1 && (
+      {/* THE FALLBACK MATTERS MORE THAN THE PRIMARY. With the attempt read
+          failed this panel cannot count attempts -- which is precisely when
+          the caveat is most needed -- and it used to vanish, leaving
+          artifacts, git outcome and logs rendered unqualified as the run's
+          output. `task.attempt_count` is the task's own counter, already shown
+          above, and answers the question when the query does not. */}
+      {(attempts !== null ? attempts.length > 1 : task.attempt_count > 1) && (
         <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
           Everything here describes the LAST attempt only. The result summary is
           written once, at terminal state; the earlier attempts&apos; output was
           never summarised anywhere.
+          {attempts === null &&
+            ` The attempt read failed, so the ${task.attempt_count} attempts are the task's own count rather than a document each.`}
         </p>
       )}
 
@@ -1197,7 +1396,7 @@ function Output({ run }: { run: AgentRun }) {
         <>
           <GitOutcome git={summary.git} artifacts={artifacts} />
           <Artifacts artifacts={artifacts} summary={summary} malformed={artifactsMalformed} />
-          <Logs logs={logs} />
+          <Logs logs={logs} malformed={logsMalformed} raw={logsRaw} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
       )}
@@ -1285,8 +1484,38 @@ function Artifacts({
   )
 }
 
-function Logs({ logs }: { logs: Record<string, string> }) {
+function Logs({
+  logs,
+  malformed,
+  raw,
+}: {
+  logs: Record<string, unknown>
+  /** `logs` was present and was not a map. Not the same as no stream. */
+  malformed: boolean
+  /** The value as recorded, shown when it is malformed so a uri inside it is
+   *  not thrown away silently. */
+  raw: unknown
+}) {
   const entries = Object.entries(logs)
+
+  if (malformed) {
+    return (
+      <div className="section" style={SUB}>
+        <h2>Logs</h2>
+        <Absent kind="partial" heading="The log list is not a map of streams">
+          This result summary records a <code>logs</code> field that is not an
+          object of stream name to uri, so no stream can be listed from it. The
+          attempt may well have uploaded stdout and stderr — this is a
+          malformed record, not a run without logs. The value is reproduced
+          below so that a uri inside it is not lost.
+        </Absent>
+        <pre className="json" style={{ maxHeight: 200, overflowY: 'auto' }}>
+          {JSON.stringify(raw, null, 2)}
+        </pre>
+        <LogsFoot />
+      </div>
+    )
+  }
 
   return (
     <div className="section" style={SUB}>
@@ -1298,34 +1527,50 @@ function Logs({ logs }: { logs: Record<string, string> }) {
         </p>
       ) : (
         <dl className="kv">
-          {entries.map(([label, uri]) => (
+          {entries.map(([label, value]) => (
             <div key={label} style={{ display: 'contents' }}>
               <dt>{label}</dt>
               <dd className="mono uri">
-                {uri}
-                <button
-                  className="copy"
-                  onClick={() => navigator.clipboard?.writeText(`gsutil cat ${uri}`)}
-                >
-                  copy gsutil
-                </button>
+                {typeof value === 'string' ? (
+                  <>
+                    {value}
+                    <button
+                      className="copy"
+                      onClick={() => navigator.clipboard?.writeText(`gsutil cat ${value}`)}
+                    >
+                      copy gsutil
+                    </button>
+                  </>
+                ) : (
+                  /* An entry whose value is not a string is not a uri. React
+                     would throw on an object child, and printing it as a
+                     location would send someone to gsutil with a number. */
+                  <span className="muted">{JSON.stringify(value)} — not a uri, so there is nothing to fetch</span>
+                )}
               </dd>
             </div>
           ))}
         </dl>
       )}
-      <p className="muted small">
-        These are the files uploaded when the attempt ended. Nothing streams
-        while an agent is running: there is no log-tail read path on the API,
-        so a running agent&apos;s output is not readable here at all.
-      </p>
+      <LogsFoot />
     </div>
   )
 }
 
+/** The standing fact about logs on this platform, in both branches above. */
+function LogsFoot() {
+  return (
+    <p className="muted small">
+      These are the files uploaded when the attempt ended. Nothing streams while
+      an agent is running: there is no log-tail read path on the API, so a
+      running agent&apos;s output is not readable here at all.
+    </p>
+  )
+}
+
 /**
- * The untyped `result_summary.runner.usage`, shown only when the typed
- * per-attempt fields have nothing.
+ * The untyped `result_summary.runner.usage`, shown when the typed per-attempt
+ * fields have nothing -- or when nobody could read them.
  *
  * It is the OLD home for these numbers -- an untyped dict no index can reach.
  * The attempt fields replaced it, so preferring them and falling back here
@@ -1334,8 +1579,16 @@ function Logs({ logs }: { logs: Record<string, string> }) {
  */
 function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] | null }) {
   const usage = usageOf(task)
+  if (usage === null) return null
+  // A FAILED ATTEMPT READ IS NOT A NEGATIVE ANSWER. `attempts.some(...)` on a
+  // null read is `false`, which had this panel leading with "No attempt
+  // document carries a typed spend figure" -- a positive claim about documents
+  // nobody read, when those documents may well carry `cost_usd`. The untyped
+  // numbers below are real either way, so they stay; only the sentence that
+  // frames them changes.
+  const unread = attempts === null
   const typed = attempts !== null && attempts.some((a) => a.cost_usd !== null || a.input_tokens !== null)
-  if (usage === null || typed) return null
+  if (typed) return null
 
   const n = (k: string) => (typeof usage[k] === 'number' ? (usage[k] as number) : null)
   const models = usage['models']
@@ -1344,9 +1597,9 @@ function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] |
     <div className="section">
       <h2>Spend, from the result summary</h2>
       <p className="muted">
-        No attempt document carries a typed spend figure, but the last
-        attempt&apos;s result summary does. These come from an untyped dict that
-        no query can reach, and they describe the last attempt only.
+        {unread
+          ? 'The attempt read failed, so whether any attempt document carries a typed spend figure is unknown. What follows is the last attempt’s own result summary — an untyped dict no query can reach — and it describes that attempt only.'
+          : 'No attempt document carries a typed spend figure, but the last attempt’s result summary does. These come from an untyped dict that no query can reach, and they describe the last attempt only.'}
       </p>
       <dl className="kv">
         <dt>Input</dt>
@@ -1727,7 +1980,16 @@ function PublishOutcome({ git }: { git: GitSummary }) {
  * that only rendered `prompt` would show nothing for a runner that names it
  * differently.
  */
-function Input({ task }: { task: Task }) {
+function Input({ run }: { run: AgentRun }) {
+  const { task } = run
+  // The sizing behind the class NAME. A caller picks `resource_class` and
+  // `runner_profile` by name and nothing else -- which is the rule that keeps
+  // arbitrary compute out of the API -- and then has no way to find out what
+  // the name they picked is worth. The catalogue this screen already loaded
+  // for the utilisation bars answers that for the class, so it is said here
+  // rather than left implicit in a bar three panels up.
+  const cls = run.classes?.[task.resource_class] ?? null
+  const noCeiling = ceilingNote(run)
   const input = task.input
   const record = typeof input === 'object' && input !== null && !Array.isArray(input)
     ? (input as Record<string, unknown>)
@@ -1744,7 +2006,16 @@ function Input({ task }: { task: Task }) {
         <dt>Runner profile</dt>
         <dd>{task.runner_profile}</dd>
         <dt>Resource class</dt>
-        <dd>{task.resource_class}</dd>
+        <dd>
+          {task.resource_class}
+          <span className="muted small">
+            {' '}
+            ·{' '}
+            {cls !== null
+              ? `${cls.cpu} vCPU · ${cls.memory_gib} GiB memory, of which the workspace may take ${cls.disk_gib} GiB · ${plural(cls.units, 'capacity unit')}`
+              : (noCeiling ?? 'the sizing behind this name is unknown')}
+          </span>
+        </dd>
         <dt>Provider</dt>
         <dd>{task.provider ?? <Em />}</dd>
         <dt>Model</dt>
@@ -1761,6 +2032,17 @@ function Input({ task }: { task: Task }) {
         <dt>Timeout</dt>
         <dd>{task.timeout_seconds !== null ? `${task.timeout_seconds}s` : <Em />}</dd>
       </dl>
+
+      {/* WHAT THE PROFILE NAME MEANS IS NOT ON THIS PAGE, and saying so is the
+          honest alternative to describing it from a client-side copy that
+          would drift the first time the catalogue changed. */}
+      <p className="muted small">
+        What <code>{task.runner_profile}</code> runs — its image, command,
+        timeout and checkpoint interval — is in the frozen runner-profile
+        catalogue, and no route serves it, so this page can show the name only.{' '}
+        <code>GET /v1/capacity</code> does publish each profile&apos;s resource
+        class, backend and provider; this screen does not read it.
+      </p>
 
       <div className="section" style={SUB_AFTER_KV}>
         <h2>Prompt</h2>
@@ -1833,11 +2115,22 @@ function Input({ task }: { task: Task }) {
 
 interface Group {
   key: string
-  /** null for the pre-admission group, and for events naming an unknown attempt. */
-  attempt: AttemptRow | null
   label: string
   events: TaskEvent[]
 }
+
+/**
+ * The event each terminal transition writes -- `control.py`'s state-to-event
+ * map, plus the scheduler's cascade cancel and the API's own. A terminal task
+ * has one by construction, so a terminal task whose page carries none is proof
+ * the page ends before the run did.
+ */
+const TERMINAL_EVENTS: ReadonlySet<string> = new Set([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'dead_lettered',
+])
 
 /**
  * The event stream, grouped under the attempt that wrote it.
@@ -1848,10 +2141,12 @@ interface Group {
  * so the grouping is the API's own rather than a guess.
  */
 function Timeline({
+  task,
   events,
   detail,
   attempts,
 }: {
+  task: Task
   events: TaskEvent[] | null
   detail: string | null
   attempts: AttemptRow[] | null
@@ -1886,31 +2181,57 @@ function Timeline({
     )
   }
 
-  // The endpoint orders `at` ASCENDING, applies the page limit and returns NO
-  // page token, so a task with more than 200 events hands back the OLDEST 200
-  // and the newest are unreachable. That is not a corner case: the worker
-  // heartbeats throughout, so a long attempt writes its way past the cap and
-  // the end of the timeline -- the part the page was opened for -- is exactly
-  // the part the API drops.
-  const truncated = events.length >= 200
+  // THE CAP IS THE SERVER'S AND THIS PAGE DOES NOT KNOW IT. The endpoint
+  // orders `at` ASCENDING, applies `paged_limit` and returns NO page token, so
+  // the newest events of a long task are unreachable here. `events.length >=
+  // 200` was the old test and it could never fire: this client sends no
+  // `limit`, so the server falls back to `default_page_size` -- 50 unless a
+  // deployment overrides it -- and nothing in the response says which. A
+  // worker heartbeats every ~150s, so an attempt of more than about two hours
+  // runs past that and the timeline simply stopped mid-run, with the banner
+  // written to prevent exactly that silently disabled.
+  //
+  // Truncation is therefore DETECTED, not counted: a terminal task always
+  // writes a terminal event, so a terminal task whose page carries none proves
+  // the page ends before the run did, whatever the cap happens to be. Where
+  // there is no proof, the caveat is stated as a limit of the route rather
+  // than as a claim about this task -- a count of 50 is not evidence either
+  // way, and pretending otherwise is how the 200 got here.
+  const lastEvent = events[events.length - 1]
+  const endMissing =
+    TERMINAL_STATES.has(task.state) && !events.some((e) => TERMINAL_EVENTS.has(e.type))
   const groups = grouped(events, attempts)
 
   return (
     <section className="section panel">
       <h2>
         Timeline
-        <span className="count-chip">{plural(events.length, 'event')}</span>
+        <span className="count-chip">{events.length} on this page</span>
       </h2>
 
-      {truncated && (
+      {endMissing ? (
         <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-          <h3>Showing the oldest 200 events</h3>
+          <h3>This page stops before the end of the run</h3>
           <p>
-            Newer events are not reachable through this endpoint yet — it orders
-            oldest-first, caps the page and returns no page token. The end of
-            this task&apos;s history is missing, not absent.
+            The task is <code>{task.state}</code> and a terminal task writes a
+            terminal event — none is on this page. The route orders events
+            oldest-first, caps the page server-side and returns no page token,
+            so the newest events are not reachable from this screen at all. The
+            end of this task&apos;s history is missing, not absent.
           </p>
+          <span className="ctl-empty-foot">
+            {lastEvent === undefined
+              ? 'No event on this page.'
+              : `The newest event here is ${lastEvent.type}, ${timeAgo(lastEvent.at)}.`}
+          </span>
         </div>
+      ) : (
+        <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
+          One page, oldest first. This screen asks for no page size, so the cap
+          is whatever the deployment&apos;s default is, and the response says
+          neither what it was nor how many events were left out — a page that
+          looks complete is not evidence that it is.
+        </p>
       )}
 
       {groups.map((g) => (
@@ -1971,7 +2292,6 @@ function grouped(events: TaskEvent[], attempts: AttemptRow[] | null): Group[] {
     return [
       {
         key: '@ungrouped',
-        attempt: null,
         label: 'Every event (attempts unread, so they cannot be grouped)',
         events,
       },
@@ -1991,13 +2311,12 @@ function grouped(events: TaskEvent[], attempts: AttemptRow[] | null): Group[] {
 
   const groups: Group[] = []
   if (preface.length > 0) {
-    groups.push({ key: '@preface', attempt: null, label: 'Before any attempt', events: preface })
+    groups.push({ key: '@preface', label: 'Before any attempt', events: preface })
   }
   const ordered = [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
   ordered.forEach((a, i) => {
     groups.push({
       key: a.attempt_id,
-      attempt: a,
       label: `Attempt ${i + 1} · generation ${a.generation}`,
       events: byAttempt.get(a.attempt_id) ?? [],
     })
@@ -2007,7 +2326,7 @@ function grouped(events: TaskEvent[], attempts: AttemptRow[] | null): Group[] {
   // these into the preface would file real attempt events under "before any
   // attempt", which is a lie about when they happened.
   for (const [id, list] of byAttempt) {
-    groups.push({ key: id, attempt: null, label: `Attempt ${id} · no attempt document`, events: list })
+    groups.push({ key: id, label: `Attempt ${id} · no attempt document`, events: list })
   }
   return groups
 }
