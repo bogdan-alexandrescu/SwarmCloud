@@ -168,8 +168,15 @@ leave duplicates. Import instead:
 terraform -chdir=terraform/infra import \
   -var-file=../environments/dev/dev.tfvars \
   module.storage.google_storage_bucket.artifacts \
-  "$PROJECT_ID-swarm-artifacts"
+  "swarm-artifacts-$PROJECT_ID"
 ```
+
+The bucket is `swarm-artifacts-<project>`, not `<project>-swarm-artifacts`.
+`terraform/modules/storage` composes it as
+`"${var.name_prefix}-artifacts-${var.bucket_suffix}"` with `bucket_suffix =
+var.project_id`, and an import of a name that has never existed fails with
+"Cannot import non-existent remote object" — at the one moment when the
+obvious reading of that message is that the bucket was lost too.
 
 Every swarm resource carries `managed-by=swarm-terraform`, so the inventory to
 import is discoverable:

@@ -1,7 +1,7 @@
-"""Two properties of the operator-facing surface that only CI can hold.
+"""Three properties of the operator-facing surface that only CI can hold.
 
-Both are things a person reads and copies, so a regression is invisible in a diff
-review and expensive afterwards.
+All three are things a person reads, copies or relies on, so a regression is
+invisible in a diff review and expensive afterwards.
 
 1. No document teaches an ID token in argv. docs/security.md forbids it in prose;
    this is the check that keeps the rest of the documentation from teaching the
@@ -11,6 +11,12 @@ review and expensive afterwards.
 2. `terraform fmt -check` covers tests/terraform. `terraform fmt` takes a single
    directory, so naming only `terraform` left the test suite `make test` depends
    on as the one Terraform in the tree with unguarded formatting.
+
+3. Every guard self-test `make test` runs is also run by a workflow. `make test`
+   is what a person runs before saying they are finished; a workflow is what runs
+   when they do not. A guard in only the first is a guard that a pull request can
+   break and merge green -- and these particular guards are the ones standing
+   between a routine command and another team's production.
 """
 
 from __future__ import annotations
@@ -20,8 +26,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DOCS = sorted((REPO / "docs").glob("*.md")) + [REPO / "README.md"]
+WORKFLOWS = REPO / ".github" / "workflows"
 
 FENCE = re.compile(r"^\s*```")
+
+#: `scripts/lib/plan-guard.sh --self-test`, and the name alone out of it. The
+#: Makefile writes `$(SCRIPTS)/lib/...` and the workflows write `./scripts/lib/...`,
+#: so the basename is the only spelling both sides share.
+SELF_TEST = re.compile(r"([A-Za-z0-9_.-]+\.sh)\s+--self-test")
 
 
 def _fenced_lines(text: str):
@@ -85,3 +97,76 @@ def test_terraform_fmt_check_covers_the_terraform_test_suite() -> None:
             "fmt takes one directory, so each root needs its own invocation:\n  "
             + "\n  ".join(fmt_checks)
         )
+
+
+def _make_recipe(makefile: str, target: str) -> str:
+    """The recipe lines of one make target.
+
+    Read by TAB rather than by blank line: GNU make defines a recipe as the
+    tab-indented lines following the target, and this Makefile's `test` recipe
+    contains multi-line `if` blocks with continuations. Anything looser would
+    either stop early or swallow the next target.
+    """
+    recipe: list[str] = []
+    collecting = False
+    for line in makefile.splitlines():
+        if line.startswith(f"{target}:"):
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if line.startswith("\t"):
+            recipe.append(line)
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        break
+    return "\n".join(recipe)
+
+
+def test_every_guard_self_test_in_make_test_is_also_run_by_a_workflow() -> None:
+    """A guard that only `make test` exercises is a guard CI cannot defend.
+
+    Each of these scripts exists because its subject failed silently once: the
+    plan guard because a plan touching another team's resources was approved,
+    the kubectl guard because a bare `kubectl` reached another team's live
+    cluster and returned resources aged 133 days, the auth guard because an
+    expired session was reported as an absent resource. They take no arguments,
+    reach no network and need no credentials, so there is no cost to running
+    them in CI and no reason for the two gates to disagree about which ones
+    matter.
+
+    `make test` is the list, because CLAUDE.md names it as the completeness
+    check; the workflows are asserted against it rather than the other way
+    round, so adding a guard to `make test` alone fails here.
+    """
+    makefile = (REPO / "Makefile").read_text()
+    guards = {Path(name).name for name in SELF_TEST.findall(_make_recipe(makefile, "test"))}
+
+    # A pattern that silently matches nothing is how a gate comes to enforce
+    # nothing, so the extraction is asserted before what it extracted is.
+    assert guards, (
+        "no `--self-test` invocation was found in the `test` target of the "
+        "Makefile; either the guards left `make test` or this parser stopped "
+        "matching it, and both are worth failing on"
+    )
+
+    workflows = {path.name: path.read_text() for path in sorted(WORKFLOWS.glob("*.yml"))}
+    assert workflows, f"no workflows found under {WORKFLOWS}"
+
+    missing = sorted(
+        guard
+        for guard in guards
+        if not any(
+            re.search(re.escape(guard) + r"\s+--self-test", text)
+            for text in workflows.values()
+        )
+    )
+
+    assert not missing, (
+        "`make test` runs these guard self-tests and no workflow does, so a pull "
+        "request that breaks one merges green: "
+        + ", ".join(missing)
+        + ". They are offline and need no credentials; add a step for each to the "
+        "`shell` job in application.yml."
+    )

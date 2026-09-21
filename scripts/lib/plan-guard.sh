@@ -194,7 +194,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
 {"resource_changes":[
  {"address":"labelled.bucket","type":"google_storage_bucket",
   "change":{"actions":["create"],"before":null,
-    "after":{"name":"saga-agents-staging-swarm-artifacts","project":"saga-agents-staging",
+    "after":{"name":"swarm-artifacts-saga-agents-staging","project":"saga-agents-staging",
              "labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"unlabelled.topic","type":"google_pubsub_topic",
   "change":{"actions":["create"],"before":null,
@@ -202,7 +202,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
              "labels":{"component":"scheduler"}}}},
  {"address":"iam.edge","type":"google_storage_bucket_iam_member",
   "change":{"actions":["create"],"before":null,
-    "after":{"bucket":"saga-agents-staging-swarm-artifacts","project":"saga-agents-staging",
+    "after":{"bucket":"swarm-artifacts-saga-agents-staging","project":"saga-agents-staging",
              "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}},
  {"address":"unknown.labels","type":"google_cloud_run_v2_service",
   "change":{"actions":["create"],"before":null,

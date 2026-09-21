@@ -235,6 +235,88 @@ is_shared_resource() {
 }
 
 # ---------------------------------------------------------------------------
+# Is a shared resource still there?
+# ---------------------------------------------------------------------------
+#
+# THREE answers, never two. `gcloud ... >/dev/null 2>&1` collapses "the API said
+# NOT_FOUND" into the same `false` as "the session expired", "the API is not
+# enabled", "I have no permission to look" and "the network is down" -- and the
+# caller of that shape was destroy.sh's post-destroy check, which renders the
+# false as "SHARED RESOURCES ARE MISSING AFTER DESTROY ... Escalate
+# immediately". In a project holding another team's live cluster, "their cluster
+# is gone" said on the strength of an expired token is the worst sentence this
+# repository can print: a page, raised at the one moment nobody can tell whether
+# it is real, about resources an operator has just run a destroy next to.
+#
+# So the reasons are separated here the way fs_database_exists separates them:
+#
+#   0  present       -- gcloud answered, and the resource is there
+#   1  ABSENT        -- gcloud answered, and the answer was NOT_FOUND
+#   2  cannot tell   -- gcloud did not answer; the reason is printed
+#
+# Return 2 is the DEFAULT. Only stderr that is recognisably a not-found earns a
+# 1, because claiming a deletion without evidence is the whole defect; an
+# unfamiliar error stays "cannot tell" and the operator reads the real text.
+
+# True when this captured gcloud stderr is the API saying the resource is not
+# there, rather than the SDK saying it could not ask.
+#
+# Deliberately narrow, and matched on the shapes the resource kinds checked in
+# destroy.sh actually produce:
+#   container clusters  -> "ResponseError: code=404, message=Not found: ..."
+#   storage buckets     -> "ERROR: ... not found: 404"
+#   iam service-accounts-> "NOT_FOUND: Unknown service account" / "does not exist"
+gcloud_not_found() {
+  case "$1" in
+    *NOT_FOUND*|*"Not found"*|*"not found"*) return 0 ;;
+    *"does not exist"*)                      return 0 ;;
+    *"code=404"*|*"HTTPError 404"*)          return 0 ;;
+  esac
+  return 1
+}
+
+# _shared_probe MODE LABEL COMMAND...
+#
+# MODE is `describe` (the exit status alone decides presence) or `list` (a
+# listing exits 0 whether or not it matched, so an EMPTY stdout is the absence).
+# The list shape exists for the GKE cluster: `clusters describe` needs a
+# --location, and a location guessed wrong returns a real NOT_FOUND for a
+# cluster that is alive one zone over -- a false "it is gone" of exactly the
+# kind this function exists to make impossible.
+_shared_probe() {
+  local mode="$1" label="$2"; shift 2
+  local out errfile rc=0
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-probe-out.XXXXXX")"
+  errfile="$(mktemp "${TMPDIR:-/tmp}/swarm-probe-err.XXXXXX")"
+  "$@" >"${out}" 2>"${errfile}" || rc=$?
+
+  if [[ "${rc}" -eq 0 ]]; then
+    if [[ "${mode}" == "list" && ! -s "${out}" ]]; then
+      rm -f "${out}" "${errfile}"
+      return 1
+    fi
+    rm -f "${out}" "${errfile}"
+    return 0
+  fi
+
+  if gcloud_not_found "$(cat "${errfile}")"; then
+    rm -f "${out}" "${errfile}"
+    return 1
+  fi
+
+  err "could not determine whether ${label} still exists:"
+  redact <"${errfile}" | head -n 3 | sed 's/^/     /' >&2
+  rm -f "${out}" "${errfile}"
+  return 2
+}
+
+# shared_resource_present LABEL COMMAND...  -- a `describe`-shaped lookup.
+shared_resource_present() { _shared_probe describe "$@"; }
+
+# shared_resource_listed LABEL COMMAND...   -- a `list --filter`-shaped lookup.
+shared_resource_listed() { _shared_probe list "$@"; }
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 

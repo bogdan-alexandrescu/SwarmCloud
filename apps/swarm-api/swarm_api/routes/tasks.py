@@ -181,5 +181,17 @@ def list_artifacts(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    artifacts = ctx.store.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
-    return {"task_id": task_id, "artifacts": artifacts}
+    """What this attempt left in GCS, by reference.
+
+    `complete` is the field that stops an empty list being read as an answer: it
+    is false until the task reaches a terminal state and the worker writes its
+    result summary, so "no artifacts yet" and "this task produced none" are
+    distinguishable. `artifacts_skipped` names the files the worker dropped at
+    the size cap, for the same reason.
+
+    No download URL is minted here. The `uri` is a `gs://` reference the caller
+    reads with their own credentials, which keeps the tenant boundary in the one
+    place IAM already enforces it.
+    """
+    result = ctx.store.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
+    return {"task_id": task_id, **result}

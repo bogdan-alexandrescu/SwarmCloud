@@ -95,6 +95,21 @@ jobs:
         # workflows use to decide whether a plan may touch this shared project.
         run: ./scripts/lib/plan-guard.sh --self-test
 
+      - name: the kubectl guard still refuses another team's cluster
+        # `make test` ran this and CI did not, so the one guard standing between
+        # a routine `kubectl` and another team's live cluster could be broken by
+        # a pull request and merged green. It was written after a bare
+        # `kubectl get runtimeclass` reached agents-staging and returned
+        # resources aged 133 days; the next command in that sequence was an
+        # apply. It takes no arguments and reaches no network.
+        run: ./scripts/lib/kubectl-guard.sh --self-test
+
+      - name: the auth guard still tells an expired session from an absent resource
+        # Same gap, same reason. This is the predicate every script uses to
+        # avoid reporting "not found" when the real answer is "your session
+        # expired" -- the failure mode that produced the swallowed-stderr sweep.
+        run: ./scripts/lib/auth-guard.sh --self-test
+
       - name: no TODO or stub markers in shipped code
         # A TODO in a dispatch path is an outage with a comment attached.
         run: |

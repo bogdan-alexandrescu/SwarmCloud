@@ -18,7 +18,9 @@
 #   4. aborts loudly, printing every offender, if either assertion fails;
 #   5. refuses in prod without --allow-prod;
 #   6. requires a typed confirmation -- SWARM_ASSUME_YES is explicitly ignored;
-#   7. after applying, re-checks that every shared resource is still there.
+#   7. after applying, re-checks that every shared resource is still there --
+#      and distinguishes "gcloud says it is gone" from "gcloud did not
+#      answer", which are different emergencies.
 #
 # Usage:
 #   scripts/destroy.sh --dry-run              # plan + assertions, change nothing
@@ -26,6 +28,7 @@
 #   scripts/destroy.sh --include-data         # also delete Firestore and buckets
 #   scripts/destroy.sh --environment prod --allow-prod
 #   scripts/destroy.sh --self-test            # verify the guard still catches
+#   scripts/destroy.sh --verify-shared        # re-check the neighbours only
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -41,6 +44,7 @@ fi
 
 DRY_RUN=0
 SELF_TEST=0
+VERIFY_ONLY=0
 ALLOW_PROD=0
 INCLUDE_DATA=0
 TARGETS=()
@@ -53,7 +57,8 @@ while [[ $# -gt 0 ]]; do
     --include-data)   INCLUDE_DATA=1; shift ;;
     --target)         TARGETS+=("$2"); shift 2 ;;
     --self-test)      SELF_TEST=1; shift ;;
-    -h|--help)        sed -n '2,29p' "$0"; exit 0 ;;
+    --verify-shared)  VERIFY_ONLY=1; shift ;;
+    -h|--help)        sed -n '2,31p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -87,7 +92,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
   cat >"${FIXTURE}" <<'FIXTURE_JSON'
 {"resource_changes":[
  {"address":"ours.bucket","type":"google_storage_bucket",
-  "change":{"actions":["delete"],"before":{"name":"saga-agents-staging-swarm-artifacts",
+  "change":{"actions":["delete"],"before":{"name":"swarm-artifacts-saga-agents-staging",
     "project":"saga-agents-staging","labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"theirs.cluster","type":"google_container_cluster",
   "change":{"actions":["delete"],"before":{"name":"agents-staging","project":"saga-agents-staging",
@@ -111,7 +116,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
   "change":{"actions":["delete"],"before":{"collection":"pools","document_id":"global",
     "database":"swarm","project":"saga-agents-staging"}}},
  {"address":"ours.bucket_iam","type":"google_storage_bucket_iam_member",
-  "change":{"actions":["delete"],"before":{"bucket":"saga-agents-staging-swarm-artifacts",
+  "change":{"actions":["delete"],"before":{"bucket":"swarm-artifacts-saga-agents-staging",
     "project":"saga-agents-staging",
     "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}}
 ]}
@@ -159,6 +164,128 @@ FIXTURE_JSON
   fi
   ok "guard self-test passed; destroy.sh will abort on shared or unlabelled resources"
   exit 0
+fi
+
+
+# ---------------------------------------------------------------------------
+# The proof that the neighbours survived -- also runnable on its own.
+# ---------------------------------------------------------------------------
+#
+# Read-only, and deliberately not welded to the end of a destroy: the one check
+# in this repository that makes a claim about ANOTHER TEAM'S resources has to be
+# runnable, and testable, without destroying anything first.
+# tests/integration/test_shared_resource_verification.py drives it with a fake
+# gcloud on PATH.
+#
+# THREE outcomes, because there are three:
+#
+#   0  every shared resource answered "present"
+#   3  gcloud answered NOT_FOUND for something of theirs   -> escalate
+#   4  at least one lookup did not answer at all           -> nothing is proven
+#
+# 4 is not a milder 3. Until this existed, an expired session -- the single most
+# likely reason a lookup fails -- printed "SHARED RESOURCES ARE MISSING AFTER
+# DESTROY ... Escalate immediately" and exited 3, naming EVERY ONE of another
+# team's resources as deleted on no evidence whatsoever, with the real reason
+# discarded into /dev/null by `2>&1`. 4 says the verification did not run, which
+# after a destroy is its own emergency and has its own fix.
+VERIFY_SURVIVED=0
+VERIFY_MISSING=()
+VERIFY_UNVERIFIED=()
+
+# _verify MODE LABEL COMMAND... -- record one answer. MODE picks the probe
+# shape; see shared_resource_present / shared_resource_listed in lib/common.sh.
+_verify() {
+  local mode="$1" label="$2"
+  shift 2
+  local rc=0
+  if [[ "${mode}" == "list" ]]; then
+    shared_resource_listed "${label}" "$@" || rc=$?
+  else
+    shared_resource_present "${label}" "$@" || rc=$?
+  fi
+  case "${rc}" in
+    0) ok "${label} still present"; VERIFY_SURVIVED=$((VERIFY_SURVIVED + 1)) ;;
+    1) VERIFY_MISSING+=("${label}") ;;
+    *) VERIFY_UNVERIFIED+=("${label}") ;;
+  esac
+}
+
+verify_shared_resources() {
+  step "Verifying shared resources are untouched"
+  VERIFY_SURVIVED=0
+  VERIFY_MISSING=()
+  VERIFY_UNVERIFIED=()
+
+  # `clusters list --filter`, never `clusters describe --location`: a location
+  # guessed wrong answers NOT_FOUND for a cluster that is running, and this
+  # script must not be able to say a live cluster is deleted. The zone was
+  # hard-coded to us-central1-a here while CONTRACT.md only pins the region.
+  _verify list "gke/agents-staging" \
+    gcloud container clusters list --project "${PROJECT_ID}" \
+      --filter="name=agents-staging" --format='value(name)'
+
+  local net bucket
+  for net in agents-staging-vpc default; do
+    _verify describe "network/${net}" \
+      gcloud compute networks describe "${net}" --project "${PROJECT_ID}" \
+        --format='value(name)'
+  done
+
+  for bucket in saga-agents-crawled-media-staging saga-agents-files-staging \
+                saga-agents-terraform-state-staging; do
+    _verify describe "bucket/${bucket}" \
+      gcloud storage buckets describe "gs://${bucket}" --project "${PROJECT_ID}" \
+        --format='value(name)'
+  done
+
+  # Named one by one rather than counted. The count came from
+  # `SA_COUNT="$(gcloud iam service-accounts list ... 2>/dev/null | wc -l)"`,
+  # which reports 0 when the call FAILS -- a command substitution swallowing its
+  # own failure, printed as "0 service account(s) remain in the project".
+  #
+  # Read OUT OF the deny-list, not restated beside it. The restatement had
+  # already drifted: it listed eleven of the twelve, and the one it dropped was
+  # 209012342332-compute@developer.gserviceaccount.com -- the only address on
+  # the list that is not <name>@<project>.iam, because it is the project's
+  # DEFAULT COMPUTE service account. That is the identity Cloud Run falls back
+  # to when a Job names none (scheduler.dispatch.assert_tenant_identity refuses
+  # to dispatch rather than use it), so it is the shared account whose loss
+  # would be felt furthest and the one nobody was looking at.
+  local entry
+  for entry in "${SHARED_DENY_LIST[@]}"; do
+    case "${entry}" in
+      *@*gserviceaccount.com)
+        _verify describe "serviceAccount/${entry%%@*}" \
+          gcloud iam service-accounts describe "${entry}" \
+            --project "${PROJECT_ID}" --format='value(email)'
+        ;;
+    esac
+  done
+
+  hr
+  if [[ "${#VERIFY_MISSING[@]}" -gt 0 ]]; then
+    err "SHARED RESOURCES ARE GONE: ${VERIFY_MISSING[*]}"
+    err "gcloud ANSWERED, and the answer was NOT_FOUND -- this is not a failed lookup."
+    err "The plan assertions passed, so this should be impossible. Escalate immediately."
+    return 3
+  fi
+  if [[ "${#VERIFY_UNVERIFIED[@]}" -gt 0 ]]; then
+    err "COULD NOT VERIFY ${#VERIFY_UNVERIFIED[@]} shared resource(s): ${VERIFY_UNVERIFIED[*]}"
+    err "The reasons are printed above. This is NOT evidence that they are gone,"
+    err "and it is NOT evidence that they are fine: the check did not run."
+    err "Fix the lookup -- most often 'gcloud auth login' -- and re-run:"
+    err "    scripts/destroy.sh --environment ${ENVIRONMENT} --verify-shared"
+    return 4
+  fi
+  ok "all ${VERIFY_SURVIVED} shared resource checks passed; other teams are unaffected"
+  return 0
+}
+
+if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
+  VERIFY_RC=0
+  verify_shared_resources || VERIFY_RC=$?
+  exit "${VERIFY_RC}"
 fi
 
 TF_ROOT="$(tf_root)"
@@ -333,60 +460,8 @@ ok "terraform destroy applied"
 # ---------------------------------------------------------------------------
 # 5. Prove the shared resources survived
 # ---------------------------------------------------------------------------
-step "Verifying shared resources are untouched"
-SURVIVED=0
-MISSING=()
-
-if gcloud container clusters describe agents-staging --project "${PROJECT_ID}" \
-     --location us-central1-a --format='value(status)' >/dev/null 2>&1; then
-  ok "GKE cluster agents-staging still present"
-  SURVIVED=$((SURVIVED + 1))
-else
-  MISSING+=("gke/agents-staging")
-fi
-
-SHARED_NETWORKS=(agents-staging-vpc default)
-for net in "${SHARED_NETWORKS[@]}"; do
-  if gcloud compute networks describe "${net}" --project "${PROJECT_ID}" \
-       --format='value(name)' >/dev/null 2>&1; then
-    ok "VPC ${net} still present"
-    SURVIVED=$((SURVIVED + 1))
-  else
-    MISSING+=("network/${net}")
-  fi
-done
-
-for bucket in saga-agents-crawled-media-staging saga-agents-files-staging saga-agents-terraform-state-staging; do
-  if gcloud storage buckets describe "gs://${bucket}" --project "${PROJECT_ID}" \
-       --format='value(name)' >/dev/null 2>&1; then
-    SURVIVED=$((SURVIVED + 1))
-  else
-    MISSING+=("bucket/${bucket}")
-  fi
-done
-ok "shared buckets checked"
-
-SA_COUNT="$(gcloud iam service-accounts list --project "${PROJECT_ID}" \
-  --format='value(email)' 2>/dev/null | wc -l | tr -d ' ')"
-info "${SA_COUNT} service account(s) remain in the project"
-for sa in api-service publisher promptlab-deployer promptlab-runner aipipeline \
-          saga-storage-ro saga-storage-rw external-secrets staging-gke-nodes \
-          crawler tournament-digest; do
-  if gcloud iam service-accounts describe \
-       "${sa}@${PROJECT_ID}.iam.gserviceaccount.com" --project "${PROJECT_ID}" \
-       --format='value(email)' >/dev/null 2>&1; then
-    SURVIVED=$((SURVIVED + 1))
-  else
-    MISSING+=("serviceAccount/${sa}")
-  fi
-done
-
-hr
-if [[ "${#MISSING[@]}" -gt 0 ]]; then
-  err "SHARED RESOURCES ARE MISSING AFTER DESTROY: ${MISSING[*]-}"
-  err "This should be impossible -- the plan assertions passed. Escalate immediately."
-  exit 3
-fi
-ok "all ${SURVIVED} shared resource checks passed; other teams are unaffected"
+VERIFY_RC=0
+verify_shared_resources || VERIFY_RC=$?
+[[ "${VERIFY_RC}" -eq 0 ]] || exit "${VERIFY_RC}"
 ok "swarm infrastructure destroyed (${ENVIRONMENT})"
 dim "runtime data is separate: scripts/purge-data.sh removes Firestore documents, artifacts and secrets"

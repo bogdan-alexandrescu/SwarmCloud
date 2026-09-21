@@ -85,7 +85,6 @@ LEASES = "leases"
 ATTEMPTS = "attempts"
 CONTROL = "control"
 EVENTS = "events"
-ARTIFACTS = "artifacts"
 
 CONTROL_DOC = "dispatch"
 
@@ -538,28 +537,51 @@ class Store:
         )
         return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
-    def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> list[dict]:
-        """Artifact METADATA only.
+    def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> dict:
+        """Artifact METADATA only, read from where the worker actually writes it.
 
         Artifacts live in the tenant's own GCS prefix and are passed by
         reference; nothing about them is inlined through Firestore, and this
         endpoint never mints a download URL -- the caller reads GCS with their
         own credentials, which keeps the tenant boundary in one place.
+
+        THE SOURCE IS `task.result_summary`, not a subcollection. This read used
+        to stream `tasks/<id>/artifacts`, and NOTHING in this repository has ever
+        written that subcollection: `ARTIFACTS` was referenced in exactly one
+        place, here. `AgentLifecycle._finalize` builds the manifest
+        -- `[{"name", "bytes", "uri"}, ...]` -- and `control.finish()` stores it
+        as `task.result_summary["artifacts"]`; `agent_worker.inputs` calls that
+        field "the manifest" and stages a downstream step's inputs from it. So
+        the route answered `[]` for every task that ever ran, with a 200, and
+        apps/swarm-ui/src/api.ts had already written the workaround into a
+        comment rather than the endpoint being fixed.
+
+        Pointing the reader at the existing writer is the fix. Inventing a second
+        writer would put the same manifest in two places and let them disagree.
+
+        `artifacts_skipped` comes back too. The worker drops files once the
+        attempt passes `max_artifact_bytes`, and an artifact list that silently
+        omits them is the same class of lie in miniature: the caller sees a short
+        list and no reason for it.
+
+        A task that has not reached a terminal state has no `result_summary`
+        yet, so `artifacts` is empty and `complete` is false -- which is a
+        different statement from "this task produced nothing".
         """
-        self.get_task(tenant_id, task_id)
-        query = (
-            self._db.collection(TASKS)
-            .document(task_id)
-            .collection(ARTIFACTS)
-            .order_by("created_at", direction=firestore.Query.ASCENDING)
-            .limit(limit)
-        )
-        out = []
-        for snap in query.stream():
-            data = dict(snap.to_dict())
-            data.setdefault("name", snap.id)
-            out.append(data)
-        return out
+        task = self.get_task(tenant_id, task_id)
+        summary = task.result_summary or {}
+        entries = summary.get("artifacts")
+        if not isinstance(entries, list):
+            entries = []
+        skipped = summary.get("artifacts_skipped")
+        if not isinstance(skipped, list):
+            skipped = []
+        return {
+            "artifacts": [dict(e) for e in entries[:limit] if isinstance(e, dict)],
+            "artifacts_skipped": [str(name) for name in skipped],
+            "artifact_bytes": summary.get("artifact_bytes"),
+            "complete": bool(task.result_summary),
+        }
 
     def count_tasks_by_state(self, tenant_id: str | None = None) -> dict[str, int]:
         counts: dict[str, int] = {}

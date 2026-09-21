@@ -49,6 +49,17 @@ class AuthContext:
     #: the tenant document so the second group cannot inherit the first's
     #: service account, secrets and GCS prefix.
     tenant_principal: str = ""
+    #: Cloud Identity could not say whether this caller is in an admin group.
+    #:
+    #: `is_admin` is a boolean and a failed lookup has no boolean. Folding one
+    #: into the other makes "the directory did not answer" indistinguishable
+    #: from "you are not an admin" -- and the second is what `require_admin`
+    #: then tells an operator, in the middle of the incident they opened the
+    #: admin surface to deal with, about a privilege they hold.
+    #:
+    #: Only ever true while `is_admin` is False; a confirmed membership, or an
+    #: `admin_users` entry, is an answer and needs no lookup.
+    admin_unresolved: bool = False
 
     @property
     def email(self) -> str:
@@ -338,11 +349,26 @@ class Authenticator:
                 # Correct identity, wrong organisation: that is a 403, not a 401.
                 raise Forbidden(str(exc)) from None
 
-        candidates = tuple(
-            dict.fromkeys(self._settings.tenant_groups + self._settings.admin_groups)
-        )
+        # TWO QUESTIONS, ASKED SEPARATELY, because they have different shapes.
+        #
+        # The tenant is the FIRST match in admin priority order, so a group that
+        # could only ever lose to a confirmed one is irrelevant however it
+        # answers -- which is exactly the rule `groups_for` applies, and why one
+        # flaky group does not take down the API.
+        #
+        # Admin is ANY match over the whole list, so every admin group matters
+        # wherever it sits. Asked together -- `tenant_groups + admin_groups`,
+        # admin groups necessarily last -- the priority rule swallowed precisely
+        # the failures that decide admin: a caller confirmed in `eng` whose
+        # `swarm-admins` lookup failed came back as `("eng@saga.xyz",)`, and
+        # `any(g in admin_set ...)` read that silence as "not an admin". The
+        # 403 that followed said "admin group membership is required for this
+        # operation" to someone who has it.
+        tenant_candidates = tuple(dict.fromkeys(self._settings.tenant_groups))
         try:
-            member_groups = self._groups.groups_for(email, candidates) if candidates else ()
+            member_groups = (
+                self._groups.groups_for(email, tenant_candidates) if tenant_candidates else ()
+            )
         except GroupLookupError as exc:
             # Only raised when the failed lookup could actually have changed the
             # answer. Falling back to the personal tenant there would run the
@@ -353,6 +379,28 @@ class Authenticator:
             raise UpstreamUnavailable(
                 "group membership could not be resolved; retry shortly"
             ) from None
+
+        admin_users = {u.lower() for u in self._settings.admin_users}
+        admin_candidates = tuple(dict.fromkeys(self._settings.admin_groups))
+        admin_groups_held: tuple[str, ...] = ()
+        admin_unresolved = False
+        # Not deduplicated against the tenant list: a group that is BOTH is the
+        # case that hid best, since the tenant pass answers it at a priority
+        # where a failure is discarded. The per-(caller, group) cache in
+        # `CloudIdentityGroups` means asking again inside the TTL costs nothing.
+        #
+        # Skipped entirely for an `admin_users` caller. That escape hatch exists
+        # for deployments where the Groups API cannot be read AT ALL (see
+        # ApiSettings.admin_users), so making it depend on a group lookup would
+        # break it in the one situation it was added for.
+        if admin_candidates and email not in admin_users:
+            try:
+                admin_groups_held = self._groups.groups_for(email, admin_candidates)
+            except GroupLookupError as exc:
+                log.warning("admin membership unresolved for %s: %s", email, exc)
+                admin_unresolved = True
+
+        member_groups = tuple(dict.fromkeys(tuple(member_groups) + admin_groups_held))
 
         principal = Principal(
             email=email,
@@ -368,7 +416,6 @@ class Authenticator:
         # groups, `admin_set` is empty and the first test can never be true,
         # so every operator screen 403s for everyone. The email is the one
         # from the verified assertion, not something the caller supplied.
-        admin_users = {u.lower() for u in self._settings.admin_users}
         is_admin = (
             any(g.lower() in admin_set for g in member_groups)
             or email.lower() in admin_users
@@ -378,6 +425,9 @@ class Authenticator:
             tenant_id=tenant_id,
             is_admin=is_admin,
             tenant_principal=tenant_principal,
+            # A confirmed membership settles the question; the doubt only
+            # survives while the answer is still False.
+            admin_unresolved=admin_unresolved and not is_admin,
         )
 
     def _tenant_principal(self, member_groups: tuple[str, ...], email: str) -> str:
@@ -395,6 +445,25 @@ class Authenticator:
 
 
 def require_admin(ctx: AuthContext) -> AuthContext:
-    if not ctx.is_admin:
-        raise Forbidden("admin group membership is required for this operation")
-    return ctx
+    """The admin gate, and the difference between "no" and "I could not ask".
+
+    503, not 403, when Cloud Identity did not answer. A 403 here is a statement
+    about the CALLER -- "you are not an admin" -- and an operator who is one
+    reads it as a permissions problem: they go and check the group, the IAM
+    bindings, ADMIN_GROUPS in the deployment. None of that is wrong, so the
+    search ends nowhere while the directory quietly recovers. A 503 names the
+    dependency, is retryable, and is the same answer tenant resolution already
+    gives for the same outage one question earlier.
+
+    This only ever widens what a caller can do after a RETRY; it never grants
+    anything, because the 503 path returns no context at all.
+    """
+    if ctx.is_admin:
+        return ctx
+    if ctx.admin_unresolved:
+        raise UpstreamUnavailable(
+            "admin group membership could not be resolved; retry shortly. This is "
+            "NOT a refusal -- Cloud Identity did not answer, so whether you are an "
+            "admin is unknown"
+        )
+    raise Forbidden("admin group membership is required for this operation")

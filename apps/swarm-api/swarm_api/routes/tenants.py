@@ -34,6 +34,10 @@ def get_me(
             "domain": auth.principal.domain,
             "groups": list(auth.principal.groups),
             "is_admin": auth.is_admin,
+            # `is_admin: false` is an assertion about the caller. When the
+            # directory did not answer it is not one, and an operator reading
+            # this screen during an incident has to be able to tell.
+            "is_admin_unresolved": auth.admin_unresolved,
         },
     }
 
