@@ -13,6 +13,7 @@ throttle them, which would otherwise be a one-line denial of service.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -32,7 +33,17 @@ from swarm_common.profiles import RUNNER_PROFILES
 from .aimd import quota_derived_limit_for
 from .settings import _int
 from .usage import DEFAULT_MAX_POLLS_PER_SWEEP
-from .oauth import CredentialError, parse_credential
+from .oauth import (
+    OAUTH_REDIRECT_URI,
+    Credential,
+    CredentialError,
+    build_authorize_url,
+    challenge_for,
+    new_state,
+    new_verifier,
+    parse_credential,
+    split_pasted_code,
+)
 from .usagepoll import UsagePoller
 from .accounts import (
     DEFAULT_HOLD_TTL,
@@ -46,6 +57,7 @@ from .accounts import (
     holds_from_firestore,
     holds_to_firestore,
     secret_name,
+    validate_label,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import AccountStore
@@ -134,6 +146,24 @@ class AccountRegister(StrictModel):
     #: Write-only. No response model in this service contains it and no route
     #: returns it -- the same rule tenants.py states for provider keys.
     credential: str = Field(min_length=8, max_length=16384)
+
+
+class AccountAuthorize(StrictModel):
+    """Begin adding an account from a browser."""
+
+    owner_tenant: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    provider: str = Field(default="anthropic", max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountExchange(StrictModel):
+    """Finish adding it, with the code the callback page displayed."""
+
+    state: str = Field(min_length=8, max_length=256)
+    #: Accepted as pasted. The callback renders `<code>#<state>` and people
+    #: paste what is on screen, so the whole thing is taken and split here.
+    code: str = Field(min_length=4, max_length=2048)
 
 
 class AccountLending(StrictModel):
@@ -340,6 +370,32 @@ def build_broker(
             project=settings.project_id, database=settings.core.firestore_database
         )
     return QuotaBroker(db, settings=settings)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def credential_from_token_response(payload: dict[str, Any]) -> Credential:
+    """Shape a token-endpoint response into a Credential.
+
+    `expires_in` is SECONDS FROM NOW, not an absolute time. Reading it as an
+    epoch would date the credential to 1970 and make every account look
+    expired the moment it was added.
+    """
+    access = str(payload.get("access_token") or "")
+    refresh = str(payload.get("refresh_token") or "")
+    if not access or not refresh:
+        raise CredentialError(
+            "the token endpoint returned no refresh token, so this credential "
+            "could not be kept alive. Nothing was saved."
+        )
+    expires_in = int(payload.get("expires_in") or 3600)
+    return Credential(
+        access_token=access,
+        refresh_token=refresh,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+    )
 
 
 def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, Any]:
@@ -1038,6 +1094,219 @@ def create_app(
             "tenant_id": scope,
         }
 
+    def _provision_and_register(
+        request: Request,
+        *,
+        store: Any,
+        secrets: Any,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        lend_to: list[str],
+        credential_payload: str,
+        access_token: str,
+    ) -> Any:
+        """Create both secrets, bind their readers, then publish the account.
+
+        ONE implementation for both ways in -- a pasted credential and a
+        browser sign-in. Two would drift, and the thing they would drift on is
+        which service account may read which secret.
+
+        PROVISION FIRST, REGISTER LAST. A probe against the deployed service
+        proved what the other order costs: `add_version` refuses to invent a
+        secret, so a failure left a Firestore document for an account the pool
+        would assign to an agent that then cannot authenticate. A secret with
+        no document is invisible and harmless; a document with no secret is a
+        live trap.
+        """
+        base = secret_name(owner_tenant, label)
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": owner_tenant,
+            "account": label,
+            "provider": provider,
+            "environment": request.app.state.environment,
+        }
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        worker_sa = request.app.state.worker_service_account(owner_tenant)
+        region = request.app.state.region
+
+        try:
+            # `{base}-refresh` holds the PAIR and only this service may read it.
+            # The worker is deliberately not an accessor: a pod that could read
+            # the refresh token could mint successors forever, which is the
+            # blast radius the two-secret split exists to prevent.
+            secrets.ensure_secret(
+                f"{base}{REFRESH_SUFFIX}",
+                labels=labels,
+                accessors=[broker_sa] if broker_sa else [],
+                region=region,
+            )
+            secrets.ensure_secret(
+                base,
+                labels=labels,
+                accessors=[sa for sa in (broker_sa, worker_sa) if sa],
+                region=region,
+            )
+            secrets.add_version(f"{base}{REFRESH_SUFFIX}", credential_payload)
+            secrets.add_version(base, access_token)
+        except Exception as exc:
+            log.error(
+                "could not provision an account's secrets",
+                extra={
+                    "tenant_id": owner_tenant,
+                    "label": label,
+                    "error": type(exc).__name__,
+                },
+            )
+            raise BrokerValidationError(
+                f"could not provision the secrets for {owner_tenant}:{label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+
+        return store.register(
+            owner_tenant, label, provider=provider, lend_to=lend_to
+        )
+
+    # ------------------------------------------------------------------
+    # Adding an account from a browser
+    # ------------------------------------------------------------------
+    #
+    # Two steps, because Anthropic's OAuth client accepts exactly one redirect
+    # target -- its own callback page, which DISPLAYS a code. A third-party
+    # application cannot register its own redirect, so the browser cannot come
+    # back here and the code the page shows is what closes the loop.
+    #
+    # The PKCE verifier has to survive between the two steps, so it is held
+    # server-side keyed by `state` rather than handed to the browser. A
+    # verifier the client holds is a PKCE flow that proves nothing.
+
+    PENDING_AUTH = "account_auth"
+    PENDING_TTL = timedelta(minutes=15)
+
+    @app.post("/v1/accounts/authorize")
+    def begin_account_authorization(
+        request: Request,
+        body: AccountAuthorize,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        _accounts(request)  # refuse early if the pool is not configured
+        validate_label(body.label)
+
+        verifier = new_verifier()
+        state = new_state()
+        url = build_authorize_url(state=state, code_challenge=challenge_for(verifier))
+
+        request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
+            {
+                "state": state,
+                "verifier": verifier,
+                "owner_tenant": body.owner_tenant,
+                "label": body.label,
+                "provider": body.provider,
+                "lend_to": list(body.lend_to),
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return {
+            "authorize_url": url,
+            "state": state,
+            "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+        }
+
+    @app.post("/v1/accounts/exchange", status_code=201)
+    def finish_account_authorization(
+        request: Request,
+        body: AccountExchange,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        store = _accounts(request)
+        secrets_store = getattr(request.app.state, "secret_store", None)
+        if secrets_store is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        code, pasted_state = split_pasted_code(body.code)
+        # The state in the paste is advisory; the one the client sent is what
+        # identifies the pending sign-in. They should match, and a mismatch is
+        # worth refusing rather than guessing between them.
+        if pasted_state and pasted_state != body.state:
+            raise BrokerValidationError(
+                "the pasted code belongs to a different sign-in than the one "
+                "this page started. Press Add account and sign in again."
+            )
+
+        ref = request.app.state.broker.db.collection(PENDING_AUTH).document(body.state)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            raise BrokerValidationError(
+                "this sign-in has expired or was already completed. Codes are "
+                "single-use; press Add account to start again."
+            )
+        pending = snap.to_dict() or {}
+
+        started = pending.get("created_at")
+        if isinstance(started, datetime):
+            age = datetime.now(timezone.utc) - _aware_utc(started)
+            if age > PENDING_TTL:
+                ref.delete()
+                raise BrokerValidationError(
+                    "this sign-in took too long and the code will have expired. "
+                    "Press Add account to start again."
+                )
+
+        owner = str(pending.get("owner_tenant") or "")
+        # The pending record decides the tenant, never the request. Otherwise a
+        # caller could complete somebody else's sign-in into their own tenant.
+        _authorize(request, authorization, owner)
+
+        try:
+            payload = request.app.state.token_endpoint.redeem(
+                code=code,
+                verifier=str(pending.get("verifier") or ""),
+                redirect_uri=OAUTH_REDIRECT_URI,
+            )
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+
+        # Inside its own guard, not the one above: the endpoint can answer 200
+        # with a response this platform cannot use -- an access token and no
+        # refresh token. That is not a transport failure and it is not the
+        # person's mistake, and it must not 500.
+        try:
+            credential = credential_from_token_response(payload)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets_store,
+            owner_tenant=owner,
+            label=str(pending.get("label") or ""),
+            provider=str(pending.get("provider") or "anthropic"),
+            lend_to=list(pending.get("lend_to") or ()),
+            credential_payload=json.dumps(
+                {
+                    "accessToken": credential.access_token,
+                    "refreshToken": credential.refresh_token,
+                    "expiresAt": int(credential.expires_at.timestamp() * 1000),
+                }
+            ),
+            access_token=credential.access_token,
+        )
+        # Single-use, and deleted only once the account exists: a failure above
+        # leaves the pending record so the person can paste again rather than
+        # having to start the whole sign-in over.
+        ref.delete()
+        return {
+            "account": account_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
     @app.post("/v1/accounts", status_code=201)
     def register_account(
         request: Request,
@@ -1060,78 +1329,16 @@ def create_app(
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
 
-        # PROVISION FIRST, REGISTER LAST, and the order is the whole point.
-        #
-        # It used to be the other way round, and a probe against the deployed
-        # service proved what that costs: `add_version` refuses to invent a
-        # secret, so registering a new label raised SecretMissing AFTER the
-        # Firestore document had been written -- leaving an account the pool
-        # would happily assign to an agent that then cannot authenticate.
-        # Observed, and the orphan had to be deleted by hand.
-        #
-        # A secret with no document is invisible and harmless, and
-        # re-registering the same label adopts it. A document with no secret is
-        # a live trap. So every fallible step happens before the one that
-        # publishes the account.
-        base = secret_name(body.owner_tenant, body.label)
-        labels = {
-            "managed-by": "swarm-secrets",
-            "component": "swarm-account",
-            "tenant": body.owner_tenant,
-            "account": body.label,
-            "provider": body.provider,
-            "environment": request.app.state.environment,
-        }
-        broker_sa = request.app.state.broker_service_account
-        if broker_sa and not broker_sa.startswith("serviceAccount:"):
-            broker_sa = f"serviceAccount:{broker_sa}"
-        worker_sa = request.app.state.worker_service_account(body.owner_tenant)
-        region = request.app.state.region
-
-        try:
-            # `{base}-refresh` holds the PAIR and only this service may read it.
-            # The worker is deliberately not an accessor: a pod that could read
-            # the refresh token could mint successors forever, which is exactly
-            # the blast radius the two-secret split exists to prevent.
-            secrets.ensure_secret(
-                f"{base}{REFRESH_SUFFIX}",
-                labels=labels,
-                accessors=[broker_sa] if broker_sa else [],
-                region=region,
-            )
-            # `{base}` holds ONLY the access token and is what the tenant's pod
-            # mounts into CLAUDE_CODE_OAUTH_TOKEN. Borrowers are granted
-            # separately, when an account is lent -- see the lending route.
-            secrets.ensure_secret(
-                base,
-                labels=labels,
-                accessors=[sa for sa in (broker_sa, worker_sa) if sa],
-                region=region,
-            )
-            # Stored as pasted rather than re-serialised: `parse_credential` is
-            # the reader, and writing back a normalised shape would make this
-            # the only place that decides what that shape is.
-            secrets.add_version(f"{base}{REFRESH_SUFFIX}", body.credential)
-            secrets.add_version(base, credential.access_token)
-        except Exception as exc:
-            log.error(
-                "could not provision an account's secrets",
-                extra={
-                    "tenant_id": body.owner_tenant,
-                    "label": body.label,
-                    "error": type(exc).__name__,
-                },
-            )
-            raise BrokerValidationError(
-                f"could not provision the secrets for {body.owner_tenant}:{body.label}: "
-                f"{type(exc).__name__}. No account was registered."
-            ) from None
-
-        account = store.register(
-            body.owner_tenant,
-            body.label,
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets,
+            owner_tenant=body.owner_tenant,
+            label=body.label,
             provider=body.provider,
             lend_to=body.lend_to,
+            credential_payload=body.credential,
+            access_token=credential.access_token,
         )
 
         return {

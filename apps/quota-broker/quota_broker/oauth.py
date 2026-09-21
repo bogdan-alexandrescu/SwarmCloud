@@ -35,6 +35,10 @@ before the credentials themselves.
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
+import secrets
+from urllib.parse import urlencode
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -110,6 +114,55 @@ class HttpTokenEndpoint:
     def __init__(self, url: str = TOKEN_ENDPOINT, client_id: str = CLAUDE_CODE_CLIENT_ID) -> None:
         self._url = url
         self._client_id = client_id
+
+    def redeem(self, *, code: str, verifier: str, redirect_uri: str) -> dict[str, Any]:
+        """Trade an authorization code for a credential pair.
+
+        The other half of `exchange`: that one renews a credential this
+        platform already holds, this one obtains the first. Same endpoint, same
+        form-encoding requirement, different grant -- and the failure modes
+        differ enough to be worth separating. A rejected refresh token means an
+        account needs re-authenticating; a rejected CODE almost always means
+        the person took too long or pasted the wrong half of what the callback
+        page showed them, and telling them to re-authenticate would be
+        unhelpful and slightly insulting.
+        """
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        body = urllib.parse.urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": self._client_id,
+                "redirect_uri": redirect_uri,
+                "code_verifier": verifier,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self._url,
+            data=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": CLIENT_USER_AGENT,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise CredentialError(
+                "the sign-in code was not accepted. Codes are single-use and "
+                "expire quickly, so the usual causes are pasting one that has "
+                "already been used, or starting the sign-in again in another "
+                f"tab. Try Add account once more. ({exc.code}: {detail})"
+            ) from None
+        except urllib.error.URLError as exc:
+            raise CredentialError(f"could not reach the token endpoint: {exc.reason}") from None
 
     def exchange(self, refresh_token: str) -> dict[str, Any]:
         import urllib.error
@@ -253,3 +306,107 @@ def serialise(credential: Credential) -> str:
             "expiresAt": int(credential.expires_at.timestamp() * 1000),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Onboarding an account from a browser
+# ---------------------------------------------------------------------------
+#
+# Every constant and every constraint below was measured rather than guessed,
+# and is recorded in claudeswitch's docs/GROUND_TRUTH.md section 31. Two of
+# them cost a day each to discover and would cost the same again:
+#
+#   * `state` MUST be 32 bytes. A 16-byte state is refused with "invalid
+#     request format", which reads like a malformed URL and is not.
+#   * the token endpoint is FORM-ENCODED. Sending JSON is answered with 403,
+#     a status that reads like an authorization failure and is not.
+#
+# WHY THE USER STILL PASTES SOMETHING. Anthropic's OAuth client accepts exactly
+# one redirect target -- its own callback page, which DISPLAYS a code. A
+# third-party application cannot register `https://swarm.example/callback`, so
+# the browser cannot be redirected back here. The code the callback shows is
+# what closes the loop. That is one short string instead of a keychain item,
+# which is the difference this flow exists to make.
+
+AUTHORIZE_ENDPOINT = "https://claude.com/cai/oauth/authorize"
+
+#: The only redirect Anthropic's client permits. It renders the code.
+OAUTH_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+
+#: Exactly what Claude Code itself requests. A narrower set has not been
+#: tested, and a credential that cannot run inference is useless here.
+OAUTH_SCOPES = (
+    "org:create_api_key",
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
+)
+
+#: 32, not 16. The endpoint validates the LENGTH rather than merely echoing it.
+_STATE_BYTES = 32
+
+
+def new_verifier() -> str:
+    """A PKCE code verifier: 32 random bytes, base64url, unpadded."""
+    return secrets.token_urlsafe(32)
+
+
+def challenge_for(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def new_state() -> str:
+    return secrets.token_urlsafe(_STATE_BYTES)
+
+
+def build_authorize_url(
+    *,
+    state: str,
+    code_challenge: str,
+    client_id: str = CLAUDE_CODE_CLIENT_ID,
+    redirect_uri: str = OAUTH_REDIRECT_URI,
+) -> str:
+    """The URL a person opens to sign in.
+
+    Parameter ORDER is the order Claude Code sends them in. That should not
+    matter to a conforming server and it is preserved anyway: this endpoint has
+    already proved to validate things a conforming server would not.
+    """
+    if len(state) < 40:
+        # 32 bytes base64url-encodes to 43 characters. Anything shorter means
+        # the caller built its own state and got the length wrong -- the exact
+        # failure that presents as "invalid request format".
+        raise CredentialError(
+            f"state is {len(state)} characters; the authorize endpoint refuses "
+            "anything built from fewer than 32 random bytes"
+        )
+    query = urlencode(
+        [
+            ("code", "true"),
+            ("client_id", client_id),
+            ("response_type", "code"),
+            ("redirect_uri", redirect_uri),
+            ("scope", " ".join(OAUTH_SCOPES)),
+            ("code_challenge", code_challenge),
+            ("code_challenge_method", "S256"),
+            ("state", state),
+        ]
+    )
+    return f"{AUTHORIZE_ENDPOINT}?{query}"
+
+
+def split_pasted_code(pasted: str) -> tuple[str, str | None]:
+    """The code, and the state if the person pasted both.
+
+    The callback page renders `<code>#<state>`, and people paste the whole
+    thing because that is what is on screen. Accepting only the bare code would
+    reject the most likely paste with a message about an invalid code.
+    """
+    value = (pasted or "").strip()
+    if "#" in value:
+        code, _, state = value.partition("#")
+        return code.strip(), (state.strip() or None)
+    return value, None
