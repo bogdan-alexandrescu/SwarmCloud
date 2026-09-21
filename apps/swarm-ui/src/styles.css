@@ -1162,3 +1162,650 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   .acct-detail { padding: 12px 10px 16px; }
   .acct-wide { max-width: none; }
 }
+
+/* ========================================================================== */
+/* Control-plane primitives (ctl-*)                                           */
+/* ========================================================================== */
+/* WHY EVERY SELECTOR BELOW IS PREFIXED. The sheet above grew as global element
+   and single-word class names — `.tile`, `.tag`, `.row`, `table.pools` — and a
+   rule added late silently restyled two screens that were already shipping. A
+   prefix is the cheapest guarantee that nothing below can reach a screen that
+   did not ask for it. `ctl-` is the whole namespace; there is no bare
+   `.metric` or `.chip` anywhere in this block.
+
+   WHAT THESE ARE FOR. The redesign folds eleven routes into five sections
+   (docs/web-ui/redesign.md). The screens inside those sections belong to other
+   tracks and are NOT edited here — these are the vocabulary they rebuild on,
+   written now so it exists before the rebuild rather than being invented five
+   times in five files.
+
+   THE ONE RULE THEY ENCODE. Every primitive has a state for "not measured"
+   that is visually distinct from zero, and a state for "measured, but not
+   recently". An empty bar and a bar whose ceiling could not be read look
+   identical unless the CSS makes them differ, and that collapse is the
+   defining bug this UI exists to avoid. So it lives in the primitive, where it
+   cannot be forgotten, rather than in each screen's judgement. */
+
+:root {
+  /* A SECOND :root, deliberately. The block at the top of this file is another
+     track's; adding names here rather than editing it means nothing existing
+     can change value, only new names can appear. */
+
+  /* Spacing. Four steps, because a control plane is a dense screen and a
+     six-step scale in a 1100px column produces two values nobody can tell
+     apart. Everything below uses these, so a density pass is one edit. */
+  --ctl-s1: 4px;
+  --ctl-s2: 8px;
+  --ctl-s3: 12px;
+  --ctl-s4: 18px;
+  --ctl-s5: 28px;
+
+  --ctl-radius-sm: 6px;
+  --ctl-radius-lg: 14px;
+
+  /* Derived, so they flip with the theme without a second definition. */
+  --ctl-absent: var(--text-faint);
+  --ctl-hairline: var(--line);
+
+  /* THE HATCH. One definition, used by every "this is not a measurement"
+     surface: an unknown ceiling, a stale panel, a value the platform does not
+     record. Diagonal stripes read as "no data here" at a glance and survive a
+     greyscale screenshot, which a colour alone does not. */
+  --ctl-hatch: repeating-linear-gradient(
+    45deg,
+    var(--surface-2), var(--surface-2) 4px,
+    var(--line) 4px, var(--line) 8px
+  );
+  /* The same idea in the failure colour, for units held above a ceiling —
+     a real measurement, but of a state that should be impossible. */
+  --ctl-hatch-bad: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--bad) 30%, transparent),
+    color-mix(in srgb, var(--bad) 30%, transparent) 3px,
+    color-mix(in srgb, var(--bad) 65%, transparent) 3px,
+    color-mix(in srgb, var(--bad) 65%, transparent) 6px
+  );
+
+  --ctl-shadow: 0 1px 2px rgb(0 0 0 / .30);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    /* The only token that cannot be derived: a 30%-black shadow that reads as
+       depth on #0b0d10 reads as dirt on #f6f8fa. */
+    --ctl-shadow: 0 1px 2px rgb(31 35 40 / .08);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Em dash: the absent measurement                                             */
+/* -------------------------------------------------------------------------- */
+/* Used everywhere a number would go and no number was recorded. It is a token
+   rather than a bare "—" so that "absent" is styleable as a class of thing:
+   dimmed, non-tabular, and never mistakable for a digit at a glance down a
+   column of figures. */
+.ctl-em {
+  color: var(--ctl-absent);
+  font-variant-numeric: normal;
+  user-select: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 1. Metric tile                                                              */
+/* -------------------------------------------------------------------------- */
+/* One fact, its units, and what it does not include. The third line is not
+   decoration: "6 units held" and "6 agents running" are different numbers and
+   the tile that omits which one it is gets read as both. */
+
+.ctl-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: var(--ctl-s2);
+  margin-bottom: var(--ctl-s4);
+}
+
+.ctl-metric {
+  position: relative;
+  padding: var(--ctl-s3) var(--ctl-s3) calc(var(--ctl-s3) - 1px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow);
+  min-width: 0;
+}
+.ctl-metric-label {
+  display: block;
+  font: 600 10.5px/1.6 var(--mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ctl-metric-value {
+  display: block;
+  margin: 3px 0 4px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  /* Tabular, so a column of tiles does not jitter as figures tick. */
+  font-variant-numeric: tabular-nums;
+}
+.ctl-metric-unit {
+  margin-left: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+  letter-spacing: 0;
+}
+.ctl-metric-sub {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.ctl-metric-foot {
+  display: block;
+  margin-top: var(--ctl-s2);
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font: 10.5px/1.5 var(--mono);
+  color: var(--text-faint);
+}
+
+/* NOT MEASURED. A dashed border plus a value that is a SENTENCE, never a
+   figure — because the sentence cannot be misread as a quantity and "0" can.
+   The font size drops deliberately: a short phrase at 24px reads as a headline
+   number, which is the exact confusion this state exists to prevent. */
+.ctl-metric.is-absent { border-style: dashed; box-shadow: none; }
+.ctl-metric.is-absent .ctl-metric-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ctl-absent);
+  letter-spacing: 0;
+}
+
+/* READ FAILED. Distinct from "not measured": the platform may well have the
+   number, we did not get it. Same dashed treatment, warning-coloured, so the
+   two absences are never told apart by reading the caption alone. */
+.ctl-metric.is-unread {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  box-shadow: none;
+}
+.ctl-metric.is-unread .ctl-metric-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--warn);
+  letter-spacing: 0;
+}
+
+.ctl-metric.is-alert { border-color: var(--bad); }
+.ctl-metric.is-alert .ctl-metric-value { color: var(--bad); }
+.ctl-metric.is-good .ctl-metric-value { color: var(--ok); }
+
+/* -------------------------------------------------------------------------- */
+/* 2. Utilisation bar                                                          */
+/* -------------------------------------------------------------------------- */
+/* used / ceiling, as a row that stays legible at 390pt. Four parts: what it
+   is, the bar, the figures, and who set the ceiling — the last because "full"
+   and "paused by an operator" look the same on a bar and are opposite facts.
+
+   THREE TRACK STATES, and they must not converge:
+     default      a ceiling exists and is known; the fill is the proportion
+     .is-unknown  no ceiling, or it could not be read. Hatched, NO fill. An
+                  unfilled plain track reads as "0% used", which is a claim.
+     .is-over     more held than the ceiling allows. The overflow segment is
+                  hatched in the failure colour rather than clipped, because a
+                  bar pinned at 100% hides the one thing worth seeing. */
+
+.ctl-util {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 160px) 78px 92px;
+  align-items: center;
+  gap: var(--ctl-s3);
+  padding: 5px 0;
+}
+.ctl-util + .ctl-util { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+
+.ctl-util-name {
+  font: 12.5px/1.35 var(--mono);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ctl-util-name b { color: var(--text); font-weight: 500; }
+
+.ctl-util-track {
+  position: relative;
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.ctl-util-fill {
+  height: 100%;
+  background: var(--info);
+  transition: width .3s ease;
+}
+.ctl-util-fill.is-warn { background: var(--warn); }
+.ctl-util-fill.is-bad  { background: var(--bad); }
+.ctl-util-fill.is-paused { background: var(--paused); }
+/* The part above the ceiling. Hatched, so it reads as "this should not exist"
+   rather than as more of the same measurement. */
+.ctl-util-over { height: 100%; background: var(--ctl-hatch-bad); }
+.ctl-util-track.is-unknown { background: var(--ctl-hatch); }
+
+.ctl-util-figure {
+  font: 12.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.ctl-util-figure .ctl-util-of { color: var(--text-faint); }
+.ctl-util-by {
+  font: 11px var(--mono);
+  color: var(--text-faint);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 3. Status chip                                                              */
+/* -------------------------------------------------------------------------- */
+/* THE WORD IS MANDATORY; the dot is decoration. A colour-only chip fails for a
+   colour-blind operator and in the greyscale screenshot that gets pasted into
+   an incident channel — which is where these screens are actually read. The
+   dot carries no meaning the text does not, so it is aria-hidden at the call
+   site and this file never relies on it alone. */
+
+.ctl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font: 600 10.5px/1.7 var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.ctl-chip > i {
+  width: 6px; height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  flex: none;
+}
+.ctl-chip.is-ok      { color: var(--ok); }
+.ctl-chip.is-warn    { color: var(--warn); }
+.ctl-chip.is-bad     { color: var(--bad); }
+.ctl-chip.is-info    { color: var(--info); }
+.ctl-chip.is-paused  { color: var(--paused); }
+/* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour. Hollow dot,
+   faint text: an absence of information, drawn as one. */
+.ctl-chip.is-unknown { color: var(--text-faint); }
+.ctl-chip.is-unknown > i { background: transparent; border: 1.5px solid currentColor; }
+/* Live work gets the only motion on the screen, and only while it is live. */
+.ctl-chip.is-live { color: var(--info); }
+.ctl-chip.is-live > i { animation: pulse 2s ease-in-out infinite; }
+
+/* -------------------------------------------------------------------------- */
+/* 4. Table                                                                    */
+/* -------------------------------------------------------------------------- */
+/* Scrolls sideways rather than reflowing into cards. These are numbers that
+   only mean anything beside each other in a row; stacking them loses the
+   comparison the table exists for. */
+
+.ctl-table {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.ctl-table > table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ctl-table th,
+.ctl-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.ctl-table tbody tr:last-child th,
+.ctl-table tbody tr:last-child td { border-bottom: none; }
+.ctl-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
+  font: 600 10.5px var(--mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ctl-table .is-num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+/* Row tones are a wash, never a text colour: the cells still have to be read
+   and a red row of red text is not legible at 3am. */
+.ctl-table tbody tr.is-bad    { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.ctl-table tbody tr.is-warn   { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.ctl-table tbody tr.is-paused { background: color-mix(in srgb, var(--paused) 7%, transparent); }
+/* The opaque id under the readable name: the name is for scanning, the id is
+   what gets pasted into a script. Both, always, never one. */
+.ctl-table .ctl-sub {
+  display: block;
+  font: 400 10.5px var(--mono);
+  color: var(--text-faint);
+}
+.ctl-table caption {
+  caption-side: bottom;
+  padding: var(--ctl-s2) 10px;
+  text-align: left;
+  font: 11px/1.5 var(--mono);
+  color: var(--text-faint);
+  border-top: 1px solid var(--line);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 5. Empty state                                                              */
+/* -------------------------------------------------------------------------- */
+/* FOUR VARIANTS, because four different things look like an empty screen and
+   this platform's worst bug was drawing them alike:
+     (default)    the read succeeded and returned nothing — a real zero
+     .is-failed   the read failed — no number may appear anywhere
+     .is-partial  some of it arrived; the rest is unknown, not zero
+     .is-admin    you are not an admin. Nothing failed, so nothing is red. */
+
+.ctl-empty {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--ctl-s4);
+}
+.ctl-empty > h3 {
+  margin: 0 0 6px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ctl-empty > p {
+  margin: 0 0 var(--ctl-s2);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.ctl-empty > p:last-child { margin-bottom: 0; }
+.ctl-empty-foot {
+  display: block;
+  margin-top: var(--ctl-s3);
+  font: 11px/1.5 var(--mono);
+  color: var(--text-faint);
+}
+
+.ctl-empty.is-failed {
+  border-color: color-mix(in srgb, var(--bad) 50%, var(--line));
+  background: color-mix(in srgb, var(--bad) 5%, var(--surface));
+}
+.ctl-empty.is-failed > h3 { color: var(--bad); }
+
+.ctl-empty.is-partial {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  background: color-mix(in srgb, var(--warn) 5%, var(--surface));
+}
+.ctl-empty.is-partial > h3 { color: var(--warn); }
+
+/* AN ADMIN GATE IS INFORMATION, NOT BREAKAGE. Blue, no retry, and never the
+   sentence "this failed" — a non-admin genuinely cannot read /v1/admin/*, and
+   painting that red tells someone their platform is broken when it is not. */
+.ctl-empty.is-admin {
+  border-color: color-mix(in srgb, var(--info) 45%, var(--line));
+  background: color-mix(in srgb, var(--info) 6%, var(--surface));
+}
+.ctl-empty.is-admin > h3 { color: var(--info); }
+
+/* -------------------------------------------------------------------------- */
+/* 6. Stale reading                                                            */
+/* -------------------------------------------------------------------------- */
+/* Data that is REAL but no longer current. The rows stay — blanking them would
+   be the mirror of the bug this app is about — but they must not read as
+   fresh, and the reason must still be on screen when the operator finally
+   looks. Hence a banner, not a toast: at 390pt a toast sits under the thumb
+   and gets dismissed by accident. */
+
+.ctl-stale-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ctl-s2);
+  margin-bottom: var(--ctl-s3);
+  padding: var(--ctl-s3);
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warn) 6%, var(--surface));
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.ctl-stale-note strong { color: var(--warn); }
+
+/* The body under that banner. Dimming is the signal that everything below is
+   from an earlier read; the left rule keeps that legible once the dimming has
+   stopped being noticed, which it does after a minute of looking at it. */
+.ctl-stale-body {
+  opacity: .62;
+  border-left: 2px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+  padding-left: var(--ctl-s3);
+}
+
+/* One value that is stale inside an otherwise fresh panel. Carries its own age
+   in the text, because a mark with no age just says "distrust this" with no
+   way to act on it. */
+.ctl-stale-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--ctl-hatch);
+  font: 500 10px/1.7 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-dim);
+  vertical-align: middle;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 7. The shell: two-level navigation                                          */
+/* -------------------------------------------------------------------------- */
+/* Five sections, each a question rather than a route. The question is printed
+   under the section's own tab strip rather than in the nav, because a nav of
+   five labels each with a sentence under it is a sentence nobody reads. */
+
+.ctl-nav {
+  display: flex;
+  align-items: stretch;
+  gap: var(--ctl-s3);
+  margin-bottom: var(--ctl-s3);
+  border-bottom: 1px solid var(--line);
+}
+.ctl-nav-sections {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.ctl-nav-sections::-webkit-scrollbar { display: none; }
+.ctl-nav-link {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 9px 13px;
+  color: var(--text-dim);
+  font: 500 14px var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ctl-nav-link:hover { color: var(--text); }
+.ctl-nav-link.is-on { color: var(--text); border-bottom-color: var(--info); }
+.ctl-nav-link:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* The utility corner. Reference lives here rather than among the sections:
+   the API surface is a thing you look up, not a thing you work in, and the
+   brief was explicit that it must not be a top-level menu item. `margin-left:
+   auto` rather than a flex spacer so it stays put when the section strip
+   scrolls on a phone. */
+.ctl-nav-util {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  margin-left: auto;
+  padding-left: var(--ctl-s3);
+  flex: none;
+}
+.ctl-nav-util button {
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  color: var(--text-faint);
+  font: 500 12px var(--font);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line);
+}
+.ctl-nav-util button:hover { color: var(--text-dim); }
+.ctl-nav-util button.is-on { color: var(--info); text-decoration-color: currentColor; }
+
+/* The section's own tab strip. role=tablist at the call site; this only draws
+   it. Deliberately lighter than the section nav above — two strips of equal
+   weight read as one confusing twelve-item menu, which is what the redesign
+   is undoing. */
+.ctl-subnav {
+  display: flex;
+  gap: var(--ctl-s1);
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.ctl-subnav button {
+  padding: 5px 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 12.5px var(--font);
+  cursor: pointer;
+}
+.ctl-subnav button:hover { color: var(--text); background: var(--surface); }
+.ctl-subnav button[aria-selected='true'] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.ctl-subnav button:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* The admin marker on a tab that will render an admin gate for most people.
+   Saying so before the click is cheaper than a blue panel after it. */
+.ctl-subnav .ctl-subnav-admin {
+  margin-left: 5px;
+  font: 500 9.5px var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The question the section answers, under its tabs. This is the load-bearing
+   part of the redesign: it is what makes a section a section rather than a
+   folder of routes, and it is the first thing to check when someone proposes
+   adding a screen to one. */
+.ctl-section-q {
+  margin: 0 0 var(--ctl-s4);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 8. Reference page                                                           */
+/* -------------------------------------------------------------------------- */
+/* The API surface, kept off the main nav. It renders the probe registry — the
+   routes this session has actually called — and says exactly that, because a
+   page headed "the API" that lists only what happened to be fetched would be
+   claiming completeness it does not have. */
+
+.ctl-ref-lead {
+  margin: 0 0 var(--ctl-s4);
+  padding: var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.ctl-ref-lead strong { color: var(--text); }
+.ctl-ref-path { font: 12px var(--mono); color: var(--text); }
+.ctl-ref-ms { font-variant-numeric: tabular-nums; color: var(--text-faint); }
+
+/* -------------------------------------------------------------------------- */
+/* 9. Agent drawer with panes                                                  */
+/* -------------------------------------------------------------------------- */
+/* The drawer gains a tab strip so the attempt timeline is reachable at all —
+   it is a finished screen that no route has ever pointed at.
+   AgentDetail.tsx belongs to another track and draws its own `.drawer`, so
+   rendering it inside this one would nest two fixed panels and two close
+   buttons. Flattening the inner one HERE, scoped to `.ctl-drawer`, keeps the
+   fix out of that file. If AgentDetail ever stops drawing its own drawer these
+   two rules become no-ops rather than breakage. */
+.ctl-drawer > .drawer {
+  position: static;
+  width: auto;
+  padding: 0;
+  border-left: none;
+  box-shadow: none;
+  overflow-y: visible;
+  background: transparent;
+}
+.ctl-drawer > .drawer > .drawer-close { display: none; }
+.ctl-drawer .ctl-subnav { margin: var(--ctl-s2) 0 var(--ctl-s3); }
+
+/* -------------------------------------------------------------------------- */
+/* Phone                                                                       */
+/* -------------------------------------------------------------------------- */
+@media (max-width: 560px) {
+  /* Two metric tiles per row stays readable at 390pt; one wastes the screen
+     and three truncate the sub-line, which is the part that says what the
+     number excludes. */
+  .ctl-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ctl-s1); }
+  .ctl-metric { padding: 10px; }
+  .ctl-metric-value { font-size: 20px; }
+
+  /* The utilisation row drops the bar and the "set by" column, not the
+     figures: the bar is a picture of the number beside it, and dropping the
+     number instead would leave a picture with nothing under it. "Set by" is
+     the one part that has a home on the detail screen. */
+  .ctl-util { grid-template-columns: minmax(0, 1fr) 84px; gap: var(--ctl-s2); }
+  .ctl-util-track, .ctl-util-by { display: none; }
+
+  .ctl-table > table { font-size: 12px; }
+  .ctl-table th, .ctl-table td { padding: 6px 8px; }
+
+  .ctl-nav-link { padding: 9px 10px; font-size: 13px; }
+  .ctl-empty { padding: var(--ctl-s3); }
+}

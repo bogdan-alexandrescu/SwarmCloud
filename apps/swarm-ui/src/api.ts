@@ -1,9 +1,14 @@
 import { noteFixtureProbe, read, write, type Result } from './fetch'
+// A VALUE import, not a type: the attempt fixture needs the terminal-state set
+// so a live task's newest attempt is rendered as live.
+import { TERMINAL_STATES } from './types'
 import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, TaskState, TaskWindow, Tenant,
+  AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, ResourceClassSpec, TaskState,
+  TaskWindow, Tenant,
   Workflow,
   Account, AccountStateName, AccountsPage, RefreshResponse,
+  AccountAuthorization, AccountExchangeResponse,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -173,14 +178,28 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
     }
   }
   const at = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString()
+  // THE SAME ATTEMPT ID `fixtureAttempts` MINTS FOR ITS NEWEST ROW. It used to
+  // be a differently-spelled id, so in development every event landed under
+  // "an attempt no document describes" and the per-attempt joins -- checkpoint
+  // sizes, live heartbeat readings, events grouped under their attempt -- were
+  // the one part of the screen nobody ever saw working. A fixture that
+  // exercises fewer code paths than production is a fixture that hides bugs.
+  const attemptId = `att_${task.id.slice(-4)}_3`
+  // `event_id` is a COUNTER, not the type: two heartbeats in one attempt are
+  // ordinary and a type-derived id made React render duplicate keys the moment
+  // this fixture grew a second one.
+  let seq = 0
   const ev = (type: string, minsAgo: number, detail: Record<string, unknown> | null = null) => ({
-    event_id: `${task.id}-${type}`,
+    event_id: `${task.id}-${++seq}-${type}`,
     task_id: task.id,
     type,
     at: at(minsAgo),
-    attempt_id: `att-${task.id.slice(-4)}`,
+    attempt_id: attemptId,
     lease_id: `lease-${task.id.slice(-4)}`,
-    generation: task.attempt_count,
+    // The generation of the attempt these events belong to, matching
+    // `fixtureAttempts`' newest row -- not the task's attempt counter, which is
+    // a different number and made the timeline claim gen 1 under attempt 3.
+    generation: 3,
     detail,
   })
   return {
@@ -220,11 +239,199 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
         ev('dispatched', 9, { execution_name: 'swarm-job-u-bogdan-claude-code-abc12', backend: 'CLOUD_RUN_JOB' }),
         ev('starting', 8),
         ev('running', 8),
-        ev('checkpoint_completed', 4, { checkpoint_id: 'ckpt-3' }),
+        // Every fifth heartbeat carries a live resource reading
+        // (lifecycle._heartbeat). It is the ONLY per-attempt measurement a
+        // running agent has: `peak_rss_bytes` on the attempt document is
+        // written at the end.
+        ev('heartbeat', 6, { elapsed_seconds: 120.4, peak_rss_bytes: 1_610_612_736, checkpoints: 1 }),
+        // The worker writes all four keys (control.record_checkpoint). The
+        // attempt document stores only the id, so the size and the uri exist
+        // HERE and nowhere else.
+        ev('checkpoint_completed', 4, {
+          checkpoint_id: 'ckpt-00001',
+          uri: 'gs://swarm-artifacts-dev/u-bogdan/checkpoints/ckpt-00001/workspace.tar.zst',
+          size_bytes: 41_235_988,
+          seq: 1,
+        }),
+        ev('heartbeat', 3, { elapsed_seconds: 300.1, peak_rss_bytes: 1_842_000_000, checkpoints: 2 }),
+        // Deliberately NO matching event for ckpt-00002, which `fixtureAttempts`
+        // lists on the attempt: that is the real paging case -- an id with no
+        // size and no uri, which must render as "the event is off this page",
+        // not as a blank cell.
         ...(task.state === 'SUCCEEDED' ? [ev('succeeded', 1, { exit_code: 0 })] : []),
         ...(task.state === 'FAILED' ? [ev('failed', 1, { exit_code: 1, error: task.last_error })] : []),
       ],
       eventsDetail: null,
+    },
+  }
+}
+
+/**
+ * The resource-class catalogue: what a class is GIVEN.
+ *
+ * `GET /v1/resource-classes` serves `RESOURCE_CLASSES` from the frozen
+ * contract. Added for exactly one screen -- the agent run detail, which
+ * renders peak RSS and peak disk against the ceiling they were measured
+ * under -- and it is a route rather than a table in this repository because
+ * `check-contract-parity.sh` does not cover TypeScript, so a hand copy would
+ * drift silently the first time a class is resized.
+ *
+ * There is no empty case: the catalogue always has three classes, so a 200
+ * with an empty object is a failure wearing a success code, not a platform
+ * with no sizes.
+ */
+export type ResourceClasses = Record<string, ResourceClassSpec>
+
+export async function loadResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
+  if (USE_FIXTURES) return fixtureResourceClasses()
+  return read<{ resource_classes: ResourceClasses }>(
+    '/v1/resource-classes',
+    (d) => Object.keys(d.resource_classes ?? {}).length === 0,
+  )
+}
+
+async function fixtureResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
+  await new Promise((r) => setTimeout(r, 40))
+  noteFixtureProbe('/v1/resource-classes', 40, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    // The real three, so the requested-vs-utilised bars are exercised in
+    // development rather than shipping having never been looked at.
+    data: {
+      resource_classes: {
+        standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
+        browser: { name: 'browser', cpu: 8, memory_gib: 16, disk_gib: 8, units: 2 },
+        large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
+      },
+    },
+  }
+}
+
+/**
+ * ONE AGENT RUN, COMPLETE: the task, every attempt, every event, and the
+ * ceilings the attempts' measurements should be read against.
+ *
+ * Four reads, and THE FAILURES ARE NOT POOLED. Only the task read can decide
+ * there is no screen; the other three each degrade to a `null` field with the
+ * reason beside it, because a failed attempts query and a task that has never
+ * been admitted produce the same empty panel unless something keeps them
+ * apart -- which is the bug this whole UI exists to avoid.
+ *
+ * `attempts: []` therefore means the query SUCCEEDED and the task has no
+ * attempt document (QUEUED, PARKED, or READY and waiting for capacity).
+ * `attempts: null` means the query failed and nothing may be concluded.
+ */
+export interface AgentRun {
+  task: Task
+  /** null means the event read FAILED. An empty array means there are none. */
+  events: TaskEvent[] | null
+  eventsDetail: string | null
+  /** null means the attempt read FAILED. An empty array means none exist. */
+  attempts: AttemptRow[] | null
+  attemptsDetail: string | null
+  /** null means the catalogue read FAILED, so no "requested" side may be drawn. */
+  classes: ResourceClasses | null
+  /** Why the catalogue is missing, and whether the route exists at all. */
+  classesDetail: string | null
+  /** True when the API did not recognise /v1/resource-classes -- a deployment
+   *  older than the route, which is a different fix from a failed read. */
+  classesRouteMissing: boolean
+}
+
+export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
+  if (USE_FIXTURES) return fixtureAgentRun(taskId)
+
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}`
+  const [task, events, attempts, classes] = await Promise.all([
+    read<{ task: Task } | Task>(path, () => false),
+    read<{ events: TaskEvent[] }>(`${path}/events`, () => false),
+    read<{ attempts: AttemptRow[] }>(`${path}/attempts`, (d) => d.attempts.length === 0),
+    loadResourceClasses(),
+  ])
+
+  if (task.status === 'loading' || task.status === 'error') return task
+  if (task.status === 'empty') {
+    return {
+      status: 'error',
+      error: {
+        kind: 'not_found',
+        httpStatus: 404,
+        code: 'not_found',
+        message: 'This task does not exist, or it belongs to another tenant.',
+      },
+    }
+  }
+
+  // GET /v1/tasks/{id} returns {"task": {...}}, not the bare document. The
+  // fallback stays because create and cancel return the same wrapper and a
+  // caller could route through either.
+  const raw = task.data as { task?: Task } & Task
+  const unwrapped: Task = raw.task ?? raw
+
+  const eventList = events.status === 'ok' ? events.data.events : events.status === 'empty' ? [] : null
+  // `empty` is a real answer here and collapses to [], which is NOT the same
+  // as the null a failure produces. The screen prints two different sentences.
+  const attemptList =
+    attempts.status === 'ok' ? attempts.data.attempts
+    : attempts.status === 'stale' ? attempts.data.attempts
+    : attempts.status === 'empty' ? []
+    : null
+
+  const classesOk = classes.status === 'ok' || classes.status === 'stale'
+
+  return {
+    status: task.status === 'stale' ? 'stale' : 'ok',
+    data: {
+      task: unwrapped,
+      events: eventList,
+      eventsDetail:
+        eventList === null
+          ? events.status === 'error' || events.status === 'stale'
+            ? events.error.message
+            : 'The event read did not complete.'
+          : null,
+      attempts: attemptList,
+      attemptsDetail:
+        attemptList === null
+          ? attempts.status === 'error'
+            ? attempts.error.message
+            : 'The attempt read did not complete.'
+          : null,
+      classes: classesOk ? classes.data.resource_classes : null,
+      classesDetail: classesOk
+        ? null
+        : classes.status === 'error'
+          ? classes.error.message
+          : classes.status === 'empty'
+            ? 'The catalogue route returned no classes, which cannot happen for a healthy API — the frozen catalogue always has three.'
+            : 'The resource-class read did not complete.',
+      classesRouteMissing: classes.status === 'error' && classes.error.kind === 'not_found',
+    },
+    fetchedAt: task.fetchedAt,
+    error: task.status === 'stale' ? task.error : undefined,
+  } as Result<AgentRun>
+}
+
+async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
+  const [detail, attempts, classes] = await Promise.all([
+    fixtureAgentDetail(taskId),
+    fixtureAttempts(taskId),
+    fixtureResourceClasses(),
+  ])
+  if (detail.status !== 'ok') return detail as Result<AgentRun>
+  return {
+    status: 'ok',
+    fetchedAt: detail.fetchedAt,
+    data: {
+      task: detail.data.task,
+      events: detail.data.events,
+      eventsDetail: detail.data.eventsDetail,
+      attempts: attempts.status === 'ok' ? attempts.data.attempts : null,
+      attemptsDetail: attempts.status === 'ok' ? null : 'The fixture attempt read did not complete.',
+      classes: classes.status === 'ok' ? classes.data.resource_classes : null,
+      classesDetail: null,
+      classesRouteMissing: false,
     },
   }
 }
@@ -546,8 +753,17 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
 
 async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 160))
+  noteFixtureProbe(`/v1/tasks/{id}/attempts`, 160, true)
   const iso = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
-  const mk = (n: number, exit: number | null): AttemptRow => ({
+  // THE NEWEST ATTEMPT FOLLOWS THE TASK'S STATE. A fixture that always returned
+  // a finished attempt meant the live-agent path -- no exit code, no
+  // `peak_rss_bytes` yet, the resource figure coming off the newest heartbeat
+  // event instead -- was never once looked at in development, and that is the
+  // path someone opens this screen for when they are worried.
+  const page = await fixtureTasks()
+  const task = page.status === 'ok' ? page.data.tasks.find((t) => t.id === taskId) : undefined
+  const live = task !== undefined && !TERMINAL_STATES.has(task.state)
+  const mk = (n: number, exit: number | null, extra: Partial<AttemptRow> = {}): AttemptRow => ({
     attempt_id: `att_${taskId.slice(-4)}_${n}`,
     task_id: taskId,
     tenant_id: 'u-bogdan',
@@ -569,8 +785,49 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
     cache_read_input_tokens: null,
     cache_creation_input_tokens: null,
     cost_usd: null,
+    ...extra,
   })
-  return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(3, 0), mk(2, 1), mk(1, 1)] } }
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      attempts: [
+        // The newest attempt carries the measurements a current worker image
+        // records, so the requested-vs-utilised bars and the spend columns are
+        // exercised in development. `ckpt-00002` deliberately has no
+        // `checkpoint_completed` event in fixtureAgentDetail: an id with no
+        // size and no uri is the ordinary paging case, not a defect.
+        mk(3, live ? null : 0, {
+          checkpoints: ['ckpt-00001', 'ckpt-00002'],
+          // A live attempt has written NO final measurement and no spend: both
+          // are written when it ends. The screen falls back to the heartbeat
+          // for memory and says five different things about the rest.
+          ...(live
+            ? { completed_at: null, peak_rss_bytes: null, peak_disk_bytes: null }
+            : {
+                peak_disk_bytes: 2_147_483_648,
+                input_tokens: 18_422,
+                output_tokens: 7_311,
+                cache_read_input_tokens: 412_880,
+                cache_creation_input_tokens: 21_004,
+                cost_usd: 0.418_2,
+              }),
+        }),
+        // The older two ran before usage capture landed: every spend figure is
+        // null, which must render as em dashes and never as $0.00.
+        mk(2, 1, { peak_rss_bytes: 7_730_941_132 }),
+        // Never started: dispatch was rejected, so there is no exit code and no
+        // measurement at all. It must not read as "exit 0" or as 0 bytes.
+        mk(1, null, {
+          peak_rss_bytes: null,
+          started_at: null,
+          completed_at: null,
+          execution_name: null,
+          error: 'BACKEND_REJECTED',
+        }),
+      ],
+    },
+  }
 }
 
 /**
@@ -1039,46 +1296,134 @@ export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
   } as Result<AccountsBoard>
 }
 
-/** What `POST /v1/accounts` answers with on 201. Carries NO key material. */
-export interface RegisterResponse {
-  account: Account
-  /** When the pasted credential's ACCESS half expires. The pair outlives it. */
-  expires_at: string
-  note: string
-}
-
 /**
- * Register -- or re-authenticate -- one account.
+ * ADDING AN ACCOUNT IS A SIGN-IN. There is no keychain paste on this surface
+ * and there must not be one again.
  *
- * `credential` is the operator's pasted keychain item, sent VERBATIM. It is
- * not parsed, normalised, trimmed into fields or logged here: `parse_credential`
- * in the broker is the one reader of that shape, and a second implementation in
- * TypeScript would disagree with it the first time the shape changed. The
- * broker parses it BEFORE any write, so a credential with no refresh token is
- * refused at the moment of pasting with a 422.
+ * The old flow asked a person to run `security find-generic-password`, copy a
+ * JSON blob and paste it without reformatting it. That was a bad experience
+ * and it was also fragile: the commonest failure was a hand-edited value that
+ * parsed on the operator's machine and not here, reported as a 422 about a
+ * missing refresh token, which named the symptom rather than the cause.
  *
- * `owner_tenant` IS DELIBERATELY NOT SENT. `routes/accounts.py` files the
- * account under the tenant on the verified token and reads the body field for
- * one purpose only -- to compare it and answer 403 when it differs. Sending a
- * value therefore buys nothing and adds a way to be refused for a mismatch
- * that is not the operator's mistake. The route's own words: "the owner comes
- * from the verified token, so the field can be omitted".
+ * It is now two calls. `authorize` returns a URL the person opens; they sign
+ * in to Claude as they normally would; the callback page DISPLAYS a code; they
+ * paste it and `exchange` redeems it. The PKCE verifier stays server-side,
+ * keyed by `state`, so nothing secret passes through this file in either
+ * direction -- the request carries a code, and the response carries an
+ * account and an expiry.
  *
- * RE-REGISTERING AN EXISTING LABEL IS THE RE-AUTHENTICATE PATH, and it
- * deliberately PRESERVES state (accountstore.py:106-124) so that re-registering
- * cannot silently un-pause an account somebody paused. The consequence the
- * caller has to handle: an account in REAUTH_REQUIRED is STILL in
- * REAUTH_REQUIRED after a successful re-register, and nothing will be assigned
- * to it until its state is put back.
+ * `POST /v1/accounts`, the keychain route, still exists in the API. It is
+ * deliberately not called from anywhere in this app: keeping one paste box
+ * "just in case" is how the flow that was removed comes back.
  */
-export async function registerAccount(body: {
+export async function beginAccountSignIn(body: {
+  owner_tenant: string
   label: string
   provider: string
   lend_to: string[]
-  credential: string
-}): Promise<Result<unknown>> {
-  if (USE_FIXTURES) return fixtureRegister(body)
-  return write('/v1/accounts', 'POST', body)
+}): Promise<Result<AccountAuthorization>> {
+  const res = USE_FIXTURES
+    ? await fixtureBeginSignIn(body)
+    : await write('/v1/accounts/authorize', 'POST', body)
+  if (res.status !== 'ok') return res as Result<AccountAuthorization>
+
+  const b = res.data
+  // A 200 WITHOUT A URL IS NOT A SUCCESS. Rendering a "sign in" button that
+  // opens `undefined` would put the failure two clicks away from its cause,
+  // in a new tab, where the message explaining it is not.
+  if (!isRecord(b) || typeof b.authorize_url !== 'string' || typeof b.state !== 'string') {
+    return {
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 200,
+        code: null,
+        message:
+          'The platform answered the sign-in request without a URL to open, so there is nothing to sign in to. Nothing was registered and nothing was changed.',
+      },
+    }
+  }
+  // Checked because this value is handed to `window.open`. It comes from our
+  // own API and should always be the provider's https URL; a scheme check
+  // costs nothing and is the difference between a bad deployment and a bad
+  // deployment that opens a `javascript:` URL in the operator's browser.
+  if (!/^https:\/\//i.test(b.authorize_url)) {
+    return {
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 200,
+        code: null,
+        message:
+          'The platform returned a sign-in URL this page will not open, because it is not an https address. Nothing was registered and nothing was changed. This is a deployment fault rather than anything you did.',
+      },
+    }
+  }
+  const ttl = b.expires_in_seconds
+  return {
+    status: 'ok',
+    fetchedAt: res.fetchedAt,
+    data: {
+      authorize_url: b.authorize_url,
+      state: b.state,
+      // Absent stays absent. See `AccountAuthorization.expires_in_seconds`:
+      // a countdown to a deadline nobody reported is invented arithmetic.
+      expires_in_seconds: typeof ttl === 'number' && Number.isFinite(ttl) ? ttl : null,
+    },
+  }
+}
+
+/**
+ * `POST /v1/accounts/exchange`. The paste, redeemed.
+ *
+ * SENT VERBATIM. The callback page renders `<code>#<state>` and people paste
+ * what is on screen; `split_pasted_code` in the broker is the one reader of
+ * that shape, and a second implementation here would disagree with it the
+ * first time the page changed -- by refusing a paste the platform would have
+ * accepted. So nothing is split, trimmed into fields or normalised here.
+ *
+ * A FAILED EXCHANGE LEAVES THE SIGN-IN OPEN, on purpose: the broker deletes
+ * the pending record only once an account exists, so a mistyped code costs one
+ * paste rather than the whole sign-in. The caller has to keep the paste field
+ * on screen after a failure for that to be worth anything.
+ */
+export async function finishAccountSignIn(body: {
+  state: string
+  code: string
+}): Promise<Result<AccountExchangeResponse>> {
+  const res = USE_FIXTURES
+    ? await fixtureFinishSignIn(body)
+    : await write('/v1/accounts/exchange', 'POST', body)
+  if (res.status !== 'ok') return res as Result<AccountExchangeResponse>
+
+  const b = res.data
+  if (!isRecord(b) || !isRecord(b.account) || typeof b.account.account_id !== 'string') {
+    // A 201 whose body does not name the account is not "nothing happened".
+    // The code may well have been redeemed and the account registered, and
+    // telling somebody to try again would spend a single-use code on a
+    // sign-in that had already succeeded.
+    return {
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 201,
+        code: null,
+        message:
+          'The platform accepted the sign-in but did not say which account it created. The code may already have been redeemed, so do not sign in again yet — refresh the pool below and look for the label first.',
+      },
+    }
+  }
+  const expires = b.expires_at
+  return {
+    status: 'ok',
+    fetchedAt: res.fetchedAt,
+    data: {
+      account: b.account as unknown as Account,
+      expires_at: typeof expires === 'string' ? expires : null,
+      note: typeof b.note === 'string' ? b.note : undefined,
+    },
+  }
 }
 
 /** `PUT /v1/accounts/{id}/lending`. The whole list, not a delta. */
@@ -1275,40 +1620,110 @@ function fixtureRefused(message: string): Result<unknown> {
   }
 }
 
-async function fixtureRegister(body: {
+/**
+ * The pending sign-ins this fixture is holding, keyed by state.
+ *
+ * A MAP RATHER THAN A SINGLE SLOT, because the two refusals worth exercising
+ * both need more than one: a code reused after it succeeded, and a paste whose
+ * state belongs to a different sign-in than the one this page started. Both
+ * are copy on the screen, and copy that no fixture can reach is copy that
+ * ships having never been read.
+ */
+const fixturePending = new Map<string, { label: string; lend_to: string[] }>()
+
+async function fixtureBeginSignIn(body: {
+  owner_tenant: string
   label: string
   provider: string
   lend_to: string[]
-  credential: string
 }): Promise<Result<unknown>> {
-  await new Promise((r) => setTimeout(r, 320))
-  // The fixture applies the SAME refusal the broker does, so the 422 copy on
-  // this screen is exercised by pasting a setup-token rather than only in
-  // production. parse_credential's rule: no refreshToken, no registration.
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(body.credential)
-  } catch {
+  await new Promise((r) => setTimeout(r, 260))
+  // The label rule is the BROKER's -- `validate_label` runs inside
+  // /v1/accounts/authorize, before a URL is returned, so an unusable label is
+  // caught before anybody signs in. The fixture applies the same refusal so
+  // that the message an operator gets in development is the one production
+  // gives, rather than a happy path only production disagrees with.
+  if (!/^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(body.label)) {
     return fixtureRefused(
-      'the stored credential is not JSON; a subscription credential needs accessToken, refreshToken and expiresAt',
+      `account label '${body.label}' must be lowercase letters, digits and dashes, ` +
+        'starting and ending alphanumeric, at most 40 characters -- it becomes part ' +
+        'of a Secret Manager name and a Kubernetes annotation',
     )
   }
-  const outer = isRecord(parsed) ? parsed : {}
-  const inner = isRecord(outer.claudeAiOauth) ? outer.claudeAiOauth : outer
-  if (!inner.refreshToken && !inner.refresh_token) {
-    return fixtureRefused('the stored credential has no refresh token')
+  // 43 characters, which is what 32 random bytes base64url-encode to. Anything
+  // shorter is the length the real authorize endpoint refuses, so a fixture
+  // that produced a short state would be modelling a broken server.
+  const state = `fixture-${Math.random().toString(36).slice(2)}${Math.random()
+    .toString(36)
+    .slice(2)}`.padEnd(43, 'x')
+  fixturePending.set(state, { label: body.label, lend_to: body.lend_to })
+  // NOTED ONLY ON THE PATH THAT SUCCEEDS. `noteFixtureProbe` renders a non-ok
+  // probe as a 403 or a 503, and this route's refusal is a 422 -- so noting
+  // the refusal above would put a wrong status on the Reference page, which
+  // exists to say what these routes actually answered. A route with no row is
+  // a route nothing has called yet: true, and not a claim about the platform.
+  noteFixtureProbe('/v1/accounts/authorize', 260, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      // The provider's real authorize host and real redirect, so the screen's
+      // copy -- which reads the callback host out of this URL rather than
+      // restating it -- is exercised rather than stubbed.
+      authorize_url:
+        'https://claude.com/cai/oauth/authorize?code=true&response_type=code' +
+        '&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback' +
+        `&code_challenge_method=S256&state=${encodeURIComponent(state)}`,
+      state,
+      expires_in_seconds: 900,
+    },
   }
-  // The owner is the token's tenant, never anything in the body -- the same
-  // rule routes/accounts.py enforces.
+}
+
+async function fixtureFinishSignIn(body: {
+  state: string
+  code: string
+}): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 480))
+
+  const hash = body.code.indexOf('#')
+  const pastedState = hash === -1 ? null : body.code.slice(hash + 1).trim()
+  if (pastedState && pastedState !== body.state) {
+    return fixtureRefused(
+      'the pasted code belongs to a different sign-in than the one this page ' +
+        'started. Press Add account and sign in again.',
+    )
+  }
+  const pending = fixturePending.get(body.state)
+  if (!pending) {
+    return fixtureRefused(
+      'this sign-in has expired or was already completed. Codes are ' +
+        'single-use; press Add account to start again.',
+    )
+  }
+  // A short code stands in for one the endpoint rejects -- the commonest real
+  // cause being that the person took too long. The pending record SURVIVES it,
+  // exactly as the broker's does, so the screen's "your sign-in is still open,
+  // paste again" treatment is reachable in development.
+  const code = (hash === -1 ? body.code : body.code.slice(0, hash)).trim()
+  if (code.length < 6) {
+    return fixtureRefused(
+      'the sign-in code was not accepted. Codes are single-use and expire ' +
+        'quickly, so this usually means it was already redeemed or that too ' +
+        'much time passed. Sign in again to get a new one.',
+    )
+  }
+
   const existing = fixtureAccounts.find(
-    (a) => a.account_id === `${FIXTURE_TENANT}:${body.label}`,
+    (a) => a.account_id === `${FIXTURE_TENANT}:${pending.label}`,
   )
   const account: Account = existing
-    // Re-registering preserves state and readings, exactly as accountstore.py does.
-    ? { ...existing, lend_to: body.lend_to, provider: body.provider }
-    : fixtureAccount(FIXTURE_TENANT, body.label, {
-        provider: body.provider,
-        lend_to: body.lend_to,
+    ? // Re-registering preserves state and readings, exactly as accountstore.py
+      // does -- REAUTH_REQUIRED included, which is why the screen puts the
+      // state back as a visible second call rather than assuming it moved.
+      { ...existing, lend_to: pending.lend_to }
+    : fixtureAccount(FIXTURE_TENANT, pending.label, {
+        lend_to: pending.lend_to,
         observed_at: null,
         stale: true,
         windows: {},
@@ -1316,14 +1731,17 @@ async function fixtureRegister(body: {
   fixtureAccounts = existing
     ? fixtureAccounts.map((a) => (a.account_id === account.account_id ? account : a))
     : [...fixtureAccounts, account]
+  // Single-use, and deleted only once the account exists.
+  fixturePending.delete(body.state)
+  noteFixtureProbe('/v1/accounts/exchange', 480, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       account,
-      expires_at: ISO(7 * 3600_000),
+      expires_at: ISO(8 * 3600_000),
       note: 'stored write-only; no route in this service returns key material',
-    } satisfies RegisterResponse,
+    },
   }
 }
 
@@ -1387,4 +1805,313 @@ async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 200))
   fixtureAccounts = fixtureAccounts.filter((a) => a.account_id !== accountId)
   return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId, secret: 'retained' } }
+}
+
+// ===========================================================================
+// Overview (the landing screen) -- two reads nothing else needed
+// ===========================================================================
+//
+// Everything else the Overview draws comes from loaders that already existed
+// above: loadCapacity, loadTasks, loadStats, loadProviders and loadLeases.
+// Only these two are new, and both exist because the shape the Overview needs
+// is genuinely different from what an existing loader returns.
+
+/**
+ * The subscription pool ALONE.
+ *
+ * Deliberately not `loadAccountsBoard`: that one also reads
+ * `/v1/admin/tenants`, which exists to populate the lending picker on the
+ * Accounts screen. The Overview offers no lending control, so paying for an
+ * admin read -- and, for a non-admin, taking a guaranteed 403 -- to render a
+ * headroom figure would be a request spent on nothing.
+ *
+ * `accounts.length === 0` IS empty here, and the panel says what that means:
+ * no account is registered, so the subscription pool supplies nothing. That is
+ * a real answer, not a failure, and it is the difference between "the pool is
+ * empty" and "we could not read the pool".
+ */
+export async function loadAccountPool(): Promise<Result<AccountsPage>> {
+  if (USE_FIXTURES) return fixtureAccountPool()
+  return read<AccountsPage>('/v1/accounts', (d) => d.accounts.length === 0)
+}
+
+async function fixtureAccountPool(): Promise<Result<AccountsPage>> {
+  await new Promise((r) => setTimeout(r, 190))
+  noteFixtureProbe('/v1/accounts', 190, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { accounts: fixtureAccounts.map((a) => ({ ...a })), tenant_id: FIXTURE_TENANT },
+  }
+}
+
+/**
+ * HOW MANY TASKS THE SPEND FIGURE IS SUMMED OVER, and why it is a small number.
+ *
+ * `cost_usd` and the four token counts live on the ATTEMPT (codec.py:285), and
+ * there is no route that aggregates them -- no sum, no group-by, no date
+ * range. The only way to total them from a browser is one
+ * `GET /v1/tasks/{id}/attempts` per task, so the sample size is a request
+ * count in disguise.
+ *
+ * Twelve, at three in flight, because the API's token bucket is 20 rps per
+ * principal per instance and EVERY OPEN TAB counts against it. The Overview
+ * already spends five requests on its other panels; a fan-out of thirty would
+ * make the landing screen the thing that 429s the operator who opened it.
+ * Three in flight, started only after the task page has landed, keeps the peak
+ * under half the bucket with room for a second tab.
+ *
+ * The consequence is stated on the panel rather than hidden: this is a sample
+ * of the most recent work, not the tenant's bill. An aggregate route is the
+ * request filed in the report.
+ */
+const SPEND_SAMPLE_TASKS = 12
+const SPEND_CONCURRENCY = 3
+
+/**
+ * What the Overview's spend panel is allowed to claim.
+ *
+ * Every field that could be zero is `number | null` on purpose. An attempt
+ * that reports no cost is NOT an attempt that cost nothing -- `record_usage`
+ * in agent_worker/control.py omits a key the runner did not report, and says
+ * so in its own docstring: "None means not reported and zero means cost
+ * nothing, and a mock task is genuinely the second while a result that failed
+ * to parse is the first". So a total is null until at least one attempt
+ * actually carried the figure, and `$0.00` is never printed over an unmeasured
+ * sample.
+ */
+export interface SpendRollup {
+  /** The tenant these tasks belong to, as the task page reported it. */
+  tenantId: string | null
+  /** Tasks on the page the sample was drawn from. */
+  tasksOnPage: number
+  /** Tasks on that page that have ever run. The population, not the sample. */
+  tasksWithAttempts: number
+  /** Tasks whose attempts were actually read. At most SPEND_SAMPLE_TASKS. */
+  tasksSampled: number
+  /** Tasks whose attempt read FAILED. Their spend is in none of the figures. */
+  failedReads: number
+  /** Why, for the panel. Null when every read in the sample succeeded. */
+  failedDetail: string | null
+  /** Attempts returned across the sample. */
+  attempts: number
+  /** Of those, how many carried a cost figure. The rest are not zero. */
+  attemptsWithCost: number
+  /** Of those, how many carried any token figure. */
+  attemptsWithTokens: number
+  costUsd: number | null
+  inputTokens: number | null
+  outputTokens: number | null
+  cacheReadTokens: number | null
+  cacheCreationTokens: number | null
+  /** Oldest and newest `created_at` among the SAMPLED tasks. The real span. */
+  from: string | null
+  to: string | null
+}
+
+/**
+ * Sum spend over the most recent tasks of an already-loaded page.
+ *
+ * Takes the page rather than re-reading `/v1/tasks`: the Overview has it in
+ * hand, and a second copy could disagree with the one the rest of the screen
+ * is drawn from -- two panels describing different sets of tasks with no way
+ * to tell.
+ *
+ * `page.tasks` arrives newest-first (store.py:408 orders by created_at
+ * DESCENDING), so `slice` takes the most recent, not an arbitrary twelve.
+ */
+export async function loadSpend(page: TaskPage): Promise<Result<SpendRollup>> {
+  const withAttempts = page.tasks.filter((t) => t.attempt_count > 0)
+  const sample = withAttempts.slice(0, SPEND_SAMPLE_TASKS)
+  const base = {
+    tenantId: page.tenant_id ?? null,
+    tasksOnPage: page.tasks.length,
+    tasksWithAttempts: withAttempts.length,
+    tasksSampled: sample.length,
+  }
+
+  // No task has ever run. A real zero, and the panel says exactly that --
+  // distinct from "we could not read the attempts".
+  if (sample.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+
+  const results = await mapWithLimit(sample, SPEND_CONCURRENCY, (t) =>
+    USE_FIXTURES ? fixtureSpendAttempts(t) : loadAttempts(t.id),
+  )
+
+  let attempts = 0
+  let attemptsWithCost = 0
+  let attemptsWithTokens = 0
+  let failedReads = 0
+  let failedDetail: string | null = null
+  // `null` until a figure is actually seen. Seeding these at 0 is how an
+  // unmeasured sample becomes a confident "$0.00".
+  let cost: number | null = null
+  let input: number | null = null
+  let output: number | null = null
+  let cacheRead: number | null = null
+  let cacheCreate: number | null = null
+
+  const add = (acc: number | null, v: number | null): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? (acc ?? 0) + v : acc
+
+  for (const r of results) {
+    if (r.status === 'error') {
+      failedReads++
+      // The FIRST failure's message, kept verbatim. Collapsing several causes
+      // into one sentence is the mistake this codebase keeps paying for.
+      failedDetail ??= r.error.message
+      continue
+    }
+    // `empty` means the task reports attempts but the subcollection returned
+    // none. Nothing to add, and nothing failed.
+    if (r.status !== 'ok' && r.status !== 'stale') continue
+    for (const a of r.data.attempts) {
+      attempts++
+      if (typeof a.cost_usd === 'number' && Number.isFinite(a.cost_usd)) attemptsWithCost++
+      const anyToken =
+        [a.input_tokens, a.output_tokens, a.cache_read_input_tokens, a.cache_creation_input_tokens]
+          .some((v) => typeof v === 'number' && Number.isFinite(v))
+      if (anyToken) attemptsWithTokens++
+      cost = add(cost, a.cost_usd)
+      input = add(input, a.input_tokens)
+      output = add(output, a.output_tokens)
+      cacheRead = add(cacheRead, a.cache_read_input_tokens)
+      cacheCreate = add(cacheCreate, a.cache_creation_input_tokens)
+    }
+  }
+
+  // EVERY read failed. There is no partial figure to show and showing the
+  // zeros would be a number nobody measured, so this is an error, not a
+  // rollup with empty columns.
+  if (failedReads === sample.length) {
+    const first = results.find((r) => r.status === 'error')
+    return {
+      status: 'error',
+      error:
+        first && first.status === 'error'
+          ? first.error
+          : {
+              kind: 'server_error',
+              httpStatus: null,
+              code: null,
+              message: 'No attempt read completed.',
+            },
+    }
+  }
+
+  const times = sample
+    .map((t) => t.created_at)
+    .filter((v): v is string => typeof v === 'string')
+    .sort()
+
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      ...base,
+      failedReads,
+      failedDetail,
+      attempts,
+      attemptsWithCost,
+      attemptsWithTokens,
+      costUsd: cost,
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheCreationTokens: cacheCreate,
+      from: times[0] ?? null,
+      to: times[times.length - 1] ?? null,
+    },
+  }
+}
+
+/**
+ * `Promise.all` with a ceiling on how many are in flight.
+ *
+ * Not a utility for its own sake: `Promise.all` over the sample would put
+ * twelve requests on the wire at once, and the API's bucket is 20 rps per
+ * principal shared with every other tab the operator has open. This is the
+ * one place in this file that fans out, so the limiter lives here rather than
+ * in a lib nothing else imports.
+ */
+async function mapWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++
+      const item = items[i]
+      if (item === undefined) return
+      out[i] = await fn(item)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+/**
+ * Attempts for the spend fixture.
+ *
+ * Separate from `fixtureAttempts` above, which reports null for every usage
+ * field -- a faithful picture of an attempt that ran before usage capture, and
+ * the right default for the attempt timeline. Summing those would show the
+ * spend panel only in its "nothing measured" state, so the one state that
+ * ships unlooked-at would be the ordinary one.
+ *
+ * The mix here is the one the panel has to survive: figures present on the
+ * newest attempt, absent on a retry, and a task whose attempts carry tokens
+ * but no cost at all.
+ */
+async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: AttemptRow[] }>> {
+  await new Promise((r) => setTimeout(r, 90))
+  noteFixtureProbe(`/v1/tasks/{id}/attempts`, 90, true)
+  const seed = task.id.length + task.attempt_count
+  const mk = (n: number, usage: Partial<AttemptRow>): AttemptRow => ({
+    attempt_id: `${task.id}-a${n}`,
+    task_id: task.id,
+    tenant_id: task.tenant_id,
+    generation: n,
+    lease_id: `lease-${task.id}-${n}`,
+    backend: 'CLOUD_RUN_JOB',
+    execution_name: null,
+    created_at: task.created_at,
+    started_at: task.started_at,
+    completed_at: task.completed_at,
+    exit_code: null,
+    error: null,
+    peak_rss_bytes: null,
+    peak_disk_bytes: null,
+    oom_near_miss: false,
+    checkpoints: [],
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_input_tokens: null,
+    cache_creation_input_tokens: null,
+    cost_usd: null,
+    ...usage,
+  })
+
+  // `mock` and `generic` runners report nothing at all -- the frozen catalogue
+  // says only claude-code and codex produce usage -- so their attempts stay
+  // all-null and the panel has to count them as unmeasured rather than free.
+  if (task.runner_profile === 'mock' || task.runner_profile === 'generic') {
+    return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(1, {})] } }
+  }
+
+  const rows = [
+    mk(task.attempt_count, {
+      input_tokens: 14_000 + seed * 137,
+      output_tokens: 2_100 + seed * 31,
+      cache_read_input_tokens: 96_000 + seed * 811,
+      cache_creation_input_tokens: 11_500 + seed * 57,
+      cost_usd: 0.18 + (seed % 7) * 0.043,
+    }),
+  ]
+  // A retry that predates usage capture: real attempt, no figures on it.
+  if (task.attempt_count > 1) rows.push(mk(task.attempt_count - 1, {}))
+  return { status: 'ok', fetchedAt: Date.now(), data: { attempts: rows } }
 }

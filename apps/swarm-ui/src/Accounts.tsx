@@ -1,8 +1,9 @@
-import { useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
+  beginAccountSignIn,
+  finishAccountSignIn,
   loadAccountsBoard,
   refreshAccount,
-  registerAccount,
   removeAccount,
   setAccountLending,
   setAccountState,
@@ -17,11 +18,15 @@ import {
   accountTone,
   barFilled,
   bindingWindow,
+  callbackHostOf,
   clearsIn,
+  humaniseUntil,
   isProjected,
   needsAHuman,
+  pastedCodeHint,
   readingOf,
   type Account,
+  type AccountAuthorization,
   type AccountReading,
   type AccountStateName,
   type AccountWindow,
@@ -31,12 +36,12 @@ import {
 /**
  * THE ONE PROVIDER, AND THE ONE CREDENTIAL KIND -- stated, never picked.
  *
- * This pool holds Claude subscription credentials: the keychain pair Claude
- * Code keeps after `/login`, which quota-broker can exchange for a successor
- * indefinitely. There is no API-key path here and no credential-kind selector,
- * because there is nothing to choose between -- and a hardcoded value with no
- * words around it is worse than a picker, since the operator cannot even tell
- * that a decision was made for them. So the form SAYS what it sends.
+ * This pool holds Claude subscription credentials: the OAuth pair a sign-in
+ * produces, which quota-broker can exchange for a successor indefinitely.
+ * There is no API-key path here and no credential-kind selector, because there
+ * is nothing to choose between -- and a hardcoded value with no words around
+ * it is worse than a picker, since the operator cannot even tell that a
+ * decision was made for them. So the form SAYS what it sends.
  *
  * It is a named constant rather than a literal in the request body so that the
  * value printed on the form and the value the request carries cannot drift
@@ -54,9 +59,15 @@ const SUBSCRIPTION_PROVIDER = 'anthropic'
  * operator is left with a spinner that ended and no verdict, which is the
  * question the button existed to answer.
  *
- * So the outcomes a person has to READ live above the remount boundary. The
- * genuinely transient things -- a half-typed reason, a dirty lending field, a
- * pasted credential -- deliberately do NOT, because they should not survive the
+ * A SIGN-IN IS THE SHARPEST CASE OF THAT. It spans a trip to another tab, in
+ * another application, and back. What has to survive is not a verdict but a
+ * live server-side record -- the `state` identifying the pending sign-in and
+ * the URL that reopens the login page. Losing those to a remount makes a person
+ * sign in again having done nothing wrong. So sign-ins live here, keyed by what
+ * they are for: one for the add form, one per account for signing in again.
+ *
+ * The genuinely transient things -- a half-typed reason, a dirty lending field,
+ * an unsent code -- deliberately do NOT, because they should not survive the
  * write that consumed them.
  *
  * Holding them here is only half of it. `Screen` renders `children` -- and so
@@ -68,16 +79,18 @@ interface Persisted {
   /** Explicitly opened or closed rows. Absent means "whatever the default is". */
   open: Record<string, boolean>
   refresh: Record<string, RefreshState>
-  reauth: Record<string, ReauthState>
-  register: RegisterState
+  /** Signing in again to an account that already exists, keyed by account id. */
+  reauth: Record<string, SignIn>
+  /** The add-an-account sign-in. */
+  signin: SignIn
 }
 
 type Patch = (fn: (p: Persisted) => Persisted) => void
 
-const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, register: { kind: 'idle' } }
+const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, signin: { kind: 'idle' } }
 
 /**
- * Settings -> Accounts. The Claude subscriptions this platform runs agents on.
+ * Capacity -> Accounts. The Claude subscriptions this platform runs agents on.
  *
  * WHY THE COLUMNS ARE `cs status`'s, EXACTLY. An operator already reads
  * ACCOUNT / 5H / 7D / CLEARS / STATE on their laptop. Inventing a second
@@ -102,7 +115,9 @@ const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, register: { kin
  * token it replaces and two writers racing on one account brick it. Every
  * button here is a call to a broker route through swarm-api's proxy. Nothing
  * in this file reads a secret, exchanges a token, retries a refresh on its own
- * initiative, or renders key material -- not even its length.
+ * initiative, or renders key material -- not even its length. It does not hold
+ * the PKCE verifier either: that stays server-side, keyed by `state`, because a
+ * verifier the client holds is a PKCE flow that proves nothing.
  */
 export function AccountsScreen() {
   // Bumping this remounts Screen, which re-runs `load`. Every mutation here
@@ -120,9 +135,9 @@ export function AccountsScreen() {
    * old rows, dimmed, never a blank screen -- and implements it with a ref that
    * a remount destroys. Reloading by remount therefore disabled the one rule
    * that keeps a failed reload from wiping the screen: the table vanished, and
-   * with it the refresh verdict, the register receipt and the re-authenticate
-   * report, all of which are rendered by `children` and all of which are the
-   * answer to a write somebody just made.
+   * with it the refresh verdict, the sign-in in progress and the report of what
+   * a sign-in did, all of which are rendered by `children` and all of which are
+   * the answer to something somebody just did.
    *
    * This ref lives in `AccountsScreen`, which is NOT remounted, so it survives
    * every reload the screen triggers. `load` below hands the previous read back
@@ -168,7 +183,7 @@ export function AccountsScreen() {
       summary={(b) => <SummaryLine board={b} />}
       /*
        * NO `empty` PROP, DELIBERATELY. Screen renders `empty` INSTEAD of its
-       * children, so an empty pool would hide the register form -- the single
+       * children, so an empty pool would hide the add form -- the single
        * control that fixes an empty pool. `loadAccountsBoard` therefore never
        * reports empty, and zero accounts is handled below as a state panel
        * sitting above a form that is still on screen.
@@ -209,7 +224,7 @@ function SummaryLine({ board }: { board: AccountsBoard }) {
   const scope = board.page.tenant_id
   const broken = board.page.accounts.filter(needsAHuman)
   // Split, because they are two different jobs for two different people: one is
-  // "open the row and paste", the other is "this is not yours to fix".
+  // "open the row and sign in", the other is "this is not yours to fix".
   const mine = broken.filter((a) => isOwned(a, scope)).length
   const lent = broken.length - mine
   return (
@@ -251,7 +266,7 @@ function Body({
     <>
       <Broken accounts={accounts} scope={board.page.tenant_id} />
       <Pool board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
-      <Register board={board} ui={ui} patch={patch} reload={reload} />
+      <AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
       <Instructions />
       <Legend />
     </>
@@ -266,11 +281,11 @@ function Body({
  * chip in a row it shares with five healthy ones is how it gets scrolled past.
  *
  * WHICH PERSON, THOUGH. A LENT account in this state is on the reader's screen
- * and is not theirs to fix: its row shows no paste control, no state control
+ * and is not theirs to fix: its row shows no sign-in control, no state control
  * and no refresh button, because those routes answer 404 for a tenant that does
- * not own the account. Telling every borrower to "open the row and paste a
- * fresh credential" sends them to a row that deliberately refuses, so the two
- * cases are separated here and only one of them is an instruction.
+ * not own the account. Telling every borrower to "open the row and sign in"
+ * sends them to a row that deliberately refuses, so the two cases are separated
+ * here and only one of them is an instruction.
  */
 function Broken({ accounts, scope }: { accounts: Account[]; scope: string | null }) {
   const broken = accounts.filter(needsAHuman)
@@ -290,16 +305,16 @@ function Broken({ accounts, scope }: { accounts: Account[]; scope: string | null
           gone or unreadable, so the sweep has stopped trying rather than spend the
           token endpoint&rsquo;s rate limit learning the same answer every five
           minutes. Nothing new is assigned to {mine.length === 1 ? 'it' : 'them'}.
-          Open the row and paste a fresh credential; the steps are under{' '}
-          <em>When an account goes REAUTH_REQUIRED</em> below.
+          Open the row and press <em>Sign in again</em>: one trip to a Claude
+          login page, one short code, and this screen puts the state back for you.
         </div>
       )}
       {lent.length > 0 && (
         <div>
           {lent.map((a) => `${a.account_id} (owned by ${a.owner_tenant})`).join(', ')}{' '}
           &mdash; broken the same way, and <strong>not yours to fix</strong>.
-          Replacing a credential, refreshing and changing state stay with the
-          owning tenant, so those rows carry no controls and the routes answer{' '}
+          Signing in again, refreshing and changing state stay with the owning
+          tenant, so those rows carry no controls and the routes answer{' '}
           <em>404, no such account in this tenant&rsquo;s pool</em> here. Nothing
           of yours will be assigned to{' '}
           {lent.length === 1 ? 'it' : 'them'} until{' '}
@@ -358,8 +373,8 @@ function Pool({
             The read succeeded and returned nothing &mdash; this is a real zero,
             not a failed query. Until an account exists, every task whose runner
             profile names a subscription provider parks on a missing credential
-            rather than failing, which costs nothing but also runs nothing.
-            Register the first one below.
+            rather than failing, which costs nothing but also runs nothing. Add
+            the first one below: it is a sign-in, and it takes about a minute.
           </p>
         </div>
       </section>
@@ -499,8 +514,11 @@ function WindowCell({ reading, window }: { reading: AccountReading; window: stri
       <td className="n acct-window acct-unmeasured" title={title}>
         {/* AN EM DASH AND NO BAR. Drawing an empty five-cell bar here would be
             pixel-for-pixel identical to a measured 0%, which is the one
-            confusion this column must never allow. */}
-        <span className="acct-pct">&mdash;</span>
+            confusion this column must never allow. `ctl-em` is the shared
+            treatment for an absent measurement, so this cell and every other
+            screen's em dash are the same class of thing rather than the same
+            character by coincidence. */}
+        <span className="acct-pct ctl-em">&mdash;</span>
         <span className="acct-why">not measured</span>
       </td>
     )
@@ -559,7 +577,7 @@ function ClearsCell({ account, now }: { account: Account; now: number }) {
   if (binding === null) {
     return (
       <td
-        className="n acct-unmeasured"
+        className="n acct-unmeasured ctl-em"
         title="No window reading, so there is no reset instant to count down to. This is an absence of information, not a window that never clears."
       >
         &mdash;
@@ -636,12 +654,12 @@ function Warnings({
   for (const a of accounts) {
     if (needsAHuman(a)) {
       // The instruction only goes to the person who can carry it out. A lent
-      // row has no paste control and no state control by design, so sending a
+      // row has no sign-in control and no state control by design, so sending a
       // borrower there is sending them to a dead end.
       lines.push(
         isOwned(a, scope)
-          ? `${a.account_id} needs a sign-in. Paste a fresh credential into its row, then put its state back.`
-          : `${a.account_id} needs a sign-in, and ${a.owner_tenant} owns it. Replacing its credential and changing its state belong to that tenant -- those routes answer 404 here -- so its row has no controls and this one is fixed by its owner, not from this screen.`,
+          ? `${a.account_id} needs a sign-in. Open its row, press Sign in again, and this screen puts its state back afterwards.`
+          : `${a.account_id} needs a sign-in, and ${a.owner_tenant} owns it. Signing in again and changing its state belong to that tenant -- those routes answer 404 here -- so its row has no controls and this one is fixed by its owner, not from this screen.`,
       )
       continue
     }
@@ -781,7 +799,7 @@ function Borrowed({ account }: { account: Account }) {
       <p className="muted small">
         <strong>{account.owner_tenant}</strong> owns this account and has lent it
         to you. Your agents can run on it, and pausing, draining, re-lending,
-        refreshing and removing it stay with its owner. Those routes answer{' '}
+        refreshing and signing in again stay with its owner. Those routes answer{' '}
         <em>404, no such account in this tenant&rsquo;s pool</em> here &mdash; the
         same answer a label that does not exist gets, so that asking cannot
         confirm somebody else&rsquo;s account names.
@@ -860,7 +878,7 @@ function ExtraClears({
   if (!w) {
     return (
       <span
-        className="sr-by acct-unmeasured"
+        className="sr-by acct-unmeasured ctl-em"
         title={`The provider reported no ${name} window in the last reading, so there is no reset instant to count down to.`}
       >
         —
@@ -904,6 +922,11 @@ type RefreshState =
  * complete successes -- `still_valid` means the stored token is fine and the
  * pod-facing secret already carries it, which is the commonest answer on a
  * healthy account and must not be painted as a failure.
+ *
+ * FOUR OF THEM END IN THE SAME INSTRUCTION -- sign in again -- and they still
+ * get four different explanations, because the thing that went wrong differs
+ * and the next person to read this screen needs to know which. Collapsing them
+ * into one sentence is exactly the mistake this codebase keeps paying for.
  */
 function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body: ReactNode } {
   switch (r.reason) {
@@ -955,8 +978,9 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
           <>
             The token endpoint refused the exchange. Only a person can fix this,
             so the broker has stopped trying and moved this account to
-            REAUTH_REQUIRED. Paste a fresh credential below, then put the state
-            back &mdash; re-registering deliberately does not do that for you.
+            REAUTH_REQUIRED. Press <em>Sign in again</em> below &mdash; it is the
+            same sign-in that added the account, and this screen puts the state
+            back afterwards as a visible second step.
           </>
         ),
       }
@@ -967,8 +991,10 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
         body: (
           <>
             What is in Secret Manager is not a credential this can read, so there
-            is nothing to exchange. The account has been moved to REAUTH_REQUIRED.
-            Paste the keychain item again, verbatim and unedited.
+            is nothing to exchange &mdash; a different fault from a refresh token
+            the endpoint rejected. The account has been moved to REAUTH_REQUIRED.
+            Press <em>Sign in again</em> below: a fresh sign-in writes the shape
+            the broker produces, which is the shape it can read.
           </>
         ),
       }
@@ -979,11 +1005,10 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
         body: (
           <>
             No <code>-refresh</code> secret exists for this account, so there is
-            no half to exchange. That is the shape a{' '}
-            <code>claude setup-token</code> value has &mdash; one long-lived
-            access token and nothing beside it &mdash; and it cannot be kept
-            alive by anything. Register this label again with the full keychain
-            item, which is a pair.
+            nothing to exchange and nothing was rejected. That is the shape a
+            lone long-lived access token has &mdash; one token, nothing beside it
+            &mdash; and it cannot be kept alive by anything. Press{' '}
+            <em>Sign in again</em> below: a sign-in always yields a pair.
           </>
         ),
       }
@@ -1177,7 +1202,7 @@ function Lending({
   // one with nothing on screen to explain why, so it is called out instead.
   const includesOwner = parsed.includes(owner)
   const willSave = parsed.filter((t) => t !== owner)
-  const dirty = willSave.join(' ') !== [...account.lend_to].join(' ')
+  const dirty = willSave.join(' ') !== [...account.lend_to].join(' ')
 
   const save = async () => {
     setBusy(true)
@@ -1351,26 +1376,781 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
 }
 
 // ---------------------------------------------------------------------------
-// Re-authenticate / replace the credential
+// The sign-in -- the only way a credential gets into this pool
 // ---------------------------------------------------------------------------
-
-type ReauthState =
-  | { kind: 'idle' | 'sending' }
-  /** The credential landed. `stateRestored` says whether the second step did. */
-  | { kind: 'replaced'; stateRestored: boolean; stateError: ApiError | null; wasBroken: boolean }
-  | { kind: 'failed'; error: ApiError }
+//
+// WHAT USED TO BE HERE, and why it is not coming back. A textarea, and
+// instructions to run `security find-generic-password -s "Claude
+// Code-credentials" -w`, copy the JSON it printed and paste it "verbatim, the
+// wrapper included". It was a bad experience and it was also fragile: the
+// commonest failure was a hand-edited value that parsed on the operator's
+// machine and not here, reported as a 422 about a missing refresh token, which
+// named the symptom rather than the cause. There is no paste box left in this
+// file and no fallback to one -- a keychain field kept "just in case" is how
+// the flow that was removed comes back.
+//
+// TWO STEPS, BECAUSE THE PROVIDER'S OAUTH CLIENT ALLOWS EXACTLY ONE REDIRECT
+// TARGET: its own callback page, which DISPLAYS a code. A third-party
+// application cannot register `https://swarm.saga.xyz/callback`, so the browser
+// cannot come back here and the code on that page is what closes the loop. The
+// screen says that out loud rather than leaving the paste looking like an
+// oversight somebody will try to "fix" later.
 
 /**
- * Paste a fresh credential over an existing account.
+ * One sign-in, as the five things that can be true of it.
  *
- * TWO STEPS, VISIBLY, because the store makes them two steps. Re-registering an
+ * `open` IS THE STATE THAT MATTERS. It holds a record that exists on the
+ * SERVER -- a pending sign-in keyed by `state`, holding the PKCE verifier, the
+ * label and the lending list -- so it is not a UI mode, it is a claim about
+ * something real that will expire. That is why it carries `startedAt`: the
+ * deadline is measured from the moment the server issued it, not from a render.
+ *
+ * `open` also survives a FAILED exchange, on purpose: the broker deletes the
+ * pending record only once an account exists, so a mistyped or stale code costs
+ * one paste rather than the whole sign-in.
+ */
+type SignIn =
+  | { kind: 'idle' }
+  | { kind: 'starting' }
+  | { kind: 'start_failed'; error: ApiError }
+  | {
+      kind: 'open'
+      label: string
+      lendTo: string[]
+      auth: AccountAuthorization
+      /** When the server issued it. The deadline is measured from here. */
+      startedAt: number
+      /** What happened when the sign-in page was asked to open, if it was. */
+      opened: 'not_yet' | 'opened' | 'blocked'
+      sending: boolean
+      /** The last exchange refusal. The sign-in is still open; paste again. */
+      failed: ApiError | null
+    }
+  | {
+      kind: 'done'
+      account: Account
+      expiresAt: string | null
+      /** Only for a sign-in that had to put a state back. Null otherwise. */
+      restore: { ok: true } | { ok: false; error: ApiError | null } | null
+    }
+
+/** A non-ok Result turned into the one error it carries. */
+function failureOf(res: Result<unknown>): ApiError {
+  if (res.status === 'error' || res.status === 'stale') return res.error
+  return {
+    kind: 'server_error',
+    httpStatus: null,
+    code: null,
+    message: 'The request did not complete, and the platform did not say why.',
+  }
+}
+
+/**
+ * The one failure this screen has to NAME rather than describe.
+ *
+ * The sign-in routes are ones this page is certain it asked for at the right
+ * path, so a 404 or a 405 from them is not "you typed something wrong" and it
+ * is not "the platform is down" -- it is an API that does not serve the sign-in
+ * yet. A 405 in particular is what an API whose only route at that path is a
+ * DELETE answers, and bare "HTTP 405" sends an operator looking at their own
+ * request. `classify` in fetch.ts cannot know that, because it is per-status
+ * and this is per-route; so it is decided here, where the route is known.
+ */
+function isRouteMissing(e: ApiError): boolean {
+  return e.httpStatus === 404 || e.httpStatus === 405
+}
+
+function SignInFailure({ error, what }: { error: ApiError; what: string }) {
+  if (isRouteMissing(error)) {
+    return (
+      <div className="ctl-empty is-partial" role="status">
+        <h3>This deployment&rsquo;s API does not serve the sign-in yet</h3>
+        <p>
+          The API answered <strong>HTTP {error.httpStatus}</strong> for{' '}
+          <code>{what}</code> itself. That is what an API which has not been
+          given the sign-in route answers &mdash; not an answer about your
+          request, and not one about your account. quota-broker implements the
+          two steps; the public API in front of it has to pass them through.
+        </p>
+        <p>
+          Nothing was created and nothing was changed. The pool above loaded, so
+          your sign-in to this platform is fine and the account routes are
+          reachable &mdash; it is this one route that is missing.
+        </p>
+        <span className="ctl-empty-foot">
+          {error.code ? `${error.code} · ` : ''}
+          {error.message}
+        </span>
+      </div>
+    )
+  }
+  return <FailedPanel error={error} onRetry={() => undefined} />
+}
+
+/**
+ * How long the platform says it will hold this sign-in, counted down.
+ *
+ * TWO CLOCKS, AND THEY ARE NOT THE SAME ONE. The platform holds its pending
+ * record for `expires_in_seconds`, which it reported, so that one can be
+ * counted down honestly. The CODE on the callback page is the provider's and
+ * expires on its own schedule, which this platform does not know and this
+ * screen therefore puts no number on. One measured figure covering both would
+ * be it lending its credibility to a guess.
+ */
+function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (auth.expires_in_seconds === null) {
+    return (
+      <p className="muted small">
+        The platform did not say how long it holds this sign-in, so there is no
+        countdown here rather than a plausible one. Finish it promptly:{' '}
+        <strong>the code is single-use and expires quickly</strong>.
+      </p>
+    )
+  }
+  const left = startedAt + auth.expires_in_seconds * 1000 - now
+  if (left <= 0) {
+    return (
+      <p className="warn-text">
+        The platform said it would hold this sign-in for{' '}
+        {humaniseUntil(auth.expires_in_seconds * 1000)}, and that has passed on
+        this browser&rsquo;s clock. A code pasted now will most likely be refused.
+        The field is still live because the platform owns the clock and this one
+        may be ahead of it &mdash; and being refused costs nothing.
+      </p>
+    )
+  }
+  return (
+    <p className="muted small">
+      This platform holds the sign-in for another{' '}
+      <strong>{humaniseUntil(left)}</strong>. The code itself is{' '}
+      <strong>single-use and expires sooner than that</strong>, on
+      Anthropic&rsquo;s schedule rather than ours &mdash; so paste it when you
+      see it rather than leaving the tab open.
+    </p>
+  )
+}
+
+/**
+ * The warning that stops somebody adding the same account twice.
+ *
+ * WHICH ORGANISATION YOU SIGN IN AS COMES FROM THE COOKIE JAR, and nothing in
+ * the request overrides it: there is no account hint this platform could send
+ * that would change it. A private window SHARES that jar, so it is not enough
+ * -- it signs you in as the same organisation again and you get a second row
+ * holding the same subscription, with nothing on any screen explaining why the
+ * pool did not really grow.
+ *
+ * It is shown BEFORE the sign-in page is opened, because once it has been
+ * opened in the wrong browser the advice is useless.
+ */
+function DifferentBrowserNote({ mode }: { mode: 'add' | 'reauth' }) {
+  return (
+    // `warn`, not `bad`: nothing has failed, and nothing will fail loudly
+    // either -- that is the problem. Signing in as the wrong organisation
+    // succeeds, so this has to be read BEFORE the button rather than diagnosed
+    // after it. `role="note"` rather than `status` because it is static text
+    // that was always here, not the result of something the person just did.
+    <div className="banner warn" role="note">
+      <strong>A different account needs a different browser application</strong>
+      <div>
+        {mode === 'add' ? (
+          <>
+            Which organisation you sign in as comes from the cookies this browser
+            already holds, and nothing in this request overrides it.{' '}
+            <strong>A private window is not enough</strong> &mdash; it shares the
+            same cookie jar, so it signs you in as the same organisation and you
+            end up with a second row holding an account you already had. To add a
+            genuinely different account, copy the link below and open it in a{' '}
+            <em>different browser application</em> &mdash; Chrome beside Safari
+            beside Firefox &mdash; or sign out of Claude in this one first.
+          </>
+        ) : (
+          <>
+            This replaces the credential behind this account with whichever
+            organisation <em>this browser</em> is currently signed in as. That
+            comes from the cookie jar and nothing in the request overrides it,
+            and <strong>a private window shares that jar</strong> rather than
+            clearing it. If this browser is signed in as a different organisation
+            than the one this account is for, copy the link below and open it in
+            a different browser application instead &mdash; otherwise this label
+            quietly starts pointing at the wrong subscription.
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Open the sign-in page, and know whether it opened.
+ *
+ * SYNCHRONOUS, INSIDE THE CLICK. That is why the URL is fetched in an earlier
+ * step and opened in this one rather than both on one press: a `window.open`
+ * in a promise continuation is the pattern popup blockers exist to stop, and a
+ * sign-in that silently does not open is indistinguishable from a platform that
+ * is broken.
+ *
+ * `noopener` is deliberately NOT in the feature string, because with it
+ * `window.open` returns null unconditionally and the one thing worth knowing --
+ * whether a tab actually opened -- is lost. The opener is severed immediately
+ * instead. The trade is sound: the tab is being pointed at the provider's own
+ * sign-in page, so even in the window between the two there is nothing
+ * untrusted on the other end of the reference.
+ */
+function openSignInPage(url: string): 'opened' | 'blocked' {
+  const w = window.open(url, '_blank')
+  if (!w) return 'blocked'
+  try {
+    w.opener = null
+  } catch {
+    // A cross-origin refusal. The tab is open, which is what was asked for.
+  }
+  return 'opened'
+}
+
+/**
+ * The link, always visible and always copyable.
+ *
+ * NOT A CONVENIENCE. Adding a second account requires opening this URL in a
+ * different browser application, and the only way to do that is to have the
+ * URL as text. So it is rendered whether or not the button worked, and it is
+ * rendered before anyone has had a chance to press the wrong one.
+ */
+function SignInLink({ url }: { url: string }) {
+  const [copied, setCopied] = useState<'no' | 'yes' | 'unavailable'>('no')
+
+  const copy = async () => {
+    // `navigator.clipboard` is undefined outside a secure context and can
+    // reject when the document is not focused. Either way the URL is on screen
+    // and selectable, so the failure is reported rather than swallowed -- a
+    // button that says "copied" when nothing was copied is the small version
+    // of the bug this whole app is about.
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied('yes')
+    } catch {
+      setCopied('unavailable')
+    }
+  }
+
+  return (
+    <>
+      <div className="acct-buttons">
+        <button type="button" onClick={() => void copy()}>
+          {copied === 'yes' ? 'link copied' : 'copy the sign-in link'}
+        </button>
+      </div>
+      {copied === 'unavailable' && (
+        <p className="muted small">
+          This browser would not give the page access to the clipboard, which it
+          refuses outside a secure context and when the window is not focused.
+          Select the link below and copy it by hand &mdash; it is the same value,
+          and nothing is wrong with the sign-in.
+        </p>
+      )}
+      <p className="acct-fixed" style={{ wordBreak: 'break-all' }}>
+        {url}
+      </p>
+    </>
+  )
+}
+
+/**
+ * Steps two and three: open the page, then paste what it shows.
+ *
+ * Shared by the add form and by a row's sign-in-again, because they are the
+ * same two calls with the same failure modes; only the label and the lending
+ * list differ, and both were decided before this component is reached. A second
+ * copy of this would drift on the thing least likely to be noticed -- which of
+ * the refusals leaves the sign-in open.
+ */
+function SignInSteps({
+  at,
+  mode,
+  set,
+  onExchanged,
+}: {
+  at: Extract<SignIn, { kind: 'open' }>
+  mode: 'add' | 'reauth'
+  set: (next: SignIn) => void
+  /** Called with the account the platform registered. The caller owns what
+      happens next -- which, for a broken account, is putting its state back. */
+  onExchanged: (account: Account, expiresAt: string | null) => void | Promise<void>
+}) {
+  const [code, setCode] = useState('')
+  const host = callbackHostOf(at.auth.authorize_url)
+  const hint = pastedCodeHint(code)
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (code.trim() === '') return
+    // Out of the field before the request leaves. Not because a single-use code
+    // is a credential -- it is not -- but because leaving it there invites a
+    // second press that spends a code the platform has already consumed.
+    const pasted = code
+    setCode('')
+    set({ ...at, sending: true, failed: null })
+    const res = await finishAccountSignIn({ state: at.auth.state, code: pasted })
+    if (res.status !== 'ok') {
+      // STILL `open`. The broker keeps the pending record on a failed exchange
+      // precisely so a retry is one paste rather than a whole sign-in, and
+      // dropping back to `idle` here would throw that away.
+      set({ ...at, sending: false, failed: failureOf(res) })
+      return
+    }
+    await onExchanged(res.data.account, res.data.expires_at)
+  }
+
+  return (
+    <>
+      <div className="acct-action">
+        <h4>2 &middot; Sign in to Claude</h4>
+        <DifferentBrowserNote mode={mode} />
+        <p className="muted small">
+          This opens Claude&rsquo;s own sign-in page in a new tab. You sign in
+          there exactly as you normally would &mdash; this platform never sees
+          your password &mdash; and the page you land on afterwards is
+          {host ? (
+            <>
+              {' '}
+              <code>{host}</code>, which is
+            </>
+          ) : (
+            <> the one Claude sends you to, which is</>
+          )}{' '}
+          Anthropic&rsquo;s, not ours.
+        </p>
+        {/* BOTH DISABLED WHILE A CODE IS IN FLIGHT, and `start over` is the one
+            that matters: abandoning a sign-in whose exchange is already on its
+            way to the platform would leave an account registered and this page
+            claiming nothing happened. The other is disabled for the same
+            reason in miniature -- these handlers write from the state this
+            render captured, so firing one mid-request would roll the request
+            back on screen while it was still running. */}
+        <div className="acct-buttons">
+          <button
+            type="button"
+            disabled={at.sending}
+            onClick={() => set({ ...at, opened: openSignInPage(at.auth.authorize_url) })}
+          >
+            {at.opened === 'not_yet' ? 'Sign in to Claude ↗' : 'Open the sign-in page again ↗'}
+          </button>
+          <button
+            type="button"
+            disabled={at.sending}
+            onClick={() => set({ kind: 'idle' })}
+            title="Forget this sign-in on this page and start a new one"
+          >
+            start over
+          </button>
+        </div>
+        {at.opened === 'blocked' && (
+          <p className="warn-text">
+            This browser refused to open the tab, which is what a popup blocker
+            or an extension does. Nothing failed on the platform and the sign-in
+            is still open &mdash; use the link below instead.
+          </p>
+        )}
+        <SignInLink url={at.auth.authorize_url} />
+      </div>
+
+      <form className="acct-action" onSubmit={(e) => void submit(e)}>
+        <h4>3 &middot; Paste the code that page shows you</h4>
+        <p className="muted small">
+          When you have signed in, Claude prints a short code on the page.{' '}
+          <strong>
+            It shows the code, then a <code>#</code>, then a long string.
+          </strong>{' '}
+          Paste <em>all of it</em> &mdash; the platform splits it, and uses the
+          part after the <code>#</code> to check the paste belongs to{' '}
+          <em>this</em> sign-in rather than another tab&rsquo;s. Pasting only the
+          part before the <code>#</code> works too.
+        </p>
+        <Deadline auth={at.auth} startedAt={at.startedAt} />
+        <input
+          type="text"
+          className="mono acct-wide"
+          value={code}
+          spellCheck={false}
+          autoComplete="off"
+          disabled={at.sending}
+          placeholder="paste the code here"
+          aria-label="The code the Claude callback page displayed"
+          onChange={(e) => setCode(e.target.value)}
+        />
+        {hint && <p className="muted small">{hint}</p>}
+        <p className="acct-buttons">
+          <button type="submit" disabled={at.sending || code.trim() === ''}>
+            {at.sending
+              ? 'redeeming…'
+              : mode === 'add'
+                ? 'Add this account'
+                : 'Replace the credential'}
+          </button>
+        </p>
+        {at.failed && (
+          <>
+            <SignInFailure error={at.failed} what="POST /v1/accounts/exchange" />
+            {!isRouteMissing(at.failed) && (
+              <p className="muted small">
+                <strong>This sign-in is still open.</strong> The platform keeps it
+                until an account actually exists, so a mistyped code costs one
+                paste and nothing else: paste again above. If the code had already
+                been used or had expired, press <em>Open the sign-in page
+                again</em> for a fresh one &mdash; the label is still reserved by
+                this sign-in, so nothing needs re-entering.
+              </p>
+            )}
+          </>
+        )}
+      </form>
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Add an account
+// ---------------------------------------------------------------------------
+
+function AddAccount({
+  board,
+  accounts,
+  ui,
+  patch,
+  reload,
+}: {
+  board: AccountsBoard
+  accounts: Account[]
+  ui: Persisted
+  patch: Patch
+  reload: () => void
+}) {
+  // THE OWNER IS THE TOKEN'S TENANT, and `tenant_id` here is that value echoed
+  // by routes/accounts.py -- deliberately not taken from the broker's answer,
+  // "so the page can never be told it is looking at a tenant it is not". It is
+  // therefore the tenant the sign-in will file this under, and naming anything
+  // else on screen would be a promise the API does not keep.
+  const owner = board.page.tenant_id
+  const [label, setLabel] = useState('')
+  const [lend, setLend] = useState('')
+  const state = ui.signin
+  const set = (next: SignIn) => patch((p) => ({ ...p, signin: next }))
+
+  // NOT CONFIGURED MEANS REFUSE, never accept-anything. Without a named tenant
+  // this form could still submit safely -- the API files the account under the
+  // verified token whatever the page thinks -- but it could not TELL the
+  // operator whose pool the account is about to land in, and a sign-in is not
+  // something to spend on a maybe.
+  if (owner === null) {
+    return (
+      <section className="section panel">
+        <h2>Add an account</h2>
+        <div className="ctl-empty is-partial" role="status">
+          <h3>Adding an account is unavailable until your tenant is named</h3>
+          <p>
+            An account is owned by exactly one tenant, and the API decides which
+            from your verified sign-in rather than from anything typed here. This
+            response did not name one, so this form cannot tell you whose pool an
+            account would land in &mdash; and that is not something to guess at.
+          </p>
+          <p>
+            This is a gap in what was read, not a fault in the platform. It says
+            nothing about the accounts above, which loaded.
+          </p>
+        </div>
+      </section>
+    )
+  }
+
+  const trimmed = label.trim()
+  // Owned labels only: a LENT account shares the screen and is not in this
+  // tenant's namespace, so warning that its name is taken would be wrong.
+  const replacing = accounts.some((a) => a.owner_tenant === owner && a.label === trimmed)
+
+  const start = async (e: FormEvent) => {
+    e.preventDefault()
+    if (trimmed === '') return
+    const lendTo = splitTenants(lend).filter((t) => t !== owner)
+    set({ kind: 'starting' })
+    const res = await beginAccountSignIn({
+      // SENT, unlike the old register body's field, and the difference is worth
+      // writing down. The broker's authorize route requires an owning tenant
+      // because the PENDING RECORD it writes is what decides where the account
+      // lands when the code comes back minutes later -- by which time there is
+      // nothing else to derive it from. This value is the resolved tenant the
+      // API itself echoed, so it cannot disagree with the verified token.
+      owner_tenant: owner,
+      label: trimmed,
+      provider: SUBSCRIPTION_PROVIDER,
+      lend_to: lendTo,
+    })
+    if (res.status !== 'ok') {
+      set({ kind: 'start_failed', error: failureOf(res) })
+      return
+    }
+    set({
+      kind: 'open',
+      label: trimmed,
+      lendTo,
+      auth: res.data,
+      startedAt: Date.now(),
+      opened: 'not_yet',
+      sending: false,
+      failed: null,
+    })
+  }
+
+  return (
+    <section className="section panel">
+      <h2>Add an account</h2>
+      <p className="conjunction">
+        Owned by <strong>{owner}</strong>. This is a sign-in, not a paste: you
+        open Claude&rsquo;s own login page, sign in as you normally would, and
+        copy back one short code. This platform never sees your password and
+        never asks you for a keychain item. What it receives is stored{' '}
+        <strong>write-only</strong> &mdash; split into two Secret Manager
+        secrets, returned by no route here, and never rendered on this screen,
+        not even as a length.
+      </p>
+
+      {state.kind === 'done' && (
+        <SignInDone
+          state={state}
+          onAgain={() => {
+            set({ kind: 'idle' })
+            setLabel('')
+            setLend('')
+          }}
+        />
+      )}
+
+      {state.kind === 'open' ? (
+        <>
+          <div className="acct-action">
+            <h4>1 &middot; Named</h4>
+            <p className="muted small">
+              This sign-in is reserved for{' '}
+              <code>
+                {owner}:{state.label}
+              </code>
+              {state.lendTo.length > 0 ? (
+                <>
+                  , lent to <strong>{state.lendTo.join(', ')}</strong>
+                </>
+              ) : (
+                <>, lent to nobody</>
+              )}
+              . The platform is holding those alongside the sign-in, so they
+              cannot be changed from here without starting a new one &mdash;{' '}
+              <em>start over</em> below does exactly that.
+            </p>
+          </div>
+          <SignInSteps
+            at={state}
+            mode="add"
+            set={set}
+            onExchanged={(account, expiresAt) => {
+              set({ kind: 'done', account, expiresAt, restore: null })
+              setLabel('')
+              setLend('')
+              reload()
+            }}
+          />
+        </>
+      ) : (
+        <form onSubmit={(e) => void start(e)}>
+          {/* NOT A PICKER, AND NOT A SILENT DEFAULT EITHER. There is one kind of
+              credential in this pool, so there is nothing to choose; but a value
+              the request carries and the form never mentions is a decision made
+              for the operator with nothing on screen admitting it. So it is
+              shown, named, and said to be fixed. */}
+          <span className="t-label">provider</span>
+          <p className="acct-fixed mono">
+            {SUBSCRIPTION_PROVIDER}
+            <span className="acct-why">
+              fixed, and the only kind this pool handles: a Claude subscription.
+              The sign-in yields the OAuth pair quota-broker can exchange for a
+              successor indefinitely &mdash; that is what makes &ldquo;the only
+              manual step is the first one&rdquo; true. There is deliberately no
+              API-key option: a key that cannot be exchanged has nothing for the
+              sweep to keep alive.
+            </span>
+          </p>
+
+          <label className="t-label" htmlFor="acct-label">
+            label
+          </label>
+          <input
+            id="acct-label"
+            className="mono acct-wide"
+            value={label}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="laptop"
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          <p className="muted small">
+            A name for this subscription, for you. The account id will be{' '}
+            <code>
+              {owner}:{trimmed || 'label'}
+            </code>
+            . Lowercase letters, digits and dashes, starting and ending
+            alphanumeric, at most 40 characters &mdash; it becomes part of a
+            Secret Manager name and a Kubernetes annotation. The platform checks
+            it <strong>before it hands back a sign-in link</strong>, so a name it
+            cannot use costs you a message rather than a wasted login. That check
+            is the platform&rsquo;s own and is not repeated here, because a
+            second copy of the rule would eventually refuse a name the platform
+            would have taken.
+          </p>
+          {replacing && (
+            <p className="warn-text">
+              <strong>{trimmed} already exists in this pool.</strong> Signing in
+              under that label REPLACES its credential rather than adding a second
+              account &mdash; the id, the readings, the lending list and the state
+              are all kept. If you meant another subscription, give it a different
+              name. If you meant to fix that one, its own row has{' '}
+              <em>Sign in again</em>, which also puts its state back afterwards.
+            </p>
+          )}
+
+          <label className="t-label" htmlFor="acct-lend">
+            lend to (optional)
+          </label>
+          <input
+            id="acct-lend"
+            className="mono acct-wide"
+            value={lend}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="tenant ids, comma separated; empty means this account serves only you"
+            onChange={(e) => setLend(e.target.value)}
+          />
+          <p className="muted small">
+            Isolation is the default. Naming a tenant here lets that
+            tenant&rsquo;s pods mount this account&rsquo;s access token, which is
+            a narrowing of invariant 9 rather than a hole in it. It is a decision
+            with a name on it, and it can be changed per account afterwards.
+          </p>
+
+          <p className="acct-buttons">
+            <button type="submit" disabled={state.kind === 'starting' || trimmed === ''}>
+              {state.kind === 'starting' ? 'asking for a sign-in link…' : 'Start the sign-in'}
+            </button>
+          </p>
+          {state.kind === 'start_failed' && (
+            <SignInFailure error={state.error} what="POST /v1/accounts/authorize" />
+          )}
+        </form>
+      )}
+    </section>
+  )
+}
+
+/**
+ * The receipt.
+ *
+ * IT SAYS WHAT EXPIRES AND WHAT DOES NOT, because an expiry in eight hours
+ * otherwise reads as "do this again tonight" and the whole promise of this pool
+ * is that you sign in once. The ACCESS half expires; the pair does not, because
+ * the sweep exchanges it for a successor before it can.
+ */
+function SignInDone({
+  state,
+  onAgain,
+}: {
+  state: Extract<SignIn, { kind: 'done' }>
+  onAgain: () => void
+}) {
+  const restore = state.restore
+  const partial = restore !== null && !restore.ok
+  return (
+    <div className={`state ${partial ? 'partial' : 'acct-ok'}`} role="status">
+      <h3>
+        {partial ? 'Signed in, but the state was not put back' : 'Signed in'}{' '}
+        &mdash; {state.account.account_id}
+      </h3>
+      <p>
+        Two secrets were written: the pair, which only quota-broker reads, and
+        the access token, which is what a pod mounts into{' '}
+        <code>CLAUDE_CODE_OAUTH_TOKEN</code>.{' '}
+        {state.expiresAt ? (
+          <>
+            That access token expires in{' '}
+            <strong>{clearsIn(state.expiresAt, Date.now())}</strong>, and that is
+            not a deadline for you: the sweep exchanges the refresh half for a
+            successor before it lapses, which is exactly what makes this a
+            one-time sign-in.
+          </>
+        ) : (
+          <>
+            The platform did not report when the access token expires, so there
+            is no figure here rather than a guessed one. That says nothing about
+            whether the credential is good &mdash; <em>Refresh this account</em>{' '}
+            in its row asks the broker directly.
+          </>
+        )}
+      </p>
+      {restore !== null &&
+        (restore.ok ? (
+          <p>
+            This account was in REAUTH_REQUIRED, and signing in deliberately does
+            not clear that by itself &mdash; the same rule that stops a
+            credential replacement silently un-pausing an account somebody
+            paused. So its state was put back to AVAILABLE as a second, separate
+            call, and that call succeeded.
+          </p>
+        ) : (
+          <p>
+            <strong>
+              This account is STILL in REAUTH_REQUIRED, so nothing will be
+              assigned to it.
+            </strong>{' '}
+            The credential is in place and is good; what failed was the second
+            call that puts the state back:{' '}
+            {restore.error?.message ?? 'the request did not complete.'} Use{' '}
+            <em>move to AVAILABLE</em> in the row above &mdash; nothing needs
+            signing in again.
+          </p>
+        ))}
+      <p className="checked-at">
+        It appears in the pool with no reading yet &mdash; that is{' '}
+        <em>unmeasured</em>, not idle. The first worker to run on it reports one.
+      </p>
+      <p className="acct-buttons">
+        <button type="button" onClick={onAgain}>
+          done
+        </button>
+      </p>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Sign in again, on a row that already exists
+// ---------------------------------------------------------------------------
+
+/**
+ * The same sign-in, aimed at a label that is already in the pool.
+ *
+ * TWO STEPS, VISIBLY, because the store makes them two steps. Registering an
  * existing label replaces the credential and deliberately PRESERVES the state
  * (accountstore.py:106-124) so that it cannot silently un-pause an account
  * somebody paused. The consequence is that an account in REAUTH_REQUIRED is
- * still in REAUTH_REQUIRED after a perfectly successful paste, and nothing will
- * be assigned to it. So the state is put back as an explicit second call, and
- * if that call fails this says so rather than reporting one green tick for two
- * operations.
+ * still in REAUTH_REQUIRED after a perfectly successful sign-in, and nothing
+ * will be assigned to it. So the state is put back as an explicit second call,
+ * and if that call fails this says so rather than reporting one green tick for
+ * two operations.
+ *
+ * THE LENDING LIST IS SENT BACK AS IT IS. Re-registering a label REPLACES
+ * `lend_to` rather than merging it, so omitting it here would quietly revoke
+ * every loan the account had as a side effect of fixing its credential.
  */
 function Reauth({
   account,
@@ -1383,140 +2163,115 @@ function Reauth({
   patch: Patch
   reload: () => void
 }) {
-  // The pasted value stays LOCAL and dies with the remount -- that is the point
-  // of it. The report of what happened to it is what has to survive.
-  const [credential, setCredential] = useState('')
   const state = ui.reauth[account.account_id] ?? { kind: 'idle' }
-  const setState = (next: ReauthState) =>
+  const set = (next: SignIn) =>
     patch((p) => ({ ...p, reauth: { ...p.reauth, [account.account_id]: next } }))
   const broken = needsAHuman(account)
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (credential.trim() === '') return
-    // Taken out of component state BEFORE the request goes anywhere, so the
-    // pasted secret is a local in one async call and is never in state again --
-    // not while the request is in flight, and not after it answers.
-    const pasted = credential
-    setCredential('')
-    setState({ kind: 'sending' })
-
-    // Same label, same provider, same lending list: re-registering an existing
-    // label is the replace path, and any of those omitted would be REPLACED
-    // with a default rather than left alone. `owner_tenant` is not sent for the
-    // reason registerAccount gives.
-    const res = await registerAccount({
+  const start = async () => {
+    set({ kind: 'starting' })
+    const res = await beginAccountSignIn({
+      owner_tenant: account.owner_tenant,
       label: account.label,
+      // The account's OWN provider, not the constant: if a row somehow carries
+      // something else, re-signing in must not silently rewrite that field.
       provider: account.provider,
       lend_to: account.lend_to,
-      credential: pasted,
     })
     if (res.status !== 'ok') {
-      setState({ kind: 'failed', error: failureOf(res) })
+      set({ kind: 'start_failed', error: failureOf(res) })
       return
     }
+    set({
+      kind: 'open',
+      label: account.label,
+      lendTo: account.lend_to,
+      auth: res.data,
+      startedAt: Date.now(),
+      opened: 'not_yet',
+      sending: false,
+      failed: null,
+    })
+  }
+
+  const finish = async (registered: Account, expiresAt: string | null) => {
     if (!broken) {
-      setState({ kind: 'replaced', stateRestored: true, stateError: null, wasBroken: false })
+      // The state was left exactly as it was, deliberately. Nothing to report
+      // and nothing to put back, so `restore` stays null.
+      set({ kind: 'done', account: registered, expiresAt, restore: null })
       reload()
       return
     }
     const back = await setAccountState(
       account.account_id,
       'AVAILABLE',
-      'credential replaced from the Accounts screen',
+      'signed in again from the Accounts screen',
     )
-    setState({
-      kind: 'replaced',
-      stateRestored: back.status === 'ok',
-      stateError: back.status === 'error' || back.status === 'stale' ? back.error : null,
-      wasBroken: true,
+    set({
+      kind: 'done',
+      account: registered,
+      expiresAt,
+      restore:
+        back.status === 'ok'
+          ? { ok: true }
+          : {
+              ok: false,
+              error: back.status === 'error' || back.status === 'stale' ? back.error : null,
+            },
     })
     reload()
   }
 
   return (
-    <form className="acct-action" onSubmit={(e) => void submit(e)}>
-      <h4>{broken ? 'Re-authenticate' : 'Replace the credential'}</h4>
+    <div className="acct-action">
+      <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
       <p className="muted small">
-        Paste the keychain item from a machine that is signed in, verbatim, the{' '}
-        <code>claudeAiOauth</code> wrapper included. It replaces the credential
-        behind <code>{account.account_id}</code> and keeps the id, the readings
-        and the lending list, because the label is the same.
-      </p>
-      <textarea
-        className="mono"
-        rows={4}
-        value={credential}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder={'{"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":0}}'}
-        aria-label={`Replacement credential for ${account.account_id}`}
-        onChange={(e) => setCredential(e.target.value)}
-      />
-      <p className="acct-buttons">
-        <button type="submit" disabled={state.kind === 'sending' || credential.trim() === ''}>
-          {state.kind === 'sending' ? 'sending…' : 'Replace credential'}
-        </button>
+        {broken ? (
+          <>
+            The refresh token behind <code>{account.account_id}</code> is gone or
+            unreadable, and only a person can replace it. This is the same
+            sign-in that adds an account: a login page and one short code. The
+            id, the readings and the lending list are all kept, because the label
+            is the same.
+          </>
+        ) : (
+          <>
+            Replaces the credential behind <code>{account.account_id}</code> with
+            a fresh one, keeping the id, the readings, the lending list and the
+            state. Nothing here needs doing on a healthy account &mdash; the
+            sweep keeps it alive on its own.
+          </>
+        )}
       </p>
 
-      {state.kind === 'replaced' && (
-        <div className={`state ${state.stateRestored ? 'acct-ok' : 'partial'}`} role="status">
-          <h3>Credential replaced</h3>
-          <p>
-            The pair was parsed and written before anything else &mdash; a
-            credential with no refresh token would have been refused here rather
-            than at the next sweep.{' '}
-            {state.wasBroken ? (
-              state.stateRestored ? (
-                <>
-                  This account was in REAUTH_REQUIRED, so its state has been put
-                  back to AVAILABLE as a second step. Press{' '}
-                  <em>Refresh this account</em> above to confirm the new
-                  credential exchanges.
-                </>
-              ) : (
-                <>
-                  <strong>
-                    This account is STILL in REAUTH_REQUIRED and nothing will be
-                    assigned to it.
-                  </strong>{' '}
-                  The credential is in place, but putting the state back failed:{' '}
-                  {state.stateError?.message ?? 'the request did not complete.'}{' '}
-                  Use <em>move to AVAILABLE</em> above.
-                </>
-              )
-            ) : (
-              <>
-                The state was left exactly as it was, deliberately: replacing a
-                credential must not silently un-pause an account somebody paused.
-              </>
-            )}
-          </p>
-        </div>
+      {state.kind === 'done' && (
+        <SignInDone state={state} onAgain={() => set({ kind: 'idle' })} />
       )}
 
-      {state.kind === 'failed' && (
+      {state.kind === 'open' ? (
+        <SignInSteps at={state} mode="reauth" set={set} onExchanged={finish} />
+      ) : (
         <>
-          <FailedPanel error={state.error} onRetry={() => undefined} />
-          <p className="warn-text">
-            The box was cleared the moment this was sent, so the credential is not
-            sitting in this page. Copy it again to retry.
-          </p>
+          <div className="acct-buttons">
+            <button
+              type="button"
+              disabled={state.kind === 'starting'}
+              onClick={() => void start()}
+            >
+              {state.kind === 'starting'
+                ? 'asking for a sign-in link…'
+                : broken
+                  ? 'Sign in again'
+                  : 'Start a replacement sign-in'}
+            </button>
+          </div>
+          {state.kind === 'start_failed' && (
+            <SignInFailure error={state.error} what="POST /v1/accounts/authorize" />
+          )}
         </>
       )}
-    </form>
+    </div>
   )
-}
-
-/** A non-ok Result turned into the one error it carries. */
-function failureOf(res: Result<unknown>): ApiError {
-  if (res.status === 'error' || res.status === 'stale') return res.error
-  return {
-    kind: 'server_error',
-    httpStatus: null,
-    code: null,
-    message: 'The request did not complete, and the platform did not say why.',
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,8 +2314,8 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
       <h4>Remove</h4>
       <p className="muted small">
         Removes the account from the pool. The credential in Secret Manager is{' '}
-        <strong>retained</strong>, not deleted, so this is reversible by
-        registering the same label again and no version history is lost.
+        <strong>retained</strong>, not deleted, so this is reversible by signing
+        in again under the same label and no version history is lost.
         {account.assigned > 0 && (
           <>
             {' '}
@@ -1603,296 +2358,80 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// Register
-// ---------------------------------------------------------------------------
-
-type RegisterState =
-  | { kind: 'idle' | 'sending' }
-  | { kind: 'done'; label: string }
-  | { kind: 'failed'; error: ApiError }
-
-function Register({
-  board,
-  ui,
-  patch,
-  reload,
-}: {
-  board: AccountsBoard
-  ui: Persisted
-  patch: Patch
-  reload: () => void
-}) {
-  // THE OWNER IS THE TOKEN'S TENANT, and `tenant_id` here is that value echoed
-  // by routes/accounts.py -- deliberately not taken from the broker's answer,
-  // "so the page can never be told it is looking at a tenant it is not". It is
-  // therefore the tenant the register route will file this under, and naming
-  // anything else on screen would be a promise the API does not keep.
-  const owner = board.page.tenant_id
-  const [label, setLabel] = useState('')
-  const [lend, setLend] = useState('')
-  const [credential, setCredential] = useState('')
-  // Above the remount boundary, same reason as the refresh verdict: registering
-  // reloads the table, and "Registered laptop" must still be on screen after it.
-  const state = ui.register
-  // Returning the SAME object makes React bail out of the update, so typing in
-  // the label field does not re-render the whole screen once per keystroke
-  // merely to set a value that is already set.
-  const setState = (next: RegisterState) =>
-    patch((p) =>
-      p.register.kind === 'idle' && next.kind === 'idle' ? p : { ...p, register: next },
-    )
-
-  // NOT CONFIGURED MEANS REFUSE, never accept-anything. Without a named tenant
-  // this form could still submit safely -- the API files the account under the
-  // verified token whatever the page thinks -- but it could not TELL the
-  // operator whose pool the credential is about to land in, and a live
-  // credential is not something to hand over on a maybe.
-  if (owner === null) {
-    return (
-      <section className="section panel">
-        <h2>Register an account</h2>
-        <div className="state partial" role="status">
-          <h3>Registration is unavailable until your tenant is named</h3>
-          <p>
-            An account is owned by exactly one tenant, and the API decides which
-            from your verified sign-in rather than from anything typed here. This
-            response did not name one, so this form cannot tell you whose pool a
-            credential would land in &mdash; and that is not something to guess
-            at with a live credential.
-          </p>
-          <p style={{ marginTop: 8 }}>
-            This is a gap in what was read, not a fault in the platform. It says
-            nothing about the accounts above, which loaded.
-          </p>
-        </div>
-      </section>
-    )
-  }
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (label.trim() === '' || credential.trim() === '') return
-    // Out of state before the request leaves, and never put back.
-    const pasted = credential
-    const chosen = label.trim()
-    setCredential('')
-    setState({ kind: 'sending' })
-    // No `owner_tenant`: the route files this under the verified token and
-    // reads that field only to refuse a mismatch, so sending it can only
-    // produce a 403 for a disagreement that is not the operator's doing.
-    const res = await registerAccount({
-      label: chosen,
-      provider: SUBSCRIPTION_PROVIDER,
-      lend_to: splitTenants(lend).filter((t) => t !== owner),
-      credential: pasted,
-    })
-    if (res.status === 'ok') {
-      setState({ kind: 'done', label: chosen })
-      setLabel('')
-      setLend('')
-      reload()
-      return
-    }
-    setState({ kind: 'failed', error: failureOf(res) })
-  }
-
-  return (
-    <form className="section panel" onSubmit={(e) => void submit(e)}>
-      <h2>Register an account</h2>
-      <p className="conjunction">
-        Owned by <strong>{owner}</strong>. The credential is{' '}
-        <strong>write-only</strong>: it is sent once, split into two Secret
-        Manager secrets, and no route in this platform returns it. This screen
-        never shows key material &mdash; not the token, and not its length.
-      </p>
-
-      {/* NOT A PICKER, AND NOT A SILENT DEFAULT EITHER. There is one kind of
-          credential in this pool, so there is nothing to choose; but a value
-          the request carries and the form never mentions is a decision made
-          for the operator with nothing on screen admitting it. So it is shown,
-          named, and said to be fixed. */}
-      <span className="t-label">provider</span>
-      <p className="acct-fixed mono">
-        {SUBSCRIPTION_PROVIDER}
-        <span className="acct-why">
-          fixed, and the only kind this pool handles: a Claude subscription. The
-          credential is the OAuth pair Claude Code keeps after <code>/login</code>,
-          which quota-broker can exchange for a successor indefinitely &mdash;
-          that is what makes &ldquo;the only manual step is the first one&rdquo;
-          true. There is deliberately no API-key option here: a key that cannot
-          be exchanged has nothing for the sweep to keep alive.
-        </span>
-      </p>
-
-      <label className="t-label" htmlFor="acct-label">
-        label
-      </label>
-      <input
-        id="acct-label"
-        className="mono acct-wide"
-        value={label}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder="laptop"
-        onChange={(e) => {
-          setLabel(e.target.value)
-          setState({ kind: 'idle' })
-        }}
-      />
-      <p className="muted small">
-        Lowercase letters, digits and dashes, starting and ending alphanumeric, at
-        most 40 characters: it becomes part of a Secret Manager name and a
-        Kubernetes annotation, so the platform checks it on the way in and says so
-        if it does not fit. The account id will be{' '}
-        <code>
-          {owner}:{label.trim() || 'label'}
-        </code>
-        . <strong>Re-using an existing label replaces that account&rsquo;s
-        credential</strong> rather than creating a second one.
-      </p>
-
-      <label className="t-label" htmlFor="acct-lend">
-        lend to (optional)
-      </label>
-      <input
-        id="acct-lend"
-        className="mono acct-wide"
-        value={lend}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder="tenant ids, comma separated; empty means this account serves only you"
-        onChange={(e) => setLend(e.target.value)}
-      />
-      <p className="muted small">
-        Isolation is the default. Naming a tenant here lets that tenant&rsquo;s
-        pods mount this account&rsquo;s access token, which is a narrowing of
-        invariant 9 rather than a hole in it. It is a decision with a name on it,
-        and it can be changed per account afterwards.
-      </p>
-
-      <label className="t-label" htmlFor="acct-cred">
-        subscription credential (pasted verbatim)
-      </label>
-      <textarea
-        id="acct-cred"
-        className="mono"
-        rows={5}
-        value={credential}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder={'{"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":0}}'}
-        onChange={(e) => {
-          setCredential(e.target.value)
-          setState({ kind: 'idle' })
-        }}
-      />
-      <p className="muted small">
-        Paste the whole keychain item, wrapper and all, unedited. The platform
-        parses it before anything is written, so a value with no refresh token is
-        refused here and now rather than discovered at its first expiry. The steps
-        for obtaining it are below.
-      </p>
-
-      <p className="acct-buttons">
-        <button
-          type="submit"
-          disabled={state.kind === 'sending' || label.trim() === '' || credential.trim() === ''}
-        >
-          {state.kind === 'sending' ? 'registering…' : 'Register this account'}
-        </button>
-      </p>
-
-      {state.kind === 'done' && (
-        <div className="state acct-ok" role="status">
-          <h3>Registered {state.label}</h3>
-          <p>
-            Two secrets were written: the pair, which only quota-broker reads, and
-            the access token, which is what a pod mounts into{' '}
-            <code>CLAUDE_CODE_OAUTH_TOKEN</code>. The account appears above with
-            no reading yet &mdash; that is <em>unmeasured</em>, not idle, and the
-            first worker to run on it will report one. Press{' '}
-            <em>Refresh this account</em> in its row to confirm the credential
-            exchanges before you rely on it.
-          </p>
-        </div>
-      )}
-
-      {state.kind === 'failed' && (
-        <>
-          <FailedPanel error={state.error} onRetry={() => undefined} />
-          <p className="warn-text">
-            The credential box was cleared the moment this was sent, so nothing is
-            sitting in this page. Copy it again to retry.{' '}
-            {state.error.kind === 'invalid' && (
-              <>
-                A 422 means the platform read the value and would not accept it,
-                most often because it is a <code>claude setup-token</code> value,
-                which has no refresh token. See below for why that is refused
-                rather than stored.
-              </>
-            )}
-          </p>
-        </>
-      )}
-    </form>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Instructions
 // ---------------------------------------------------------------------------
 
 /**
  * Real operator instructions, in the page, because this is the screen someone
  * opens at the moment they need them and a wiki link is a second place to be
- * wrong. Every command below is one that exists.
+ * wrong. Every step below is one this screen performs.
  */
 function Instructions() {
   return (
     <section className="section panel acct-instructions">
       <h2>How to run this pool</h2>
 
-      <h3>1 &middot; Getting the credential</h3>
+      <h3>1 &middot; Adding an account is a sign-in</h3>
       <p>
-        The credential is the item Claude Code itself keeps after you sign in, on
-        a machine you control. Take it from there rather than minting a new one.
+        Name it, press <em>Start the sign-in</em>, open the page it gives you,
+        sign in to Claude as you normally would, and paste back the short code
+        that page shows. That is the whole procedure. There is no keychain item
+        to find, no JSON to preserve, no wrapper to keep intact, and nothing to
+        run on your laptop.
       </p>
       <ul>
         <li>
-          <strong>macOS.</strong> It is a login-keychain item called{' '}
-          <code>Claude Code-credentials</code>. Read it with{' '}
-          <code>
-            security find-generic-password -s &quot;Claude Code-credentials&quot;
-            -w
-          </code>
-          , or open Keychain Access, find that item and use <em>Show password</em>.
+          <strong>Why a code is still pasted.</strong> Anthropic&rsquo;s OAuth
+          client accepts exactly one redirect target &mdash; its own callback
+          page, which <em>displays</em> a code. A third-party application cannot
+          register <code>https://swarm.saga.xyz/callback</code>, so your browser
+          cannot be sent back here, and the code on that page is what closes the
+          loop. One short string is as close to &ldquo;just a button&rdquo; as
+          this can get.
         </li>
         <li>
-          <strong>Linux.</strong> The same JSON is at{' '}
-          <code>~/.claude/.credentials.json</code>.
+          <strong>Paste the whole thing.</strong> The page shows the code, then a{' '}
+          <code>#</code>, then a long string. The platform splits it, and uses
+          the part after the <code>#</code> to check the paste belongs to the
+          sign-in <em>this</em> page started rather than another tab&rsquo;s
+          &mdash; two tabs open is how a credential lands on the wrong account.
+          Pasting only the part before the <code>#</code> works too.
         </li>
         <li>
-          Paste <strong>the whole value</strong>, including the{' '}
-          <code>{'{"claudeAiOauth": ...}'}</code> wrapper. The platform unwraps
-          it. Do not reformat it, pull out single fields, or strip the wrapper: a
-          hand-edited value is the commonest cause of a credential that parses on
-          your machine and not here.
+          <strong>Codes are single-use and expire quickly.</strong> A refused
+          code almost always means it was already redeemed or that too much time
+          passed. Press <em>Open the sign-in page again</em> for a new one: the
+          sign-in itself stays open, so the label and the lending list do not
+          need re-entering.
         </li>
         <li>
-          Treat the clipboard accordingly. That value carries a live access token{' '}
-          <em>and</em> the refresh token that can mint successors: paste it into
-          this form and nowhere else. Not a ticket, not a chat, not a shell whose
-          history persists.
+          <strong>
+            A second account needs a different browser application, not a private
+            window.
+          </strong>{' '}
+          Which organisation you sign in as comes from the cookies the browser
+          already holds, and nothing in the request overrides it. A private
+          window shares the same cookie jar, so it signs you in as the same
+          organisation and you get a second row for a subscription you already
+          had, with nothing explaining why the pool did not really grow. Copy the
+          sign-in link and open it in another browser application, or sign out of
+          Claude in this one first.
+        </li>
+        <li>
+          <strong>Nothing secret passes through this page.</strong> The PKCE
+          verifier stays on the server, keyed by the sign-in &mdash; a verifier
+          the browser holds is a PKCE flow that proves nothing. What comes back
+          is an account and an expiry: never key material, and never its length.
         </li>
       </ul>
       <p>
-        What happens to it: it is sent once and stored as two secrets.{' '}
+        What the platform does with what it receives: two secrets.{' '}
         <code>&lt;base&gt;-refresh</code> holds the pair and is read only by
         quota-broker. <code>&lt;base&gt;</code> holds <em>only</em> the access
         token, and is what a tenant&rsquo;s pod mounts into{' '}
-        <code>CLAUDE_CODE_OAUTH_TOKEN</code>. That split is the security boundary:
-        a compromised pod holds a credential that expires, not one that can mint
-        successors forever.
+        <code>CLAUDE_CODE_OAUTH_TOKEN</code>. That split is the security
+        boundary: a compromised pod holds a credential that expires, not one that
+        can mint successors forever.
       </p>
 
       <h3>2 &middot; How refreshing works</h3>
@@ -1921,9 +2460,7 @@ function Instructions() {
         <li>
           <strong>Refresh this account</strong> runs that exact code path now, for
           one account, and tells you which of those things happened. It exists
-          because a timer cannot answer &ldquo;did that work?&rdquo;: you would
-          otherwise paste a credential and wait an unknown number of minutes to
-          find out whether it was any good.
+          because a timer cannot answer &ldquo;did that work?&rdquo;.
         </li>
       </ul>
 
@@ -1936,55 +2473,54 @@ function Instructions() {
       </p>
       <ol>
         <li>
-          On a machine you control, sign in to Claude Code again: run{' '}
-          <code>claude</code> and use <code>/login</code>.
-        </li>
-        <li>Read the refreshed keychain item exactly as in step 1.</li>
-        <li>
-          Open that account&rsquo;s row here and paste it into{' '}
-          <em>Re-authenticate</em>. <strong>Keep the same label.</strong>{' '}
-          Re-registering an existing label replaces the credential and keeps the
-          account id, its readings and its lending list; a new label would create
-          a second account and leave the broken one in the pool.
+          Open that account&rsquo;s row here and press <em>Sign in again</em>. It
+          is the same sign-in as adding an account, aimed at the label already in
+          the pool, so the id, the readings and the lending list are kept. A new
+          label would instead create a second account and leave the broken one
+          sitting there.
         </li>
         <li>
-          <strong>Then put the state back.</strong> Re-registering deliberately
-          does <em>not</em> change state &mdash; that rule is what stops it
-          silently un-pausing an account somebody paused &mdash; so a
-          re-authenticated account is still REAUTH_REQUIRED, and still
-          unassignable, until it is moved to AVAILABLE. This screen does that as a
-          visible second step and tells you if the second step fails.
+          <strong>Check which organisation this browser is signed in as.</strong>{' '}
+          The sign-in replaces the credential with whoever this browser is
+          currently logged in as, and nothing in the request overrides that. If
+          it is not the subscription this label is for, copy the link into a
+          different browser application first.
         </li>
         <li>
-          Press <em>Refresh this account</em>. <code>refreshed</code> or{' '}
-          <code>still_valid</code> means it is alive. That is the confirmation;
-          the state chip alone is not.
+          <strong>
+            The state is put back for you, as a visible second step.
+          </strong>{' '}
+          Signing in deliberately does <em>not</em> change state on its own
+          &mdash; that rule is what stops it silently un-pausing an account
+          somebody paused &mdash; so this screen makes a second call to move the
+          account back to AVAILABLE, and says plainly if that second call fails.
+          An account left in REAUTH_REQUIRED is unassignable no matter how good
+          its new credential is.
+        </li>
+        <li>
+          Press <em>Refresh this account</em> if you want independent
+          confirmation. <code>refreshed</code> or <code>still_valid</code> means
+          it is alive. The state chip alone is not that confirmation.
         </li>
       </ol>
 
-      <h3>
-        4 &middot; Why a <code>claude setup-token</code> value is refused
-      </h3>
+      <h3>4 &middot; Why a credential with no refresh token is refused</h3>
       <p>
-        <code>claude setup-token</code> mints a single long-lived access token
-        with <strong>no refresh token beside it</strong>. The platform parses what
-        you paste before writing anything, and refuses that shape with a 422
-        reading <em>the stored credential has no refresh token</em>.
+        A sign-in normally yields a pair: an access token, and the refresh token
+        that mints its successors. If the token endpoint ever answers with an
+        access token and nothing beside it, the platform refuses it and stores
+        nothing, with a 422 saying the credential could not be kept alive. The
+        same refusal is what a <code>claude setup-token</code> value used to get
+        when this screen still took pastes.
       </p>
       <p>
-        The refusal is the feature. A setup-token cannot be kept alive: nothing
-        can exchange it, so when it expires a person has to log in again.
-        Accepted here, it would look perfectly healthy &mdash; the account would
-        sit at AVAILABLE, agents would be assigned to it, and at its first expiry
-        every one of them would fail on an expired token with nothing on any
-        screen pointing at the cause. Being refused costs you one error message
-        now. Being accepted costs an outage later, at a time nobody chose.
-      </p>
-      <p>
-        The pair Claude Code keeps in the keychain can be exchanged for a new pair
-        indefinitely, which is what makes &ldquo;the only manual step is the first
-        one&rdquo; true rather than aspirational. So: paste the keychain item, not
-        a setup token.
+        The refusal is the feature. Such a credential cannot be exchanged, so
+        when it expires a person has to log in again. Accepted, it would look
+        perfectly healthy &mdash; the account would sit at AVAILABLE, agents
+        would be assigned to it, and at its first expiry every one of them would
+        fail on an expired token with nothing on any screen pointing at the
+        cause. Being refused costs you one error message now. Being accepted
+        costs an outage later, at a time nobody chose.
       </p>
     </section>
   )
@@ -2032,13 +2568,22 @@ function Legend() {
           here still matches. The one treatment that is a fact rather than a
           judgement is a window that is fully spent.
         </dd>
+        <dt>Adding a second account needs a second browser application</dt>
+        <dd>
+          Not a private window. The organisation you sign in as comes from the
+          browser&rsquo;s cookie jar, a private window shares that jar, and
+          nothing this platform sends overrides it. Without a different browser
+          application you will add the same subscription twice and have no way to
+          see why the pool did not grow.
+        </dd>
         <dt>Four states, and they are not degrees of one thing</dt>
         <dd>
           <code>AVAILABLE</code> is the only state a <em>new</em> agent may be
           started on. <code>PAUSED</code> means no new work while the agents on it
           keep running. <code>DRAINING</code> means they are being moved off.{' '}
           <code>REAUTH_REQUIRED</code> is a verdict the broker reached, not a
-          state to declare &mdash; only a person clears it.
+          state to declare &mdash; only a person clears it, and signing in again
+          is how.
         </dd>
         <dt>&ldquo;Agents on it&rdquo; is advisory</dt>
         <dd>

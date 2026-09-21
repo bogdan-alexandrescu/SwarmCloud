@@ -539,6 +539,257 @@ export interface AttemptRow {
   cost_usd: number | null
 }
 
+// --------------------------------------------------------------------------
+// Requested vs utilised
+// --------------------------------------------------------------------------
+
+/**
+ * One entry of `GET /v1/resource-classes`, which serves `RESOURCE_CLASSES`
+ * from the frozen catalogue.
+ *
+ * THE POINT OF THE ROUTE. An attempt has always recorded what it USED
+ * (`peak_rss_bytes`, `peak_disk_bytes`) and nothing served what it was GIVEN,
+ * so "peak RSS 6.1 GiB" was a figure with no scale -- comfortable on `large`,
+ * one prompt from an OOM kill on `standard`, and no way to tell which.
+ *
+ * The numbers are NOT hand-copied into this file on purpose.
+ * `check-contract-parity.sh` asserts that shell and jq restatements of the
+ * frozen catalogue still match the Python; it does not cover TypeScript, so a
+ * copy here would drift the first time a class is resized and nothing would
+ * notice -- see the same reasoning in Holders.tsx's ClassMix.
+ */
+export interface ResourceClassSpec {
+  name: string
+  /** BOTH the request and the limit. `requests == limits` platform-wide. */
+  cpu: number
+  memory_gib: number
+  /** A SLICE OF memory_gib, not capacity on top of it: the workspace is a tmpfs. */
+  disk_gib: number
+  /** Weighted capacity units admission counts. Never a number of agents. */
+  units: number
+}
+
+/** GiB, binary. The ceilings are GiB, so a GB (1e9) denominator would overstate
+ *  every utilisation figure by 7.4% -- against a ceiling with no burst headroom
+ *  that is the difference between "fine" and "near miss". */
+export const GIB = 1024 ** 3
+
+/**
+ * Bytes as a figure a person reads, or an em dash when there is no measurement.
+ * NEVER "0 B" for an absent one: the whole point of this UI is that nothing
+ * measured and nothing used are different claims.
+ */
+export function bytesLabel(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '—'
+  if (bytes >= GIB) return `${(bytes / GIB).toFixed(2)} GiB`
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KiB`
+  return `${bytes} B`
+}
+
+// --------------------------------------------------------------------------
+// Checkpoints
+// --------------------------------------------------------------------------
+
+/**
+ * One checkpoint of one attempt, assembled from TWO records because neither is
+ * complete on its own.
+ *
+ *  - `attempt.checkpoints` is the authoritative LIST, and it is `list[str]`:
+ *    ids and nothing else (models.py:215, written by
+ *    `control.record_checkpoint`).
+ *  - the `checkpoint_completed` EVENT for that id carries `{checkpoint_id,
+ *    uri, size_bytes, seq}` -- the only place the size and the location exist
+ *    per checkpoint.
+ *
+ * So a row with an id and no uri is not a broken checkpoint. It means the
+ * event that described it is not on the page of events we were handed, which
+ * happens for real: the events route orders OLDEST first, caps the page and
+ * returns no page token, and a worker heartbeats throughout, so the later
+ * checkpoints of a long attempt are exactly the ones whose events fall off
+ * the end. `uriKnown` is what lets the screen say that instead of drawing a
+ * blank cell.
+ *
+ * CONTENTS ARE NOT RECORDED ANYWHERE. Only the id, the size and the uri. A
+ * file listing would need a new route and a manifest read out of GCS.
+ */
+export interface CheckpointRow {
+  checkpoint_id: string
+  /** null when no `checkpoint_completed` event for this id is on this page. */
+  bytes: number | null
+  uri: string | null
+  seq: number | null
+  /** When the event was written, if we have the event. */
+  at: string | null
+  /**
+   * True when only an event names this id and the attempt document does not.
+   * Worth keeping separate: the document is written by a read-modify-write, so
+   * an id present in one record and not the other is a real inconsistency and
+   * not a paging artefact.
+   */
+  eventOnly: boolean
+}
+
+function detailString(e: TaskEvent, key: string): string | null {
+  const v = e.detail?.[key]
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function detailNumber(e: TaskEvent, key: string): number | null {
+  const v = e.detail?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * Every checkpoint of one attempt, ids from the attempt document enriched with
+ * whatever the event page could supply.
+ *
+ * Events whose `attempt_id` is null are SKIPPED rather than attributed here.
+ * The worker sets `attempt_id` on every event it emits (control.emit), so a
+ * null one did not come from this attempt's worker, and guessing would put
+ * another attempt's checkpoint under this one's heading.
+ */
+export function checkpointsFor(
+  attempt: AttemptRow,
+  events: TaskEvent[] | null,
+): CheckpointRow[] {
+  const fromEvents = new Map<string, { bytes: number | null; uri: string | null; seq: number | null; at: string }>()
+  for (const e of events ?? []) {
+    if (e.type !== 'checkpoint_completed') continue
+    if (e.attempt_id !== attempt.attempt_id) continue
+    const id = detailString(e, 'checkpoint_id')
+    if (id === null) continue
+    fromEvents.set(id, {
+      bytes: detailNumber(e, 'size_bytes'),
+      uri: detailString(e, 'uri'),
+      seq: detailNumber(e, 'seq'),
+      at: e.at,
+    })
+  }
+
+  const rows: CheckpointRow[] = attempt.checkpoints.map((id) => {
+    const found = fromEvents.get(id)
+    fromEvents.delete(id)
+    return {
+      checkpoint_id: id,
+      bytes: found?.bytes ?? null,
+      uri: found?.uri ?? null,
+      seq: found?.seq ?? null,
+      at: found?.at ?? null,
+      eventOnly: false,
+    }
+  })
+  // Whatever is left was described by an event the attempt document does not
+  // list. Dropping it would hide a checkpoint that demonstrably completed.
+  for (const [id, found] of fromEvents) {
+    rows.push({ checkpoint_id: id, ...found, eventOnly: true })
+  }
+  return rows
+}
+
+/** The checkpoint this attempt RESUMED from, which a previous attempt wrote. */
+export interface RestoredFrom {
+  checkpoint_id: string
+  /** The attempt that wrote it. Null when the event did not record it. */
+  from_attempt: string | null
+  bytes: number | null
+  /** How many files came back out of the archive. */
+  files: number | null
+}
+
+export function restoredFrom(attempt: AttemptRow, events: TaskEvent[] | null): RestoredFrom | null {
+  for (const e of events ?? []) {
+    if (e.type !== 'checkpoint_restored') continue
+    if (e.attempt_id !== attempt.attempt_id) continue
+    const id = detailString(e, 'checkpoint_id')
+    if (id === null) continue
+    return {
+      checkpoint_id: id,
+      from_attempt: detailString(e, 'from_attempt'),
+      bytes: detailNumber(e, 'bytes'),
+      files: detailNumber(e, 'files'),
+    }
+  }
+  return null
+}
+
+// --------------------------------------------------------------------------
+// Live readings from the heartbeat
+// --------------------------------------------------------------------------
+
+/**
+ * The newest `heartbeat` event belonging to one attempt.
+ *
+ * WHY THIS EXISTS. `attempt.peak_rss_bytes` is written by
+ * `control.record_resource_usage` at the END of an attempt, so a RUNNING agent
+ * has none and its resource panel would be entirely em dashes -- for exactly
+ * the agent someone is watching because they are worried about it. The worker
+ * puts `{elapsed_seconds, peak_rss_bytes, checkpoints}` in every fifth
+ * heartbeat event (lifecycle._heartbeat), which is a real measurement of a
+ * live process.
+ *
+ * It is NOT the same claim as the final figure and must never be rendered as
+ * one: it is the high-water mark AS OF that event, and the event page is
+ * oldest-first with no page token, so on a long attempt the newest heartbeat
+ * available here can be old. Every caller therefore renders `at` beside it.
+ */
+export interface HeartbeatReading {
+  at: string
+  peakRssBytes: number | null
+  elapsedSeconds: number | null
+  checkpoints: number | null
+}
+
+export function newestHeartbeat(
+  attempt: AttemptRow,
+  events: TaskEvent[] | null,
+): HeartbeatReading | null {
+  let best: HeartbeatReading | null = null
+  let bestAt = -Infinity
+  for (const e of events ?? []) {
+    if (e.type !== 'heartbeat') continue
+    if (e.attempt_id !== attempt.attempt_id) continue
+    const t = new Date(e.at).getTime()
+    if (!Number.isFinite(t) || t <= bestAt) continue
+    bestAt = t
+    best = {
+      at: e.at,
+      peakRssBytes: detailNumber(e, 'peak_rss_bytes'),
+      elapsedSeconds: detailNumber(e, 'elapsed_seconds'),
+      checkpoints: detailNumber(e, 'checkpoints'),
+    }
+  }
+  return best
+}
+
+/**
+ * The outcome chip for one attempt.
+ *
+ * Exit 0 is the only success. A null exit code is THREE different things
+ * depending on what else the document says -- never a zero, and never a
+ * failure. `AttemptTimeline.tsx` carries a private copy of this; it should
+ * switch to this one, which is why this lives here rather than in the screen.
+ */
+export function attemptOutcome(a: AttemptRow): { label: string; tone: Tone | 'unknown' } {
+  if (a.exit_code === 0) return { label: 'exit 0', tone: 'ok' }
+  if (a.exit_code !== null) return { label: `exit ${a.exit_code}`, tone: 'bad' }
+  if (a.started_at === null) return { label: 'never started', tone: 'unknown' }
+  if (a.completed_at === null) return { label: 'running', tone: 'live' }
+  return { label: 'ended, no exit code', tone: 'wait' }
+}
+
+/** How long one attempt ran, in words. Not a number: three of the four cases
+ *  are not durations at all and a "0s" for any of them would be a lie. */
+export function attemptRan(a: AttemptRow, now: number): string {
+  if (a.started_at === null) return 'never started'
+  const started = new Date(a.started_at).getTime()
+  if (!Number.isFinite(started)) return 'start time unreadable'
+  if (a.completed_at === null) return `${duration(now - started)} so far`
+  const done = new Date(a.completed_at).getTime()
+  if (!Number.isFinite(done)) return 'finish time unreadable'
+  return duration(done - started)
+}
+
 /** `SubmissionService.stats`, service.py:271-288. */
 export interface Stats {
   tenant_id: string
@@ -1232,4 +1483,109 @@ export const BAR_CELLS = 5
 export function barFilled(pct: number): number {
   const filled = Math.round((pct / 100) * BAR_CELLS)
   return Math.max(0, Math.min(BAR_CELLS, filled))
+}
+
+// ---------------------------------------------------------------------------
+// Adding an account: the two-step sign-in
+// ---------------------------------------------------------------------------
+// Shapes returned by `begin_account_authorization` and
+// `finish_account_authorization` in apps/quota-broker/quota_broker/main.py.
+//
+// WHY A PERSON STILL PASTES SOMETHING, since "just a button" is the obvious
+// ask. Anthropic's OAuth client accepts exactly one redirect target -- its own
+// callback page, which DISPLAYS a code. A third-party application cannot
+// register `https://swarm.saga.xyz/callback`, so the browser cannot be
+// redirected back here and the code on that page is what closes the loop. One
+// short string replaces a keychain item; that is the whole distance this can
+// travel, and the screen says so rather than leaving it looking like an
+// oversight.
+//
+// NO KEY MATERIAL APPEARS HERE EITHER. The PKCE verifier is held server-side
+// keyed by `state` and never reaches the browser -- a verifier the client holds
+// is a PKCE flow that proves nothing -- so there is no field for it and there
+// must not be one.
+
+/** What `POST /v1/accounts/authorize` answers with. */
+export interface AccountAuthorization {
+  /** The page a person opens to sign in. Always the provider's own host. */
+  authorize_url: string
+  /**
+   * What identifies this sign-in to the server. Sent back with the code.
+   *
+   * Also rendered on the callback page after a `#`, which is why the paste
+   * field accepts the whole thing: the server splits it and refuses a paste
+   * whose state belongs to a DIFFERENT sign-in rather than guessing between
+   * two open tabs.
+   */
+  state: string
+  /**
+   * How long the server holds the pending sign-in.
+   *
+   * NULL WHEN THE SERVER DID NOT SAY. It is not defaulted to a plausible
+   * fifteen minutes: a countdown to a deadline nobody reported is a number
+   * invented in the browser, and this screen's whole discipline is that a
+   * figure on it was measured somewhere.
+   */
+  expires_in_seconds: number | null
+}
+
+/** What `POST /v1/accounts/exchange` answers with on 201. No key material. */
+export interface AccountExchangeResponse {
+  account: Account
+  /**
+   * When the ACCESS half expires -- hours, not days. The pair outlives it:
+   * the broker's sweep exchanges the refresh half for a successor
+   * indefinitely, which is what makes "you sign in once" true rather than
+   * aspirational. The screen has to say that, because an expiry in eight
+   * hours otherwise reads as "do this again tonight".
+   */
+  expires_at: string | null
+  note?: string
+}
+
+/**
+ * The host the provider will send the person to, taken from the URL the SERVER
+ * built rather than from a constant here.
+ *
+ * `OAUTH_REDIRECT_URI` lives in quota_broker/oauth.py and nothing checks that a
+ * TypeScript copy of it still matches -- `check-contract-parity.sh` covers the
+ * shell and jq restatements of the frozen contract, not this file. So the copy
+ * that tells somebody which page will show them a code reads the value out of
+ * the authorize URL itself, and says "the page Claude sends you to" when it
+ * cannot. A wrong host name in that sentence sends a person hunting a page
+ * they will never see.
+ */
+export function callbackHostOf(authorizeUrl: string): string | null {
+  try {
+    const redirect = new URL(authorizeUrl).searchParams.get('redirect_uri')
+    return redirect ? new URL(redirect).host : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A HINT ABOUT A PASTE, never a gate on one.
+ *
+ * The server is the only authority on what a code is: it splits `<code>#<state>`
+ * itself, and `split_pasted_code` is the one implementation of that rule. A
+ * second one here would disagree with it the first time the callback page
+ * changed shape, and it would disagree by REFUSING something the platform
+ * would have accepted -- which is the expensive direction to be wrong in.
+ *
+ * So this returns a sentence to show BESIDE the field, and the submit button
+ * stays live whatever it says. It only recognises the two pastes that are
+ * definitely not a code: a URL (the address bar instead of the page) and a
+ * query string (the part after the `?`). Everything else returns null.
+ */
+export function pastedCodeHint(pasted: string): string | null {
+  const v = pasted.trim()
+  if (v === '') return null
+  if (/^https?:\/\//i.test(v)) {
+    return 'That looks like a URL rather than a code. The code is the short string the callback page prints on the page itself, not the address bar. Sending it anyway is safe — the platform will say what it made of it.'
+  }
+  if (/^[?&]?code=/i.test(v)) {
+    return 'That looks like a query string. The code is the value, without the `code=` in front of it. Sending it anyway is safe — the platform will say what it made of it.'
+  }
+  return null
 }
