@@ -132,6 +132,11 @@ class AccountStore:
                 last_assigned_at=current.last_assigned_at,
                 assigned=current.assigned,
                 reason=current.reason,
+                # PRESERVED, never re-derived. An account registered before the
+                # naming rule changed keeps pointing at the secret that holds
+                # its credential; re-deriving here would orphan it on the next
+                # re-registration.
+                secret_ref=current.secret or secret_name(owner_tenant, label),
             )
             ref.set(updated.to_firestore())
             return updated
@@ -142,6 +147,7 @@ class AccountStore:
             label=label,
             provider=provider,
             lend_to=lend,
+            secret_ref=secret_name(owner_tenant, label),
         )
         ref.set(account.to_firestore())
         return account
@@ -197,7 +203,15 @@ class AccountStore:
         return updated
 
     def secret_for(self, account: Account) -> str:
-        return secret_name(account.owner_tenant, account.label)
+        """Where this account's credential actually lives.
+
+        The RECORDED name wins over a derived one. Deriving was safe until the
+        naming rule changed, at which point every account already registered
+        began pointing at a secret that had never existed -- silently, because
+        a missing refresh secret and a tenant that simply uses an API key
+        report the same thing.
+        """
+        return account.secret or secret_name(account.owner_tenant, account.label)
 
 
 __all__ = ["AccountStore", "COLLECTION"]

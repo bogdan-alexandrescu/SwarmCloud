@@ -300,3 +300,48 @@ def test_a_label_containing_the_separator_is_still_unambiguous():
 
     with pytest.raises(AccountError, match="separates"):
         secret_name("acme--prod", "x")
+
+
+def test_a_recorded_secret_name_survives_a_change_to_how_names_are_made():
+    """The reason the name is stored rather than derived.
+
+    When `secret_name` moved from one dash to two -- to stop
+    ("acme-prod","x") and ("acme","prod-x") colliding -- every account already
+    registered began deriving a name that had never existed. Nothing said so:
+    the refresh sweep reports "no_refresh_credential" for a missing refresh
+    secret, which is also exactly what a healthy API-key tenant reports, and
+    the usage poller simply skips. Three live accounts were orphaned that way
+    and the platform looked entirely healthy.
+    """
+    from quota_broker.accounts import Account
+
+    recorded = Account(
+        account_id="u-bogdan:personal",
+        owner_tenant="u-bogdan",
+        label="personal",
+        secret_ref="swarm-account-u-bogdan-personal",   # the pre-change name
+    )
+    assert recorded.secret == "swarm-account-u-bogdan-personal"
+    assert recorded.secret != secret_name("u-bogdan", "personal")
+
+
+def test_a_document_written_before_the_field_existed_still_resolves():
+    """Backwards compatibility for every account registered before this.
+    Empty means derive, which is the only thing such a document can do."""
+    from quota_broker.accounts import Account
+
+    legacy = Account.from_firestore(
+        {"account_id": "t:l", "owner_tenant": "t", "label": "l"}
+    )
+    assert legacy.secret == secret_name("t", "l")
+
+
+def test_the_recorded_name_survives_a_firestore_round_trip():
+    """It is only useful if it persists; an in-memory-only field would be lost
+    the first time the document was read back."""
+    from quota_broker.accounts import Account
+
+    original = Account(
+        account_id="t:l", owner_tenant="t", label="l", secret_ref="legacy-name"
+    )
+    assert Account.from_firestore(original.to_firestore()).secret == "legacy-name"

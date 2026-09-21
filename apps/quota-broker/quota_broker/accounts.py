@@ -277,6 +277,23 @@ class Account:
     #: Why it is in its current state, for the human who has to act on it.
     reason: str = ""
 
+    #: The secret this account's credential actually lives in, RECORDED at
+    #: registration rather than re-derived on every read.
+    #:
+    #: Derivation was fine until the naming rule had to change. When
+    #: `secret_name` moved from one dash to two -- to stop
+    #: ("acme-prod","x") and ("acme","prod-x") colliding -- every account
+    #: already registered started deriving a name that does not exist, and
+    #: nothing said so: the refresh sweep reports "no_refresh_credential",
+    #: which is also what a healthy API-key tenant reports, and the usage
+    #: poller simply skips. Three live accounts were orphaned that way and the
+    #: platform looked fine.
+    #:
+    #: A name that is stored cannot be invalidated by a change to how names are
+    #: made. Empty means "derive it", which is what a document written before
+    #: this field existed needs.
+    secret_ref: str = ""
+
     #: When an agent was last assigned this account, ever. None means NEVER,
     #: and that is the field's whole purpose: a pool with accounts in it and
     #: nothing ever assigned from it is a pool no worker can reach, which is
@@ -428,7 +445,21 @@ class Account:
 
     @property
     def secret(self) -> str:
-        return secret_name(self.owner_tenant, self.label)
+        """Where this account's credential actually lives.
+
+        The RECORDED name wins over a derived one. Deriving was safe until the
+        naming rule changed: when `secret_name` moved from one dash to two, to
+        stop ("acme-prod","x") and ("acme","prod-x") colliding, every account
+        already registered began pointing at a secret that had never existed --
+        silently, because a missing refresh secret and a tenant that simply
+        uses an API key report the identical thing. Three live accounts were
+        orphaned that way and the platform looked healthy.
+
+        A name that is stored cannot be invalidated by a change to how names
+        are made. Empty means "derive it", which is what a document written
+        before this field existed needs.
+        """
+        return self.secret_ref or secret_name(self.owner_tenant, self.label)
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -443,6 +474,7 @@ class Account:
             "holds": holds_to_firestore(self.holds),
             "unreadable_by": dict(self.unreadable_by),
             "reason": self.reason,
+            "secret": self.secret_ref,
             "observed_at": self.observed_at,
             "windows": {
                 name: {"utilization": w.utilization, "resets_at": w.resets_at}
@@ -469,6 +501,7 @@ class Account:
             provider=data.get("provider", "anthropic"),
             state=AccountState(data.get("state", AccountState.AVAILABLE.value)),
             lend_to=tuple(data.get("lend_to") or ()),
+            secret_ref=str(data.get("secret") or ""),
             windows=windows,
             observed_at=_aware(observed) if isinstance(observed, datetime) else None,
             holds=holds_from_firestore(data.get("holds")),
