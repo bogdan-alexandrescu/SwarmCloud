@@ -1023,6 +1023,24 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
           </>
         ),
       }
+    case 'published_unverified':
+      return {
+        ok: true,
+        heading: 'Published, but nothing confirmed it was needed',
+        body: (
+          <>
+            The stored token was still valid and was written to the secret a pod
+            mounts &mdash; without the broker being able to read that secret
+            first, so it could not tell whether the write was necessary. The
+            credential is fine and pods have the right token. What is wrong is
+            the broker&rsquo;s IAM: it needs{' '}
+            <code>roles/secretmanager.secretAccessor</code> on this
+            account&rsquo;s secret. Until it has that, the usage poller cannot
+            read the token either, so this account&rsquo;s headroom stays at
+            whatever it was last seen to be.
+          </>
+        ),
+      }
     case 'still_valid':
       return {
         ok: true,

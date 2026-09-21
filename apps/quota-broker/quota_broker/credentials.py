@@ -17,12 +17,22 @@ Two invariants, both about not locking a tenant out:
      limit while a human is the only possible fix. The tenant's provider is
      marked so admission parks its work rather than dispatching attempts that
      are certain to fail authentication.
+
+And one about not writing for the sake of writing:
+
+  3. An UNCHANGED credential adds no secret version. A sweep runs every five
+     minutes and a token lives eight hours, so anything this module writes per
+     tick it writes ~1,700 times per token. See `_BaseState` for the bool that
+     could not tell "the secret differs" from "I was not allowed to look", and
+     what that cost.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Protocol
 
 from .oauth import (
@@ -54,6 +64,34 @@ class SecretStore(Protocol):
         """
 
     def add_version(self, name: str, payload: str) -> None: ...
+
+
+class _BaseState(Enum):
+    """What is KNOWN about the worker-facing secret's current contents.
+
+    Three values rather than two, and that is the whole point of this type.
+    The check used to be a bool, and a bool cannot say "I could not look" --
+    so a read that FAILED returned the same False as a read that succeeded and
+    found a different token, and the caller published either way.
+
+    That is indistinguishable-guard-failure, and it cost 1,665 identical
+    secret versions per credential in saga-agents-staging before anyone
+    noticed. The broker holds `secretmanager.secretVersionAdder` on the
+    worker-facing secret but NOT `secretAccessor`, so `access()` raises
+    PermissionDenied every single time; the bool turned that permanent,
+    structural fact into "the secret is stale", and the sweep republished an
+    identical value every five minutes from 2026-09-18T07:26 onward without
+    one line of log to say so.
+    """
+
+    #: The read succeeded and the secret already holds this token. Nothing to do.
+    CURRENT = "current"
+    #: A DEFINITE answer that a write is needed: the read succeeded and the
+    #: payload differs, or there is no enabled version at all.
+    NEEDS_PUBLISH = "needs_publish"
+    #: The read itself failed. NOT evidence about the contents, in either
+    #: direction.
+    UNREADABLE = "unreadable"
 
 
 @dataclass(frozen=True)
@@ -89,6 +127,19 @@ class CredentialRefresher:
         self._log = logger
         self._window = window
         self._now = now or (lambda: datetime.now(timezone.utc))
+        #: secret name -> SHA-256 of the access token THIS refresher last wrote
+        #: into it, and only ever recorded after the write returned.
+        #:
+        #: It exists for one case: the read-back is refused, so the only
+        #: evidence about what the worker-facing secret holds is what this
+        #: process put there. A digest rather than the token because this dict
+        #: outlives the request that filled it, and a long-lived map of live
+        #: access tokens is a thing to leak; the comparison only needs equality.
+        #:
+        #: Bounded by the number of credentials in the deployment (tens), so it
+        #: is not evicted. An account that is removed leaves one dead 64-byte
+        #: entry behind until the next deploy.
+        self._published: dict[str, str] = {}
 
     def refresh_tenant(self, tenant_id: str, provider: str) -> RefreshOutcome:
         return self._refresh(
@@ -145,9 +196,50 @@ class CredentialRefresher:
             # already carry it. Compared rather than written blindly: writing
             # every sweep would add a secret version every five minutes, which
             # is 288 a day of identical values.
-            if self._base_is_current(base, credential.access_token):
+            state, detail = self._base_state(base, credential.access_token)
+            if state is _BaseState.CURRENT:
+                self._remember_published(base, credential.access_token)
                 return RefreshOutcome(
                     tenant_id, provider, False, "still_valid", credential.expires_at
+                )
+
+            if state is _BaseState.UNREADABLE and self._already_published(
+                base, credential.access_token
+            ):
+                # THE READ IS REFUSED AND THIS PROCESS ALREADY WROTE THIS EXACT
+                # TOKEN HERE. Writing it again cannot change what the secret
+                # holds; it can only add another identical version, which is
+                # the leak. Its own successful `add_version` is better evidence
+                # than the read it is not allowed to make.
+                #
+                # What this gives up: it no longer heals a base version that
+                # somebody disabled or destroyed out of band, because it cannot
+                # see that happen. The refresh path publishes unconditionally,
+                # so that self-heals within one token lifetime (five hours
+                # here) instead of five minutes. Five minutes of healing is not
+                # worth 288 unverified writes a day, and the real fix for both
+                # is the accessor grant named in the warning below.
+                return RefreshOutcome(
+                    tenant_id, provider, False, "still_valid", credential.expires_at
+                )
+
+            if state is _BaseState.UNREADABLE:
+                # Said ONCE PER TOKEN, not once per sweep: the branch above
+                # swallows the other 59 ticks of each token's life. Loud
+                # because a permanently blind guard is a misconfiguration
+                # somebody has to fix, and the only thing that ever reported it
+                # was the secret-version count.
+                self._log.warning(
+                    "could not read the worker-facing secret to see whether it "
+                    "already holds this access token, so it was published "
+                    "unchecked; grant the broker "
+                    "roles/secretmanager.secretAccessor on it, or every new "
+                    "token is written without anything confirming it was needed",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "provider": provider,
+                        "error": detail,
+                    },
                 )
             try:
                 self._store.add_version(base, credential.access_token)
@@ -161,12 +253,23 @@ class CredentialRefresher:
                     },
                 )
                 return RefreshOutcome(tenant_id, provider, False, "publish_failed")
+            # AFTER the write returned, never before. A note that we published
+            # something we did not is how the branch above would suppress a
+            # write the secret actually needs.
+            self._remember_published(base, credential.access_token)
             self._log.info(
                 "published an access token that was already valid",
                 extra={"tenant_id": tenant_id, "provider": provider},
             )
             return RefreshOutcome(
-                tenant_id, provider, True, "published", credential.expires_at
+                tenant_id,
+                provider,
+                True,
+                # Distinct from `published` so the sweep response and the
+                # Settings screen say which of the two happened: a write the
+                # broker CHECKED was needed, or one it could not check.
+                "published" if state is _BaseState.NEEDS_PUBLISH else "published_unverified",
+                credential.expires_at,
             )
 
         try:
@@ -201,6 +304,13 @@ class CredentialRefresher:
 
         # Only now the short-lived half the worker actually mounts.
         self._store.add_version(base, fresh.access_token)
+        # Recorded here too, and this is what makes the steady state cost
+        # nothing even where the read-back is refused: the next ~59 sweeps in
+        # this token's life find the digest of the token they were about to
+        # write and stop. Without this line the blind-publish branch would fire
+        # once per tick again, because nothing else ever tells it what is in
+        # there.
+        self._remember_published(base, fresh.access_token)
 
         self._log.info(
             "subscription credential refreshed",
@@ -219,19 +329,40 @@ class CredentialRefresher:
         """
         return self._refresh(secret_base, tenant_id=label or secret_base, provider="account")
 
-    def _base_is_current(self, base: str, access_token: str) -> bool:
-        """Whether the worker-facing secret already holds this access token.
+    def _base_state(self, base: str, access_token: str) -> tuple[_BaseState, str]:
+        """What the worker-facing secret holds, and how confident that is.
 
-        A read failure is reported as NOT current, deliberately. Publishing a
-        credential the secret may already have costs one redundant version;
-        NOT publishing one it lacks costs every task for that tenant. The two
-        mistakes are not the same size, so the uncertain case takes the cheap
-        one.
+        Returns the reason string alongside the state because the caller logs
+        it: `PermissionDenied` and `ServiceUnavailable` both arrive here as
+        UNREADABLE and want completely different things done about them, and
+        which one it was is the entire diagnosis.
+
+        `KeyError` is the store's contract for "no such secret, or no enabled
+        version" -- see `SecretStore.access`. That is a DEFINITE answer and
+        exactly the onboarding case this path exists for, so it is
+        NEEDS_PUBLISH rather than UNREADABLE. Collapsing the two would be the
+        same mistake in the other direction: a real outage would read as an
+        empty secret and be written to on every tick.
         """
         try:
-            return self._store.access(base) == access_token
-        except Exception:
-            return False
+            stored = self._store.access(base)
+        except KeyError:
+            return _BaseState.NEEDS_PUBLISH, "no_version"
+        except Exception as exc:
+            return _BaseState.UNREADABLE, type(exc).__name__
+        return (
+            _BaseState.CURRENT if stored == access_token else _BaseState.NEEDS_PUBLISH
+        ), "compared"
+
+    @staticmethod
+    def _fingerprint(access_token: str) -> str:
+        return hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+
+    def _already_published(self, base: str, access_token: str) -> bool:
+        return self._published.get(base) == self._fingerprint(access_token)
+
+    def _remember_published(self, base: str, access_token: str) -> None:
+        self._published[base] = self._fingerprint(access_token)
 
     def sweep_accounts(self, secrets: list[tuple[str, str]]) -> list[RefreshOutcome]:
         """Refresh every account given, INCLUDING ones nobody is using.

@@ -310,22 +310,225 @@ def test_a_token_already_published_is_not_written_again():
     assert store.writes == []
 
 
+class _Unreadable(_Store):
+    """A store whose worker-facing secret refuses the READ but accepts writes.
+
+    That is not a hypothetical. In saga-agents-staging the broker holds
+    `secretmanager.secretVersionAdder` on every base secret and
+    `secretAccessor` on none of them, so `access()` raises PermissionDenied
+    and `add_version()` succeeds -- measured, and the usage poller logs the
+    same PermissionDenied on the same secret in the same tick.
+    """
+
+    def __init__(self, base, initial=None, **kw):
+        super().__init__(initial, **kw)
+        self.base = base
+        self.reads = 0
+
+    def access(self, name):
+        if name == self.base:
+            self.reads += 1
+            raise PermissionError("permission denied")
+        return super().access(name)
+
+
 def test_an_unreadable_base_secret_is_treated_as_needing_the_token():
     """Publishing one the secret may already have costs a redundant version.
     NOT publishing one it lacks costs every task for that tenant. The uncertain
-    case takes the cheap mistake."""
+    case takes the cheap mistake -- ONCE. See the test below for the rest."""
     base = "swarm-tenant-eng-anthropic"
-
-    class _Unreadable(_Store):
-        def access(self, name):
-            if name == base:
-                raise RuntimeError("permission denied")
-            return super().access(name)
-
-    store = _Unreadable({f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
     out = _refresher(store, _Endpoint()).refresh_tenant("eng", "anthropic")
 
-    assert out.reason == "published"
+    assert out.reason == "published_unverified"
+    assert out.refreshed is True
+    assert store.writes == [base]
+
+
+def test_a_blind_publish_happens_once_per_token_not_once_per_sweep():
+    """THE 1,665-VERSION BUG, reproduced at the tick rate that produced it.
+
+    `swarm-account-u-bogdan-personal` in saga-agents-staging went from version
+    1 to version 1,665 between 2026-09-18T07:26 and 2026-09-21T21:55 -- one
+    every five minutes, no gaps -- while its `-refresh` twin took 21 versions
+    over the same span. Only the still-valid branch writes the base alone, so
+    that ratio localises the write to this path exactly.
+
+    The cause was not the comparison. It was that the comparison could not RUN:
+    the broker has no `secretAccessor` on the base secret, `access()` raised
+    PermissionDenied, and a bool reported that as "not current" forever.
+
+    Sixty ticks is five hours, one token's life. The old code wrote 60 versions
+    of an identical value; anything above 1 is the leak.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    refresher = _refresher(store, _Endpoint())
+
+    for _ in range(60):
+        out = refresher.refresh_tenant("eng", "anthropic")
+
+    assert store.writes == [base], (
+        f"an unchanged credential wrote {len(store.writes)} versions over five "
+        "hours of sweeps; it must write one and then stop"
+    )
+    assert out.reason == "still_valid"
+    assert store.reads == 60, "it must keep TRYING to look; the grant may land"
+
+
+def test_a_blind_publish_says_so_once_per_token_and_names_the_fix():
+    """A guard that cannot run must be audible. The only thing that reported
+    this one was the secret-version count, four days later.
+
+    Once per token, not once per sweep: a line on every tick is a line nobody
+    reads, which is the same silence with a higher bill."""
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    log = _Log()
+    refresher = _refresher(store, _Endpoint(), log)
+
+    for _ in range(60):
+        refresher.refresh_tenant("eng", "anthropic")
+
+    warnings = [
+        r for r in log.records
+        if json.loads(r)["severity"] == "WARNING"
+        and "secretAccessor" in json.loads(r)["message"]
+    ]
+    assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"
+    assert json.loads(warnings[0])["error"] == "PermissionError", (
+        "the error TYPE is the diagnosis -- PermissionDenied is a missing "
+        "grant, ServiceUnavailable is an outage, and they want opposite actions"
+    )
+
+
+def test_a_new_token_is_published_even_though_the_last_one_was_too():
+    """The note is per TOKEN, not per secret.
+
+    Keying it on the secret alone would suppress the publish for the life of
+    the process, so the first exchange after startup would write the refresh
+    half and leave pods mounting the token it just revoked.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    refresher = _refresher(store, _Endpoint())
+    refresher.refresh_tenant("eng", "anthropic")
+    assert store.writes == [base]
+
+    # The operator pastes a different credential; same secret, new token.
+    store.data[f"{base}{REFRESH_SUFFIX}"] = json.dumps({
+        "accessToken": "access-NEWER",
+        "refreshToken": "refresh-A",
+        "expiresAt": int((NOW + timedelta(hours=8)).timestamp() * 1000),
+    })
+    out = refresher.refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published_unverified"
+    assert store.writes == [base, base]
+    assert store.data[base] == "access-NEWER"
+
+
+def test_an_exchange_leaves_nothing_for_the_next_sweep_to_republish():
+    """After a real exchange the base secret holds the new token, and the
+    ~59 still-valid sweeps that follow must write nothing -- even blind.
+
+    This is the steady state. Without it the leak returns at full rate five
+    hours after every deploy, which is indistinguishable from a fix that works.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(1)})  # due now
+    ep = _Endpoint({"access_token": "access-new", "refresh_token": "refresh-B",
+                    "expires_in": 28800})
+    refresher = _refresher(store, ep)
+
+    first = refresher.refresh_tenant("eng", "anthropic")
+    assert first.reason == "refreshed"
+    assert store.writes == [f"{base}{REFRESH_SUFFIX}", base]
+
+    for _ in range(59):
+        out = refresher.refresh_tenant("eng", "anthropic")
+
+    assert store.writes == [f"{base}{REFRESH_SUFFIX}", base], (
+        "the exchange already published the new token; the sweeps after it "
+        "must add nothing"
+    )
+    assert out.reason == "still_valid"
+    assert len(ep.calls) == 1, "and the valid token must not be spent again"
+
+
+def test_a_failed_publish_is_never_recorded_as_published():
+    """The note is written AFTER the write returns.
+
+    Recording intent instead of fact would make the next sweep skip a write the
+    secret actually needs, and the base secret would stay empty until the next
+    exchange -- five hours of every task for that tenant failing on a missing
+    version, caused by the fix for writing too often.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)}, fail_on=base)
+    refresher = _refresher(store, _Endpoint())
+
+    first = refresher.refresh_tenant("eng", "anthropic")
+    assert first.reason == "publish_failed" and store.writes == []
+
+    store.fail_on = None  # Secret Manager comes back
+    out = refresher.refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published_unverified"
+    assert store.writes == [base]
+
+
+def test_a_grant_lost_mid_process_does_not_restart_the_leak():
+    """A successful comparison is recorded too, so losing the read later is
+    already covered.
+
+    The grant can go away under a running process -- a terraform apply that
+    reorders bindings, an operator tidying IAM. Without the note from the ticks
+    that COULD read, the first refused read would find nothing remembered and
+    start writing a version every five minutes again, which is the whole bug
+    arriving by a different door.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Store({f"{base}{REFRESH_SUFFIX}": _stored(8), base: "access-old"})
+    refresher = _refresher(store, _Endpoint())
+
+    assert refresher.refresh_tenant("eng", "anthropic").reason == "still_valid"
+
+    readable = store.access
+
+    def refused(name):  # the accessor binding disappears under the process
+        if name == base:
+            raise PermissionError("permission denied")
+        return readable(name)
+
+    store.access = refused
+
+    for _ in range(30):
+        out = refresher.refresh_tenant("eng", "anthropic")
+
+    assert store.writes == [], (
+        "the token has not changed since the last readable tick; losing the "
+        "read is not a reason to start writing"
+    )
+    assert out.reason == "still_valid"
+
+
+def test_a_readable_base_secret_is_compared_not_remembered():
+    """When the read WORKS it wins, because it is evidence about the secret
+    rather than about this process. A note from a previous write must not
+    suppress a publish the secret can be seen to need -- that is how an
+    out-of-band change would become permanent."""
+    base = "swarm-tenant-eng-anthropic"
+    store = _Store({f"{base}{REFRESH_SUFFIX}": _stored(8), base: "access-old"})
+    refresher = _refresher(store, _Endpoint())
+
+    assert refresher.refresh_tenant("eng", "anthropic").reason == "still_valid"
+    assert store.writes == []
+
+    del store.data[base]  # somebody destroyed the only version
+    out = refresher.refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published", "a DEFINITE answer, so not `_unverified`"
     assert store.writes == [base]
 
 
