@@ -70,6 +70,40 @@ class ReconcilerConfig:
     enable_cloud_run: bool = True
     enable_gc: bool = True
 
+    # -- checkpoint retention ------------------------------------------------
+    #: The artifact bucket. Empty disables checkpoint collection entirely,
+    #: which is what happens in any environment that has not configured one --
+    #: a collector that cannot see the bucket must do nothing, not assume.
+    artifact_bucket: str = ""
+    enable_checkpoint_gc: bool = True
+
+    #: How long an object whose referent cannot be found is kept before the
+    #: backstop takes it. This window is NOT a retention policy -- a checkpoint
+    #: with a live reference is kept for ever, however old. It applies only to
+    #: an object whose task or attempt document is gone, which nothing in this
+    #: platform can resume from.
+    #:
+    #: Seven days. The window exists to absorb a control-plane read that is
+    #: stale or wrong, not to bound storage: a pass runs every five minutes, so
+    #: a deletion here means roughly two thousand consecutive passes all agreed
+    #: the referent no longer exists. It is also deliberately shorter than
+    #: `artifact_retention_days` (14 in dev.tfvars, 90 by default) so that this
+    #: collector, and not the bucket's blind lifecycle rule, is what usually
+    #: removes an orphan.
+    checkpoint_orphan_backstop_seconds: int = 7 * 24 * 3600
+
+    #: Objects examined per sweep. A full-bucket listing is the expensive part
+    #: of this pass, and an unbounded one would grow with the platform until it
+    #: outran the request timeout -- at which point the sweep stops happening at
+    #: all, silently, which is worse than sweeping slowly.
+    checkpoint_scan_limit: int = 20000
+
+    #: The sweep lists the whole tenants/ prefix, so it runs on its own, slower
+    #: clock than the five-minute reconciliation tick. Hourly: a checkpoint that
+    #: became collectable a moment ago costs pennies for another hour, whereas
+    #: twelve full-bucket listings an hour is a bill.
+    checkpoint_sweep_interval_seconds: int = 3600
+
     #: Label every resource this platform owns; GC refuses to touch anything
     #: without it, which is what keeps a shared project safe.
     managed_label_key: str = "managed-by"
@@ -100,4 +134,14 @@ class ReconcilerConfig:
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),
             enable_cloud_run=_bool("ENABLE_CLOUD_RUN_JOBS", settings.enable_cloud_run_jobs),
             enable_gc=_bool("RECONCILER_ENABLE_GC", True),
+            # ARTIFACT_BUCKET is already in every control-plane service's
+            # environment (terraform/infra/locals.tf, common_env), and the
+            # reconciler already holds roles/storage.objectAdmin on that bucket.
+            artifact_bucket=settings.artifact_bucket,
+            enable_checkpoint_gc=_bool("RECONCILER_ENABLE_CHECKPOINT_GC", True),
+            checkpoint_orphan_backstop_seconds=_int(
+                "CHECKPOINT_ORPHAN_BACKSTOP_SECONDS", 7 * 24 * 3600
+            ),
+            checkpoint_scan_limit=_int("CHECKPOINT_SCAN_LIMIT", 20000),
+            checkpoint_sweep_interval_seconds=_int("CHECKPOINT_SWEEP_INTERVAL_SECONDS", 3600),
         )

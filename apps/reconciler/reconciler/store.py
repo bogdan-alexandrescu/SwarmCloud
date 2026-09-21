@@ -35,6 +35,7 @@ from swarm_common.states import (
 )
 
 from .model import AttemptView, ControlSnapshot, LeaseView, TaskView
+from .model import as_datetime as _as_datetime
 
 
 class FirestoreTransactionRunner:
@@ -109,6 +110,64 @@ class ControlStore:
                     doc.to_dict() or {}, lease.attempt_id
                 )
         return snapshot
+
+    def task_and_attempts(self, task_id: str) -> tuple[TaskView | None, list[AttemptView]]:
+        """Everything checkpoint retention needs about one task.
+
+        Not part of `snapshot()`, and deliberately so: the snapshot reads only
+        tasks in the four concurrency states, because those are the only ones
+        that can hold capacity. Retention asks the opposite question -- which
+        tasks are finished -- so it reads by id, one task at a time, and a
+        backlog of a hundred thousand QUEUED tasks still costs this pass
+        nothing.
+
+        A task document that does not exist returns None, which `classify`
+        hands to the age backstop. A READ THAT FAILS raises, and the caller
+        keeps the objects untouched: "the task is gone" and "I could not look"
+        must never produce the same deletion.
+        """
+        snap = self._db.collection("tasks").document(task_id).get()
+        task = TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
+        attempts: list[AttemptView] = []
+        query = self._db.collection("attempts").where(
+            filter=self._filter("task_id", "==", task_id)
+        )
+        for doc in query.stream():
+            attempts.append(AttemptView.from_doc(doc.to_dict() or {}, doc.id))
+        return task, attempts
+
+    #: Where the checkpoint sweep records that it ran. A single document, read
+    #: and written inside one transaction, because swarm-reconciler scales to
+    #: zero and an in-process timer would reset on every cold start -- the same
+    #: mistake `record_pass` exists to undo.
+    SWEEP_STATE_PATH = ("reconciler_state", "checkpoint_gc")
+
+    def claim_checkpoint_sweep(self, *, min_interval_seconds: int, now: datetime) -> bool:
+        """True at most once per `min_interval_seconds`, across all instances.
+
+        The claim is written BEFORE the sweep runs, not after. A sweep that
+        crashes half way therefore waits a full interval before trying again,
+        which is the safe direction: the alternative is a failing sweep relisting
+        the entire bucket on every five-minute tick for as long as it keeps
+        failing.
+        """
+        collection, document = self.SWEEP_STATE_PATH
+        ref = self._db.collection(collection).document(document)
+
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            if snap.exists:
+                last = (snap.to_dict() or {}).get("last_started_at")
+                last_dt = _as_datetime(last)
+                if last_dt is not None and (now - last_dt).total_seconds() < min_interval_seconds:
+                    return False
+                txn.update(ref, {"last_started_at": now})
+            else:
+                txn.set(ref, {"last_started_at": now})
+            return True
+
+        return bool(self._txn.run(_apply))
 
     def active_tenants(self, snapshot: ControlSnapshot) -> set[str]:
         return {task.tenant_id for task in snapshot.tasks.values() if task.tenant_id}

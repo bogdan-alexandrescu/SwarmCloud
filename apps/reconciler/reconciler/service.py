@@ -24,6 +24,7 @@ from swarm_common.config import Settings
 from swarm_common.logging_setup import configure_logging
 
 from .backends import Backend, CloudRunBackend, GkeBackend
+from .checkpoints import GcsCheckpointStore
 from .config import ReconcilerConfig
 from .logs import build_logger
 from .repair import ReconcileReport, Reconciler
@@ -54,6 +55,23 @@ def build_backends(config: ReconcilerConfig, logger: Any) -> list[Backend]:
     return backends
 
 
+def build_checkpoint_store(config: ReconcilerConfig, logger: Any) -> Any:
+    """The artifact bucket, or None when this environment has not named one.
+
+    None disables checkpoint collection. That is the honest behaviour for a
+    missing bucket: the alternative is a collector that lists nothing, finds
+    nothing and reports a clean sweep of a bucket it never opened.
+    """
+    if not config.enable_checkpoint_gc or not config.artifact_bucket:
+        logger.info(
+            "checkpoint collection disabled",
+            enabled=config.enable_checkpoint_gc,
+            bucket=config.artifact_bucket or "(unset)",
+        )
+        return None
+    return GcsCheckpointStore(config.artifact_bucket, project_id=config.project_id)
+
+
 def build_reconciler(config: ReconcilerConfig, settings: Settings, logger: Any) -> Reconciler:
     db = _firestore_client(settings)
     return Reconciler(
@@ -61,6 +79,7 @@ def build_reconciler(config: ReconcilerConfig, settings: Settings, logger: Any) 
         backends=build_backends(config, logger),
         config=config,
         logger=logger,
+        checkpoint_store=build_checkpoint_store(config, logger),
     )
 
 

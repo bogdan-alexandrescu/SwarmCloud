@@ -44,6 +44,12 @@ class FindingKind(str, Enum):
     OBSOLETE_GENERATION = "obsolete_generation"
     UNUSED_JOB_RESOURCE = "unused_job_resource"
     EMPTY_NAMESPACE = "empty_namespace"
+    #: A checkpoint nothing can resume from: see `checkpoints.classify`.
+    RECLAIMABLE_CHECKPOINT = "reclaimable_checkpoint"
+    #: A checkpoint whose task or attempt document is gone, so no reference can
+    #: be established either way. The only finding in this module decided by a
+    #: clock rather than by state.
+    ORPHAN_CHECKPOINT = "orphan_checkpoint"
 
 
 @dataclass(frozen=True)
