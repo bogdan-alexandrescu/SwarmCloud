@@ -91,15 +91,64 @@ def resolve_api_url() -> str:
 #: the code alone is worse: a 404 here almost never means "no such route".
 _HTML = ("<html", "<!doctype html", "<HTML")
 
+#: IAP does NOT answer in HTML, whatever its Content-Type says. Measured on
+#: 2026-09-22 against the deployed front door, all three under
+#: `content-type: text/html`:
+#:
+#:     no Authorization       302  Invalid IAP credentials: empty token
+#:     a garbage bearer       401  Invalid IAP credentials: Unable to parse JWT
+#:     an unsigned JWT        401  Invalid IAP credentials: JWT signature is invalid
+#:
+#: They are one short sentence of plain text, so the HTML test above says
+#: "this came from the application" about every real IAP refusal there is --
+#: including `Invalid JWT audience`, the exact message this module exists to
+#: translate. Matched on the family prefix rather than on a sentence, because
+#: the sentence is Google's to reword.
+_IAP_REFUSAL = "invalid iap credentials"
+
 
 def _is_edge_page(body: str) -> bool:
-    """True when this body is Google's HTML, not the API's JSON."""
-    return body.strip().lower().startswith(_HTML)
+    """True when this body is the edge answering, not the API's JSON."""
+    stripped = body.strip()
+    return stripped.lower().startswith(_HTML) or _is_iap_refusal(stripped)
+
+
+def _is_iap_refusal(body: str) -> bool:
+    return body.strip().lower().startswith(_IAP_REFUSAL)
+
+
+def _is_edge(status: int, body: str) -> bool:
+    """`edge` as the caller grades on it: did the API ever see this request?
+
+    A redirect is included whatever its body, because the API does not issue
+    one -- a 30x from the API's own host is the edge sending the caller to a
+    sign-in page, which means the request was never delivered.
+    """
+    return 300 <= status < 400 or _is_edge_page(body)
 
 
 def _explain(status: int, body: str) -> str:
-    """Turn an edge's HTML refusal into the sentence it was trying to be."""
+    """Turn an edge's refusal into the sentence it was trying to be."""
     stripped = body.strip()
+    if _is_iap_refusal(stripped):
+        # Google's own clause says WHICH way the credential was wrong, which
+        # the remedy does not; the remedy says what to do about it, which
+        # Google's does not. Both, or the reader has half an answer.
+        return (
+            f"IAP refused this before the API saw it -- {stripped[:200]}. A bearer "
+            "token minted for anything other than the IAP OAuth client id reads as "
+            "`Invalid JWT audience`; set SWARM_IAP_CLIENT_ID and SWARM_IMPERSONATE_SA, "
+            "and check your account is on the IAP access list"
+        )
+
+    if 300 <= status < 400:
+        return (
+            f"the edge answered with a redirect (HTTP {status}), which the API never "
+            "does -- this request reached a sign-in page, not the platform. It was "
+            "NOT followed: urllib carries the Authorization header across a redirect, "
+            "including to another host. Authenticate to IAP first"
+        )
+
     if not _is_edge_page(body):
         try:
             parsed = json.loads(stripped)
@@ -125,10 +174,81 @@ def _explain(status: int, body: str) -> str:
     return f"an HTML error page from Google's edge (HTTP {status}), not from the API"
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect. Returning None is how urllib is told to stop.
+
+    TWO REASONS, AND THE FIRST IS THE CREDENTIAL. CPython's redirect handler
+    copies every header onto the new request except the content ones -- the
+    Authorization header included -- and it never compares hosts, so it goes
+    to whatever the `Location` names. Measured on 2026-09-22 over loopback
+    against the DEFAULT opener: the redirect target received the bearer
+    verbatim. An ID token minted for swarm-api would therefore reach
+    accounts.google.com, which is the cross-audience mistake commit 411d086
+    fixed one layer down and `fetch_accounts` refuses to make one layer up.
+
+    THE SECOND IS THAT THE FOLLOWED REQUEST SUCCEEDS. Measured on 2026-09-22:
+    an unauthenticated GET to the front door is a 302 that resolves, in two
+    hops, to a 200 carrying Google's sign-in HTML. Every error path in this
+    file hangs off `HTTPError`, so that arrived as a success and `json.loads`
+    raised `JSONDecodeError` -- not a `SwarmError`, so `swarm doctor`, the
+    command whose whole job is to explain this, ended in a traceback.
+
+    With the redirect refused, urllib raises the 30x as an `HTTPError` and it
+    takes the ordinary explained path.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+        return None
+
+
+_OPENER = urllib.request.build_opener(_RefuseRedirects())
+
+
+def _open(request: urllib.request.Request, timeout: int):
+    """The one place this package speaks HTTP.
+
+    A function rather than a call site so that a test can put a real
+    application behind it, which is the only way the shape of a real response
+    ever gets checked. `urllib.request.urlopen` is not used: it builds its own
+    opener, with the redirect handler above replaced by the default one.
+    """
+    return _OPENER.open(request, timeout=timeout)
+
+
 @dataclass
 class _Token:
     value: str
     minted_at: float
+
+
+def unwrap_task(payload: Any) -> dict[str, Any]:
+    """The task document out of whatever the route wrapped it in.
+
+    `POST /v1/tasks` answers `{"task": {...}, "scheduler_woken": ...}`,
+    `GET /v1/tasks/{id}` answers `{"task": {...}}` and
+    `POST /v1/tasks/{id}/cancel` answers `{"task": {...}, ...}`. Reading the
+    envelope as the task does not error -- every field comes back absent, so a
+    running task reads as state `None`, no commits, no patch and no pull
+    request, which is indistinguishable from a task that has not started.
+
+    The bare shape is still accepted: this is a bridge to whatever swarm-api a
+    person has deployed, and unwrapping must not be the thing that breaks
+    against one that does not wrap.
+    """
+    if isinstance(payload, dict) and isinstance(payload.get("task"), dict):
+        return payload["task"]
+    return payload if isinstance(payload, dict) else {}
+
+
+def task_id_of(task: dict[str, Any]) -> str:
+    """A task's id. The API calls it `id`; this package called it `task_id`.
+
+    `codec.task_to_api` emits `id`, after the frozen `Task.id`. Nothing under
+    `/v1/tasks` ever emits `task_id` on a task document -- it appears only as
+    a sibling key on the events, attempts and artifacts envelopes -- so the
+    fallback is for those, not for a variant of this shape.
+    """
+    return str(task.get("id") or task.get("task_id") or "")
 
 
 def service_name() -> str:
@@ -259,15 +379,30 @@ class SwarmClient:
         if body is not None:
             req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with _open(req, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
-                return json.loads(raw) if raw.strip() else None
+                if not raw.strip():
+                    return None
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    # A 2xx that is not JSON is the edge answering with a page
+                    # -- a sign-in form, a captive portal, a path rule pointing
+                    # at the wrong backend. Letting JSONDecodeError out ends
+                    # the CLI in a traceback about column 1 of a document
+                    # nobody asked for.
+                    raise SwarmError(
+                        f"{method} {path} -> {response.status}, but the body is not "
+                        f"JSON: {_explain(response.status, raw)}",
+                        status=response.status,
+                        edge=_is_edge(response.status, raw),
+                    ) from exc
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             raise SwarmError(
                 f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}",
                 status=exc.code,
-                edge=_is_edge_page(raw),
+                edge=_is_edge(exc.code, raw),
             ) from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
@@ -304,13 +439,23 @@ class SwarmClient:
             payload["timeout_seconds"] = timeout_seconds
         if model:
             payload["model"] = model
-        return self.request("POST", "/v1/tasks", payload=payload)
+        # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
+        # `task.get("task_id", "")` off the envelope and printed an empty line,
+        # which a shell then piped into `swarm tail`.
+        return unwrap_task(self.request("POST", "/v1/tasks", payload=payload))
 
-    def dispatch_batch(self, tasks: list[dict[str, Any]]) -> Any:
-        return self.request("POST", "/v1/tasks/batch", payload={"tasks": tasks})
+    def dispatch_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Several tasks at once. A LIST, matching what `dispatch` returns for
+        one -- `{"tasks": [...], "count": n, ...}` is the route's envelope and
+        a caller iterating it would iterate its keys."""
+        data = self.request("POST", "/v1/tasks/batch", payload={"tasks": tasks})
+        created = data.get("tasks") if isinstance(data, dict) else None
+        if created is None:
+            raise SwarmError("the batch response carried no `tasks` field")
+        return [unwrap_task(t) for t in created]
 
     def task(self, task_id: str) -> dict[str, Any]:
-        return self.request("GET", f"/v1/tasks/{task_id}")
+        return unwrap_task(self.request("GET", f"/v1/tasks/{task_id}"))
 
     def events(self, task_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
         data = self.request("GET", f"/v1/tasks/{task_id}/events?limit={limit}")
@@ -318,5 +463,5 @@ class SwarmClient:
             return list(data.get("events") or [])
         return list(data or [])
 
-    def cancel(self, task_id: str) -> Any:
-        return self.request("POST", f"/v1/tasks/{task_id}/cancel", payload={})
+    def cancel(self, task_id: str) -> dict[str, Any]:
+        return unwrap_task(self.request("POST", f"/v1/tasks/{task_id}/cancel", payload={}))

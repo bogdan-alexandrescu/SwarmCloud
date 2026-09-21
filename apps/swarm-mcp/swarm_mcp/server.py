@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .client import SwarmClient, SwarmError
+from .client import SwarmClient, SwarmError, task_id_of
 from .patches import apply_patch, download, explain_absence, integrate, patch_uri
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -228,7 +228,10 @@ def _describe(task: dict[str, Any]) -> dict[str, Any]:
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
     out: dict[str, Any] = {
-        "task_id": task.get("task_id"),
+        # The API names it `id`. Read as `task_id` this was null for every
+        # task on the platform, and a session reads a null id and a null state
+        # as "it has not started yet".
+        "task_id": task_id_of(task),
         "state": task.get("state"),
         "commits": git.get("commit_count", 0),
         "insertions": git.get("insertions", 0),
@@ -302,7 +305,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             repository_ref=args.get("ref"),
             metadata={"unit": args["label"]} if args.get("label") else None,
         )
-        task_id = task.get("task_id", "")
+        task_id = task_id_of(task)
+        if not task_id:
+            # `follow_live_with: "swarm tail "` is worse than an error: it
+            # still looks like a command, so a session runs it.
+            raise SwarmError(
+                f"the API accepted the task but its response named no id: {sorted(task)}"
+            )
         return json.dumps(
             {
                 "task_id": task_id,
@@ -331,14 +340,24 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         deadline = time.monotonic() + int(3600 if requested is None else requested)
         pending = list(args["task_ids"])
         finished: dict[str, dict[str, Any]] = {}
-        while pending and time.monotonic() < deadline:
+        # ALWAYS ONE PASS, then wait. `while ... < deadline` skipped the body
+        # entirely at timeout 0, so the one value the comment above calls
+        # legitimate -- "tell me what has finished, do not wait" -- returned
+        # `finished: []` and a `still_running` list of tasks it had not looked
+        # at, under a note asserting they had not finished. Reporting a
+        # finished task as running is the same defect as reporting a failed
+        # read as an empty result: an answer given without asking.
+        while True:
             for task_id in list(pending):
                 task = client.task(task_id)
                 if task.get("state") in TERMINAL:
                     finished[task_id] = _describe(task)
                     pending.remove(task_id)
-            if pending:
-                time.sleep(5)
+            remaining = deadline - time.monotonic()
+            if not pending or remaining <= 0:
+                break
+            # Clamped, so a short wait is not rounded up to the poll interval.
+            time.sleep(min(5.0, remaining))
         out: dict[str, Any] = {"finished": list(finished.values())}
         if pending:
             # Saying WHICH are still running matters: a caller that read this

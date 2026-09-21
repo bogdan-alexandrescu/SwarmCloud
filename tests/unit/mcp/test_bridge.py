@@ -34,7 +34,16 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 
 
 class FakeClient:
-    """A control plane that answers from a dict. No credentials, no network."""
+    """A control plane that answers from a dict. No credentials, no network.
+
+    It answers in the shape `SwarmClient` HANDS BACK -- the task document, not
+    the `{"task": {...}}` envelope the route sends, which the client unwraps.
+    That distinction is not this file's to check; `test_against_the_real_api`
+    drives the real application through the real client for exactly that, and
+    it exists because this fake once named the id field `task_id` while the
+    API named it `id`, so every consumer here agreed with the fake and none of
+    them worked.
+    """
 
     def __init__(self, tasks=None, blobs=None):
         self.tasks = tasks or {}
@@ -49,7 +58,8 @@ class FakeClient:
 
     def dispatch(self, **kwargs):
         self.dispatched.append(kwargs)
-        return {"task_id": f"task_{len(self.dispatched)}", "state": "QUEUED"}
+        # `id`, the name `codec.task_to_api` uses. Not `task_id`.
+        return {"id": f"task_{len(self.dispatched)}", "state": "QUEUED"}
 
     def cancel(self, task_id):
         self.cancelled.append(task_id)
@@ -113,7 +123,7 @@ def _patch_for(repo, mutate):
 
 
 def _task(task_id="task_a", *, state="SUCCEEDED", git=None, artifacts=None, summary=True):
-    body = {"task_id": task_id, "tenant_id": "u-test", "state": state}
+    body = {"id": task_id, "tenant_id": "u-test", "state": state}
     if summary:
         body["result_summary"] = {"artifacts": artifacts or [], "git": git}
     return body

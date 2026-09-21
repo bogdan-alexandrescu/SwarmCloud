@@ -20,12 +20,20 @@ import argparse
 import json
 import os
 import sys
+import textwrap
 import time
 from pathlib import Path
 from typing import Any
 
 from .auth import REACHES, WHY_NOT, Tier, detect
-from .client import SwarmClient, SwarmError, project_id, region, service_name
+from .client import (
+    SwarmClient,
+    SwarmError,
+    project_id,
+    region,
+    service_name,
+    task_id_of,
+)
 from .patches import (
     apply_patch,
     download,
@@ -52,21 +60,40 @@ def _artifact_bucket() -> str:
 
 
 def _live_log_uri(task: dict[str, Any], attempt_id: str, stream: str) -> str:
+    # `task_id_of`, not `task["task_id"]`: the API names the field `id`, so
+    # the subscript raised KeyError -- which is not a SwarmError and so escaped
+    # every handler in this file as a traceback, mid-tail.
     return (
         f"gs://{_artifact_bucket()}/tenants/{task['tenant_id']}"
-        f"/tasks/{task['task_id']}/attempts/{attempt_id}/logs/live/{stream}.tail.log"
+        f"/tasks/{task_id_of(task)}/attempts/{attempt_id}/logs/live/{stream}.tail.log"
     )
 
 
-def _latest_attempt(client: SwarmClient, task_id: str) -> str | None:
+def _latest_attempt(
+    client: SwarmClient, task_id: str
+) -> tuple[str | None, SwarmError | None]:
+    """`(attempt_id, None)`, `(None, None)` for "not started yet", or
+    `(None, why)`.
+
+    THREE OUTCOMES, NOT TWO. This swallowed the error and returned None, which
+    `tail` reads as "no attempt has begun", so a route that 403s or times out
+    produced a tail that printed events and NEVER printed a log line, with no
+    indication that it had stopped being able to look. `sc` states this rule
+    for its own fetchers -- a failure is never an empty result -- and this is
+    the same rule one directory over.
+    """
     try:
         data = client.request("GET", f"/v1/tasks/{task_id}/attempts?limit=1")
-    except SwarmError:
-        return None
+    except SwarmError as exc:
+        return None, exc
     attempts = data.get("attempts") if isinstance(data, dict) else None
+    if attempts is None:
+        return None, SwarmError(
+            f"GET /v1/tasks/{task_id}/attempts answered without an `attempts` field"
+        )
     if not attempts:
-        return None
-    return attempts[0].get("attempt_id")
+        return None, None
+    return attempts[0].get("attempt_id"), None
 
 
 def _emit(prefix: str, text: str) -> None:
@@ -95,7 +122,15 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
     if args.json:
         print(json.dumps(task, indent=2))
     else:
-        print(task.get("task_id", ""), flush=True)
+        task_id = task_id_of(task)
+        if not task_id:
+            # A blank line here is the worst outcome: the shell pipes it into
+            # `swarm tail` and gets an error about a task named "".
+            raise SwarmError(
+                "the API accepted the task but its response named no id: "
+                f"{sorted(task)}"
+            )
+        print(task_id, flush=True)
     return EXIT_OK
 
 
@@ -120,6 +155,9 @@ def cmd_tail(client: SwarmClient, args) -> int:
     seen_events: dict[str, set[str]] = {t: set() for t in tasks}
     shown_to: dict[tuple[str, str], int] = {}
     attempts: dict[str, str] = {}
+    # Said ONCE per task, not once per poll: at three seconds an interval, a
+    # repeated line would bury the agent's own output within a minute.
+    warned: set[str] = set()
     done: set[str] = set()
     failed = False
 
@@ -146,7 +184,16 @@ def cmd_tail(client: SwarmClient, args) -> int:
                     continue
                 _emit(short, f"· {kind}")
 
-            attempt = attempts.get(task_id) or _latest_attempt(client, task_id)
+            attempt = attempts.get(task_id)
+            if attempt is None:
+                attempt, why = _latest_attempt(client, task_id)
+                if why is not None and task_id not in warned:
+                    # Not fatal -- the state polling above still works, so the
+                    # tail can still report the outcome. But silence here is
+                    # indistinguishable from an agent that has printed nothing,
+                    # which is the reading an operator would take.
+                    warned.add(task_id)
+                    _emit(short, f"! logs unavailable: {why}")
             if attempt:
                 attempts[task_id] = attempt
                 for stream in ("stdout", "stderr"):
@@ -314,7 +361,23 @@ def cmd_doctor(_client, args) -> int:
     for profile in ("solo", "team"):
         why = WHY_NOT.get((detection.tier, profile))
         if why:
-            print(f"not {profile:<8}{why}")
+            # WRAPPED, because these explanations are paragraphs. Printed raw
+            # they are one 400-column line, and the remedy -- which is the
+            # last sentence -- is the part that scrolls off.
+            print(
+                textwrap.fill(
+                    why,
+                    width=78,
+                    initial_indent=f"not {profile:<8}",
+                    subsequent_indent=" " * 12,
+                    # These sentences name hostnames, service names and
+                    # environment variables. Split on a hyphen or mid-word,
+                    # `swarm-api` becomes `swarm-\napi`, which is not a thing
+                    # anyone can then search for.
+                    break_on_hyphens=False,
+                    break_long_words=False,
+                )
+            )
 
     for name, verdict in detection.considered:
         print(f"  checked   {name}: {verdict}")

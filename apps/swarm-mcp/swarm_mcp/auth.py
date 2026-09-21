@@ -55,9 +55,11 @@ class Tier(str, Enum):
     EXPLICIT = "explicit-token"
     #: Running inside GCP. The metadata server mints for any audience, free.
     METADATA = "metadata-server"
-    #: A service account we may impersonate. The CI answer, and the only tier
-    #: that can also satisfy IAP, because only service accounts may set an
-    #: audience on an ID token.
+    #: A service account we may impersonate. The CI answer for a SOLO
+    #: deployment. Only a service account may set an audience on an ID token,
+    #: which is what IAP needs -- but the audience this tier sets is the API's
+    #: own URL, so satisfying IAP takes the client id as well, and that is the
+    #: tier below rather than this one.
     IMPERSONATE = "service-account"
     #: An IAP-protected front door plus the client id to address it.
     IAP = "iap"
@@ -72,8 +74,16 @@ class Tier(str, Enum):
 #: computed from the same table it acts on cannot drift from the behaviour.
 REACHES: dict[Tier, tuple[str, ...]] = {
     Tier.EXPLICIT: ("solo", "team"),
+    # Inside GCP, so inside the VPC: a team deployment's
+    # `internal-and-cloud-load-balancing` ingress accepts the call, and the
+    # audience is the service URL. The deployed `swarm-verify` job is exactly
+    # this -- see terraform/infra/verify.tf, which sets API_AUDIENCE to the
+    # service url and runs on the connector.
     Tier.METADATA: ("solo", "team"),
-    Tier.IMPERSONATE: ("solo", "team"),
+    # NOT "team". See WHY_NOT below: this tier is only ever reached when the
+    # metadata server is absent, so the caller is outside the VPC, where a
+    # team deployment's ingress refuses it before reading the token.
+    Tier.IMPERSONATE: ("solo",),
     Tier.IAP: ("team",),
     Tier.PROXY: ("solo",),
 }
@@ -83,6 +93,16 @@ WHY_NOT: dict[tuple[Tier, str], str] = {
         "a team deployment keeps Cloud Run open to `allUsers` and gates at the "
         "load balancer, so its ingress refuses the direct call the proxy makes. "
         "Set SWARM_IAP_CLIENT_ID and SWARM_IMPERSONATE_SA instead."
+    ),
+    (Tier.IMPERSONATE, "team"): (
+        "this tier mints a token for the API's OWN URL, and it is only reached "
+        "when there is no metadata server -- so the caller is outside the VPC, "
+        "where a team deployment's ingress answers an HTML 404 before reading "
+        "any token (measured 2026-09-22 against swarm-api, with and without an "
+        "Authorization header). Its load balancer will take the call, but IAP "
+        "accepts only a token whose audience is the IAP OAuth client id. Set "
+        "SWARM_IAP_CLIENT_ID as well -- that is the IAP tier, and it uses this "
+        "same service account."
     ),
     (Tier.IAP, "solo"): (
         "a solo deployment has no load balancer and no IAP, so there is nothing "

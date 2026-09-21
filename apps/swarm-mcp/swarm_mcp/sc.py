@@ -137,18 +137,6 @@ def _attempt(fn: Callable[[], Any]) -> tuple[Any, SwarmError | None]:
         return None, SwarmError(f"{type(exc).__name__}: {exc}")
 
 
-def _unwrap(data: Any, key: str) -> Any:
-    """A route that answers `{"task": {...}}` and one that answers `{...}`.
-
-    Both shapes are live in this API, and guessing wrong does not error -- it
-    quietly reads every field as absent, which renders as a screen of dashes
-    over perfectly good data.
-    """
-    if isinstance(data, dict) and isinstance(data.get(key), dict):
-        return data[key]
-    return data
-
-
 def fetch_tenant(client: SwarmClient) -> dict[str, Any]:
     return client.request("GET", "/v1/tenants/me")
 
@@ -170,7 +158,14 @@ def fetch_tasks(client: SwarmClient, *, limit: int = 100) -> list[dict[str, Any]
 
 
 def fetch_task(client: SwarmClient, task_id: str) -> dict[str, Any]:
-    return _unwrap(client.request("GET", f"/v1/tasks/{task_id}"), "task")
+    """`GET /v1/tasks/{id}` answers `{"task": {...}}`.
+
+    Unwrapped by the CLIENT, in one place, rather than by a second rule kept
+    here. This file used to hold its own copy; the copy was right and the
+    client's absence of one was wrong, so every `swarm` command read the
+    envelope as the task while `sc` read it correctly.
+    """
+    return client.task(task_id)
 
 
 class AccountsRouteAbsent(SwarmError):
