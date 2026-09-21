@@ -33,7 +33,11 @@ the file, about whether it was uploaded at all, and about how large it is.
 
 **Everything is resolved before anything is downloaded.** A workflow step with
 four declared inputs, one of them missing, fails without moving the other three
-across the network into a memory-backed workspace.
+across the network into a memory-backed workspace. The size cap is applied
+twice for the same reason: once to the sizes the upstream manifests declare, so
+an oversized set never starts, and again to the bytes that actually arrive,
+because a manifest is a claim about the object and only the download measures
+it.
 """
 
 from __future__ import annotations
@@ -295,7 +299,30 @@ def artifact_reference(
                 f"upstream task {upstream_task_id} recorded {filename!r} without a "
                 "location, so it cannot be fetched"
             )
+        # An entry with no `bytes` is NOT an entry of size zero, and the
+        # difference is the whole of the cap in `stage_inputs`: a zero lets any
+        # number of artifacts of any size through a check that is a sum. The
+        # two honest readings are "refuse it" and "measure it", and measuring
+        # is not available here -- the `ObjectStore` protocol exposes no size,
+        # so the only way to learn one is to download the object, which is the
+        # decision the cap exists to make BEFORE anything is pulled into a
+        # memory-backed workspace. So: refuse. It costs nothing against any
+        # manifest this platform has written, because the single writer
+        # (`lifecycle._upload_outputs`) records `path.stat().st_size` on every
+        # entry it appends; an entry reaching here without a usable size came
+        # from no writer of ours. A negative is refused for the same reason a
+        # missing one is -- it would SUBTRACT from the total and let a genuinely
+        # oversized sibling through.
         size = entry.get("bytes")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            recorded = "no size" if size is None else f"a size of {size!r}"
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} recorded {filename!r} with "
+                f"{recorded}, where a whole number of bytes was required; that "
+                "number is what bounds how much one attempt may stage into a "
+                "memory-backed workspace, so the input is refused rather than "
+                "fetched uncounted"
+            )
         return ArtifactReference(
             key=artifact_key(
                 uri,
@@ -304,7 +331,7 @@ def artifact_reference(
                 filename=filename,
             ),
             uri=uri,
-            size_bytes=int(size) if isinstance(size, int) and not isinstance(size, bool) else 0,
+            size_bytes=size,
         )
 
     # A skipped artifact is a different fault with a different remedy: the file
@@ -436,7 +463,15 @@ def stage_inputs(
             f"{max_total_bytes} byte cap for one attempt; refusing to stage them"
         )
 
-    # Pass 4: fetch.
+    # Pass 4: fetch, re-checking the cap against what actually arrives.
+    #
+    # The check above was made against sizes the UPSTREAM reported about
+    # itself. This one is made against bytes that landed, because the two can
+    # differ -- a truncated upload, a hand-edited task document, a future
+    # writer that rounds -- and only this one is measured on the RAM being
+    # spent. A perfect type on the manifest entry would not close this; the
+    # manifest is a claim, and the claim is checkable only here.
+    downloaded = 0
     for item in pending:
         reference = references[item]
         destination = destinations[item]
@@ -448,6 +483,24 @@ def stage_inputs(
                 f"could not stage {item.filename!r} from upstream task "
                 f"{item.upstream_task_id} ({reference.uri}): {exc}"
             ) from exc
+        downloaded += size
+        if downloaded > max_total_bytes:
+            # Unlinked before raising, not left for the workspace teardown: the
+            # work directory is memory-backed tmpfs, so until this file is gone
+            # it still holds the RAM this refusal exists to protect, and the
+            # failure path above us has a checkpoint and an upload left to do.
+            try:
+                destination.unlink()
+            except OSError:  # pragma: no cover - best effort on a doomed attempt
+                pass
+            raise InputUnavailable(
+                f"staging {item.filename!r} from upstream task "
+                f"{item.upstream_task_id} brought the declared inputs to "
+                f"{downloaded} bytes actually downloaded, over the "
+                f"{max_total_bytes} byte cap for one attempt; the upstream "
+                f"manifests declared {total} bytes in total, so at least one of "
+                "them under-reported what it had stored"
+            )
         staged.append(
             StagedInput(
                 upstream_task_id=item.upstream_task_id,

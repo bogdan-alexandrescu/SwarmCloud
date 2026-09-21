@@ -901,18 +901,11 @@ class Worker:
             max_total_bytes=self.cfg.max_artifact_bytes,
             # Derived from the workspace rather than spelled out, so a new
             # control file added to `Workspace` cannot be silently stageable
-            # over. `repo` and `.swarm` are the worker's own directories
-            # inside `work/`.
-            reserved=frozenset(
-                {
-                    REPO_DIR_NAME,
-                    WORKER_STATE_DIR,
-                    ws.input_path.name,
-                    ws.result_path.name,
-                    ws.quota_path.name,
-                    ws.credential_path.name,
-                }
-            ),
+            # over -- `control_file_names` finds every property it puts in
+            # `work/`. `repo` and `.swarm` are the worker's OWN directories
+            # inside `work/`, not the workspace's, so they are named here.
+            reserved=frozenset({REPO_DIR_NAME, WORKER_STATE_DIR})
+            | ws.control_file_names(),
         )
         self._staged_inputs = staged
         self.log.info(

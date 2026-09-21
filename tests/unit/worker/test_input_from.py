@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 
 from agent_worker import inputs as inputs_mod
+from agent_worker import workspace
 from agent_worker.errors import ExitCode, InputUnavailable
 from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
@@ -547,3 +548,277 @@ def test_one_missing_input_fails_before_its_siblings_are_downloaded(
         )
 
     assert not list(work.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# the size cap, and the two ways round it
+# ---------------------------------------------------------------------------
+
+
+def seed_manifest_entry(
+    db: Any,
+    store: Any,
+    *,
+    task_id: str,
+    name: str,
+    stored: bytes,
+    entry_extra: dict[str, Any],
+) -> str:
+    """One SUCCEEDED upstream whose manifest entry is spelled by the caller.
+
+    `stored` is what is really in the object store; `entry_extra` is what the
+    manifest claims about it. Keeping the two separate is the point: every
+    bypass below is a manifest that disagrees with the bytes.
+    """
+    key = f"tenants/{TENANT}/tasks/{task_id}/attempts/att/artifacts/{name}"
+    store.upload_bytes(key, stored)
+    entry: dict[str, Any] = {"name": name, "uri": store.uri(key)}
+    entry.update(entry_extra)
+    db.seed(
+        f"tasks/{task_id}",
+        {
+            "id": task_id,
+            "tenant_id": TENANT,
+            "state": TaskState.SUCCEEDED.value,
+            "result_summary": {"artifacts": [entry]},
+        },
+    )
+    return key
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        pytest.param({}, id="absent"),
+        pytest.param({"bytes": None}, id="null"),
+        pytest.param({"bytes": "600"}, id="string"),
+        pytest.param({"bytes": 600.0}, id="float"),
+        pytest.param({"bytes": True}, id="bool"),
+        pytest.param({"bytes": -600}, id="negative"),
+    ],
+)
+def test_an_artifact_with_no_usable_size_is_refused_not_counted_as_zero(
+    db, store, tmp_path, log_stream, recorded: dict[str, Any]
+):
+    """An entry with no size is not an entry of size zero.
+
+    Each of these shapes used to produce `size_bytes = 0`, and a zero is not a
+    small file -- it is a file that the cap, which is a sum, cannot see at all.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    seed_manifest_entry(
+        db, store, task_id="task_1", name="big-1.bin", stored=b"x" * 600, entry_extra=recorded
+    )
+
+    with pytest.raises(InputUnavailable) as raised:
+        inputs_mod.stage_inputs(
+            inputs_mod.declared_inputs({"input_from": {"task_1": "big-1.bin"}}),
+            work=work,
+            store=store,
+            db=db,
+            tenant_id=TENANT,
+            logger=logger_for(log_stream),
+            resumed=False,
+            max_total_bytes=1000,
+            reserved=frozenset({"repo"}),
+        )
+
+    # The two strings a person needs in order to fix it, as the module promises.
+    assert "task_1" in str(raised.value)
+    assert "big-1.bin" in str(raised.value)
+    assert not list(work.iterdir())
+
+
+def test_sizeless_artifacts_cannot_sum_their_way_under_the_cap(db, store, tmp_path, log_stream):
+    """The bypass itself: two 600-byte files, a 1000-byte cap, no sizes recorded.
+
+    Before the fix both entries contributed 0, the sum passed the cap, and 1200
+    bytes landed in a memory-backed workspace that was only ever promised 1000.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    for index in (1, 2):
+        seed_manifest_entry(
+            db,
+            store,
+            task_id=f"task_{index}",
+            name=f"big-{index}.bin",
+            stored=b"x" * 600,
+            entry_extra={},
+        )
+
+    with pytest.raises(InputUnavailable):
+        inputs_mod.stage_inputs(
+            inputs_mod.declared_inputs(
+                {"input_from": {"task_1": "big-1.bin", "task_2": "big-2.bin"}}
+            ),
+            work=work,
+            store=store,
+            db=db,
+            tenant_id=TENANT,
+            logger=logger_for(log_stream),
+            resumed=False,
+            max_total_bytes=1000,
+            reserved=frozenset({"repo"}),
+        )
+
+    assert not list(work.iterdir())
+
+
+def test_a_manifest_that_under_reports_is_caught_by_the_bytes_that_arrive(
+    db, store, tmp_path, log_stream
+):
+    """The half a type would not fix: a well-formed manifest that lies.
+
+    Both entries declare 10 bytes and hold 600, so the declared total (20) is
+    comfortably under the 1000-byte cap and pass 3 lets them through. Only the
+    download knows better.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    for index in (1, 2):
+        seed_manifest_entry(
+            db,
+            store,
+            task_id=f"task_{index}",
+            name=f"big-{index}.bin",
+            stored=b"x" * 600,
+            entry_extra={"bytes": 10},
+        )
+
+    with pytest.raises(InputUnavailable) as raised:
+        inputs_mod.stage_inputs(
+            inputs_mod.declared_inputs(
+                {"input_from": {"task_1": "big-1.bin", "task_2": "big-2.bin"}}
+            ),
+            work=work,
+            store=store,
+            db=db,
+            tenant_id=TENANT,
+            logger=logger_for(log_stream),
+            resumed=False,
+            max_total_bytes=1000,
+            reserved=frozenset({"repo"}),
+        )
+
+    message = str(raised.value)
+    assert "1200 bytes actually downloaded" in message
+    assert "declared 20 bytes" in message
+    # The file that crossed the cap is unlinked rather than left occupying the
+    # tmpfs this refusal exists to protect.
+    assert not (work / "big-2.bin").exists()
+
+
+def test_a_truthful_manifest_still_stages_at_exactly_the_cap(db, store, tmp_path, log_stream):
+    """The new check must not refuse the boundary it is guarding.
+
+    Two 500-byte files against a 1000-byte cap: declared total and downloaded
+    total are both exactly the cap, and the attempt proceeds.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    for index in (1, 2):
+        seed_manifest_entry(
+            db,
+            store,
+            task_id=f"task_{index}",
+            name=f"fits-{index}.bin",
+            stored=b"x" * 500,
+            entry_extra={"bytes": 500},
+        )
+
+    staged = inputs_mod.stage_inputs(
+        inputs_mod.declared_inputs(
+            {"input_from": {"task_1": "fits-1.bin", "task_2": "fits-2.bin"}}
+        ),
+        work=work,
+        store=store,
+        db=db,
+        tenant_id=TENANT,
+        logger=logger_for(log_stream),
+        resumed=False,
+        max_total_bytes=1000,
+        reserved=frozenset({"repo"}),
+    )
+
+    assert [item.size_bytes for item in staged] == [500, 500]
+    assert (work / "fits-1.bin").stat().st_size == 500
+    assert (work / "fits-2.bin").stat().st_size == 500
+
+
+def test_a_genuinely_empty_artifact_still_stages(db, store, tmp_path, log_stream):
+    """Zero is a real size, and refusing it would be a regression on real data.
+
+    A read-only survey of saga-agents-staging on 2026-09-22 (57 SUCCEEDED
+    tasks, 129 manifest entries) found `bytes` ranging from 0 to 25560, so
+    zero-byte artifacts exist in production today. The refusal in
+    `artifact_reference` is `size < 0`, not `size <= 0`, for exactly that
+    reason: "not reported" and "reported as empty" are different claims, and
+    only the first one blinds the cap.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    seed_manifest_entry(
+        db, store, task_id="task_1", name="empty.txt", stored=b"", entry_extra={"bytes": 0}
+    )
+
+    staged = inputs_mod.stage_inputs(
+        inputs_mod.declared_inputs({"input_from": {"task_1": "empty.txt"}}),
+        work=work,
+        store=store,
+        db=db,
+        tenant_id=TENANT,
+        logger=logger_for(log_stream),
+        resumed=False,
+        max_total_bytes=1000,
+        reserved=frozenset({"repo"}),
+    )
+
+    assert [item.size_bytes for item in staged] == [0]
+    assert (work / "empty.txt").read_bytes() == b""
+
+
+# ---------------------------------------------------------------------------
+# the reserved set is derived, not restated
+# ---------------------------------------------------------------------------
+
+
+def test_a_control_file_added_to_the_workspace_is_reserved_without_editing_the_caller(
+    tmp_path: Path,
+):
+    """`lifecycle._stage_declared_inputs` says this set is derived. It must be.
+
+    A hand-written list at the call site is correct only until someone adds a
+    control file to `Workspace` and does not know to go and edit it -- and a
+    control file missing from the set is one a declared input can land on
+    first. The subclass below stands in for that future property.
+    """
+
+    class WorkspaceWithANewControlFile(workspace.Workspace):
+        @property
+        def handoff_path(self) -> Path:
+            return self.work / "handoff.json"
+
+    base = tmp_path / "ws"
+    ws = WorkspaceWithANewControlFile(
+        root=base,
+        work=base / "work",
+        artifacts=base / "artifacts",
+        logs=base / "logs",
+        tmp=base / "tmp",
+        restore=base / "restore",
+        private=base / "private",
+    )
+
+    names = ws.control_file_names()
+    # Everything `Workspace` already puts in `work/` ...
+    assert {"input.json", "result.json", "quota.json", "credential.json"} <= names
+    # ... the new one, with nothing at the call site changed ...
+    assert "handoff.json" in names
+    # ... and nothing from `logs/`, which no declared input can reach anyway.
+    assert "stdout.log" not in names and "stderr.log" not in names
+
+    with pytest.raises(InputUnavailable) as raised:
+        inputs_mod.destination_for(ws.work, "handoff.json", reserved=names)
+    assert "the worker owns" in str(raised.value)
