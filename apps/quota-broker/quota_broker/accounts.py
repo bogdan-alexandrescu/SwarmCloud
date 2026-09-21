@@ -76,6 +76,11 @@ from typing import Any, Iterable
 #: names are: a caller who could name the secret could name someone else's.
 _SECRET_PREFIX = "swarm-account"
 
+#: Separates the tenant from the label in a secret name. Two dashes because a
+#: single one is ambiguous when both sides may contain dashes -- see
+#: `secret_name`, which is where that cost invariant 9.
+_SEPARATOR = "--"
+
 #: Labels become part of a secret name and a Kubernetes annotation, so they are
 #: restricted to what both accept. Checked on the way IN, so a bad label is
 #: refused at onboarding rather than at dispatch.
@@ -153,11 +158,39 @@ class AccountError(RuntimeError):
 
 
 def secret_name(owner_tenant: str, label: str) -> str:
-    """`swarm-account-<tenant>-<label>`. Derived, never supplied."""
+    """`swarm-account-<tenant>--<label>`. Derived, never supplied.
+
+    TWO DASHES, and that is a security boundary rather than a style choice.
+
+    A single dash made the name AMBIGUOUS, because a tenant id and a label may
+    both contain one: `("acme-prod", "x")` and `("acme", "prod-x")` produced the
+    identical secret. Registering the second would bind the second tenant's
+    worker service account as an accessor on a secret holding the FIRST
+    tenant's live refresh and access tokens -- CONTRACT.md invariant 9, broken
+    with no attacker and no malice, by two ordinary onboardings. Reported in
+    docs/audits/2026-09-18/06-quota-broker-accounts.md and unfixed until
+    account registration moved into the Settings page, where the label is
+    chosen by whoever is signed in rather than by an operator running a script.
+
+    `--` is unambiguous because the name splits at the FIRST occurrence and the
+    TENANT cannot contain one -- the check below refuses that. A label may
+    contain `--` harmlessly: everything after the first separator is the label
+    by definition, so there is still exactly one way to read the name.
+    (`validate_label` does not forbid a repeated dash, and an earlier draft of
+    this comment claimed it did.)
+
+    Changed at the only moment it was free: no account had yet been registered
+    anywhere, so there was nothing to migrate.
+    """
     validate_label(label)
     if not owner_tenant:
         raise AccountError("an account must have an owning tenant")
-    return f"{_SECRET_PREFIX}-{owner_tenant}-{label}"
+    if _SEPARATOR in owner_tenant:
+        raise AccountError(
+            f"tenant id {owner_tenant!r} contains {_SEPARATOR!r}, which separates "
+            "the tenant from the label in a secret name and must appear in neither"
+        )
+    return f"{_SECRET_PREFIX}-{owner_tenant}{_SEPARATOR}{label}"
 
 
 def validate_label(label: str) -> str:

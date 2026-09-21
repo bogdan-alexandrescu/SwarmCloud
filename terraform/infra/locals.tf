@@ -486,6 +486,24 @@ locals {
         module.iam.service_account_emails["swarm-api"],
       ])
 
+      # Provisioning an account's two secrets, which moved here when account
+      # management became a Settings page rather than a shell script. A pool
+      # account's secret name contains a LABEL chosen at registration time, so
+      # terraform cannot declare it in advance and the component handling the
+      # registration has to create it.
+      BROKER_SERVICE_ACCOUNT = module.iam.service_account_emails["swarm-quota-broker"]
+
+      # A TEMPLATE, not a pattern rebuilt in Python. modules/tenancy owns what a
+      # tenant's service account is called -- `swarm-agent-worker-<tenant>`, with
+      # an 11-character tenant limit because of the 30-character GCP cap -- and a
+      # second copy of that rule inside the broker would be correct until the day
+      # it was not. The symptom then is a pod that cannot read the credential it
+      # was assigned, surfacing inside a job, nowhere near the cause.
+      #
+      # `{tenant}` is substituted by the broker. An unset value makes the
+      # register route REFUSE rather than create a secret no pod can read.
+      WORKER_SERVICE_ACCOUNT_TEMPLATE = "swarm-agent-worker-{tenant}@${var.project_id}.iam.gserviceaccount.com"
+
       # WorkerIdentity refuses to start without this when `hardened`, for the
       # same reason PUSH_AUDIENCE exists: no audience means google-auth does not
       # check `aud` at all. It was never set, and `hardened` is driven by

@@ -103,7 +103,7 @@ def test_an_unreadable_token_skips_that_account_and_continues():
     """One bad secret must not stop the pool being read."""
     accounts = Accounts()
     p = UsagePoller(
-        Secrets(fail={"swarm-account-u-bogdan-a"}),
+        Secrets(fail={"swarm-account-u-bogdan--a"}),
         accounts,
         logger=Log(),
         now=lambda: NOW,

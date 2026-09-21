@@ -136,9 +136,9 @@ resource "google_project_iam_custom_role" "gke_reaper" {
 resource "google_project_iam_custom_role" "secret_lister" {
   project = var.project_id
   role_id = local.custom_role_ids.secret_lister
-  title   = "Swarm Secret Lister"
+  title   = "Swarm Secret Lister and Account Provisioner"
 
-  description = "List secret METADATA project-wide. Cannot read any payload."
+  description = "List secret metadata project-wide, and create the two secrets an account pool entry needs. Cannot read any payload."
   stage       = "GA"
 
   # The quota broker must discover which tenants hold a subscription
@@ -152,5 +152,25 @@ resource "google_project_iam_custom_role" "secret_lister" {
   # refresh secrets, so a bug here cannot widen into reading tenant keys.
   permissions = [
     "secretmanager.secrets.list",
+
+    # PROVISIONING an account's secrets, added when account management moved
+    # into the Settings page and stopped being a shell script.
+    #
+    # A secret for a pool account cannot be created ahead of time: its name
+    # contains a LABEL the operator chooses at registration, so terraform
+    # cannot declare it and only the component handling the registration can
+    # make it. That component is this one, because it is already the single
+    # writer for subscription credentials -- see quota_broker.credentials for
+    # why a second writer bricks a rotating credential.
+    #
+    # `setIamPolicy` is here for the same reason `create` is. A secret created
+    # without an accessor binding is one the tenant's pod cannot read, and the
+    # failure surfaces much later as an unexplained auth error inside a job.
+    # Creating it and binding it are one operation or the secret is useless.
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
+    "secretmanager.versions.add",
   ]
 }

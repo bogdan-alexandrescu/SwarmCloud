@@ -45,6 +45,7 @@ from .accounts import (
     eligibility,
     holds_from_firestore,
     holds_to_firestore,
+    secret_name,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import AccountStore
@@ -791,6 +792,38 @@ def create_app(
     # property that keeps a rotating credential from being corrupted.
     app.state.secret_store = secret_store
 
+    # What an account's secrets need at creation time: where to replicate them,
+    # what to label them, and who may read them.
+    app.state.region = os.environ.get("REGION", "").strip()
+    app.state.environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
+    app.state.broker_service_account = os.environ.get(
+        "BROKER_SERVICE_ACCOUNT", ""
+    ).strip()
+
+    # THE TENANT WORKER'S IDENTITY IS A TEMPLATE FROM TERRAFORM, not a pattern
+    # rebuilt here. terraform/modules/tenancy owns what a tenant's service
+    # account is called; a second copy of that rule in this file would be
+    # correct until the day it was not, and the symptom -- a pod that cannot
+    # read the credential it was assigned -- appears inside a job, nowhere near
+    # this line.
+    template = os.environ.get("WORKER_SERVICE_ACCOUNT_TEMPLATE", "").strip()
+
+    def _worker_sa(tenant_id: str) -> str:
+        # Empty means REFUSE, not "grant nobody". A secret created with no
+        # worker accessor is one the tenant's pod cannot read, and that failure
+        # surfaces much later as an unexplained auth error inside a job. The
+        # register route turns this into a 422 naming the variable.
+        if not template or "{tenant}" not in template:
+            raise BrokerValidationError(
+                "WORKER_SERVICE_ACCOUNT_TEMPLATE is unset or has no {tenant} "
+                "placeholder, so an account's secret cannot be bound to the "
+                "tenant that must read it. Refusing rather than creating a "
+                "secret no pod can read."
+            )
+        return f"serviceAccount:{template.format(tenant=tenant_id)}"
+
+    app.state.worker_service_account = _worker_sa
+
     # The usage poller needs the same Secret Manager store the refresher uses --
     # it reads each account's CURRENT access token, which the refresh above has
     # just made fresh. Ordering matters: polling with a token the refresh is
@@ -1027,25 +1060,79 @@ def create_app(
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
 
+        # PROVISION FIRST, REGISTER LAST, and the order is the whole point.
+        #
+        # It used to be the other way round, and a probe against the deployed
+        # service proved what that costs: `add_version` refuses to invent a
+        # secret, so registering a new label raised SecretMissing AFTER the
+        # Firestore document had been written -- leaving an account the pool
+        # would happily assign to an agent that then cannot authenticate.
+        # Observed, and the orphan had to be deleted by hand.
+        #
+        # A secret with no document is invisible and harmless, and
+        # re-registering the same label adopts it. A document with no secret is
+        # a live trap. So every fallible step happens before the one that
+        # publishes the account.
+        base = secret_name(body.owner_tenant, body.label)
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": body.owner_tenant,
+            "account": body.label,
+            "provider": body.provider,
+            "environment": request.app.state.environment,
+        }
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        worker_sa = request.app.state.worker_service_account(body.owner_tenant)
+        region = request.app.state.region
+
+        try:
+            # `{base}-refresh` holds the PAIR and only this service may read it.
+            # The worker is deliberately not an accessor: a pod that could read
+            # the refresh token could mint successors forever, which is exactly
+            # the blast radius the two-secret split exists to prevent.
+            secrets.ensure_secret(
+                f"{base}{REFRESH_SUFFIX}",
+                labels=labels,
+                accessors=[broker_sa] if broker_sa else [],
+                region=region,
+            )
+            # `{base}` holds ONLY the access token and is what the tenant's pod
+            # mounts into CLAUDE_CODE_OAUTH_TOKEN. Borrowers are granted
+            # separately, when an account is lent -- see the lending route.
+            secrets.ensure_secret(
+                base,
+                labels=labels,
+                accessors=[sa for sa in (broker_sa, worker_sa) if sa],
+                region=region,
+            )
+            # Stored as pasted rather than re-serialised: `parse_credential` is
+            # the reader, and writing back a normalised shape would make this
+            # the only place that decides what that shape is.
+            secrets.add_version(f"{base}{REFRESH_SUFFIX}", body.credential)
+            secrets.add_version(base, credential.access_token)
+        except Exception as exc:
+            log.error(
+                "could not provision an account's secrets",
+                extra={
+                    "tenant_id": body.owner_tenant,
+                    "label": body.label,
+                    "error": type(exc).__name__,
+                },
+            )
+            raise BrokerValidationError(
+                f"could not provision the secrets for {body.owner_tenant}:{body.label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+
         account = store.register(
             body.owner_tenant,
             body.label,
             provider=body.provider,
             lend_to=body.lend_to,
         )
-        base = store.secret_for(account)
-
-        # TWO SECRETS, and the split is the security boundary. `{base}-refresh`
-        # holds the pair and is read only by this service, the single writer.
-        # `{base}` holds ONLY the access token and is what the tenant's pod
-        # reads into CLAUDE_CODE_OAUTH_TOKEN -- so a compromised pod has a
-        # credential that expires, not one that can mint successors forever.
-        #
-        # Stored as pasted rather than re-serialised: `parse_credential` is the
-        # reader, and writing back a normalised shape would make this the only
-        # place that decides what that shape is.
-        secrets.add_version(f"{base}{REFRESH_SUFFIX}", body.credential)
-        secrets.add_version(base, credential.access_token)
 
         return {
             "account": account_to_api(account),

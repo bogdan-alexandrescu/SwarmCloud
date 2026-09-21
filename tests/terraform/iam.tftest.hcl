@@ -301,16 +301,44 @@ run "custom_role_ids_accept_only_legal_characters" {
 # secrets only. If that separation ever collapses into one project-wide role,
 # a bug in the broker stops being a failed refresh and becomes every tenant's
 # provider key at once.
-run "the_broker_can_list_secrets_and_read_none" {
+run "the_broker_can_provision_account_secrets_and_read_none" {
   command = plan
 
   module {
     source = "../../terraform/modules/iam"
   }
 
+  # Pinned as an exact SET, not a subset check. The point of a custom role here
+  # is that every permission in it was argued for; asserting "contains x" would
+  # let an unrelated one be added silently, which is how a narrow role becomes
+  # roles/secretmanager.admin one commit at a time.
+  #
+  # `create` and `setIamPolicy` arrived when account management moved into the
+  # Settings page: a pool account's secret name contains a LABEL chosen at
+  # registration, so terraform cannot declare it and the component handling the
+  # registration has to make it -- and a secret created without an accessor
+  # binding is one the tenant's pod cannot read.
   assert {
-    condition     = google_project_iam_custom_role.secret_lister.permissions == toset(["secretmanager.secrets.list"])
-    error_message = "discovery needs exactly one permission; anything more is reach it does not use"
+    condition = google_project_iam_custom_role.secret_lister.permissions == toset([
+      "secretmanager.secrets.list",
+      "secretmanager.secrets.create",
+      "secretmanager.secrets.get",
+      "secretmanager.secrets.getIamPolicy",
+      "secretmanager.secrets.setIamPolicy",
+      "secretmanager.versions.add",
+    ])
+    error_message = "every permission in this role was argued for; adding one silently is how it becomes secretmanager.admin"
+  }
+
+  # THE LINE THAT MUST NOT MOVE. The broker writes credentials and binds their
+  # readers; it never reads a payload project-wide. `versions.add` is
+  # write-only, and payload access stays per-secret.
+  assert {
+    condition = !contains(
+      google_project_iam_custom_role.secret_lister.permissions,
+      "secretmanager.versions.get"
+    )
+    error_message = "reading a version project-wide would defeat per-tenant secret isolation"
   }
 
   assert {

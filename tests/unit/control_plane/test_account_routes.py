@@ -44,17 +44,43 @@ def _credential(expires_in_hours: int = 8, refresh: str = "rt-abcdefgh") -> str:
 
 
 class _Secrets:
-    """A Secret Manager double that records every write."""
+    """A Secret Manager double that records every write.
+
+    Models the real store's REFUSAL to invent a secret: `add_version` on a
+    secret that was never created raises, exactly as SecretManagerStore does
+    ("a secret this service invents has no tenant labels and no accessor
+    binding"). Without that refusal here, a test would pass against a double
+    that is more forgiving than production -- which is how the ordering bug
+    reached a deployed service.
+    """
 
     def __init__(self) -> None:
         self.versions: dict[str, list[str]] = {}
+        self.created: dict[str, dict[str, str]] = {}
+        self.accessors: dict[str, list[str]] = {}
+        self.fail_on: str | None = None
 
     def access(self, name: str) -> str:
         if name not in self.versions:
             raise KeyError(name)
         return self.versions[name][-1]
 
+    def ensure_secret(self, name, *, labels, accessors, region):
+        if self.fail_on and self.fail_on in name:
+            raise RuntimeError("secret manager said no")
+        created = name not in self.created
+        if created:
+            self.created[name] = dict(labels)
+            self.region = region
+        self.accessors.setdefault(name, [])
+        for m in accessors:
+            if m not in self.accessors[name]:
+                self.accessors[name].append(m)
+        return created
+
     def add_version(self, name: str, payload: str) -> None:
+        if name not in self.created:
+            raise KeyError(f"{name} was never created")
         self.versions.setdefault(name, []).append(payload)
 
 
@@ -69,6 +95,14 @@ def client(broker):
         def resolve(self, authorization):
             return None, True             # the platform, so every tenant is in scope
 
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("REGION", "us-central1")
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com")
+    monkeypatch.setenv(
+        "WORKER_SERVICE_ACCOUNT_TEMPLATE",
+        "swarm-agent-worker-{tenant}@p.iam.gserviceaccount.com",
+    )
     app = create_app(
         broker,
         identity=PlatformIdentity(project_id=PROJECT),
@@ -109,7 +143,7 @@ def test_the_credential_is_split_across_two_secrets(client):
         json={"owner_tenant": TENANT, "label": "personal", "credential": _credential()},
     )
     written = client.secrets.versions
-    base = f"swarm-account-{TENANT}-personal"
+    base = f"swarm-account-{TENANT}--personal"
 
     assert base in written and f"{base}-refresh" in written
     assert written[base][-1] == "at-abcdefghijklmnop"
@@ -251,7 +285,7 @@ def test_refreshing_goes_through_the_same_refresher_as_the_sweep(client):
     client.app_ref.state.credential_refresher = refresher
 
     client.post(f"/v1/accounts/{TENANT}:personal/refresh")
-    assert refresher.calls == [(f"swarm-account-{TENANT}-personal", "personal")]
+    assert refresher.calls == [(f"swarm-account-{TENANT}--personal", "personal")]
 
 
 def test_a_dead_refresh_token_marks_the_account_rather_than_retrying_forever(client):
@@ -290,4 +324,122 @@ def test_removing_an_account_keeps_its_secret(client):
     assert r.status_code == 200
     assert r.json()["secret"] == "retained"
     assert client.get("/v1/accounts").json()["accounts"] == []
-    assert f"swarm-account-{TENANT}-personal-refresh" in client.secrets.versions
+    assert f"swarm-account-{TENANT}--personal-refresh" in client.secrets.versions
+
+
+# -- provisioning, and the ordering a live probe exposed --------------------
+
+
+def test_registering_creates_both_secrets_with_the_labels_that_identify_them(client):
+    """The secrets cannot be declared in terraform: their names contain a LABEL
+    the operator chooses at registration time. So this service makes them, and
+    it must apply the same labels the rest of the platform is found by."""
+    client.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "personal", "credential": _credential()},
+    )
+    base = f"swarm-account-{TENANT}--personal"
+
+    assert set(client.secrets.created) == {base, f"{base}-refresh"}
+    for name, labels in client.secrets.created.items():
+        assert labels["managed-by"] == "swarm-secrets", name
+        assert labels["component"] == "swarm-account", name
+        assert labels["tenant"] == TENANT and labels["account"] == "personal", name
+        assert labels["environment"] == "dev", name
+
+
+def test_only_the_broker_may_read_the_pair_and_the_worker_only_the_token(client):
+    """The two-secret split is worthless if both are bound to the same readers.
+    A pod that could read the refresh token could mint successors forever,
+    which is the blast radius the split exists to prevent."""
+    client.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "personal", "credential": _credential()},
+    )
+    base = f"swarm-account-{TENANT}--personal"
+
+    pair_readers = client.secrets.accessors[f"{base}-refresh"]
+    token_readers = client.secrets.accessors[base]
+
+    assert any("quota-broker" in m for m in pair_readers)
+    assert not any("agent-worker" in m for m in pair_readers), (
+        "the tenant's pod must never be able to read the refresh token"
+    )
+    assert any(f"agent-worker-{TENANT}" in m for m in token_readers)
+
+
+def test_a_failed_secret_write_leaves_no_account_behind(client):
+    """THE ORDERING BUG, proved against the deployed service before it was
+    fixed. `add_version` refuses to invent a secret, so registering a new label
+    raised AFTER the document had been written -- leaving an account the pool
+    would assign to an agent that then cannot authenticate. The orphan had to
+    be deleted by hand.
+
+    A secret with no document is invisible and harmless. A document with no
+    secret is a live trap. So every fallible step must happen before the one
+    that publishes the account.
+    """
+    client.secrets.fail_on = "-refresh"
+
+    r = client.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "doomed", "credential": _credential()},
+    )
+
+    assert r.status_code == 422
+    assert "No account was registered" in r.json()["message"]
+    assert client.get("/v1/accounts").json()["accounts"] == [], "an orphan was left behind"
+
+
+def test_re_registering_a_label_replaces_the_credential_without_duplicating(client):
+    """The supported way to rotate a credential by hand. It must adopt the
+    existing secrets rather than fail on AlreadyExists."""
+    for token in ("first", "second"):
+        r = client.post(
+            "/v1/accounts",
+            json={
+                "owner_tenant": TENANT,
+                "label": "personal",
+                "credential": _credential(refresh=f"rt-{token}-value"),
+            },
+        )
+        assert r.status_code == 201, r.text
+
+    assert len(client.get("/v1/accounts").json()["accounts"]) == 1
+    base = f"swarm-account-{TENANT}--personal"
+    assert len(client.secrets.versions[f"{base}-refresh"]) == 2
+    assert "rt-second-value" in client.secrets.versions[f"{base}-refresh"][-1]
+
+
+def test_an_unset_worker_template_refuses_rather_than_binding_nobody(broker, monkeypatch):
+    """"Not configured means refuse." A secret created with no worker accessor
+    is one the tenant's pod cannot read, and that failure does not surface
+    here -- it surfaces inside a job as an unexplained auth error."""
+    from fastapi.testclient import TestClient
+
+    from quota_broker.accountstore import AccountStore
+    from quota_broker.main import WorkerIdentity, create_app
+
+    monkeypatch.setenv("REGION", "us-central1")
+    monkeypatch.delenv("WORKER_SERVICE_ACCOUNT_TEMPLATE", raising=False)
+
+    class PlatformIdentity(WorkerIdentity):
+        def resolve(self, authorization):
+            return None, True
+
+    app = create_app(
+        broker,
+        identity=PlatformIdentity(project_id=PROJECT),
+        account_store=AccountStore(broker.db),
+    )
+    app.state.secret_store = _Secrets()
+    c = TestClient(app, raise_server_exceptions=False)
+
+    r = c.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "orphaned", "credential": _credential()},
+    )
+
+    assert r.status_code == 422
+    assert "WORKER_SERVICE_ACCOUNT_TEMPLATE" in r.json()["message"]
+    assert c.get("/v1/accounts").json()["accounts"] == []

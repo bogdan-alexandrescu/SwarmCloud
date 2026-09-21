@@ -225,7 +225,9 @@ def test_next_reset_reports_only_what_is_actually_blocking():
 
 def test_the_secret_name_is_derived_never_supplied():
     """A caller who could name the secret could name someone else's."""
-    assert secret_name("u-bogdan", "personal") == "swarm-account-u-bogdan-personal"
+    # Two dashes between tenant and label: a single one made
+    # ("acme-prod","x") and ("acme","prod-x") the same secret.
+    assert secret_name("u-bogdan", "personal") == "swarm-account-u-bogdan--personal"
 
 
 @pytest.mark.parametrize("bad", [
@@ -252,3 +254,49 @@ def test_firestore_round_trip_preserves_everything_that_matters():
     assert back.assigned == a.assigned
     assert back.headroom(NOW) == pytest.approx(a.headroom(NOW))
     assert back.may_serve("eng")
+
+
+# -- secret names must not collide across tenants --------------------------
+
+
+def test_two_ordinary_registrations_cannot_share_a_secret():
+    """CONTRACT.md invariant 9, broken with no attacker and no malice.
+
+    With a single dash, `("acme-prod", "x")` and `("acme", "prod-x")` produced
+    the identical secret name. Registering the second bound the second tenant's
+    worker service account as an accessor on a secret holding the FIRST
+    tenant's live refresh and access tokens.
+
+    Reported in docs/audits/2026-09-18/06-quota-broker-accounts.md and left
+    unfixed while account onboarding was a script an operator ran. It became
+    urgent when registration moved into the Settings page, where the label is
+    chosen by whoever is signed in.
+    """
+    from quota_broker.accounts import secret_name
+
+    assert secret_name("acme-prod", "x") != secret_name("acme", "prod-x")
+
+
+def test_a_tenant_id_that_could_forge_a_separator_is_refused():
+    """The separator is only unambiguous while neither side can contain it."""
+    from quota_broker.accounts import AccountError, secret_name
+
+    with pytest.raises(AccountError, match="separates"):
+        secret_name("acme--evil", "x")
+
+
+def test_a_label_containing_the_separator_is_still_unambiguous():
+    """A label MAY contain `--` and that is harmless, because the name splits
+    at the FIRST separator and everything after it is the label by definition.
+    Only the tenant side has to be constrained."""
+    from quota_broker.accounts import secret_name
+
+    assert secret_name("acme", "prod--x") == "swarm-account-acme--prod--x"
+
+    # The tenant side is what must be constrained, and is: a tenant containing
+    # the separator is refused outright, so no second reading of that name
+    # exists.
+    from quota_broker.accounts import AccountError
+
+    with pytest.raises(AccountError, match="separates"):
+        secret_name("acme--prod", "x")

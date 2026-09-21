@@ -63,7 +63,7 @@ from conftest import PROJECT, TENANT, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 ACCOUNT_ID = f"{TENANT}:personal"
-ACCOUNT_SECRET = f"swarm-account-{TENANT}-personal"
+ACCOUNT_SECRET = f"swarm-account-{TENANT}--personal"
 ASSIGNMENT_ID = "assignment-0001"
 TENANT_SECRET = f"swarm-tenant-{TENANT}-anthropic"
 TOKEN = "sk-ant-oat01-from-the-pool"
@@ -503,7 +503,7 @@ def test_a_reload_does_not_move_the_agent_onto_a_different_account(
 def _other(label: str = "second") -> Assignment:
     return Assignment(
         account_id=f"{TENANT}:{label}",
-        secret=f"swarm-account-{TENANT}-{label}",
+        secret=f"swarm-account-{TENANT}--{label}",
         assignment_id=f"assignment-{label}",
         account={"account_id": f"{TENANT}:{label}", "owner_tenant": TENANT,
                  "label": label},
@@ -535,9 +535,9 @@ def test_a_freshly_onboarded_account_is_handed_back_and_another_is_asked_for(
     db, worker_factory, tmp_path
 ):
     """THE ONBOARDING WINDOW, which is every task submitted between
-    `scripts/account.sh add` and the broker's next sweep.
+    registration in the Settings page and the broker's next sweep.
 
-    account.sh creates `{base}` EMPTY on purpose -- the broker publishes the
+    registration creates `{base}` EMPTY on purpose -- the broker publishes the
     access token on its next sweep -- and `Account.headroom()` returns 1.0 for
     a never-observed account, so `choose()` ranks that brand-new account FIRST.
     Reading it raises google NotFound, which used to travel out of
@@ -574,7 +574,7 @@ def test_a_borrowed_account_the_worker_cannot_read_parks_rather_than_failing(
 ):
     """LENDING IS THE FEATURE THAT MAKES A POOL WORTH HAVING, and as shipped it
     was the one case guaranteed to fail: the only grant of secretAccessor on
-    `swarm-account-<owner>-<label>` is to the OWNER's worker service account,
+    `swarm-account-<owner>--<label>` is to the OWNER's worker service account,
     so a borrower's pod gets PermissionDenied on a secret the broker was happy
     to assign it. That used to fail the attempt, three times over.
     """

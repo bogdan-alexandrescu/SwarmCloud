@@ -23,9 +23,14 @@ secret, so they cannot disagree with it.
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from .credentials import REFRESH_SUFFIX
+
+#: The only role this service ever grants on a secret: read a payload, nothing
+#: else. Not admin, not versionManager -- an accessor cannot rotate, relabel or
+#: delete the secret it can read.
+ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +81,97 @@ class SecretManagerStore:
             # populated. Same practical meaning as missing, same handling.
             raise SecretMissing(name) from None
         return response.payload.data.decode("utf-8")
+
+    def ensure_secret(
+        self,
+        name: str,
+        *,
+        labels: dict[str, str],
+        accessors: Sequence[str],
+        region: str,
+    ) -> bool:
+        """Create the secret if it is absent, and bind its readers. Idempotent.
+
+        Returns True when it created one, False when it already existed.
+
+        WHY THIS LIVES HERE RATHER THAN IN TERRAFORM. A pool account's secret
+        name contains a LABEL the operator chooses at registration time, so
+        there is no name for terraform to declare in advance. Something at
+        request time has to make it, and that something must be the single
+        writer for subscription credentials -- two components creating and
+        rotating the same secret is how a rotating credential gets bricked.
+
+        CREATION AND BINDING ARE ONE OPERATION, deliberately. A secret created
+        without an accessor binding is one the tenant's pod cannot read, and
+        that failure does not surface here: it surfaces much later, inside a
+        job, as an unexplained auth error. Splitting them would make a
+        half-provisioned account a state this platform can be in.
+
+        The binding is ADDITIVE -- read, append, write. Replacing the policy
+        would drop any grant made outside this call, and on a re-registration
+        that would quietly revoke a tenant that had been lent the account.
+
+        Replication is user-managed and pinned to `region` because that is what
+        every other secret in this platform uses; automatic replication would
+        put the tenant's credential in regions the deployment never chose.
+        """
+        from google.api_core import exceptions as gexc
+        from google.cloud import secretmanager
+
+        client = self._secret_client()
+        created = False
+        try:
+            client.create_secret(
+                request={
+                    "parent": self.parent,
+                    "secret_id": name,
+                    "secret": secretmanager.Secret(
+                        replication=secretmanager.Replication(
+                            user_managed=secretmanager.Replication.UserManaged(
+                                replicas=[
+                                    secretmanager.Replication.UserManaged.Replica(
+                                        location=region
+                                    )
+                                ]
+                            )
+                        ),
+                        labels=dict(labels),
+                    ),
+                }
+            )
+            created = True
+        except gexc.AlreadyExists:
+            # Re-registering an existing label is the supported way to replace
+            # a credential, so this is an ordinary path and not a conflict.
+            pass
+
+        if accessors:
+            self._grant_accessors(name, accessors)
+        return created
+
+    def _grant_accessors(self, name: str, members: Sequence[str]) -> None:
+        client = self._secret_client()
+        resource = f"{self.parent}/secrets/{name}"
+        policy = client.get_iam_policy(request={"resource": resource})
+
+        binding = None
+        for existing in policy.bindings:
+            if existing.role == ACCESSOR_ROLE:
+                binding = existing
+                break
+        if binding is None:
+            binding = policy.bindings.add()
+            binding.role = ACCESSOR_ROLE
+
+        present = set(binding.members)
+        missing = [m for m in members if m not in present]
+        if not missing:
+            # Nothing to do, and saying so matters: setIamPolicy on an
+            # unchanged policy still burns a write quota and still races any
+            # other writer of the same policy.
+            return
+        binding.members.extend(missing)
+        client.set_iam_policy(request={"resource": resource, "policy": policy})
 
     def add_version(self, name: str, payload: str) -> None:
         from google.api_core import exceptions as gexc

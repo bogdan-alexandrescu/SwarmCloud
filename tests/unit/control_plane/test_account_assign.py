@@ -339,7 +339,7 @@ def test_the_response_names_the_secret_and_carries_no_key_material(client, accou
     accounts.register(ENG, "personal")
     body = _assign(client).json()
 
-    assert body["secret"] == f"swarm-account-{ENG}-personal"
+    assert body["secret"] == f"swarm-account-{ENG}--personal"
     blob = client.post("/v1/accounts/assign", json={"provider": "anthropic"}).text
     for forbidden in ("accessToken", "refreshToken", "access_token", "-refresh"):
         assert forbidden not in blob, forbidden
