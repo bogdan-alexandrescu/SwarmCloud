@@ -57,21 +57,53 @@ for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}"; do
     t_fail "${service}: describe succeeded but returned no status.url"
     continue
   fi
-  readyz_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-readyz.XXXXXX")"
-  if code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
-      -H "Authorization: Bearer $(id_token)" "${url%/}/readyz" 2>"${readyz_err}")"; then
-    rm -f "${readyz_err}"
-    if [[ "${code}" == "200" ]]; then
-      t_pass "${service} /readyz 200"
+  # /readyz ONLY for the service this identity may invoke and holds a token
+  # for. id_token() mints one token, for API_AUDIENCE; presenting it to
+  # swarm-scheduler or swarm-quota-broker gets a 401 for the wrong audience
+  # even before IAM is consulted -- which is exactly what this suite reported
+  # on its first successful run, as two health failures against two healthy
+  # services.
+  #
+  # The others are checked through the Admin API instead. See
+  # cloud_run_service_ready for why that is not a weaker check but a
+  # differently-scoped one: making the probe work would mean adding a test
+  # identity to the invoker list of the service holding every tenant's
+  # subscription credentials.
+  if [[ "${service}" == "${API_SERVICE}" ]]; then
+    readyz_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-readyz.XXXXXX")"
+    if code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer $(id_token)" "${url%/}/readyz" 2>"${readyz_err}")"; then
+      rm -f "${readyz_err}"
+      if [[ "${code}" == "200" ]]; then
+        t_pass "${service} /readyz 200"
+      else
+        t_fail "${service} /readyz ${code}"
+      fi
     else
-      t_fail "${service} /readyz ${code}"
+      err_detail="$(cat "${readyz_err}")"
+      rm -f "${readyz_err}"
+      die_if_auth_failure "${err_detail}"
+      t_fail "${service}: /readyz unreachable: $(printf '%s' "${err_detail}" | redact | head -n 1)"
     fi
-  else
-    err_detail="$(cat "${readyz_err}")"
-    rm -f "${readyz_err}"
-    die_if_auth_failure "${err_detail}"
-    t_fail "${service}: /readyz unreachable: $(printf '%s' "${err_detail}" | redact | head -n 1)"
+    continue
   fi
+
+  ready_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-ready.XXXXXX")"
+  if ! ready="$(cloud_run_service_ready "${service}" 2>"${ready_err}")"; then
+    err_detail="$(cat "${ready_err}")"
+    rm -f "${ready_err}"
+    die_if_auth_failure "${err_detail}"
+    t_fail "${service}: could not read its serving condition: $(printf '%s' "${err_detail}" | redact | head -n 1)"
+    continue
+  fi
+  rm -f "${ready_err}"
+  case "${ready}" in
+    True)  t_pass "${service} serving revision Ready" ;;
+    False) t_fail "${service} serving revision is NOT Ready" ;;
+    # Unknown is a deploy in flight or a condition this API version does not
+    # report. Not a pass -- an unread condition is not a healthy one.
+    *)     t_fail "${service} readiness is ${ready}; the condition was not reported" ;;
+  esac
 done
 
 # ---------------------------------------------------------------------------
@@ -84,8 +116,14 @@ me_body="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-me.XXXXXX")"
 if api_get "/tenants/me" >"${me_body}"; then
   me="$(cat "${me_body}")"
   rm -f "${me_body}"
-  tenant="$(jq -r '.tenant_id // .id // empty' <<<"${me}")"
-  email="$(jq -r '.email // .submitted_by // empty' <<<"${me}")"
+  # `.tenant.tenant_id` FIRST, because that is the shape GET /v1/tenants/me
+  # actually returns: {"tenant": {...}, "principal": {...}} (routes/tenants.py
+  # get_me). Reading `.tenant_id` at the top level found nothing and this
+  # reported "no tenant in the response" against a response that named the
+  # tenant on its second line. The flatter spellings are kept as fallbacks so
+  # an older deployment still parses.
+  tenant="$(jq -r '.tenant.tenant_id // .tenant_id // .id // empty' <<<"${me}")"
+  email="$(jq -r '.principal.email // .email // .submitted_by // empty' <<<"${me}")"
   if [[ -n "${tenant}" ]]; then
     t_pass "tenant ${tenant}${email:+ (${email})}"
   else

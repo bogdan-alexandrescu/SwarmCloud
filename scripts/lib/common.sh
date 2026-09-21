@@ -562,6 +562,48 @@ cloud_run_service_uri() {
   rm -f "${out}"
 }
 
+#: Whether a Cloud Run service's latest revision is READY. Prints "True",
+#: "False" or "Unknown", or fails with a reason on stderr.
+#:
+#: WHY THIS EXISTS RATHER THAN A /readyz PROBE. The verification suites check
+#: that the control plane is healthy, and /readyz is the obvious way -- but a
+#: probe needs run.invoker on the service AND an ID token minted for THAT
+#: service's URL, and the gate holds one token for one audience. Getting there
+#: for swarm-quota-broker would mean adding a test identity to the invoker list
+#: of the service that holds every tenant's subscription credentials, whose
+#: membership is deliberately workers + api + scheduler + tick and nothing
+#: else. A health check is not worth that.
+#:
+#: The Admin API answers the same question -- is the serving revision up --
+#: from a role the gate already holds (run.viewer), and it distinguishes "not
+#: deployed" from "could not look", which a 401 from a probe does not.
+cloud_run_service_ready() {
+  local service="$1" out rc=0
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-runready.XXXXXX")"
+  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+    -H "Authorization: Bearer $(access_token)" \
+    "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/services/${service}" \
+    >"${out}" 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    redact <"${out}" >&2
+    rm -f "${out}"
+    return 1
+  fi
+  if jq -e '.error' <"${out}" >/dev/null 2>&1; then
+    jq -r '.error.message // "unknown error"' <"${out}" | redact >&2
+    rm -f "${out}"
+    return 1
+  fi
+  # `terminalCondition` is the v2 shape; `Ready` in `conditions` is the older
+  # one. Neither present is "Unknown", never "False" -- an absent condition is
+  # not a failing one.
+  jq -r '(.terminalCondition.state // (.conditions[]? | select(.type=="Ready") | .state) // "UNKNOWN")
+         | if . == "CONDITION_SUCCEEDED" then "True"
+           elif . == "CONDITION_FAILED" then "False"
+           else . end' <"${out}" | head -1
+  rm -f "${out}"
+}
+
 #: The container image a Cloud Run service is CURRENTLY serving. Prints it, or
 #: fails if the service cannot be read.
 #:
