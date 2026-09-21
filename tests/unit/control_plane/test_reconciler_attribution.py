@@ -51,8 +51,12 @@ class _Config:
 class _Execution:
     is_active = True
 
-    def __init__(self, *, task_id, attempt_id="att-1", generation=None, name="x", age=600):
+    def __init__(
+        self, *, task_id, attempt_id="att-1", generation=None, name="x", age=600,
+        claim_refused=False,
+    ):
         self.task_id = task_id
+        self.claim_refused = claim_refused
         self.tenant_id = "u-sw-c90291"
         self.backend = "cloud_run"
         self.attempt_id = attempt_id
@@ -110,3 +114,29 @@ def test_the_no_task_id_check_runs_before_the_task_lookup():
 
     snapshot = _Snapshot(tasks=_ExplodingTasks())
     assert _findings(_Execution(task_id=None), snapshot) == []
+
+
+def test_a_refused_cross_tenant_claim_is_still_terminated():
+    """The hole the first version of this fix opened, caught by an existing
+    security test rather than by me.
+
+    scope_executions_to_tenant strips a forged claim with
+    `replace(execution, task_id=None, ...)`. That made a forged execution --
+    real compute, running in the attacker's tenant, asserting a claim on the
+    victim's task -- byte-identical to an execution that never claimed
+    anything. Skipping "no task_id" would therefore have left it running.
+
+    `claim_refused` records the refusal as a fact instead of representing it as
+    an absence, which is the same lesson as everything else in this file.
+    """
+    found = _findings(_Execution(task_id=None, claim_refused=True, name="attacker-exec"))
+    assert len(found) == 1
+    assert found[0].kind is FindingKind.ORPHAN_EXECUTION
+    assert "another tenant" in found[0].reason
+
+
+def test_the_two_reasons_for_an_absent_task_id_do_not_share_a_message():
+    """If they read the same, the next person collapses them again."""
+    refused = _findings(_Execution(task_id=None, claim_refused=True))[0].reason
+    unknown = _findings(_Execution(task_id="task_abc"))[0].reason
+    assert refused != unknown

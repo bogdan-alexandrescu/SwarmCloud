@@ -167,7 +167,19 @@ def scope_executions_to_their_tenant(
                 claimed_task=execution.task_id,
                 task_tenant=task.tenant_id,
             )
-        scoped.append(replace(execution, task_id=None, attempt_id=None, generation=None))
+        # The claim is stripped AND the refusal is recorded. Stripping alone
+        # would make this indistinguishable from an execution that never
+        # claimed anything, which is the shape detect_orphan_executions must
+        # leave alone.
+        scoped.append(
+            replace(
+                execution,
+                task_id=None,
+                attempt_id=None,
+                generation=None,
+                claim_refused=True,
+            )
+        )
     return scoped
 
 
@@ -351,7 +363,7 @@ def detect_orphan_executions(
         # name prefix and a label neither of which they are obliged to avoid. A
         # reconciler that cannot attribute compute to a task must not terminate
         # it -- that is what its authority is FOR.
-        if execution.task_id is None:
+        if execution.task_id is None and not execution.claim_refused:
             log = getattr(config, "logger", None)
             if log is not None:
                 log.info(
@@ -361,7 +373,11 @@ def detect_orphan_executions(
                 )
             continue
 
-        if task is None:
+        if execution.claim_refused:
+            # Real compute, running in its own tenant, that asserted a claim on
+            # another tenant's task. The claim is void; the compute is not.
+            reason = "execution claimed a task in another tenant; the claim was refused"
+        elif task is None:
             reason = "execution carries no task this control plane knows about"
         elif task.is_terminal:
             reason = f"task is already {task.state.value}"
