@@ -850,6 +850,40 @@ fs_null_filter() {
   jq -nc --arg f "$1" --arg o "$2" '{unaryFilter:{field:{fieldPath:$f},op:$o}}'
 }
 
+# --- the task lifecycle, restated once for the shell -------------------------
+#
+# `swarm_common.states` is the authority. A bash script cannot import it, so
+# these four arrays are the ONE shell copy, kept here rather than in the scripts
+# that read them -- `scripts/status.sh` used to carry its own inline copy of the
+# capacity-holding set, which is the number an operator reads during an incident
+# to decide whether the platform is actually busy.
+#
+# The split is not cosmetic. CONTRACT.md invariant 1 is exactly this partition:
+# only CONCURRENCY_STATES create infrastructure demand, PENDING_STATES cost
+# nothing, TERMINAL_STATES have released everything. A state added to the enum
+# and not added here would be counted as neither, so a real backlog or a real
+# load would read as zero on the one screen meant to show it.
+#
+# scripts/lib/check-contract-parity.sh asserts all four against the frozen enum,
+# so adding a state to swarm_common without adding it here fails `make test`.
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+TASK_STATES=(SUBMITTED QUEUED PARKED READY LEASED DISPATCHED STARTING RUNNING
+             SUCCEEDED FAILED CANCELLED DEAD_LETTERED)
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+CONCURRENCY_STATES=(LEASED DISPATCHED STARTING RUNNING)
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+PENDING_STATES=(SUBMITTED QUEUED PARKED READY)
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+TERMINAL_STATES=(SUCCEEDED FAILED CANCELLED DEAD_LETTERED)
+
+# states_json ARRAY_ELEMENTS...  ->  ["A","B",...]
+# Used to hand one of the sets above to jq as --argjson, so a jq expression can
+# iterate the set instead of naming its members. bash 3.2 has no way to pass an
+# array to a function, so callers expand it: states_json "${CONCURRENCY_STATES[@]}".
+states_json() {
+  printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
 # Firestore's REST encoding is typed ({"integerValue":"3"}), which is unreadable
 # in a terminal and awkward in jq. This prelude decodes a document into plain
 # JSON: `jq "${FS_JQ} .[] | doc"`.

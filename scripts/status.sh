@@ -55,8 +55,12 @@ done
 
 require_cmd gcloud jq curl
 
-TASK_STATES=(SUBMITTED QUEUED PARKED READY LEASED DISPATCHED STARTING RUNNING
-             SUCCEEDED FAILED CANCELLED DEAD_LETTERED)
+# TASK_STATES, CONCURRENCY_STATES, PENDING_STATES and TERMINAL_STATES come from
+# lib/common.sh, which holds the one shell copy of swarm_common.states and is
+# asserted against it by scripts/lib/check-contract-parity.sh. This file used to
+# declare the enum here and then hardcode the capacity-holding four again in the
+# jq below -- two copies of the partition CONTRACT.md invariant 1 is about, in
+# the screen an operator reads to decide whether the platform is busy.
 
 # Every gcloud listing goes through redact() before it is parsed. A Cloud Run
 # service or Job description carries its whole environment block, and a
@@ -359,15 +363,26 @@ render() {
   fi
 
   step "Tasks"
-  jq -r '
+  # Each row is DERIVED from the set in lib/common.sh rather than naming its
+  # members, so a state added to the frozen enum lands in the right row here the
+  # moment it lands there -- and `make test` fails until it does.
+  local pending_set holding_set terminal_set
+  pending_set="$(states_json ${PENDING_STATES[@]+"${PENDING_STATES[@]}"})"
+  holding_set="$(states_json ${CONCURRENCY_STATES[@]+"${CONCURRENCY_STATES[@]}"})"
+  terminal_set="$(states_json ${TERMINAL_STATES[@]+"${TERMINAL_STATES[@]}"})"
+  jq -r --argjson pending "${pending_set}" \
+         --argjson holding "${holding_set}" \
+         --argjson terminal "${terminal_set}" '
     .tasks as $t
-    | [ "  demand-free : QUEUED \($t.QUEUED // 0)   PARKED \($t.PARKED // 0)   READY \($t.READY // 0)   SUBMITTED \($t.SUBMITTED // 0)",
-        "  holding cap : LEASED \($t.LEASED // 0)   DISPATCHED \($t.DISPATCHED // 0)   STARTING \($t.STARTING // 0)   RUNNING \($t.RUNNING // 0)",
-        "  terminal    : SUCCEEDED \($t.SUCCEEDED // 0)   FAILED \($t.FAILED // 0)   CANCELLED \($t.CANCELLED // 0)   DEAD_LETTERED \($t.DEAD_LETTERED // 0)" ]
+    | def row($label; $set): "  \($label) : " + ([ $set[] | "\(.) \($t[.] // 0)" ] | join("   "));
+      [ row("demand-free"; $pending),
+        row("holding cap"; $holding),
+        row("terminal   "; $terminal) ]
     | .[]' <<<"${snapshot}" >&2
   local holding
-  holding="$(jq -r '[.tasks.LEASED, .tasks.DISPATCHED, .tasks.STARTING, .tasks.RUNNING] | map(. // 0) | add' <<<"${snapshot}")"
-  dim "  ${holding} task(s) hold capacity; QUEUED/PARKED/READY cost nothing"
+  holding="$(jq -r --argjson holding "${holding_set}" \
+    '.tasks as $t | [ $holding[] | $t[.] // 0 ] | add' <<<"${snapshot}")"
+  dim "  ${holding} task(s) hold capacity; $(IFS=/; echo "${PENDING_STATES[*]}") cost nothing"
 
   step "Leases"
   local now_epoch

@@ -200,6 +200,29 @@ def current_auth(
     return auth
 
 
+def tenant_scope(
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> str:
+    """The caller's tenant id for a tenant-scoped route, through the guard.
+
+    WHY A ROUTE MUST NOT USE `auth.tenant_id` DIRECTLY. The id is derived from
+    the verified identity and can never be supplied by a caller -- that half was
+    always true -- but it is not UNIQUE to an identity. The frozen
+    `tenant_id_for_group` slugs the local part only, so two registered groups
+    can derive one id, and the personal-tenant prefix `u-` is one a group's own
+    slug can produce. A route that hands the raw string to the store is then
+    filtering by a value two unrelated principals both hold.
+
+    `SubmissionService.scope_for` compares the caller's tenant principal against
+    the one the tenant document was created for and refuses a mismatch, exactly
+    as `ensure_tenant` does on the submit paths. Declaring this dependency is
+    what makes that impossible to forget when a route is added, which is the
+    same reason the store owns the tenant filter rather than the routes.
+    """
+    return ctx.submissions.scope_for(auth)
+
+
 def admin_auth(auth: AuthContext = Depends(current_auth)) -> AuthContext:
     return require_admin(auth)
 

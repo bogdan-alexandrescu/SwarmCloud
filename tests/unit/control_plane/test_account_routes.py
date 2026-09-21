@@ -443,3 +443,239 @@ def test_an_unset_worker_template_refuses_rather_than_binding_nobody(broker, mon
     assert r.status_code == 422
     assert "WORKER_SERVICE_ACCOUNT_TEMPLATE" in r.json()["message"]
     assert c.get("/v1/accounts").json()["accounts"] == []
+
+
+# -- what the sweep writes down --------------------------------------------
+#
+# The sweep detected a dead refresh token, logged it, counted it into a
+# response body Cloud Scheduler discards, and left the account document at
+# AVAILABLE with an empty reason. Every consequence of that was invisible: new
+# agents were still assigned an account that cannot authenticate, the dead
+# token was presented to the endpoint every five minutes forever, and an
+# operator looking at the pool saw nothing wrong with it. These pin the write
+# and, just as importantly, the way back out of it.
+
+
+class _SweepRefresher:
+    """Answers the sweep, recording exactly what it was handed.
+
+    Returns real `RefreshOutcome`s rather than a stand-in. The write-back reads
+    `.reason` and `.tenant_id` off them, and a looser double would let the
+    label-for-account-id confusion these tests exist to pin slip through.
+    """
+
+    def __init__(self, reasons=None, on_second=None):
+        self.reasons = dict(reasons or {})
+        # What a SECOND attempt on the same account answers, when it differs.
+        # The sweep confirms a dead credential before writing a state only a
+        # person can leave, so this is how a test drives the confirmation.
+        self.on_second = dict(on_second or {})
+        self.seen: list[list[tuple[str, str]]] = []
+        self.confirmations: list[str] = []
+
+    def sweep(self, tenants):
+        return []
+
+    def refresh_secret(self, base, *, label=""):
+        from quota_broker.credentials import RefreshOutcome
+
+        self.confirmations.append(label)
+        reason = self.on_second.get(label, self.reasons.get(label, "refreshed"))
+        return RefreshOutcome(label, "account", reason == "refreshed", reason)
+
+    def sweep_accounts(self, secrets):
+        from quota_broker.credentials import RefreshOutcome
+
+        self.seen.append(list(secrets))
+        out = []
+        for _base, key in secrets:
+            reason = self.reasons.get(key, "refreshed")
+            out.append(RefreshOutcome(key, "account", reason == "refreshed", reason))
+        return out
+
+    def swept_keys(self):
+        return [key for _base, key in self.seen[-1]]
+
+
+def _sweeping(client, refresher):
+    client.app_ref.state.credential_refresher = refresher
+    # The usage poll is a separate concern and would reach the network.
+    client.app_ref.state.usage_poller = None
+    return client.post("/v1/quota/sweep")
+
+
+def _add(client, tenant, label):
+    r = client.post(
+        "/v1/accounts",
+        json={"owner_tenant": tenant, "label": label, "credential": _credential()},
+    )
+    assert r.status_code == 201, r.text
+
+
+def _account(client, account_id):
+    accounts = client.get("/v1/accounts").json()["accounts"]
+    return next(a for a in accounts if a["account_id"] == account_id)
+
+
+def test_the_sweep_points_an_operator_at_the_account_that_is_actually_broken(client):
+    """The failure had no other symptom. A revoked refresh token was detected
+    on every tick and the listing went on saying AVAILABLE with no reason, so
+    nothing anywhere named the account a person had to go and fix."""
+    _add(client, TENANT, "personal")
+
+    r = _sweeping(client, _SweepRefresher({f"{TENANT}:personal": "reauth_required"}))
+
+    assert r.status_code == 200, r.text
+    account = _account(client, f"{TENANT}:personal")
+    assert account["state"] == "REAUTH_REQUIRED"
+    assert "reauth_required" in account["reason"]
+    assert r.json()["accounts"]["marked_reauth_required"] == [f"{TENANT}:personal"]
+
+
+def test_a_credential_that_cannot_be_parsed_is_as_dead_as_a_revoked_one(client):
+    """`unreadable` means there is nothing to present to the token endpoint.
+    Retrying the same bytes every five minutes cannot change the answer, and
+    the on-demand route has always treated the two the same."""
+    _add(client, TENANT, "personal")
+
+    _sweeping(client, _SweepRefresher({f"{TENANT}:personal": "unreadable"}))
+
+    assert _account(client, f"{TENANT}:personal")["state"] == "REAUTH_REQUIRED"
+
+
+def test_the_write_back_is_keyed_on_the_account_id_not_the_label(client):
+    """A label is unique only WITHIN a tenant -- two tenants may both have one
+    called `personal`. Keyed on the label, the sweep marks whichever it finds
+    first, so a healthy account is taken out of service and the dead one is
+    left in it."""
+    _add(client, "eng", "personal")
+    _add(client, "research", "personal")
+
+    refresher = _SweepRefresher({"research:personal": "reauth_required"})
+    _sweeping(client, refresher)
+
+    assert _account(client, "research:personal")["state"] == "REAUTH_REQUIRED"
+    assert _account(client, "eng:personal")["state"] == "AVAILABLE"
+    assert sorted(refresher.swept_keys()) == ["eng:personal", "research:personal"]
+
+
+def test_a_marked_account_stops_being_presented_to_the_token_endpoint(client):
+    """The whole reason the state exists. Only a human can fix a revoked token,
+    so the broker must stop spending a shared rate limit rediscovering it."""
+    _add(client, TENANT, "personal")
+    dead = f"{TENANT}:personal"
+
+    first = _SweepRefresher({dead: "reauth_required"})
+    _sweeping(client, first)
+    assert first.swept_keys() == [dead]
+
+    second = _SweepRefresher()
+    _sweeping(client, second)
+    assert second.swept_keys() == []
+
+
+def test_signing_in_again_gives_the_account_back(client):
+    """Marking without an exit replaces a silent failure with a permanent one:
+    `due_for_refresh` skips a marked account, so the sweep can never undo the
+    state it wrote."""
+    _add(client, TENANT, "personal")
+    _sweeping(client, _SweepRefresher({f"{TENANT}:personal": "reauth_required"}))
+    assert _account(client, f"{TENANT}:personal")["state"] == "REAUTH_REQUIRED"
+
+    _add(client, TENANT, "personal")
+
+    account = _account(client, f"{TENANT}:personal")
+    assert account["state"] == "AVAILABLE"
+    assert account["reason"] == "", "a reason that is no longer true is worse than none"
+
+
+def test_recovery_gives_a_paused_account_its_pause_back(client):
+    """A background sweep marked it and a person's credential unmarked it. If
+    recovery always chose AVAILABLE, an account an operator had deliberately
+    taken out of service would come back in it with nothing saying so."""
+    _add(client, TENANT, "personal")
+    client.put(
+        f"/v1/accounts/{TENANT}:personal/state",
+        json={"state": "PAUSED", "reason": "spending review"},
+    )
+
+    _sweeping(client, _SweepRefresher({f"{TENANT}:personal": "reauth_required"}))
+    assert _account(client, f"{TENANT}:personal")["state"] == "REAUTH_REQUIRED"
+
+    _add(client, TENANT, "personal")
+    assert _account(client, f"{TENANT}:personal")["state"] == "PAUSED"
+
+
+def test_an_exchange_that_worked_clears_the_mark_and_a_still_valid_one_does_not(client):
+    """`refreshed` presented the refresh token and got a new one, which is the
+    only thing the state ever claimed was false. `still_valid` never presents
+    it -- it says the stored ACCESS token has hours left, and is silent about
+    the half that died."""
+    _add(client, TENANT, "personal")
+    _sweeping(client, _SweepRefresher({f"{TENANT}:personal": "reauth_required"}))
+
+    client.app_ref.state.credential_refresher = _Refresher(reason="still_valid")
+    client.post(f"/v1/accounts/{TENANT}:personal/refresh")
+    assert _account(client, f"{TENANT}:personal")["state"] == "REAUTH_REQUIRED"
+
+    client.app_ref.state.credential_refresher = _Refresher(reason="refreshed")
+    r = client.post(f"/v1/accounts/{TENANT}:personal/refresh")
+    assert r.json()["account"]["state"] == "AVAILABLE"
+    assert r.json()["account"]["reason"] == ""
+
+
+def test_an_account_removed_mid_sweep_does_not_stall_the_tick(client):
+    """The sweep is what un-parks throttled tenants. A refresh outcome for a
+    document that is no longer there must cost one log line, not the tick."""
+    _add(client, TENANT, "personal")
+    client.delete(f"/v1/accounts/{TENANT}:personal")
+
+    from quota_broker.credentials import RefreshOutcome
+
+    refresher = _SweepRefresher()
+    refresher.sweep_accounts = lambda secrets: [
+        RefreshOutcome(f"{TENANT}:gone", "account", False, "reauth_required")
+    ]
+
+    r = _sweeping(client, refresher)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["accounts"]["reauth_required"] == [f"{TENANT}:gone"]
+    assert r.json()["accounts"]["marked_reauth_required"] == []
+
+
+def test_a_credential_that_fails_once_and_then_works_is_not_taken_out_of_service(client):
+    """REAUTH_REQUIRED is a state only a person can leave -- `due_for_refresh`
+    skips it, so the sweep can never lift what it writes. A false one therefore
+    costs an operator a sign-in they did not need and the pool an account that
+    was never broken.
+
+    This is the shape audit finding 3 produces and which is still unfixed:
+    nothing serialises the sweep, so two ticks can read the same refresh token,
+    one exchanges it, and the other is told `invalid_grant` for a token that
+    was merely rotated away from it."""
+    _add(client, TENANT, "personal")
+    dead = f"{TENANT}:personal"
+
+    refresher = _SweepRefresher(
+        {dead: "reauth_required"}, on_second={dead: "still_valid"}
+    )
+    r = _sweeping(client, refresher)
+
+    assert refresher.confirmations == [dead], "the mark must be confirmed first"
+    assert _account(client, dead)["state"] == "AVAILABLE"
+    assert r.json()["accounts"]["reauth_required"] == [dead]
+    assert r.json()["accounts"]["marked_reauth_required"] == []
+
+
+def test_a_genuinely_dead_credential_is_still_marked_after_the_second_attempt(client):
+    """The confirmation must not become a way for a dead account to stay
+    invisible, which is the failure the whole write-back exists to end."""
+    _add(client, TENANT, "personal")
+    dead = f"{TENANT}:personal"
+
+    refresher = _SweepRefresher({dead: "reauth_required"})
+    _sweeping(client, refresher)
+
+    assert refresher.confirmations == [dead]
+    assert _account(client, dead)["state"] == "REAUTH_REQUIRED"

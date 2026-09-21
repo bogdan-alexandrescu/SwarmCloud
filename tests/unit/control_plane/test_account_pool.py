@@ -7,6 +7,7 @@ nobody lent them.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -254,6 +255,39 @@ def test_firestore_round_trip_preserves_everything_that_matters():
     assert back.assigned == a.assigned
     assert back.headroom(NOW) == pytest.approx(a.headroom(NOW))
     assert back.may_serve("eng")
+
+
+def test_the_state_an_account_had_before_its_credential_died_survives_a_round_trip():
+    """The record of where a recovered account belongs. A sweep marks
+    REAUTH_REQUIRED and a person clears it, so without this the only state
+    recovery could choose is AVAILABLE -- and an account an operator had
+    deliberately paused would come back in service with nothing saying the
+    pause had been overruled."""
+    a = replace(_acct("personal", state=AccountState.REAUTH_REQUIRED),
+                state_before_reauth=AccountState.PAUSED)
+
+    back = Account.from_firestore(a.to_firestore())
+
+    assert back.state is AccountState.REAUTH_REQUIRED
+    assert back.state_before_reauth is AccountState.PAUSED
+
+
+def test_a_document_with_no_remembered_state_reads_as_nothing_remembered():
+    """Both a document written before the field existed and an account an
+    operator typed REAUTH_REQUIRED onto. Recovery from either is AVAILABLE."""
+    raw = _acct("personal").to_firestore()
+    del raw["state_before_reauth"]
+    assert Account.from_firestore(raw).state_before_reauth is None
+
+
+def test_an_unrecognised_remembered_state_does_not_hide_the_account():
+    """Deliberately more forgiving than `state`, which is allowed to raise and
+    take the document out of `AccountStore.list` with it. This field only says
+    where to put the account back; the account itself is fine, and dropping it
+    from the pool over an advisory value would be the larger failure."""
+    raw = _acct("personal").to_firestore()
+    raw["state_before_reauth"] = "ASCENDED"
+    assert Account.from_firestore(raw).state_before_reauth is None
 
 
 # -- secret names must not collide across tenants --------------------------

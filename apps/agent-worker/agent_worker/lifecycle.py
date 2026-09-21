@@ -8,6 +8,7 @@ load-bearing in a way the rest are not.
     3.  create the isolated workspace
     4.  restore the latest checkpoint, if any
     5.  optional shallow git clone
+    5b. stage every artifact this step declared in `input_from`
     6.  resolve the tenant's provider credential
     7.  start the runner child
     8.  while it runs: heartbeat, MANDATORY periodic checkpoint, watch for
@@ -56,6 +57,7 @@ from typing import Any
 from swarm_common.models import ProviderState, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from . import inputs as inputs_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNT_TOKEN_ENV,
@@ -217,6 +219,11 @@ class Worker:
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
         self._clone_base: str | None = None
+        # What `metadata.input_from` put in the workspace. Kept so the result
+        # summary can report which upstream artifact this attempt actually ran
+        # on -- the question every debugging of a wrong workflow output starts
+        # with, and one the workspace cannot answer because it is destroyed.
+        self._staged_inputs: list[inputs_mod.StagedInput] = []
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
         # The account this attempt holds, if the pool gave it one. Set once and
@@ -338,10 +345,27 @@ class Worker:
         # one most likely to vary with repository size.
         self._heartbeat()
 
+        # ---- STEP 5b: stage the artifacts this step declared -------------
+        # Order relative to the clone is not load-bearing: the two write to
+        # different paths inside `work/`, and a declared name that would collide
+        # with the clone directory is refused rather than resolved. Order
+        # relative to the RUNNER INPUT is: `input.json` has to be able to tell
+        # the agent what it was given, so staging happens first.
+        staged_inputs = self._stage_declared_inputs(task)
+        if staged_inputs:
+            # Downloading an upstream artifact is unbounded in the same way a
+            # clone is; prove liveness after it for the same reason.
+            self._heartbeat()
+
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
         if repo_info:
             payload.setdefault("repository", repo_info)
+        if staged_inputs:
+            # Assigned, not `setdefault`: this key describes what is actually on
+            # disk right now, so a caller's own `staged_inputs` in the step input
+            # must not shadow it and leave the agent reading a stale claim.
+            payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
         if cfg.model:
             payload.setdefault("model", cfg.model)
         payload.setdefault("task_id", cfg.task_id)
@@ -840,6 +864,56 @@ class Worker:
             "ref": clone.ref,
             "commit": clone.commit,
         }
+
+    def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
+        """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
+
+        The API validates the declaration against the DAG and the service
+        rewrites it onto the task keyed by upstream TASK id; this is where the
+        file actually arrives. See `agent_worker.inputs` for why a declared
+        input that cannot be staged fails the attempt instead of warning.
+
+        A task with no declaration returns here without a single read, which is
+        what makes this invisible to every deployment that does not use it.
+        """
+        ws = self.ws
+        assert ws is not None
+        declared = inputs_mod.declared_inputs(task.get("metadata"))
+        if not declared:
+            return []
+        staged = inputs_mod.stage_inputs(
+            declared,
+            work=ws.work,
+            store=self.store,
+            db=self.db,
+            tenant_id=self.cfg.tenant_id,
+            logger=self.log,
+            resumed=self._restored_from is not None,
+            # The workspace is memory-backed; see `stage_inputs` for why the
+            # artifact cap is the right bound on what one attempt may stage.
+            max_total_bytes=self.cfg.max_artifact_bytes,
+            # Derived from the workspace rather than spelled out, so a new
+            # control file added to `Workspace` cannot be silently stageable
+            # over. `repo` and `.swarm` are the worker's own directories
+            # inside `work/`.
+            reserved=frozenset(
+                {
+                    REPO_DIR_NAME,
+                    WORKER_STATE_DIR,
+                    ws.input_path.name,
+                    ws.result_path.name,
+                    ws.quota_path.name,
+                    ws.credential_path.name,
+                }
+            ),
+        )
+        self._staged_inputs = staged
+        self.log.info(
+            "declared inputs staged",
+            count=len(staged),
+            files=[item.path for item in staged],
+        )
+        return staged
 
     def _clone_base_path(self) -> Path | None:
         ws = self.ws
@@ -1879,6 +1953,8 @@ class Worker:
                 "checkpoint_id": self._restored_from.checkpoint_id,
                 "attempt_id": self._restored_from.attempt_id,
             }
+        if self._staged_inputs:
+            summary["staged_inputs"] = [item.as_dict() for item in self._staged_inputs]
         # This dict becomes `task.result_summary`, a Firestore document that
         # every reader of the task can see. It is scrubbed on the way out for
         # the same reason the files above are.

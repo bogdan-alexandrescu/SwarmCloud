@@ -80,10 +80,29 @@ def _declared(app: Path) -> set[str]:
     return names
 
 
+#: Directories under an app that are not the app. `rglob` walks everything,
+#: and a virtualenv created inside an app directory (`uv sync` run from
+#: `apps/<app>/` leaves an 88MB `.venv` there) puts the whole of site-packages
+#: under it -- at which point this test reads google-cloud's OWN internal
+#: imports, reports `firestore_v1` and `secretmanager_v1beta2` as undeclared,
+#: and fails or passes depending on which directory somebody last ran uv from.
+#: Excluding them is not a narrowing of the check: the question it asks is what
+#: THIS SERVICE imports, and a third-party package's imports are not that.
+_NOT_SOURCE = {"site-packages", "node_modules", "build", "dist"}
+
+
+def _is_source(path: Path, app: Path) -> bool:
+    parts = path.relative_to(app).parts
+    # Hidden directories cover .venv, .tox, .direnv and friends in one rule.
+    return not any(p.startswith(".") or p in _NOT_SOURCE for p in parts[:-1])
+
+
 def _imported(app: Path) -> dict[str, list[str]]:
     """`google.cloud.<module>` -> the files importing it, tests excluded."""
     found: dict[str, list[str]] = {}
     for path in app.rglob("*.py"):
+        if not _is_source(path, app):
+            continue
         if "test" in path.parts or path.name.startswith("test_"):
             continue
         for module in _IMPORT.findall(path.read_text()):

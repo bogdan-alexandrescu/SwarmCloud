@@ -158,6 +158,11 @@ GSA_ID="${GSA_PREFIX}${TENANT_ID}"
 # able to read the other's provider keys. terraform/modules/tenancy/variables.tf
 # refuses the same ids for the same reason, so both provisioning paths agree on
 # which tenants can exist.
+#
+# This is a RESTATEMENT of swarm_common.identity's `_MAX_TENANT_ID`, which is
+# computed there the same way from the same prefix. scripts/lib/check-contract-parity.sh
+# asserts the two still agree, so the prefix moving on either side fails `make test`
+# rather than surfacing as a tenant the API resolves and nobody can provision.
 MAX_TENANT_ID=$(( 30 - ${#GSA_PREFIX} ))
 if [[ "${#TENANT_ID}" -gt "${MAX_TENANT_ID}" ]]; then
   die "tenant id '${TENANT_ID}' is ${#TENANT_ID} characters; the limit here is ${MAX_TENANT_ID}.
@@ -168,16 +173,20 @@ if [[ "${#TENANT_ID}" -gt "${MAX_TENANT_ID}" ]]; then
   identity, both tenants' secretAccessor bindings and both tenants' GCS prefix conditions
   accumulating on it. So this refuses, exactly as terraform/modules/tenancy does.
 
-  This is a CROSS-TRACK CONFLICT, not a misconfiguration of yours.
-  swarm_common.identity caps a tenant id at 22, sized for the prefix 'swarm-t-' (8 chars);
-  terraform/modules/tenancy uses '${GSA_PREFIX}' (${#GSA_PREFIX} chars), which leaves ${MAX_TENANT_ID}. Ids between
-  ${MAX_TENANT_ID} and 22 characters are therefore resolvable by the API and provisionable by nobody --
-  which includes most personal fallback tenants, because any dot in a local part makes the
-  slug lossy and the frozen module then appends a 6-character digest.
+  THIS SHOULD BE UNREACHABLE, and that is the useful part of the message. This id was
+  DERIVED by swarm_common.identity, not typed: '--tenant' is only ever checked for
+  agreement with the derived value. The frozen module budgets its slugs against the same
+  '${GSA_PREFIX}' prefix and the same 30-character cap, so it cannot mint an id longer
+  than ${MAX_TENANT_ID} -- a principal whose slug would overrun gets a shortened slug plus a
+  6-character digest instead. Reaching this line means the frozen module and this script
+  have DRIFTED: its budget is now larger than the one this prefix leaves.
 
-  Until the two agree, either register ${PRINCIPAL} under a group whose name slugs to
-  ${MAX_TENANT_ID} characters or fewer, or shorten the prefix in terraform/modules/tenancy.
-  See docs/multi-tenancy.md section 6."
+  So do not work around it per tenant. Compare swarm_common.identity's _GSA_PREFIX and
+  _MAX_TENANT_ID against GSA_PREFIX here and in terraform/modules/tenancy, and make them
+  agree again; scripts/lib/check-contract-parity.sh asserts exactly that pair and would
+  normally have failed 'make test' before you got here.
+  See docs/multi-tenancy.md section 6 -- note that that section still describes an
+  earlier 22-character cap in the frozen module, which no longer exists."
 fi
 
 GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"

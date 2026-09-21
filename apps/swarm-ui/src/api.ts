@@ -1234,24 +1234,36 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
 // credentials and two writers racing on one account brick it. Nothing in this
 // file may reach Secret Manager, mint a token, or "helpfully" retry a refresh.
 //
-// WHICH OF THEM SWARM-API ACTUALLY PASSES THROUGH, because this file used to
-// say "all of them" and that is not true. `routes/accounts.py` registers
-// GET "", POST "", POST /{id}/refresh, PUT /{id}/lending, PUT /{id}/state and
-// DELETE /{id}; the `AccountPool` protocol in `brokerclient.py` -- which is
-// "deliberately not a generic HTTP client", so there is no fallthrough -- has
-// a method for each of those and for nothing else.
+// WHICH OF THEM SWARM-API PASSES THROUGH, because this file has been wrong
+// about that in both directions. `routes/accounts.py` registers GET "",
+// POST "", POST /authorize, POST /exchange, POST /{id}/refresh,
+// PUT /{id}/lending, PUT /{id}/state and DELETE /{id}; the `AccountPool`
+// protocol in `brokerclient.py` -- which is "deliberately not a generic HTTP
+// client", so there is no fallthrough -- has a method for each of those and
+// for nothing else.
 //
-// THE TWO SIGN-IN ROUTES ARE NOT AMONG THEM. quota-broker serves
-// `POST /v1/accounts/authorize` (quota_broker/main.py:1190) and
-// `POST /v1/accounts/exchange` (main.py:1221), and swarm-api proxies neither,
-// so against a deployed API both answer 405 -- the only route it has at that
-// path is `DELETE /{account_id}`, and "authorize" reads as an account id.
-// That gap is in swarm-api, which this track does not own and must not patch.
-// It is reported rather than worked around: the calls below are made at the
-// paths the routes are meant to live at, and `SignInFailure` in Accounts.tsx
-// names a 404/405 from them as a missing proxy rather than as a fault in the
-// operator's request. Adding a paste box back here to route around it would
-// reinstate the flow this screen exists to remove.
+// THE TWO SIGN-IN ROUTES ARE AMONG THEM NOW. For one deploy they were not,
+// and this comment carried a long apology for it in place of a proxy; the
+// proxy is built (`begin_sign_in` and `finish_sign_in` in routes/accounts.py),
+// and forwards to quota-broker's own `POST /v1/accounts/authorize` and
+// `POST /v1/accounts/exchange` (`begin_account_authorization` and
+// `finish_account_authorization` in quota_broker/main.py).
+//
+// THE PROXY'S BODIES ARE NARROWER THAN THE BROKER'S, and that is not cosmetic.
+// `AccountSignInStart` is `{label, lend_to}` and `AccountSignInFinish` is
+// `{state, code}` (swarm_api/schemas.py), both on `StrictModel`, whose
+// `model_config` is `extra="forbid"`. A body carrying `owner_tenant` or
+// `provider`, which this file used to send because the BROKER takes them, is
+// refused 422 by FastAPI before any handler runs: not a message about the
+// sign-in, and the first thing an operator adding a real account would have
+// met. The tenant comes from the verified token and the provider is fixed to
+// SUBSCRIPTION_PROVIDER inside the proxy, so neither is this page's to send.
+//
+// A 404 or a 405 from either path therefore no longer means "this gap is
+// known": it means the API answering is not the one in this repository, and
+// `SignInFailure` in Accounts.tsx says that rather than blaming the request.
+// Adding a paste box back here to route around one would reinstate the flow
+// this screen exists to remove.
 
 /**
  * Everything the Accounts screen needs, in one load.
@@ -1348,16 +1360,23 @@ export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
  * direction -- the request carries a code, and the response carries an
  * account and an expiry.
  *
- * `POST /v1/accounts`, the keychain route, still exists in the API -- and as
- * the note above records, it is the only add-route swarm-api serves today. It
- * is still deliberately not called from anywhere in this app: keeping one
- * paste box "just in case" is how the flow that was removed comes back, and
- * the missing proxy is a gap to report, not a reason to reinstate it.
+ * `POST /v1/accounts`, the keychain route, still exists in the API. It is
+ * deliberately not called from anywhere in this app: keeping one paste box
+ * "just in case" is how the flow that was removed comes back.
  */
 export async function beginAccountSignIn(body: {
-  owner_tenant: string
+  /**
+   * The label, and nothing the proxy does not have a field for.
+   *
+   * NO `owner_tenant` AND NO `provider`, both of which this call used to send
+   * because quota-broker's own route takes them. `AccountSignInStart` is a
+   * `StrictModel`, so an extra key is a 422 raised by validation -- a refusal
+   * about the shape of the request, not about the sign-in, on the one control
+   * this screen exists for. The tenant is resolved from the verified token by
+   * the proxy and the provider is fixed there; a page cannot influence either,
+   * which is the rule every other account route already follows.
+   */
   label: string
-  provider: string
   lend_to: string[]
 }): Promise<Result<AccountAuthorization>> {
   const res = USE_FIXTURES
@@ -1421,24 +1440,30 @@ export async function beginAccountSignIn(body: {
  * accepted. So nothing is split, trimmed into fields or normalised here.
  *
  * A FAILED EXCHANGE DOES NOT ALWAYS LEAVE THE SIGN-IN OPEN, and this comment
- * used to say that it did. Four refusals, reading main.py:1244-1300:
+ * used to say that it did. Four refusals, reading
+ * `finish_account_authorization` in quota_broker/main.py:
  *
  *  - a paste whose state belongs to ANOTHER sign-in is refused before the
  *    pending record is even read, so this one is untouched and still open;
  *  - a token-endpoint refusal -- a mistyped, spent or expired code -- happens
  *    after the record is read and before `ref.delete()`, which runs only once
  *    an account exists, so that one is still open too;
- *  - "this sign-in has expired or was already completed" is raised BECAUSE the
- *    record is not there;
- *  - "this sign-in took too long" calls `ref.delete()` and then raises.
+ *  - "this sign-in took too long" deletes the pending record for age. It is
+ *    raised BEFORE the token endpoint is called, so no credential was
+ *    redeemed and NOTHING WAS CREATED;
+ *  - "this sign-in has expired or was already completed" is raised because the
+ *    record is ABSENT, and the one place that deletes a record without also
+ *    raising is the line after `_provision_and_register` returns. So the
+ *    commonest way to reach this message is that the sign-in SUCCEEDED -- the
+ *    account exists, and on a re-auth its credential has just been replaced.
  *
- * The last two are terminal: no code pasted against that `state` can ever be
- * redeemed, and telling somebody to paste again is an unbounded loop with a
- * fresh code refused every time. So a caller must tell the four apart before
- * it writes the next instruction; `exchangeRefusal` in Accounts.tsx is where
- * that is decided, and it matches the broker's own wording positively so that
- * an unrecognised refusal promises nothing rather than promising the
- * commonest thing.
+ * THE FIRST TWO LEAVE THE SIGN-IN REDEEMABLE. The last two end it, and they
+ * end it in OPPOSITE DIRECTIONS: one means nothing happened, the other means
+ * it probably all happened. A caller that merges them writes "nothing was
+ * created" over an account that now exists. `exchangeRefusal` in
+ * Accounts.tsx is where they are told apart, and it matches the broker's own
+ * wording positively so that an unrecognised refusal promises nothing rather
+ * than promising the commonest thing.
  */
 export async function finishAccountSignIn(body: {
   state: string
@@ -1455,6 +1480,14 @@ export async function finishAccountSignIn(body: {
     // The code may well have been redeemed and the account registered, and
     // telling somebody to try again would spend a single-use code on a
     // sign-in that had already succeeded.
+    //
+    // `httpStatus: 201` IS LOAD-BEARING, not decoration. `classify` only ever
+    // builds an ApiError for a response that was not ok, so 201 cannot arrive
+    // from a real refusal -- which makes it an exact marker, and
+    // `exchangeRefusal` in Accounts.tsx keys its `accepted_unnamed` treatment
+    // off it rather than off this sentence. The advice rendered under this
+    // message has to agree with it; it used to say "pasting again costs
+    // nothing" directly below "do not sign in again yet".
     return {
       status: 'error',
       error: {
@@ -1462,7 +1495,7 @@ export async function finishAccountSignIn(body: {
         httpStatus: 201,
         code: null,
         message:
-          'The platform accepted the sign-in but did not say which account it created. The code may already have been redeemed, so do not sign in again yet — refresh the pool below and look for the label first.',
+          'The platform accepted the sign-in but did not say which account it created. The code may already have been redeemed, so do not sign in again yet — refresh the pool and look for the label first.',
       },
     }
   }
@@ -1554,7 +1587,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // --------------------------------------------------------------------------
 // Mutable on purpose: registering, refreshing, lending and removing all take
 // effect here, so the screen can be worked on -- and its failure treatments
-// actually looked at -- before the proxy route exists. A fixture that only
+// actually looked at -- with no deployed API at all. A fixture that only
 // serves reads means every write path ships having never been seen.
 //
 // The set below carries ONE OF EVERY TREATMENT, because a tidy fixture teaches
@@ -1685,9 +1718,7 @@ function fixtureRefused(message: string): Result<unknown> {
 const fixturePending = new Map<string, { label: string; lend_to: string[] }>()
 
 async function fixtureBeginSignIn(body: {
-  owner_tenant: string
   label: string
-  provider: string
   lend_to: string[]
 }): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 260))
@@ -1749,16 +1780,36 @@ async function fixtureFinishSignIn(body: {
   }
   const pending = fixturePending.get(body.state)
   if (!pending) {
+    // The record is ABSENT. In the broker this is overwhelmingly a sign-in
+    // that already SUCCEEDED, because the only delete that does not also
+    // raise is the one after the account is written -- which is why the
+    // screen's treatment for this may not say "nothing was created", and why
+    // the fixture reaches it by pasting twice rather than by timing out.
     return fixtureRefused(
       'this sign-in has expired or was already completed. Codes are ' +
         'single-use; press Add account to start again.',
+    )
+  }
+  const code = (hash === -1 ? body.code : body.code.slice(0, hash)).trim()
+  // TWO SENTINEL CODES, because the screen has two treatments that no ordinary
+  // paste can reach and unreadable copy is copy that ships unread. They stand
+  // where a 15-minute wait and a broker bug would be, and nothing but a
+  // deliberate paste produces either.
+  //
+  // `expired` -> the age refusal. Deletes the record BEFORE any redemption,
+  // so nothing was created: the opposite consequence to the branch above,
+  // which is the whole reason they are two treatments and not one.
+  if (code.toLowerCase() === 'expired') {
+    fixturePending.delete(body.state)
+    return fixtureRefused(
+      'this sign-in took too long and the code will have expired. ' +
+        'Press Add account to start again.',
     )
   }
   // A short code stands in for one the endpoint rejects -- the commonest real
   // cause being that the person took too long. The pending record SURVIVES it,
   // exactly as the broker's does, so the screen's "your sign-in is still open,
   // paste again" treatment is reachable in development.
-  const code = (hash === -1 ? body.code : body.code.slice(0, hash)).trim()
   if (code.length < 6) {
     return fixtureRefused(
       'the sign-in code was not accepted. Codes are single-use and expire ' +
@@ -1787,6 +1838,13 @@ async function fixtureFinishSignIn(body: {
   // Single-use, and deleted only once the account exists.
   fixturePending.delete(body.state)
   noteFixtureProbe('/v1/accounts/exchange', 480, true)
+  // `unnamed` -> the second sentinel: a 201 whose body names no account. The
+  // account IS registered above and the record IS gone, which is exactly the
+  // situation the treatment describes -- "look for the label in the pool" is
+  // advice a fixture can now be checked against, and it finds it.
+  if (code.toLowerCase() === 'unnamed') {
+    return { status: 'ok', fetchedAt: Date.now(), data: {} }
+  }
   return {
     status: 'ok',
     fetchedAt: Date.now(),

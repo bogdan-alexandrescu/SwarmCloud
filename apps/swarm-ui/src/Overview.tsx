@@ -116,7 +116,7 @@ export function OverviewScreen() {
   const accounts = useRead(loadAccountPool, live)
   const stats = useRead(loadStats, heavy)
 
-  const spend = useSpend(dataOf(tasks), heavy)
+  const spend = useSpend(tasks, heavy)
 
   // Typed as `Result<unknown>` because this list only ever asks about a read's
   // OUTCOME, never its payload. Leaving it to inference makes it a union of six
@@ -302,12 +302,39 @@ function useRead<T>(load: () => Promise<Result<T>>, nonce: number): Result<T> {
  *
  * So the trigger is: a page whose identity differs from the one held when
  * `heavy` last moved, and which has not already been summed for this `heavy`.
+ *
+ * AND IT TAKES THE WHOLE `Result`, NOT THE PAGE. A task read that lands
+ * `empty` or `error` never produces a page at all, so a hook fed only
+ * `dataOf(tasks)` sat at `loading` for ever -- and `loading` is a claim that a
+ * request is IN FLIGHT. On a tenant that has never submitted a task, which is
+ * the ordinary first-run state and not an edge case, that pulsed a skeleton
+ * and printed "1 still arriving" in the screen's own provenance line for as
+ * long as the page stayed open, while the Running panel two columns away drew
+ * "No task exists yet" from the same read.
+ *
+ * So both TERMINAL upstream outcomes are mirrored into this Result:
+ *
+ *   - `empty`: the read landed and there are no tasks, so there is nothing to
+ *     sum. A real zero -- the same one `loadSpend` returns for a page whose
+ *     tasks have no attempts.
+ *   - `error`: the read this rollup is BUILT ON failed, so no sum can be
+ *     assembled and no attempt read was ever made.
+ *
+ * `loading` upstream stays `loading` here, because then a request really is in
+ * flight and the fan-out starts when it lands.
+ *
+ * THE MIRROR STOPS AT THE FIRST FAN-OUT. `useRead` reports a failed refresh as
+ * `error` rather than `stale`, so without that rule a 500 on the 20-second
+ * poll would replace a rollup that really was summed from a page that really
+ * landed -- retracting a measurement because a later, different read failed.
+ * The tile carries the sum's age for exactly that case.
  */
-function useSpend(page: TaskPage | null, heavy: number): Result<SpendRollup> {
+function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
   const [state, setState] = useState<Result<SpendRollup>>({
     status: 'loading',
     since: Date.now(),
   })
+  const page = dataOf(tasks)
   const latest = useRef<TaskPage | null>(null)
   latest.current = page
 
@@ -315,6 +342,15 @@ function useSpend(page: TaskPage | null, heavy: number): Result<SpendRollup> {
   const atPress = useRef<TaskPage | null>(null)
   /** The `heavy` a rollup has been decided for. Never decided twice. */
   const summedFor = useRef<number | null>(null)
+  /**
+   * True once a fan-out has been STARTED -- not once it has landed. From that
+   * moment this hook answers for itself: while the requests are out `loading`
+   * is true, and when they land their outcome stands. Neither may be replaced
+   * by a mirror of the task read.
+   */
+  const dispatched = useRef(false)
+  /** The upstream outcome already mirrored, so it is not re-set every poll. */
+  const mirrored = useRef<string | null>(null)
 
   useEffect(() => {
     atPress.current = latest.current
@@ -330,15 +366,42 @@ function useSpend(page: TaskPage | null, heavy: number): Result<SpendRollup> {
   const [job, setJob] = useState<{ heavy: number; page: TaskPage } | null>(null)
 
   useEffect(() => {
-    if (page === null) return
+    if (page === null) {
+      // THERE IS NO PAGE. For one of the three reasons one is still coming;
+      // for the other two none ever is, and sitting at `loading` through them
+      // asserts a fan-out is in flight that will never start.
+      if (dispatched.current) return
+      if (tasks.status === 'empty') {
+        if (mirrored.current === 'empty') return
+        mirrored.current = 'empty'
+        setState({ status: 'empty', fetchedAt: tasks.fetchedAt })
+      } else if (tasks.status === 'error') {
+        // Keyed on the error itself: a later poll that fails differently is a
+        // different fact and replaces it. The panel names the task read as the
+        // thing that failed, so this is never read as an attempt-read failure.
+        const key = `${tasks.error.kind}:${tasks.error.httpStatus ?? 'none'}:${tasks.error.message}`
+        if (mirrored.current === key) return
+        mirrored.current = key
+        setState({ status: 'error', error: tasks.error })
+      }
+      return
+    }
+
+    const wasMirrored = mirrored.current !== null
+    mirrored.current = null
     if (summedFor.current === heavy) return
     // The refresh has been pressed and the new task page has not landed yet.
     // The next render that brings one re-runs this effect.
     if (page === atPress.current) return
 
     summedFor.current = heavy
+    dispatched.current = true
+    // A first task arrived for a tenant that had none, so the mirrored "no
+    // task has run" is about to stop being true and a fan-out really is
+    // starting. An absence must not survive into the read that replaces it.
+    if (wasMirrored) setState({ status: 'loading', since: Date.now() })
     setJob({ heavy, page })
-  }, [heavy, page])
+  }, [heavy, page, tasks])
 
   useEffect(() => {
     if (job === null) return
@@ -1213,19 +1276,32 @@ function chipTone(state: TaskState): string {
  */
 function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result<TaskPage> }) {
   if (state.status === 'loading') {
-    // The rollup cannot start until the task page lands, so a failed task read
-    // leaves this permanently loading unless it is named.
-    if (tasks.status === 'error') {
-      return (
-        <Nothing kind="failed" heading="Spend could not be assembled">
-          It is summed from the attempts of the most recent tasks, and the task
-          list itself could not be read: {tasks.error.message}
-        </Nothing>
-      )
-    }
+    // A READ IS IN FLIGHT, and now that is the only way to reach this line:
+    // either the task page has not landed (the fan-out starts when it does) or
+    // the twelve attempt reads are out. `useSpend` mirrors a task read that
+    // landed `empty` or failed into this Result, so a tenant whose fan-out
+    // will never start does not watch a skeleton pulse for it.
     return <Reading />
   }
   if (state.status === 'error') {
+    // TWO FAILURES, AND WHAT THE READER DOES NEXT DIFFERS. This rollup is
+    // built ON the task page: when the task read is the one that failed, no
+    // attempt read was made at all, nothing is known about the attempt route,
+    // and the thing to fix is the task list. Saying "no attempt read
+    // completed" there would send someone after a route that was never called.
+    if (tasks.status === 'error') {
+      const b = blindness(tasks.error)
+      return (
+        <Nothing
+          kind={b.admin ? 'admin' : 'failed'}
+          heading="Spend could not be assembled"
+        >
+          It is summed from the attempts of the most recent tasks, and the task
+          list itself could not be read. {b.why} No attempt read was made, so
+          nothing here is a statement about spend.
+        </Nothing>
+      )
+    }
     return (
       <Nothing kind="failed" heading="No attempt read completed">
         {errorHeading(state.error)} — {state.error.message} No figure is shown,
@@ -1234,6 +1310,19 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
     )
   }
   if (state.status === 'empty') {
+    // TWO ZEROS, AND THEY ARE NOT THE SAME ZERO. "Every task on the page has
+    // no attempts" describes tasks that exist; on a tenant with no tasks at
+    // all it would describe a page that is not there. The Running panel draws
+    // "No task exists yet" from this same read and the two must not disagree.
+    if (tasks.status === 'empty') {
+      return (
+        <Nothing kind="zero" heading="No task exists yet">
+          The task read succeeded and returned nothing at all — not one task has
+          ever been submitted for this tenant, so there are no attempts to sum
+          and no request is outstanding. This is a real zero.
+        </Nothing>
+      )
+    }
     return (
       <Nothing kind="zero" heading="No task has ever run">
         Every task on the page has an attempt count of zero, so there are no

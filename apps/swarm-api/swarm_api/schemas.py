@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -37,6 +39,16 @@ class TaskCreate(StrictModel):
     #: Provider model name, recorded for attribution and cost reporting. It
     #: selects nothing about the container.
     model: str | None = Field(default=None, max_length=128)
+    #: How this dispatch's work gets merged, and what carries it between steps.
+    #: Validated in `validation.resolve_dispatch_options`, which names the
+    #: accepted values in its refusal, rather than declared as a `Literal` here:
+    #: a Literal produces pydantic's generic 422 shape, and every other refusal
+    #: this service makes carries a stable `code` a caller can branch on.
+    #:
+    #: The defaults are today's behaviour, so a caller who sends neither field
+    #: gets exactly the dispatch they got before this feature existed.
+    strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
+    carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
 
     @field_validator("repository_url")
     @classmethod
@@ -74,6 +86,33 @@ class WorkflowCreate(StrictModel):
     priority: int = Field(default=0, ge=-100, le=100)
     on_step_failure: Literal["fail_workflow", "continue"] = "fail_workflow"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: Chosen once for the whole workflow, not per step: `integrate` produces
+    #: ONE pull request, so "which repository" cannot be a per-step answer.
+    #: Same accepted values and same defaults as `TaskCreate`.
+    strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
+    carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The repository every step of this workflow clones, and the one an
+    #: `integrate` step opens its pull request against.
+    #:
+    #: WHY IT IS HERE AND NOT ON THE STEP. A workflow step had no way to name a
+    #: repository at all before this, so a workflow's tasks were always created
+    #: with `repository_url=None` and no step could ever clone anything -- which
+    #: made every strategy but `collect` unreachable for a workflow. It is
+    #: workflow-level because the steps of one workflow integrate into one
+    #: branch; a step that needed a different repository is a different dispatch.
+    repository_url: str | None = Field(default=None, max_length=1024)
+    repository_ref: str | None = Field(default=None, max_length=256)
+
+    @field_validator("repository_url")
+    @classmethod
+    def _repo_scheme(cls, value: str | None) -> str | None:
+        # The same rule TaskCreate applies, stated here because a workflow's
+        # repository reaches Task.repository_url without passing through it.
+        if value is None:
+            return None
+        if not value.startswith(("https://", "git@", "ssh://")):
+            raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
+        return value
 
 
 # --------------------------------------------------------------------------

@@ -862,13 +862,30 @@ function AttemptCard({
   now: number
 }) {
   const out = attemptOutcome(a)
+  const end = attemptEnd(a, run.task, isLatest)
+
+  // `attemptOutcome` reads the attempt document ALONE, and on the document
+  // alone a reclaimed attempt is indistinguishable from a running one: both
+  // have a start time and no finish time. This card can see two things the
+  // document cannot -- whether a later attempt exists and what state the task
+  // is in -- so the chip is corrected here rather than left saying "running"
+  // directly above a paragraph that says the attempt is over. The correction
+  // belongs in `attemptOutcome`; that lives in types.ts, which another track
+  // owns, so it is reported rather than edited.
+  const chip: { label: string; tone: Tone | 'unknown' } =
+    end.over && out.label === 'running'
+      ? {
+          label: end.by === 'superseded' ? 'superseded' : 'ended, no end recorded',
+          tone: 'wait',
+        }
+      : out
 
   return (
     <section className="section panel" style={CARD}>
       <h2>
         Attempt {ordinal}
         <span className="count-chip">gen {a.generation}</span>
-        <Chip tone={out.tone}>{out.label}</Chip>
+        <Chip tone={chip.tone}>{chip.label}</Chip>
         {isLatest && <span className="tag wait">latest</span>}
         {a.oom_near_miss && (
           <span className="tag full" title="Peak memory came close to the ceiling this attempt was given">
@@ -885,7 +902,22 @@ function AttemptCard({
             running, never started, or ended without the field being written. */}
         <dd>{a.completed_at === null ? <Em /> : timeAgo(a.completed_at)}</dd>
         <dt>Duration</dt>
-        <dd>{attemptRan(a, now)}</dd>
+        {/* `attemptRan` measures from the start to NOW when there is no finish
+            time, which is right for a running attempt and false for this one:
+            an attempt that ended without its end being written stopped at some
+            unknown moment, and "1h 40m so far" is a clock still running on a
+            process that is gone -- printed, until this branch existed, next to
+            the chip and the paragraph below that both say it is over. */}
+        <dd>
+          {end.over && a.completed_at === null && a.started_at !== null ? (
+            <span className="muted">
+              not recorded — it started {timeAgo(a.started_at)} and no finish
+              time was ever written, so how long it ran is unknown
+            </span>
+          ) : (
+            attemptRan(a, now)
+          )}
+        </dd>
         <dt>Backend</dt>
         <dd>{a.backend}</dd>
         <dt>Execution</dt>
@@ -910,11 +942,47 @@ function AttemptCard({
         </div>
       )}
 
-      <AttemptResources a={a} run={run} />
+      <AttemptResources a={a} run={run} isLatest={isLatest} />
       <AttemptSpend a={a} profile={run.task.runner_profile} />
       <AttemptCheckpoints a={a} run={run} />
     </section>
   )
+}
+
+/**
+ * HAS THIS ATTEMPT ENDED, and on what evidence.
+ *
+ * `completed_at` is the obvious test and it is not sufficient. It is written
+ * in exactly one place -- `control.record_attempt_end`, reachable only from
+ * `finish()` -- so the two interruptions this screen most needs to describe
+ * never set it. A SIGKILL kills the worker before `finish()` runs, and a
+ * reconciler reclaim of a stale generation repairs the TASK document without
+ * touching the attempt's at all (`repair_task_state` sets `completed_at` on
+ * the task, not on the attempt). An attempt that ended either of those ways
+ * keeps `completed_at: null` for ever -- the same shape a RUNNING attempt has
+ * -- so a panel keyed on that field alone tells the reader of a reclaimed
+ * attempt to wait for a final figure that nothing will ever write.
+ *
+ * Two further facts on this page settle it, and both are READ rather than
+ * inferred:
+ *
+ *   - A LATER ATTEMPT DOCUMENT EXISTS. Attempts are fenced by generation and
+ *     run one at a time, so an attempt that is not the newest is over.
+ *   - THE TASK IS TERMINAL. Nothing runs for it again, so nothing writes to
+ *     any of its attempts again.
+ *
+ * `by` is carried because the three read differently to a person and the
+ * sentence under the bars names the one that applies. What is NOT claimed
+ * anywhere is WHY the attempt stopped: this page cannot see a kill, a reclaim
+ * or a crash -- only that it stopped, and that no final figure came with it.
+ */
+type AttemptEnd = { over: false } | { over: true; by: 'recorded' | 'superseded' | 'task-ended' }
+
+function attemptEnd(a: AttemptRow, task: Task, isLatest: boolean): AttemptEnd {
+  if (a.completed_at !== null) return { over: true, by: 'recorded' }
+  if (!isLatest) return { over: true, by: 'superseded' }
+  if (TERMINAL_STATES.has(task.state)) return { over: true, by: 'task-ended' }
+  return { over: false }
 }
 
 /**
@@ -937,20 +1005,47 @@ function AttemptCard({
  * the live process, so that is used when there is no final figure -- labelled
  * with its age, never presented as the final number.
  */
-function AttemptResources({ a, run }: { a: AttemptRow; run: AgentRun }) {
+function AttemptResources({
+  a,
+  run,
+  isLatest,
+}: {
+  a: AttemptRow
+  run: AgentRun
+  /** From the attempt list: whether any later attempt document exists. */
+  isLatest: boolean
+}) {
   const { task, events, classes, classesDetail, classesRouteMissing } = run
   const cls: ResourceClassSpec | null = classes?.[task.resource_class] ?? null
   const hb = newestHeartbeat(a, events)
 
   // THE ATTEMPT HAS ENDED OR IT HAS NOT, and the same fallback figure means
   // two different things either way. A running attempt has no final peak YET.
-  // An attempt that ended without `record_resource_usage` -- a kill, a
-  // reconciler reclaim of a stale generation, an ordinary crash -- has
-  // `completed_at` set and `peak_rss_bytes` null, and no final figure is ever
-  // coming. Both used to get the same "live reading ... written when the
-  // attempt ends" sentence, which told the second one's reader to wait for a
-  // number that does not exist.
-  const ended = a.completed_at !== null
+  // An attempt that ended without `record_resource_usage` has none at all and
+  // none is coming, and calling that figure "live" tells its reader to wait
+  // for a write that has already not happened.
+  //
+  // `completed_at` alone does not separate the two -- it is not written on the
+  // paths this distinction exists for. `attemptEnd` above is where the three
+  // pieces of evidence this page actually holds are read.
+  const end = attemptEnd(a, task, isLatest)
+  const ended = end.over
+
+  // WHAT IS KNOWN ABOUT THE END, in the words of what was read. This page
+  // cannot see a kill, a reclaim or a crash; it can see a finish time, a later
+  // attempt document and the task's state, so it says those and stops.
+  const endedBecause: ReactNode =
+    end.over === false ? null : end.by === 'recorded' ? (
+      <>Its finish time is recorded, and no peak memory was written with it.</>
+    ) : end.by === 'superseded' ? (
+      <>A later attempt has replaced it, so nothing writes to this document again.</>
+    ) : (
+      <>
+        The task is <code>{task.state}</code> and this attempt was never marked
+        finished — the shape a kill, or a reconciler reclaim of a stale
+        generation, leaves behind.
+      </>
+    )
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =
@@ -1060,11 +1155,11 @@ function AttemptResources({ a, run }: { a: AttemptRow; run: AgentRun }) {
         <p className="muted small">
           {ended ? (
             <>
-              This attempt ended without a final peak being written, so the
-              memory figure is the last heartbeat reading before it stopped (
-              {timeAgo(hb.at)}). <code>record_resource_usage</code> never ran —
-              a kill, a reclaim or a crash ends an attempt without it — so
-              there is no final high-water mark and none is coming.
+              This attempt is over, so the memory figure is the last heartbeat
+              reading before it stopped ({timeAgo(hb.at)}) — not a live one.{' '}
+              {endedBecause} The final high-water mark is written at the end of
+              an attempt, and this one has already ended without it, so there
+              is none and none is coming.
             </>
           ) : (
             <>
@@ -1080,9 +1175,9 @@ function AttemptResources({ a, run }: { a: AttemptRow; run: AgentRun }) {
       {a.peak_rss_bytes === null && liveRss === null && ended && a.started_at !== null && (
         <p className="muted small">
           This attempt ended with no peak memory recorded, and no heartbeat
-          carrying one is on this page. What it used is unknown — which is why
-          the figure is an em dash rather than a zero, and no later write will
-          fill it in.
+          carrying one is on this page. {endedBecause} What it used is unknown —
+          which is why the figure is an em dash rather than a zero, and no later
+          write will fill it in.
         </p>
       )}
     </div>

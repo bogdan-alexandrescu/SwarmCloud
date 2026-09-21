@@ -132,6 +132,12 @@ class AccountStore:
                 last_assigned_at=current.last_assigned_at,
                 assigned=current.assigned,
                 reason=current.reason,
+                # CARRIED OVER with the state, for the same reason the state
+                # is: this is a `set`, and changing who an account is lent to
+                # must not throw away the record of where a recovered account
+                # belongs. Dropping it here would silently turn a paused
+                # account's recovery into AVAILABLE.
+                state_before_reauth=current.state_before_reauth,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -153,9 +159,92 @@ class AccountStore:
         return account
 
     def set_state(self, account_id: str, state: AccountState, reason: str = "") -> None:
+        """An operator's state change. Supersedes anything the sweep remembered.
+
+        `state_before_reauth` is cleared here because this call is a PERSON
+        saying where the account belongs. Leaving an older remembered state
+        behind would let a later recovery restore a decision that had since
+        been overruled -- the account would come back not where the last person
+        to touch it put it, but where it was two episodes ago.
+        """
         self._db.collection(COLLECTION).document(account_id).update(
-            {"state": state.value, "reason": reason}
+            {"state": state.value, "reason": reason, "state_before_reauth": ""}
         )
+
+    def mark_reauth_required(self, account_id: str, reason: str) -> Account | None:
+        """Record that this account's credential is dead. Returns it, or None.
+
+        THE WRITER THE SWEEP NEVER HAD. The refresher detected a revoked
+        refresh token, logged it and counted it, and the document stayed at
+        AVAILABLE with an empty reason -- so `choose()` kept handing the
+        account to new agents that could not authenticate, `due_for_refresh()`
+        kept retrying a token that cannot come back, and a listing showed
+        nothing at all pointing at the account that was actually broken.
+
+        Separate from `set_state` on purpose. This one REMEMBERS the state it
+        is replacing, because it is a background sweep overwriting a state a
+        person may have chosen; `set_state` is that person, and forgets.
+
+        An account already marked is left exactly as it is: `due_for_refresh`
+        excludes it, so this only ever fires on the transition, and rewriting
+        it would replace the remembered state with REAUTH_REQUIRED itself and
+        lose the way back.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            # A refresh outcome for an account that has since been removed.
+            # Not an error: `remove` is allowed to race a sweep in flight.
+            log.warning(
+                "a refresh outcome arrived for an account that is not registered",
+                extra={"account_id": account_id},
+            )
+            return None
+        current = Account.from_firestore(snap.to_dict() or {})
+        if current.state is AccountState.REAUTH_REQUIRED:
+            return current
+        ref.update(
+            {
+                "state": AccountState.REAUTH_REQUIRED.value,
+                "reason": reason,
+                "state_before_reauth": current.state.value,
+            }
+        )
+        return self.get(account_id)
+
+    def clear_reauth_required(self, account_id: str) -> Account | None:
+        """Give a recovered account back the state it had. Returns it, or None.
+
+        THE EXIT, and it has to ship with the mark rather than after it.
+        `due_for_refresh` excludes REAUTH_REQUIRED, so once the sweep writes
+        that state the sweep will never look at the account again: without a
+        way back, marking a dead credential would turn a silent failure into a
+        permanent one.
+
+        Called only where a credential has just been proven to work -- a
+        completed exchange, or a freshly written credential pair. Not on
+        `still_valid`, which says the stored ACCESS token has hours left and
+        says nothing about the refresh token that is the thing that died.
+
+        An account that is not marked is returned untouched, so this is safe to
+        call on every success without first asking what state the account is in.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            return None
+        current = Account.from_firestore(snap.to_dict() or {})
+        if current.state is not AccountState.REAUTH_REQUIRED:
+            return current
+        restored = current.state_before_reauth or AccountState.AVAILABLE
+        ref.update(
+            {"state": restored.value, "reason": "", "state_before_reauth": ""}
+        )
+        log.info(
+            "an account's credential works again; restoring the state it had",
+            extra={"account_id": account_id, "state": restored.value},
+        )
+        return self.get(account_id)
 
     def remove(self, account_id: str) -> None:
         """Forget the account. Does NOT delete the secret.

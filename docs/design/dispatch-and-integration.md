@@ -90,16 +90,18 @@ repository in front of it and can resolve a conflict with context.
 | edits land in the tree | they land in a tmpfs that is destroyed | replaced by harvest |
 | the session commits | the worker harvests a patch; optionally pushes a branch and opens a PR | works |
 | the session merges | — | **missing** |
-| passing work between stages | `input_from` on a workflow step | **inert, see below** |
+| passing work between stages | `input_from` on a workflow step | **works** (2026-09-21) |
 
 ### The three gaps, precisely
 
-1. **`input_from` is declared and never honoured.** A workflow step may say it
-   wants an upstream step's artifact staged into its workspace. The API
-   validates it (`validation.py:205`), the service records it in task metadata
-   (`service.py:228`), the codec returns it — and no worker or scheduler code
-   reads it. So a step cannot receive the previous step's output, which is
-   exactly the primitive an integration step needs.
+1. ~~**`input_from` is declared and never honoured.**~~ **CLOSED 2026-09-21.**
+   It was declared and never honoured: the API validated it, the service
+   recorded it in task metadata, the codec returned it, and no worker code read
+   it. The worker now stages each declared artifact from the upstream task's
+   successful attempt into the workspace before the agent starts, and refuses
+   the attempt — naming the upstream task and the filename — when a promised
+   input cannot be found. Starting an agent without an input it was promised is
+   how it silently produces the wrong thing.
 
 2. **There is no integrator.** Locally the session merges. In the cluster
    nothing does: each attempt produces a patch in its own GCS prefix, and they

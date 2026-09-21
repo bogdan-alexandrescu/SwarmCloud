@@ -1,9 +1,18 @@
 """Task routes.
 
-Read the tenant argument on every store call below. `auth.tenant_id` comes from
-the verified ID token and the admin-registered group list; it is never taken
-from a path, a query string or a header, so there is no request a caller can
-construct that reads another tenant's task.
+Read the tenant argument on every store call below. It comes from
+`tenant_scope`, never from `auth.tenant_id` and never from a path, a query
+string or a header.
+
+WHY THE DEPENDENCY RATHER THAN `auth.tenant_id`. This docstring used to claim
+that deriving the id from the verified token was the whole boundary -- "there is
+no request a caller can construct that reads another tenant's task". That was
+wrong, and the counterexample is two VERIFIED identities holding the SAME id:
+the frozen `tenant_id_for_group` slugs the local part only, so `eng@saga.xyz`
+and `eng@partner.com` both derive `eng`, and a registered group `u-eng@saga.xyz`
+derives what the personal tenant of `eng@saga.xyz` derives. Submitting was
+already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
+`tenant_scope` applies that same principal check before any store call here.
 """
 
 from __future__ import annotations
@@ -14,7 +23,7 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
-from ..deps import AppContext, current_auth, get_context, paged_limit
+from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
 
@@ -68,7 +77,7 @@ def list_tasks(
     runner_profile: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     parsed_state: TaskState | None = None
@@ -81,7 +90,7 @@ def list_tasks(
                 detail={"known_states": [s.value for s in TaskState]},
             ) from None
     page = ctx.store.list_tasks(
-        auth.tenant_id,
+        tenant_id,
         state=parsed_state,
         workflow_id=workflow_id,
         runner_profile=runner_profile,
@@ -91,26 +100,30 @@ def list_tasks(
     return {
         "tasks": [task_to_api(task) for task in page.items],
         "next_page_token": page.next_page_token,
-        "tenant_id": auth.tenant_id,
+        "tenant_id": tenant_id,
     }
 
 
 @router.get("/{task_id}")
 def get_task(
     task_id: str,
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"task": task_to_api(ctx.store.get_task(auth.tenant_id, task_id))}
+    return {"task": task_to_api(ctx.store.get_task(tenant_id, task_id))}
 
 
 @router.post("/{task_id}/cancel")
 def cancel_task(
     task_id: str,
+    # Both: the scope decides WHOSE task may be cancelled, `auth` records WHO
+    # cancelled it. Cancelling is a write, and it was reachable across a tenant
+    # id collision until this dependency existed.
+    tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    task = ctx.store.request_cancel(auth.tenant_id, task_id, by=auth.email)
+    task = ctx.store.request_cancel(tenant_id, task_id, by=auth.email)
     return {
         "task": task_to_api(task),
         # A task holding capacity stays in its state until the worker or the
@@ -124,10 +137,10 @@ def cancel_task(
 def list_events(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    events = ctx.store.list_events(auth.tenant_id, task_id, limit=paged_limit(ctx, limit))
+    events = ctx.store.list_events(tenant_id, task_id, limit=paged_limit(ctx, limit))
     return {"task_id": task_id, "events": [_event_to_api(e) for e in events]}
 
 
@@ -135,7 +148,7 @@ def list_events(
 def list_attempts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Every attempt for one task, newest first.
@@ -151,9 +164,9 @@ def list_attempts(
     """
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
     # an empty attempt list, which would read as "this task never ran".
-    ctx.store.get_task(auth.tenant_id, task_id)
+    ctx.store.get_task(tenant_id, task_id)
     attempts = ctx.store.list_attempts(
-        auth.tenant_id, task_id, limit=paged_limit(ctx, limit)
+        tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
     return {
         "task_id": task_id,
@@ -165,8 +178,8 @@ def list_attempts(
 def list_artifacts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    artifacts = ctx.store.list_artifacts(auth.tenant_id, task_id, limit=paged_limit(ctx, limit))
+    artifacts = ctx.store.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
     return {"task_id": task_id, "artifacts": artifacts}

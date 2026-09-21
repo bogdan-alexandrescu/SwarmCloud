@@ -263,9 +263,30 @@ def finish_sign_in(
 ) -> dict:
     """Redeem the code and register the account.
 
-    The caller's tenant is resolved here and checked by the broker against the
-    pending sign-in it issued, so a code cannot be completed into a tenant other
-    than the one that started it.
+    WHERE THE ACCOUNT LANDS is decided by the PENDING SIGN-IN, never by this
+    request: the broker reads `owner_tenant` off the record it keyed by `state`
+    when `/authorize` issued it, and this route sends only the state and the
+    code. So a redeemed code cannot be filed into a tenant other than the one
+    that started the sign-in, whatever the redeemer sends.
+
+    WHAT IS NOT CHECKED, stated plainly because this docstring previously
+    claimed it was: nothing ties the CALLER to that pending record. swarm-api
+    authenticates to the broker as a PLATFORM caller, so the broker's
+    `_authorize` returns the pending owner unexamined (`if is_platform: return
+    tenant_id`), and this route resolves the caller's tenant without comparing
+    it. A caller holding another tenant's `state` would therefore complete that
+    tenant's sign-in -- filing their own credential into the originator's pool
+    and receiving the created account's metadata back. `state` is an unguessable
+    server-minted value shown only to the browser that started the flow, which
+    is what bounds this; it is not the same thing as a check. Closing it needs
+    the broker to accept and compare an expected owner on `/v1/accounts/exchange`,
+    which is that service's change to make, so it is reported rather than faked
+    here.
+
+    `_tenant_id` is still called, and called FIRST: it is what refuses a tenant
+    id collision (409) and a disabled tenant (403) before any credential is
+    redeemed. Its value is deliberately unused -- see above; assigning it to a
+    variable would read as if it were compared with something.
     """
     _tenant_id(ctx, auth)
     result = pool.finish_sign_in(state=body.state, code=body.code)

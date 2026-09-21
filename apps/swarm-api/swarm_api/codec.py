@@ -30,6 +30,8 @@ from swarm_common.models import (
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
+from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, DISPATCH_METADATA_KEY
+
 
 def as_datetime(value: Any) -> datetime | None:
     if value is None:
@@ -96,6 +98,51 @@ def task_from_dict(data: dict[str, Any]) -> Task:
     )
 
 
+def dispatch_of(task: Task) -> dict[str, Any]:
+    """The EFFECTIVE dispatch options for a task, always complete.
+
+    `task.metadata["dispatch"]` is where they are stored, and it is absent on
+    every task submitted before this feature existed. Absent means today's
+    behaviour -- harvest the patch, push nothing -- so it reads back as
+    `collect`/`checkpoints` rather than as null. A caller reading this key never
+    has to know that the encoding lives in metadata, or that a task may predate
+    it.
+    """
+    raw = task.metadata.get(DISPATCH_METADATA_KEY)
+    block = raw if isinstance(raw, dict) else {}
+    return {
+        "strategy": block.get("strategy") or DEFAULT_STRATEGY,
+        "carrier": block.get("carrier") or DEFAULT_CARRIER,
+        # None on everything but an `integrate` workflow's steps.
+        "role": block.get("role"),
+        "integrates": list(block.get("integrates") or ()),
+    }
+
+
+def workflow_dispatch(tasks: Any) -> dict[str, Any]:
+    """A workflow's dispatch options, read back from the tasks that carry them.
+
+    The frozen `Workflow` dataclass has no metadata field, so there is nowhere
+    on the workflow document to store them; every task of a workflow is written
+    with the same strategy and carrier, so any one of them answers. The per-step
+    ROLE is not reported here because it differs by step -- the integrator is
+    named instead, which is the part a caller wants from the workflow level.
+    """
+    strategy, carrier = DEFAULT_STRATEGY, DEFAULT_CARRIER
+    integrator_task_id: str | None = None
+    for task in tasks:
+        options = dispatch_of(task)
+        strategy, carrier = options["strategy"], options["carrier"]
+        if options["role"] == "integrator":
+            integrator_task_id = task.id
+            break
+    return {
+        "strategy": strategy,
+        "carrier": carrier,
+        "integrator_task_id": integrator_task_id,
+    }
+
+
 def task_to_api(task: Task) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec."""
     return {
@@ -123,6 +170,11 @@ def task_to_api(task: Task) -> dict[str, Any]:
         "depends_on": task.depends_on,
         "cancel_requested": task.cancel_requested,
         "metadata": task.metadata,
+        # Also inside `metadata`, which is where it is STORED. It is lifted out
+        # here so a caller reads the effective values -- including on a task
+        # that predates the feature and has no block -- without knowing the
+        # encoding.
+        "dispatch": dispatch_of(task),
         "repository_url": task.repository_url,
         "repository_ref": task.repository_ref,
         "input": task.input,

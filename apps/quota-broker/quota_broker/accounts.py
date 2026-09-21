@@ -277,6 +277,23 @@ class Account:
     #: Why it is in its current state, for the human who has to act on it.
     reason: str = ""
 
+    #: The state this account held when something marked it REAUTH_REQUIRED,
+    #: so that recovery can give it back rather than promote it.
+    #:
+    #: REAUTH_REQUIRED is written by a BACKGROUND SWEEP and cleared by a
+    #: PERSON, and those two facts together are why this exists. Without it,
+    #: the only sensible state to recover to is AVAILABLE -- so an account an
+    #: operator had deliberately PAUSED or DRAINING would come back in service
+    #: the moment its credential was replaced, with nothing saying the pause
+    #: had been overruled. `AccountStore.register` carries the same reasoning
+    #: for the same reason: a sweep must not undo a decision nobody asked it
+    #: to touch.
+    #:
+    #: None means "nothing is remembered", which is both a document written
+    #: before this field existed and an account that reached REAUTH_REQUIRED
+    #: by an operator typing it. Recovery from that is AVAILABLE.
+    state_before_reauth: AccountState | None = None
+
     #: The secret this account's credential actually lives in, RECORDED at
     #: registration rather than re-derived on every read.
     #:
@@ -474,6 +491,12 @@ class Account:
             "holds": holds_to_firestore(self.holds),
             "unreadable_by": dict(self.unreadable_by),
             "reason": self.reason,
+            # "" rather than None: the same empty-means-nothing-remembered
+            # spelling `secret` uses, so a document never carries a null that
+            # a reader has to tell apart from a missing key.
+            "state_before_reauth": (
+                self.state_before_reauth.value if self.state_before_reauth else ""
+            ),
             "secret": self.secret_ref,
             "observed_at": self.observed_at,
             "windows": {
@@ -517,6 +540,7 @@ class Account:
             },
             assigned=int(data.get("assigned", 0)),
             reason=data.get("reason", "") or "",
+            state_before_reauth=_optional_state(data.get("state_before_reauth")),
         )
 
 
@@ -561,6 +585,23 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
 def _aware(value: datetime) -> datetime:
     """Firestore hands back naive datetimes in some client versions."""
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _optional_state(raw: Any) -> AccountState | None:
+    """A remembered state, or None -- never an exception.
+
+    Deliberately more forgiving than the `state` field above, which is allowed
+    to raise and take the document out of `AccountStore.list` with it. This one
+    is ADVISORY: it only says where recovery should put the account back. An
+    unrecognised value here must not make an account unreadable and remove it
+    from the pool, because the account itself is fine.
+    """
+    if not raw:
+        return None
+    try:
+        return AccountState(str(raw))
+    except ValueError:
+        return None
 
 
 def account_id_for(owner_tenant: str, label: str) -> str:

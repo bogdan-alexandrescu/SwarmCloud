@@ -279,6 +279,41 @@ class Store:
             },
         )
 
+    def assert_tenant_scope(self, tenant_id: str, principal: str) -> None:
+        """The READ-side half of the collision check `ensure_tenant` runs.
+
+        A tenant id is not a unique key for a principal. The frozen
+        `tenant_id_for_group` slugs the local part only, so `eng@saga.xyz` and
+        `eng@partner.com` both derive `eng`; and the group path adds no prefix
+        while the personal path adds `u-`, so a registered group named
+        `u-eng@saga.xyz` derives the same id as the personal tenant of
+        `eng@saga.xyz`. Two verified, unrelated identities therefore arrive
+        holding the same `tenant_id` string, and every query below filters on
+        exactly that string.
+
+        Until this existed the collision was refused on the SUBMIT paths only,
+        which is the wrong way round: submitting was 409 while listing, reading
+        and CANCELLING the other principal's tasks all succeeded. Reproduced
+        through the real routes on 2026-09-21 before the fix, in-process against
+        the test Firestore -- not against a deployment.
+
+        A missing document means nothing has ever been filed under the id.
+        Both paths that create work -- `submit_tasks` and `submit_workflow` --
+        go through `SubmissionService.tenant_for`, which calls `ensure_tenant`
+        before the first write, so a task under a tenant with no document is a
+        state this service cannot produce. Nothing to reach across, nothing to
+        refuse; refusing anyway would 409 every brand-new tenant's first list.
+
+        COLLISION ONLY, and deliberately not `enabled`: disabling a tenant stops
+        it starting work, and a stopped tenant still has to see and cancel what
+        it already has running. `SubmissionService.tenant_for` is what refuses a
+        disabled tenant, on the paths that create work.
+        """
+        existing = self.get_tenant(tenant_id)
+        if existing is None:
+            return
+        self._assert_principal_matches(existing, principal)
+
     def set_tenant_limits(
         self,
         tenant_id: str,

@@ -42,7 +42,12 @@ from .schemas import TaskCreate, WorkflowCreate
 from .settings import ApiSettings
 from .store import Store
 from .validation import (
+    DISPATCH_METADATA_KEY,
+    DispatchOptions,
     StepSpec,
+    reject_reserved_metadata,
+    resolve_dispatch_options,
+    resolve_integrator_step,
     validate_batch_size,
     validate_dag,
     validate_input_size,
@@ -59,6 +64,24 @@ log = logging.getLogger(__name__)
 class SubmissionResult:
     tasks: list[Task]
     woke_scheduler: bool
+
+
+@dataclass(frozen=True)
+class WorkflowSubmission:
+    """What a workflow submission produced, including the dispatch it resolved.
+
+    The dispatch options are returned alongside the workflow rather than read
+    off it because the frozen `Workflow` dataclass has no metadata field to
+    hold them -- they are stored once per TASK. A create response has to echo
+    what was accepted, so the value travels out of here directly.
+    """
+
+    workflow: Workflow
+    tasks: list[Task]
+    dispatch: DispatchOptions
+    #: The step that integrates the others, or None when the strategy is not
+    #: `integrate`.
+    integrator_step_id: str | None
 
 
 class SubmissionService:
@@ -98,6 +121,22 @@ class SubmissionService:
             raise Forbidden(f"tenant {tenant.tenant_id!r} is disabled")
         return tenant
 
+    def scope_for(self, ctx: AuthContext) -> str:
+        """The tenant id this caller may READ, with the collision check applied.
+
+        `tenant_for` above is the entry for paths that CREATE work: it writes
+        the tenant document on first sight and refuses a disabled tenant. A read
+        must do neither -- a GET that creates a document is a surprise, and a
+        disabled tenant still has to see and cancel what it already has running
+        -- but it must still refuse a caller whose tenant id belongs to a
+        different principal. That is the whole of `Store.assert_tenant_scope`,
+        and why it is a separate call rather than a flag on this one.
+        """
+        self._store.assert_tenant_scope(
+            ctx.tenant_id, ctx.tenant_principal or ctx.email
+        )
+        return ctx.tenant_id
+
     # -- tasks ------------------------------------------------------------
 
     def _build_task(
@@ -107,17 +146,34 @@ class SubmissionService:
         tenant: Tenant,
         ctx: AuthContext,
         now: datetime,
+        dispatch: DispatchOptions,
         workflow_id: str | None = None,
         step_id: str | None = None,
         depends_on: Sequence[str] = (),
         resource_class_override: str | None = None,
         priority: int | None = None,
+        repository_url: str | None = None,
+        repository_ref: str | None = None,
     ) -> Task:
         profile = validate_runner_profile(spec.runner_profile)
         validate_input_size(spec.input, self._settings.core.max_input_bytes)
+        # The CALLER's metadata is what the 16 KiB limit measures, which is why
+        # this runs before the dispatch block is added below. The block this
+        # service adds is two short strings, plus -- on an integrator only -- one
+        # task id per upstream step, so `max_workflow_steps` is its ceiling.
+        reject_reserved_metadata(spec.metadata)
         validate_input_size(spec.metadata, 16 * 1024, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
+
+        # `dispatch` is resolved by the CALLER of this method, because the rules
+        # differ by scale: a standalone task may not ask for `integrate`, and a
+        # workflow resolves one integrator for all of its steps. `spec.strategy`
+        # and `spec.carrier` are deliberately not read here -- `submit_workflow`
+        # synthesises a TaskCreate whose defaults would otherwise silently
+        # override the workflow's choice.
+        metadata = dict(spec.metadata)
+        metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
 
         # Walk the real state machine even though only the end state is stored.
         assert_transition(TaskState.SUBMITTED, TaskState.QUEUED)
@@ -147,9 +203,13 @@ class SubmissionService:
             provider=profile.provider,
             model=spec.model,
             priority=spec.priority if priority is None else priority,
-            metadata=dict(spec.metadata),
-            repository_url=spec.repository_url,
-            repository_ref=spec.repository_ref,
+            metadata=metadata,
+            # Exactly one of these two is ever set. A standalone task carries
+            # its own repository on the spec; a workflow names one repository
+            # for all of its steps and `submit_workflow` passes it here, into a
+            # synthesised TaskCreate that has none of its own.
+            repository_url=repository_url or spec.repository_url,
+            repository_ref=repository_ref or spec.repository_ref,
             timeout_seconds=timeout,
             max_attempts=spec.max_attempts or 3,
             park_reason=park_reason,
@@ -163,8 +223,25 @@ class SubmissionService:
         tenant = self.tenant_for(ctx)
         now = self._now()
         try:
+            # Inside the try so a refused dispatch is counted like every other
+            # rejected submission rather than being invisible to the metric.
             tasks = [
-                self._build_task(spec=spec, tenant=tenant, ctx=ctx, now=now) for spec in specs
+                self._build_task(
+                    spec=spec,
+                    tenant=tenant,
+                    ctx=ctx,
+                    now=now,
+                    dispatch=resolve_dispatch_options(
+                        strategy=spec.strategy,
+                        carrier=spec.carrier,
+                        # A batch is N INDEPENDENT tasks -- nothing in it
+                        # depends on anything else in it -- so every task in a
+                        # batch is at task scale, not workflow scale.
+                        scale="task",
+                        repository_url=spec.repository_url,
+                    ),
+                )
+                for spec in specs
             ]
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
@@ -179,7 +256,7 @@ class SubmissionService:
 
     # -- workflows --------------------------------------------------------
 
-    def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> Workflow:
+    def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> WorkflowSubmission:
         tenant = self.tenant_for(ctx)
         step_specs = [
             StepSpec(
@@ -189,8 +266,19 @@ class SubmissionService:
             )
             for s in spec.steps
         ]
+        integrator_step_id: str | None = None
         try:
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
+            dispatch = resolve_dispatch_options(
+                strategy=spec.strategy,
+                carrier=spec.carrier,
+                scale="workflow",
+                repository_url=spec.repository_url,
+            )
+            if dispatch.strategy == "integrate":
+                # After validate_dag, which has already rejected the cycles and
+                # dangling dependencies this would otherwise have to reason about.
+                integrator_step_id = resolve_integrator_step(step_specs)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -218,11 +306,20 @@ class SubmissionService:
                 tenant=tenant,
                 ctx=ctx,
                 now=now,
+                dispatch=self._step_dispatch(
+                    dispatch,
+                    step_id=step_id,
+                    integrator_step_id=integrator_step_id,
+                    order=order,
+                    step_task_id=step_task_id,
+                ),
                 workflow_id=workflow_id,
                 step_id=step_id,
                 depends_on=parent_task_ids,
                 resource_class_override=source.resource_class,
                 priority=spec.priority,
+                repository_url=spec.repository_url,
+                repository_ref=spec.repository_ref,
             )
             if source.input_from:
                 task.metadata["input_from"] = {
@@ -264,16 +361,56 @@ class SubmissionService:
         self._store.create_workflow(workflow, tasks)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
-        return workflow
+        return WorkflowSubmission(
+            workflow=workflow,
+            tasks=tasks,
+            dispatch=dispatch,
+            integrator_step_id=integrator_step_id,
+        )
+
+    @staticmethod
+    def _step_dispatch(
+        dispatch: DispatchOptions,
+        *,
+        step_id: str,
+        integrator_step_id: str | None,
+        order: Sequence[str],
+        step_task_id: dict[str, str],
+    ) -> DispatchOptions:
+        """The dispatch block for ONE step of a workflow.
+
+        Only `integrate` gives its steps distinct roles, so every other strategy
+        hands every step the same options.
+
+        The integrator's `integrates` list is the tasks of every step that comes
+        before it in TOPOLOGICAL order, which is the order its patches must be
+        applied in. Taking the prefix of `order` rather than "every step except
+        this one" is what makes the ids already known: the loop assigns task ids
+        as it walks `order`, and a step that comes after the integrator would not
+        have one yet. `resolve_integrator_step` guarantees the integrator is the
+        graph's only sink, so that prefix is in fact every other step.
+        """
+        if integrator_step_id is None:
+            return dispatch
+        if step_id != integrator_step_id:
+            return dispatch.with_role("contributor")
+        upstream = list(order[: list(order).index(step_id)])
+        return dispatch.with_role(
+            "integrator", integrates=[step_task_id[sid] for sid in upstream]
+        )
 
     # -- read models ------------------------------------------------------
 
     def stats(self, ctx: AuthContext) -> dict[str, Any]:
+        # Through the collision check, never the raw `ctx.tenant_id`: these
+        # counts are this tenant's, and two unrelated principals can hold the
+        # same id string. See `scope_for`.
+        tenant_id = self.scope_for(ctx)
         control = self._store.get_control()
         self._metrics.dispatch_paused.set(1 if control.get("dispatch_paused") else 0)
         payload: dict[str, Any] = {
-            "tenant_id": ctx.tenant_id,
-            "tasks_by_state": self._store.count_tasks_by_state(ctx.tenant_id),
+            "tenant_id": tenant_id,
+            "tasks_by_state": self._store.count_tasks_by_state(tenant_id),
             "dispatch_paused": bool(control.get("dispatch_paused")),
             "limits": {
                 "max_batch_size": self._settings.core.max_batch_size,
@@ -296,8 +433,11 @@ class SubmissionService:
         """
         from .codec import pool_to_api
 
-        own_tenant_pool = f"tenant:{ctx.tenant_id}"
-        own_provider_suffix = f":tenant:{ctx.tenant_id}"
+        # Same guard as `stats`: a pool's `active` count is a usage signal about
+        # whoever really owns the id, so the id has to be the checked one.
+        tenant_id = self.scope_for(ctx)
+        own_tenant_pool = f"tenant:{tenant_id}"
+        own_provider_suffix = f":tenant:{tenant_id}"
         visible = []
         for pool in self._store.list_pools():
             if not ctx.is_admin:
@@ -310,7 +450,7 @@ class SubmissionService:
             visible.append(pool_to_api(pool))
         visible.sort(key=lambda p: p["name"])
         return {
-            "tenant_id": ctx.tenant_id,
+            "tenant_id": tenant_id,
             "pools": visible,
             "runner_profiles": {
                 name: {
@@ -319,7 +459,7 @@ class SubmissionService:
                     "provider": profile.provider,
                     "units": RESOURCE_CLASSES[profile.resource_class].units,
                     "pools": pool_names_for(
-                        tenant_id=ctx.tenant_id,
+                        tenant_id=tenant_id,
                         provider=profile.provider,
                         resource_class=profile.resource_class,
                         runner_profile=name,

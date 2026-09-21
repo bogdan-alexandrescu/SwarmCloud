@@ -61,11 +61,32 @@ REPO = HERE.parent
 # The frozen catalogue is the source of truth for sizing. Import it rather than
 # restating the numbers: a manifest that disagrees with RESOURCE_CLASSES would
 # produce a pod the scheduler's accounting does not describe.
+#
+# The same argument applies to the two RULES this file used to restate, and one
+# of them had already drifted:
+#
+#   * the slugification character class. The reconciler maps a running Job back
+#     to its Firestore task by re-slugging the label and looking the result up
+#     (`reconciler/detect.py` `sanitised()`), so a name rendered here that does
+#     not slug the way the frozen module slugs is a task the reconciler cannot
+#     resolve -- it then either reclaims a live attempt or misses an orphaned
+#     one.
+#   * the account-label rule. This file carried the generic 63-character RFC1123
+#     pattern where `quota_broker.accounts` enforces a 40-character one, so
+#     `--account` accepted a label the broker could never have registered --
+#     defeating the one job `_VALUE_PATTERNS` has.
+#
+# `quota_broker.accounts` is pure: it imports nothing but the standard library,
+# builds no client, and reads no environment. Both paths are added explicitly
+# because this file is run by a bare `python3` (see the Makefile and
+# `kubernetes/apply.sh`), not from inside the uv workspace venv.
 sys.path.insert(0, str(REPO / "apps" / "common"))
+sys.path.insert(0, str(REPO / "apps" / "quota-broker"))
+from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
 
 NAMESPACE_PREFIX = "swarm-"
-_NAME_SAFE = re.compile(r"[^a-z0-9-]+")
 
 
 class RenderError(SystemExit):
@@ -120,7 +141,12 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     # A label, not an id: "which account is this agent burning?" is the first
     # question asked when one is exhausted and the others are not, and an
     # opaque id does not answer it.
-    "ACCOUNT_LABEL": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    #
+    # The broker's own rule, imported rather than restated. The 40-character cap
+    # is not cosmetic: the label becomes part of a Secret Manager name
+    # (`swarm-account-<tenant>--<label>`) and of the annotation below, so a label
+    # this accepted but the broker would refuse names a secret that cannot exist.
+    "ACCOUNT_LABEL": _ACCOUNT_LABEL,
 }
 
 
@@ -181,9 +207,13 @@ JOB_FILES_GVISOR = {
 def sanitize_name(*parts: str, max_length: int = 63) -> str:
     """The same shape the dispatcher's `sanitize_name` produces.
 
-    Reproduced rather than imported because `apps/scheduler` is not a dependency
-    of this directory; the two must agree, and the manifest test asserts they do
-    for the names that matter.
+    The BODY is reproduced because `apps/scheduler` is not a dependency of this
+    directory, but the character class is no longer a third copy of
+    `[^a-z0-9-]+`: it is `swarm_common.identity._TENANT_SAFE`, imported above, so
+    the part most likely to be edited in one place and not the others cannot be.
+    `test_kubernetes_manifests.py` asserts the whole function still agrees with
+    the dispatcher's over a matrix that includes the truncation and
+    leading-digit branches, so a change on either side fails in CI.
     """
     joined = "-".join(p for p in parts if p)
     slug = _NAME_SAFE.sub("-", joined.lower()).strip("-")
@@ -311,10 +341,12 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
         "--gsa",
         default="",
         help=(
-            "the tenant's Google service account email. Defaults to the name "
-            "terraform/modules/tenancy creates; scripts/register-tenant.sh uses "
-            "swarm-t-<tenant> instead, so pass it explicitly if the tenant was "
-            "registered by the script."
+            "the tenant's Google service account email. Defaults to "
+            "swarm-agent-worker-<tenant>, which is what "
+            "terraform/modules/tenancy creates AND what scripts/register-tenant.sh "
+            "creates -- the script's older swarm-t-<tenant> identity is gone, so "
+            "the default is right for both provisioning paths. Pass this only to "
+            "render against an identity neither of them made."
         ),
     )
     parser.add_argument("--project", default="saga-agents-staging")

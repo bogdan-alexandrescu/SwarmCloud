@@ -113,11 +113,13 @@ const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, signin: { kind:
  * WHAT THIS SCREEN MAY NOT DO. quota-broker is the platform's single writer for
  * subscription credentials, because refreshing an OAuth credential REVOKES the
  * token it replaces and two writers racing on one account brick it. Every
- * button here is a call to a broker route, addressed to swarm-api -- which
- * proxies the list, the register, the refresh, the lending and the state
- * routes, AND NOT THE TWO SIGN-IN ROUTES: see the note above
- * `loadAccountsBoard` in api.ts, and `SignInFailure` below, which is what a
- * 405 from those reaches. Nothing in this file reads a secret, exchanges a
+ * button here is a call to a broker route, addressed to swarm-api, which
+ * proxies all of them -- the list, the register, the refresh, the lending, the
+ * state, and both sign-in routes. That last pair was missing for one deploy and
+ * the browser got a 404 from a path nobody had built; `SignInFailure` below is
+ * what a 404 or 405 from them still reaches, because a proxy that exists today
+ * can be absent in an older deployment and the screen should say which.
+ * Nothing in this file reads a secret, exchanges a
  * token, retries a refresh on its own initiative, or renders key material --
  * not even its length. It does not hold the PKCE verifier either: that stays
  * server-side, keyed by `state`, because a verifier the client holds is a PKCE
@@ -630,9 +632,16 @@ function ClearsCell({
   // at render; there is no second reading of the platform's clock to difference
   // them against. So the tooltip reports the two things that WERE measured --
   // the instant is behind us, and the board is this old -- and names no cause.
-  // `clearsIn` prints "now" here, which is a countdown that has run out rather
-  // than a claim that anything cleared, and the projected mark says the figure
-  // is not a reading.
+  //
+  // `~now`, AND THE MARK IS NOT OPTIONAL. "now" here is a countdown that has
+  // run out, not a claim that anything cleared, and this row reached this
+  // branch precisely because no reading confirms either. The provenance line
+  // under the table and the legend both tell the reader that a figure marked ~
+  // is projected rather than measured, and `.acct-projected` is grey with an
+  // amber `~` so that the distinction survives a printout or a photograph --
+  // grey alone is the failure that treatment exists to prevent. Before this
+  // branch existed such a row fell through to the one below and was marked;
+  // dropping the mark here made the same cell quietly assert a reading.
   const resetsAt = new Date(binding.window.resets_at).getTime()
   if (Number.isFinite(resetsAt) && resetsAt <= now) {
     return (
@@ -640,6 +649,7 @@ function ClearsCell({
         className="n acct-projected"
         title={`The ${windowName} window is the binding one, and the reset instant the platform gave for it is already in the past. The board this row came from was read ${timeAgo(readAt)} and had not marked the window reset. This page does not compare its clock with the platform's, so it cannot tell you whether the window has cleared since that read -- reload, and the platform answers.`}
       >
+        <span className="acct-tilde">~</span>
         now
       </td>
     )
@@ -1524,19 +1534,50 @@ function isRouteMissing(e: ApiError): boolean {
 }
 
 /**
- * WHICH OF THE EXCHANGE'S REFUSALS THIS IS. Four causes are not one cause.
+ * WHICH OF THE EXCHANGE'S REFUSALS THIS IS. The test is not "did it fail" but
+ * "WHAT IS TRUE NOW", and the answers are opposites of each other.
  *
- * `POST /v1/accounts/exchange` refuses for four reasons and only two of them
- * leave the sign-in redeemable (main.py:1244-1300, and the same four are in
- * `fixtureFinishSignIn`):
+ * `sign_in_gone` used to hold two of these at once, and the single paragraph
+ * it printed asserted "Nothing was created and nothing was changed" for both.
+ * That sentence is right for one of them and false for the other in the way
+ * that costs most: `finish_account_authorization` in quota_broker/main.py
+ * deletes the pending record on exactly two paths -- for age BEFORE anything
+ * is redeemed, and immediately AFTER an account has been written by
+ * `_provision_and_register`. An absent record is
+ * therefore, most often, a sign-in that SUCCEEDED -- so the reader is told an
+ * account does not exist while it sits in the pool, and on a re-auth while the
+ * credential they were replacing has already been replaced, which revokes the
+ * one it replaced. The reader's next action differs completely, and that is
+ * the only reason to tell them anything at all.
  *
- *  - `other_sign_in` -- the pasted code names a different sign-in. Refused
- *    BEFORE the pending record is read, so this one is untouched.
- *  - `code_refused` -- the token endpoint rejected the code. The record is
- *    deleted only once an account exists, so this one survives it.
- *  - `sign_in_gone` -- the record is absent, or was deleted for age. TERMINAL:
- *    no code pasted against this `state` can ever be redeemed, and a fresh
- *    code from the same page is checked against the same missing record.
+ * The buckets, and what each one leaves behind:
+ *
+ *  - `route_missing` -- 404/405. The request never reached a handler.
+ *  - `accepted_unnamed` -- the platform answered 201 and named no account.
+ *    Synthesised in `finishAccountSignIn`; see `httpStatus === 201` below.
+ *    The sign-in is OVER and an account has probably been created.
+ *  - `no_answer` -- `fetch` itself failed, so `httpStatus` is null. NOBODY
+ *    REFUSED ANYTHING: the exchange may have been completed in full and only
+ *    the answer lost. Unknowable from here, and said so.
+ *  - `sign_in_expired` -- "took too long". The record was deleted for age
+ *    before the token endpoint was called, so NOTHING WAS CREATED. Terminal.
+ *  - `sign_in_absent` -- "expired or was already completed". The record is not
+ *    there; the commonest reason is that it was redeemed. Terminal, and the
+ *    opposite of the one above in consequence.
+ *  - `other_sign_in` -- refused BEFORE the record is read, so it is untouched.
+ *  - `code_refused` -- the token endpoint rejected the code, before the delete
+ *    that only runs once an account exists. Still open.
+ *
+ * WHAT A FIXTURE CAN REACH, exactly: `fixtureFinishSignIn` produces
+ * `other_sign_in` (paste a code whose `#state` is another's), `sign_in_absent`
+ * (NOT reachable from a fixture: both fixture deletes close the panel first,
+ * so there is no second paste -- kept in the type because the BROKER raises it
+ * whenever a pending sign-in is gone, which is the ordinary case for a code
+ * redeemed in another tab), `code_refused` (a code under six characters),
+ * `sign_in_expired` (paste `expired`) and `accepted_unnamed` (paste
+ * `unnamed`). `route_missing` and `no_answer` are transport failures a fixture
+ * does not have; they are the two this list cannot promise, and this sentence
+ * says which rather than claiming all of them.
  *
  * MATCHED ON THE BROKER'S OWN WORDING, AND POSITIVELY. Substring matching is
  * fragile, so an unrecognised message falls through to `unknown`, which
@@ -1545,57 +1586,255 @@ function isRouteMissing(e: ApiError): boolean {
  * that had already ended. `classify` in fetch.ts makes the same trade for the
  * three unrelated 403s.
  */
-type Refusal = 'route_missing' | 'sign_in_gone' | 'other_sign_in' | 'code_refused' | 'unknown'
+type Refusal =
+  | 'route_missing'
+  | 'accepted_unnamed'
+  | 'no_answer'
+  | 'sign_in_expired'
+  | 'sign_in_absent'
+  | 'other_sign_in'
+  | 'code_refused'
+  | 'unknown'
 
 function exchangeRefusal(e: ApiError): Refusal {
   if (isRouteMissing(e)) return 'route_missing'
+  // AN EXACT MARKER RATHER THAN A SENTENCE. `classify` in fetch.ts only builds
+  // an ApiError for a response that was NOT ok, so no refusal can carry a 201;
+  // the usual source is `finishAccountSignIn`'s own synthesis for a 201 whose
+  // body named no account. Matching its prose instead would put the page one
+  // copy edit away from telling somebody to paste a code that was redeemed.
+  //
+  // IT IS NOT THE ONLY SOURCE, and an earlier version of this comment said it
+  // was. `write()` in fetch.ts has a second path that never reaches `classify`:
+  // an `ok` response whose body is not JSON becomes a synthesised
+  // `session_expired` carrying the real status. This route answers 201, so an
+  // intermediary answering HTML in front of swarm-api lands here with a
+  // message that says the change was NOT saved -- under a heading saying the
+  // platform accepted it. The message is therefore checked first, below, and
+  // only a 201 that does not carry that signature is treated as unnamed.
+  if (e.httpStatus === 201 && !e.message.toLowerCase().includes('not saved')) {
+    return 'accepted_unnamed'
+  }
+  // `httpStatus === null` is `fetch` rejecting -- DNS, TLS, offline, a proxy
+  // that timed out. Tested BEFORE the message, because the message is then the
+  // browser's own and nothing in it is the platform speaking.
+  if (e.httpStatus === null) return 'no_answer'
   const m = e.message.toLowerCase()
-  if (m.includes('already completed') || m.includes('took too long')) return 'sign_in_gone'
+  if (m.includes('took too long')) return 'sign_in_expired'
+  if (m.includes('already completed')) return 'sign_in_absent'
   if (m.includes('different sign-in')) return 'other_sign_in'
   if (m.includes('code was not accepted')) return 'code_refused'
   return 'unknown'
 }
 
 /**
+ * Whether this refusal ended the sign-in for good.
+ *
+ * ONE DEFINITION, because three controls turn on it -- the paste field, the
+ * button that reopens the authorize URL, and the link that hands the same URL
+ * out as text. Two of them used to be gated here and the third was not, so an
+ * operator could copy a dead link, sign in with it somewhere else and come
+ * back to a disabled field.
+ *
+ * `no_answer` is deliberately NOT here: nothing measured says the record is
+ * gone, and disabling a control on a guess is the same fault pointed the other
+ * way.
+ */
+function signInIsOver(refusal: Refusal | null): boolean {
+  return (
+    refusal === 'sign_in_expired' ||
+    refusal === 'sign_in_absent' ||
+    refusal === 'accepted_unnamed'
+  )
+}
+
+/**
  * What to do about a refused exchange, which is a different sentence for each
- * of the four. The one thing it may never do is tell somebody to paste again
- * into a sign-in the platform has already finished with.
+ * refusal because what is TRUE after each of them is different.
+ *
+ * TWO RULES, and they are the same defect from two sides. It may never tell
+ * somebody to paste again into a sign-in the platform has already finished
+ * with; and it may never contradict the platform's own message, which
+ * `SignInFailure` has just rendered immediately above it. "Pasting again costs
+ * nothing" printed under "do not sign in again yet" is both at once, and it
+ * shipped once already.
  */
 function ExchangeAdvice({
   refusal,
   mode,
   onStartOver,
+  reload,
 }: {
   refusal: Refusal
   /** Which control opened this sign-in, so the advice names the right one. */
   mode: 'add' | 'reauth'
   onStartOver: () => void
+  /**
+   * Re-reads the pool. OFFERED RATHER THAN DESCRIBED: three of these refusals
+   * end with "look at the pool before you do anything else", and a sentence
+   * telling somebody to find a control is worse than the control.
+   *
+   * WHAT IT COSTS, stated because an earlier version of this comment claimed
+   * the opposite. The sign-in panel itself survives -- `ui` lives in
+   * `AccountsScreen`, above the remount -- but `reload` bumps the nonce used
+   * as `key` on `<Screen>`, so the subtree below it unmounts and AddAccount's
+   * `label` and `lend` fields, which are plain local state, are cleared. Three
+   * of the refusals that offer this button advise checking exactly those two
+   * fields. So the copy beside it must tell the reader to look BEFORE pressing
+   * it, and must not promise the form is still there afterwards.
+   */
+  reload: () => void
 }) {
   // A missing route is a deployment fault and `SignInFailure` has just said so
   // at length. Adding "paste again" under it would be advice about a request
   // that never reached a handler.
   if (refusal === 'route_missing') return null
 
-  if (refusal === 'sign_in_gone') {
+  if (refusal === 'accepted_unnamed') {
     return (
       <>
         <p className="warn-text">
-          <strong>This sign-in is over, and pasting cannot reopen it.</strong>{' '}
-          The platform holds one pending record per sign-in, and the one this
-          page started is gone &mdash; redeemed already, or held past its
-          deadline and deleted. What is missing is the record the code is
-          checked against, not the code, so a fresh code from the same page is
-          refused in exactly the same way. Nothing was created and nothing was
-          changed.
+          <strong>Do not sign in again until you have looked.</strong> The
+          message above is the platform saying yes: 201 is the answer it gives
+          once the account has been written, and it deletes the pending record
+          on that same path. What is missing from the answer is the account's
+          name, not the account.
+        </p>
+        <p className="muted small">
+          {mode === 'add' ? (
+            <>
+              Reload the pool and look for the label you typed. If it is there,
+              this worked and there is nothing left to do &mdash; open its row
+              to see its state. If it is not, <em>start over</em> asks for a
+              fresh sign-in; the platform kept no copy of the label or the
+              lending list, so read both off the form before you press
+                anything here — reloading the pool clears them.
+            </>
+          ) : (
+            <>
+              Reload the pool and open this account&rsquo;s row.{' '}
+              <strong>
+                Treat the credential as already replaced until you have looked
+              </strong>
+              : a replacement revokes the one before it, so this is not a
+              failure to repeat blindly. A replacement keeps the id, the
+              readings and the lending list, so the row will look much as it
+              did. If it is still asking for a sign-in, <em>start over</em>{' '}
+              begins a fresh one.
+            </>
+          )}
+        </p>
+        <p className="acct-buttons">
+          <button type="button" onClick={reload}>
+            reload the pool
+          </button>
+          <button type="button" onClick={onStartOver}>
+            start over
+          </button>
+        </p>
+      </>
+    )
+  }
+
+  if (refusal === 'no_answer') {
+    return (
+      <>
+        <p className="warn-text">
+          <strong>Nothing refused this &mdash; nothing answered it.</strong> The
+          request did not complete, so this page never learned what the platform
+          did with it. It may have been redeemed in full and only the answer
+          lost; it may never have arrived. Nothing here measures which, so
+          nothing here will tell you which.
+        </p>
+        <p className="muted small">
+          Reload the pool and look{' '}
+          {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
+          first, because that is measurable and this is not. If{' '}
+          {mode === 'add' ? 'it is not there' : 'it still needs a sign-in'}, the
+          paste field above is still live and the code on the callback page is
+          still the right one to paste &mdash; if the exchange did go through,
+          pasting it says so rather than doing it twice.
+        </p>
+        <p className="acct-buttons">
+          <button type="button" onClick={reload}>
+            reload the pool
+          </button>
+        </p>
+      </>
+    )
+  }
+
+  if (refusal === 'sign_in_expired') {
+    return (
+      <>
+        <p className="warn-text">
+          <strong>
+            This sign-in was held past its deadline, and pasting cannot reopen
+            it.
+          </strong>{' '}
+          The platform deletes a pending record once it is too old, and it does
+          that <em>before</em> it tries to redeem anything &mdash; which is why
+          this one can be blunt: <strong>nothing was created and nothing was
+          changed</strong>. What is missing is the record the code is checked
+          against, not the code, so a fresh code from the same page is refused
+          in exactly the same way.
         </p>
         <p className="muted small">
           <em>start over</em> above asks the platform for a new sign-in; the
           button below does the same thing.{' '}
           {mode === 'add'
-            ? 'The label and the lending list went with the record, so they are yours to set again.'
-            : 'The account in the row is untouched — its credential, its readings and its state are exactly as they were before this sign-in was started.'}
+            ? 'The platform kept no copy of the label or the lending list, so read both off the form before you press anything here \u2014 reloading the pool clears them.'
+            : 'The account in the row is untouched — its credential and its state are exactly as they were before this sign-in was started.'}
         </p>
         <p className="acct-buttons">
+          <button type="button" onClick={onStartOver}>
+            start over
+          </button>
+        </p>
+      </>
+    )
+  }
+
+  if (refusal === 'sign_in_absent') {
+    return (
+      <>
+        <p className="warn-text">
+          <strong>This sign-in is over, and it may well have worked.</strong>{' '}
+          The platform is not holding a record for it any more, and the ordinary
+          reason a record is missing is that it was <em>redeemed</em>: the
+          delete that does not raise is the one immediately after an account has
+          been written. Pasting cannot reopen it &mdash; a code is now checked
+          against nothing &mdash; and this page cannot tell you from here
+          whether it completed.{' '}
+          <strong>So this is not &ldquo;nothing happened&rdquo;</strong>, which
+          is what this panel used to say.
+        </p>
+        <p className="muted small">
+          {mode === 'add' ? (
+            <>
+              Reload the pool and look for the label before you start another
+              sign-in. If it is there, this worked. If it is not, <em>start
+              over</em> asks for a fresh one &mdash; the platform kept no copy
+              of the label or the lending list, so read both off the form
+              before you press anything here &mdash; reloading the pool clears
+              them.
+            </>
+          ) : (
+            <>
+              Reload the pool and open this account&rsquo;s row.{' '}
+              <strong>
+                Treat the credential as possibly already replaced
+              </strong>
+              : a replacement revokes the one before it, so a row that has
+              stopped asking for a sign-in was fixed rather than left alone. If
+              it still needs one, <em>start over</em> begins a fresh sign-in.
+            </>
+          )}
+        </p>
+        <p className="acct-buttons">
+          <button type="button" onClick={reload}>
+            reload the pool
+          </button>
           <button type="button" onClick={onStartOver}>
             start over
           </button>
@@ -1634,16 +1873,31 @@ function ExchangeAdvice({
   }
 
   return (
-    <p className="muted small">
-      <strong>
-        The platform refused the exchange, and what it said above is all it
-        said.
-      </strong>{' '}
-      This page cannot tell from that whether the sign-in is still open: the two
-      refusals that end one name themselves, and this is neither. Pasting again
-      costs nothing and will say; <em>start over</em> above begins a fresh
-      sign-in if it does not.
-    </p>
+    <>
+      <p className="muted small">
+        <strong>
+          The platform refused the exchange, and what it said above is all it
+          said.
+        </strong>{' '}
+        This page recognises the refusals that end a sign-in by their wording,
+        and this is none of them. So it does not know whether the record is
+        still there, and it does not know whether an account was written before
+        whatever went wrong &mdash; and it will not tell you either way from a
+        message it did not recognise.
+      </p>
+      <p className="muted small">
+        Reload the pool and look{' '}
+        {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
+        first, because that is measurable and this is not. The paste field above
+        is still live if you need it, and <em>start over</em> begins a fresh
+        sign-in.
+      </p>
+      <p className="acct-buttons">
+        <button type="button" onClick={reload}>
+          reload the pool
+        </button>
+      </p>
+    </>
   )
 }
 
@@ -1651,6 +1905,8 @@ function SignInFailure({
   error,
   what,
   onRetry,
+  heading,
+  tone = 'failed',
 }: {
   error: ApiError
   what: string
@@ -1666,6 +1922,18 @@ function SignInFailure({
    * the retry.
    */
   onRetry?: () => void
+  /**
+   * Overrides `errorHeading`, for the one failure that is not one.
+   *
+   * A 201 whose body named no account arrives here as a `server_error`, whose
+   * heading is "The API failed on this request" -- printed directly above a
+   * message that begins "The platform accepted the sign-in". The heading and
+   * the tone are the loudest things on the panel, so leaving them to the kind
+   * would contradict the body text in the largest type on the screen.
+   */
+  heading?: string
+  /** `partial` for a request that did something, `failed` for one that did not. */
+  tone?: 'failed' | 'partial'
 }) {
   if (isRouteMissing(error)) {
     return (
@@ -1675,8 +1943,10 @@ function SignInFailure({
           The API answered <strong>HTTP {error.httpStatus}</strong> for{' '}
           <code>{what}</code> itself. That is what an API which has not been
           given the sign-in route answers &mdash; not an answer about your
-          request, and not one about your account. quota-broker implements the
-          two steps; the public API in front of it has to pass them through.
+          request, and not one about your account. Both steps exist in this
+          repository &mdash; quota-broker serves them and swarm-api proxies
+          them &mdash; so the API that answered this is not the one this page
+          was built against.
         </p>
         <p>
           Nothing was created and nothing was changed. The pool above loaded, so
@@ -1697,8 +1967,8 @@ function SignInFailure({
   // about one request rather than about the screen, and the caller renders the
   // controls that DO something directly under it.
   return (
-    <div className="state failed" role="status">
-      <h3>{errorHeading(error)}</h3>
+    <div className={`state ${tone}`} role="status">
+      <h3>{heading ?? errorHeading(error)}</h3>
       <p>{error.message}</p>
       <p className="checked-at">
         {what}
@@ -1843,6 +2113,12 @@ function openSignInPage(url: string): 'opened' | 'blocked' {
  * different browser application, and the only way to do that is to have the
  * URL as text. So it is rendered whether or not the button worked, and it is
  * rendered before anyone has had a chance to press the wrong one.
+ *
+ * ONLY WHILE THE SIGN-IN IS LIVE, though, and the caller enforces that. This
+ * is a control that hands out the same `authorize_url` the reopen button does,
+ * so a refusal that disables that button has to withdraw this too -- and the
+ * clipboard-failure sentence below promises that nothing is wrong with the
+ * sign-in, which is only true where `signInIsOver` is false.
  */
 function SignInLink({ url }: { url: string }) {
   const [copied, setCopied] = useState<'no' | 'yes' | 'unavailable'>('no')
@@ -1897,6 +2173,7 @@ function SignInSteps({
   mode,
   set,
   onExchanged,
+  reload,
 }: {
   at: Extract<SignIn, { kind: 'open' }>
   mode: 'add' | 'reauth'
@@ -1904,19 +2181,34 @@ function SignInSteps({
   /** Called with the account the platform registered. The caller owns what
       happens next -- which, for a broken account, is putting its state back. */
   onExchanged: (account: Account, expiresAt: string | null) => void | Promise<void>
+  /** Re-reads the pool, for the advice that ends in "go and look". */
+  reload: () => void
 }) {
   const [code, setCode] = useState('')
   const host = callbackHostOf(at.auth.authorize_url)
   const hint = pastedCodeHint(code)
   // WHAT THE LAST REFUSAL WAS, and whether it ended the sign-in. `dead` gates
-  // the two controls that cannot work any more: the paste field, because the
-  // record its code would be checked against is gone, and `Open the sign-in
-  // page again`, because it reopens THIS `authorize_url` carrying THAT dead
-  // `state` -- a fresh code refused exactly like the last one. Leaving both
-  // live is an unbounded loop with `start over`, the one control that fixes
-  // it, sitting unmentioned beside them.
+  // the THREE controls that cannot work any more, all of which are the same
+  // dead `state` wearing different clothes: the paste field, because the record
+  // its code would be checked against is gone; `Open the sign-in page again`,
+  // because it reopens THIS `authorize_url` carrying THAT `state`; and the
+  // link, which hands that same URL out as text for another browser.
+  //
+  // THE LINK WAS THE ONE THAT WAS MISSED. Gating two of the three left an
+  // operator free to copy it, sign in somewhere else, come back with a code and
+  // find the field disabled -- a dead end the page invited them into, which is
+  // worse than the unbounded loop gating was added to stop.
   const refusal = at.failed ? exchangeRefusal(at.failed) : null
-  const dead = refusal === 'sign_in_gone'
+  const dead = signInIsOver(refusal)
+  // ONE WORDING FOR WHY, printed by the reopen button's tooltip and by the
+  // paragraph that replaces the link -- the two places with room for a
+  // sentence. The paste field's placeholder is a few words instead, because a
+  // placeholder is; it is the only other statement of this, and it says the
+  // same thing in them.
+  const deadWhy =
+    refusal === 'accepted_unnamed'
+      ? 'The platform has already accepted this sign-in, so it is no longer holding a record for it. Look for the account in the pool before signing in again.'
+      : 'The platform is no longer holding this sign-in, so this page would hand you a code nothing here can redeem. Start over instead.'
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -1930,12 +2222,13 @@ function SignInSteps({
     const res = await finishAccountSignIn({ state: at.auth.state, code: pasted })
     if (res.status !== 'ok') {
       // STILL `open`, AND THE INSTRUCTION UNDER IT IS WHAT MAKES THAT MEAN
-      // ANYTHING. Two of the four refusals leave the pending record in place --
-      // a mismatched paste is refused before it is read, and a token-endpoint
-      // refusal happens before `ref.delete()` -- so dropping back to `idle`
-      // would throw away a sign-in that is still redeemable. The other two are
-      // terminal, and `dead` above is what stops this screen inviting a paste
-      // into one of those forever.
+      // ANYTHING. Some refusals leave the pending record in place -- a
+      // mismatched paste is refused before it is read, a token-endpoint refusal
+      // happens before `ref.delete()`, and a request nothing answered may not
+      // have arrived at all -- so dropping back to `idle` would throw away a
+      // sign-in that is still redeemable. The rest are terminal, `signInIsOver`
+      // is where that is decided, and `dead` above is what stops this screen
+      // inviting a paste into one of them forever.
       set({ ...at, sending: false, failed: failureOf(res) })
       return
     }
@@ -1972,11 +2265,7 @@ function SignInSteps({
           <button
             type="button"
             disabled={at.sending || dead}
-            title={
-              dead
-                ? 'The platform is no longer holding this sign-in, so this page would hand you a code nothing here can redeem. Start over instead.'
-                : undefined
-            }
+            title={dead ? deadWhy : undefined}
             onClick={() => set({ ...at, opened: openSignInPage(at.auth.authorize_url) })}
           >
             {at.opened === 'not_yet' ? 'Sign in to Claude ↗' : 'Open the sign-in page again ↗'}
@@ -2000,7 +2289,21 @@ function SignInSteps({
             is still open &mdash; use the link below instead.
           </p>
         )}
-        <SignInLink url={at.auth.authorize_url} />
+        {dead ? (
+          /* WITHDRAWN, NOT ANNOTATED. A sentence under a live "copy the
+             sign-in link" button saying the link will not work is exactly the
+             shape this screen keeps being wrong about: the control still
+             works, it just produces a dead end two browsers away from here,
+             where nothing explains it. */
+          <p className="muted small">
+            <strong>The sign-in link has been withdrawn.</strong> It carries
+            the same <code>state</code> that the reopen button above is disabled
+            for, and it is the one control that can be carried to another
+            browser, where none of this is on screen. {deadWhy}
+          </p>
+        ) : (
+          <SignInLink url={at.auth.authorize_url} />
+        )}
       </div>
 
       <form className="acct-action" onSubmit={(e) => void submit(e)}>
@@ -2027,7 +2330,13 @@ function SignInSteps({
           spellCheck={false}
           autoComplete="off"
           disabled={at.sending || dead}
-          placeholder={dead ? 'this sign-in has ended — start over' : 'paste the code here'}
+          placeholder={
+            dead
+              ? refusal === 'accepted_unnamed'
+                ? 'the platform already accepted this sign-in'
+                : 'this sign-in has ended — start over'
+              : 'paste the code here'
+          }
           aria-label="The code the Claude callback page displayed"
           onChange={(e) => setCode(e.target.value)}
         />
@@ -2046,11 +2355,23 @@ function SignInSteps({
             {/* NO RETRY BUTTON ON THIS ONE. The code was taken out of the field
                 before the request left, so there is nothing to re-send; what
                 follows names the controls that do work, per refusal. */}
-            <SignInFailure error={at.failed} what="POST /v1/accounts/exchange" />
+            <SignInFailure
+              error={at.failed}
+              what="POST /v1/accounts/exchange"
+              /* A 201 is not a failure, and the panel may not shout that it
+                 is over a message saying the platform accepted the sign-in. */
+              heading={
+                refusal === 'accepted_unnamed'
+                  ? 'The platform accepted this sign-in without naming the account'
+                  : undefined
+              }
+              tone={refusal === 'accepted_unnamed' ? 'partial' : 'failed'}
+            />
             <ExchangeAdvice
               refusal={refusal}
               mode={mode}
               onStartOver={() => set({ kind: 'idle' })}
+              reload={reload}
             />
           </>
         )}
@@ -2160,20 +2481,31 @@ function AddAccount({
 
   // NO EVENT ARGUMENT, so the failure panel can call it too. A "Try again"
   // that cannot re-send the request it is offered for is worse than no button.
+  //
+  // AN EMPTY LABEL IS REFUSED HERE AND OFFERED NOWHERE. The platform checks the
+  // label before it hands back a sign-in link, so an empty one is a refusal
+  // this page can see coming and returning early is right. What was wrong was
+  // the failure panel offering "Try again" wired to this anyway: the most
+  // prominent control on the panel, producing no request, no spinner and no
+  // message, which is indistinguishable from a platform that swallowed it.
+  // BOTH callers now gate on the same `trimmed`, and this line is the backstop
+  // rather than the rule.
   const start = async () => {
     if (trimmed === '') return
     const lendTo = splitTenants(lend).filter((t) => t !== owner)
     set({ kind: 'starting' })
     const res = await beginAccountSignIn({
-      // SENT, unlike the old register body's field, and the difference is worth
-      // writing down. The broker's authorize route requires an owning tenant
-      // because the PENDING RECORD it writes is what decides where the account
-      // lands when the code comes back minutes later -- by which time there is
-      // nothing else to derive it from. This value is the resolved tenant the
-      // API itself echoed, so it cannot disagree with the verified token.
-      owner_tenant: owner,
+      // THE LABEL AND THE LENDING LIST, AND NOTHING ELSE. The pending record
+      // the broker writes is what decides where the account lands when the code
+      // comes back minutes later, and the tenant on it is the one swarm-api
+      // resolves from the VERIFIED TOKEN. `AccountSignInStart` has no
+      // `owner_tenant` field and no `provider` field and forbids extra keys, so
+      // sending either -- which this call used to do, because the broker's own
+      // route takes them -- is a 422 from validation instead of a sign-in.
+      // `owner` is that same resolved tenant echoed back by routes/accounts.py,
+      // so what this form names and what the record files under cannot
+      // disagree; it is displayed, not transmitted.
       label: trimmed,
-      provider: SUBSCRIPTION_PROVIDER,
       lend_to: lendTo,
     })
     if (res.status !== 'ok') {
@@ -2241,6 +2573,7 @@ function AddAccount({
             at={state}
             mode="add"
             set={set}
+            reload={reload}
             onExchanged={async (account, expiresAt) => {
               // `restore: null` was hardcoded here, which reported a green
               // "Signed in" for an account the store had handed back still in
@@ -2343,11 +2676,30 @@ function AddAccount({
             </button>
           </p>
           {state.kind === 'start_failed' && (
-            <SignInFailure
-              error={state.error}
-              what="POST /v1/accounts/authorize"
-              onRetry={() => void start()}
-            />
+            <>
+              {/* THE RETRY IS NOT OFFERED WITHOUT SOMETHING TO RETRY WITH. The
+                  label field sits directly above this panel and stays editable
+                  while it is open, so it can be empty by the time anybody reads
+                  it -- and `start` refuses an empty label, which made this
+                  button a silent no-op: no request, no spinner, no message.
+                  Withdrawing the button and naming the empty field is the same
+                  rule the submit button below follows by being disabled: a
+                  control that cannot act does not look like one that can. */}
+              <SignInFailure
+                error={state.error}
+                what="POST /v1/accounts/authorize"
+                onRetry={trimmed === '' ? undefined : () => void start()}
+              />
+              {trimmed === '' && (
+                <p className="warn-text">
+                  There is no <em>Try again</em> on this failure because the{' '}
+                  <strong>label field above is empty</strong>, and the platform
+                  checks the label before it hands back a sign-in link. Type the
+                  name this account should have and press{' '}
+                  <em>Start the sign-in</em>.
+                </p>
+              )}
+            </>
           )}
         </form>
       )}
@@ -2512,14 +2864,48 @@ function Reauth({
     patch((p) => ({ ...p, reauth: { ...p.reauth, [account.account_id]: next } }))
   const broken = needsAHuman(account)
 
+  // A CONTROL THAT WOULD REWRITE A FIELD IT CANNOT SEND. The sign-in swarm-api
+  // performs produces a `SUBSCRIPTION_PROVIDER` credential and its request body
+  // has no provider field, so re-registering a row that says anything else
+  // would file the account under a provider nobody chose on this screen -- the
+  // silent rewrite the removed `provider: account.provider` argument existed to
+  // prevent. Refused and named, rather than offered and surprising.
+  if (account.provider !== SUBSCRIPTION_PROVIDER) {
+    return (
+      <div className="acct-action">
+        <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
+        <div className="ctl-empty is-partial" role="status">
+          <h3>This screen cannot sign in for this account</h3>
+          <p>
+            Its provider is <code>{account.provider}</code>, and the sign-in
+            this platform performs produces a{' '}
+            <code>{SUBSCRIPTION_PROVIDER}</code> credential &mdash; the request
+            carries no provider, so there is no way to ask it for the other one.
+            Signing in here would replace the credential and leave the row
+            describing something it is not.
+          </p>
+          <p>
+            Nothing about the account has changed, and nothing here failed. Its
+            readings, its lending list and its state are the ones the row above
+            shows.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   const start = async () => {
     set({ kind: 'starting' })
     const res = await beginAccountSignIn({
-      owner_tenant: account.owner_tenant,
+      // NEITHER THE TENANT NOR THE PROVIDER IS OURS TO SEND. swarm-api resolves
+      // the tenant from the verified token -- and this control renders only on
+      // a row this tenant owns -- and it fixes the provider itself;
+      // `AccountSignInStart` has a field for neither and forbids extra keys, so
+      // sending `account.owner_tenant` and `account.provider`, which this call
+      // used to do, is a 422 from validation rather than a sign-in. The
+      // provider that used to be sent here is now checked above instead: a row
+      // carrying anything else is refused rather than quietly re-registered.
       label: account.label,
-      // The account's OWN provider, not the constant: if a row somehow carries
-      // something else, re-signing in must not silently rewrite that field.
-      provider: account.provider,
       lend_to: account.lend_to,
     })
     if (res.status !== 'ok') {
@@ -2573,7 +2959,13 @@ function Reauth({
       )}
 
       {state.kind === 'open' ? (
-        <SignInSteps at={state} mode="reauth" set={set} onExchanged={finish} />
+        <SignInSteps
+          at={state}
+          mode="reauth"
+          set={set}
+          onExchanged={finish}
+          reload={reload}
+        />
       ) : (
         <>
           <div className="acct-buttons">

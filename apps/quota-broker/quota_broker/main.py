@@ -716,6 +716,144 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
     }
 
 
+#: Refresh outcomes that mean the credential is dead and only a person can fix
+#: it.
+#:
+#: `unreadable` sits beside `reauth_required` because the stored payload cannot
+#: be parsed at all: there is nothing to present to the token endpoint, so no
+#: number of retries changes the answer, and the account is exactly as unusable
+#: as one whose token was revoked. The on-demand refresh route has treated the
+#: two identically since it was written; naming them once is what stops the
+#: sweep growing a second opinion about what "dead" means.
+CREDENTIAL_NEEDS_A_HUMAN = ("reauth_required", "unreadable")
+
+
+def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, Any]:
+    """Refresh every registered account, and RECORD what came back.
+
+    THE RECORDING IS THE POINT, and its absence was the audit's first finding
+    (docs/audits/2026-09-18/06-quota-broker-accounts.md). The sweep already
+    detected a revoked refresh token, logged it and counted it into a response
+    body that Cloud Scheduler throws away. Nothing wrote the account document,
+    so:
+
+      * `choose()` kept handing the account to new agents, which then failed to
+        authenticate for a reason nothing connected to the account;
+      * `due_for_refresh()` kept presenting a dead token to the endpoint every
+        five minutes, forever -- the exact behaviour `AccountState`'s own
+        docstring says must not happen;
+      * and every listing, the UI's included, showed AVAILABLE with an empty
+        reason. An operator looking at a pool with one dead account saw a pool
+        with nothing wrong with it.
+
+    KEYED BY ACCOUNT ID, NOT BY LABEL. `refresh_secret` puts whatever second
+    element it is given into `RefreshOutcome.tenant_id`, and this used to hand
+    it `a.label` -- which is unique only WITHIN a tenant. Two tenants may both
+    have an account labelled `personal`, so a write-back keyed on the label
+    would mark whichever one it found first, and the response named an account
+    nobody could look up. The account id is `tenant:label` and is the document
+    id, so it is both unambiguous and directly usable.
+
+    Never raises: this runs inside the tick that un-parks throttled tenants,
+    and one unreadable account document must not stall every tenant's quota
+    recovery. A failure to WRITE one account is caught per account for the same
+    reason -- the other marks are still worth making.
+    """
+    try:
+        due = due_for_refresh(store.list(), now)
+        outcomes = refresher.sweep_accounts(
+            [(store.secret_for(a), a.account_id) for a in due]
+        )
+    except Exception as exc:
+        log.error(
+            "account pool sweep failed",
+            extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+        )
+        return {"error": type(exc).__name__}
+
+    needs_human = [
+        (o.tenant_id, o.reason)
+        for o in outcomes
+        if o.reason in CREDENTIAL_NEEDS_A_HUMAN
+    ]
+    marked: list[str] = []
+    for account_id, reason in needs_human:
+        try:
+            account = store.get(account_id)
+            if account is None:
+                # Removed between the listing and now. `remove` is allowed to
+                # race a sweep in flight; nothing is wrong.
+                continue
+
+            # CONFIRMED BEFORE IT IS WRITTEN, with a second exchange against
+            # the credential AS IT STANDS NOW.
+            #
+            # REAUTH_REQUIRED is a state only a person can leave -- the sweep
+            # cannot lift it, because `due_for_refresh` skips it -- so a false
+            # one costs an operator a sign-in they did not need and the pool an
+            # account that was never broken. That is worth one extra call.
+            #
+            # The concrete way a false one happens today is finding 3 of
+            # docs/audits/2026-09-18/06-quota-broker-accounts.md, which is not
+            # fixed: nothing serialises this endpoint, Cloud Scheduler retries
+            # a tick it thinks timed out without cancelling the first, and the
+            # service takes 40 concurrent requests. Two sweeps then read the
+            # same refresh token, one exchanges it, and the OTHER is told
+            # `invalid_grant` for a token that was merely rotated away from it
+            # -- a perfectly healthy account. The second attempt re-reads the
+            # secret, finds the rotated credential the winner just wrote, and
+            # answers `still_valid`, so the account is not marked.
+            #
+            # This is confirmation, not mutual exclusion: it makes the race
+            # harmless HERE while two sweeps still waste each other's exchanges
+            # elsewhere. The fix for that is a lease on the sweep itself.
+            second = refresher.refresh_secret(
+                store.secret_for(account), label=account_id
+            )
+            if second.reason not in CREDENTIAL_NEEDS_A_HUMAN:
+                log.info(
+                    "an account's refresh failed and then worked on a second "
+                    "attempt; leaving its state alone",
+                    extra={
+                        "account_id": account_id,
+                        "first": reason,
+                        "second": second.reason,
+                    },
+                )
+                continue
+
+            recorded = store.mark_reauth_required(
+                account_id, f"refresh failed: {second.reason}"
+            )
+        except Exception as exc:
+            log.error(
+                "could not record that an account's credential is dead",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
+        if recorded is None:
+            continue
+        marked.append(account_id)
+        log.warning(
+            "an account's credential is dead and the pool has stopped trying; "
+            "it needs a person to sign in again",
+            extra={"account_id": account_id, "reason": second.reason},
+        )
+    return {
+        "examined": len(outcomes),
+        "refreshed": sum(1 for o in outcomes if o.refreshed),
+        #: ACCOUNT IDS -- every account this tick's first pass found dead. Ids
+        #: rather than labels because a label is unique only within a tenant.
+        "reauth_required": [account_id for account_id, _ in needs_human],
+        #: The subset that was still dead on a second attempt AND written. The
+        #: two lists differ when an account was removed mid-sweep, when the
+        #: second attempt succeeded, or when the write failed -- each of which
+        #: is logged, because a detection that was never recorded is one the
+        #: listing will not show.
+        "marked_reauth_required": marked,
+    }
+
+
 def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
     """Run one refresh sweep and summarise it, never raising.
 
@@ -1167,9 +1305,27 @@ def create_app(
                 f"{type(exc).__name__}. No account was registered."
             ) from None
 
-        return store.register(
+        account = store.register(
             owner_tenant, label, provider=provider, lend_to=lend_to
         )
+
+        # THE WAY BACK, for the way people actually recover an account.
+        #
+        # Signing in again, or pasting a fresh credential, IS the fix for
+        # REAUTH_REQUIRED -- and `register` deliberately preserves state, so
+        # without this the account would keep refusing work after the thing
+        # that was wrong with it had been replaced, carrying a `reason` that
+        # is no longer true. The sweep cannot lift it either: `due_for_refresh`
+        # skips marked accounts.
+        #
+        # A freshly written pair is the best evidence available at this
+        # moment -- `parse_credential` has already refused a payload with no
+        # refresh token. If the token turns out to be dead anyway, the next
+        # sweep marks it again within five minutes, which is the cheap
+        # direction to be wrong in.
+        if account.state is AccountState.REAUTH_REQUIRED:
+            account = store.clear_reauth_required(account.account_id) or account
+        return account
 
     # ------------------------------------------------------------------
     # Adding an account from a browser
@@ -1428,12 +1584,21 @@ def create_app(
         # minutes. Recording it against the account is what turns "it keeps
         # failing" into "this one needs a human", which is the only thing an
         # operator can act on.
-        if result.get("reason") in ("reauth_required", "unreadable"):
-            store.set_state(
-                account_id,
-                AccountState.REAUTH_REQUIRED,
-                f"refresh failed: {result.get('reason')}",
-            )
+        reason = result.get("reason")
+        if reason in CREDENTIAL_NEEDS_A_HUMAN:
+            store.mark_reauth_required(account_id, f"refresh failed: {reason}")
+        elif reason == "refreshed":
+            # AND THE WAY BACK. A completed exchange is proof the refresh token
+            # works, which is the only thing REAUTH_REQUIRED ever claimed was
+            # false. Leaving the mark would make the pool refuse an account
+            # that demonstrably works, and the sweep cannot lift it --
+            # `due_for_refresh` skips marked accounts, so the state it writes
+            # is one the sweep can never undo.
+            #
+            # Only on `refreshed`, deliberately. `still_valid` says the stored
+            # ACCESS token has hours left; it never presents the refresh token,
+            # so it is silent about the half that died.
+            store.clear_reauth_required(account_id)
         return {"refresh": result, "account": account_to_api(store.get(account_id))}
 
     @app.delete("/v1/accounts/{account_id}")
@@ -1764,18 +1929,15 @@ def create_app(
             # Every registered account, whether or not anything is using it.
             # See quota_broker.accounts.due_for_refresh for why there is no
             # "in use" filter.
+            #
+            # Its own summariser rather than `_sweep_block`, because this one
+            # WRITES: an account whose refresh token is gone is marked
+            # REAUTH_REQUIRED on its document, which is what stops the retry
+            # loop and what puts the dead account in front of an operator.
             store = getattr(request.app.state, "account_store", None)
             if store is not None:
-                result["accounts"] = _sweep_block(
-                    lambda: refresher.sweep_accounts(
-                        [
-                            (store.secret_for(a), a.label)
-                            for a in due_for_refresh(
-                                store.list(), datetime.now(timezone.utc)
-                            )
-                        ]
-                    ),
-                    "account pool sweep failed",
+                result["accounts"] = _sweep_account_pool(
+                    refresher, store, datetime.now(timezone.utc)
                 )
 
                 # Read what each account has LEFT. Separate from the refresh
