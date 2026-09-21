@@ -414,7 +414,8 @@ if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
   # script for any tenant, which means those tenants got their GCS access from
   # terraform or not at all.
   CONDITION_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-condition.XXXXXX")"
-  trap 'rm -f "${CONDITION_FILE}"' EXIT INT TERM
+  BUCKET_POLICY_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-bucket-policy.XXXXXX")"
+  trap 'rm -f "${CONDITION_FILE}" "${BUCKET_POLICY_FILE}"' EXIT INT TERM
   cat >"${CONDITION_FILE}" <<CONDEOF
 title: tenant_prefix_only
 description: Only this tenant's object prefix, listing included
@@ -425,6 +426,21 @@ CONDEOF
   # artifacts -- so an operator applying it should see what they are applying,
   # and a --dry-run that does not show it is not a rehearsal of anything.
   dim "  condition: objects/${GCS_PREFIX}/ and listing prefix ${GCS_PREFIX}/"
+  # Read the bucket policy ONCE, here, and answer both "already granted?"
+  # questions below from that one document. Two reads are two chances to decide
+  # two grants against two different policies, and this one is long -- it is the
+  # shared artifact bucket, so it holds every tenant's bindings.
+  #
+  # Redirected to a file rather than captured: `X="$(gcloud ...)"` runs the
+  # command in a subshell, and this policy is also the input to a predicate that
+  # must be able to say "I could not read it" separately from "it is not there".
+  # An empty file is that first answer, and it makes both checks below fall
+  # through to the add -- which either succeeds or fails out loud. The one
+  # outcome this must never produce is a skipped grant reported as a present one.
+  if ! gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
+       --project "${PROJECT_ID}" --format=json >"${BUCKET_POLICY_FILE}" 2>/dev/null; then
+    : >"${BUCKET_POLICY_FILE}"
+  fi
   # Skip if the binding is already there. terraform/modules/tenancy grants this
   # same conditioned binding for every tenant it manages, and adding it twice is
   # not merely redundant: gcloud reads the bucket policy at version 1, the
@@ -432,9 +448,13 @@ CONDEOF
   # "Specified policy version (1) must be at least 3" -- which aborts this
   # script before it reaches the tenant document, the thing it is actually
   # needed for.
-  if gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
-       --project "${PROJECT_ID}" --format=json 2>/dev/null \
-       | grep -q "serviceAccount:${GSA_EMAIL}"; then
+  #
+  # Role AND member, not either alone. This bucket's policy names every tenant,
+  # so "is this member in the policy at all" is a different question: a tenant
+  # holding only the metadata role below would have its object grant skipped and
+  # its worker left unable to read the artifacts it writes.
+  if iam_policy_binds_member "${BUCKET_POLICY_FILE}" \
+       roles/storage.objectUser "serviceAccount:${GSA_EMAIL}"; then
     ok "storage access already granted (terraform manages this tenant's binding)"
     rm -f "${CONDITION_FILE}"
   else
@@ -449,14 +469,21 @@ CONDEOF
 
   if gcloud iam roles describe "${BUCKET_METADATA_ROLE_ID}" \
        --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
-    # `--condition None` for the same reason as the project bindings: this
-    # policy contains conditions, so gcloud refuses an unconditioned addition
-    # unless told that is deliberate.
-    if gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
-         --project "${PROJECT_ID}" --format=json 2>/dev/null \
-         | grep -q "${BUCKET_METADATA_ROLE_ID}"; then
+    # This role is bound on ONE bucket for EVERY tenant
+    # (terraform/modules/tenancy/main.tf, `for_each = var.tenants`), so asking
+    # whether the policy mentions the role id at all is answered by the first
+    # tenant ever bound and never becomes false again. A tenant this script
+    # creates -- one that is not in var.tenants -- matched another tenant's
+    # binding here and was told the grant existed. It did not, and without
+    # storage.buckets.get its worker cannot mount the bucket at all.
+    if iam_policy_binds_member "${BUCKET_POLICY_FILE}" \
+         "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" \
+         "serviceAccount:${GSA_EMAIL}"; then
       ok "${BUCKET_METADATA_ROLE_ID} already granted"
     else
+      # `--condition None` for the same reason as the project bindings: this
+      # policy contains conditions, so gcloud refuses an unconditioned addition
+      # unless told that is deliberate.
       run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
         --member "serviceAccount:${GSA_EMAIL}" \
         --role "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" \

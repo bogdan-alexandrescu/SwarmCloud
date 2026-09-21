@@ -1001,6 +1001,43 @@ require_fs_database() {
 }
 
 # ---------------------------------------------------------------------------
+# IAM policies
+# ---------------------------------------------------------------------------
+
+# iam_policy_binds_member POLICY_JSON_FILE ROLE MEMBER
+#
+# True only when MEMBER is listed in a binding whose role is EXACTLY ROLE.
+#
+# This exists because grepping a policy document for one half of that pair is
+# not a near-miss, it is a check that can never fail. The artifact bucket is a
+# single bucket shared by every tenant, with ONE policy:
+#
+#   * `grep -q "${ROLE_ID}"` is true the moment ANY tenant holds the role --
+#     and terraform/modules/tenancy grants swarmBucketMetadataReader to every
+#     tenant in var.tenants -- so the first tenant's binding makes the check
+#     true forever, for every tenant after it.
+#   * `grep -q "serviceAccount:${GSA}"` is true the moment that member holds
+#     ANY role on the bucket, so one grant present makes a different, missing
+#     grant read as present.
+#
+# Either way the caller reports "already granted" and skips a binding it never
+# made: a worker that cannot reach its own artifacts, with a transcript that
+# says it can.
+#
+# An unreadable, empty or unexpected policy answers "not bound" (non-zero)
+# rather than failing. Callers use this to decide whether to ADD a binding, and
+# `add-iam-policy-binding` is idempotent, so guessing "not bound" costs a
+# redundant write that fails loudly, while guessing "bound" is the silent
+# missing grant above.
+iam_policy_binds_member() {
+  local policy_file="$1" role="$2" member="$3"
+  [[ -s "${policy_file}" ]] || return 1
+  jq -e --arg role "${role}" --arg member "${member}" \
+    'any((.bindings? // [])[]; .role == $role and any(.members[]?; . == $member))' \
+    "${policy_file}" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
 

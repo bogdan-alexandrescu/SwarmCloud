@@ -456,6 +456,48 @@ class CloudRunBackend:
 # ---------------------------------------------------------------------------
 
 
+def gke_api_host(endpoint: str) -> str:
+    """The `host` a kubernetes client Configuration needs for this cluster.
+
+    GKE_ENDPOINT is `google_container_cluster.endpoint` passed straight through
+    by terraform/infra/locals.tf, and that attribute is a BARE address --
+    `34.118.229.12`, no scheme. The kubernetes client concatenates
+    `configuration.host` with the resource path and hands the result to urllib3,
+    which needs a scheme to choose a connection pool at all: without it the GKE
+    backend is unreadable on every pass, and a reconciler that cannot see a
+    backend refuses to act on anything it might hold.
+
+    This function is duplicated, deliberately: the identical body lives in
+    `scheduler.dispatch`. The two services are separate images that share only
+    the FROZEN `swarm_common` package -- images/swarm-reconciler/Dockerfile
+    copies `apps/common/` and `apps/reconciler/` and nothing else -- so neither
+    can import the other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_host.py` pins the two together by
+    asserting they agree on the same inputs, which is exactly the check that was
+    missing while they did not: this side added the scheme and the scheduler,
+    which dispatches to the very same cluster, did not.
+    """
+    raw = (endpoint or "").strip()
+    if not raw:
+        # The caller treats "unset" as "not configured for out-of-cluster use"
+        # and falls back to in-cluster config; it must not become "https://".
+        return ""
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        rest = raw
+    elif scheme.lower() != "https":
+        # The client puts a cloud-platform OAuth token in an Authorization
+        # header on every call; any other scheme puts it on the wire in clear.
+        raise ValueError(
+            "GKE_ENDPOINT must be a bare host or an https:// URL; "
+            f"{scheme}:// would send the bearer token in clear text"
+        )
+    rest = rest.rstrip("/")
+    if not rest:
+        raise ValueError(f"GKE_ENDPOINT is not a usable host: {endpoint!r}")
+    return f"https://{rest}"
+
+
 @dataclass
 class GkeConnection:
     endpoint: str
@@ -512,9 +554,7 @@ class GkeBackend:
             )
             credentials.refresh(google.auth.transport.requests.Request())
             configuration = k8s_client.Configuration()
-            configuration.host = (
-                endpoint if endpoint.startswith("https://") else f"https://{endpoint}"
-            )
+            configuration.host = gke_api_host(endpoint)
             configuration.ssl_ca_cert = self._ca_file
             configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
             api_client = k8s_client.ApiClient(configuration)

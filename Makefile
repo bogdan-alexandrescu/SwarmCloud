@@ -168,6 +168,18 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	else \
 	  echo "no unit tests in tests/unit yet"; \
 	fi
+	@# tests/integration is OFFLINE -- it drives the real scripts end to end with
+	@# a fake gcloud and a fake curl on PATH under --dry-run, creating nothing and
+	@# needing no credentials. It was in no target, and it rotted exactly as the
+	@# comment under tf-test predicted for the terraform suite: 9c639af ("An HTTP
+	@# error is not an empty result") correctly taught fs_request to check the
+	@# status code, the fake curl had never honoured `-o`/`-w`, and all three
+	@# files errored in their fixture for 95 commits with nothing to report it.
+	@if [ -d tests/integration ] && [ -n "$$(find tests/integration -name 'test_*.py' -print -quit)" ]; then \
+	  uv run --project . pytest tests/integration -q; \
+	else \
+	  echo "no offline integration tests in tests/integration yet"; \
+	fi
 	@$(MAKE) tf-test
 
 tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no credentials)

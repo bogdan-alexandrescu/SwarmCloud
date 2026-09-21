@@ -51,8 +51,10 @@ key material at all and the pod's KSA-to-GSA binding is what grants access.
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -502,6 +504,49 @@ class CloudRunJobDispatcher:
 # GKE Autopilot
 # --------------------------------------------------------------------------
 
+def gke_api_host(endpoint: str) -> str:
+    """The `host` a kubernetes client Configuration needs for this cluster.
+
+    GKE_ENDPOINT is `google_container_cluster.endpoint` passed straight through
+    by terraform/infra/locals.tf, and that attribute is a BARE address --
+    `34.118.229.12`, no scheme. The kubernetes client concatenates
+    `configuration.host` with the resource path and hands the result to urllib3,
+    which needs a scheme to choose a connection pool at all: without it every
+    call fails on a URL it cannot parse, and it fails AFTER admission has taken
+    the lease, so the task is already committed to a backend that will never
+    start it.
+
+    This function is duplicated, deliberately: the identical body lives in
+    `reconciler.backends`. The two services are separate images that share only
+    the FROZEN `swarm_common` package -- images/swarm-scheduler/Dockerfile
+    copies `apps/common/` and `apps/scheduler/` and nothing else -- so neither
+    can import the other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_host.py` pins the two together by
+    asserting they agree on the same inputs, which is exactly the check that was
+    missing while they did not: the reconciler added the scheme and this side
+    did not.
+    """
+    raw = (endpoint or "").strip()
+    if not raw:
+        # The caller treats "unset" as "GKE is not configured" and refuses to
+        # dispatch; it must not be turned into the URL "https://".
+        return ""
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        rest = raw
+    elif scheme.lower() != "https":
+        # The client puts a cloud-platform OAuth token in an Authorization
+        # header on every call; any other scheme puts it on the wire in clear.
+        raise ValueError(
+            "GKE_ENDPOINT must be a bare host or an https:// URL; "
+            f"{scheme}:// would send the bearer token in clear text"
+        )
+    rest = rest.rstrip("/")
+    if not rest:
+        raise ValueError(f"GKE_ENDPOINT is not a usable host: {endpoint!r}")
+    return f"https://{rest}"
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -515,6 +560,18 @@ class GkeTarget:
     #: `swarm-agent-worker`, so that is the default here; `WORKER_KSA_NAME`
     #: overrides it for a cluster provisioned with a different spelling.
     ksa_name: str = "swarm-agent-worker"
+    #: The cluster CA as terraform actually supplies it. `locals.tf` sets
+    #: GKE_CA_CERT_B64 for this service (and for the reconciler) from
+    #: `module.gke_autopilot[0].ca_certificate`, which is base64 exactly as the
+    #: container API returns it. Nothing anywhere writes a CA file into this
+    #: image, so `ca_cert_path` alone could never be satisfied in a deployed
+    #: environment; it stays for a path supplied out of band.
+    ca_cert_b64: str = ""
+
+    @property
+    def api_host(self) -> str:
+        """`endpoint` as a URL the kubernetes client can use. See gke_api_host."""
+        return gke_api_host(self.endpoint)
 
 
 class GkeJobDispatcher:
@@ -530,6 +587,25 @@ class GkeJobDispatcher:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
+        self._ca_file: str | None = None
+
+    def _ca_cert_file(self, target: GkeTarget) -> str:
+        """A path on local disk holding the cluster CA.
+
+        Terraform hands this service the CA base64-encoded in GKE_CA_CERT_B64,
+        never as a file, so a base64 value is materialised once per process --
+        the same thing the reconciler does with the same variable.
+        """
+        if target.ca_cert_path:
+            return target.ca_cert_path
+        if self._ca_file is None:
+            handle = tempfile.NamedTemporaryFile(
+                prefix="gke-ca-", suffix=".crt", delete=False
+            )
+            handle.write(base64.b64decode(target.ca_cert_b64))
+            handle.close()
+            self._ca_file = handle.name
+        return self._ca_file
 
     def _api(self) -> Any:
         if self._batch_api is not None:
@@ -539,6 +615,19 @@ class GkeJobDispatcher:
                 "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_B64",
                 code="gke_not_configured",
             )
+        try:
+            host = self._target.api_host
+            ca_cert = self._ca_cert_file(self._target)
+        except ValueError as exc:
+            # A malformed GKE_ENDPOINT or a CA that is not base64 is a
+            # configuration fault, and the dispatch loop catches DispatchError
+            # and NOTHING else: any other exception escapes it with the lease
+            # still held, so the slot stays occupied until the dispatch deadline
+            # for a container that was never created. (binascii.Error, which
+            # b64decode raises, is a ValueError.)
+            raise DispatchError(
+                f"GKE dispatch is misconfigured: {exc}", code="gke_misconfigured"
+            ) from exc
         import google.auth
         import google.auth.transport.requests
         from kubernetes import client as k8s
@@ -548,8 +637,8 @@ class GkeJobDispatcher:
         )
         credentials.refresh(google.auth.transport.requests.Request())
         configuration = k8s.Configuration()
-        configuration.host = self._target.endpoint
-        configuration.ssl_ca_cert = self._target.ca_cert_path
+        configuration.host = host
+        configuration.ssl_ca_cert = ca_cert
         configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
         self._batch_api = k8s.BatchV1Api(k8s.ApiClient(configuration))
         return self._batch_api
@@ -766,6 +855,8 @@ def build_router(settings: Any) -> BackendRouter:
     import os
 
     endpoint = os.environ.get("GKE_ENDPOINT", "").strip()
+    # _gke_ca_file already decodes GKE_CA_CERT_B64 to a file, so there is one
+    # representation of the bundle here rather than two.
     ca_path = _gke_ca_file()
     target = None
     if endpoint and ca_path:
