@@ -103,6 +103,36 @@ class SubmissionService:
     # -- tenant -----------------------------------------------------------
 
     def tenant_for(self, ctx: AuthContext) -> Tenant:
+        # BEFORE ensure_tenant, because ensure_tenant CREATES on first sight.
+        #
+        # terraform/infra/variables.tf refuses to let a tenant's principal
+        # appear in secret_admin_members, for a reason it states at length: a
+        # secret admin holds secretVersionAdder on every tenant's provider-key
+        # secrets, and while that cannot read a key in place it can REPLACE one
+        # with a key pointing at attacker-controlled infrastructure, after which
+        # the victim tenant's prompts, source and output all flow through it.
+        #
+        # That validation can only see tenants DECLARED in var.tenants. This
+        # method creates one for any allowed-domain caller who has never been
+        # seen before, which is the path that actually fired: on 2026-09-21
+        # admin@saga.xyz signed in to the web UI and tenant u-admin was written,
+        # with the platform's secret admin as its principal.
+        #
+        # 403 rather than a silent skip: the caller is authenticated and known,
+        # and the honest answer is that this identity may not own a tenant --
+        # not that it has one which happens to be empty.
+        principal = (ctx.tenant_principal or ctx.email or "").strip().lower()
+        forbidden = {p.strip().lower() for p in self._settings.secret_admin_principals if p.strip()}
+        if principal and principal in forbidden:
+            raise Forbidden(
+                f"{principal} administers every tenant's provider-key secrets and "
+                "therefore may not own a tenant of its own: a tenant whose principal "
+                "can add a secret version to another tenant's key can redirect that "
+                "tenant's work through infrastructure it controls. Sign in as an "
+                "ordinary user, or declare this principal in terraform's `tenants` "
+                "and remove it from `secret_admin_members`."
+            )
+
         tenant = self._store.ensure_tenant(
             ctx.tenant_id,
             # The TENANT's principal (the group, for a group tenant), never the

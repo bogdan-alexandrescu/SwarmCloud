@@ -386,6 +386,23 @@ locals {
       # has been checked, and the address it compares comes from that token.
       ALLOWED_USERS = google_service_account.verify.email
 
+      # The same principals terraform already refuses to let own a DECLARED
+      # tenant, handed to the runtime so it can refuse the ones terraform
+      # cannot see.
+      #
+      # variables.tf validates secret_admin_members against var.tenants, and
+      # that is the whole check -- but Store.ensure_tenant creates a
+      # self-service tenant for any allowed-domain caller on first sight, and
+      # var.tenants does not contain those. On 2026-09-21 admin@saga.xyz signed
+      # in to the web UI and became the principal of tenant u-admin.
+      #
+      # The `user:`/`group:` prefix is stripped because swarm-api compares
+      # against a bare principal (an email), which is what both
+      # tenant_id_for_group and tenant_id_for_user are given.
+      SECRET_ADMIN_PRINCIPALS = join(",", sort([
+        for m in var.secret_admin_members : replace(replace(m, "user:", ""), "group:", "")
+      ]))
+
       # swarm-api PROXIES every account-pool call to the broker and never
       # writes a subscription credential itself, so without this the Settings
       # page cannot list or register an account at all.

@@ -111,6 +111,25 @@ class ApiSettings:
     #: reads -- so this changes WHICH verified identities are admitted, never
     #: whether the identity was verified.
     allowed_users: tuple[str, ...] = ()
+    #: Principals that hold secretVersionAdder on EVERY tenant's provider-key
+    #: secrets, and must therefore never be a tenant's own principal.
+    #:
+    #: terraform/infra/variables.tf already refuses that shape -- it validates
+    #: secret_admin_members against var.tenants and caught it once, when
+    #: bogdan@saga.xyz was both the secret admin and the principal of the
+    #: u-bogdan fallback tenant. But that validation can only see DECLARED
+    #: tenants, and `Store.ensure_tenant` creates a self-service tenant for any
+    #: allowed-domain caller on first sight. On 2026-09-21 admin@saga.xyz --
+    #: the platform account the tfvars comment describes as one that "owns no
+    #: tenant" -- signed in to the web UI and became the principal of tenant
+    #: u-admin, bypassing the validation entirely.
+    #:
+    #: A tenant whose principal can add a secret version to every other
+    #: tenant's provider key can replace one with a key pointing at
+    #: infrastructure they control, after which that tenant's prompts, source
+    #: and output all flow through it. So the runtime enforces what terraform
+    #: enforces, on the path terraform cannot see.
+    secret_admin_principals: tuple[str, ...] = ()
     #: The Workspace user this service account acts AS when reading groups.
     #:
     #: Cloud Identity's Groups API does not authorize through GCP IAM -- a
@@ -202,6 +221,7 @@ class ApiSettings:
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=_csv("ADMIN_USERS"),
             allowed_users=_csv("ALLOWED_USERS"),
+            secret_admin_principals=_csv("SECRET_ADMIN_PRINCIPALS"),
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
