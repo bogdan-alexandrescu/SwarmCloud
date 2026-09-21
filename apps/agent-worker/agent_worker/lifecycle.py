@@ -218,6 +218,7 @@ class Worker:
         self._last_checkpoint: CheckpointRecord | None = None
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
+        self._task: dict[str, Any] | None = None
         self._clone_base: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
@@ -335,6 +336,10 @@ class Worker:
 
         # ---- STEP 4: restore the latest checkpoint ----------------------
         task = self.control.fetch_task()
+        # Kept because the publish gate, several steps later, needs the
+        # caller's dispatch strategy and re-fetching it there would be a
+        # second read of a document that cannot have changed.
+        self._task = task
         self._restore_checkpoint(task.get("latest_checkpoint"))
         # Restoring a large checkpoint is unbounded; prove liveness after it.
         self._heartbeat()
@@ -1601,6 +1606,28 @@ class Worker:
                     "could not publish a live log tail", stream=label, error=str(exc)
                 )
 
+    def _dispatch_strategy(self) -> str:
+        """How the caller asked for this work to be merged. Defaults to collect.
+
+        UNKNOWN VALUES FALL BACK TO `collect`, deliberately. swarm-api validates
+        the field, so an unrecognised one here means a newer control plane and
+        an older worker -- and in that disagreement the safe reading is the one
+        that pushes nothing. A worker that guessed "probably direct-pr" would
+        open pull requests a caller never asked for.
+        """
+        task = self._task or {}
+        metadata = task.get("metadata")
+        if not isinstance(metadata, dict):
+            return "collect"
+        dispatch = metadata.get("dispatch")
+        if not isinstance(dispatch, dict):
+            return "collect"
+        value = dispatch.get("strategy")
+        if not isinstance(value, str):
+            return "collect"
+        value = value.strip().lower()
+        return value if value in ("collect", "direct-pr", "integrate") else "collect"
+
     def _credential_refusal(self) -> dict[str, Any] | None:
         """The runner's `credential.json`, if it wrote one.
 
@@ -1721,6 +1748,32 @@ class Worker:
             }
         if not cfg.git_publish_enabled:
             return {"published": False, "publish_reason": "publishing is disabled for this worker"}
+
+        # THE CALLER'S STRATEGY IS A PROMISE AND THIS IS WHERE IT IS KEPT.
+        #
+        # swarm-api accepts `strategy` on submit and returns it in the 201, and
+        # `collect` -- the default every caller gets -- states that patches are
+        # harvested and NOTHING IS PUSHED. Until this check existed that
+        # guarantee held only because the tenant's token happened to lack write
+        # scope: granting write scope would have made every `collect` dispatch
+        # start opening pull requests while its own API response promised it
+        # would not. A guarantee enforced by an unrelated accident is not a
+        # guarantee.
+        #
+        # Read from metadata rather than a typed field because adding one to
+        # Task would be a frozen-contract change; the request to type it is
+        # recorded in docs/contract-change-requests.md.
+        strategy = self._dispatch_strategy()
+        if strategy == "collect":
+            return {
+                "strategy": strategy,
+                "published": False,
+                "publish_reason": (
+                    "strategy is 'collect': the patch is harvested and nothing "
+                    "is pushed. Submit with strategy 'direct-pr' to open a pull "
+                    "request from this agent"
+                ),
+            }
 
         url = self._repo_url or cfg.repository_url
         if not url:
