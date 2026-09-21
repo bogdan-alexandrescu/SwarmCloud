@@ -227,6 +227,18 @@ export interface Task {
   last_error: string | null
   result_summary: Record<string, unknown> | null
   latest_checkpoint: string | null
+
+  /**
+   * `codec.dispatch_of`, lifted out of `metadata.dispatch` by the API.
+   *
+   * OPTIONAL ON PURPOSE, and it is the one field in this interface whose
+   * absence means something. `task_to_api` always sends it -- filling the
+   * API's defaults for a task submitted before the feature existed -- so a
+   * missing key here is not an old TASK, it is an older API than this bundle.
+   * Those are different and `dispatchOf` below keeps them different: an old
+   * task reads `collect`, an old API reads "not reported".
+   */
+  dispatch?: TaskDispatch | null
 }
 
 /**
@@ -238,6 +250,206 @@ export interface Task {
  * can show it and no screen should imply it. Attempt.generation is available
  * per attempt, which is a different and narrower thing.
  */
+
+// --------------------------------------------------------------------------
+// Dispatch: how a caller's work gets merged
+// --------------------------------------------------------------------------
+//
+// Mirrors `swarm_api/validation.py`. Two fields chosen at submit time; neither
+// is an execution parameter, so invariant 10 is untouched -- they say what
+// happens to the work AFTER the agent has produced it.
+//
+// THE CARRIER VOCABULARY IS `checkpoints`, NOT `patches`. Typing the wrong word
+// here is not a cosmetic slip: `_accepted_value` refuses an unknown carrier at
+// submission, so every submission from this screen would 422. `patches` is a
+// real trap because the WORKER uses it -- `lifecycle._dispatch_carrier` accepts
+// `("patches", "branches")` and swarm-api accepts `("checkpoints", "branches")`,
+// a live disagreement recorded in docs/contract-change-requests.md. This file
+// mirrors the API, because the API is what this browser talks to.
+
+/** `validation.DISPATCH_STRATEGIES`, in the order every refusal lists them. */
+export const DISPATCH_STRATEGIES = ['collect', 'direct-pr', 'integrate'] as const
+export type DispatchStrategy = (typeof DISPATCH_STRATEGIES)[number]
+
+/** `validation.DISPATCH_CARRIERS`. */
+export const DISPATCH_CARRIERS = ['checkpoints', 'branches'] as const
+export type DispatchCarrier = (typeof DISPATCH_CARRIERS)[number]
+
+/** `validation.DEFAULT_STRATEGY` / `DEFAULT_CARRIER` -- today's behaviour. */
+export const DEFAULT_STRATEGY: DispatchStrategy = 'collect'
+export const DEFAULT_CARRIER: DispatchCarrier = 'checkpoints'
+
+export type DispatchRole = 'contributor' | 'integrator'
+
+/** The four keys `codec.dispatch_of` returns. */
+export interface TaskDispatch {
+  strategy: DispatchStrategy
+  carrier: DispatchCarrier
+  /** Only an `integrate` workflow's steps have one. */
+  role: DispatchRole | null
+  /** Upstream TASK ids the integrator must apply, in topological order. */
+  integrates: string[]
+}
+
+function isStrategy(v: unknown): v is DispatchStrategy {
+  return typeof v === 'string' && (DISPATCH_STRATEGIES as readonly string[]).includes(v)
+}
+
+function isCarrier(v: unknown): v is DispatchCarrier {
+  return typeof v === 'string' && (DISPATCH_CARRIERS as readonly string[]).includes(v)
+}
+
+/**
+ * What this task CHOSE, or null when this API did not say.
+ *
+ * Null is the whole reason this is a function rather than a field read. Three
+ * situations arrive as "no usable `dispatch` object" and only one of them is
+ * an answer:
+ *
+ *  - the API sent the block: that is the answer, however old the task is.
+ *    `dispatch_of` already substituted `collect`/`checkpoints` for a task that
+ *    predates the feature, and that substitution is CORRECT -- an absent block
+ *    means the worker will harvest and push nothing, which is what collect is.
+ *  - the API sent no `dispatch` key at all: a deployment older than the field.
+ *    Rendering `collect` here would invent a caller's choice out of a version
+ *    skew, and "nothing was pushed because you asked for collect" is a
+ *    different sentence from "nothing was pushed and we cannot say why".
+ *  - the API sent a value neither vocabulary knows: same answer, same reason.
+ *
+ * So the second and third return null and every caller has to say so.
+ */
+export function dispatchOf(task: Task): TaskDispatch | null {
+  const d = task.dispatch
+  if (typeof d !== 'object' || d === null || Array.isArray(d)) return null
+  if (!isStrategy(d.strategy) || !isCarrier(d.carrier)) return null
+  const role = d.role === 'contributor' || d.role === 'integrator' ? d.role : null
+  return {
+    strategy: d.strategy,
+    carrier: d.carrier,
+    role,
+    integrates: Array.isArray(d.integrates) ? d.integrates.filter((t) => typeof t === 'string') : [],
+  }
+}
+
+/**
+ * `DispatchOptions.needs_repository`, restated -- and deliberately only ever
+ * used to WARN.
+ *
+ * validation.py is the decider and names its own refusal; a copy here that
+ * disabled the submit button would, on drifting, block a submission the API
+ * would have accepted. Warning fails the other way: the worst a stale copy can
+ * do is show a caution that turns out to be wrong.
+ */
+export function needsRepository(strategy: DispatchStrategy, carrier: DispatchCarrier): boolean {
+  return strategy === 'direct-pr' || strategy === 'integrate' || carrier === 'branches'
+}
+
+/**
+ * WHAT PICKING THIS ACTUALLY PRODUCES, in pull requests, for `steps` steps.
+ *
+ * This is the reason the control exists. `integrate` on a six-step workflow is
+ * ONE pull request and `direct-pr` on the same six steps is SIX, and a caller
+ * who cannot see that at the moment of choosing is picking between three words.
+ *
+ * `pullRequests` is a CEILING, not a promise, and `atMost` says which. A step
+ * whose agent changed nothing publishes nothing -- `_harvest_git` reports
+ * "changed nothing" and the run ends -- so `direct-pr` over six steps opens
+ * between zero and six. `integrate` is exactly one or none, because there is
+ * only ever one step that opens one.
+ */
+export interface DispatchConsequence {
+  pullRequests: number
+  atMost: boolean
+  pushes: boolean
+  /** The headline, with the real step count already in it. */
+  headline: string
+  /** What happens to the work itself. */
+  detail: string
+}
+
+export function consequenceOf(
+  strategy: DispatchStrategy,
+  steps: number,
+): DispatchConsequence {
+  const n = Math.max(1, steps)
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+  switch (strategy) {
+    case 'collect':
+      return {
+        pullRequests: 0,
+        atMost: false,
+        pushes: false,
+        headline: 'No pull request. Nothing is pushed.',
+        detail:
+          `Each of the ${plural(n, 'step')} harvests its patch into the task's own GCS ` +
+          'prefix and the run ends there. Nothing reaches the repository, so this is ' +
+          'the only strategy that works with a read-only token.',
+      }
+    case 'direct-pr':
+      return {
+        pullRequests: n,
+        atMost: true,
+        pushes: true,
+        headline: `Up to ${plural(n, 'pull request')} — one per step.`,
+        detail:
+          `Every step pushes its own branch and opens its own pull request, so ${plural(n, 'step')} ` +
+          `means ${plural(n, 'review')} to do and ${plural(n, 'branch')} to merge. A step whose agent ` +
+          'changed nothing opens none, which is why this is a ceiling and not a count.',
+      }
+    case 'integrate':
+      return {
+        pullRequests: 1,
+        atMost: true,
+        pushes: true,
+        headline: 'Exactly one pull request for the whole workflow.',
+        detail:
+          n < 2
+            ? 'One final step receives the others’ work and opens the single pull ' +
+              'request. There are no other steps here yet, so there is nothing to integrate.'
+            : `The final step merges the other ${plural(n - 1, 'step')}’ branches into its own ` +
+              'and opens one pull request against the repository. Those steps push a branch each ' +
+              'and open nothing.',
+      }
+  }
+}
+
+/** Label and one-line gloss for each strategy, for a picker. */
+export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
+  collect: 'Collect',
+  'direct-pr': 'A PR per step',
+  integrate: 'One PR for all steps',
+}
+
+/** Label and gloss for each carrier. See the honesty note in `CARRIER_NOTE`. */
+export const CARRIER_LABEL: Readonly<Record<DispatchCarrier, string>> = {
+  checkpoints: 'Checkpoints',
+  branches: 'Branches',
+}
+
+/**
+ * THE SENTENCE THAT KEEPS THE CARRIER CONTROL HONEST.
+ *
+ * `carrier` is validated at submission, stored on the task, and read back by
+ * the API -- and then nothing does anything with it. `_dispatch_carrier` in
+ * agent-worker has no caller in production code; its only references are its
+ * own definition and one test. So the only effect `branches` has TODAY is that
+ * `needs_repository` becomes true and the submission is refused without a
+ * repository URL. Saying "work travels between steps as pushed branches" would
+ * describe a mechanism that is not wired up, which is precisely the kind of
+ * claim this UI exists to not make.
+ */
+export const CARRIER_NOTE =
+  'Recorded on the task and returned by the API, but no worker code reads it yet. ' +
+  'Choosing branches changes one thing today: it makes a repository URL required.'
+
+export const CARRIER_DETAIL: Readonly<Record<DispatchCarrier, string>> = {
+  checkpoints:
+    'The default. Intended to carry a step’s work to the next one as the checkpoint ' +
+    'tarballs the worker already writes every few minutes.',
+  branches:
+    'Intended to carry a step’s work to the next one as a pushed branch, which outlives ' +
+    'the platform. Requires a repository URL.',
+}
 
 /** `_event_to_api`, routes/tasks.py. */
 export interface TaskEvent {
@@ -340,6 +552,31 @@ export interface GitSummary {
   published?: boolean
   publish_reason?: string
   pull_request?: { number: number; url: string; state: string; created: boolean }
+
+  /**
+   * WHAT THE RUN ITSELF RECORDED ABOUT ITS DISPATCH, written by `_publish` in
+   * agent_worker/lifecycle.py. Both are partial by design, so neither may be
+   * read as "the dispatch":
+   *
+   *  - `strategy` is written on the `collect` early return ONLY. Every other
+   *    strategy gets past that branch and the field is never set.
+   *  - `role` is written once the strategy is known to be `integrate`, and is
+   *    null on the other two.
+   *
+   * `task.dispatch` is the complete record and `dispatchOf` reads it. These are
+   * preferred over it where present for one reason: they say what the attempt
+   * ACTUALLY DID, which is the subject of the panel that renders them.
+   */
+  strategy?: string | null
+  role?: string | null
+
+  /** `merge_branches`' outcome, written on an integrator only. */
+  integrated?: {
+    merged?: string[]
+    conflicted?: string[]
+    missing?: string[]
+    complete?: boolean
+  }
 }
 
 export interface ArtifactRef {

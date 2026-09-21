@@ -1,8 +1,16 @@
 import { useState } from 'react'
 import { loadCapacity, loadStats } from './api'
+import { DispatchChoice, type DispatchDraft } from './Dispatch'
 import { errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { Screen, timeAgo } from './Shell'
-import type { RunnerProfile, Workflow } from './types'
+import {
+  DEFAULT_CARRIER,
+  DEFAULT_STRATEGY,
+  consequenceOf,
+  type DispatchStrategy,
+  type RunnerProfile,
+  type Workflow,
+} from './types'
 
 /**
  * Submit a multi-step workflow -- the only WRITE screen in this UI.
@@ -50,9 +58,38 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
 type Submission =
   | { kind: 'idle' | 'sending' }
   | { kind: 'rejected' | 'uncertain'; error: ApiError }
-  | { kind: 'created'; workflow: Workflow }
+  | { kind: 'created'; workflow: Workflow; dispatch: DispatchEcho | null }
 
-type Envelope = { code?: unknown; message?: unknown; detail?: unknown; workflow?: unknown }
+/**
+ * `routes/workflows.create_workflow`'s `dispatch` block: what was ACCEPTED, not
+ * what was sent. Null when the 201 carried none, which is an API older than the
+ * field rather than a workflow that chose nothing -- the same distinction
+ * `dispatchOf` keeps for a task.
+ */
+export interface DispatchEcho {
+  strategy: string
+  carrier: string
+  integrator_step_id: string | null
+}
+
+function echoOf(raw: unknown): DispatchEcho | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const d = raw as Record<string, unknown>
+  if (typeof d.strategy !== 'string' || typeof d.carrier !== 'string') return null
+  return {
+    strategy: d.strategy,
+    carrier: d.carrier,
+    integrator_step_id: typeof d.integrator_step_id === 'string' ? d.integrator_step_id : null,
+  }
+}
+
+type Envelope = {
+  code?: unknown
+  message?: unknown
+  detail?: unknown
+  workflow?: unknown
+  dispatch?: unknown
+}
 const KIND_BY_STATUS: Partial<Record<number, ApiErrorKind>> = {
   401: 'unauthenticated', 403: 'admin_required', 409: 'conflict',
   422: 'invalid', 429: 'rate_limited', 503: 'upstream_degraded',
@@ -87,7 +124,9 @@ async function postWorkflow(body: unknown): Promise<Submission> {
   } catch { env = null }
   if (res.ok) {
     const wf = env?.workflow
-    if (typeof wf === 'object' && wf !== null) return { kind: 'created', workflow: wf as Workflow }
+    if (typeof wf === 'object' && wf !== null) {
+      return { kind: 'created', workflow: wf as Workflow, dispatch: echoOf(env?.dispatch) }
+    }
     // 201 with a body we could not read. It WAS created; we just cannot name it.
     return unsure('server_error', res.status, 'The workflow was accepted but its id could not be read.')
   }
@@ -118,6 +157,11 @@ function Form({ sources }: { sources: FormSources }) {
   const first = sources.profiles[0]
   const blank = (key: number): StepDraft => ({ key, stepId: '', profile: first ? first[0] : '', dependsOn: [] })
   const [steps, setSteps] = useState<StepDraft[]>([blank(1)])
+  const [dispatch, setDispatch] = useState<DispatchDraft>({
+    strategy: DEFAULT_STRATEGY,
+    carrier: DEFAULT_CARRIER,
+    repositoryUrl: '',
+  })
   const [sub, setSub] = useState<Submission>({ kind: 'idle' })
   // Read from the payload, never a constant: an unread limit is not a limit of 50,
   // so `maxSteps` stays null and nothing here caps the form.
@@ -126,8 +170,16 @@ function Form({ sources }: { sources: FormSources }) {
   // The only check made here: duplicate ids, cycles and unknown profiles are all named precisely by the API.
   const ids = steps.map((s) => s.stepId.trim())
   const unnamed = ids.some((id) => id === '')
+  // The steps nothing else depends on. `integrate` opens ONE pull request and
+  // `resolve_integrator_step` therefore requires exactly one of these, so this
+  // is what lets the control NAME the step that would open it. It is a preview
+  // only: nothing below is gated on it, matching this screen's standing rule
+  // that the API decides the DAG and names its own refusal.
+  const dependedOn = new Set(steps.flatMap((s) => s.dependsOn.filter((d) => ids.includes(d))))
+  const terminals = ids.filter((id) => id !== '' && !dependedOn.has(id))
   const send = () => {
     setSub({ kind: 'sending' })
+    const repo = dispatch.repositoryUrl.trim()
     // depends_on is filtered to ids that still exist: renaming a step after another
     // depends on it would otherwise send an edge to a step that is no longer here.
     void postWorkflow({
@@ -135,6 +187,11 @@ function Form({ sources }: { sources: FormSources }) {
         step_id: s.stepId.trim(), runner_profile: s.profile,
         depends_on: s.dependsOn.filter((d) => ids.includes(d)),
       })),
+      // Workflow-level, not per step: `integrate` produces ONE pull request, so
+      // "which repository" cannot be a per-step answer (schemas.WorkflowCreate).
+      strategy: dispatch.strategy,
+      carrier: dispatch.carrier,
+      ...(repo === '' ? {} : { repository_url: repo }),
     }).then(setSub)
   }
   return (
@@ -164,6 +221,22 @@ function Form({ sources }: { sources: FormSources }) {
             is guessed. {sources.limitsDetail} The API enforces its own and names it.
           </p>
         )}
+      </section>
+
+      <section className="section panel">
+        <h2>What happens to the work</h2>
+        {/* `steps.length` is passed live, so the pull-request count on each
+            option moves as steps are added. That is the entire point: with six
+            steps on the form, `direct-pr` reads "up to 6 pull requests" and
+            `integrate` reads "exactly one", side by side, before anything is
+            submitted. */}
+        <DispatchChoice
+          draft={dispatch}
+          onChange={setDispatch}
+          steps={steps.length}
+          scale="workflow"
+          terminals={terminals}
+        />
       </section>
     </>
   )
@@ -209,6 +282,48 @@ function StepRow({ step, profiles, others, removable, onChange, onRemove }: {
   )
 }
 
+/**
+ * WHAT THE API ACCEPTED, read off the 201 rather than off the form.
+ *
+ * `create_workflow` echoes the resolved dispatch precisely so a caller sees the
+ * accepted values and not the sent ones -- and an `integrate` workflow is told
+ * WHICH step will open its single pull request, which is the fact the form
+ * could only preview. If that step is not the one the caller expected, this is
+ * where it is cheap to find out.
+ */
+function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number }) {
+  if (echo === null) {
+    return (
+      <p className="warn-text">
+        The 201 carried no dispatch block, so this screen cannot say what strategy
+        was stored — an API older than the field. Open the workflow to read it off
+        its tasks.
+      </p>
+    )
+  }
+  // The consequence sentence is only computed for a strategy this bundle knows.
+  // A value it does not is printed as the API spelled it and nothing is claimed
+  // about the outcome, which is the same rule `dispatchOf` follows.
+  const known: DispatchStrategy | null =
+    echo.strategy === 'collect' || echo.strategy === 'direct-pr' || echo.strategy === 'integrate'
+      ? echo.strategy
+      : null
+  return (
+    <p className="muted" style={{ marginTop: 8 }}>
+      Accepted as <code>{echo.strategy}</code> / <code>{echo.carrier}</code>.{' '}
+      {known === null
+        ? 'This bundle does not recognise that strategy, so no outcome is claimed for it.'
+        : consequenceOf(known, steps).headline}
+      {echo.integrator_step_id !== null && (
+        <>
+          {' '}
+          Step <code>{echo.integrator_step_id}</code> opens it.
+        </>
+      )}
+    </p>
+  )
+}
+
 function Outcome({ sub }: { sub: Submission }) {
   // `workflow.state` IS NOT SHOWN, here or anywhere. submit_workflow writes it once
   // as QUEUED and nothing in apps/scheduler, apps/reconciler or apps/agent-worker
@@ -222,6 +337,7 @@ function Outcome({ sub }: { sub: Submission }) {
           created {timeAgo(sub.workflow.created_at)}. No progress is shown here: a workflow's
           own state is written once at submission and never updated.
         </p>
+        <Accepted echo={sub.dispatch} steps={sub.workflow.steps.length} />
       </div>
     )
   }

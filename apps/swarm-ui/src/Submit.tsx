@@ -1,8 +1,17 @@
 import { useState, type FormEvent } from 'react'
 import { loadCapacity } from './api'
+import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
 import { isPaused, type ApiError } from './fetch'
 import { FailedPanel, Screen } from './Shell'
-import { headroomFor, type Capacity, type Pool, type RunnerProfile, type Task } from './types'
+import {
+  DEFAULT_CARRIER,
+  DEFAULT_STRATEGY,
+  headroomFor,
+  type Capacity,
+  type Pool,
+  type RunnerProfile,
+  type Task,
+} from './types'
 
 /**
  * Submit one task -- and the honest constraints on doing so.
@@ -24,9 +33,18 @@ import { headroomFor, type Capacity, type Pool, type RunnerProfile, type Task } 
  * POST. api.ts is its real home, not least for the USE_FIXTURES branch.
  */
 
-/** The TaskCreate keys this form sends (schemas.py:25-39). */
-const FIELDS = ['runner_profile', 'input'] as const
+/**
+ * The TaskCreate keys this form sends (schemas.py, `TaskCreate`).
+ *
+ * This list is what a 422 is attributed AGAINST, so it has to hold every key
+ * in the body -- including the three the dispatch control owns, whose refusals
+ * would otherwise all land as "the API refused and did not say which field".
+ * It is wider than `draft`: the last three live in their own state and are
+ * edited by `DispatchChoice`, so `set` below takes the narrower union.
+ */
+const FIELDS = ['runner_profile', 'input', 'strategy', 'carrier', 'repository_url'] as const
 type Field = (typeof FIELDS)[number]
+type DraftField = 'runner_profile' | 'input'
 
 type Outcome =
   | { kind: 'idle' | 'sending' }
@@ -110,6 +128,14 @@ function attribute(env: Record<string, unknown>, message: string):
   }
   if (Object.keys(fields).length === 0) {
     if (Array.isArray(detail.known_runner_profiles)) fields.runner_profile = message
+    // `DispatchOptionError` (code `invalid_dispatch`) is raised before FastAPI's
+    // validator and carries no errors list either. Its three detail shapes name
+    // their own field: the accepted-values lists come from `_accepted_value`,
+    // and `missing` comes from the needs-a-repository refusal. Matched on the
+    // detail key rather than on the prose, which is the part free to change.
+    else if (Array.isArray(detail.accepted_carriers)) fields.carrier = message
+    else if (detail.missing === 'repository_url') fields.repository_url = message
+    else if (Array.isArray(detail.accepted_strategies)) fields.strategy = message
     else if (typeof detail.max_bytes === 'number') fields.input = message
   }
   return { fields, unattributed: Object.keys(fields).length === 0 ? message : null }
@@ -131,11 +157,18 @@ export function SubmitScreen() {
 
 function Form({ capacity }: { capacity: Capacity }) {
   const [draft, setDraft] = useState({ runner_profile: '', input: '{}' })
+  // Seeded with the API's own defaults, so a caller who touches nothing sends
+  // the dispatch they would have got before this control existed.
+  const [dispatch, setDispatch] = useState<DispatchDraft>({
+    strategy: DEFAULT_STRATEGY,
+    carrier: DEFAULT_CARRIER,
+    repositoryUrl: '',
+  })
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'idle' })
   const names = Object.keys(capacity.runner_profiles).sort()
   const profile: RunnerProfile | null = capacity.runner_profiles[draft.runner_profile] ?? null
   const bad = outcome.kind === 'refused' ? outcome.fields : {}
-  const set = (f: Field, v: string) => setDraft((d) => ({ ...d, [f]: v }))
+  const set = (f: DraftField, v: string) => setDraft((d) => ({ ...d, [f]: v }))
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()
@@ -152,7 +185,23 @@ function Form({ capacity }: { capacity: Capacity }) {
       return
     }
     setOutcome({ kind: 'sending' })
-    setOutcome(await postTask({ runner_profile: draft.runner_profile, input }))
+    const repo = dispatch.repositoryUrl.trim()
+    setOutcome(
+      await postTask({
+        runner_profile: draft.runner_profile,
+        input,
+        // Sent ALWAYS, including when they are the defaults. `TaskCreate` has
+        // defaults of its own, so omitting them would produce the same task --
+        // but then the request body would not say what the screen said, and the
+        // 201 echo below would be the first place the two could be compared.
+        strategy: dispatch.strategy,
+        carrier: dispatch.carrier,
+        // Omitted when blank: `repository_url` is `str | None` with a scheme
+        // validator, and `""` fails it with a message about URL schemes rather
+        // than about the field being empty.
+        ...(repo === '' ? {} : { repository_url: repo }),
+      }),
+    )
   }
 
   return (
@@ -171,6 +220,17 @@ function Form({ capacity }: { capacity: Capacity }) {
       <textarea id="in" className="mono" rows={5} style={{ width: '100%' }} value={draft.input} onChange={(ev) => set('input', ev.target.value)} />
       <p className="muted small">Opaque to the platform: handed to the profile's agent, validated only for size.</p>
       {bad.input && <p className="warn-text" role="alert">{bad.input}</p>}
+      {/* `steps={1}`: a standalone task IS one step, and that is the number the
+          pull-request counts on the options are computed from. `scale="task"`
+          is the same word `resolve_dispatch_options` takes, and it is what
+          makes `integrate` show as unavailable here rather than 422 later. */}
+      <DispatchChoice
+        draft={dispatch}
+        onChange={setDispatch}
+        steps={1}
+        scale="task"
+        errors={{ strategy: bad.strategy, carrier: bad.carrier, repository_url: bad.repository_url }}
+      />
       <p style={{ marginTop: 14 }}>
         <button type="submit" disabled={outcome.kind === 'sending' || draft.runner_profile === ''}>
           {outcome.kind === 'sending' ? 'Submitting…' : 'Submit one task'}
@@ -239,6 +299,10 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
         {task.park_reason ? <> It is parked: <code>{String(task.park_reason)}</code>.</> : null}</p>
       {/* The id verbatim: not truncated, not transformed. This is what gets pasted. */}
       <p className="mono">{task.id}</p>
+      {/* READ BACK OFF THE 201, not off the form. The form says what was asked
+          for; `task.dispatch` is what was stored, and a caller who is about to
+          wait for a pull request should be told from the second one. */}
+      <DispatchFacts task={task} />
       <p className="checked-at">
         {woke ? 'The scheduler was woken by this submission.'
           : 'The scheduler was not woken; it will pick this up on its next pass.'}{' '}

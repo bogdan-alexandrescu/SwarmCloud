@@ -1,5 +1,6 @@
 import { useCallback, type CSSProperties, type ReactNode } from 'react'
 import { loadAgentRun, type AgentRun } from './api'
+import { DispatchFacts } from './Dispatch'
 import { num } from './fetch'
 import { LivenessBadge } from './Liveness'
 import { Screen, timeAgo } from './Shell'
@@ -11,6 +12,7 @@ import {
   attemptRan,
   bytesLabel,
   checkpointsFor,
+  dispatchOf,
   elapsed,
   newestHeartbeat,
   reasonCopy,
@@ -21,6 +23,8 @@ import {
   whyAgent,
   type ArtifactRef,
   type AttemptRow,
+  type DispatchRole,
+  type DispatchStrategy,
   type GitSummary,
   type ResourceClassSpec,
   type ResultSummary,
@@ -114,6 +118,7 @@ function Run({ run }: { run: AgentRun }) {
       <Why task={task} />
       {task.last_error && <ErrorBanner text={task.last_error} />}
       <Attempts run={run} now={now} />
+      <DispatchPanel task={task} />
       <Output run={run} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
@@ -1489,7 +1494,7 @@ function Output({ run }: { run: AgentRun }) {
         </Absent>
       ) : (
         <>
-          <GitOutcome git={summary.git} artifacts={artifacts} />
+          <GitOutcome git={summary.git} artifacts={artifacts} task={task} />
           <Artifacts artifacts={artifacts} summary={summary} malformed={artifactsMalformed} />
           <Logs logs={logs} malformed={logsMalformed} raw={logsRaw} />
           <SummaryUsage task={task} attempts={attempts} />
@@ -1717,6 +1722,33 @@ function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] |
 }
 
 /**
+ * WHAT THIS DISPATCH CHOSE -- above the Code panel, because it is the question
+ * that panel keeps being asked.
+ *
+ * "Why did this run open a pull request and that one not?" has one answer and
+ * it is not in the git summary: it is the `strategy` the caller picked at
+ * submission. Without it an operator reads the publish outcome and reaches for
+ * a cause -- a token scope, a forge outage, a push rejection -- when the cause
+ * was a choice somebody made and the platform kept.
+ *
+ * It renders for EVERY task, not only finished ones. `Output` is empty until an
+ * attempt finishes, and "what will this do when it gets there" is exactly what
+ * is worth knowing while it is still running.
+ */
+function DispatchPanel({ task }: { task: Task }) {
+  return (
+    <section className="section panel">
+      <h2>Dispatch</h2>
+      <p className="muted" style={{ marginBottom: 10 }}>
+        Chosen at submission and stored on the task. It decides what happens to
+        the agent&apos;s work once the run finishes — nothing about how it runs.
+      </p>
+      <DispatchFacts task={task} />
+    </section>
+  )
+}
+
+/**
  * What happened to the code, if the task had any.
  *
  * WHY THIS PANEL LEADS WITH A REASON RATHER THAN A LINK. A pull request is
@@ -1747,7 +1779,8 @@ function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] |
  * common case: most agents edit files and never run `git commit`. A panel that
  * only counted commits would report "no changes" for the majority of real runs.
  */
-function GitOutcome({ git, artifacts }: { git: GitSummary | undefined; artifacts: ArtifactRef[] }) {
+
+function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; artifacts: ArtifactRef[]; task: Task }) {
   // Same untyped-dict caution as the artifact list: `GitSummary` describes what
   // `_harvest_git` writes, and the field is whatever is in Firestore.
   if (typeof git !== 'object' || git === null || Array.isArray(git)) return null
@@ -1771,7 +1804,7 @@ function GitOutcome({ git, artifacts }: { git: GitSummary | undefined; artifacts
         </p>
       ) : null}
 
-      <PublishOutcome git={git} />
+      <PublishOutcome git={git} task={task} />
 
       <dl className="kv">
         <dt>Commits</dt>
@@ -1912,15 +1945,78 @@ function GitOutcome({ git, artifacts }: { git: GitSummary | undefined; artifacts
   )
 }
 
-/** The six causes, each with the response it actually needs. */
-function PublishOutcome({ git }: { git: GitSummary }) {
+/**
+ * The causes, each with the response it actually needs.
+ *
+ * TWO OF THESE USED TO BE DIAGNOSED WRONG, and both wrong answers sent someone
+ * to do work that would have made things worse. Neither was a rendering bug:
+ * the screen had no access to the dispatch and was matching free text, so the
+ * two outcomes that are CORRECT BY REQUEST were indistinguishable from failures.
+ *
+ *  * `collect` -- the DEFAULT, so this was the common case -- produces
+ *    `published: false` with a reason that matched none of the patterns below,
+ *    and fell through to "the reason is git's own / a rejected push usually
+ *    means something else moved the branch". Nothing was pushed and nothing was
+ *    rejected: the caller asked for the patch to be harvested and it was.
+ *  * an `integrate` CONTRIBUTOR produces `published: true` with no pull request,
+ *    and read as "only the pull-request call did not complete, so opening one
+ *    by hand from that branch is all that is left". Opening one by hand is the
+ *    one thing that must not happen -- it is a second pull request against a
+ *    strategy whose whole promise is exactly one, and the integrator is already
+ *    going to merge that branch.
+ *
+ * So the two are keyed on the STRUCTURED dispatch now, not on prose. The
+ * worker's own `strategy`/`role` fields in the git summary come first because
+ * they record what the run did; the task's stored dispatch answers for a
+ * summary written before those fields existed. The prose patterns stay as a
+ * third fallback for a task whose dispatch cannot be read at all.
+ */
+function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   const reason = git.publish_reason ?? null
   const lower = (reason ?? '').toLowerCase()
+  const stored = dispatchOf(task)
+  // The run's own record wins over the task's, and neither is invented: an
+  // unrecognised value falls through to null rather than being coerced.
+  const strategy: DispatchStrategy | null =
+    git.strategy === 'collect' || git.strategy === 'direct-pr' || git.strategy === 'integrate'
+      ? git.strategy
+      : (stored?.strategy ?? null)
+  const role: DispatchRole | null =
+    git.role === 'contributor' || git.role === 'integrator' ? git.role : (stored?.role ?? null)
+
+  // THE PROSE IS THE THIRD FALLBACK, not the first, and it exists for one case:
+  // a task whose dispatch this API did not report AND whose summary predates the
+  // worker's structured fields. Both substrings are the worker's own, quoted
+  // from `_publish` in agent_worker/lifecycle.py -- see the seam test in
+  // tests/unit/control_plane/test_dispatch_ui_surface.py, which asserts these
+  // still appear there verbatim.
+  const isCollect = strategy === 'collect' || lower.includes("strategy is 'collect'")
+  const isContributor = role === 'contributor' || lower.includes('this step is a contributor')
 
   // 1. There is a pull request. Nothing to explain.
   if (git.pull_request) return null
 
-  // 2. PUSHED, NO PULL REQUEST. The branch is on the forge; only the final API
+  // 2. A CONTRIBUTOR IN AN `integrate` WORKFLOW. Pushed, deliberately opened
+  //    nothing, and must not be "finished off" by hand. Ahead of the general
+  //    pushed-but-no-PR case below, which would tell you to do exactly that.
+  if (isContributor && git.published === true) {
+    return (
+      <div className="ctl-empty" style={{ marginBottom: 10 }}>
+        <h3>Pushed, and no pull request — by request</h3>
+        <p>
+          This step is a <code>contributor</code> in an <code>integrate</code>{' '}
+          workflow. Its branch{' '}
+          <span className="mono">{git.branch ?? 'below'}</span> is on the forge and
+          the integrating step merges it into the single pull request the whole
+          workflow opens. <strong>Do not open one from this branch</strong> — that
+          is the second pull request this strategy exists to prevent.
+        </p>
+        {reason !== null && <span className="ctl-empty-foot">{reason}</span>}
+      </div>
+    )
+  }
+
+  // 3. PUSHED, NO PULL REQUEST. The branch is on the forge; only the final API
   //    call did not land. Re-running the agent would be the wrong response.
   if (git.published === true) {
     return (
@@ -1938,7 +2034,31 @@ function PublishOutcome({ git }: { git: GitSummary }) {
     )
   }
 
-  // 3. The tenant's token cannot push. EXPECTED TODAY, and a fact rather than a
+  // 4. `collect`: the caller asked for nothing to be pushed. Before the
+  //    strategy check below the forge was never even contacted, so there is no
+  //    can_push, no branch and no git error to report -- and this fell through
+  //    to the "rejected push" ending, which described a push that never
+  //    happened. It is checked ahead of can_push for that reason: on this path
+  //    the worker returns before `probe_repository`, so every field those
+  //    branches read is absent.
+  if (isCollect) {
+    return (
+      <div className="ctl-empty" style={{ marginBottom: 10 }}>
+        <h3>Nothing was pushed — this dispatch asked for <code>collect</code></h3>
+        <p>
+          <code>collect</code> is the default strategy: the agent&apos;s work is
+          harvested into this task&apos;s patch and artifacts, and the repository
+          is never written to. Nothing failed, and no token or forge setting
+          changes this. Submit with <code>direct-pr</code> to have the agent open
+          a pull request of its own, or run it as a step of an{' '}
+          <code>integrate</code> workflow for one pull request across the steps.
+        </p>
+        {reason !== null && <span className="ctl-empty-foot">{reason}</span>}
+      </div>
+    )
+  }
+
+  // 5. The tenant's token cannot push. EXPECTED TODAY, and a fact rather than a
   //    failure: the secret holds a clone token, the forge was asked and said
   //    no. The patch is the deliverable.
   if (git.can_push === false) {
@@ -1955,6 +2075,7 @@ function PublishOutcome({ git }: { git: GitSummary }) {
     )
   }
 
+  // 6. No reason at all.
   if (reason === null) {
     return (
       <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
@@ -1968,7 +2089,7 @@ function PublishOutcome({ git }: { git: GitSummary }) {
     )
   }
 
-  // 4-6. No structured signal beyond `published: false`, so the free-text
+  // 7+. No structured signal beyond `published: false`, so the free-text
   //      reason is matched -- carefully. An unrecognised reason is printed
   //      verbatim and labelled as one, never forced into a bucket.
   const known: { match: string; heading: string; body: ReactNode } | undefined = [

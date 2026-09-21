@@ -1,11 +1,15 @@
 import { loadWorkflowBoard } from './api'
+import { workflowDispatchOf } from './Dispatch'
 import { Screen, timeAgo } from './Shell'
 import {
+  consequenceOf,
+  dispatchOf,
   stateGlyph,
   stateTone,
   stepState,
   type StepState,
   type Task,
+  type TaskDispatch,
   type Tone,
   type Workflow,
   type WorkflowStep,
@@ -135,6 +139,14 @@ function WorkflowCard({
 }) {
   const levels = levelsOf(workflow.steps)
   const roll = rollup(workflow.steps, taskById)
+  // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
+  // server-side -- the frozen `Workflow` has no metadata field, so there is
+  // nowhere else it could live. Null when the task join produced nothing to
+  // read, which the banner above is already explaining.
+  const tasks = workflow.steps
+    .map((s) => (s.task_id ? (taskById?.get(s.task_id) ?? null) : null))
+    .filter((t): t is Task => t !== null)
+  const dispatch = workflowDispatchOf(tasks)
 
   return (
     <section className="section">
@@ -146,6 +158,12 @@ function WorkflowCard({
         {roll.text}
         {workflow.cancel_requested && ' · cancel requested'}
       </p>
+      <WorkflowDispatch
+        dispatch={dispatch?.dispatch ?? null}
+        integratorTaskId={dispatch?.integratorTaskId ?? null}
+        steps={workflow.steps.length}
+        joined={tasks.length > 0}
+      />
       <div className="dag">
         {levels.map((level, i) => (
           <div className="level" key={i} style={{ ['--depth' as string]: i }}>
@@ -170,6 +188,50 @@ function WorkflowCard({
         ))}
       </div>
     </section>
+  )
+}
+
+/**
+ * HOW MANY PULL REQUESTS THIS WORKFLOW IS GOING TO PRODUCE.
+ *
+ * The same sentence the submit form showed when it was chosen, computed from
+ * the same function over the same step count -- so "I picked one pull request"
+ * and "this workflow will open one pull request" cannot come apart.
+ *
+ * Three absences, and they are not the same:
+ *  - no task joined at all: the task read failed or has not reached any step,
+ *    and the state banner above is already saying so. Nothing is claimed.
+ *  - tasks joined but none carried a dispatch: an API older than the field.
+ *  - a dispatch was read: shown.
+ */
+function WorkflowDispatch({
+  dispatch,
+  integratorTaskId,
+  steps,
+  joined,
+}: {
+  dispatch: TaskDispatch | null
+  integratorTaskId: string | null
+  steps: number
+  joined: boolean
+}) {
+  if (dispatch === null) {
+    return (
+      <p className="muted small">
+        {joined
+          ? 'None of this workflow’s tasks reported a dispatch, so what it publishes is not shown. That is an API older than the field, not a workflow that publishes nothing.'
+          : 'No task was joined for this workflow, so what it publishes cannot be read here.'}
+      </p>
+    )
+  }
+  const c = consequenceOf(dispatch.strategy, steps)
+  return (
+    <p className={`rollup dsp-rollup${c.pushes ? '' : ' is-none'}`}>
+      <code>{dispatch.strategy}</code> · {c.headline}
+      {dispatch.strategy === 'integrate' && integratorTaskId !== null && (
+        <span className="muted small"> · integrator {integratorTaskId.slice(-8)}</span>
+      )}
+    </p>
   )
 }
 
@@ -203,10 +265,26 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
 
 function StepNode({ step, state }: { step: WorkflowStep; state: StepState }) {
   const p = present(state)
+  // Read off the step's own task, so the node that opens the pull request is
+  // marked in the graph rather than only named in the line above it. Silent on
+  // a step with no task and on a `contributor`: every step of an `integrate`
+  // workflow but one is a contributor, so a badge on each would mark nothing.
+  //
+  // Through `dispatchOf`, not off the field: it is the one reader that decides
+  // what an absent or unrecognised block means, and a second one here is how
+  // two screens start disagreeing about the same task.
+  const role = state.kind === 'state' ? (dispatchOf(state.task)?.role ?? null) : null
 
   return (
     <div className={`node ${p.tone}`} title={p.title}>
-      <div className="node-id">{step.step_id}</div>
+      <div className="node-id">
+        {step.step_id}
+        {role === 'integrator' && (
+          <span className="tag ok" title="This step merges the other steps' branches and opens the workflow's single pull request.">
+            opens the PR
+          </span>
+        )}
+      </div>
       <div className="node-state">
         <span aria-hidden>{p.glyph}</span> {p.word}
       </div>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { loadTasks } from './api'
+import { DispatchChip } from './Dispatch'
 import { Screen } from './Shell'
 import {
   CONCURRENCY_STATES,
@@ -320,7 +321,14 @@ function TaskRow({
         {units !== undefined && <span className="units"> · {units}u</span>}
       </span>
 
-      <span className="badges">{cancelling && <span className="tag full">cancelling…</span>}</span>
+      {/* The dispatch chip renders NOTHING for a plain `collect` task, which is
+          most of them, and something for every task that will push or open a
+          pull request. That asymmetry is the point: the rows worth spotting in
+          a list of forty are the ones that are going to write to a repository. */}
+      <span className="badges">
+        <DispatchChip task={task} />
+        {cancelling && <span className="tag full">cancelling…</span>}
+      </span>
 
       {/* The reason this screen exists on a phone: someone is checking why
           their agent has not moved. It outranks every identifier and is never

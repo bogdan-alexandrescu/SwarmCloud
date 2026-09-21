@@ -163,6 +163,65 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
   } as Result<AgentDetail>
 }
 
+/**
+ * `_publish`'s return value, for the strategy this task actually chose.
+ *
+ * The three shapes are the worker's, not invented ones, INCLUDING the reason
+ * strings -- those are what `PublishOutcome` falls back to matching when a task
+ * carries no dispatch block, so a paraphrase here would exercise the fallback
+ * against text production never produces.
+ */
+function fixtureGit(task: Task): Record<string, unknown> {
+  const common = {
+    base: 'd41f0c9a7b',
+    commits: [
+      {
+        sha: '9b1c7f00aa', subject: 'Harden the destroy guard against an unreadable cluster',
+        author: 'agent', committed_at: new Date().toISOString(),
+        files_changed: 3, insertions: 61, deletions: 12, binary_files: 0,
+      },
+    ],
+    commit_count: 1, insertions: 61, deletions: 12,
+    dirty: [], patch: 'diff.patch', patch_bytes: 91233,
+    repository: 'bogdan-alexandrescu/SwarmCloud',
+  }
+  const d = task.dispatch
+  if (d?.strategy === 'collect' || d === undefined || d === null) {
+    return {
+      ...common,
+      strategy: 'collect',
+      published: false,
+      publish_reason:
+        "strategy is 'collect': the patch is harvested and nothing is pushed. " +
+        "Submit with strategy 'direct-pr' to open a pull request from this agent",
+    }
+  }
+  if (d.role === 'contributor') {
+    return {
+      ...common,
+      role: 'contributor',
+      default_branch: 'main', can_push: true,
+      branch: `swarm/${task.id}`, pushed_head: '9b1c7f00aa', auto_committed: false,
+      published: true,
+      publish_reason:
+        "strategy is 'integrate' and this step is a contributor: its branch was " +
+        'pushed and no pull request was opened. The integrator step merges this ' +
+        'branch and opens the single pull request for the whole workflow.',
+    }
+  }
+  return {
+    ...common,
+    role: d.role,
+    default_branch: 'main', can_push: true,
+    branch: `swarm/${task.id}`, pushed_head: '9b1c7f00aa', auto_committed: false,
+    published: true,
+    pull_request: { number: 412, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/412', state: 'open', created: true },
+    ...(d.role === 'integrator'
+      ? { integrated: { merged: d.integrates, conflicted: [], missing: [], complete: true } }
+      : {}),
+  }
+}
+
 async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   const page = await fixtureTasks()
   const task = page.status === 'ok' ? page.data.tasks.find((t) => t.id === taskId) : undefined
@@ -216,6 +275,12 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
                   { name: 'diff.patch', bytes: 91233, uri: 'gs://swarm-artifacts-dev/u-bogdan/diff.patch' },
                 ],
                 artifact_bytes: 99474,
+                // The git block the worker's `_publish` writes, DERIVED FROM
+                // THIS TASK'S OWN STRATEGY rather than fixed. The publish
+                // outcome and the dispatch are two renderings of one decision,
+                // and a fixture that let them disagree would make the screen
+                // look right while showing an impossible run.
+                git: fixtureGit(task),
                 logs: {
                   stdout: 'gs://swarm-artifacts-dev/u-bogdan/logs/stdout.log',
                   stderr: 'gs://swarm-artifacts-dev/u-bogdan/logs/stderr.log',
@@ -1261,6 +1326,12 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     next_eligible_at: state === 'PARKED' ? at(minsAgo - 15) : null,
     metadata: null,
     repository_ref: 'main',
+    // `task_to_api` sends this on every task, filling the API's defaults for a
+    // task that predates the feature -- so the fixture default is the same pair
+    // and the rows that differ say so in `extra`. A fixture that omitted it
+    // would exercise only the "this API did not report a dispatch" path, which
+    // is the one production should never take.
+    dispatch: { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] },
     input: null,
     last_error: state === 'FAILED' ? 'exit status 1: pytest collected 2 failures' : null,
     result_summary: state === 'SUCCEEDED' ? { artifacts: 1, checkpoints: 2 } : null,
@@ -1291,15 +1362,31 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
         mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
         mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
         mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62),
+        // A standalone `direct-pr` task: the one shape that opens a pull
+        // request on its own, so the row chip and the Code panel's published
+        // path are both reachable in development.
+        mk('task_c41d90b7', 'SUCCEEDED', 'claude-code', 20, {
+          dispatch: { strategy: 'direct-pr', carrier: 'checkpoints', role: null, integrates: [] },
+        }),
         // Part of a workflow, so the graph view has something with edges.
+        //
+        // THE WORKFLOW IS AN `integrate` ONE, and the roles are the real ones
+        // `_step_dispatch` assigns: every step a contributor except the single
+        // sink, whose `integrates` is the topological prefix in apply order.
+        // A `collect` fixture would have left the integrator badge, the
+        // contributor publish panel and the one-pull-request rollup unrendered
+        // in development -- which is how a panel ships untested.
         mk('task_wf_plan', 'SUCCEEDED', 'claude-code', 30, {
           workflow_id: 'wf_audit_01', step_id: 'plan', depends_on: [],
+          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
         }),
         mk('task_wf_scan_a', 'SUCCEEDED', 'claude-code', 24, {
           workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
+          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
         }),
         mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
           workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
+          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
         }),
         // PARKED, not "BLOCKED". There is no BLOCKED task state -- a step
         // waiting on a dependency is PARKED with DEPENDENCY_INCOMPLETE.
@@ -1307,6 +1394,10 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
           workflow_id: 'wf_audit_01', step_id: 'report',
           depends_on: ['scan-scripts', 'scan-terraform'],
           park_reason: 'DEPENDENCY_INCOMPLETE',
+          dispatch: {
+            strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
+            integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],
+          },
         }),
       ],
       next_page_token: null,
