@@ -32,12 +32,27 @@ resource "google_service_account" "verify" {
   project      = var.project_id
   account_id   = "swarm-verify"
   display_name = "SwarmCloud verification job"
-  description  = "Runs the smoke, concurrency and race targets from inside the VPC. Holds run.invoker on swarm-api and nothing else."
+  description  = "Runs the smoke, concurrency and race targets from inside the VPC. Reads Firestore, Cloud Run executions and artifact objects; invokes swarm-api. Writes nothing outside its own tenant."
 }
 
-# The ONLY grant this identity gets. It submits and reads tasks through the
-# public API surface exactly as a user would; it has no Firestore access, no
-# secret access and no admin group.
+# WHY THIS IS NO LONGER THE ONLY GRANT.
+#
+# The comment that stood here said this identity "has no Firestore access, no
+# secret access and no admin group", and treated that as the design. It was
+# true and it made the gate impossible: the suites do NOT work only through the
+# public API. scripts/lib/testlib.sh reads pool and task documents with fs_get
+# and fs_count, counts Cloud Run executions for invariant 1, and counts GCS
+# objects to prove artifacts landed under the tenant's own prefix. With
+# run.invoker alone, require_platform died on its opening guard before a single
+# assertion ran -- twice in two days, for two different reasons.
+#
+# So the grants below are the ones the suites actually exercise, and no more.
+# All three are READ-ONLY at the project level; everything the gate writes, it
+# writes through swarm-api as its own tenant, which is the property the
+# original comment was protecting and which still holds.
+#
+# Secret access is deliberately still absent. Nothing in the suites reads a
+# secret, and the mock runner profile this tenant uses needs no provider key.
 resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
   project  = var.project_id
   location = var.region
@@ -46,6 +61,36 @@ resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
   # map key itself, so take it from the map-shaped output.
   name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
   role   = "roles/run.invoker"
+  member = "serviceAccount:${google_service_account.verify.email}"
+}
+
+# Firestore. require_fs_database asks the Admin API whether the database
+# exists, then every suite reads task, lease and pool documents directly.
+# roles/datastore.viewer, not .user: the suites read documents and never write
+# one -- task creation goes through swarm-api, which holds its own write role.
+resource "google_project_iam_member" "verify_reads_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = "serviceAccount:${google_service_account.verify.email}"
+}
+
+# Cloud Run executions. CONTRACT invariant 1 -- that QUEUED, PARKED and READY
+# create no infrastructure demand -- is asserted by counting executions, so a
+# gate that cannot list them cannot check the invariant it exists for.
+resource "google_project_iam_member" "verify_reads_run" {
+  project = var.project_id
+  role    = "roles/run.viewer"
+  member  = "serviceAccount:${google_service_account.verify.email}"
+}
+
+# Artifact objects. The smoke suite proves artifacts landed under the tenant's
+# OWN GCS prefix, which is per-tenant isolation (invariant 9) and cannot be
+# checked without listing them. Scoped to the artifact bucket, not the project:
+# this project is SHARED with another team and a project-level storage role
+# would reach their buckets.
+resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
+  bucket = module.storage.artifact_bucket_name
+  role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.verify.email}"
 }
 
@@ -71,12 +116,23 @@ resource "google_cloud_run_v2_job" "verify" {
       timeout         = "1800s"
 
       vpc_access {
-        # PRIVATE_RANGES_ONLY, not ALL_TRAFFIC: this job talks to swarm-api and
-        # to the metadata server, both of which are reachable without routing
-        # its whole egress through Cloud NAT. The worker jobs use ALL_TRAFFIC
-        # because provider calls must carry the NAT's reserved addresses; this
-        # one calls no provider.
-        egress = "PRIVATE_RANGES_ONLY"
+        # ALL_TRAFFIC, and the reasoning that put PRIVATE_RANGES_ONLY here was
+        # wrong in a way worth recording.
+        #
+        # It argued that this job "talks to swarm-api and to the metadata
+        # server, both reachable without routing egress through Cloud NAT".
+        # The address it talks to swarm-api on is
+        # module.cloud_run.service_urls["swarm-api"] -- a PUBLIC *.run.app
+        # hostname (see the API_URL env below). A public hostname is not in a
+        # private range, so under PRIVATE_RANGES_ONLY the request never left
+        # the VPC. This repository had already measured that exact refusal from
+        # the other direction and written it down in
+        # docs/audits/2026-09-20/verification-targets-cannot-run.md.
+        #
+        # swarm-api's ingress is INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, which
+        # admits traffic arriving from within the VPC network -- but the packet
+        # has to be routed there first, and that is what this setting decides.
+        egress = "ALL_TRAFFIC"
 
         network_interfaces {
           network    = module.network.network_id

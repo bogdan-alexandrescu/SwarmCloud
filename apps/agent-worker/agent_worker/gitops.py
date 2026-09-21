@@ -34,7 +34,7 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
 from .procman import run_child
@@ -738,3 +738,175 @@ def push_branch(
     head = text.strip() if code == 0 else ""
     logger.info("branch pushed", branch=branch, head=head or "unknown")
     return head
+
+
+@dataclass(frozen=True)
+class MergeOutcome:
+    """What an integrator managed to bring together, and what it did not.
+
+    `conflicted` and `missing` are NOT errors that abort the integration, and
+    that is a deliberate choice rather than leniency. An integrator is the sink
+    of a workflow whose other steps have already run, been billed and pushed
+    their work; refusing the whole pull request because one of six contributors
+    conflicts would throw away five successful attempts and leave the caller
+    with nothing to look at. So the merge takes what merges and NAMES what it
+    could not take -- in this object, in the run's result, and in the pull
+    request body itself, where a human reviewing it cannot miss it.
+
+    The failure this avoids is the opposite one: a pull request that claims to
+    integrate a workflow while silently containing a subset of it.
+    """
+
+    merged: tuple[str, ...] = ()
+    conflicted: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.conflicted and not self.missing
+
+
+def merge_branches(
+    *,
+    repo: Path,
+    url: str,
+    branches: Sequence[str],
+    token: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    author_name: str,
+    author_email: str,
+    git_binary: str = "git",
+    branch_prefix: str = "swarm/",
+) -> MergeOutcome:
+    """Merge each contributor branch into the current HEAD, in the order given.
+
+    ORDER IS THE CALLER'S, AND IT MATTERS. swarm-api builds `integrates` from
+    the topological prefix of the workflow, so branch N may depend on branch
+    N-1 having landed. Merging in any other order turns a clean sequence into
+    an artificial conflict.
+
+    `--no-ff` on every merge, so the history shows which contributor each
+    change came from even when the merge could have fast-forwarded. An
+    integrator's whole purpose is attribution across steps; collapsing that is
+    the one thing it must not do.
+
+    A conflicted merge is aborted with `git merge --abort` before the next one
+    is attempted, so a failed merge never leaks a half-applied index into the
+    branch that follows it.
+    """
+    repo = Path(repo)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    url = validate_repository_url(url)
+
+    merged: list[str] = []
+    conflicted: list[str] = []
+    missing: list[str] = []
+
+    cred_file = _write_credentials(url, token, private_dir)
+    config_args = [
+        *_NO_HOOKS,
+        "-c", "protocol.version=2",
+        "-c", f"credential.helper=store --file={cred_file}",
+        # The merge commits are the worker's, not the agent's. Without these
+        # git refuses to commit at all in a container with no global config,
+        # and the merge fails for a reason that reads like a conflict.
+        "-c", f"user.name={author_name}",
+        "-c", f"user.email={author_email}",
+    ]
+
+    try:
+        for raw in branches:
+            branch = validate_ref(raw) or ""
+            if not branch:
+                missing.append(str(raw))
+                continue
+            # Re-checked here rather than trusted from the dispatch block: the
+            # names arrive through task metadata, and the same prefix rule that
+            # governs what this worker may PUSH governs what it may pull into a
+            # branch it is about to push.
+            if not branch.startswith(branch_prefix):
+                logger.warning(
+                    "refusing to merge a branch outside the prefix",
+                    branch=branch,
+                    prefix=branch_prefix,
+                )
+                missing.append(branch)
+                continue
+
+            slug = branch.replace("/", "-")
+            code, _ = _git_text(
+                [
+                    git_binary, *config_args, "fetch", "--no-tags", "--depth=2147483647",
+                    "--", url, f"refs/heads/{branch}",
+                ],
+                repo=repo,
+                private_dir=private_dir,
+                logs_dir=logs_dir,
+                slug=f"integrate-fetch-{slug}",
+                timeout_seconds=timeout_seconds,
+                logger=logger,
+            )
+            if code != 0:
+                # The contributor never pushed, or pushed under another name.
+                # Absent, not conflicting -- the distinction is what tells a
+                # reviewer whether to re-run a step or resolve a conflict.
+                logger.warning("contributor branch not found on the remote", branch=branch)
+                missing.append(branch)
+                continue
+
+            code, _ = _git_text(
+                [
+                    git_binary, *config_args, "merge", "--no-ff", "--no-edit",
+                    "-m", f"swarm: integrate {branch}",
+                    "FETCH_HEAD",
+                ],
+                repo=repo,
+                private_dir=private_dir,
+                logs_dir=logs_dir,
+                slug=f"integrate-merge-{slug}",
+                timeout_seconds=timeout_seconds,
+                logger=logger,
+            )
+            if code != 0:
+                abort_code, _ = _git_text(
+                    [git_binary, *_NO_HOOKS, "merge", "--abort"],
+                    repo=repo,
+                    private_dir=private_dir,
+                    logs_dir=logs_dir,
+                    slug=f"integrate-abort-{slug}",
+                    timeout_seconds=timeout_seconds,
+                    logger=logger,
+                )
+                if abort_code != 0:
+                    # An abort that fails leaves the tree in a state the next
+                    # merge would silently build on. Stop rather than produce a
+                    # pull request nobody can reason about.
+                    raise GitError(
+                        f"merging {branch} failed and `git merge --abort` then failed "
+                        f"with exit {abort_code}; the working tree is mid-merge and "
+                        "this integration cannot continue safely"
+                    )
+                logger.warning("contributor branch conflicts", branch=branch)
+                conflicted.append(branch)
+                continue
+
+            merged.append(branch)
+    finally:
+        try:
+            cred_file.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("could not remove the git credential file", error=str(exc))
+
+    logger.info(
+        "integration merge complete",
+        merged=len(merged),
+        conflicted=len(conflicted),
+        missing=len(missing),
+    )
+    return MergeOutcome(
+        merged=tuple(merged), conflicted=tuple(conflicted), missing=tuple(missing)
+    )

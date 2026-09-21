@@ -87,7 +87,9 @@ from .errors import (
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
     GitError,
+    MergeOutcome,
     commit_dirty,
+    merge_branches,
     push_branch,
     shallow_clone,
     summarize_work,
@@ -1606,6 +1608,22 @@ class Worker:
                     "could not publish a live log tail", stream=label, error=str(exc)
                 )
 
+    def _dispatch_block(self) -> dict[str, Any]:
+        """The `task.metadata["dispatch"]` block, or an empty one.
+
+        swarm-api writes four fields here -- strategy, carrier, role and
+        integrates (see DispatchOptions.to_metadata). For a long time this
+        worker read only the first, so `integrate` took the `direct-pr` path
+        and every step of a workflow opened its own pull request against an
+        API that had promised, in three places, to open exactly one.
+        """
+        task = self._task or {}
+        metadata = task.get("metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        dispatch = metadata.get("dispatch")
+        return dispatch if isinstance(dispatch, dict) else {}
+
     def _dispatch_strategy(self) -> str:
         """How the caller asked for this work to be merged. Defaults to collect.
 
@@ -1615,18 +1633,46 @@ class Worker:
         that pushes nothing. A worker that guessed "probably direct-pr" would
         open pull requests a caller never asked for.
         """
-        task = self._task or {}
-        metadata = task.get("metadata")
-        if not isinstance(metadata, dict):
-            return "collect"
-        dispatch = metadata.get("dispatch")
-        if not isinstance(dispatch, dict):
-            return "collect"
-        value = dispatch.get("strategy")
+        value = self._dispatch_block().get("strategy")
         if not isinstance(value, str):
             return "collect"
         value = value.strip().lower()
         return value if value in ("collect", "direct-pr", "integrate") else "collect"
+
+    def _dispatch_role(self) -> str:
+        """This task's part in an `integrate` workflow.
+
+        Only `integrate` assigns roles; every other strategy leaves the field
+        absent and every step behaves identically. An UNRECOGNISED role reads as
+        `contributor` rather than `integrator`, matching the same
+        newer-control-plane-older-worker reasoning as the strategy above: a
+        contributor pushes a branch and opens nothing, which is the outcome
+        that cannot surprise a caller.
+        """
+        value = self._dispatch_block().get("role")
+        if not isinstance(value, str):
+            return ""
+        value = value.strip().lower()
+        return value if value in ("contributor", "integrator") else "contributor"
+
+    def _dispatch_integrates(self) -> list[str]:
+        """The upstream task ids this integrator must bring together.
+
+        Order is preserved: swarm-api builds it from the workflow's topological
+        prefix, so it is the order the patches have to be applied in.
+        """
+        raw = self._dispatch_block().get("integrates")
+        if not isinstance(raw, list):
+            return []
+        return [t.strip() for t in raw if isinstance(t, str) and t.strip()]
+
+    def _dispatch_carrier(self) -> str:
+        """How intermediate work travels between steps. Defaults to patches."""
+        value = self._dispatch_block().get("carrier")
+        if not isinstance(value, str):
+            return "patches"
+        value = value.strip().lower()
+        return value if value in ("patches", "branches") else "patches"
 
     def _credential_refusal(self) -> dict[str, Any] | None:
         """The runner's `credential.json`, if it wrote one.
@@ -1815,7 +1861,11 @@ class Worker:
         branch = f"{cfg.git_branch_prefix}{cfg.task_id}"
         protected = (access.default_branch,) if access.default_branch else ()
 
+        role = self._dispatch_role() if strategy == "integrate" else ""
+        out["role"] = role or None
+
         auto_committed = False
+        merge: MergeOutcome | None = None
         try:
             new_sha = commit_dirty(
                 repo=repo,
@@ -1835,6 +1885,43 @@ class Worker:
             if new_sha:
                 auto_committed = True
                 work_head = new_sha
+
+            # THE INTEGRATOR MERGES BEFORE IT PUSHES.
+            #
+            # Its own commit has to be in the tree first (above), and every
+            # contributor's branch has to be in it before the push, or the
+            # single pull request this strategy promises would contain only
+            # the integrator's own step.
+            #
+            # The branch names are DERIVED from the upstream task ids with the
+            # same prefix the contributors pushed under -- never taken from
+            # metadata as names -- so nothing in a task document can point this
+            # at an arbitrary ref.
+            if role == "integrator":
+                upstream = [
+                    f"{cfg.git_branch_prefix}{tid}" for tid in self._dispatch_integrates()
+                ]
+                if upstream:
+                    merge = merge_branches(
+                        repo=repo,
+                        url=url,
+                        branches=upstream,
+                        token=token,
+                        private_dir=ws.private,
+                        logs_dir=ws.logs,
+                        timeout_seconds=cfg.git_clone_timeout_seconds,
+                        logger=self.log,
+                        author_name=cfg.git_author_name,
+                        author_email=cfg.git_author_email,
+                        branch_prefix=cfg.git_branch_prefix,
+                    )
+                    out["integrated"] = {
+                        "merged": list(merge.merged),
+                        "conflicted": list(merge.conflicted),
+                        "missing": list(merge.missing),
+                        "complete": merge.complete,
+                    }
+
             pushed = push_branch(
                 repo=repo,
                 url=url,
@@ -1862,6 +1949,22 @@ class Worker:
             }
         )
 
+        # A CONTRIBUTOR PUSHES AND STOPS. This is the whole difference between
+        # `integrate` and `direct-pr`, and its absence is what made them the
+        # same run: every step used to reach the code below and open its own
+        # pull request, so a six-step `integrate` workflow produced six of them
+        # against an API whose schema, validator and docs all say it produces
+        # ONE. The branch is the deliverable here; the integrator merges it.
+        if role == "contributor":
+            out["published"] = True
+            out["publish_reason"] = (
+                "strategy is 'integrate' and this step is a contributor: its "
+                "branch was pushed and no pull request was opened. The "
+                "integrator step merges this branch and opens the single pull "
+                "request for the whole workflow."
+            )
+            return out
+
         if not access.default_branch:
             out["published"] = True
             out["publish_reason"] = (
@@ -1871,7 +1974,9 @@ class Worker:
             return out
 
         title = f"[swarm] {cfg.task_id}"
-        body = self._pull_request_body(branch=branch, auto_committed=auto_committed)
+        body = self._pull_request_body(
+            branch=branch, auto_committed=auto_committed, merge=merge
+        )
         try:
             pr = open_pull_request(
                 access=access,
@@ -1906,7 +2011,13 @@ class Worker:
         self.log.info("pull request ready", number=pr.number, url=pr.url, created=pr.created)
         return out
 
-    def _pull_request_body(self, *, branch: str, auto_committed: bool) -> str:
+    def _pull_request_body(
+        self,
+        *,
+        branch: str,
+        auto_committed: bool,
+        merge: "MergeOutcome | None" = None,
+    ) -> str:
         """The body a reviewer reads. Provenance first, prompt second.
 
         The prompt is truncated hard and scrubbed. It is UNTRUSTED text that
@@ -1935,6 +2046,32 @@ class Worker:
                 "the agent left changes uncommitted and they would otherwise not "
                 "have reached this branch at all.",
             ]
+
+        # WHAT THIS PULL REQUEST DOES NOT CONTAIN, stated on the pull request
+        # rather than only in the run result. An integrator takes what merges
+        # and names what it could not take; a reviewer who cannot see that
+        # would read a partial integration as a complete one, which is the
+        # single most misleading thing this page could do.
+        if merge is not None:
+            lines += ["", f"Integrates {len(merge.merged)} contributor branch(es):"]
+            lines += [f"- merged: `{b}`" for b in merge.merged] or ["- none"]
+            if merge.conflicted:
+                lines += [
+                    "",
+                    "**NOT included -- these branches conflict and were left out. "
+                    "This pull request is an INCOMPLETE integration of the "
+                    "workflow:**",
+                ]
+                lines += [f"- conflicted: `{b}`" for b in merge.conflicted]
+            if merge.missing:
+                lines += [
+                    "",
+                    "**NOT included -- these branches were not found on the "
+                    "remote. The step either failed before pushing or never "
+                    "ran:**",
+                ]
+                lines += [f"- missing: `{b}`" for b in merge.missing]
+
         return "\n".join(lines)
 
     def _upload_outputs(self, *, publish: bool = False) -> dict[str, Any]:

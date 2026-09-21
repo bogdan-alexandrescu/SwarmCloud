@@ -371,6 +371,21 @@ locals {
       ADMIN_USERS             = join(",", sort(var.admin_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
+      # The verification job's identity, admitted past the domain check.
+      #
+      # swarm-api admits a caller through ALLOWED_USERS or through the frozen
+      # domain check against allowed_domains (saga.xyz). The swarm-verify job
+      # authenticates as swarm-verify@<project>.iam.gserviceaccount.com, whose
+      # domain is not saga.xyz and cannot be -- a service account is not a
+      # Workspace principal. ALLOWED_USERS exists in settings.py and auth.py
+      # for exactly this case and was set by no .tf and no .tfvars, so the
+      # in-VPC gate's every request was answered 403 by design.
+      #
+      # This widens WHICH verified identities are admitted, never whether an
+      # identity was verified: auth.py:331 consults this only after the token
+      # has been checked, and the address it compares comes from that token.
+      ALLOWED_USERS = google_service_account.verify.email
+
       # swarm-api PROXIES every account-pool call to the broker and never
       # writes a subscription credential itself, so without this the Settings
       # page cannot list or register an account at all.

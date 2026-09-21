@@ -46,8 +46,34 @@ assert_eq() {
   fi
 }
 
+# A numeric assertion whose operand was never measured is not a pass.
+#
+# Both helpers below are reached as `assert_le "$(pool_active global)" N ...`
+# (failure-test.sh:162, load-test.sh:150). A command substitution used as an
+# ARGUMENT swallows its own exit status -- `set -e` cannot fire there -- so a
+# failed read arrived as the empty string, and `[[ "" -le N ]]` is TRUE in
+# bash. The assertion passed green having measured nothing.
+#
+# Guarding the callers is not enough, because the substitution is evaluated
+# before this function is entered; the check has to be here, where the value
+# actually lands.
+_assert_numeric() {
+  local value="$1" what="$2" role="$3"
+  if [[ -z "${value}" ]]; then
+    t_fail "${what}: the ${role} could not be read (empty). Refusing to compare -- an unread value is not a passing one."
+    return 1
+  fi
+  if [[ ! "${value}" =~ ^-?[0-9]+$ ]]; then
+    t_fail "${what}: the ${role} is not a number ('${value}'). Refusing to compare."
+    return 1
+  fi
+  return 0
+}
+
 assert_le() {
   local value="$1" limit="$2" what="$3"
+  _assert_numeric "${value}" "${what}" "measured value" || return 0
+  _assert_numeric "${limit}" "${what}" "limit" || return 0
   if [[ "${value}" -le "${limit}" ]]; then
     t_pass "${what}: ${value} <= ${limit}"
   else
@@ -57,6 +83,8 @@ assert_le() {
 
 assert_ge() {
   local value="$1" floor="$2" what="$3"
+  _assert_numeric "${value}" "${what}" "measured value" || return 0
+  _assert_numeric "${floor}" "${what}" "floor" || return 0
   if [[ "${value}" -ge "${floor}" ]]; then
     t_pass "${what}: ${value} >= ${floor}"
   else
@@ -183,8 +211,36 @@ task_field() {
   printf '%s' "${doc}" | jq -r "$2"
 }
 
-pool_doc() { fs_get "pools/$1" | jq -c "${FS_JQ} if .fields then doc else null end"; }
-pool_active() { pool_doc "$1" | jq -r '.active // 0'; }
+# `|| return 1` on every read, for the reason task_doc above already carries
+# it -- these three were the ones that did not, and the omission reached the
+# assertions.
+#
+# A failed read makes these print the EMPTY STRING, and `[[ "" -eq 0 ]]` and
+# `[[ "" -le N ]]` are both TRUE in bash (confirmed on 3.2.57 and on the
+# Alpine bash the verify image ships). The predicates below then answer "the
+# pool is drained" and "capacity is back at baseline" having never read
+# anything. wait_until calls them as `if "$@"`, which discards the status, so
+# nothing downstream could notice either.
+#
+# The reachable consequence was in race-test.sh:203, polled the instant after
+# every cancellation is fired in parallel -- exactly when Firestore is most
+# likely to answer 429. One failed read there printed
+# `PASS  runner:mock active is 0` and exited 0, certifying that no lease
+# survived the cancellation storm without having looked at the pool.
+#
+# A 401 is no safer despite fs_request routing it through die: the die runs in
+# the left-hand side of the pipeline, which is a subshell, so only the subshell
+# exits and the false PASS still happens.
+pool_doc() { fs_get "pools/$1" | jq -c "${FS_JQ} if .fields then doc else null end" || return 1; }
+pool_active() {
+  local doc
+  doc="$(pool_doc "$1")" || return 1
+  # A pool document that does not exist is NOT a drained pool. fs_get opts into
+  # 404, and `null | .active // 0` is 0, so an absent pool used to read as
+  # empty -- the same conflation, one level down.
+  [[ -n "${doc}" && "${doc}" != "null" ]] || return 1
+  printf '%s' "${doc}" | jq -r '.active // 0'
+}
 pool_limit() { pool_doc "$1" | jq -r "${FS_JQ} effective_limit" 2>/dev/null || pool_doc "$1" | jq -r '.hard_limit // 0'; }
 
 # Number of tasks currently holding capacity, from the state machine's own
@@ -192,20 +248,43 @@ pool_limit() { pool_doc "$1" | jq -r "${FS_JQ} effective_limit" 2>/dev/null || p
 holding_capacity() {
   local total=0 state n
   for state in LEASED DISPATCHED STARTING RUNNING; do
-    n="$(fs_count tasks state EQUAL "${state}")"
+    # Unchecked, a failed count folded in as 0 and UNDERSTATED the total --
+    # the direction that turns a real leak into a pass.
+    n="$(fs_count tasks state EQUAL "${state}")" || return 1
+    [[ -n "${n}" ]] || return 1
     total=$(( total + n ))
   done
   printf '%s' "${total}"
 }
 
 active_leases() {
-  fs_count_where leases "$(fs_null_filter released_at IS_NULL)"
+  local n
+  n="$(fs_count_where leases "$(fs_null_filter released_at IS_NULL)")" || return 1
+  [[ -n "${n}" ]] || return 1
+  printf '%s' "${n}"
 }
 
 # Predicates, so wait_until can be given a condition rather than a shell string.
-holding_at_most() { [[ "$(holding_capacity)" -le "$1" ]]; }
-pool_drained()    { [[ "$(pool_active "$1")" -eq 0 ]]; }
-leases_at_most()  { [[ "$(active_leases)" -le "$1" ]]; }
+#
+# Each captures the read FIRST and fails the predicate when the read failed,
+# rather than letting the empty string fall into a numeric comparison that is
+# true for every bound. A failed read now means "not satisfied, keep polling",
+# and if it persists the wait times out loudly -- which is the honest outcome.
+holding_at_most() {
+  local n; n="$(holding_capacity)" || return 1
+  [[ -n "${n}" ]] || return 1
+  [[ "${n}" -le "$1" ]]
+}
+pool_drained() {
+  local n; n="$(pool_active "$1")" || return 1
+  [[ -n "${n}" ]] || return 1
+  [[ "${n}" -eq 0 ]]
+}
+leases_at_most() {
+  local n; n="$(active_leases)" || return 1
+  [[ -n "${n}" ]] || return 1
+  [[ "${n}" -le "$1" ]]
+}
 task_is_terminal() {
   case "$(task_state "$1")" in
     SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED) return 0 ;;

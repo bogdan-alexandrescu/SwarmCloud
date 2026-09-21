@@ -242,6 +242,35 @@ tenants = {
     capacity_units  = 4
   }
 
+  # The in-VPC verification job's own tenant.
+  #
+  # THE KEY IS COMPUTED, NOT CHOSEN. swarm_common.identity._slug appends a
+  # digest of the full principal whenever the slug is lossy or too long for a
+  # service account name, and
+  # `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` is both. So the
+  # id is `u-sw-c90291` and not the `u-swarm-verify` that reads naturally --
+  # verified by calling tenant_id_for_user, not by reading the regex. If the
+  # service account or the project is ever renamed, this key changes with it
+  # and must be recomputed the same way.
+  #
+  # It needs to exist at all because scripts/smoke-test.sh asks
+  # GET /v1/tenants/me and then uses whatever tenant comes back: without a
+  # tenant document there are no per-tenant Cloud Run Jobs, and an admitted
+  # task holds a lease with nowhere to run.
+  #
+  # No providers, deliberately. The suites use the `mock` runner profile, which
+  # needs no provider key, so this identity never touches a subscription
+  # credential -- which is why swarm-verify holds no secret access.
+  u-sw-c90291 = {
+    kind            = "user"
+    principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    display_name    = "Verification gate"
+    directory_group = false
+    providers       = []
+    max_active      = 2
+    capacity_units  = 4
+  }
+
   # A personal fallback tenant. swarm_common.identity maps a caller who is in
   # none of the registered groups to `u-<local part>`, and that is what an
   # operator running the smoke test from their laptop actually resolves to:
