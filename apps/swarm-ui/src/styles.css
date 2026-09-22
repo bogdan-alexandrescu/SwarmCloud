@@ -17,11 +17,34 @@
      the screen to make hard to read. Now 4.86:1 at worst. */
   --text-faint: #828d9b;
 
-  --ok: #3fb950;
-  --warn: #d29922;
-  --bad: #f85149;
-  --info: #58a6ff;
-  --paused: #a371f7;
+  /* THE SEVERITY TRIAD IS SPREAD BY LUMINANCE, not only by hue.
+     It used to be spread by hue alone, and the measurement was damning: in
+     this theme --ok and --warn sat at relative luminance .3633 and .3660, a
+     contrast ratio of 1.006:1 -- IDENTICAL in greyscale. A healthy platform
+     and one with every pool at its ceiling produced the same picture in a
+     colour-blind reader's eyes, in a greyscale print, and in the screenshot
+     that gets pasted into an incident channel, which is where these screens
+     are actually read.
+
+     Each pair of ok / warn / bad is now at least 1.5:1 apart in relative
+     luminance IN BOTH THEMES, and the order is the same in both: warn is the
+     brightest, then ok, then bad. tests/unit/control_plane/
+     test_state_colour_discriminability.py holds that floor and the 4.5:1 text
+     floor below, so tuning one of these colours can no longer silently undo
+     the other.
+
+     Red is the constraint that fixes the rest. There is no bright red: past
+     about L .30 a red is a pink, so --bad stays where it was and the other two
+     move up and away from it. Yellow is naturally the highest-luminance hue,
+     so --warn takes the top of the band and keeps its identity while doing it.
+
+     Values are relative luminance (WCAG 2.x), not HSL lightness. */
+  --ok: #58c668;      /* L .4346 -- was #3fb950, L .3633 */
+  --warn: #ffd60a;    /* L .6938 -- was #d29922, L .3660 (1.006:1 from --ok) */
+  --bad: #f85149;     /* L .2632 -- unchanged; a brighter red is a pink */
+  --info: #58a6ff;    /* L .3657 -- the link accent, NOT a severity state */
+  --paused: #b288f8;  /* L .3385 -- was #a371f7, L .2631: 1.000:1 from --bad,
+                         i.e. PARKED and FAILED were the same tone exactly */
 
   --radius: 10px;
   --gutter: 16px;
@@ -42,11 +65,27 @@
        10.5-12px throughout. Now 4.93:1 at worst. Light mode was the failing
        case here; dark mode needed the opposite correction. */
     --text-faint: #606a77;
-    --ok: #1a7f37;
-    --warn: #9a6700;
-    --bad: #cf222e;
-    --info: #0969da;
-    --paused: #8250df;
+    /* The same triad, and the light theme was the worse of the two: --ok,
+       --warn and --bad measured .1567, .1657 and .1461, so all three states
+       were ONE TONE (1.043:1, 1.054:1, 1.100:1). The band here is capped from
+       above, not below: a state colour is drawn as text at 10.5-12px on
+       --surface-2 (L .8928), so 4.5:1 caps every one of them at L .1595.
+       --ok is already as light as that cap allows, so the spread is bought by
+       taking --warn and --bad DOWN, not by taking anything up.
+
+       The cost is named rather than hidden: --warn is a dark amber that reads
+       brown, and --bad a dark red that reads maroon. Hue identity is what pays
+       for tonal separation in a light theme, which is exactly why the shape
+       cues further down this file are the primary fix and this is the second
+       one. Shape AND tone.
+
+       --warn also fixes a plain AA failure on the way past: #9a6700 was 4.37:1
+       on --surface-2, under the 4.5:1 floor, at the size this token is used. */
+    --ok: #1a7f37;      /* L .1567 -- unchanged; already at the AA cap */
+    --warn: #6e4a00;    /* L .0821 -- was #9a6700, L .1657 and 4.37:1 on --surface-2 */
+    --bad: #681117;     /* L .0341 -- was #cf222e, L .1461 */
+    --info: #0969da;    /* L .1522 -- the link accent, NOT a severity state */
+    --paused: #7139db;  /* L .1155 -- was #8250df, L .1581: 1.001:1 from --ok */
   }
 }
 
@@ -1339,8 +1378,41 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   letter-spacing: 0;
 }
 
+/* GOOD AND ALERT, and they used to differ by ONE THING: the colour of the
+   figure. --ok and --bad measured 1.054:1 apart in the light theme, so a tile
+   saying "0 over ceiling" and a tile saying "4 over ceiling" printed the same
+   in greyscale and read the same to a colour-blind operator. Both now carry a
+   mark in the top-right corner, in the same shape vocabulary the chips use
+   below — disc for ok, diamond for bad — so the tone is the second signal
+   rather than the only one.
+
+   The mark is a pseudo-element: it is decoration that repeats the figure's own
+   caption, and putting it in the markup would make every screen reader read a
+   state twice. The label gets padding on these tiles only, so a long LABEL
+   never runs under it. */
+.ctl-metric.is-alert::after,
+.ctl-metric.is-good::after {
+  content: '';
+  position: absolute;          /* `.ctl-metric` is already `position: relative` */
+  top: var(--ctl-s3);
+  right: var(--ctl-s3);
+  width: 8px; height: 8px;
+}
+.ctl-metric.is-alert .ctl-metric-label,
+.ctl-metric.is-good .ctl-metric-label { padding-right: 16px; }
+
 .ctl-metric.is-alert { border-color: var(--bad); }
+.ctl-metric.is-alert::after {
+  background: var(--bad);
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
 .ctl-metric.is-alert .ctl-metric-value { color: var(--bad); }
+
+.ctl-metric.is-good::after {
+  background: var(--ok);
+  border-radius: 999px;
+}
 .ctl-metric.is-good .ctl-metric-value { color: var(--ok); }
 
 /* -------------------------------------------------------------------------- */
@@ -1390,9 +1462,48 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: var(--info);
   transition: width .3s ease;
 }
-.ctl-util-fill.is-warn { background: var(--warn); }
-.ctl-util-fill.is-bad  { background: var(--bad); }
-.ctl-util-fill.is-paused { background: var(--paused); }
+/* THE FILL TONES CARRY A TEXTURE, not only a hue. A 10px bar has no room for
+   a glyph, so the shape cue has to be in the fill itself. Three textures that
+   stay apart at 10px and in greyscale:
+
+     default   flat                 under the ceiling, nothing to say
+     warn      diagonal stripes     approaching it
+     bad       vertical ticks       at it
+     paused    wide back-diagonals  held by an operator, which is not "full"
+
+   The stripe colour is mixed toward `--surface-2`, the track behind it, rather
+   than toward black or white: black stripes are invisible on the light theme's
+   dark fills and white ones are invisible on the dark theme's bright ones, and
+   this file has to work in both.
+
+   Angles are chosen against the two hatches already in this file. `--ctl-hatch`
+   and `--ctl-hatch-bad` both run at 45°, so `.is-bad` runs vertical and
+   `.is-paused` runs the other way: a bar at its ceiling and the over-ceiling
+   segment beside it must not read as one stripe field. */
+.ctl-util-fill.is-warn {
+  background-color: var(--warn);
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--warn) 50%, var(--surface-2)) 0 3px,
+    transparent 3px 7px
+  );
+}
+.ctl-util-fill.is-bad {
+  background-color: var(--bad);
+  background-image: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bad) 45%, var(--surface-2)) 0 2px,
+    transparent 2px 5px
+  );
+}
+.ctl-util-fill.is-paused {
+  background-color: var(--paused);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--paused) 50%, var(--surface-2)) 0 3px,
+    transparent 3px 9px
+  );
+}
 /* The part above the ceiling. Hatched, so it reads as "this should not exist"
    rather than as more of the same measurement. */
 .ctl-util-over { height: 100%; background: var(--ctl-hatch-bad); }
@@ -1417,11 +1528,34 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* -------------------------------------------------------------------------- */
 /* 3. Status chip                                                              */
 /* -------------------------------------------------------------------------- */
-/* THE WORD IS MANDATORY; the dot is decoration. A colour-only chip fails for a
-   colour-blind operator and in the greyscale screenshot that gets pasted into
-   an incident channel — which is where these screens are actually read. The
-   dot carries no meaning the text does not, so it is aria-hidden at the call
-   site and this file never relies on it alone. */
+/* THE WORD IS MANDATORY; the mark repeats it as a SHAPE. A colour-only chip
+   fails for a colour-blind operator and in the greyscale screenshot that gets
+   pasted into an incident channel — which is where these screens are actually
+   read. The mark carries no meaning the text does not, so it stays aria-hidden
+   at the call site and this file never relies on it alone.
+
+   THE SHAPE VOCABULARY. `.ctl-chip.is-unknown` already argued this case and
+   won it — "UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour", so
+   its dot went hollow — and then the idiom was used exactly once. Every state
+   now has a silhouette, and it is the same vocabulary wherever a state is
+   drawn; the metric tile below reuses it rather than inventing a second one:
+
+     ok        a filled disc          present, and fine
+     warn      a triangle, apex up    the universal caution shape
+     bad       a diamond              a disc knocked off its axis
+     info      a bar                  flat: a fact, not a verdict
+     paused    two bars               the pause glyph
+     unknown   a hollow disc          an absence of information, drawn as one
+     live      a disc with a halo     a dot that is broadcasting
+
+   SOLID SHAPES, deliberately. A stroked glyph — an outlined tick, a drawn
+   "x" — needs sub-pixel strokes at 7px and turns to mush on a 1x display,
+   which is what an operator's second monitor usually is. A filled silhouette
+   survives any DPI and any greyscale conversion.
+
+   `prefers-reduced-motion` kills the live pulse (see the top of this file), so
+   `.is-live` cannot be told from `.is-ok` by motion alone. Its halo is what
+   keeps the two apart when the animation is off. */
 
 .ctl-chip {
   display: inline-flex;
@@ -1437,7 +1571,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   color: var(--text-dim);
 }
 .ctl-chip > i {
-  width: 6px; height: 6px;
+  width: 7px; height: 7px;
   border-radius: 999px;
   background: currentColor;
   flex: none;
@@ -1447,13 +1581,51 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-chip.is-bad     { color: var(--bad); }
 .ctl-chip.is-info    { color: var(--info); }
 .ctl-chip.is-paused  { color: var(--paused); }
+
+/* The shapes. Each one overrides the disc; none of them changes the colour,
+   so tone and shape stay independent and a greyscale reader loses neither. */
+
+/* Caution: a triangle, wider than it is tall so the base reads as a base. */
+.ctl-chip.is-warn > i {
+  width: 9px; height: 8px;
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+/* Failure: a diamond. Same area as the disc, off its axis — the one mark on
+   the screen with corners. */
+.ctl-chip.is-bad > i {
+  width: 6px; height: 6px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+/* A fact rather than a verdict: flat. */
+.ctl-chip.is-info > i {
+  width: 8px; height: 3px;
+  border-radius: 1px;
+}
+/* Held, not running: the pause glyph. Two bars with a gap wide enough to
+   survive a 1x display. */
+.ctl-chip.is-paused > i {
+  width: 8px; height: 8px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    currentColor 0 34%, transparent 34% 66%, currentColor 66% 100%
+  );
+}
 /* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour. Hollow dot,
    faint text: an absence of information, drawn as one. */
 .ctl-chip.is-unknown { color: var(--text-faint); }
 .ctl-chip.is-unknown > i { background: transparent; border: 1.5px solid currentColor; }
-/* Live work gets the only motion on the screen, and only while it is live. */
+/* Live work gets the only motion on the screen, and only while it is live —
+   plus a halo, which is what distinguishes it from `.is-ok` once
+   `prefers-reduced-motion` has stopped the pulse. */
 .ctl-chip.is-live { color: var(--info); }
-.ctl-chip.is-live > i { animation: pulse 2s ease-in-out infinite; }
+.ctl-chip.is-live > i {
+  width: 6px; height: 6px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 35%, transparent);
+  animation: pulse 2s ease-in-out infinite;
+}
 
 /* -------------------------------------------------------------------------- */
 /* 4. Table                                                                    */
@@ -1503,6 +1675,42 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-table tbody tr.is-bad    { background: color-mix(in srgb, var(--bad) 8%, transparent); }
 .ctl-table tbody tr.is-warn   { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .ctl-table tbody tr.is-paused { background: color-mix(in srgb, var(--paused) 7%, transparent); }
+/* An 8% wash of a colour is roughly a 1% change in tone, so in greyscale the
+   three washes above are one wash and a flagged row is an unflagged row. Each
+   toned row also carries a rule down the left edge of its first cell, and the
+   rules differ in FORM, not only in colour:
+
+     bad      a full-height rule      act on this row
+     warn     a half-height rule      watch it
+     paused   a hatched rule          held; the hatch is this file's mark for
+                                      "not a measurement", used the same way
+                                      by `--ctl-hatch` above
+
+   It is drawn as a background on the first cell rather than a border, so it
+   costs no layout and cannot push a column out of line, and rather than as a
+   `box-shadow` on the row, which `border-collapse: collapse` drops. */
+.ctl-table tbody tr.is-bad > :first-child,
+.ctl-table tbody tr.is-warn > :first-child,
+.ctl-table tbody tr.is-paused > :first-child {
+  background-repeat: no-repeat;
+  background-position: left center;
+}
+.ctl-table tbody tr.is-bad > :first-child {
+  background-image: linear-gradient(var(--bad), var(--bad));
+  background-size: 3px 100%;
+}
+.ctl-table tbody tr.is-warn > :first-child {
+  background-image: linear-gradient(var(--warn), var(--warn));
+  background-size: 3px 46%;
+}
+.ctl-table tbody tr.is-paused > :first-child {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--paused) 0 2px,
+    transparent 2px 4px
+  );
+  background-size: 3px 100%;
+}
 /* The opaque id under the readable name: the name is for scanning, the id is
    what gets pasted into a script. Both, always, never one. */
 .ctl-table .ctl-sub {
