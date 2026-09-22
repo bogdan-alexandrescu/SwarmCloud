@@ -425,6 +425,16 @@ class SwarmClient:
         caller picks a runner profile BY NAME and supplies data; it cannot
         supply an image, a command or a resource spec, and this client has no
         parameter that would let it try.
+
+        `model` IS ATTRIBUTION, NOT SELECTION. It becomes the task's top-level
+        `model` field -- what `TaskCreate` calls "recorded for attribution and
+        cost reporting; it selects nothing about the container" -- and nothing
+        carries it into the execution environment: `worker_env` carries
+        identifiers and endpoints only, and the runner reads `input.model` or
+        the Job's own MODEL, neither of which this sets. Sending it changes what
+        the task record says and never what runs. That is deliberate rather than
+        unfinished; choosing a model per task is an execution parameter from a
+        caller, which invariant 10 forbids without a contract change.
         """
         payload: dict[str, Any] = {
             "runner_profile": runner_profile,

@@ -6,24 +6,37 @@ Cloud Run Jobs was chosen as the primary backend because it has no nodes, no
 autoscaler and no node upgrades — fewer mechanisms that can end a running agent
 for reasons unrelated to the agent.
 
-Long agent runs also need more than the default container filesystem, so the
-resource classes request Cloud Run **ephemeral (second-generation) disk**.
+**What this section used to say, and why it is wrong.** It said the resource
+classes request Cloud Run **ephemeral (second-generation) disk**; that the
+feature is Preview and enabling it disables live migration; and that the
+configuration therefore partially undermined the reason for choosing this
+backend. None of that describes what is deployed. The Terraform google provider
+cannot express that feature — `empty_dir.medium` accepts only `"MEMORY"` — so a
+workspace is a tmpfs carved out of the container's own memory, and the deployment
+runs on the fully-GA path, **which does support live migration**. The retraction
+is repeated at the foot of this file and in CONTRACT.md.
 
-**That feature is Preview, and per Google's documentation enabling it disables
-live migration.**
+**The tension is real anyway, and it is not the one that was written down.** Live
+migration covers infrastructure moves. It says nothing about the interruptions
+that actually end attempts on this platform, all of which are above the
+infrastructure:
 
-So the configuration this platform runs partially undermines one of the reasons
-it chose this backend. Live migration is precisely the mechanism that would have
-carried a two-hour agent run across a host maintenance event. Without it, an
-infrastructure event during a run destroys the sandbox.
+| Interruption | What ends the attempt |
+|---|---|
+| Provider quota exhausted | the worker checkpoints, parks, releases its lease and exits (invariant 4) |
+| Cancellation | the worker is asked to stop mid-run |
+| Reconciler reclaim | a stale fencing generation must exit without touching the lease (invariant 5) |
+| Crash, OOM, timeout | the ordinary ways a process dies |
 
-This is a **known risk, accepted deliberately**, not an oversight, and not
-something to soften in a status update. The compensation is this document:
-mandatory checkpointing every 120 seconds, which converts "the attempt is lost"
-into "the attempt loses at most two minutes". It does not convert it into "the
-attempt is unaffected". If Google promotes ephemeral disk to GA with live
-migration intact, revisit `requires_preview_disk` in
-`swarm_common/profiles.py` — and until then, treat the checkpoint interval as a
+Every one of those loses whatever is not committed. So the compensation is
+unchanged and is this document: mandatory checkpointing every 120 seconds, which
+converts "the attempt is lost" into "the attempt loses at most two minutes". It
+does not convert it into "the attempt is unaffected".
+
+**Do not relax the interval on the grounds that live migration is now
+available.** That is the one wrong conclusion this correction invites, and it
+would trade a real protection against the four rows above for a reassurance about
+a fifth that was never the problem. Treat the checkpoint interval as a
 reliability control, not a tuning knob.
 
 See also [cost-control.md](cost-control.md#4-the-preview-disk-tension) for what the

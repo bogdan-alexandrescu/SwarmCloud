@@ -165,9 +165,11 @@ function Drift({ board }: { board: HoldersBoard }) {
  * share a weight.
  *
  * vCPU and memory are deliberately NOT shown. They live in RESOURCE_CLASSES
- * in the frozen contract, no route exposes them, and hand-copying them here
- * is the restatement drift check-contract-parity.sh exists to catch — it
- * does not cover TypeScript, so the copy would drift silently. See
+ * in the frozen contract, this screen has no route that exposes them, and
+ * hand-copying them here is the restatement drift check-contract-parity.sh
+ * exists to catch. Its TypeScript section would now catch such a copy, which
+ * is not a reason to make one: the fix is to serve the numbers, as
+ * /v1/resource-classes does for the run-detail screen. See
  * docs/audits/2026-09-20/data-gaps-found-by-fanout.md.
  */
 function ClassMix({ rows }: { rows: LeaseRow[] }) {

@@ -260,14 +260,28 @@ than from arithmetic. See [scaling.md](scaling.md#6-right-sizing).
 
 ### A known risk, accepted deliberately
 
-Cloud Run's ephemeral (second-generation) disk is **Preview**, and per Google's
-documentation enabling it **disables live migration**. Live migration is part of
-why Cloud Run was chosen for long jobs, so this specific feature partially
-undermines the reason for the choice. It is accepted, not hidden, and the
-compensation is mandatory 120-second checkpointing. Read
-[checkpointing.md](checkpointing.md) and
+**This section described a risk this platform does not carry. Retracted, and
+kept because the conclusion — mandatory 120-second checkpointing — still holds
+for different reasons.**
+
+What was written here: Cloud Run's ephemeral (second-generation) disk is
+**Preview**, per Google's documentation enabling it **disables live migration**,
+and since live migration is part of why Cloud Run was chosen for long jobs, the
+feature partially undermined the reason for the choice.
+
+What is deployed: that feature is not used and cannot be. The Terraform google
+provider cannot express it — `empty_dir.medium` accepts only `"MEMORY"` — so a
+workspace is a tmpfs slice of the container's memory (`standard` ~4 GiB of its
+8, `browser` ~8 of 16, `large` ~16 of 32) and the deployment runs on the fully-GA
+path, **with** live migration.
+
+Checkpointing is not relaxed on that news. Live migration covers infrastructure
+moves. It does nothing about a quota park-and-exit, a cancellation, a reconciler
+reclaim of a stale generation or an ordinary crash, and those are what actually
+end attempts here — checkpointing is what makes each of them cost minutes rather
+than the whole attempt. Read [checkpointing.md](checkpointing.md) and
 [cost-control.md](cost-control.md#4-the-preview-disk-tension) before changing
-either the disk configuration or the checkpoint interval.
+either the workspace configuration or the checkpoint interval.
 
 ### Multi-tenant from V1
 

@@ -495,7 +495,35 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--repo", default=os.environ.get("SWARM_REPO") or None)
     d.add_argument("--ref", default=None)
     d.add_argument("--label", default=None, help="recorded as metadata.unit")
-    d.add_argument("--model", default=None)
+    # ATTRIBUTION ONLY, and the help text has to say so. This flag looked like
+    # model selection and is not: it becomes the TOP-LEVEL `model` field of the
+    # task, which `swarm_api.schemas.TaskCreate` documents as "recorded for
+    # attribution and cost reporting -- it selects nothing about the container".
+    # Nothing carries it any further. `scheduler.dispatch.worker_env` builds the
+    # worker's entire environment and deliberately carries "identifiers and
+    # endpoints" only, so no MODEL reaches the container from a task; the
+    # worker's own `cfg.model` is read from the Job definition's MODEL, and the
+    # runner's `--model` argument comes from `input.model`, which this flag does
+    # not set. So `--model` changed what the task record SAYS and never what
+    # ran -- the worst shape a flag can have.
+    #
+    # Documented rather than refused. The field is real, it round-trips through
+    # `codec.task_to_api`, and `swarm result --json` prints it, so a caller
+    # tagging a run for cost reporting is using it correctly. Removing it would
+    # break that and would still leave the API accepting the same field.
+    #
+    # Wiring it through to the agent is NOT a fix to make here: a caller-chosen
+    # model in the execution environment is an execution parameter supplied by
+    # the caller, which is what CONTRACT.md invariant 10 exists to forbid. That
+    # is an owner decision and belongs in docs/contract-change-requests.md.
+    d.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "recorded on the task for attribution and cost reporting; "
+            "it does NOT select the model the agent runs"
+        ),
+    )
     d.add_argument("--timeout", type=int, default=None)
     d.add_argument("--json", action="store_true")
     d.set_defaults(func=cmd_dispatch)

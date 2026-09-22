@@ -943,11 +943,15 @@ export interface AttemptRow {
  * so "peak RSS 6.1 GiB" was a figure with no scale -- comfortable on `large`,
  * one prompt from an OOM kill on `standard`, and no way to tell which.
  *
- * The numbers are NOT hand-copied into this file on purpose.
- * `check-contract-parity.sh` asserts that shell and jq restatements of the
- * frozen catalogue still match the Python; it does not cover TypeScript, so a
- * copy here would drift the first time a class is resized and nothing would
- * notice -- see the same reasoning in Holders.tsx's ClassMix.
+ * The numbers are NOT hand-copied into this file on purpose. A served value
+ * cannot drift at all, which is strictly better than a copy something watches:
+ * an asserted copy still has to be edited in two places when a class is resized.
+ * See the same reasoning in Holders.tsx's ClassMix.
+ *
+ * (`check-contract-parity.sh` now has a TypeScript section and does assert the
+ * copies this file does keep -- RESOURCE_UNITS, the state sets, the reason and
+ * provider unions, the pool families. That is the second-best answer, used where
+ * a route is not available. It is not a reason to start copying.)
  */
 export interface ResourceClassSpec {
   name: string
@@ -1339,11 +1343,22 @@ export interface Tenant {
  * `quota_to_api` = asdict(QuotaState) + the state enum value + effective_limit.
  * Every nullable field here is genuinely unknown rather than zero, which is
  * why they are typed `| null` and must render as an em dash.
+ *
+ * `state` reuses `ProviderStateName` rather than spelling the members again.
+ * The second spelling had drifted: it listed `'HEALTHY'`, which is not a member
+ * of `ProviderState` and is written nowhere in this platform, and it omitted
+ * `AVAILABLE`, `THROTTLED` and `UNKNOWN`, which are three of the six that are.
+ * `| string` made the mistake invisible -- the union widens to `string`, so
+ * nothing ever failed to compile -- and it is kept, deliberately, for the same
+ * reason `park_reason` keeps it: a value the server adds must still decode and
+ * render as itself rather than crash the row. `check-contract-parity.sh` now
+ * asserts `ProviderStateName` against the frozen enum, so there is one
+ * restatement left and something watching it.
  */
 export interface QuotaState {
   provider: string
   tenant_id: string
-  state: 'HEALTHY' | 'COOLDOWN' | 'EXHAUSTED' | 'DISABLED' | string
+  state: ProviderStateName | string
   updated_at: string
   configured_hard_max: number
   adaptive_target: number | null
@@ -1737,7 +1752,16 @@ export interface WorkflowStep {
   resource_class: string
   /** The DAG edges. Real ones -- this is a tree, not a star. */
   depends_on: string[]
-  input_from: string | null
+  /**
+   * A MAP, upstream step_id -> artifact filename to stage into this step's
+   * workspace. `models.WorkflowStep.input_from` is `dict[str, str]` and
+   * `codec.workflow_to_api` serves it as it stands, so this was declared
+   * `string | null` against an object that is never a string and never null --
+   * and the fixtures supplied a string, so it looked right in development and
+   * would have been wrong against every real response. A step may stage from
+   * SEVERAL upstreams, which the old type could not express at all.
+   */
+  input_from: Record<string, string>
   timeout_seconds?: number | null
   task_id?: string | null
   input?: unknown

@@ -1876,8 +1876,11 @@ function leaseCheck(leases: Result<LeasePage>): Check {
   // this set for exactly the leases it was meant to surface: `mark_dispatched`
   // moves a lease to DISPATCHED the instant the backend accepts the create
   // call. The API flag is now the whole answer; narrowing it here would
-  // restate a contract rule in TypeScript, which check-contract-parity.sh
-  // does not cover and so could drift silently.
+  // restate a contract rule in TypeScript. That restatement used to be
+  // invisible to check-contract-parity.sh; as of the merge that landed
+  // "the parity check now reads TypeScript" it is not, so the duplicate would
+  // now be CAUGHT rather than drift silently. It is still wrong to write: a
+  // rule the API already answers should be read, not re-derived.
   const overdue = rows.filter((l) => l.dispatch_overdue)
   const dead = rows.filter((l) => leaseLiveliness(l, page.thresholds).kind === 'presumed-dead')
   const silent = rows.filter(

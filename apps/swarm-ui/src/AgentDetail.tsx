@@ -994,10 +994,10 @@ function attemptEnd(a: AttemptRow, task: Task, isLatest: boolean): AttemptEnd {
  * REQUESTED vs UTILISED, for one attempt.
  *
  * The requested side is `RESOURCE_CLASSES` from the frozen catalogue, served
- * by `/v1/resource-classes`. It is a route rather than a table in this
- * repository because `check-contract-parity.sh` does not cover TypeScript, so
- * a hand copy would drift the first time a class is resized and nothing would
- * notice.
+ * by `/v1/resource-classes`. It is a route rather than a table because a
+ * served value cannot drift at all -- `check-contract-parity.sh` now has a
+ * TypeScript section, but an asserted copy still has to be edited in two
+ * places every time a class is resized, and a route has to be edited in none.
  *
  * THE COMPARISON ONLY MEANS ANYTHING BECAUSE `requests == limits`. There is no
  * bursting on this platform, so the requested figure is also the ceiling: 90%

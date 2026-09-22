@@ -88,11 +88,29 @@ Re-running them at a 70% compute discount is not a saving.
 
 ## 4. The Preview-disk tension
 
-Cloud Run ephemeral (second-generation) disk is **Preview**, and enabling it
-**disables live migration**. Cloud Run was chosen partly because it has fewer
-ways to interrupt a long job; this specific feature reintroduces one. That is a
-known risk, accepted deliberately — see
-[checkpointing.md](checkpointing.md#the-tension-stated-plainly).
+**Retracted. This platform does not use Cloud Run ephemeral disk, so the tension
+this section described does not exist.** The section is kept under its original
+heading because other documents link to it and because the conclusion it reached
+— that checkpointing is not optional and every attempt pays for it — is still
+correct, for different reasons.
+
+What was written here: Cloud Run ephemeral (second-generation) disk is
+**Preview**, enabling it **disables live migration**, and Cloud Run was chosen
+partly for having fewer ways to interrupt a long job, so the feature reintroduced
+one.
+
+What is actually deployed: the Terraform google provider cannot express that
+feature — `empty_dir.medium` accepts only `"MEMORY"` — so workspaces are
+memory-backed tmpfs on the fully-GA path, which **does** support live migration.
+The reliability requirement that drove the Cloud Run choice is better served than
+by the feature we set out to use.
+
+Checkpointing stays mandatory, and the bill below is unchanged. Live migration
+covers **infrastructure** moves; it does nothing about the application-level
+interruptions that actually end attempts here — a quota park-and-exit, a
+cancellation, a reconciler reclaim of a stale generation, an ordinary crash. Do
+not read "live migration is available now" as a reason to lengthen the interval;
+see [checkpointing.md](checkpointing.md#the-tension-stated-plainly).
 
 The cost consequence is that checkpointing is not optional, so every attempt pays
 for it:
@@ -104,10 +122,11 @@ storage               ≈ retained checkpoints x archive size x retention days
 ```
 
 That is a real, recurring line on the bill, and the alternative is losing whole
-attempts — including their provider tokens — to infrastructure events. Paying
-30 uploads an hour to avoid re-running two hours of an agent is the cheaper side
-of the trade, but it is a trade, not a free win. Keep `artifact_retention_days`
-tight (14 in dev, 180 in prod) and let lifecycle rules do the rest.
+attempts — including their provider tokens — to a park, a cancellation, a
+reclaim or a crash. Paying 30 uploads an hour to avoid re-running two hours of an
+agent is the cheaper side of the trade, but it is a trade, not a free win. Keep
+`artifact_retention_days` tight (14 in dev, 180 in prod) and let lifecycle rules
+do the rest.
 
 ---
 

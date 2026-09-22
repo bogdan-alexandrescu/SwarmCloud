@@ -56,12 +56,12 @@ def resource_classes(
     absorb an overshoot, and `oom_near_miss` exists precisely because the
     attempt that finished at 97% of its ceiling looks like a clean success.
 
-    WHY A ROUTE RATHER THAN A TABLE IN THE CLIENT. `check-contract-parity.sh`
-    asserts that shell and jq restatements of the frozen catalogue still match
-    the Python; it does not cover TypeScript. A copy of these five numbers in a
-    .ts file would therefore drift silently the first time a class is resized,
-    and the screen most likely to be trusted -- "did this agent fit?" -- would
-    be the one answering from stale figures.
+    WHY A ROUTE RATHER THAN A TABLE IN THE CLIENT. A served value cannot drift
+    at all. `check-contract-parity.sh` does now assert the TypeScript copies the
+    client keeps, but an asserted copy of these five numbers would still have to
+    be edited in two places every time a class is resized -- and the screen most
+    likely to be trusted, "did this agent fit?", is the worst one to leave
+    depending on somebody remembering the second place.
 
     Static and non-sensitive: no store read, no tenant filter, nothing here
     that is not already implied by the `resource_class` a caller submits.
