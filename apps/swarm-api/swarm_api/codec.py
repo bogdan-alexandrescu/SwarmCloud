@@ -350,6 +350,14 @@ def lease_to_api(lease: Lease) -> dict[str, Any]:
         # `dispatch_overdue` are methods. Mixed, on a frozen model, so it
         # cannot be tidied -- calling the property returns a bool and then
         # tries to call it, which fails at runtime rather than at import.
+        #
+        # `dispatch_overdue` no longer carries a `state is LEASED` guard. The
+        # old comment here argued the guard was safe "because nothing ever
+        # writes STARTING or RUNNING to a lease document". That premise was
+        # true and the conclusion did not follow: the state that ends the
+        # window is DISPATCHED, written by `mark_dispatched` as soon as the
+        # backend accepts the create call. So the flag read false on every
+        # lease whose dispatch was in flight -- the only population it is for.
         "released": lease.is_released,
         "expired": lease.is_expired(),
         "dispatch_overdue": lease.dispatch_overdue(),

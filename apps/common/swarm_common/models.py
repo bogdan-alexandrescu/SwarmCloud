@@ -142,8 +142,26 @@ class Lease:
         return (now or utcnow()) > self.expires_at
 
     def dispatch_overdue(self, now: datetime | None = None) -> bool:
-        """Admitted but never started. The reconciler reclaims these."""
-        return self.state is TaskState.LEASED and (now or utcnow()) > self.dispatch_deadline
+        """Past the dispatch deadline with no worker to show for it.
+
+        NOT guarded on `state is LEASED`. `mark_dispatched`
+        (scheduler/store.py) writes DISPATCHED to the lease the moment the
+        backend ACCEPTS the create call -- long before a container runs -- so
+        that guard excluded essentially every lease this method names. Measured
+        on task_b5dc2568713a40158851 in saga-agents-staging on 2026-09-22:
+        `dispatch_overdue` was still False 301 seconds after admission, and the
+        `overdue_only=1` operator query returned an empty list at exactly the
+        moment it was asked.
+
+        A `heartbeat_at is None` conjunct is deliberately NOT added. The
+        reconciler needs that distinction because it decides whether to fence a
+        generation; this method answers the narrower question -- has the
+        deadline passed -- and a lease that heartbeated and then went quiet past
+        the deadline is still, factually, overdue.
+
+        Changed 2026-09-22 by the owner's decision on contract change request 9.
+        """
+        return (now or utcnow()) > self.dispatch_deadline
 
 
 # --------------------------------------------------------------------------

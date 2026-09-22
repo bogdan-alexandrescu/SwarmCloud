@@ -1871,7 +1871,14 @@ function leaseCheck(leases: Result<LeasePage>): Check {
   }
   const page = leases.data
   const rows = page.leases
-  const overdue = rows.filter((l) => l.dispatch_state === 'LEASED' && l.dispatch_overdue)
+  // No `dispatch_state === 'LEASED'` conjunct. That was a second copy of the
+  // guard removed from `Lease.dispatch_overdue` on 2026-09-22, and it emptied
+  // this set for exactly the leases it was meant to surface: `mark_dispatched`
+  // moves a lease to DISPATCHED the instant the backend accepts the create
+  // call. The API flag is now the whole answer; narrowing it here would
+  // restate a contract rule in TypeScript, which check-contract-parity.sh
+  // does not cover and so could drift silently.
+  const overdue = rows.filter((l) => l.dispatch_overdue)
   const dead = rows.filter((l) => leaseLiveliness(l, page.thresholds).kind === 'presumed-dead')
   const silent = rows.filter(
     (l) => !dead.includes(l) && leaseLiveliness(l, page.thresholds).kind === 'silent',

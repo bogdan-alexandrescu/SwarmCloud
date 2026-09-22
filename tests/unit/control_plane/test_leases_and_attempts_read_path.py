@@ -246,3 +246,78 @@ def test_the_per_tenant_provider_pool_has_its_own_name():
         "provider-wide one would be enough and it is not"
     )
     assert "backend:CLOUD_RUN_JOB" in names
+
+
+# -- dispatch_overdue, after contract change request 9 ----------------------
+#
+# These exist because the suite was green while the flag was permanently False.
+# The only test that touched `dispatch_overdue` asserted the KEY was present
+# and never its VALUE:
+#
+#     for key in ("released", "expired", "dispatch_overdue"):
+#         assert key in body
+#
+# So the operator query `overdue_only=1` could return an empty list at exactly
+# the moment an incident made someone ask it, and nothing went red for weeks.
+# A predicate is not covered by a test that checks it was spelled correctly.
+#
+# THESE ANCHOR ON THE REAL CLOCK, NOT ON THE MODULE'S `NOW`. `lease_to_api`
+# calls `lease.dispatch_overdue()` with no argument, so the predicate resolves
+# against `utcnow()`. A fixture dated 2026-09-20 is already days past any
+# deadline, which makes "overdue" assertions pass no matter what the code does
+# -- the first draft of these tests did exactly that and only the negative case
+# exposed it.
+
+
+def _lease_at(db, lease_id, tenant, *, deadline_delta, state="DISPATCHED"):
+    """A lease whose dispatch deadline sits `deadline_delta` from real now."""
+    real_now = datetime.now(timezone.utc)
+    created = real_now - timedelta(minutes=1)
+    db.collection("leases").document(lease_id).set({
+        "lease_id": lease_id,
+        "task_id": f"task_{lease_id}",
+        "attempt_id": f"att_{lease_id}",
+        "tenant_id": tenant,
+        "generation": 1,
+        "pools": ["global", f"tenant:{tenant}"],
+        "units": 1,
+        "state": state,
+        "created_at": created,
+        "dispatch_deadline": real_now + deadline_delta,
+        "expires_at": real_now + timedelta(minutes=30),
+        "heartbeat_at": None,
+        "released_at": None,
+        "release_reason": None,
+    })
+
+
+def test_a_dispatched_lease_past_its_deadline_is_overdue(db):
+    """THE ONE THAT WOULD HAVE CAUGHT IT.
+
+    `mark_dispatched` writes DISPATCHED the moment the backend ACCEPTS the
+    create call, long before a container runs. The old guard
+    `state is TaskState.LEASED` therefore excluded essentially every lease
+    `dispatch_overdue` names. Measured live on 2026-09-22: still False 301s
+    after admission.
+    """
+    _lease_at(db, "l1", "eng", deadline_delta=-timedelta(minutes=5), state="DISPATCHED")
+    body = lease_to_api(_store(db).list_leases("eng")[0])
+    assert body["dispatch_overdue"] is True, (
+        "a DISPATCHED lease five minutes past its dispatch deadline is "
+        "overdue; a guard on state is LEASED hides exactly this case"
+    )
+
+
+def test_a_lease_inside_its_deadline_is_not_overdue(db):
+    """The other half. Without it, returning a constant True also passes --
+    and it is what exposed the first draft anchoring on the wrong clock."""
+    _lease_at(db, "l1", "eng", deadline_delta=timedelta(minutes=5), state="DISPATCHED")
+    body = lease_to_api(_store(db).list_leases("eng")[0])
+    assert body["dispatch_overdue"] is False
+
+
+def test_a_still_LEASED_lease_past_its_deadline_is_overdue(db):
+    """The case the old guard DID cover, kept so removing it cannot regress."""
+    _lease_at(db, "l1", "eng", deadline_delta=-timedelta(minutes=5), state="LEASED")
+    body = lease_to_api(_store(db).list_leases("eng")[0])
+    assert body["dispatch_overdue"] is True

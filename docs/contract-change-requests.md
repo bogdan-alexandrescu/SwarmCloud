@@ -858,3 +858,60 @@ Which gives the shape of the answer to all of these:
 * where one reader is jq or Terraform, a parity check ends it, and both exist;
 * where one reader is TypeScript, nothing ends it today, and a route that serves
   the value is the only remedy this repository has actually made work.
+
+## 9. `models.py`: `Lease.dispatch_overdue` excluded the leases it names
+
+**Status: ACCEPTED and applied 2026-09-22, by the owner's decision.**
+
+### The claim that was false
+
+```python
+def dispatch_overdue(self, now=None) -> bool:
+    """Admitted but never started. The reconciler reclaims these."""
+    return self.state is TaskState.LEASED and (now or utcnow()) > self.dispatch_deadline
+```
+
+`mark_dispatched` (`apps/scheduler/scheduler/store.py`) writes `DISPATCHED` to
+the lease the moment the backend *accepts* the create call — long before a
+container runs. So `state is TaskState.LEASED` was False for essentially every
+lease whose dispatch was in flight, which is exactly the population the method
+names. Measured on `task_b5dc2568713a40158851` on 2026-09-22: still False 301
+seconds after admission.
+
+### What it cost
+
+* `apps/swarm-api/swarm_api/routes/admin.py:433` — the `overdue_only=1` filter
+  is the query an operator runs during a capacity incident to find stuck
+  dispatches. It returned an empty list at exactly the moment it was asked.
+* `apps/swarm-api/swarm_api/codec.py:355` — `lease_to_api` reported
+  `dispatch_overdue: false` on every lease the API served.
+* `apps/swarm-ui/src/Overview.tsx` — narrowed again with
+  `dispatch_state === 'LEASED' &&`, a second copy of a guard that had already
+  emptied the set.
+
+### Why no test caught it
+
+The only test that touched the predicate asserted the KEY was present and never
+its VALUE:
+
+```python
+for key in ("released", "expired", "dispatch_overdue"):
+    assert key in body
+```
+
+A predicate is not covered by a test that checks it was spelled correctly. The
+suite stayed green for weeks with the flag permanently False.
+
+### What was applied
+
+The `state is LEASED` guard was removed from the helper, the stale comment in
+`codec.py` defending it was corrected, and the duplicate guard in `Overview.tsx`
+was deleted. A `heartbeat_at is None` conjunct was deliberately NOT added: the
+reconciler needs that distinction because it decides whether to fence a
+generation, while this method answers the narrower question of whether the
+deadline has passed.
+
+Three tests were added in
+`tests/unit/control_plane/test_leases_and_attempts_read_path.py`, and the fix
+was proved by mutation — restoring the guard turns
+`test_a_dispatched_lease_past_its_deadline_is_overdue` red.
