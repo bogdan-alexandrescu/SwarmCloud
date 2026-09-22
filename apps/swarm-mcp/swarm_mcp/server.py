@@ -246,9 +246,11 @@ TOOLS: list[dict[str, Any]] = [
             "refuses the whole submission.\n"
             "\n"
             "Returns as soon as the workflow is accepted, with the task id of "
-            "every step. It does not wait and cannot stream: poll "
-            "swarm_workflow_status, or run the `swarm tail` command it hands "
-            "back in a background shell."
+            "every step. It does not wait: poll swarm_workflow_status for "
+            "per-step state, or swarm_follow with the returned task ids to "
+            "narrate events and log lines as they arrive. swarm_follow takes a "
+            "cursor and returns the next one, so a session can report progress "
+            "without holding anything open."
         ),
         "inputSchema": {
             "type": "object",

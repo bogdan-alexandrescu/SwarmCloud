@@ -3,6 +3,11 @@ name: delegate
 description: Decide whether a unit of work runs in this session or as agents in SwarmCloud, dispatch it, follow it, and bring the result back into the tree. Use when work splits into several independent units, when a task would flood this session's context, when it is long enough that the developer wants their terminal back, when more parallelism is wanted than one machine has, or when asked "run this in the cloud", "run these in parallel", "do it remotely", "what is running remotely", "what has that cost", or "apply what the agent did". Read it before applying any remote agent's patch into a working tree.
 allowed-tools:
   - mcp__swarmcloud__swarm_dispatch
+  - mcp__swarmcloud__swarm_workflow
+  - mcp__swarmcloud__swarm_workflow_status
+  - mcp__swarmcloud__swarm_workflow_result
+  - mcp__swarmcloud__swarm_workflow_cancel
+  - mcp__swarmcloud__swarm_follow
   - mcp__swarmcloud__swarm_status
   - mcp__swarmcloud__swarm_wait
   - mcp__swarmcloud__swarm_result
@@ -71,6 +76,19 @@ agents will see, and check that the work they depend on is on it.
 
 ## Dispatching
 
+**Anything with `depends_on` or `input_from` goes through `swarm_workflow`**,
+not through a hand-rolled join. Dispatching the units separately and stitching
+them together in a later prompt is exactly the hand bookkeeping the platform
+exists to remove, and it loses artifact staging entirely --- `input_from` is how
+one step's output reaches the next, by GCS reference rather than through a
+prompt.
+
+Per-step state comes from `swarm_workflow_status`, which reports the **derived**
+rollup and never a stored `state` field. That distinction is not theoretical: on
+2026-09-22 a stored field read `QUEUED` for a workflow whose six steps had ALL
+succeeded.
+
+
 | What you want | Call |
 |---|---|
 | run one unit remotely | `swarm_dispatch` |
@@ -100,6 +118,16 @@ per-tenant isolation is not negotiable — so a prompt that says "continue what
 the other agent started" describes something the agent cannot do.
 
 ## Following a run
+
+Use **`swarm_follow`** rather than going silent between dispatch and result. It
+takes a cursor and hands back the next one, so poll it between turns and narrate
+progress the way this session narrates local work. It is a cursor rather than a
+held connection because a long-lived tail inside a subprocess dies.
+
+It caps what it returns and SAYS when it capped. A silent truncation reads as
+"that was all the output", so pass the cap on to the developer rather than
+summarising past it.
+
 
 An MCP tool returns exactly **once**, so nothing here streams and no tool
 pretends to.
@@ -222,36 +250,3 @@ pool is far worse than a surprise locally.
 **3. Where the work landed.** Covered above, and it is the rule most easily
 lost when things are going well.
 
-## Tools that do not exist yet
-
-Everything above is written against tools that exist today. Two capabilities
-are being built by other lanes. **Do not call a tool because this file names
-one** — the tool list the host advertises is the only truth about what exists.
-
-* **`swarm_workflow`** — proposed in `docs/cli-integration/seamless-delegation.md`
-  as gap G1. **It does not exist.** As of 2026-09-22 the string "workflow"
-  appears zero times in `apps/swarm-mcp/swarm_mcp/server.py`. The platform side
-  is real — `POST /v1/workflows` ran a six-step DAG with a five-way join on
-  2026-09-22 — so the gap is the bridge, not the platform.
-
-  *Until it lands*, a DAG cannot be submitted from a session. Dispatch the
-  independent units, `swarm_wait` on them, then dispatch the join with their
-  results in its prompt — and **say that is what you are doing**, because it is
-  exactly the hand bookkeeping the platform exists to remove, and the developer
-  should know they are paying for it.
-
-  *When it lands*, anything with `depends_on` or `input_from` goes through it
-  instead of a hand-rolled join, and per-step state comes from the **derived**
-  rollup, never a stored `state` field — one such field read `QUEUED` on
-  2026-09-22 for a workflow whose six steps had all succeeded.
-
-* **A follow tool** — gap G2 proposes one and deliberately does not name it;
-  the lane building it picks the name. **No such tool exists today.**
-  `swarm tail` is a terminal command, not a tool, which is why the
-  background-shell advice above is the whole story for now. The design
-  constraint is that a long-lived tail inside a subprocess dies, so it will be
-  a resumable cursor over new events and log lines rather than a held
-  connection.
-
-  *When it lands*, use it instead of going silent: poll the cursor between
-  turns and narrate progress the way this session narrates local work.

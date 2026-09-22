@@ -165,22 +165,39 @@ def _not_yet(body: str) -> set[str]:
     return {m.group(1) for line in section.split("\n") if (m := _NOT_YET_ENTRY.match(line))}
 
 
-def test_the_delegation_skill_still_tells_the_truth_about_what_is_missing():
-    """When the other lane ships `swarm_workflow`, this goes red -- which is
-    the point. The skill currently instructs a session to join fan-out by hand
-    BECAUSE no workflow tool exists; that instruction becomes wrong, and
-    expensive, on the commit that makes the tool real."""
+def test_the_delegation_skill_claims_nothing_real_is_missing():
+    """This replaces a scaffold that did its job and fired exactly once.
+
+    The old test asserted the skill still had a "Tools that do not exist yet"
+    section listing `swarm_workflow` and a follow tool, and went red the moment
+    either became real -- which is what it was for. Both landed on 2026-09-22,
+    it fired, the section was deleted and its substance moved into the sections
+    that own the behaviour.
+
+    Keeping the scaffold after that would have required the skill to keep a
+    heading that was a lie in order to satisfy a test. So the guarantee is
+    inverted and made permanent instead: the skill must never tell a session
+    that a tool which DOES exist is missing. That was the expensive failure --
+    it made sessions hand-join a fan-out and lose artifact staging -- and it
+    stays guarded whether or not a "not yet" section ever exists again.
+    """
     path = _PLUGIN / "skills" / "delegate" / "SKILL.md"
     _, body = _load(path)
-    declared = _not_yet(body)
-    assert declared, (
-        f"{_NOT_YET_HEADING!r} lists no tool. If the gaps closed, delete the "
-        "section and the workarounds it justifies."
+
+    declared_missing = _not_yet(body)
+    wrongly_missing = sorted(declared_missing & _REAL)
+    assert not wrongly_missing, (
+        f"{wrongly_missing} exist in swarm_mcp.server.TOOLS but the skill "
+        "still tells sessions to work around their absence"
     )
-    landed = sorted(declared & _REAL)
-    assert not landed, (
-        f"{landed} now exist(s) in swarm_mcp.server.TOOLS while the skill still "
-        "tells sessions to work around their absence. Rewrite that section."
+
+    # The other direction: a tool the skill leans on must actually be there.
+    named = {m.group(1) for m in re.finditer(r"`(swarm_[a-z_]+)`", body)}
+    phantom = sorted(named - _REAL)
+    assert not phantom, (
+        f"the skill names {phantom}, which do not exist in "
+        "swarm_mcp.server.TOOLS -- a session told to call one gets an error "
+        "at the moment it is trying to be useful"
     )
 
 
