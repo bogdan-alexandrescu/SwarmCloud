@@ -177,7 +177,8 @@ a manual environment approval — no downloadable service-account keys exist.
 [`checkpointing`](docs/checkpointing.md) ·
 [`multi-tenancy`](docs/multi-tenancy.md) · [`security`](docs/security.md) ·
 [`operations`](docs/operations.md) · [`cost control`](docs/cost-control.md) ·
-[`troubleshooting`](docs/troubleshooting.md)
+[`troubleshooting`](docs/troubleshooting.md) · [`testing`](docs/testing.md) ·
+[`benchmarks`](docs/benchmarks.md)
 
 [`CONTRACT.md`](CONTRACT.md) holds the invariants every component must respect.
 

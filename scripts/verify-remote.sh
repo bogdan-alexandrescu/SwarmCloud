@@ -10,8 +10,21 @@
 # balancer or the VPC. See docs/audits/2026-09-20/verification-targets-cannot-run.md.
 #
 # This executes the same scripts, unchanged, in a Cloud Run job that IS in the
-# VPC. The job's identity holds run.invoker on swarm-api and nothing else, and
-# its ID token comes from the metadata server rather than from a key file.
+# VPC. Its ID token comes from the metadata server rather than from a key file.
+#
+# The job's identity holds four grants, all read-only at the project level:
+# run.invoker on swarm-api, roles/datastore.viewer, roles/run.viewer and
+# storage.objectViewer on the artifact bucket (terraform/infra/verify.tf). The
+# header here used to say "run.invoker and nothing else", which stopped being
+# true when the suites were found to read Firestore and Cloud Run directly --
+# and an out-of-date statement of what an identity can do is how the next
+# permission gets granted without anyone weighing it.
+#
+# ONE TARGET CANNOT RUN WITH THOSE GRANTS. race-test narrows a pool to force
+# contention, which is a WRITE, and roles/datastore.viewer cannot make it. That
+# is a deliberate open question about which permission to add, not an oversight;
+# the options, their blast radius and the recommendation are written out at the
+# top of scripts/race-test.sh, next to the code that needs the permission.
 #
 # Exit code is the job's exit code. A gate that swallows the failure it was
 # built to catch is worse than no gate, so nothing here uses `|| true` and the
@@ -28,7 +41,15 @@ require_cmd gcloud
 
 JOB="swarm-verify"
 TARGETS=("$@")
-[[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=(smoke-test concurrency-test race-test)
+# `e2e-test` is in the DEFAULT list, not merely available to be named.
+#
+# A suite nothing invokes rots, and this repository has the receipts:
+# tests/integration errored in its fixture for 95 commits because `make test`
+# did not run it, and tests/terraform's 86 assertions were wired into no target
+# at all. The seam checks are the ones that would have caught the last three
+# days of defects, so they belong in what runs by default rather than in what
+# somebody remembers to type.
+[[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=(smoke-test concurrency-test race-test e2e-test)
 
 step "Verification gate, inside the VPC"
 info "job     ${JOB} (${REGION}/${PROJECT_ID})"

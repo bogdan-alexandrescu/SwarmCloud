@@ -75,36 +75,67 @@ for path in targets:
 link = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 bad = []
 checked = 0
-for path in targets:
-    text = path.read_text()
+
+
+def _mask_fences(text: str) -> str:
+    """Blank out fenced code, KEEPING the line structure so offsets still map.
+
+    Blanking rather than deleting matters twice: a line number computed from
+    the masked text still points at the real line, and a link inside a fenced
+    example stays unchecked (it is an illustration, not a link).
+    """
+    out = []
     in_fence = False
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for line in text.split("\n"):
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
+            out.append("")
             continue
-        if in_fence:
+        out.append("" if in_fence else line)
+    return "\n".join(out)
+
+
+for path in targets:
+    text = path.read_text()
+    # SCANNED OVER THE WHOLE TEXT, NOT LINE BY LINE.
+    #
+    # This loop used to iterate `text.splitlines()` and run the regex against
+    # one line at a time. A Markdown link may be wrapped by the author, and the
+    # label side of `[...](...)` legally contains the newline:
+    #
+    #     you want [how to read a benchmark
+    #     result](#how-to-read-a-benchmark-result)
+    #
+    # Such a link matched nothing, so it was never resolved and never counted
+    # -- and the run still printed "0 broken", which reads as "every link is
+    # fine" rather than "I did not look at that one". A wrong anchor written
+    # that way survived the gate silently, which is this repository's own
+    # defect class in the checker meant to catch it: both ends built, the seam
+    # never executed. The fence mask keeps code examples excluded and keeps the
+    # reported line number honest.
+    masked = _mask_fences(text)
+    for m in link.finditer(masked):
+        lineno = masked.count("\n", 0, m.start()) + 1
+        target = m.group(1)
+        if target.startswith(("http://", "https://", "mailto:")):
             continue
-        for m in link.finditer(line):
-            target = m.group(1)
-            if target.startswith(("http://", "https://", "mailto:")):
-                continue
-            filepart, _, frag = target.partition("#")
-            dest = (path.parent / filepart).resolve() if filepart else path.resolve()
-            checked += 1
-            if not dest.exists():
-                bad.append(f"{path.relative_to(root)}:{lineno}  {target}  -> no such file")
-                continue
-            if not frag:
-                continue
-            known = anchors.get(dest)
-            if known is None:
-                continue          # a Markdown file outside the scanned set
-            if frag not in known:
-                near = [a for a in sorted(known) if frag.lstrip("0123456789-") in a]
-                hint = f"  (did you mean #{near[0]}?)" if near else ""
-                bad.append(
-                    f"{path.relative_to(root)}:{lineno}  {target}  -> no such anchor{hint}"
-                )
+        filepart, _, frag = target.partition("#")
+        dest = (path.parent / filepart).resolve() if filepart else path.resolve()
+        checked += 1
+        if not dest.exists():
+            bad.append(f"{path.relative_to(root)}:{lineno}  {target}  -> no such file")
+            continue
+        if not frag:
+            continue
+        known = anchors.get(dest)
+        if known is None:
+            continue          # a Markdown file outside the scanned set
+        if frag not in known:
+            near = [a for a in sorted(known) if frag.lstrip("0123456789-") in a]
+            hint = f"  (did you mean #{near[0]}?)" if near else ""
+            bad.append(
+                f"{path.relative_to(root)}:{lineno}  {target}  -> no such anchor{hint}"
+            )
 
 for b in bad:
     print(f"    {b}", file=sys.stderr)

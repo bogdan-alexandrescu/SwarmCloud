@@ -110,6 +110,19 @@ jobs:
         # expired" -- the failure mode that produced the swallowed-stderr sweep.
         run: ./scripts/lib/auth-guard.sh --self-test
 
+      - name: the benchmark engine still fails a regression and a missed measurement
+        # `make test` runs this, so CI must too -- the rule the operator-surface
+        # test enforces, and the reason it exists: a guard that only one of the
+        # two runs is a guard a pull request can break and merge green.
+        #
+        # This is the engine that decides whether a performance regression is
+        # reported or swallowed. It asserts, offline and with no browser, that an
+        # unchanged run passes, that a 10x regression fails, that a run which
+        # measured NOTHING fails rather than setting a record, that the recorded
+        # 3m09s cold start of 2026-09-22 decomposes to 189s, and that a
+        # fixture-mode UI capture reports its API metrics as not measured.
+        run: ./scripts/bench.sh --self-test
+
       - name: no TODO or stub markers in shipped code
         # A TODO in a dispatch path is an outage with a comment attached.
         run: |
@@ -196,6 +209,41 @@ jobs:
         # The guard is the only thing between `make destroy` and another team's
         # production cluster, so it is verified on every run, not before use.
         run: ./scripts/destroy.sh --self-test
+
+  ui:
+    name: swarm-ui typecheck / component tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 20 is what the reference workstation runs and what vitest 3 and
+          # jsdom 25 both support. `cache: npm` needs the lockfile path because
+          # the package is not at the repository root.
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/swarm-ui/package-lock.json
+
+      - name: install
+        working-directory: apps/swarm-ui
+        run: npm ci --no-audit --no-fund
+
+      - name: typecheck
+        # THE FIRST THING IN THIS REPOSITORY THAT EVER COMPILES THE TYPESCRIPT.
+        # Nothing ran `tsc` -- not make lint, not make test, not any workflow --
+        # so a field renamed in types.ts did not fail to build. It rendered as
+        # `undefined`, which this client prints as an em dash, so the visible
+        # symptom was a column reading "not measured" on every row.
+        working-directory: apps/swarm-ui
+        run: npm run typecheck
+
+      - name: component tests
+        # Offline by construction: setup.ts replaces the global `fetch` with
+        # one that throws, so a test that forgets to stub a response fails by
+        # name instead of reaching a machine.
+        working-directory: apps/swarm-ui
+        run: npm test -- --run
 
   integration:
     name: integration tests (emulator)

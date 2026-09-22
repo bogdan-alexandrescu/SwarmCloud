@@ -642,10 +642,14 @@ cloud_run_image() {
   rm -f "${out}"
 }
 
-#: Count Cloud Run job executions in the project. Prints the count, or fails.
-#: Zero is an ANSWER here; an unreadable listing is a failure, because that
-#: number is the whole point of the invariant-1 check that calls it.
-cloud_run_execution_count() {
+#: Every Cloud Run job execution in the project, as a JSON array. Fails loudly.
+#:
+#: An empty list is an ANSWER (`executions` is ABSENT, not empty, when there are
+#: none) and an unreadable listing is a failure -- the same distinction
+#: gcs_object_count draws, for the same reason: a denied or expired listing read
+#: as "nothing is running" turns the invariant-1 check green on a platform that
+#: is running work it cannot see.
+cloud_run_executions() {
   local out rc=0
   out="$(mktemp "${TMPDIR:-/tmp}/swarm-execs.XXXXXX")"
   curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
@@ -662,8 +666,23 @@ cloud_run_execution_count() {
     rm -f "${out}"
     return 1
   fi
-  jq -r '(.executions // []) | length' <"${out}"
+  jq -c '.executions // []' <"${out}"
   rm -f "${out}"
+}
+
+#: Count Cloud Run job executions in the project. Prints the count, or fails.
+#: Zero is an ANSWER here; an unreadable listing is a failure, because that
+#: number is the whole point of the invariant-1 check that calls it.
+#:
+#: Assigned first and checked, NOT `cloud_run_executions | jq length`: under
+#: pipefail a pipeline's status is the rightmost command's, so jq succeeding on
+#: empty input would mask the listing having failed -- and this function is
+#: called as an `if` condition, where set -e is suppressed anyway.
+cloud_run_execution_count() {
+  local rows
+  rows="$(cloud_run_executions)" || return 1
+  [[ -n "${rows}" ]] || return 1
+  printf '%s' "${rows}" | jq -r 'length'
 }
 
 #: Count objects under a GCS prefix. Prints the count, or fails with a reason.
