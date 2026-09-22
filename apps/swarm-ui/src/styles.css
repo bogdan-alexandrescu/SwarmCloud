@@ -152,24 +152,248 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
-.app { max-width: 1100px; margin: 0 auto; padding: 24px var(--gutter) 64px; }
+/* B19 -- THE LAYOUT MUST NOT WASTE THE SCREEN.
+   This was `max-width: 1100px`. On the 1600px+ displays these screens are
+   actually read on, that centred the whole console in two thirds of the glass
+   and left a third of it empty on both sides; the audit measured the workflow
+   DAG -- the most important diagram in the product -- using about 700px of it.
+   For a console whose brief is "graphs and diagrams everywhere possible",
+   empty space is the most expensive thing on screen.
+
+   THE CAP IS GONE, NOT RAISED. `.ov-cols` is
+   `repeat(auto-fit, minmax(min(400px, 100%), 1fr))`, so the number of columns
+   is decided by the width it is given: capped at 1100px it could never reach
+   three, and every wide-screen panel row was two columns with a ragged right
+   edge. Uncapped it reaches three at about 1250px of content and four at about
+   1670px.
+
+   `--app-max` still exists and is deliberately enormous rather than absent: on
+   an ultrawide a table row 3000px long is one the eye cannot track from the
+   name on the left to the figure on the right, which is a different way of
+   being unreadable. 1880px is about the widest row that stays scannable at the
+   13px body size and it is only reached on a 2000px+ viewport, so nothing
+   below that ever meets it.
+
+   The padding grows with the viewport instead of the content being centred in
+   a lane: gutter at phone size, more air as there is more to spare. `--app-pad`
+   is a token because the product header (Brand.tsx) sits OUTSIDE `.app` -- its
+   environment bar has to reach both viewport edges -- and has to line its
+   wordmark up with this column at every breakpoint. */
+:root { --app-max: 1880px; --app-pad: var(--gutter); }
+@media (min-width: 1280px) { :root { --app-pad: 24px; } }
+@media (min-width: 1600px) { :root { --app-pad: 32px; } }
+.app { max-width: var(--app-max); margin: 0 auto; padding: 24px var(--app-pad) 64px; }
+
+/* --measure: the width a SENTENCE is allowed, now that the page is not one.
+   Removing the cap above makes tables, charts and graphs full-bleed, which is
+   the point; it would also make a paragraph 1800px long, which nobody can read
+   -- the eye loses the line on the way back. Prose in the frame is clamped
+   here. It is applied to the shell's own prose only: a screen's paragraph is
+   that screen's to clamp. */
+:root { --measure: 74ch; }
 
 /* ---- header ---- */
 .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 .head h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
-.head .env {
-  font: 500 11px/1.6 var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 1px 8px;
-}
-.sub { color: var(--text-dim); font-size: 13px; margin: 0 0 24px; }
+/* `.head .env` USED TO LIVE HERE and is deleted with its markup. It rendered a
+   hardcoded "dev" beside every screen title -- a word nothing in this app had
+   measured, repeated on sixteen screens. The environment is drawn once now, by
+   Brand.tsx, and only from something that was established. */
+.sub { color: var(--text-dim); font-size: 13px; margin: 0 0 24px; max-width: var(--measure); }
 .sub button {
   background: none; border: none; color: var(--info);
   font: inherit; cursor: pointer; padding: 0; text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------------------
+   B17 -- AN IDENTIFIER IS NEVER RESTYLED
+   ---------------------------------------------------------------------------
+   `.section > h2` below sets `text-transform: uppercase`, and two screens put
+   a workflow id inside one. The screen therefore showed
+   `WF_BCDC9180E4FB4A209F31` for an id that is lowercase in Firestore, in the
+   API, in every log line and in the `#agents/task/<id>` address you would
+   paste it into -- so the only thing the id is for, being copied, was the one
+   thing it could not do. `QuotaDetail.tsx:94-96` already refuses to do this to
+   tenant ids and writes the reason next to the refusal. This is that refusal
+   as one rule.
+
+   WHY IT IS SET ON THE IDENTIFIER AND NOT UNSET ON THE HEADING. A heading, a
+   chip, a table header or a tab added next month may legitimately want to be
+   uppercase; an id inside it never does. Declaring `text-transform: none` on
+   the identifier element itself beats an ancestor by inheritance rather than
+   by specificity, so it cannot be out-specified from above and no future rule
+   has to know this one exists.
+
+   `code`, `kbd` and `samp` are here for the same reason and without needing a
+   class: their contents are literals -- a route, a field name, a command --
+   and a literal that has been case-shifted is no longer the literal. */
+.id, code, kbd, samp {
+  text-transform: none;
+  /* An id is a string of characters that must be told apart one by one, and
+     letter-spacing inherited from an uppercase label is the opposite of that. */
+  letter-spacing: 0;
+}
+.id {
+  font-family: var(--mono);
+  /* Ids run long and must not be the reason a heading overflows its column. */
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+   THE PRODUCT HEADER (Brand.tsx)
+   ---------------------------------------------------------------------------
+   Mark, wordmark, environment, tenant, signed-in principal. One bar, above
+   everything, on every screen.
+
+   IT SITS OUTSIDE `.app`. `.brand-bar` has to reach both viewport edges --
+   that full width is what makes the environment readable in peripheral vision
+   and in a screenshot scaled to a thumbnail -- and an element inside `.app`
+   stops at the content gutter. `.brand-row` re-applies `--app-max` and
+   `--app-pad` so the wordmark still lines up with the nav below it.
+
+   DENSITY. 44px tall, 13px wordmark, 10.5px keys: the Lens / Nomad register
+   the redesign is aimed at, not a marketing header. It is chrome, and chrome
+   that spends 80px of a 900px screen is chrome that has stopped being useful. */
+.brand {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* THE ENVIRONMENT BAR. Drawn only for the two kinds that mean "a mistake here
+   is expensive": production, and not-knowing. 3px is enough to register
+   without reading and small enough to cost nothing.
+
+   SOLID FOR PRODUCTION, HATCHED FOR UNKNOWN. Two different marks, not two
+   colours -- the same rule the state palette is held to: render the page in
+   greyscale and two things that mean different things must still look
+   different. The hatch is this sheet's established "we could not read this"
+   surface, so unknown reuses a meaning that already exists here rather than
+   inventing one. */
+.brand-bar { height: 3px; }
+.brand-bar.is-prod { background: var(--bad); }
+.brand-bar.is-unknown { background: var(--ctl-hatch); }
+
+.brand-row {
+  max-width: var(--app-max);
+  margin: 0 auto;
+  padding: 0 var(--app-pad);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.brand-home {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  text-decoration: none;
+  /* The mark inherits this, so it is the same ink as the wordmark in both
+     themes and on any ground this bar is ever given. */
+  flex: 0 0 auto;
+}
+.brand-home:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 6px; }
+.brand-mark { display: block; }
+.brand-word {
+  font: 400 13.5px/1 var(--font);
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
+/* Two weights, one word: the swarm is the noun and the cloud is where it runs.
+   No second font and no webfont -- a product header that waits on a font
+   download is a product header that flashes on every cold load. */
+.brand-word b { font-weight: 700; }
+
+/* A KEY, not a label: the small word that says what the value beside it is. */
+.brand-k {
+  font: 500 10px/1.7 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-faint);
+}
+
+.brand-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  font: 600 10.5px/1.7 var(--mono);
+  letter-spacing: .06em;
+  flex: 0 0 auto;
+}
+.brand-env .brand-env-name { text-transform: uppercase; }
+.brand-env .id { font-size: 10.5px; color: var(--text-dim); }
+
+/* FOUR TREATMENTS, AND THE CHANNEL IS NEVER COLOUR ALONE.
+   A pill is quiet; a square-cornered block with a rule down its left edge is
+   loud. That distinction survives greyscale, a colour-blind reader and a
+   screenshot, which is where these screens are actually read. */
+.brand-env.is-nonprod,
+.brand-env.is-local {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+/* Dashed, because "this is your laptop" is a third thing, not a quieter dev. */
+.brand-env.is-local { border-style: dashed; }
+
+.brand-env.is-prod {
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--line));
+  border-left: 3px solid var(--bad);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: var(--bad-ink);
+}
+.brand-env.is-unknown {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--text-dim);
+  border-radius: 4px;
+  background: var(--ctl-hatch);
+  color: var(--text-dim);
+}
+
+/* WHO YOU ARE. Pushed right, and allowed to wrap rather than to truncate: a
+   service-account email cut off at the column edge is the one thing on this
+   bar somebody copies. */
+.brand-who {
+  margin: 0 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.brand-who .id { font-size: 12px; color: var(--text); }
+.brand-who-name { color: var(--text-faint); font-size: 11.5px; }
+/* The read has not landed yet, and the bar says so rather than showing an
+   empty slot that reads as "no tenant". */
+.brand-who.is-pending { color: var(--text-faint); font-style: italic; }
+/* The read FAILED. Still not an empty slot, and deliberately not painted as an
+   incident: not being able to name your tenant is information about this tab,
+   not evidence about the platform. */
+.brand-who.is-unread { color: var(--text-dim); max-width: var(--measure); }
+
+.brand-admin {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--info) 22%, transparent);
+  color: var(--info-ink);
+  font: 600 10px/1.8 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+/* On a phone the identity gets its own line rather than squeezing the
+   wordmark and the environment into forty pixels each. */
+@media (max-width: 720px) {
+  .brand-row { padding-top: 6px; padding-bottom: 6px; row-gap: 6px; }
+  .brand-who { margin-left: 0; width: 100%; }
 }
 
 /* ---- section ---- */

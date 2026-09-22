@@ -90,9 +90,16 @@ export function Screen<T>({
 
   return (
     <>
+      {/* NO ENVIRONMENT BADGE HERE ANY MORE. Every screen used to print a
+          hardcoded `dev` beside its own title -- a word nothing in this app
+          had measured, repeated on sixteen screens. Overview.tsx had already
+          refused to draw it and said why; Brand.tsx now draws the real one
+          once, in the product header, from something that was actually
+          established. A per-screen copy would be a second opinion about the
+          environment, and the second opinion is the one that gets believed
+          because it is next to what you are reading. */}
       <div className="head">
         <h1>{title}</h1>
-        <span className="env">dev</span>
       </div>
 
       <p className="sub">
@@ -266,6 +273,42 @@ export function SkeletonRows({ rows = 6 }: { rows?: number }) {
  * The eleven existing `import { timeAgo } from './Shell'` sites are untouched.
  */
 export { timeAgo }
+
+/**
+ * AN IDENTIFIER, RENDERED SO IT CAN BE PASTED. B17.
+ *
+ * `styles.css:178` uppercases `.section > h2`, and two screens put an id in
+ * one: `Workflows.tsx` prints the workflow id there and `Agents.tsx` prints it
+ * again as a group heading. The result on screen is
+ * `WF_BCDC9180E4FB4A209F31` for an id that is lowercase in Firestore, in the
+ * API, in every log line and in the URL you would paste it into. A displayed
+ * id that differs from the real one is not a cosmetic problem: it is unusable
+ * for the one thing an id is for. `QuotaDetail.tsx:94-96` already refuses to
+ * do this to tenant ids and writes the reason beside the refusal; this is that
+ * refusal made general.
+ *
+ * IT IS A COMPONENT AND A CLASS, NOT A CONVENTION. `.id` in styles.css sets
+ * `text-transform: none` on the element ITSELF, so it wins over any ancestor's
+ * transform by inheritance rather than by out-specifying it -- which means a
+ * heading, chip or table cell added later cannot break it from above. Wrapping
+ * the value is the only thing a caller has to remember, and
+ * `src/__tests__/brand.test.tsx` asserts the computed style rather than the
+ * source text, so deleting the CSS rule fails the suite.
+ */
+export function Id({
+  children,
+  title,
+}: {
+  children: ReactNode
+  title?: string
+}) {
+  return (
+    <span className="id" title={title}>
+      {children}
+    </span>
+  )
+}
+
 export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
   const tabs = [
     ['home', 'Home'],

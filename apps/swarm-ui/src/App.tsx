@@ -5,6 +5,7 @@ import { AdminSettingsScreen } from './AdminSettings'
 import { AgentDetailScreen } from './AgentDetail'
 import { AgentsScreen } from './Agents'
 import { AttemptTimelineScreen } from './AttemptTimeline'
+import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
 import { DataSourceStrip } from './DataSources'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
@@ -465,27 +466,37 @@ export function App() {
   const section = sectionOf(at.sectionId)
 
   return (
-    <div className="app">
-      <Nav at={at} go={go} />
+    <>
+      {/* OUTSIDE `.app`, DELIBERATELY. The header's environment bar is 3px
+          tall and spans the full viewport width -- that full width is what
+          makes it readable in peripheral vision and in a scaled-down
+          screenshot, and an element inside `.app` stops at the content
+          gutter. The bar's own padding uses the same `--app-pad` token `.app`
+          does, so the wordmark still lines up with the nav below it at every
+          breakpoint. */}
+      <ProductHeader />
+      <div className="app">
+        <Nav at={at} go={go} />
 
-      {section === null ? (
-        at.sectionId === HELP ? (
-          <HelpScreen topic={at.tab} />
+        {section === null ? (
+          at.sectionId === HELP ? (
+            <HelpScreen topic={at.tab} />
+          ) : (
+            <ReferenceScreen />
+          )
         ) : (
-          <ReferenceScreen />
-        )
-      ) : (
-        <>
-          <SubNav section={section} tab={at.tab} go={go} />
-          <p className="ctl-section-q">{section.question}</p>
-          <SectionBody sectionId={section.id} tab={at.tab} go={go} />
-        </>
-      )}
+          <>
+            <SubNav section={section} tab={at.tab} go={go} />
+            <p className="ctl-section-q">{section.question}</p>
+            <SectionBody sectionId={section.id} tab={at.tab} go={go} />
+          </>
+        )}
 
-      {at.taskId !== null && <AgentDrawer taskId={at.taskId} pane={at.taskPane} go={go} />}
+        {at.taskId !== null && <AgentDrawer taskId={at.taskId} pane={at.taskPane} go={go} />}
 
-      <DataSourceStrip />
-    </div>
+        <DataSourceStrip />
+      </div>
+    </>
   )
 }
 
