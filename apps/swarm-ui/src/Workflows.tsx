@@ -1,6 +1,15 @@
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { loadWorkflowBoard } from './api'
+import { dagShape, edgePath, miniMap, type Box, type DagShape } from './dag'
 import { workflowDispatchOf } from './Dispatch'
 import { Screen, timeAgo } from './Shell'
+import { stepCost, stepDuration, usdLabel, type Cell } from './stepfacts'
 import {
   consequenceOf,
   dispatchOf,
@@ -17,21 +26,68 @@ import {
 } from './types'
 
 /**
- * The DAG view. These are REAL edges -- `depends_on` on each step -- so this is
- * a tree, not a star with the workflow in the middle. Laid out by dependency
- * depth: a step sits one level below its deepest parent.
+ * THE DAG VIEW, IN TWO MODES, WITH REAL EDGES.
  *
- * Deliberately SVG-free. A workflow here has a handful of steps, and a column
- * layout with drawn connectors stays readable on a phone in a way a
- * force-directed graph does not. If workflows grow to dozens of steps this is
- * the thing to revisit, and the depth calculation is already the hard part.
+ * WHAT WAS WRONG, measured on 2026-09-22 against `wf_5e5ad3b6f7da4299a839`
+ * (five independent steps and a sixth joining all five):
  *
- * Step state is JOINED, not read off the step. `GET /v1/workflows` returns
- * steps with no state field at all; it only exists on the task a step created.
- * See `stepState` in types.ts for the three ways that join can come up empty
- * and why they must not render alike.
+ *   [cold-start] [fencing] [allornothing] [checkpoints] [absentzero]
+ *                       ———— THEN ————
+ *                        [synthesis]
+ *
+ * One `THEN` bar -- the SAME bar a strictly linear workflow draws between two
+ * sequential steps. There were no edges at all: siblings were laid out in a row
+ * and dependency was implied by vertical order plus one separator, so the view
+ * could not distinguish a fan-in of five from a chain of five. That is the one
+ * question this screen exists to answer. The only complete statement of the
+ * graph on the page was the dependency line under the join, and CSS ellipsed
+ * it: `← cold-start, fencing, allorn…`, hiding two of its five parents.
+ *
+ * SO: one drawn edge per (parent, child) pair, from `dag.ts`, and a dependency
+ * list that wraps and is never truncated. Five parents draw five edges; a chain
+ * of five draws four, each between one pair. Nothing is shared between two
+ * pairs, because a shared mark is how the distinction was lost.
+ *
+ * THE TWO MODES, and what each is for:
+ *
+ *   COLLAPSED  for scanning a board of workflows. It still carries TOPOLOGY --
+ *              a sentence naming the degree that makes the shape what it is
+ *              ("5 join into synthesis", never just "6 steps") and a sparkline
+ *              drawn from the SAME edge list the canvas uses, so the two cannot
+ *              disagree. A reader tells a fan-out from a chain without
+ *              expanding anything.
+ *   FULL       one workflow, the whole canvas, at the full content width.
+ *
+ * EDGES ARE MEASURED, NOT ASSUMED. Node height depends on its text -- the
+ * dependency list wraps rather than ellipsing -- so the geometry comes from
+ * `getBoundingClientRect` on the rendered nodes and is recomputed on resize.
+ * Until the first measurement lands, NO edge is drawn: a path at (0,0) would be
+ * a line that claims a dependency it has not located, and the dependency list
+ * in each node is a complete statement of the graph either way.
+ *
+ * STEP STATE IS STILL JOINED, not read off the step. `GET /v1/workflows`
+ * returns steps with no state field at all; it only exists on the task a step
+ * created. See `stepState` in types.ts for the three ways that join can come up
+ * empty and why they must not render alike.
  */
 export function WorkflowsScreen() {
+  // The BOARD default. Collapsed, because the list answers "which of my
+  // workflows should I look at" and a canvas per card would bury that under
+  // ten graphs. A card opened to `full` keeps its own mode in `override`.
+  const [boardMode, setBoardMode] = useState<Mode>('collapsed')
+  const [override, setOverride] = useState<Record<string, Mode>>({})
+
+  const setBoard = useCallback((mode: Mode) => {
+    setBoardMode(mode)
+    // A board-level choice is the whole board's answer, so per-card overrides
+    // are cleared rather than silently winning over the control just clicked.
+    setOverride({})
+  }, [])
+
+  const toggle = useCallback((id: string, mode: Mode) => {
+    setOverride((prev) => ({ ...prev, [id]: mode }))
+  }, [])
+
   return (
     <Screen
       title="Workflows"
@@ -45,12 +101,64 @@ export function WorkflowsScreen() {
       {(d) => (
         <>
           {d.statesDetail !== null && <StatesUnavailable detail={d.statesDetail} />}
+          <ModeControl mode={boardMode} onChange={setBoard} count={d.workflows.length} />
           {d.workflows.map((w) => (
-            <WorkflowCard key={w.workflow_id} workflow={w} taskById={d.taskById} />
+            <WorkflowCard
+              key={w.workflow_id}
+              workflow={w}
+              taskById={d.taskById}
+              mode={override[w.workflow_id] ?? boardMode}
+              onMode={(m) => toggle(w.workflow_id, m)}
+            />
           ))}
         </>
       )}
     </Screen>
+  )
+}
+
+export type Mode = 'collapsed' | 'full'
+
+/**
+ * The board-level mode switch.
+ *
+ * `aria-pressed` rather than a `<select>`: there are two states, both are one
+ * click away, and the current one is legible without opening anything.
+ */
+function ModeControl({
+  mode,
+  onChange,
+  count,
+}: {
+  mode: Mode
+  onChange: (m: Mode) => void
+  count: number
+}) {
+  return (
+    <div className="dagx-modes">
+      <span className="dagx-modes-label">Graph</span>
+      <button
+        type="button"
+        aria-pressed={mode === 'collapsed'}
+        className={mode === 'collapsed' ? 'on' : ''}
+        onClick={() => onChange('collapsed')}
+      >
+        Collapsed
+      </button>
+      <button
+        type="button"
+        aria-pressed={mode === 'full'}
+        className={mode === 'full' ? 'on' : ''}
+        onClick={() => onChange('full')}
+      >
+        Full DAG
+      </button>
+      <span className="dagx-modes-note">
+        {mode === 'collapsed'
+          ? `Shape and counts for ${count} workflow${count === 1 ? '' : 's'}. Open one to draw its edges.`
+          : 'Every edge drawn, at full width. Click a node to open that agent run.'}
+      </span>
+    </div>
   )
 }
 
@@ -74,37 +182,6 @@ function StatesUnavailable({ detail }: { detail: string }) {
         running.
       </p>
     </div>
-  )
-}
-
-/** Depth of each step: 0 for roots, else 1 + max(depth of dependencies). */
-function levelsOf(steps: WorkflowStep[]): WorkflowStep[][] {
-  const byId = new Map(steps.map((s) => [s.step_id, s]))
-  const depth = new Map<string, number>()
-
-  const resolve = (id: string, seen: Set<string>): number => {
-    const cached = depth.get(id)
-    if (cached !== undefined) return cached
-    // A cycle should be impossible -- the scheduler rejects one at submission --
-    // but a UI that hangs on malformed data is worse than one that draws it
-    // flat, so this terminates rather than trusting that.
-    if (seen.has(id)) return 0
-    const step = byId.get(id)
-    if (!step || step.depends_on.length === 0) {
-      depth.set(id, 0)
-      return 0
-    }
-    seen.add(id)
-    const d = 1 + Math.max(...step.depends_on.map((p) => resolve(p, seen)))
-    seen.delete(id)
-    depth.set(id, d)
-    return d
-  }
-
-  steps.forEach((s) => resolve(s.step_id, new Set()))
-  const max = Math.max(0, ...steps.map((s) => depth.get(s.step_id) ?? 0))
-  return Array.from({ length: max + 1 }, (_, lvl) =>
-    steps.filter((s) => (depth.get(s.step_id) ?? 0) === lvl),
   )
 }
 
@@ -179,12 +256,17 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
 function WorkflowCard({
   workflow,
   taskById,
+  mode,
+  onMode,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
+  mode: Mode
+  onMode: (m: Mode) => void
 }) {
-  const levels = levelsOf(workflow.steps)
+  const shape = dagShape(workflow.steps)
   const roll = rollupLine(workflow)
+  const now = Date.now()
   // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
   // server-side -- the frozen `Workflow` has no metadata field, so there is
   // nowhere else it could live. Null when the task join produced nothing to
@@ -215,30 +297,111 @@ function WorkflowCard({
         steps={workflow.steps.length}
         joined={tasks.length > 0}
       />
-      <div className="dag">
-        {levels.map((level, i) => (
-          <div className="level" key={i} style={{ ['--depth' as string]: i }}>
-            {/* A single vertical stalk used to sit here. It was decorative and
-                it LIED: one line between levels reads as a linear chain, and
-                this is a DAG -- `plan` forks to two children and they join back
-                into `report`. Stacked on a phone it was worse, rendering four
-                parallel-and-sequential steps as one sequence.
-                The honest signal is the level itself, so the level says what it
-                is; exact edges stay on each node as `← dependency`. */}
-            {i > 0 && (
-              <div className="level-label">
-                {level.length > 1 ? `then ${level.length} in parallel` : 'then'}
-              </div>
-            )}
-            <div className="level-steps">
-              {level.map((s) => (
-                <StepNode key={s.step_id} step={s} state={stepState(s, taskById)} />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+
+      <Topology shape={shape} taskById={taskById} mode={mode} onMode={onMode} />
+
+      {mode === 'full' && (
+        <DagCanvas
+          workflowId={workflow.workflow_id}
+          shape={shape}
+          taskById={taskById}
+          now={now}
+        />
+      )}
+
+      {shape.dangling.length > 0 && <Dangling shape={shape} />}
     </section>
+  )
+}
+
+/**
+ * A `depends_on` entry naming a step this workflow does not contain.
+ *
+ * Shown rather than filtered. `validate_dag` rejects one at submission
+ * (tests/unit/control_plane/test_dag_validation.py), so a workflow that has one
+ * is evidence about the API or the payload, and a graph that quietly drew one
+ * fewer edge would look complete and be wrong.
+ */
+function Dangling({ shape }: { shape: DagShape }) {
+  return (
+    <p className="rollup untrusted">
+      {shape.dangling.length} dependenc{shape.dangling.length === 1 ? 'y names a step' : 'ies name steps'} this
+      workflow does not contain:{' '}
+      {shape.dangling.map((e) => `${e.to} ← ${e.from}`).join(', ')}. No edge is drawn for{' '}
+      {shape.dangling.length === 1 ? 'it' : 'them'}, and the graph above is therefore incomplete.
+    </p>
+  )
+}
+
+/**
+ * THE COLLAPSED MODE, and the header of the full one.
+ *
+ * `shape.summary` names the degree rather than the count -- "5 join into
+ * synthesis", not "6 steps" -- because a count is exactly what a chain of six
+ * and a fan-in of five have in common, and telling them apart is the point.
+ *
+ * The sparkline beside it is drawn from `shape.edges`, the same list the canvas
+ * draws, so the collapsed and expanded views cannot disagree about the shape of
+ * the same workflow. Its dots carry state tone, so "which of these is red" is
+ * answerable while scanning.
+ */
+function Topology({
+  shape,
+  taskById,
+  mode,
+  onMode,
+}: {
+  shape: DagShape
+  taskById: ReadonlyMap<string, Task> | null
+  mode: Mode
+  onMode: (m: Mode) => void
+}) {
+  const mini = miniMap(shape, 132, 34)
+  const toneOf = new Map<string, string>()
+  for (const level of shape.levels) {
+    for (const step of level) toneOf.set(step.step_id, present(stepState(step, taskById)).tone)
+  }
+
+  return (
+    <div className="dagx-topo">
+      <svg
+        className="dagx-mini"
+        width={mini.width}
+        height={mini.height}
+        viewBox={`0 0 ${mini.width} ${mini.height}`}
+        role="img"
+        aria-label={shape.summary}
+      >
+        {mini.lines.map((l) => (
+          <line
+            key={`${l.from}->${l.to}`}
+            data-edge={`${l.from}->${l.to}`}
+            x1={l.x1}
+            y1={l.y1}
+            x2={l.x2}
+            y2={l.y2}
+          />
+        ))}
+        {mini.dots.map((d) => (
+          <circle key={d.id} className={`t-${toneOf.get(d.id) ?? 'unknown'}`} cx={d.cx} cy={d.cy} r={2.6} />
+        ))}
+      </svg>
+      <div className="dagx-topo-text">
+        <span className="dagx-shape">{shape.summary}</span>
+        <span className="dagx-topo-sub">
+          {shape.depth} level{shape.depth === 1 ? '' : 's'} · {shape.edges.length} edge
+          {shape.edges.length === 1 ? '' : 's'} · widest {shape.widest}
+        </span>
+      </div>
+      <button
+        type="button"
+        className="dagx-open"
+        aria-expanded={mode === 'full'}
+        onClick={() => onMode(mode === 'full' ? 'collapsed' : 'full')}
+      >
+        {mode === 'full' ? 'Collapse' : 'Open DAG'}
+      </button>
+    </div>
   )
 }
 
@@ -286,6 +449,167 @@ function WorkflowDispatch({
   )
 }
 
+// ---------------------------------------------------------------------------
+// The canvas
+// ---------------------------------------------------------------------------
+
+type Geometry = { boxes: Map<string, Box>; width: number; height: number }
+
+/**
+ * The full graph: nodes in normal flow, edges in an absolutely-positioned SVG
+ * underneath them.
+ *
+ * WHY NOT LAY THE NODES OUT IN THE SVG TOO. A node carries its id, its state,
+ * its runner profile, its duration, its cost and its complete dependency list,
+ * and the dependency list wraps. Text in SVG does not wrap, and a fixed node
+ * height would put every edge a few pixels into the wrong place the first time
+ * a step id grew. So the browser lays the nodes out, the boxes are measured,
+ * and the edges are drawn to what is actually there.
+ *
+ * `overflow-x: auto` on the host with a min-width per level means a workflow
+ * twelve wide scrolls rather than crushing its nodes to unreadable slivers, and
+ * the SVG spans the scrolled width, not the visible one.
+ */
+function DagCanvas({
+  workflowId,
+  shape,
+  taskById,
+  now,
+}: {
+  workflowId: string
+  shape: DagShape
+  taskById: ReadonlyMap<string, Task> | null
+  now: number
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const nodeRefs = useRef(new Map<string, HTMLElement>())
+  const [geom, setGeom] = useState<Geometry | null>(null)
+
+  const register = useCallback((id: string, el: HTMLElement | null) => {
+    if (el) nodeRefs.current.set(id, el)
+    else nodeRefs.current.delete(id)
+  }, [])
+
+  useLayoutEffect(() => {
+    const host = hostRef.current
+    if (host === null) return
+
+    const measure = () => {
+      const hb = host.getBoundingClientRect()
+      const boxes = new Map<string, Box>()
+      nodeRefs.current.forEach((el, id) => {
+        const b = el.getBoundingClientRect()
+        boxes.set(id, {
+          // Relative to the host's PADDING BOX and un-scrolled, so an edge stays
+          // attached to its node when the canvas is scrolled sideways.
+          x: b.left - hb.left + host.scrollLeft,
+          y: b.top - hb.top + host.scrollTop,
+          w: b.width,
+          h: b.height,
+        })
+      })
+      const next: Geometry = { boxes, width: host.scrollWidth, height: host.scrollHeight }
+      // Compared before storing. The observer below fires on every layout of
+      // every node, and a new object each time would re-render on a resize that
+      // moved nothing.
+      setGeom((prev) => (sameGeometry(prev, next) ? prev : next))
+    }
+
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(host)
+    nodeRefs.current.forEach((el) => ro.observe(el))
+    return () => ro.disconnect()
+    // The node set changes only when the steps do; `shape` is recomputed per
+    // render, so its identity is not usable as a dependency and the step ids
+    // are used instead.
+  }, [shape.levels.map((l) => l.map((s) => s.step_id).join(',')).join('|')])
+
+  // Unique per card: two workflow cards on one board would otherwise share a
+  // marker id, and the second one's arrowheads would resolve to the first's.
+  const marker = `dagx-arrow-${cssId(workflowId)}`
+
+  return (
+    <div className="dagx" ref={hostRef}>
+      {/* aria-hidden: every edge this draws is also stated in words inside the
+          node it points at ("← plan, scan-scripts"), so a reader who cannot see
+          the curve still gets the complete graph rather than a duplicate of it. */}
+      <svg
+        className="dagx-edges"
+        width={geom?.width ?? 0}
+        height={geom?.height ?? 0}
+        aria-hidden
+        focusable="false"
+      >
+        <defs>
+          <marker
+            id={marker}
+            markerWidth="7"
+            markerHeight="7"
+            refX="5.4"
+            refY="3"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
+            <path d="M 0 0 L 6 3 L 0 6 z" />
+          </marker>
+        </defs>
+        {/* No geometry yet means no line. A path drawn at the origin would
+            claim a dependency it has not located. */}
+        {geom !== null &&
+          shape.edges.map((e) => {
+            const from = geom.boxes.get(e.from)
+            const to = geom.boxes.get(e.to)
+            if (!from || !to) return null
+            return (
+              <path
+                key={`${e.from}->${e.to}`}
+                className="dagx-edge"
+                data-edge={`${e.from}->${e.to}`}
+                d={edgePath(from, to)}
+                markerEnd={`url(#${marker})`}
+              />
+            )
+          })}
+      </svg>
+
+      <div className="dagx-levels" style={{ ['--widest' as string]: shape.widest }}>
+        {shape.levels.map((level, i) => (
+          <div className="dagx-level" key={i}>
+            {level.map((s) => (
+              <StepNode
+                key={s.step_id}
+                step={s}
+                state={stepState(s, taskById)}
+                now={now}
+                register={register}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function sameGeometry(a: Geometry | null, b: Geometry): boolean {
+  if (a === null) return false
+  if (a.width !== b.width || a.height !== b.height || a.boxes.size !== b.boxes.size) return false
+  for (const [id, box] of b.boxes) {
+    const prev = a.boxes.get(id)
+    if (!prev) return false
+    if (prev.x !== box.x || prev.y !== box.y || prev.w !== box.w || prev.h !== box.h) return false
+  }
+  return true
+}
+
+/** A workflow id is `[a-z0-9_]`, but an id used in a CSS `url(#...)` reference
+ *  must survive whatever a future id scheme allows, so it is narrowed here. */
+function cssId(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, '_')
+}
+
 /** How each of the three step-state kinds presents. Kept together so the
  *  difference between "not started" and "not read" stays deliberate. */
 function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; word: string; title: string } {
@@ -314,7 +638,36 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
   }
 }
 
-function StepNode({ step, state }: { step: WorkflowStep; state: StepState }) {
+/**
+ * THE NODE IS THE WAY IN.
+ *
+ * This was a plain `<div>` with no href and no onClick, so from "draft is
+ * parked" there was no click that reached `draft`. It is now an `<a>` to
+ * `#agents/task/<id>` -- the route App.tsx already resolves to the full agent
+ * run: runtime environment, attempts, spend, duration, logs, checkpoints,
+ * artifacts and outputs. An anchor rather than a click handler on purpose: it
+ * is middle-clickable, copyable, and reachable by keyboard without this file
+ * reimplementing any of that.
+ *
+ * A step with NO TASK is not a link, and says why. A dead link to a task that
+ * does not exist would be the same defect one level down.
+ *
+ * A step whose task id we hold but whose task the read did not return IS a
+ * link: the task exists, the run page fetches it by id, and the fact that this
+ * board's page of 200 tasks did not include it says nothing about whether the
+ * run can be opened.
+ */
+function StepNode({
+  step,
+  state,
+  now,
+  register,
+}: {
+  step: WorkflowStep
+  state: StepState
+  now: number
+  register: (id: string, el: HTMLElement | null) => void
+}) {
   const p = present(state)
   // Read off the step's own task, so the node that opens the pull request is
   // marked in the graph rather than only named in the line above it. Silent on
@@ -325,9 +678,11 @@ function StepNode({ step, state }: { step: WorkflowStep; state: StepState }) {
   // what an absent or unrecognised block means, and a second one here is how
   // two screens start disagreeing about the same task.
   const role = state.kind === 'state' ? (dispatchOf(state.task)?.role ?? null) : null
+  const taskId =
+    state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
 
-  return (
-    <div className={`node ${p.tone}`} title={p.title}>
+  const body = (
+    <>
       <div className="node-id">
         {step.step_id}
         {role === 'integrator' && (
@@ -340,11 +695,77 @@ function StepNode({ step, state }: { step: WorkflowStep; state: StepState }) {
         <span aria-hidden>{p.glyph}</span> {p.word}
       </div>
       <div className="node-meta">{step.runner_profile}</div>
+      <div className="node-facts">
+        <Fact label="took" cell={stepDuration(state, now)} render={(v) => v} />
+        <Fact label="cost" cell={stepCost(state)} render={usdLabel} />
+      </div>
       {step.depends_on.length > 0 && (
-        <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
-          ← {step.depends_on.join(', ')}
+        /* NEVER ELLIPSED. This list is the complete statement of the graph in
+           words, and the CSS that used to truncate it hid two of the five
+           parents of the one node the whole screen was about. It wraps. */
+        <div className="node-dep">
+          <span aria-hidden>←</span>{' '}
+          <span className="node-dep-list">{step.depends_on.join(', ')}</span>
         </div>
       )}
-    </div>
+      {taskId !== null && <span className="node-go">open run →</span>}
+    </>
+  )
+
+  if (taskId === null) {
+    return (
+      <div
+        className={`node ${p.tone} is-unreachable`}
+        title={p.title}
+        ref={(el) => register(step.step_id, el)}
+      >
+        {body}
+        <span className="node-go is-none">no run to open yet</span>
+      </div>
+    )
+  }
+
+  return (
+    <a
+      className={`node ${p.tone}`}
+      href={`#agents/task/${encodeURIComponent(taskId)}`}
+      title={`${p.title} — opens this agent run`}
+      ref={(el) => register(step.step_id, el)}
+    >
+      {body}
+    </a>
+  )
+}
+
+/**
+ * One number on a node, or the sentence that says there is no number.
+ *
+ * The absence NEVER renders as a digit. `stepfacts.ts` makes that structural --
+ * an absent cell carries a word and a note and has no numeric field at all --
+ * and this component only formats what it is handed, so there is no `?? 0` to
+ * write here by accident.
+ */
+function Fact<T>({
+  label,
+  cell,
+  render,
+}: {
+  label: string
+  cell: Cell<T>
+  render: (value: T) => string
+}): ReactNode {
+  if (cell.kind === 'absent') {
+    return (
+      <span className={`node-fact is-absent is-${cell.absence}`} title={cell.note}>
+        <span className="node-fact-label">{label}</span>
+        <span className="node-fact-value">{cell.word}</span>
+      </span>
+    )
+  }
+  return (
+    <span className="node-fact" title={cell.note}>
+      <span className="node-fact-label">{label}</span>
+      <span className="node-fact-value">{render(cell.value)}</span>
+    </span>
   )
 }
