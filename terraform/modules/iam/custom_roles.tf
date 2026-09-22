@@ -172,5 +172,39 @@ resource "google_project_iam_custom_role" "secret_lister" {
     "secretmanager.secrets.getIamPolicy",
     "secretmanager.secrets.setIamPolicy",
     "secretmanager.versions.add",
+
+    # RETENTION, added 2026-09-22 on the owner's explicit decision.
+    #
+    # Without these the broker cannot expire what it supersedes, and it never
+    # could: swarm-tenant-u-bogdan-anthropic reached 1,816 versions, ALL
+    # ENABLED, ZERO destroyed, because nothing in this platform had ever
+    # expired one. Only `latest` is ever read, so 1,815 of those were dead
+    # credentials that stayed retrievable by anything holding accessor. A
+    # credential that rotates but leaves its predecessor enabled has not
+    # rotated -- the same point create-secrets.sh makes beside
+    # `--disable-previous`.
+    #
+    # `list` is needed before `destroy`: retention recomputes the retained set
+    # from a live listing on every publish rather than recording state.
+    #
+    # THE SCOPE IS PROJECT-WIDE AND THAT IS A DELIBERATE, INFORMED CHOICE, not
+    # an oversight. saga-agents-staging is SHARED, so this permits the broker
+    # to destroy a version of any secret in it, including another team's. The
+    # owner chose this over a per-secret binding on 2026-09-22 having been shown
+    # that trade-off explicitly.
+    #
+    # WHAT ACTUALLY STOPS IT is therefore no longer IAM but
+    # `quota_broker.secretstore.owned_by_this_platform`, which matches
+    # \Aswarm-(?:tenant|account)-[A-Za-z0-9_-]+\Z -- anchored with \A/\Z
+    # rather than ^/$ so a trailing newline cannot smuggle a second name past
+    # it, and admitting no `/` so a name cannot re-point the resource path at
+    # another secret or project. It was attacked with thirteen hostile inputs
+    # on 2026-09-22 -- newline injection, traversal, full resource paths,
+    # lookalike prefixes -- and refused all of them.
+    #
+    # If that guard is ever weakened, this grant becomes the hole. Do not widen
+    # one without re-reading the other.
+    "secretmanager.versions.list",
+    "secretmanager.versions.destroy",
   ]
 }
