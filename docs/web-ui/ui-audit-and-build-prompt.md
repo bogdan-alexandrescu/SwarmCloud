@@ -2572,3 +2572,99 @@ and got better, not worse, under load:
   not run, because it would create work that is guaranteed to fail and spend
   agent time to prove something the code already states.
 * W6 may be a probe artefact rather than a defect; it is written as a question.
+
+---
+
+# HALF FIVE — the original brief, item by item, against what exists
+
+Asked for on 2026-09-22: re-read the original request and find what is still
+missing. Every line below is a measurement, not an impression.
+
+The brief was: *"more centered around Agents and Workflows of agents and
+sub-agents, with great tooling to inspect the work an agent has done,
+checkpoints, logs and stats and a way to visualize the resulting work ...
+details about resource consumption and costs, duration, inputs and outputs and
+a way to inspect the outputs ... graphs and diagrams everywhere possible"*,
+styled after Lens for Kubernetes but more futuristic, with Nomad, Run:ai,
+OpenShift Console and Rancher as references — and, separately, *"remove all of
+the prose content from the app. Help should sit in a dedicated help section but
+we could put everywhere we need to a helper hover over question mark tooltip"*.
+
+| Brief item | State | Evidence |
+|---|---|---|
+| Agents & workflows as the centre | partial | Nav leads with Overview; Agents is second |
+| **Sub-agents** | **does not exist** | No `parent_task`/`child_task` in the UI **or in the frozen contract** |
+| Inspect an agent's work | partial | `AgentDetail` is good; it is the only one |
+| **Checkpoints** | **unreachable** | `loadCheckpoints` (api.ts:379) — **no screen calls it** |
+| **Logs** | **unreachable** | `loadTaskLogs` (api.ts:414) — **no screen calls it** |
+| Stats | partial | `PlatformCounts` exists, behind a button |
+| **Visualize the resulting work** | **absent** | Artifacts are LISTED; nothing renders their content |
+| **Inspect the outputs** | **absent** | No viewer, no download, no preview anywhere |
+| Resource consumption | partial | On task detail only; absent from every graph node |
+| Costs | partial | Same |
+| Duration | partial | Same |
+| Inputs and outputs | **absent** | No input shown; no output viewer |
+| **Graphs and diagrams everywhere** | **effectively absent** | **0** charting deps; **3** CSS bar rows; `svg` in exactly **1** file |
+| Futuristic / Lens-like | not started | Plain document layout, system fonts, no visual language |
+| **Remove prose to a Help section** | **not started** | **108** `className="muted"` prose blocks; **6** legend/`<dl>` blocks |
+| **`?` hover affordance** | **not started** | **0** instances. 94 native `title=` attrs, which are not the same thing |
+| **Dedicated Help section** | **does not exist** | No `Help*.tsx` |
+| **Logo / branding** | **does not exist** | No logo in any component or in index.html |
+
+## The three that are not UI work
+
+**S1 — Sub-agents do not exist in the model.** The brief says "workflows of
+agents **and sub-agents**". A workflow step is a task; there is no parent/child
+task relationship anywhere, including in `apps/common/swarm_common/models.py`,
+which is FROZEN. This cannot be built in the UI. It is a **contract change
+request** and belongs in `docs/contract-change-requests.md` with the shape the
+UI would need — at minimum a nullable parent task id and a way to list children
+— so the owner can decide. Nobody should fake it by inferring hierarchy from
+`depends_on`: a dependency is not a parent.
+
+**S2 — Nothing can show an output.** `GET /v1/tasks/{id}/artifacts` lists
+artifacts and the run really does produce them — `wf_5e5ad3b6f7da4299a839`
+yielded `synthesis.md`, five `<step>.md` files and `claude-transcript.json`.
+There is no route that returns an artifact's CONTENT and no screen that renders
+one. "A way to visualize the resulting work" is the headline ask of the brief
+and it is the single largest unbuilt thing. This needs a server route first.
+
+**S3 — There is no stop control.** `POST /v1/tasks/{task_id}/cancel` exists
+(routes/tasks.py:116) and works — it cancelled six tasks cleanly when used at
+the workflow level on 2026-09-22 — but **no UI calls it**. An operator watching
+an agent burn tokens on the wrong thing cannot stop it from the console.
+
+## New build items
+
+* **B26 — The node is the way in.** `StepNode` (Workflows.tsx:317) is a plain
+  component with no href and no onClick. Clicking a node must open that agent
+  run: its runtime environment, live and final logs, checkpoints, artifacts,
+  outputs, spend and duration. `loadCheckpoints` and `loadTaskLogs` already
+  exist and have never been called — this is their caller. Blocks the brief's
+  "great tooling to inspect the work an agent has done".
+* **B27 — Two graph modes.** A collapsed summary for scanning many workflows,
+  and a full visual DAG canvas for one. The collapsed mode must still convey
+  topology, not just a count.
+* **B28 — Stop a run from the console.** A cancel control on a running node and
+  on the run detail, wired to the existing route. It is destructive and
+  irreversible for that attempt, so it confirms first and names what it will
+  stop. Report whether an attempt can be stopped without failing the workflow
+  when `on_step_failure: continue`.
+* **B29 — An artifact viewer, and the route under it.** Render text artifacts
+  and transcripts in-page; offer download for the rest. The server route that
+  returns content does not exist yet — specify it before building the UI, and
+  note that artifacts are tenant-scoped GCS objects, so the route must enforce
+  the same tenant boundary the artifact list does and must never proxy a path
+  the caller supplies.
+* **B30 — Identity: logo and header.** A real product header with a logo, the
+  environment, the tenant and the signed-in principal. Today `index.html` and
+  every component carry no branding at all.
+* **B31 — Sub-agents, as a contract request.** Write the request; do not build a
+  fake hierarchy from `depends_on`.
+
+## Correction to half one
+
+Half one said the checkpoint and log routes "already exist with no screen
+calling them". That was right about the routes and understated the situation:
+the **client loaders exist too** (`api.ts:379`, `api.ts:414`), fully written,
+and are dead code. The work is further along and more wasted than reported.
