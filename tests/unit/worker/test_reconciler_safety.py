@@ -50,11 +50,12 @@ def seed_running_task(
     silent_seconds: int = 600,
     state: TaskState = TaskState.RUNNING,
     pool_active: int = 2,
+    backend: str = "CLOUD_RUN_JOB",
 ) -> None:
     now = utcnow()
     pools = pool_names_for(
         tenant_id=TENANT, provider=None, resource_class="standard",
-        runner_profile="mock", backend="CLOUD_RUN_JOB",
+        runner_profile="mock", backend=backend,
     )
     db.seed(
         f"tasks/{task_id}",
@@ -86,7 +87,7 @@ def seed_running_task(
         f"attempts/{attempt_id}",
         {
             "attempt_id": attempt_id, "task_id": task_id, "tenant_id": TENANT,
-            "generation": generation, "lease_id": lease_id, "backend": "CLOUD_RUN_JOB",
+            "generation": generation, "lease_id": lease_id, "backend": backend,
             "created_at": now - timedelta(seconds=silent_seconds + 60),
             "execution_name": "projects/p/locations/us-central1/jobs/swarm-eng-mock/executions/x1",
             "started_at": now - timedelta(seconds=silent_seconds + 30),
@@ -111,10 +112,10 @@ def running_execution(attempt_id: str = "att_1", generation: int = 3, age_second
     )
 
 
-def build(db: FakeFirestore, config: ReconcilerConfig, backend: FakeBackend) -> Reconciler:
+def build(db: FakeFirestore, config: ReconcilerConfig, *backends: FakeBackend) -> Reconciler:
     logger = build_logger(stream=__import__("io").StringIO())
     store = ControlStore(db, logger=logger, txn_runner=FakeTransactionRunner(db))
-    return Reconciler(store=store, backends=[backend], config=config, logger=logger)
+    return Reconciler(store=store, backends=list(backends), config=config, logger=logger)
 
 
 def index_of(journal, predicate) -> int:
@@ -272,6 +273,81 @@ def test_an_unreadable_backend_blocks_repairs_rather_than_guessing(db, config):
     assert report.findings == 0, "no execution list means no safe conclusions"
     assert db.doc("leases/lease_1")["released_at"] is None
     assert db.doc("pools/global")["active"] == 2
+
+
+def unauthorized_from_the_cluster() -> Exception:
+    """The exception the kubernetes client really raises on a rejected token.
+
+    Verbatim in shape from the live failure: `str()` on this renders
+    "(401)\nReason: Unauthorized", which is what swarm-reconciler logged on
+    every pass from 2026-09-22T00:55:08Z onwards. Constructed from the real
+    class rather than a RuntimeError, because the property under test is that
+    the reporting path treats an ApiException as blindness and not as an answer.
+    """
+    from kubernetes.client.rest import ApiException
+
+    return ApiException(status=401, reason="Unauthorized")
+
+
+def test_a_401_from_gke_is_reported_as_blindness_not_as_an_empty_cluster(db, config):
+    """The failure mode this platform keeps producing: a failed read as no result.
+
+    An expired bearer token made every GKE list return 401 for 3h50m. If that
+    read had been rendered as "no executions found", the reconciler would have
+    concluded that a live browser-profile agent had no execution behind it,
+    invalidated its generation, released its slot and let the scheduler start a
+    second agent on the same task with the same credentials and the same
+    repository -- the duplicate-execution failure this service exists to
+    prevent, caused by the service itself.
+
+    The Cloud Run backend is readable here and returns nothing, so the ONLY
+    reason to hold back is the unreadable GKE backend. That distinction is the
+    whole test; the companion below shows the same seed does release when the
+    backend genuinely answers "empty".
+    """
+    gke_config = ReconcilerConfig(**{**config.__dict__, "enable_gke": True})
+    seed_running_task(db, backend="GKE_AUTOPILOT")
+    cloud_run = FakeBackend("CLOUD_RUN_JOB", executions=[], journal=db.writes)
+    blind_gke = FakeBackend(
+        "GKE_AUTOPILOT",
+        executions=[],
+        journal=db.writes,
+        list_raises=unauthorized_from_the_cluster(),
+    )
+
+    report = build(db, gke_config, cloud_run, blind_gke).run_once()
+
+    assert any("401" in error and "GKE_AUTOPILOT" in error for error in report.errors), (
+        f"the 401 must reach the report as an error, got {report.errors}"
+    )
+    assert report.findings == 0, "an unreadable backend permits no conclusions about absence"
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert db.doc("pools/global")["active"] == 2
+    assert db.doc("tasks/task_1")["current_generation"] == 3, "nothing was fenced"
+
+
+def test_an_empty_gke_cluster_does_release_so_the_test_above_means_something(db, config):
+    """The contrast. Same seed, same backends -- but GKE answers instead of failing.
+
+    Without this, `findings == 0` above would also be satisfied by a reconciler
+    that had simply stopped working, and the test would pass for the wrong
+    reason.
+    """
+    gke_config = ReconcilerConfig(**{**config.__dict__, "enable_gke": True})
+    seed_running_task(db, backend="GKE_AUTOPILOT")
+    cloud_run = FakeBackend("CLOUD_RUN_JOB", executions=[], journal=db.writes)
+    empty_gke = FakeBackend("GKE_AUTOPILOT", executions=[], journal=db.writes)
+
+    report = build(db, gke_config, cloud_run, empty_gke).run_once()
+
+    assert report.errors == []
+    assert [outcome.kind for outcome in report.outcomes] == [
+        "missing_execution",
+        "stale_lease",
+    ]
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert db.doc("pools/global")["active"] == 1
+    assert db.doc("tasks/task_1")["current_generation"] == 4
 
 
 def test_dry_run_changes_nothing(db, config):

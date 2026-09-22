@@ -9,11 +9,14 @@ across both implementations:
   teams. Every list is label-filtered on the `managed-by=swarm*` family and
   every delete re-checks the label on the object it is about to remove, because
   a list filter is a query and a re-check is a guarantee.
-* **Termination is confirmed, not requested.** `terminate()` returns True only
-  when the backend acknowledged it. The caller uses that return value to decide
-  whether it may release the slot, and a slot released after an unconfirmed
-  termination is exactly the duplicate-execution bug this service exists to
-  prevent.
+* **Termination is proven, not requested.** `terminate()` returns True only
+  when the backend acknowledged the stop, or when the backend's own record of
+  the execution says it has already finished -- never on the strength of having
+  asked. The caller uses that return value to decide whether it may release the
+  slot, and a slot released after an unproven termination is exactly the
+  duplicate-execution bug this service exists to prevent. The second form of
+  proof exists because Cloud Run reports a cancellation it carried out as a
+  FAILED operation whenever the execution did not succeed; see `terminate`.
 
 Two asymmetries here are deliberate, and both exist because being BLIND is far
 more dangerous than seeing too much.
@@ -208,6 +211,44 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def execution_is_finished(execution: Any) -> bool:
+    """True only when Cloud Run's own record proves this execution is over.
+
+    A separate question from `_execution_view`'s phase, and deliberately so.
+    The phase answers "what is this doing", and its `UNKNOWN` bucket is where
+    shapes nobody has characterised land; this answers "is the compute gone",
+    which is the only question that may release a slot. Reusing the phase would
+    quietly let that bucket release slots too.
+
+    All three conditions are required, and each rules out a shape seen on a real
+    execution rather than an imagined one:
+
+    * `completion_time` set -- the field Cloud Run writes when an execution
+      reaches a terminal state. `swarm-job-eng-claude-code-sq2l6` read back
+      `completion_time=2026-09-22T04:00:14Z`, `cancelled_count=1`,
+      `running_count=0`, `reconciling=False`; the healthy
+      `swarm-job-eng-claude-code-vn5mp` read the same shape with
+      `succeeded_count=1`. Only the counts differ, which is why the counts are
+      not what is tested: this must confirm a stop, not a success.
+    * `running_count == 0` -- an execution with `task_count > 1` can post a
+      terminal count for one task while another is still going, and the agent in
+      that task is still holding the credential.
+    * not `reconciling` -- Cloud Run is still acting on the resource, so its
+      counters are mid-flight. sq2l6 grew an `ImmediateRetry` Retry condition at
+      04:00:19, five seconds AFTER its completionTime; `maxRetries: 0` meant
+      nothing came of it, but a profile with retries would have restarted the
+      container under a completion time that was already set.
+
+    An object missing these fields reads as not finished, which is the direction
+    that holds the slot.
+    """
+    if as_datetime(getattr(execution, "completion_time", None)) is None:
+        return False
+    if int(getattr(execution, "running_count", 0) or 0) > 0:
+        return False
+    return not bool(getattr(execution, "reconciling", False))
+
+
 # ---------------------------------------------------------------------------
 # Cloud Run Jobs
 # ---------------------------------------------------------------------------
@@ -361,19 +402,48 @@ class CloudRunBackend:
 
     # -- writes ---------------------------------------------------------
     def terminate(self, execution: ExecutionView) -> bool:
-        """Cancel the execution and return whether Cloud Run CONFIRMED it.
+        """Stop the execution and return whether the stop is PROVEN.
 
-        Only an operation whose result names this exact execution counts.
-        `bool(result)` would not: a protobuf is truthy whenever it carries any
-        field at all, so falling back to it reports success for essentially any
-        completed operation -- including one that returned a different
-        execution, which is precisely the case the name comparison exists to
-        catch. `repair.py` gates the lease release on this boolean, so a false
-        True releases a slot while the first agent may still be running: two
-        agents, one task, one credential, one repository.
+        Two kinds of proof, and only two.
 
-        A `NotFound` is a confirmed stop: the execution this service was asked
-        to end does not exist any more.
+        **The cancel was acknowledged for this execution.** Only an operation
+        whose result names this exact execution counts. `bool(result)` would
+        not: a protobuf is truthy whenever it carries any field at all, so
+        falling back to it reports success for essentially any completed
+        operation -- including one that returned a different execution, which is
+        precisely the case the name comparison exists to catch. `repair.py`
+        gates the lease release on this boolean, so a false True releases a slot
+        while the first agent may still be running: two agents, one task, one
+        credential, one repository.
+
+        **Or Cloud Run's own record says the execution is over.** A `NotFound`
+        is the extreme of that: the execution this service was asked to end does
+        not exist any more. `_confirmed_finished` is the rest of it, and it
+        exists because Cloud Run does NOT distinguish "the cancellation failed"
+        from "the execution did not succeed". Every failed cancel seen on
+        saga-agents-staging was the second thing:
+
+        * `400 Execution 'swarm-job-u-bogdan-mock-w8g2g' cannot be cancelled
+          because it is not running.` -- 16 of these in 1.997s on 2026-09-20,
+          because the executions finished between the list and the cancel. That
+          pass (pass_0bd239d41f79479385cf) found 17 dead workers and released
+          exactly one: sixteen leases held on a read-then-act race.
+        * `409 Task swarm-verify-dc9fl-task0 failed with exit code: 1` -- the
+          LRO carrying the task's own failure as operation error code 10.
+        * `None Unspecified error. 2: Unspecified error.` --
+          swarm-job-eng-claude-code-sq2l6 on 2026-09-22. Its CancelExecution
+          audit entry reads `status { code: 2, message: "Execution
+          swarm-job-eng-claude-code-sq2l6 has failed to complete, 0/1 tasks were
+          a success." }` and carries, in the same payload, the execution with
+          cancelledCount 1 and completionTime set. The cancellation worked.
+
+        So an unacknowledged cancel is not evidence of anything and the
+        execution is re-read instead. A GET that reports it finished is STRONGER
+        evidence than an ack: an ack says Cloud Run accepted a request, a
+        terminal execution says the compute is gone. Nothing else changes -- if
+        the re-read cannot prove termination the original error is re-raised,
+        `repair.py` logs it and the slot stays held, which is the outcome this
+        module exists to produce.
         """
         from google.api_core import exceptions as gapi_exceptions
         from google.cloud import run_v2
@@ -388,18 +458,89 @@ class CloudRunBackend:
                     "cloud run execution already gone", execution=execution.name, confirmed=True
                 )
             return True
-        cancelled = getattr(result, "name", None) == execution.name
+        except Exception as exc:
+            # Re-raised rather than turned into False when the proof fails, so
+            # `repair.py`'s "termination failed" carries the real cause. A bare
+            # False would report the same refusal with nothing to act on.
+            if self._confirmed_finished(execution, cause=exc):
+                return True
+            raise
+        if getattr(result, "name", None) == execution.name:
+            if self._log:
+                self._log.info(
+                    "cloud run execution cancelled", execution=execution.name, confirmed=True
+                )
+            return True
+        returned = str(getattr(result, "name", "")) or None
+        if self._confirmed_finished(
+            execution, cause=f"cancel acknowledged {returned!r}, not this execution"
+        ):
+            return True
         if self._log:
-            log = self._log.info if cancelled else self._log.error
-            log(
-                "cloud run execution cancelled"
-                if cancelled
-                else "cloud run did not confirm the cancellation; NOT releasing the slot",
+            self._log.error(
+                "cloud run did not confirm the cancellation; NOT releasing the slot",
                 execution=execution.name,
-                returned=str(getattr(result, "name", "")) or None,
-                confirmed=cancelled,
+                returned=returned,
+                confirmed=False,
             )
-        return cancelled
+        return False
+
+    def _confirmed_finished(self, execution: ExecutionView, *, cause: Any) -> bool:
+        """Re-read the execution and say whether Cloud Run reports it finished.
+
+        The read is what makes this safe to act on, so a read that does not
+        happen, or does not prove termination, returns False every time. There
+        is no inference here: no timeout heuristic, no "it was probably the
+        cancel", nothing derived from `cause`, which is carried only so the log
+        line says which unacknowledged cancel this is answering.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+
+        try:
+            current = self._executions_client().get_execution(name=execution.name)
+        except gapi_exceptions.NotFound:
+            if self._log:
+                self._log.info(
+                    "cloud run execution is gone; treating the cancellation as confirmed",
+                    execution=execution.name,
+                    cause=str(cause),
+                    confirmed=True,
+                )
+            return True
+        except Exception as exc:
+            # Cannot see it, so cannot claim it stopped. Same rule as an
+            # unreadable backend in `repair._is_actionable`.
+            if self._log:
+                self._log.error(
+                    "could not re-read the execution after an unconfirmed cancellation",
+                    execution=execution.name,
+                    cause=str(cause),
+                    error=str(exc),
+                    confirmed=False,
+                )
+            return False
+        if not execution_is_finished(current):
+            if self._log:
+                self._log.error(
+                    "cloud run still reports this execution as running; NOT releasing the slot",
+                    execution=execution.name,
+                    cause=str(cause),
+                    running_count=int(getattr(current, "running_count", 0) or 0),
+                    reconciling=bool(getattr(current, "reconciling", False)),
+                    confirmed=False,
+                )
+            return False
+        if self._log:
+            self._log.info(
+                "cloud run reports this execution finished; the stop is confirmed",
+                execution=execution.name,
+                cause=str(cause),
+                cancelled_count=int(getattr(current, "cancelled_count", 0) or 0),
+                succeeded_count=int(getattr(current, "succeeded_count", 0) or 0),
+                failed_count=int(getattr(current, "failed_count", 0) or 0),
+                confirmed=True,
+            )
+        return True
 
     def list_job_resources(self) -> list[JobResourceView]:
         resources: list[JobResourceView] = []
@@ -498,6 +639,95 @@ def gke_api_host(endpoint: str) -> str:
     return f"https://{rest}"
 
 
+def google_bearer_token(credentials: Any) -> str:
+    """The access token for the NEXT Kubernetes API call, refreshed if stale.
+
+    A Google OAuth access token lives about an hour, and on Cloud Run often much
+    less: the metadata server hands out whatever remains of the token it has
+    cached, so a first mint can come back with half an hour of life. That is
+    fine for a one-shot job and fatal for this service, because a single
+    kubernetes client is built once and then lives as long as the process --
+    `service.create_app` keeps the Reconciler (and therefore this backend) in
+    app state, and `run.googleapis.com/cpu-throttling: 'false'` plus a
+    five-minute Cloud Scheduler tick keeps the instance warm for hours.
+
+    That is not a theoretical decay. swarm-reconciler instance 00a41e8c started
+    at 2026-09-22T00:18:03Z and minted its token on the first pass at 00:20:24Z;
+    every GKE list from 00:55:08Z onwards returned 401 Unauthorized, for 3h50m
+    and 40 consecutive passes, on that same process. Nothing in the failure said
+    "token": a 401 from the Kubernetes API reads the same whether the bearer was
+    absent, malformed or merely dead, and the earlier passes on that instance had
+    returned 403, so the log looked like an IAM problem that had somehow got
+    worse. Meanwhile `repair.run_once` was correctly refusing to act on a backend
+    it could not read, so every GKE workload went unreconciled -- a stuck
+    browser-profile task would have held its lease and its capacity forever.
+
+    So: no token is ever cached past its own expiry. `Credentials.valid` is
+    google.auth's own answer to "would this token still be accepted", already
+    carrying google.auth's refresh threshold, so a token this returns had time
+    left when the request was built. Credentials that cannot say when they
+    expire are refreshed on every call: minting one more token costs a metadata
+    round trip, and serving one dead token costs a reconciliation pass.
+    """
+    import google.auth.transport.requests
+
+    expiry = getattr(credentials, "expiry", None)
+    if expiry is None or not getattr(credentials, "valid", False):
+        credentials.refresh(google.auth.transport.requests.Request())
+    token = getattr(credentials, "token", None)
+    if not token:
+        # Never the token itself, here or anywhere: this message reaches the
+        # reconciliation report, which the API serves to operators.
+        raise RuntimeError(
+            "google.auth returned no access token for the GKE API; "
+            "the cluster cannot be read without one"
+        )
+    return str(token)
+
+
+def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
+    """Give a kubernetes Configuration a token it refreshes for every request.
+
+    `refresh_api_key_hook` is the kubernetes client's own extension point for
+    exactly this, and it is called on every single request:
+    `ApiClient.update_params_for_auth` -> `Configuration.auth_settings` ->
+    `get_api_key_with_prefix("authorization")` -> the hook. Hooking it is what
+    lets the client, its connection pool and the CA file on disk stay cached for
+    the life of the process while the credential does not.
+
+    This function is duplicated in `scheduler.dispatch`, deliberately and for
+    the same reason `gke_api_host` is: the two services ship as separate images
+    that share only the FROZEN `swarm_common` package, so neither can import the
+    other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_auth.py` pins the two copies
+    together, by running the same expiring credential through both and asserting
+    the same sequence of headers comes out.
+    """
+
+    def refresh(config: Any) -> None:
+        config.api_key["authorization"] = f"Bearer {google_bearer_token(credentials)}"
+
+    # Refused, not assumed. A Configuration that does not KNOW about the hook
+    # would accept the attribute and never call it -- silently restoring the
+    # one-shot token this replaces, with no test and no log line to show for it.
+    # Both images resolve `kubernetes>=30` at build time rather than from a
+    # lock, and this repository has already lost a working check to a client
+    # version that quietly ignored what it was handed.
+    if not hasattr(configuration, "refresh_api_key_hook"):
+        raise RuntimeError(
+            "this kubernetes client Configuration has no refresh_api_key_hook, "
+            "so a GKE access token cannot be refreshed per request"
+        )
+    # Seeded as well as hooked. `auth_settings()` only asks for a bearer token
+    # when `api_key` ALREADY holds an "authorization" entry, so a Configuration
+    # carrying the hook alone would send no Authorization header at all -- and
+    # the API server answers a missing bearer with the very same 401 this is
+    # here to stop.
+    configuration.api_key = {}
+    refresh(configuration)
+    configuration.refresh_api_key_hook = refresh
+
+
 @dataclass
 class GkeConnection:
     endpoint: str
@@ -547,16 +777,18 @@ class GkeBackend:
                 handle.close()
                 self._ca_file = handle.name
             import google.auth
-            import google.auth.transport.requests
 
             credentials, _ = google.auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
-            credentials.refresh(google.auth.transport.requests.Request())
             configuration = k8s_client.Configuration()
             configuration.host = gke_api_host(endpoint)
             configuration.ssl_ca_cert = self._ca_file
-            configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
+            # Per request, not once. `self._batch`/`self._core` below are cached
+            # for the life of the process and `_configure` returns early on
+            # every later pass, so a token minted here would be the token every
+            # subsequent call carried until the instance died.
+            install_google_bearer_token(configuration, credentials)
             api_client = k8s_client.ApiClient(configuration)
         else:
             k8s_config.load_incluster_config()

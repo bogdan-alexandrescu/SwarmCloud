@@ -356,6 +356,33 @@ export interface Task {
   latest_checkpoint: string | null
 
   /**
+   * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
+   *
+   * It increments on admission (`admission.py:186`) AND on a reconciler fence
+   * (`reconciler/store.py:220-227`), so `current_generation > attempt_count`
+   * is exactly "a stale worker was fenced out" -- the only cheap signal that
+   * CONTRACT invariant 5 has fired. `AttemptRow.generation` is a different and
+   * narrower thing: the generation ONE attempt was minted with.
+   *
+   * NOT OPTIONAL and 0 IS AN ANSWER: the API sends it on every task, and zero
+   * means never admitted. Read `> attempt_count` rather than truthiness.
+   */
+  current_generation: number
+  /**
+   * The lease holding this task's capacity, or null if it holds none.
+   *
+   * Null on a QUEUED, PARKED, READY or terminal task -- those cost nothing
+   * (invariant 1). It is the join key onto `LeaseRow`, and comparing that
+   * row's `generation` against `current_generation` above is how a stalled
+   * task is diagnosed: a task at generation 2 whose named lease is still at
+   * generation 1 and unreleased is holding a slot for work that will never
+   * run. That is the twenty-minute DISPATCHED stall on
+   * task_b5dc2568713a40158851, which no screen could explain because neither
+   * number reached the browser.
+   */
+  current_lease_id: string | null
+
+  /**
    * `codec.dispatch_of`, lifted out of `metadata.dispatch` by the API.
    *
    * OPTIONAL ON PURPOSE, and it is the one field in this interface whose
@@ -369,13 +396,13 @@ export interface Task {
 }
 
 /**
- * NOT on the task: `current_generation`.
- *
- * models.py carries it and it is meaningful -- it increments on admission AND
- * on a reconciler fence, so `current_generation > attempt_count` is exactly
- * "a stale worker was fenced out". task_to_api does not send it, so no screen
- * can show it and no screen should imply it. Attempt.generation is available
- * per attempt, which is a different and narrower thing.
+ * `current_generation` and `current_lease_id` USED TO BE MISSING HERE, and this
+ * block used to say so: "task_to_api does not send it, so no screen can show it
+ * and no screen should imply it". That was true, and it was the standing reason
+ * not to build the fencing indicator -- the same shape as the comment that kept
+ * the cost columns off the attempts table by blaming a worker fix that had
+ * already shipped. `task_to_api` serves both now and they are typed on `Task`
+ * above; a screen that wants the fence glyph has the numbers.
  */
 
 // --------------------------------------------------------------------------

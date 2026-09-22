@@ -1,7 +1,9 @@
 import { noteFixtureProbe, read, write, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
-// so a live task's newest attempt is rendered as live.
-import { TERMINAL_STATES } from './types'
+// so a live task's newest attempt is rendered as live, and the task fixture
+// needs the concurrency set to decide which rows hold a lease -- invariant 1's
+// four states, not a second list written out here.
+import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 import type {
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
@@ -1860,6 +1862,25 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     next_eligible_at: state === 'PARKED' ? at(minsAgo - 15) : null,
     metadata: null,
     repository_ref: 'main',
+    // THE FENCING PAIR, as `task_to_api` now serves it. Two different rules,
+    // both taken from the contract rather than drawn by eye here:
+    //
+    // A LEASE IS HELD ONLY IN THE FOUR CONCURRENCY STATES (invariant 1).
+    // QUEUED, PARKED, READY and every terminal state cost nothing, and
+    // `control.park` and `control.finish` both write `current_lease_id: None`
+    // on the way out. A fixture that gave every row a lease id would show a
+    // released slot as held, on the screens built to find held slots.
+    //
+    // THE GENERATION IS NEVER RESET, so a finished task keeps the one it ran
+    // at, and only a never-admitted task is at 0. It equals `attempt_count`
+    // unless a reconciler fenced a stale worker; `task_19d91b82` overrides it
+    // in `extra` below to the fenced shape, which is the live twenty-minute
+    // stall and the one row that exercises the glyph.
+    current_generation:
+      state === 'QUEUED' || state === 'READY' ? 0 : state === 'FAILED' ? 3 : 1,
+    current_lease_id: CONCURRENCY_STATES.has(state)
+      ? `lease_${id.replace('task_', '')}`
+      : null,
     // `task_to_api` sends this on every task, filling the API's defaults for a
     // task that predates the feature -- so the fixture default is the same pair
     // and the rows that differ say so in `extra`. A fixture that omitted it
@@ -1883,7 +1904,16 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
       tasks: [
         mk('task_a073aff5', 'RUNNING', 'claude-code', 4),
         mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
-        mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3),
+        // THE FENCED SHAPE, which is the twenty-minute DISPATCHED stall that
+        // exposed the missing fields: generation 2 against attempt_count 1,
+        // still naming the generation-1 lease that was never released. This is
+        // the row that tells a developer whether an indicator reads correctly;
+        // with every fixture row at generation == attempt_count, a glyph that
+        // never fires and a glyph that is not wired look identical.
+        mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3, {
+          current_generation: 2,
+          current_lease_id: 'lease_723362a25968460aae35',
+        }),
         mk('task_92eb4807', 'STARTING', 'claude-code', 2),
         mk('task_460409cd', 'LEASED', 'claude-code', 1),
         mk('task_950b8e4a', 'READY', 'claude-code', 1),

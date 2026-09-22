@@ -165,6 +165,39 @@ def task_to_api(task: Task) -> dict[str, Any]:
         "next_eligible_at": task.next_eligible_at,
         "park_reason": task.park_reason.value if task.park_reason else None,
         "blocked_by": task.blocked_by,
+        # THE FENCING PAIR, which this serialiser never emitted.
+        #
+        # CONTRACT invariant 5 -- a stale worker exits without running the
+        # agent -- turns on `current_generation`, and `task_from_dict` above has
+        # always read both fields back. Neither ever reached a caller, so the
+        # platform's core safety mechanism was invisible through the API and no
+        # screen could show it. The live case: task_b5dc2568713a40158851 sat
+        # DISPATCHED for twenty minutes at generation 2 while its
+        # `current_lease_id` named an UNRELEASED generation-1 lease whose
+        # attempt never started, so the slot stayed held for work that could
+        # never run. The one number that says so was not served.
+        #
+        # THAT TASK'S DOCUMENT STILL PROVES THE POINT after the reconciler
+        # reclaimed it (`release_reason: reconciler:missing_execution`) and the
+        # retry succeeded: it is SUCCEEDED with `current_generation` 3 and
+        # `attempt_count` 2. Generation above attempt count is the permanent
+        # record that a stale worker was fenced, and it was unreadable through
+        # every API a person or a screen could call.
+        #
+        # Neither is withheld material. The docstring above promises no
+        # credential material and no backend spec: a generation is a small
+        # integer and the lease id is already public -- `lease_to_api` serves
+        # `lease_id` itself, and that lease's own generation, to the same
+        # callers. Nothing in this function's history ever removed them; they
+        # were absent from the first commit that wrote it.
+        #
+        # ALWAYS EMITTED, INCLUDING AS 0 AND None. Zero is an answer -- the
+        # task has never been admitted -- and it is what makes
+        # `current_generation > attempt_count` ("a stale worker was fenced")
+        # readable. A `or None` here would turn that answer back into "not
+        # reported", the conflation this codec has spent days removing.
+        "current_generation": task.current_generation,
+        "current_lease_id": task.current_lease_id,
         "workflow_id": task.workflow_id,
         "step_id": task.step_id,
         "depends_on": task.depends_on,

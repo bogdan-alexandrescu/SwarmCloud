@@ -76,18 +76,30 @@ def run_execution(
     labels: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
     running: int = 1,
+    cancelled: int = 0,
+    succeeded: int = 0,
+    failed: int = 0,
+    completed: bool = False,
+    reconciling: bool = False,
     age_seconds: int = 600,
 ) -> Any:
-    """A `run_v2.Execution` as the dispatcher's `run_job` override produces it."""
+    """A `run_v2.Execution` as the dispatcher's `run_job` override produces it.
+
+    `completed=True` is the terminal shape, and the field values are the ones a
+    real `get_execution` returned for swarm-job-eng-claude-code-sq2l6 after it
+    was cancelled: `running_count=0`, `cancelled_count=1`, `reconciling=False`
+    and `completion_time` set.
+    """
     return SimpleNamespace(
         name=name,
         labels=labels or {},
         create_time=utcnow() - timedelta(seconds=age_seconds),
         running_count=running,
-        cancelled_count=0,
-        succeeded_count=0,
-        failed_count=0,
-        completion_time=None,
+        cancelled_count=cancelled,
+        succeeded_count=succeeded,
+        failed_count=failed,
+        completion_time=utcnow() if completed else None,
+        reconciling=reconciling,
         template=SimpleNamespace(
             containers=[SimpleNamespace(name="worker", env=env_entries(**(env or {})))]
         ),
@@ -124,9 +136,27 @@ class FakeJobsClient:
 class FakeExecutionsClient:
     def __init__(self, executions: dict[str, list[Any]]) -> None:
         self.executions = executions
+        #: Every name `get_execution` was asked for, so a test can assert that
+        #: `terminate()` re-read the execution rather than trusting the ack.
+        self.read: list[str] = []
 
     def list_executions(self, parent: str) -> list[Any]:
         return list(self.executions.get(parent, []))
+
+    def get_execution(self, name: str) -> Any:
+        """One execution by name, as `terminate()` re-reads it.
+
+        An unknown name raises `NotFound`, which is what the real client does
+        and is itself a confirmed stop.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+
+        self.read.append(name)
+        for items in self.executions.values():
+            for execution in items:
+                if str(getattr(execution, "name", "")) == name:
+                    return execution
+        raise gapi_exceptions.NotFound(name)
 
 
 def k8s_job(
@@ -380,6 +410,105 @@ def test_a_namespace_without_a_tenant_label_is_never_collectable():
     with pytest.raises(PermissionError):
         backend.delete_job_resource(replace(resources[0], managed=True))
     assert backend._core.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# A cancel Cloud Run would not acknowledge, over an execution it reports as over
+#
+# End to end through the real `CloudRunBackend`, because the bool that decides
+# whether the slot comes back is produced there and `FakeBackend` returns a
+# scripted one. Wedged live on 2026-09-22: task_b5dc2568713a40158851 held its
+# lease from 04:00:22 (the failed cancel) until 04:05:16, when the following
+# pass reached it by another route. The route out must not be incidental.
+# ---------------------------------------------------------------------------
+
+
+def _wedged_clients(*, cancel_error: Exception, current: Any):
+    """A dispatcher-shaped job whose one execution refuses to be cancelled."""
+    job = run_job(labels={"managed-by": "swarm-scheduler", "swarm-tenant-id": TENANT})
+    listed = run_execution(
+        labels={"managed-by": "swarm-scheduler"},
+        env={
+            "TASK_ID": "task_1",
+            "ATTEMPT_ID": "att_1",
+            "TENANT_ID": TENANT,
+            "GENERATION": "3",
+        },
+    )
+
+    class _Client(FakeExecutionsClient):
+        def __init__(self) -> None:
+            super().__init__({JOB: [listed]})
+            self.cancelled: list[str] = []
+
+        def cancel_execution(self, request):
+            self.cancelled.append(request.name)
+            raise cancel_error
+
+        def get_execution(self, name: str):
+            # The cancel has landed by the time anything re-reads, so the GET
+            # returns the post-cancel state rather than the listed one.
+            self.read.append(name)
+            return current
+
+    return FakeJobsClient([job]), _Client()
+
+
+def test_an_unacknowledged_cancel_releases_the_slot_once_the_execution_reads_as_over(db):
+    """The sq2l6 shape: LRO error code 2, execution already terminal."""
+    from google.api_core import exceptions as gapi_exceptions
+
+    seed_running_task(db, pool_active=2)
+    jobs, executions = _wedged_clients(
+        cancel_error=gapi_exceptions.Unknown("Unspecified error."),
+        current=run_execution(running=0, cancelled=1, completed=True),
+    )
+    backend = CloudRunBackend(
+        PROJECT, REGION, job_name_prefix="swarm-",
+        jobs_client=jobs, executions_client=executions, logger=build_logger(),
+    )
+    report = build_gke_reconciler(db, config_for_cloud_run(), backend).run_once()
+
+    outcome = report.outcomes[0]
+    assert outcome.kind == "dead_worker"
+    assert executions.cancelled == [f"{JOB}/executions/x1"]
+    assert outcome.terminated is True, outcome.as_dict()
+    assert outcome.released is True, outcome.as_dict()
+    # The generation was fenced first, the slot came back after, and the task is
+    # queueable again -- all in the pass that found it.
+    assert db.doc("tasks/task_1")["current_generation"] == 4
+    assert db.doc("pools/global")["active"] == 1
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert db.doc("tasks/task_1")["state"] == TaskState.READY.value
+
+
+def test_an_unacknowledged_cancel_holds_the_slot_while_the_execution_still_runs(db):
+    """Genuinely unknown: Cloud Run still reports the execution running.
+
+    A stuck slot is recoverable; two agents on one repository are not.
+    """
+    from google.api_core import exceptions as gapi_exceptions
+
+    seed_running_task(db, pool_active=2)
+    jobs, executions = _wedged_clients(
+        cancel_error=gapi_exceptions.Unknown("Unspecified error."),
+        current=run_execution(running=1),
+    )
+    backend = CloudRunBackend(
+        PROJECT, REGION, job_name_prefix="swarm-",
+        jobs_client=jobs, executions_client=executions, logger=build_logger(),
+    )
+    report = build_gke_reconciler(db, config_for_cloud_run(), backend).run_once()
+
+    outcome = report.outcomes[0]
+    assert outcome.terminated is False
+    assert outcome.released is False
+    assert outcome.skipped and "termination_failed" in outcome.skipped
+    assert "Unspecified error" in outcome.skipped, "the real cause must survive"
+    assert db.doc("pools/global")["active"] == 2
+    assert db.doc("leases/lease_1")["released_at"] is None
+    # The generation brake was still applied: it does not need the backend.
+    assert db.doc("tasks/task_1")["current_generation"] == 4
 
 
 # ---------------------------------------------------------------------------

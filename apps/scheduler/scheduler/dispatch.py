@@ -555,6 +555,90 @@ def gke_api_host(endpoint: str) -> str:
     return f"https://{rest}"
 
 
+def google_bearer_token(credentials: Any) -> str:
+    """The access token for the NEXT Kubernetes API call, refreshed if stale.
+
+    A Google OAuth access token lives about an hour, and on Cloud Run often much
+    less: the metadata server hands out whatever remains of the token it has
+    cached. This dispatcher is built once per process -- `main.create_app` puts
+    the Scheduler in app state and the one-minute Cloud Scheduler tick keeps the
+    instance warm -- so a token minted at first use is the token every later
+    dispatch carries.
+
+    The reconciler proved what that costs. Instance 00a41e8c of swarm-reconciler
+    started at 2026-09-22T00:18:03Z, minted on its first pass at 00:20:24Z, and
+    from 00:55:08Z answered 401 Unauthorized for 3h50m and 40 consecutive
+    passes; the identical construction lived here. On this side the damage is
+    worse in one way and better in another: every GKE dispatch on a warm
+    instance fails, so a browser-profile task never starts -- but the 401 is
+    wrapped into a DispatchError by `GkeJobDispatcher.dispatch`, so the lease
+    does come back and no capacity leaks.
+
+    `Credentials.valid` is google.auth's own answer to "would this token still be
+    accepted", already carrying google.auth's refresh threshold, so a token this
+    returns had time left when the request was built. Credentials that cannot say
+    when they expire are refreshed on every call: one extra metadata round trip
+    is cheaper than one dispatch lost to a dead token.
+    """
+    import google.auth.transport.requests
+
+    expiry = getattr(credentials, "expiry", None)
+    if expiry is None or not getattr(credentials, "valid", False):
+        credentials.refresh(google.auth.transport.requests.Request())
+    token = getattr(credentials, "token", None)
+    if not token:
+        # Never the token itself. `DispatchError.code` and the message below
+        # reach `task.last_error`, which the API returns to the tenant verbatim.
+        raise RuntimeError(
+            "google.auth returned no access token for the GKE API; "
+            "no job can be created without one"
+        )
+    return str(token)
+
+
+def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
+    """Give a kubernetes Configuration a token it refreshes for every request.
+
+    `refresh_api_key_hook` is the kubernetes client's own extension point for
+    exactly this, and it is called on every single request:
+    `ApiClient.update_params_for_auth` -> `Configuration.auth_settings` ->
+    `get_api_key_with_prefix("authorization")` -> the hook. Hooking it is what
+    lets the client, its connection pool and the CA file on disk stay cached for
+    the life of the process while the credential does not.
+
+    This function is duplicated in `reconciler.backends`, deliberately and for
+    the same reason `gke_api_host` is: the two services ship as separate images
+    that share only the FROZEN `swarm_common` package, so neither can import the
+    other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_auth.py` pins the two copies
+    together, by running the same expiring credential through both and asserting
+    the same sequence of headers comes out.
+    """
+
+    def refresh(config: Any) -> None:
+        config.api_key["authorization"] = f"Bearer {google_bearer_token(credentials)}"
+
+    # Refused, not assumed. A Configuration that does not KNOW about the hook
+    # would accept the attribute and never call it -- silently restoring the
+    # one-shot token this replaces, with no test and no log line to show for it.
+    # Both images resolve `kubernetes>=30` at build time rather than from a
+    # lock, and this repository has already lost a working check to a client
+    # version that quietly ignored what it was handed.
+    if not hasattr(configuration, "refresh_api_key_hook"):
+        raise RuntimeError(
+            "this kubernetes client Configuration has no refresh_api_key_hook, "
+            "so a GKE access token cannot be refreshed per request"
+        )
+    # Seeded as well as hooked. `auth_settings()` only asks for a bearer token
+    # when `api_key` ALREADY holds an "authorization" entry, so a Configuration
+    # carrying the hook alone would send no Authorization header at all -- and
+    # the API server answers a missing bearer with the very same 401 this is
+    # here to stop.
+    configuration.api_key = {}
+    refresh(configuration)
+    configuration.refresh_api_key_hook = refresh
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -637,17 +721,19 @@ class GkeJobDispatcher:
                 f"GKE dispatch is misconfigured: {exc}", code="gke_misconfigured"
             ) from exc
         import google.auth
-        import google.auth.transport.requests
         from kubernetes import client as k8s
 
         credentials, _ = google.auth.default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-        credentials.refresh(google.auth.transport.requests.Request())
         configuration = k8s.Configuration()
         configuration.host = host
         configuration.ssl_ca_cert = ca_cert
-        configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
+        # Per request, not once. `self._batch_api` is cached for the life of the
+        # process and this method returns it unchanged on every later dispatch,
+        # so a token minted here would be the token every subsequent
+        # create_namespaced_job carried until the instance died.
+        install_google_bearer_token(configuration, credentials)
         self._batch_api = k8s.BatchV1Api(k8s.ApiClient(configuration))
         return self._batch_api
 
