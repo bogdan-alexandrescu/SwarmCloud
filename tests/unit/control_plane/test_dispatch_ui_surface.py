@@ -244,17 +244,26 @@ def test_an_empty_repository_url_is_in_fact_refused(client):
 
 
 def test_the_workflow_body_the_form_builds_is_accepted(client):
-    """Six steps into one pull request: the case the control exists to explain."""
+    """Six steps into one pull request: the case the control exists to explain.
+
+    `input` is on every step because the form now puts it there. It was absent
+    from this body for as long as it was absent from the form, and a fixture
+    that agrees with a broken screen is how the blocker survived an audit: the
+    request shape was asserted, accepted and green, and every workflow it
+    described still failed at the agent. `test_workflow_step_input_surface.py`
+    owns that seam; this body simply must not go back to contradicting it.
+    """
     body = {
         "steps": [
-            {"step_id": "plan", "runner_profile": "mock", "depends_on": []},
-            {"step_id": "scan-a", "runner_profile": "mock", "depends_on": ["plan"]},
-            {"step_id": "scan-b", "runner_profile": "mock", "depends_on": ["plan"]},
-            {"step_id": "scan-c", "runner_profile": "mock", "depends_on": ["plan"]},
-            {"step_id": "scan-d", "runner_profile": "mock", "depends_on": ["plan"]},
+            {"step_id": "plan", "runner_profile": "mock", "input": {"prompt": "plan"}, "depends_on": []},
+            {"step_id": "scan-a", "runner_profile": "mock", "input": {"prompt": "a"}, "depends_on": ["plan"]},
+            {"step_id": "scan-b", "runner_profile": "mock", "input": {"prompt": "b"}, "depends_on": ["plan"]},
+            {"step_id": "scan-c", "runner_profile": "mock", "input": {"prompt": "c"}, "depends_on": ["plan"]},
+            {"step_id": "scan-d", "runner_profile": "mock", "input": {"prompt": "d"}, "depends_on": ["plan"]},
             {
                 "step_id": "report",
                 "runner_profile": "mock",
+                "input": {"prompt": "report"},
                 "depends_on": ["scan-a", "scan-b", "scan-c", "scan-d"],
             },
         ],
