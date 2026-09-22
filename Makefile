@@ -59,7 +59,7 @@ TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
         load-test quota-test concurrency-test failure-test race-test e2e-test \
         test tf-test ui-test ui-component-test lint \
-        bench bench-baseline \
+        bench bench-ui bench-baseline \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -176,6 +176,14 @@ bench: ## Performance benchmarks against baselines (SUITES=api,reconcile,cost)
 	@# nobody runs because it is expensive is not a benchmark.
 	@$(SCRIPTS)/bench.sh $${SUITES:+--suites $$SUITES}
 
+bench-ui: ## Browser-side UI cost: paint, load and every /v1 fetch (URL=http://localhost:5173)
+	@# Separate from `bench` because it needs a UI already running and a browser,
+	@# which the three read-only API suites do not. It submits nothing and
+	@# creates nothing; against a fixture UI it records the API numbers as
+	@# not-measured WITH THAT REASON rather than omitting them, because an
+	@# omitted metric and a fast one are indistinguishable in a chart.
+	@$(SCRIPTS)/bench-ui.sh --url $${URL:-http://localhost:5173} $${ROUNDS:+--rounds $$ROUNDS}
+
 bench-baseline: ## Record this run's numbers as the reference (SUITES=api,...)
 	@# Recording a baseline asserts "this is what normal looks like". Read the
 	@# diff before committing it: a cold cache, a busy platform or a
@@ -231,7 +239,25 @@ ui-test: ## Drive the real UI in a headed browser and assert what a person would
 	@# guard that turns "I could not find the browser" into a green run is the
 	@# exact shape the comment under `test` above refuses. Separate target, no
 	@# guard, and it exits 3 rather than 0 when it could not run at all.
-	@$(SCRIPTS)/ui-test.sh $(UI_TEST_ARGS)
+	@#
+	@# THE EXIT CODE HAS TO BE TRANSLATED HERE, because make destroys it.
+	@# ui-test.sh distinguishes 1 (findings, every one already in
+	@# tests/browser/baseline.json -- nothing got worse) from 2 (a NEW finding
+	@# -- something got worse) from 3 (the harness never ran). GNU make returns
+	@# 2 for ANY failed recipe, so through `make ui-test` all three arrive as
+	@# the same "Error 1 / exit 2" and the baseline stops meaning anything.
+	@# That is this repository's own defect class wearing a Makefile: both ends
+	@# built, the seam between them dropping the signal. So the recipe reads
+	@# the code itself and says in words which of the four happened.
+	@s=0; $(SCRIPTS)/ui-test.sh $(UI_TEST_ARGS) || s=$$?; \
+	  case $$s in \
+	    0) echo "ui-test: no findings." ;; \
+	    1) echo "ui-test: findings, ALL of them already recorded in tests/browser/baseline.json -- nothing got worse." ;; \
+	    2) echo "ui-test: NEW finding(s) -- something got worse. Read build/ui-test/report.txt before you re-baseline." ;; \
+	    3) echo "ui-test: the harness could not run at all. This is a harness failure, never a pass." ;; \
+	    *) echo "ui-test: unexpected exit $$s." ;; \
+	  esac; \
+	  exit $$s
 
 ui-component-test: ## swarm-ui typecheck + component tests (Vitest/jsdom, offline, no credentials)
 	@# 20,445 lines of TypeScript had NO test runner, and the Python files that
@@ -365,5 +391,5 @@ clean: ## Remove local build artifacts (never touches the cloud)
 	@rm -rf build/*.tfplan build/*.json build/*.jsonl build/kubeconfig-*.yaml build/cloudbuild-*.yaml build/rendered
 	@echo "cleaned build/"
 
-verify-remote: ## Run the verification gate INSIDE the VPC (smoke, concurrency, race)
+verify-remote: ## Run the verification gate INSIDE the VPC (smoke, concurrency, race, e2e)
 	@$(SCRIPTS)/verify-remote.sh

@@ -66,6 +66,12 @@ RUNNER_ARGS=()
 SKIP_BUILD=0
 for arg in "$@"; do
   case "${arg}" in
+    # Answered BEFORE the bundle build below. `--help` used to fall through to
+    # the runner as an unknown flag, so asking this script what it takes cost a
+    # full `npm run build` and then printed a node stack trace and exit 3 -- the
+    # harness-failure code, for a question. Every other script here answers -h
+    # the same way, off its own header.
+    -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
     --skip-build) SKIP_BUILD=1 ;;
     *) RUNNER_ARGS+=("${arg}") ;;
   esac

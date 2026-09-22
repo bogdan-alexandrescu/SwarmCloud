@@ -283,6 +283,12 @@ CODECS: tuple[Codec, ...] = (
         decode=workflow_from_dict,
         required=("workflow_id", "tenant_id", "created_at", "updated_at", "state"),
         to_api=workflow_to_api,
+        #: `state` is SERVED DERIVED from the step rollup, because the stored
+        #: field was written once as QUEUED and advanced by nothing. These two
+        #: say which answer the caller got. They are computed on purpose, and
+        #: naming them here is what makes that a decision rather than drift:
+        #: delete either from the codec and the shape test below fails.
+        api_computed=("stored_state", "state_source"),
     ),
 )
 
