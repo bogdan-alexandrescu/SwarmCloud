@@ -2036,7 +2036,7 @@ const OVERVIEW_CSS = `
   justify-content: space-between;
   gap: var(--ctl-s3);
   flex-wrap: wrap;
-  margin-bottom: var(--ctl-s4);
+  margin-bottom: var(--ctl-s3);
 }
 .ov-topline .head { margin-bottom: 0; }
 .ov-topline .sub { margin: 0; }

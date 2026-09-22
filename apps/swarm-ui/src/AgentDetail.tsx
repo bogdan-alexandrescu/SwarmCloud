@@ -384,11 +384,11 @@ const CARD: CSSProperties = {
 }
 
 /** Sub-blocks inside a card. `.section`'s own 28px is too much three deep. */
-const SUB: CSSProperties = { marginBottom: 'var(--ctl-s4)' }
+const SUB: CSSProperties = { marginBottom: 'var(--ctl-s3)' }
 
 /** A sub-block that follows a `dl.kv`, which has no bottom margin of its own,
  *  so its heading would otherwise sit directly on the last value. */
-const SUB_AFTER_KV: CSSProperties = { marginTop: 'var(--ctl-s5)', marginBottom: 'var(--ctl-s4)' }
+const SUB_AFTER_KV: CSSProperties = { marginTop: 'var(--ctl-s5)', marginBottom: 'var(--ctl-s3)' }
 
 /** "1 attempt" / "3 attempts". Never "3 attempt(s)". */
 function plural(count: number, word: string): string {
@@ -957,7 +957,7 @@ function AttemptLegend() {
         flexWrap: 'wrap',
         alignItems: 'baseline',
         gap: '4px var(--ctl-s2)',
-        margin: 'var(--ctl-s4) 0 0',
+        margin: 'var(--ctl-s3) 0 0',
         paddingTop: 'var(--ctl-s3)',
         borderTop: '1px solid var(--line)',
         font: '11px/1.7 var(--mono)',

@@ -179,7 +179,12 @@ function Scope({
       {real.map(({ state, n }) => (
         <div className="split-row" key={state}>
           <span className="sr-name">{state}</span>
-          <span className="sr-bar">
+          {/* A STATE THE RESPONSE DID NOT CARRY IS NOT A ZERO (§B20). This
+              drew a zero-width fill on a plain track for it, which is the one
+              mark the axis now reserves for a MEASURED zero -- so an absent
+              count would have been promoted to a measurement by the fix.
+              Hatched instead, with no axis, matching the em dash beside it. */}
+          <span className={`sr-bar${typeof n === 'number' ? '' : ' is-unknown'}`}>
             <i style={{ width: `${((typeof n === 'number' ? n : 0) / max) * 100}%` }} />
           </span>
           <span className="sr-n">{typeof n === 'number' ? n : '—'}</span>

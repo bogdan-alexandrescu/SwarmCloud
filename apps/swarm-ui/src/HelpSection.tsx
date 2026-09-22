@@ -118,7 +118,7 @@ function Topic({
         borderLeft: highlighted ? '3px solid var(--text-dim)' : '1px solid var(--line)',
         borderRadius: 'var(--radius)',
         background: 'var(--surface)',
-        padding: 'var(--ctl-s4)',
+        padding: 'var(--ctl-pad-chrome)',
         marginBottom: 'var(--ctl-s3)',
         scrollMarginTop: 'var(--ctl-s5)',
       }}

@@ -53,6 +53,7 @@ import { CONCURRENCY_STATES, REAL_STATES, type TaskState } from './types'
  */
 export type TopicId =
   | 'absent-vs-zero'
+  | 'api-reads'
   | 'attempt-documents'
   | 'capacity'
   | 'checkpoints'
@@ -123,6 +124,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Every number on these screens is one of three things: measured, never measured, or not read. They are three different facts and drawing them alike was this UI’s defining bug.',
       'A measured figure renders as a digit on a solid tile — including a measured zero, which is a real result and is shown as one. A figure the platform never recorded renders as a short phrase on a dashed tile in the faint colour, because a phrase cannot be mistaken for a quantity and a zero can. A figure a failed read left behind renders as a phrase too, but in the warning colour, because the platform may well hold the number and we simply did not get it.',
       'The same rule runs through the bars: a track whose ceiling could not be read is hatched with no fill, because an empty plain track reads as “0% used” — a claim about a measurement nobody has.',
+    ],
+  },
+
+  'api-reads': {
+    group: 'the-platform',
+    title: 'The reads behind a screen',
+    short:
+      'The bar at the foot of every screen summarises the routes this browser tab has called. The age it shows is of the newest SUCCESSFUL payload, not of the newest attempt \u2014 which is the part that tells a stale panel from a healthy one.',
+    long: [
+      'Every read this tab makes registers in one place: which route, what happened to the last attempt, how long that attempt took, and when the route last actually produced a payload. The dock at the foot of the window is one line off that registry, and it opens into a cell per route.',
+      'The age is the load-bearing number, and it is the age of the last SUCCESS. A panel drawn from a figure four minutes old, whose route has been failing for three of them, is indistinguishable from a healthy panel \u2014 the figure is still on screen, still formatted as a measurement, and nothing on the panel itself has changed. The age is the only thing that says otherwise.',
+      'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute, and a number labelled as though it were would be the same class of claim as a total summed over a partial response.',
+      'A 403 on an admin-only route is counted apart from failures, and deliberately. Someone who is not an admin genuinely cannot read those routes; a console that reported that as a fault would be reporting itself broken every time a non-admin opened it.',
     ],
   },
 

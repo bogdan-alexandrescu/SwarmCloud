@@ -182,7 +182,11 @@ body {
 :root { --app-max: 1880px; --app-pad: var(--gutter); }
 @media (min-width: 1280px) { :root { --app-pad: 24px; } }
 @media (min-width: 1600px) { :root { --app-pad: 32px; } }
-.app { max-width: var(--app-max); margin: 0 auto; padding: 24px var(--app-pad) 64px; }
+/* The bottom gutter reserves the dock's COLLAPSED bar and nothing more: the
+   dock is fixed to the viewport, and an expanded one overlays the foot of the
+   page deliberately rather than reflowing it -- a panel that pushed 240px of
+   content up every time it opened would move the row you were reading. */
+.app { max-width: var(--app-max); margin: 0 auto; padding: 0 var(--app-pad) calc(28px + 48px); }
 
 /* --measure: the width a SENTENCE is allowed, now that the page is not one.
    Removing the cap above makes tables, charts and graphs full-bleed, which is
@@ -397,9 +401,38 @@ body {
 }
 
 /* ---- section ---- */
-.section { margin-bottom: 28px; }
+/* §B4.3 move 1: A HAIRLINE, NOT A MARGIN.
+   This was `margin-bottom: 28px`, and 28px of nothing is whitespace being
+   asked to carry structure. The audit measured the cost on
+   `04-runtimes-catalogue.png`: a paragraph sitting 19px above the BACKENDS
+   heading read as its lead-in while belonging to the section above it, because
+   the only thing separating two regions was a gap slightly larger than the gap
+   inside one. With `--line` now at 3:1 against the surface (§B4.2) a single
+   rule does that work at 12px instead of 28px, and does it unambiguously.
+
+   `+` rather than a rule on every section: a trailing hairline under the last
+   region on a page is a line with nothing on the other side of it, which reads
+   as content that failed to load. */
+.section { margin-bottom: var(--ctl-s3); }
+/* LONGHANDS, not `border-top: 1px solid var(--ctl-hairline)`. A shorthand
+   carrying a custom property is not expanded into its longhands by every CSS
+   parser -- jsdom is one that does not -- so the guard in
+   `src/__tests__/shell.test.tsx` would read `borderTopWidth` as `""` and pass
+   whether the rule was here or deleted. A test that is strongest when it is
+   broken is the failure mode this suite exists to remove. */
+.section + .section {
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-top-color: var(--ctl-hairline);
+  padding-top: var(--ctl-s3);
+}
+/* 13px, not 12px. D2 settled the DATA at 12-13px and ~30px rows; the chrome
+   around it moves the other way (see `--ctl-pad-chrome`), and a panel title is
+   chrome. One integer step up is the smallest change that survives the
+   uppercase treatment, which costs a heading roughly a pixel of apparent size
+   by removing every descender. */
 .section > h2 {
-  font-size: 12px; font-weight: 600; text-transform: uppercase;
+  font-size: 13px; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.07em; color: var(--text-faint);
   margin: 0 0 10px;
 }
@@ -426,11 +459,19 @@ body {
 .pool .count { font: 600 13px/1.3 var(--mono); white-space: nowrap; }
 .pool .count .of { color: var(--text-faint); font-weight: 400; }
 
-/* The bar is the whole point of the card: saturation at a glance. */
-.bar { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-.bar > i { display: block; height: 100%; border-radius: 999px; background: var(--ok); transition: width .3s ease; }
-.bar > i.warn { background: var(--warn); }
-.bar > i.bad  { background: var(--bad); }
+/* THE POOL CARD'S BAR MOVED TO `.ctl-track` (§A3.1, §B4.3 move 2).
+   `.bar` was TWO components in one selector: this 5px pill, and the header
+   banner declared ~780 lines further down with `padding: 9px 12px`, a 1px
+   border and `border-radius: var(--radius)`. The banner wins on order, so this
+   card's saturation bar shipped as a 10px-radius box with 9px of padding
+   inside a 5px-high element -- sliced, exactly as the audit recorded. Renaming
+   the track rather than the banner is the smaller change and leaves `.bar`
+   meaning one thing.
+   The fill tones live with the one track primitive; only the colour override
+   the pool card needs is here. */
+.pool .ctl-track > i { background: var(--ok); }
+.pool .ctl-track > i.warn { background: var(--warn); }
+.pool .ctl-track > i.bad  { background: var(--bad); }
 
 .tags { display: flex; gap: 6px; flex-wrap: wrap; min-height: 17px; }
 .tag {
@@ -519,8 +560,13 @@ body {
 .filters .n { color: var(--text-faint); font-family: var(--mono); font-size: 11px; margin-left: 4px; }
 
 /* ---- task rows ---- */
-.rows { display: flex; flex-direction: column; gap: 4px; }
+/* Same density decision as the table (D2): a one-line row is `--row-h` tall
+   and the gap between rows is the rhythm's intra-row step. A row that wraps --
+   the "why" line under a parked agent is the case -- grows past it, because
+   that line is the answer somebody opened the screen for. */
+.rows { display: flex; flex-direction: column; gap: var(--ctl-s1); }
 .row {
+  min-height: var(--row-h);
   display: grid;
   /* state · agent · owner · workflow · elapsed · try · class · badges
      The "why" line spans the whole row underneath. */
@@ -528,7 +574,7 @@ body {
     minmax(96px, auto) minmax(0, 1.4fr) 84px 110px 86px 52px 96px minmax(0, auto);
   align-items: center; gap: 10px;
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: 8px; padding: 9px 12px;
+  border-radius: 8px; padding: 4px 12px;
 }
 .row.holding { border-color: color-mix(in srgb, var(--info) 35%, var(--line)); }
 .row .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-faint); }
@@ -799,9 +845,15 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
 /* Agents screen (Screen A)                                                  */
 /* ------------------------------------------------------------------------ */
 
-.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+/* §B4.3 move 4: STOP SPENDING 1068px ON FOUR-CHARACTER LABELS.
+   `.tabs button { flex: 1 }` divided the whole content width between however
+   many tabs there were, so "All" and "Mine" each took a quarter of a 1400px
+   row and the strip read as four enormous buttons rather than as a filter.
+   `flex: 0 0 auto` sizes each one to its label; `justify-content: flex-start`
+   is what keeps the leftover width with the content instead of the chrome. */
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; justify-content: flex-start; flex-wrap: wrap; }
 .tabs button {
-  flex: 1;
+  flex: 0 0 auto;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -970,11 +1022,10 @@ ol.timeline li::before {
    without it a panel showing a four-minute-old figure while its route has
    been failing for three of them looks exactly like a healthy panel. */
 
-.sources {
-  margin-top: 26px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
+/* `.sources` -- the footer wrapper -- is DELETED with §B18. The cells below
+   are unchanged and are not deleted: they moved into the dock, behind one line
+   and one click. What went is the 200px of cards stapled to the bottom of all
+   fifteen routes, saying the same thing on every one of them. */
 .source-cells {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -1139,12 +1190,22 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 }
 .wb-more { flex-basis: 100%; margin: 4px 0 0; }
 
+/* §B4.3 move 3: CAP THE BARS, AND LEFT-ALIGN THEM.
+   `.chart .col { flex: 1 }` divided the full content width between the
+   columns, so a seven-day window on a 1600px screen drew seven bars 220px
+   wide. A 220px-wide bar is not a more precise measurement than a 60px one --
+   it is the same number, drawn larger, and at that width the eye stops reading
+   the row as a series. Capping at 72px and packing left keeps the series
+   readable and hands the leftover width back to the page. */
 .chart {
-  display: flex; align-items: flex-end; gap: 3px;
+  display: flex; align-items: flex-end; justify-content: flex-start; gap: 3px;
   height: 150px; padding-top: 8px;
   overflow-x: auto; -webkit-overflow-scrolling: touch;
 }
-.chart .col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 26px; flex: 1; }
+.chart .col {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  min-width: 26px; flex: 1 1 26px; max-width: 72px;
+}
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
 .stackcol > i.succeeded { background: var(--ok); }
@@ -1176,13 +1237,20 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    "this engineer spent nothing", which is worse than saying nothing. */
 .tile.blocked { border-style: dashed; }
 .tile.blocked .t-value { font-size: 15px; color: var(--text-faint); font-weight: 500; }
-.coverage { display: block; height: 4px; margin-bottom: 5px; border-radius: 999px; background: var(--surface-2); }
-.coverage > i { display: block; height: 100%; border-radius: 999px; background: var(--info); }
+.coverage { margin-bottom: 5px; }
 
-.split-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) 46px; align-items: center; gap: 10px; padding: 3px 0; }
+/* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
+   middle stretched the bar to whatever was left, which on a wide screen is a
+   600px bar next to a two-digit number. `justify-content: start` is what stops
+   the grid spreading once no column takes a fraction -- the variants that keep
+   an `fr` (`.pool-group .split-row`) are unaffected, because a fraction still
+   absorbs the free space. */
+.split-row {
+  display: grid; grid-template-columns: 110px minmax(0, 280px) 46px;
+  justify-content: start;
+  align-items: center; gap: 10px; padding: 3px 0;
+}
 .sr-name { font: 12px var(--mono); color: var(--text-dim); }
-.sr-bar { height: 9px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-.sr-bar > i { display: block; height: 100%; background: var(--info); }
 .sr-n { font: 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
 
 @media (max-width: 640px) {
@@ -1509,14 +1577,56 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      track's; adding names here rather than editing it means nothing existing
      can change value, only new names can appear. */
 
-  /* Spacing. Four steps, because a control plane is a dense screen and a
-     six-step scale in a 1100px column produces two values nobody can tell
-     apart. Everything below uses these, so a density pass is one edit. */
+  /* THE DATA RHYTHM. FOUR STEPS (§B4.3 move 6), and the fifth is gone.
+     `--ctl-s4: 18px` was 1.5x `--ctl-s3` and nobody can tell those apart in a
+     column of figures -- so it was not a step, it was a second spelling of
+     s3 that let two regions drift a few pixels out of rhythm for no reason
+     anyone could see. Its thirteen uses are now s3 or `--ctl-pad-chrome`
+     below, each picked by what the value was doing rather than by its size.
+
+       s1  4px   inside a row
+       s2  8px   inside a panel
+       s3  12px  between regions
+       s5  28px  the one large break
+
+     s5 keeps its name rather than becoming s4: renaming it would change the
+     meaning of `--ctl-s5` in every file that already uses it, which is the
+     kind of quiet edit this scale exists to prevent. */
   --ctl-s1: 4px;
   --ctl-s2: 8px;
   --ctl-s3: 12px;
-  --ctl-s4: 18px;
   --ctl-s5: 28px;
+
+  /* CHROME PADDING, AND WHY IT IS NOT A FIFTH STEP.
+     D2 is settled: the DATA is compact -- ~30px rows, 12-13px type, the Lens /
+     Nomad register. The owner also said the console is "very hard to read",
+     and a naive compact pass makes that worse, because it tightens the one
+     thing that was fine (the frame) along with the thing that was not (the
+     rows). The resolution their own reference uses -- the OpenShift Console --
+     is compact DATA inside generous CHROME: dense rows in a table of numbers,
+     and air around the panel that holds it.
+
+     So this is a token named for its JOB, not a size in the rhythm scale. It
+     is used for panel and card padding and for control targets, and it is the
+     only value in this file that is allowed to move UP when the row height
+     moves down. Nothing in a data region may use it. */
+  --ctl-pad-chrome: 16px;
+
+  /* Row height, so "compact" is one number rather than a padding guessed at in
+     six places. 30px at 13px type is a 1.5 line-height plus 5px above and
+     below -- inside D2's 28-32px band, and about 24 rows on a 1000px viewport
+     against the ten the audit counted. */
+  --row-h: 30px;
+
+  /* THE ONE TRACK. §B4.3 move 2: seven primitives drew a proportion in this
+     file, at 4px, 5px, 9px and 10px, with two radius conventions and three
+     different ideas about what an unmeasured one looks like. One height, one
+     radius, one colour rule, and one axis (see `.ctl-track` below). */
+  --track-h: 8px;
+  --track-radius: 2px;
+  /* §B20: the width of the baseline tick. 3px because 2px disappears against
+     the track's own edge at 1x and 4px starts to read as a value. */
+  --track-axis: 3px;
 
   --ctl-radius-sm: 6px;
   --ctl-radius-lg: 14px;
@@ -1579,7 +1689,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
   gap: var(--ctl-s2);
-  margin-bottom: var(--ctl-s4);
+  margin-bottom: var(--ctl-s3);
 }
 
 .ctl-metric {
@@ -1732,19 +1842,75 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 .ctl-util-name b { color: var(--text); font-weight: 500; }
 
-.ctl-util-track {
+/* ==========================================================================
+   THE ONE TRACK (§B4.3 move 2) AND THE MEASURED ZERO (§B20)
+   ==========================================================================
+   SEVEN PRIMITIVES DREW A PROPORTION in this file -- the pool card's bar at
+   5px, `.sr-bar` at 9px, `.coverage` at 4px, `.ctl-util-track` at 10px, and
+   three more that only differed in which of those they had copied. Two radius
+   conventions, three ideas about what an unmeasured one looks like, and a
+   density pass had to find all of them. One height, one radius, one colour
+   rule, declared once; the variants below add a fill colour and nothing else.
+
+   §B20 -- A ZERO BAR MUST LOOK MEASURED.
+   The live console drew `0 / 10` as a zero-width fill on a near-white track:
+   nothing, on a page that is scrupulous in prose about the difference between
+   a measured zero and a value it could not read. A widget that failed to
+   render looks exactly the same.
+
+   So every MEASURED track carries an axis -- a 3px rule down its left edge,
+   always drawn, covered by any fill wide enough to reach past it. At zero the
+   axis is what is left, and it says "this scale starts here and the value is
+   at the start of it". An UNMEASURED track (`.is-unknown`) is hatched and has
+   NO axis: there is no scale to start. That is the same pair of marks
+   `.ctl-chart-dot.is-zero` (a hollow dot sitting on the zero rule) and
+   `.ctl-chart-absent` (a hatched band) already use for the line chart, so the
+   product says it one way.
+
+   It is a BORDER rather than a pseudo-element on purpose: `::before` would
+   paint above an in-flow fill and would be invisible to `getComputedStyle`, so
+   the guard in `src/__tests__/shell.test.tsx` could not tell a drawn axis from
+   a deleted one. A border is in the computed style of the element itself.
+
+   The radius drops from 999px to 2px for the same reason: a pill cap turns a
+   3px axis into a crescent, and a square end is what an axis looks like. */
+.ctl-track,
+.ctl-util-track,
+.sr-bar,
+.coverage {
   position: relative;
   display: flex;
-  height: 10px;
-  border-radius: 999px;
+  height: var(--track-h);
+  border-radius: var(--track-radius);
   background: var(--surface-2);
+  /* Longhands, for the reason `.section + .section` gives above: a shorthand
+     holding a custom property is not expanded by every parser, and the guard
+     that proves this axis is drawn reads the longhand. */
+  border-left-width: var(--track-axis);
+  border-left-style: solid;
+  border-left-color: var(--text-dim);
   overflow: hidden;
 }
-.ctl-util-fill {
+.ctl-track > i,
+.ctl-util-fill,
+.sr-bar > i,
+.coverage > i {
+  display: block;
   height: 100%;
   background: var(--info);
   transition: width .3s ease;
 }
+/* NOT MEASURED. Hatched, no fill, and no axis. */
+.ctl-track.is-unknown,
+.ctl-util-track.is-unknown,
+.sr-bar.is-unknown,
+.coverage.is-unknown {
+  background: var(--ctl-hatch);
+  border-left-width: 0;
+}
+.ctl-track.is-unknown > i,
+.sr-bar.is-unknown > i,
+.coverage.is-unknown > i { display: none; }
 /* THE FILL TONES CARRY A TEXTURE, not only a hue. A 10px bar has no room for
    a glyph, so the shape cue has to be in the fill itself. Three textures that
    stay apart at 10px and in greyscale:
@@ -1790,7 +1956,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* The part above the ceiling. Hatched, so it reads as "this should not exist"
    rather than as more of the same measurement. */
 .ctl-util-over { height: 100%; background: var(--ctl-hatch-bad); }
-.ctl-util-track.is-unknown { background: var(--ctl-hatch); }
 
 .ctl-util-figure {
   font: 12.5px var(--mono);
@@ -1929,9 +2094,17 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border-collapse: collapse;
   font-size: 13px;
 }
+/* COMPACT DATA (D2). 4px above and below 13px type at 1.5 line-height is a
+   30px row -- inside the 28-32px band D2 settled on, and about 24 rows on a
+   1000px viewport against the ten the audit counted. The horizontal padding is
+   NOT reduced with it: 10px between a name and the figure beside it is what
+   keeps two columns from reading as one string, and squeezing that is how a
+   compact table becomes the unreadable table the owner complained about.
+   The air this buys back is spent on the chrome, not reclaimed. */
+.ctl-table tbody tr { height: var(--row-h); }
 .ctl-table th,
 .ctl-table td {
-  padding: 7px 10px;
+  padding: 4px 10px;
   text-align: left;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
@@ -2024,7 +2197,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  padding: var(--ctl-s4);
+  padding: var(--ctl-pad-chrome);
 }
 .ctl-empty > h3 {
   margin: 0 0 6px;
@@ -2119,61 +2292,156 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 
 /* -------------------------------------------------------------------------- */
-/* 7. The shell: two-level navigation                                          */
+/* 7. The shell: rail, head, work area, inspector, dock (§B3)                   */
 /* -------------------------------------------------------------------------- */
-/* Five sections, each a question rather than a route. The question is printed
-   under the section's own tab strip rather than in the nav, because a nav of
-   five labels each with a sentence under it is a sentence nobody reads. */
+/* THE REGIONS, AND WHAT EACH ONE IS FOR.
+   This replaced two horizontal strips -- a section bar and a tab strip,
+   stacked above every screen -- which between them spent about 64px of
+   vertical on all fifteen routes to display navigation that does not change.
+   Vertical is the axis a 900px-tall laptop has least of; horizontal is what
+   the tables and the workflow graph want. So the navigation went sideways.
 
-.ctl-nav {
+     RAIL       200px fixed, never reorders, all six sections with their tabs
+     WORK       fluid, min-width 0, no max-width -- the point of §B19
+     INSPECTOR  a grid COLUMN, not a fixed overlay, wherever two panes fit
+     HEAD       44px inside the work column: breadcrumb, read age, section `?`
+     DOCK       fixed to the viewport, 28px collapsed (§B18)
+
+   `.app` KEEPS `max-width: var(--app-max)` and its `--app-pad` gutter. Those
+   two are what line the content column up with the product header, which sits
+   outside `.app` so its environment bar can reach both viewport edges. Losing
+   either would drift the wordmark away from the rail at the first breakpoint,
+   and `src/__tests__/brand.test.tsx` fails if they go. */
+
+.app {
+  display: grid;
+  grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr);
+  align-items: start;
+  gap: 0 var(--ctl-s5);
+}
+:root { --rail-w: 200px; }
+/* Below 1280px the rail narrows rather than becoming a 56px icon column: this
+   product has no icon set, and a letter is not an icon when two sections begin
+   with the same one (Agents, Admin). 152px still fits "Runner profiles". */
+@media (max-width: 1279px) { :root { --rail-w: 152px; } }
+
+.work { min-width: 0; }
+
+/* ---- the rail ---- */
+.ctl-rail {
+  position: sticky;
+  /* Under the 44px product header, which is not sticky, so this pins once the
+     header has scrolled away and not before. */
+  top: 0;
+  align-self: start;
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
   gap: var(--ctl-s3);
-  margin-bottom: var(--ctl-s3);
-  border-bottom: 1px solid var(--line);
+  padding: var(--ctl-s3) 0;
+  max-height: calc(100vh - var(--dock-h, 28px));
+  overflow-y: auto;
+  border-right: 1px solid var(--ctl-hairline);
+  /* The gutter belongs to the rail, not to the grid gap, so the hairline sits
+     between the two regions rather than floating inside the left one. */
+  margin-right: calc(var(--ctl-s5) * -1);
+  padding-right: var(--ctl-s5);
 }
-.ctl-nav-sections {
-  display: flex;
-  gap: 2px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  min-width: 0;
-}
-.ctl-nav-sections::-webkit-scrollbar { display: none; }
+.ctl-rail-sections { display: flex; flex-direction: column; gap: 2px; }
+.ctl-rail-group { display: flex; flex-direction: column; }
+
+/* A SECTION. The one control target in the rail that is a destination. */
 .ctl-nav-link {
-  flex: 0 0 auto;
+  display: block;
+  width: 100%;
+  text-align: left;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  padding: 9px 13px;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--ctl-radius-sm) var(--ctl-radius-sm) 0;
+  /* Chrome, so it gets the chrome target: 30px of height and 10px of air,
+     against the 30px data row the tables now use. */
+  min-height: 30px;
+  padding: 6px 10px;
   color: var(--text-dim);
-  font: 500 14px var(--font);
+  font: 500 13.5px var(--font);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
-.ctl-nav-link:hover { color: var(--text); }
-.ctl-nav-link.is-on { color: var(--text); border-bottom-color: var(--info); }
+.ctl-nav-link:hover { color: var(--text); background: var(--surface); }
+/* SELECTION IS A RULE PLUS A SURFACE STEP, NOT A HUE (§B4.2 tier 2). `--info`
+   already carries seven jobs in this file, and a selected tab drawn in the
+   same blue as a live agent is how a reader learns to stop trusting colour as
+   a state channel. The rule is `--text`, which is hueless. */
+.ctl-nav-link.is-on {
+  color: var(--text);
+  background: var(--surface-2);
+  border-left-color: var(--text);
+}
 .ctl-nav-link:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 
-/* The utility corner. Reference lives here rather than among the sections:
-   the API surface is a thing you look up, not a thing you work in, and the
-   brief was explicit that it must not be a top-level menu item. `margin-left:
-   auto` rather than a flex spacer so it stays put when the section strip
-   scrolls on a phone. */
+/* THE SECOND LEVEL, indented 12px. Drawn for every section at all times, not
+   only the open one: the rail's value is that a position means one thing, and
+   a list that grows under the cursor has a geometry you re-read every visit. */
+.ctl-rail-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 2px var(--ctl-s3);
+}
+.ctl-rail-tabs button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--ctl-radius-sm) var(--ctl-radius-sm) 0;
+  background: none;
+  color: var(--text-faint);
+  font: 500 12.5px var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.ctl-rail-tabs button:hover { color: var(--text); background: var(--surface); }
+.ctl-rail-tabs button[aria-selected='true'] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-left-color: var(--text-dim);
+}
+.ctl-rail-tabs button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* The admin marker on a tab that will render an admin gate for most people.
+   Saying so before the click is cheaper than a blue panel after it. */
+.ctl-subnav-admin {
+  margin-left: 5px;
+  font: 500 9.5px var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The utility corner. `API reads` and Help are things you look up once, not
+   things you work in, so they sit under the sections rather than among them.
+   `margin-top: auto` pins them to the foot of the rail at any height. */
 .ctl-nav-util {
   display: flex;
-  align-items: center;
-  gap: var(--ctl-s2);
-  margin-left: auto;
-  padding-left: var(--ctl-s3);
-  flex: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ctl-s1);
+  margin-top: auto;
+  padding-top: var(--ctl-s3);
+  border-top: 1px solid var(--ctl-hairline);
 }
 .ctl-nav-util button {
   background: none;
   border: none;
-  padding: 4px 2px;
+  min-height: 24px;
+  padding: 2px 10px;
   color: var(--text-faint);
   font: 500 12px var(--font);
   cursor: pointer;
@@ -2183,52 +2451,270 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 .ctl-nav-util button:hover { color: var(--text-dim); }
 .ctl-nav-util button.is-on { color: var(--info); text-decoration-color: currentColor; }
+.ctl-nav-util button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
-/* The section's own tab strip. role=tablist at the call site; this only draws
-   it. Deliberately lighter than the section nav above — two strips of equal
-   weight read as one confusing twelve-item menu, which is what the redesign
-   is undoing. */
-.ctl-subnav {
+/* ---- the head ---- */
+/* 44px, inside the work column. It names the PAGE; the rail names the product,
+   and the bar above them both names the environment. */
+.ctl-head {
   display: flex;
-  gap: var(--ctl-s1);
+  align-items: center;
+  gap: var(--ctl-s3);
+  min-height: 44px;
+  margin-bottom: var(--ctl-s3);
+  border-bottom: 1px solid var(--ctl-hairline);
+}
+.ctl-crumb {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-.ctl-subnav button {
-  padding: 5px 11px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: none;
+  margin: 0;
+  min-width: 0;
+  font-size: 12.5px;
   color: var(--text-dim);
-  font: 500 12.5px var(--font);
-  cursor: pointer;
 }
-.ctl-subnav button:hover { color: var(--text); background: var(--surface); }
-.ctl-subnav button[aria-selected='true'] {
+.ctl-crumb-at { color: var(--text-dim); }
+.ctl-crumb-sep { color: var(--text-faint); }
+/* The open object. `.id` already refuses `text-transform` (§B17); this only
+   keeps a long task id from pushing the read age off the row. */
+.ctl-crumb-obj {
+  font-size: 11.5px;
   color: var(--text);
-  background: var(--surface-2);
-  border-color: var(--line);
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.ctl-subnav button:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-/* The admin marker on a tab that will render an admin gate for most people.
-   Saying so before the click is cheaper than a blue panel after it. */
-.ctl-subnav .ctl-subnav-admin {
-  margin-left: 5px;
-  font: 500 9.5px var(--mono);
+.ctl-head-age {
+  margin-left: auto;
+  flex: none;
+  font: 11px var(--mono);
+  color: var(--text-faint);
+}
+
+/* ---- the section question, behind the `?` (§B2) ---- */
+.ctl-q { position: relative; display: inline-flex; flex: none; }
+.ctl-q-glyph {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font: 600 11px/1 var(--mono);
+  cursor: help;
+}
+.ctl-q-glyph:hover { color: var(--text-dim); border-color: var(--text-faint); }
+.ctl-q-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ctl-q-card {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  max-width: 44ch;
+  padding: var(--ctl-pad-chrome);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / .28);
+  text-align: left;
+  cursor: auto;
+}
+.ctl-q-title {
+  display: block;
+  margin: 0 0 4px;
+  font: 600 10.5px/1.5 var(--mono);
   letter-spacing: .04em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
-
-/* The question the section answers, under its tabs. This is the load-bearing
-   part of the redesign: it is what makes a section a section rather than a
-   folder of routes, and it is the first thing to check when someone proposes
-   adding a screen to one. */
-.ctl-section-q {
-  margin: 0 0 var(--ctl-s4);
+.ctl-q-body {
+  display: block;
   font-size: 12.5px;
-  line-height: 1.5;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+/* ---- the inspector (§B3) ---- */
+/* A GRID COLUMN wherever two panes fit, so reading one agent no longer takes
+   the other agents off the screen -- which is the single change the audit
+   called the largest in the build. Below 1100px total width two panes
+   genuinely do not fit and it reverts to the overlay `.drawer` already draws,
+   `role="dialog"` and all. */
+@media (min-width: 1100px) {
+  .app.has-inspector {
+    grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr) [inspector] var(--inspector-w);
+  }
+  .app.has-inspector > .ctl-drawer {
+    position: sticky;
+    top: 0;
+    grid-column: inspector;
+    width: auto;
+    max-height: calc(100vh - var(--dock-h, 28px));
+    box-shadow: none;
+    background: var(--bg);
+    border-left: 1px solid var(--line);
+    z-index: 1;
+  }
+}
+:root { --inspector-w: 480px; }
+/* The drag handle, on the inspector's left edge. 6px of target on a 1px rule:
+   a 1px hit area is a control only a very steady hand has. */
+.ctl-inspector-grip {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.ctl-inspector-grip:hover { background: color-mix(in srgb, var(--info) 35%, transparent); }
+
+/* ---- the dock (§B3, §B18) ---- */
+.ctl-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+/* The collapsed bar is ONE LINE and it is always the same height, so the page
+   below it never reflows when the dock opens. */
+.ctl-dock-line {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--app-pad);
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font: 11.5px var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.ctl-dock-line:hover { color: var(--text); }
+.ctl-dock-line:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+/* The dot repeats the summary as a SHAPE as well as a tone: filled for a clean
+   strip, hatched for one with failures in it, ringed for an expired session.
+   A colour-only signal at 8px fails in greyscale and for a colour-blind
+   reader, which is the rule the state palette is held to everywhere else. */
+.ctl-dock-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ok);
+}
+.ctl-dock-dot.is-warn { background: var(--ctl-hatch-bad); }
+.ctl-dock-dot.is-bad { background: transparent; border: 2px solid var(--bad); }
+.ctl-dock-label {
+  flex: none;
+  font: 600 10px var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
   color: var(--text-faint);
+}
+.ctl-dock-facts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-dock-bad { color: var(--bad-ink); }
+.ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
+
+.ctl-dock.is-open { box-shadow: 0 -8px 24px rgb(0 0 0 / .22); }
+.ctl-dock-grip {
+  height: 6px;
+  margin-top: -3px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.ctl-dock-grip:hover { background: color-mix(in srgb, var(--info) 35%, transparent); }
+.ctl-dock-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--app-pad) var(--ctl-s3);
+}
+.ctl-dock-lead {
+  margin: 0 0 var(--ctl-s2);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: var(--measure);
+}
+.ctl-dock-lead a { color: var(--info); }
+.ctl-dock-foot {
+  margin: var(--ctl-s2) 0 0;
+  font: 11px/1.5 var(--mono);
+  color: var(--text-faint);
+  max-width: var(--measure);
+}
+
+/* ---- narrow: the rail is a top bar again ---- */
+/* 200px of a 390pt phone is half the screen. The MARKUP does not change: the
+   column becomes a scrolling row and every unopened section's tabs are hidden,
+   which yields the same eleven-item horizontal strip this replaced -- the
+   right shape at this width and the wrong one above it. */
+@media (max-width: 899px) {
+  .app { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .ctl-rail {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--ctl-s2);
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    margin-right: 0;
+    padding: 0 0 var(--ctl-s2);
+    border-right: none;
+    border-bottom: 1px solid var(--ctl-hairline);
+  }
+  .ctl-rail::-webkit-scrollbar { display: none; }
+  .ctl-rail-sections { flex-direction: row; align-items: center; gap: var(--ctl-s2); }
+  .ctl-rail-group { flex-direction: row; align-items: center; }
+  .ctl-nav-link {
+    width: auto;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
+  }
+  .ctl-nav-link.is-on { border-left-color: transparent; border-bottom-color: var(--text); }
+  /* Only the open section's second level. Nineteen items in a scrolling row is
+     a row nobody scrolls to the end of. */
+  .ctl-rail-group:not(.is-on) .ctl-rail-tabs { display: none; }
+  .ctl-rail-tabs { flex-direction: row; margin: 0 0 0 var(--ctl-s2); }
+  .ctl-rail-tabs button {
+    width: auto;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+  }
+  .ctl-rail-tabs button[aria-selected='true'] {
+    border-left-color: transparent;
+    border-bottom-color: var(--text-dim);
+  }
+  .ctl-nav-util {
+    flex-direction: row;
+    margin-top: 0;
+    margin-left: auto;
+    padding-top: 0;
+    padding-left: var(--ctl-s3);
+    border-top: none;
+    border-left: 1px solid var(--ctl-hairline);
+  }
+  .ctl-q-card { right: auto; left: 0; max-width: min(44ch, 86vw); }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2240,7 +2726,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    claiming completeness it does not have. */
 
 .ctl-ref-lead {
-  margin: 0 0 var(--ctl-s4);
+  margin: 0 0 var(--ctl-s3);
   padding: var(--ctl-s3);
   border: 1px solid var(--line);
   border-left: 3px solid var(--info);
@@ -2274,7 +2760,36 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: transparent;
 }
 .ctl-drawer > .drawer > .drawer-close { display: none; }
-.ctl-drawer .ctl-subnav { margin: var(--ctl-s2) 0 var(--ctl-s3); }
+
+/* THE PANE STRIP, and it is now the inspector's alone.
+   It used to draw the SECTION's tabs as well, above every screen; those moved
+   into the rail (§B3), where they keep a fixed position instead of reflowing
+   with the section. What is left is the two panes of one agent -- Detail and
+   Attempts -- which are views of one object rather than destinations, and a
+   strip is the right shape for that. */
+.ctl-subnav {
+  display: flex;
+  gap: var(--ctl-s1);
+  flex-wrap: wrap;
+  margin: var(--ctl-s2) 0 var(--ctl-s3);
+}
+.ctl-subnav button {
+  min-height: 28px;
+  padding: 5px 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 12.5px var(--font);
+  cursor: pointer;
+}
+.ctl-subnav button:hover { color: var(--text); background: var(--surface); }
+.ctl-subnav button[aria-selected='true'] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.ctl-subnav button:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 /* -------------------------------------------------------------------------- */
 /* Dispatch: choosing how work gets merged, and reading back what was chosen    */
@@ -2570,7 +3085,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    wrapping a command is worse than scrolling to it. */
 .art-md { max-width: 78ch; font-size: 13px; line-height: 1.6; }
 .art-md p { margin: 0 0 var(--ctl-s3); }
-.art-md .art-h { margin: var(--ctl-s4) 0 var(--ctl-s2); line-height: 1.3; }
+.art-md .art-h { margin: var(--ctl-s5) 0 var(--ctl-s2); line-height: 1.3; }
 .art-md .art-h[data-level="1"] { font-size: 16px; }
 .art-md .art-h[data-level="2"] { font-size: 14.5px; }
 .art-md .art-h[data-level="3"] { font-size: 13.5px; }
@@ -2582,7 +3097,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .art-md code { font: 12px var(--mono); color: var(--text); }
 .art-md a { color: var(--info); }
-.art-md hr { border: 0; border-top: 1px solid var(--line); margin: var(--ctl-s4) 0; }
+.art-md hr { border: 0; border-top: 1px solid var(--line); margin: var(--ctl-s5) 0; }
 
 .art-text, .art-code {
   font: 11.5px/1.5 var(--mono);
@@ -2638,7 +3153,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    argument `.ctl-util-fill` makes for its textures, and it survives a
    greyscale screenshot pasted into an incident channel. */
 
-.ctl-chart { margin: 0 0 var(--ctl-s4); }
+.ctl-chart { margin: 0 0 var(--ctl-s3); }
 
 .ctl-chart-title {
   margin: 0 0 var(--ctl-s2);

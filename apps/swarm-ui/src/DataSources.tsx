@@ -1,49 +1,36 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
-import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
+import type { ProbeRecord } from './fetch'
 import { timeAgo } from './Shell'
 
 /**
- * The data-source strip: the screen's own self-report.
+ * The data-source cells: the screen's own self-report.
  *
  * This is what an operator looks at when a number seems wrong. One cell per
  * route, each carrying the status of the most recent attempt, how long it
- * took, and — the part that matters — the age of the newest SUCCESSFUL
+ * took, and -- the part that matters -- the age of the newest SUCCESSFUL
  * payload. A panel showing a figure from four minutes ago while its route has
  * been failing for three of them is indistinguishable from a healthy panel
  * unless something says so.
  *
  * A 403 here is information, not a failure. A non-admin genuinely cannot read
- * /v1/admin/*, and the strip saying so is what stops the page looking broken.
+ * /v1/admin/*, and the cell saying so is what stops the page looking broken.
  * A 401 is different: that is an expired session and carries a re-auth action.
+ *
+ * IT IS NO LONGER A FOOTER (§B18). It rendered ~200px of cards at the bottom
+ * of all fifteen routes, identical everywhere, outranking each page's own
+ * content for vertical space. The cells are unchanged and are not deleted --
+ * they moved into the dock (`Dock.tsx`), behind one line and one click, which
+ * is where §B2 puts provenance: "context for everything on screen, not a
+ * destination". This component no longer subscribes or ticks; the dock owns
+ * both, so the sixteen cells re-render once per tick instead of sixteen times.
  */
-export function DataSourceStrip() {
-  const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
-  const [, tick] = useState(0)
-
-  // The ages shown here are the whole point, so they have to move on their own
-  // rather than only when a fetch happens to land.
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 5000)
-    return () => clearInterval(id)
-  }, [])
-
+export function DataSourceCells({ probes }: { probes: readonly ProbeRecord[] }) {
   if (probes.length === 0) return null
-
-  const expired = probes.some((p) => p.lastKind === 'unauthenticated' || p.lastKind === 'session_expired')
-
   return (
-    <footer className="sources" aria-label="Data sources">
-      {expired && (
-        <button className="reauth" onClick={() => window.location.reload()}>
-          Session expired — reload to sign in
-        </button>
-      )}
-      <div className="source-cells">
-        {probes.map((p) => (
-          <Cell key={p.path} probe={p} />
-        ))}
-      </div>
-    </footer>
+    <div className="source-cells">
+      {probes.map((p) => (
+        <Cell key={p.path} probe={p} />
+      ))}
+    </div>
   )
 }
 

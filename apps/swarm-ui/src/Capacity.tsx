@@ -415,8 +415,13 @@ function PoolCard({ pool }: { pool: Pool }) {
         </span>
       </div>
 
+      {/* THE ONE TRACK (§B4.3 move 2), and it is no longer `.bar`: that
+          selector is also the header banner further down styles.css, which
+          won on order and gave this 5px pill 9px of padding and a border.
+          `.is-unknown` when no ceiling was read -- an empty plain track is a
+          claim that nothing is in use, and "no ceiling" is not a zero. */}
       <div
-        className="bar"
+        className={`ctl-track${limit > 0 ? '' : ' is-unknown'}`}
         role="meter"
         aria-valuenow={pool.active}
         aria-valuemin={0}

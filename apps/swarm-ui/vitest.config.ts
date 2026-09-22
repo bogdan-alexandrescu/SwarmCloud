@@ -49,20 +49,22 @@ export default defineConfig({
     restoreMocks: true,
     unstubGlobals: true,
     unstubEnvs: true,
-    // CSS IS PROCESSED RATHER THAN STUBBED, and it is needed for exactly one
-    // thing. `brand.test.tsx` asserts B17 -- "an identifier is never
-    // restyled" -- by injecting the SHIPPED `styles.css` into the test
-    // document and reading `getComputedStyle().textTransform` off the element
-    // the component actually rendered. With the default `css: false`, Vitest
-    // stubs every CSS module, so `import STYLES from './styles.css?raw'`
-    // resolves to the empty string, the injected sheet has zero rules, and
-    // every computed style comes back `""` -- which reads as a pass for a
-    // negative assertion. A guard that is strongest when it is broken is the
-    // failure mode this whole suite exists to remove.
+    // CSS IS PROCESSED RATHER THAN STUBBED. Two files depend on it:
+    // `brand.test.tsx` asserts B17 -- "an identifier is never restyled" --
+    // and `shell.test.tsx` asserts the shell's regions (B3), the density pass
+    // (B4.3) and the measured-zero axis (B20). Both do it by injecting the
+    // SHIPPED `styles.css` into the test document and reading
+    // `getComputedStyle()` off the element the component actually rendered.
+    // With the default `css: false`, Vitest stubs every CSS module, so
+    // `import STYLES from './styles.css?raw'` resolves to the empty string,
+    // the injected sheet has zero rules, and every computed style comes back
+    // `""` -- which reads as a pass for a negative assertion. A guard that is
+    // strongest when it is broken is the failure mode this whole suite exists
+    // to remove.
     //
     // The cost is nothing at runtime: only `src/main.tsx` imports the sheet
-    // and no test imports `main.tsx`, so this processes one file, for one
-    // test, and injects nothing anywhere by itself.
+    // and no test imports `main.tsx`, so this processes one file and injects
+    // nothing anywhere by itself.
     css: true,
     // No watcher, no browser, no coverage instrumentation: this runs inside
     // `make test`, which is a gate rather than a development loop.

@@ -1,4 +1,11 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
+import { INSPECTOR, clampPane, readPane, summariseProbes, writePane } from './panes'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -7,8 +14,9 @@ import { AgentsScreen } from './Agents'
 import { AttemptTimelineScreen } from './AttemptTimeline'
 import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
-import { DataSourceStrip } from './DataSources'
+import { Dock } from './Dock'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
+import { useHelpDisclosure } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
@@ -43,9 +51,14 @@ import { WorkflowsScreen } from './Workflows'
  *   Overview · Agents · Runtimes · Pools · History · Admin
  *
  * "Pools" because the section lists pools; "History" because it is what
- * already happened. The QUESTION each section answers is still here, printed
- * under the tabs, where it is a test for what belongs in the section rather
- * than a name anyone has to memorise.
+ * already happened. The QUESTION each section answers is still here, and it is
+ * still the test for what belongs in the section rather than a name anyone has
+ * to memorise -- but it is no longer PRINTED on every pane. It was rendered
+ * under the tab strip on all fifteen routes, which is five copies of the same
+ * sentence for Pools alone, costing a line of vertical on every screen to say
+ * something nobody re-reads after the first visit. §B2 moves it behind the
+ * head's `?` (see `SectionQuestion`): written once, one keystroke from any
+ * pane, and unchanged.
  *
  * That test is also what lets the list grow again honestly. It was five when
  * the redesign landed; "Runtimes" is the sixth, and the note on that entry
@@ -125,9 +138,11 @@ interface SectionDef {
   /** The OBJECT this section is about. A noun, never a question. */
   label: string
   /**
-   * Printed under the tabs. Not the name — the test for whether a screen
-   * belongs in this section, kept in the file the sections are declared in so
-   * it is read by whoever adds the next one.
+   * What this section answers. NOT the name, and no longer printed on the
+   * pane: it is the test for whether a screen belongs in this section, kept in
+   * the file the sections are declared in so it is read by whoever adds the
+   * next one, and rendered behind the head's `?` (§B2) for the reader who
+   * wants it.
    */
   question: string
   tabs: TabDef[]
@@ -464,6 +479,7 @@ export function App() {
   }
 
   const section = sectionOf(at.sectionId)
+  const inspector = at.taskId !== null
 
   return (
     <>
@@ -475,56 +491,119 @@ export function App() {
           does, so the wordmark still lines up with the nav below it at every
           breakpoint. */}
       <ProductHeader />
-      <div className="app">
-        <Nav at={at} go={go} />
+      <div className={`app${inspector ? ' has-inspector' : ''}`}>
+        <Rail at={at} go={go} />
 
-        {section === null ? (
-          at.sectionId === HELP ? (
-            <HelpScreen topic={at.tab} />
+        {/* THE WORK AREA (§B3). A grid column, `min-width: 0`, no max-width.
+            Its own head sits inside it rather than above the rail, because the
+            head names the PAGE and the rail names the product. */}
+        <main className="work">
+          <Head at={at} section={section} />
+
+          {section === null ? (
+            at.sectionId === HELP ? (
+              <HelpScreen topic={at.tab} />
+            ) : (
+              <ReferenceScreen />
+            )
           ) : (
-            <ReferenceScreen />
-          )
-        ) : (
-          <>
-            <SubNav section={section} tab={at.tab} go={go} />
-            <p className="ctl-section-q">{section.question}</p>
             <SectionBody sectionId={section.id} tab={at.tab} go={go} />
-          </>
-        )}
+          )}
+        </main>
 
         {at.taskId !== null && <AgentDrawer taskId={at.taskId} pane={at.taskPane} go={go} />}
-
-        <DataSourceStrip />
       </div>
+
+      {/* THE DOCK (§B3), OUTSIDE `.app` for the same reason the header is:
+          it is fixed to the viewport and spans it. It also has to survive
+          navigation within the session, which a child of the routed body
+          could not. */}
+      <Dock />
     </>
   )
 }
 
 /**
- * The section bar. A `<nav>` of links, NOT a tablist: these change what the
- * page is about and push history, which is navigation. The tab roles belong on
- * the strip below, where they are true. Getting this backwards is how a screen
- * reader ends up announcing "tab 3 of 11" for a whole product.
+ * THE RAIL (§B3): 200px fixed, down the left, and it never reorders.
+ *
+ * WHY A RAIL AND NOT THE TWO HORIZONTAL STRIPS IT REPLACES. The console had a
+ * section bar and a tab strip stacked above every screen, and between them
+ * they spent about 64px of vertical on every one of fifteen routes -- on the
+ * 900px-tall laptops these screens are actually read on, that is 7% of the
+ * glass, permanently, to display navigation that does not change. Horizontal
+ * is also the axis this product has least of: the work area wants every pixel
+ * of width for tables and for the workflow graph, and has vertical to spare.
+ *
+ * IT NEVER REORDERS, which is the property the whole thing is for. After a
+ * week you go to a POSITION rather than reading a label, and that only works
+ * if the position is a constant -- so every section's tabs are drawn at all
+ * times, indented, rather than appearing when their section is opened. A
+ * second-level list that materialises under the cursor is a list whose
+ * geometry you have to re-read on every visit.
+ *
+ * THE UTILITY CORNER stays in the rail, at the bottom, and keeps its
+ * `ctl-nav-util` class: the API reads page and Help are things you look up
+ * once, not things you work in, and putting them among the six sections is the
+ * mistake the eleven-item nav made eleven times over.
+ * `tests/unit/control_plane/test_nav_headings_agree.py` reads that class name
+ * to find the utility button, so it is load-bearing rather than decorative.
+ *
+ * BELOW 900px IT IS A TOP BAR AGAIN. Two hundred pixels of a 390pt phone is
+ * half the screen. The markup does not change -- the CSS turns the column into
+ * a scrolling row and hides every unopened section's tabs, which is exactly
+ * the eleven-item horizontal strip this replaced, and is the right shape at
+ * that width.
+ *
+ * WHAT WAS NOT BUILT, AND WHY IT IS NOT A 56px ICON RAIL BELOW 1280px. §B3
+ * asks for icon-only at 56px. This product has no icon set, and a single
+ * letter is not an icon: Agents and Admin both begin with A, so a
+ * letter-per-section rail would put two identical marks in a list whose whole
+ * value is that a position means one thing. It narrows to 152px instead, which
+ * still fits "Runner profiles" at 12px, and the reason is here rather than in
+ * a commit message.
  */
-function Nav({ at, go }: { at: Route; go: (to: string) => void }) {
+function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
   return (
-    <nav className="ctl-nav" aria-label="Sections">
-      <div className="ctl-nav-sections">
+    <nav className="ctl-rail" aria-label="Sections">
+      <div className="ctl-rail-sections">
         {SECTIONS.map((s) => {
           const on = at.sectionId === s.id
           return (
-            <button
-              key={s.id}
-              className={`ctl-nav-link${on ? ' is-on' : ''}`}
-              aria-current={on ? 'page' : undefined}
-              title={s.question}
-              onClick={() => go(`${s.id}/${firstTab(s)}`)}
-            >
-              {s.label}
-            </button>
+            <div key={s.id} className={`ctl-rail-group${on ? ' is-on' : ''}`}>
+              <button
+                className={`ctl-nav-link${on ? ' is-on' : ''}`}
+                aria-current={on ? 'page' : undefined}
+                title={s.question}
+                onClick={() => go(`${s.id}/${firstTab(s)}`)}
+              >
+                {s.label}
+              </button>
+              {/* A single-pane section draws no second level: one tab under
+                  one section is a duplicate of the section. */}
+              {s.tabs.length > 1 && (
+                <div
+                  className="ctl-rail-tabs"
+                  role="tablist"
+                  aria-label={`${s.label} views`}
+                >
+                  {s.tabs.map((t) => (
+                    <button
+                      key={t.id}
+                      role="tab"
+                      aria-selected={on && at.tab === t.id}
+                      onClick={() => go(`${s.id}/${t.id}`)}
+                    >
+                      {t.label}
+                      {t.admin && <span className="ctl-subnav-admin">admin</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )
         })}
       </div>
+
       <div className="ctl-nav-util">
         <button
           className={at.sectionId === REFERENCE ? 'is-on' : ''}
@@ -536,7 +615,7 @@ function Nav({ at, go }: { at: Route; go: (to: string) => void }) {
         {/* THE HEAD `?` (§B7.3). The way into Help from anywhere, for the
             reader who has not got a `?` in front of them. A glyph and an
             accessible name, not the word "Help" -- the rail is the product's
-            five questions and a sixth word beside them reads as a sixth. */}
+            six questions and a seventh word beside them reads as a seventh. */}
         <button
           className={at.sectionId === HELP ? 'is-on' : ''}
           aria-current={at.sectionId === HELP ? 'page' : undefined}
@@ -552,34 +631,124 @@ function Nav({ at, go }: { at: Route; go: (to: string) => void }) {
 }
 
 /**
- * The section's panes. `role="tablist"` / `role="tab"` / `aria-selected` is the
- * convention Agents.tsx already uses; reusing the styling without it would
- * leave the selected pane expressed only as a CSS class.
+ * THE HEAD (§B3): 44px, spanning the work area, above everything routed.
+ *
+ * Three things, and the third is the one that moved.
+ *
+ * 1. THE BREADCRUMB -- section, pane, and the object if one is open. It is the
+ *    only place the open agent's id appears outside the inspector itself, and
+ *    it is what makes "back" legible: you can see what you would go back to.
+ *
+ * 2. THE READ AGE. The age of the newest SUCCESSFUL payload of any route this
+ *    tab has called, taken from the probe registry the dock summarises. It is
+ *    a measurement, never a promise: "nothing has loaded" is a different
+ *    sentence from "0s ago" and this renders the first one when it is true.
+ *
+ *    THERE IS NO REFRESH BUTTON HERE, deliberately, although §B3 asks for one.
+ *    Every screen owns its own reads -- `Screen` in Shell.tsx holds the result
+ *    and the retry -- and a control in the frame would have to claim it
+ *    refreshed something it does not own. The honest version of that control
+ *    needs a refresh seam the screens do not expose yet; a button that reloaded
+ *    the page and called it a refresh would be worse than its absence, because
+ *    it would look like it worked.
+ *
+ * 3. THE SECTION'S `?` (§B2). The question each section answers used to be
+ *    printed under the tab strip on EVERY pane of that section -- five times
+ *    for Pools, in a sentence nobody re-reads after the first visit, costing a
+ *    line of vertical on every screen. §B2 moves it: printed once, behind the
+ *    section's own `?`, where it is still the membership test for what belongs
+ *    in the section and is still one keystroke from any pane. The question
+ *    itself is unchanged and still lives in `SECTIONS`.
  */
-function SubNav({
-  section,
-  tab,
-  go,
-}: {
-  section: SectionDef
-  tab: string
-  go: (to: string) => void
-}) {
-  if (section.tabs.length < 2) return null
+function Head({ at, section }: { at: Route; section: SectionDef | null }) {
+  const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
+  const [, tick] = useState(0)
+
+  // The age is the point, so it moves on its own rather than only when a
+  // fetch happens to land.
+  useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 5000)
+    return () => clearInterval(id)
+  }, [])
+
+  const newest = summariseProbes(probes).newestSuccessAt
+  const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
+  const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+
   return (
-    <div className="ctl-subnav" role="tablist" aria-label={`${section.label} views`}>
-      {section.tabs.map((t) => (
-        <button
-          key={t.id}
-          role="tab"
-          aria-selected={tab === t.id}
-          onClick={() => go(`${section.id}/${t.id}`)}
-        >
-          {t.label}
-          {t.admin && <span className="ctl-subnav-admin">admin</span>}
-        </button>
-      ))}
+    <div className="ctl-head">
+      <p className="ctl-crumb">
+        <span className="ctl-crumb-at">{head}</span>
+        {tab !== null && section !== null && section.tabs.length > 1 && (
+          <>
+            <span className="ctl-crumb-sep" aria-hidden>
+              &#9656;
+            </span>
+            <span className="ctl-crumb-at">{tab.label}</span>
+          </>
+        )}
+        {at.taskId !== null && (
+          <>
+            <span className="ctl-crumb-sep" aria-hidden>
+              &#9656;
+            </span>
+            <span className="id ctl-crumb-obj">{at.taskId}</span>
+          </>
+        )}
+      </p>
+
+      <span className="ctl-head-age">
+        {newest === null ? (
+          <span className="ctl-em">nothing has loaded in this tab</span>
+        ) : (
+          <>newest read {timeAgo(newest)}</>
+        )}
+      </span>
+
+      {section !== null && <SectionQuestion section={section} />}
     </div>
+  )
+}
+
+/**
+ * The section's question, behind the `?` (§B2, §B7.2).
+ *
+ * It reuses `useHelpDisclosure` rather than re-implementing the behaviour,
+ * because the behaviour is the part that is easy to get wrong and is already
+ * tested: hover opens after 120ms, FOCUS opens immediately so the keyboard
+ * reaches it, click pins it so it survives the pointer leaving and can be read
+ * in a screenshot, and Escape or an outside click dismisses. A hover-only
+ * explanation is invisible on a touch device and invisible in the screenshot
+ * someone pastes into an incident channel.
+ *
+ * It is not a `<HelpCard>`: those render a topic out of `help.ts`, and a
+ * section's question is data on the section, not a help topic. The card's box
+ * is drawn by `.ctl-q-card` rather than inline so the question inherits the
+ * same surface as everything else in the frame.
+ */
+function SectionQuestion({ section }: { section: SectionDef }) {
+  const { state, trigger, hover } = useHelpDisclosure()
+  const cardId = `q-${section.id}`
+
+  return (
+    <span className="ctl-q" {...hover}>
+      <button
+        type="button"
+        className="ctl-q-glyph"
+        aria-label={`What the ${section.label} section answers`}
+        aria-expanded={state.open}
+        aria-controls={state.open ? cardId : undefined}
+        {...trigger}
+      >
+        ?
+      </button>
+      {state.open && (
+        <span id={cardId} role={state.pinned ? 'dialog' : 'tooltip'} className="ctl-q-card">
+          <strong className="ctl-q-title">{section.label} answers</strong>
+          <span className="ctl-q-body">{section.question}</span>
+        </span>
+      )}
+    </span>
   )
 }
 
@@ -667,8 +836,25 @@ function SectionBody({
  *
  * `AgentDetailScreen` draws its own `.drawer` and its own close button. Both
  * are flattened by two rules scoped to `.ctl-drawer` in styles.css rather than
- * by changing that file, which belongs to another track. If it ever stops
- * drawing its own drawer, those rules become no-ops rather than breakage.
+ * by changing that file. If it ever stops drawing its own drawer, those rules
+ * become no-ops rather than breakage.
+ *
+ * IT IS A GRID COLUMN, NOT AN OVERLAY, WHEREVER TWO PANES FIT (§B3). The
+ * defect it fixes is "reading one agent takes the others off the screen": the
+ * drawer was `position: fixed` at every width, so on a 1600px display it drew
+ * a 560px panel over a list that had 1000px of room beside it. At 1600px the
+ * work area now reflows to 1600 - 200 - 480 - gutters and the list stays
+ * legible. Below 1100px total width two panes genuinely do not fit and it
+ * reverts to the overlay, `role="dialog"` and all -- which is why that role is
+ * on the element unconditionally rather than switched with the layout.
+ *
+ * THE WIDTH IS THE VIEWER'S, 400-720px, remembered per viewer through
+ * `panes.ts` -- whose reads and writes are inside `try/catch`, because
+ * `localStorage` THROWS in a private window and losing the shell to a
+ * preference is not a trade anyone would make. It is published as a custom
+ * property on the documentElement rather than as an inline width, because the
+ * element that has to react to it is `.app`'s grid template, which is this
+ * element's parent.
  */
 function AgentDrawer({
   taskId,
@@ -681,9 +867,44 @@ function AgentDrawer({
 }) {
   const base = `agents/task/${encodeURIComponent(taskId)}`
   const close = () => go('agents/running')
+  const [width, setWidth] = useState(() => readPane(INSPECTOR))
+  const dragging = useRef(false)
+
+  useEffect(() => {
+    const root = document.documentElement
+    root.style.setProperty('--inspector-w', `${width}px`)
+    return () => {
+      root.style.removeProperty('--inspector-w')
+    }
+  }, [width])
+
+  const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragging.current) return
+    // The inspector is anchored to the right edge, so its width is the
+    // distance from the pointer to that edge.
+    setWidth(clampPane((globalThis.innerWidth || 0) - e.clientX, INSPECTOR.min, INSPECTOR.max))
+  }
+  const endDrag = () => {
+    if (!dragging.current) return
+    dragging.current = false
+    writePane(INSPECTOR, width)
+  }
 
   return (
     <div className="drawer ctl-drawer" role="dialog" aria-label={`Agent ${taskId}`}>
+      <div
+        className="ctl-inspector-grip"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the inspector"
+        onPointerDown={(e) => {
+          dragging.current = true
+          e.currentTarget.setPointerCapture(e.pointerId)
+        }}
+        onPointerMove={onMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      />
       <button className="drawer-close" onClick={close} aria-label="Close">
         ✕
       </button>
