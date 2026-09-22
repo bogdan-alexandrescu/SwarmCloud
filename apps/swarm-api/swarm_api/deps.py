@@ -32,6 +32,7 @@ from .inspect import InspectionService
 from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .ratelimit import TokenBucketLimiter
+from .rollup import WorkflowRollups
 from .service import SubmissionService
 from .settings import ApiSettings
 from .store import Store
@@ -60,6 +61,11 @@ class AppContext:
     #: configured for this deployment" -- a deployment problem with a named
     #: fix -- rather than into an empty list.
     inspection: InspectionService
+    #: Derives a workflow's state from its steps, reports drift against the
+    #: stored copy, and writes the stored copy back. Constructed here like every
+    #: other collaborator so a test gets the shipped code path over an in-memory
+    #: Firestore rather than a patched import.
+    rollups: WorkflowRollups
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -154,6 +160,7 @@ def build_context(
         default_log_bytes=settings.default_log_bytes,
         min_log_bytes=settings.min_log_bytes,
     )
+    rollups = WorkflowRollups(store=store, metrics=metrics)
     return AppContext(
         settings=settings,
         db=db,
@@ -165,6 +172,7 @@ def build_context(
         metrics=metrics,
         waker=waker,
         inspection=inspection,
+        rollups=rollups,
         now=now,
     )
 

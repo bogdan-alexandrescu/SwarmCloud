@@ -47,6 +47,15 @@ class ApiMetrics:
             ["tenant"],
             registry=self.registry,
         )
+        self.workflow_state_drift = Counter(
+            "swarm_api_workflow_state_drift_total",
+            "Workflow reads where the stored state and the state derived from "
+            "the steps did not agree (disagree), or could not be compared "
+            "because a step task was unreadable (unknown). Taken BEFORE the "
+            "write-back repairs it, so a repaired disagreement still counts.",
+            ["direction"],
+            registry=self.registry,
+        )
         self.auth_failures = Counter(
             "swarm_api_auth_failures_total",
             "Authentication and authorisation failures, by kind.",

@@ -527,11 +527,33 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
     )
 
 
-def workflow_to_api(workflow: Workflow) -> dict[str, Any]:
+def workflow_to_api(
+    workflow: Workflow, rollup: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Public JSON shape for a workflow.
+
+    `state` SERVES THE DERIVED VALUE when a rollup is supplied, and the value
+    read out of Firestore is served beside it as `stored_state`. That is a
+    deliberate change of meaning for an existing field and it is the point of the
+    change: every consumer already asks "what state is this workflow in" by
+    reading `.state`, and until now the answer was QUEUED forever because nothing
+    advanced the stored field. Leaving `.state` faithful to the document would
+    have preserved the defect for the sake of a fidelity nobody asked for.
+
+    `rollup` is None only on a path that did not read the steps. The field then
+    reports the stored value and says so, rather than implying it was confirmed.
+    """
+    served = dict(rollup or {})
+    state = served.pop("state", None) or workflow.state.value
     return {
         "workflow_id": workflow.workflow_id,
         "tenant_id": workflow.tenant_id,
-        "state": workflow.state.value,
+        "state": state,
+        #: Always the value in Firestore. Kept so the cache can be audited, and
+        #: so a consumer that specifically wants the document gets the document.
+        "stored_state": workflow.state.value,
+        "state_source": "derived" if rollup else "stored",
+        **served,
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
         "submitted_by": workflow.submitted_by,

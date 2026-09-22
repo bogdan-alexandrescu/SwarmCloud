@@ -92,6 +92,13 @@ CONTROL_DOC = "dispatch"
 #: document and its `submitted` event), so a chunk of 200 tasks is the ceiling.
 _BATCH_CHUNK = 200
 
+#: Step-task point reads one list request may spend deriving workflow states.
+#: A page of `max_page_size` workflows at `max_workflow_steps` each would be
+#: 10,000 documents, which is not a cost a list route may incur on a caller's
+#: behalf. Past this the remaining steps come back UNREAD and the workflows that
+#: needed them derive as UNKNOWN -- slower to answer, never wrong.
+_STEP_READ_BUDGET = 500
+
 #: `evaluate_capacity` treats a MISSING pool as unlimited, but a Firestore
 #: document has no "absent integer" -- so a pool created only to carry an
 #: enabled/disabled flag (a drain, say) needs a hard limit that will never bind.
@@ -155,6 +162,28 @@ def decode_cursor(token: str | None) -> datetime | None:
 class Page:
     items: list[Any]
     next_page_token: str | None
+
+
+@dataclass
+class StepStateRead:
+    """The outcome of reading a set of workflow steps' task states.
+
+    Three fields because there are three outcomes and collapsing them is how a
+    failed read becomes a cheerful answer:
+
+      * `states`  -- task_id -> state, for the tasks that were read.
+      * `absent`  -- read, and the document was not there or belonged to another
+                     tenant. A data fault.
+      * `unread`  -- never read: the budget ran out first. A capacity decision.
+
+    Both `absent` and `unread` make a workflow's rollup incomplete, and the
+    rollup reports which kind it hit.
+    """
+
+    states: dict[str, TaskState]
+    absent: list[str]
+    unread: list[str]
+    reads: int
 
 
 class Store:
@@ -636,6 +665,76 @@ class Store:
             rows = rows[:limit]
             next_token = encode_cursor(rows[-1].created_at)
         return Page(items=rows, next_page_token=next_token)
+
+    def workflow_step_states(
+        self,
+        tenant_id: str,
+        workflows: Sequence[Workflow],
+        *,
+        budget: int | None = None,
+    ) -> StepStateRead:
+        """Task states for every step of these workflows, by point read.
+
+        POINT READS, NOT A QUERY. Each `WorkflowStep` already carries its
+        `task_id`, so the ids are in hand and a query would only re-derive them
+        -- and a query per workflow costs the same documents plus a round trip
+        each. This is the pattern `SchedulerStore.task_states` already uses for
+        `depends_on`, for the same reason: a bounded number of point reads is not
+        a scan.
+
+        TENANT-CHECKED, like `get_task`: a step naming a task that belongs to
+        someone else reads as ABSENT rather than being returned. Invariant 9 does
+        not get an exception for a derived field.
+
+        BOUNDED, because a page of 200 workflows at 50 steps each is 10,000
+        documents and a list route must not be able to cost that. When the budget
+        runs out the remaining ids come back in `unread`, which makes every
+        workflow that needed one derive as UNKNOWN. That is the correct
+        degradation: the answer gets slower to appear, never wrong.
+        """
+        limit = _STEP_READ_BUDGET if budget is None else max(0, budget)
+        wanted: list[str] = []
+        for workflow in workflows:
+            for step in workflow.steps:
+                if step.task_id:
+                    wanted.append(step.task_id)
+        wanted = list(dict.fromkeys(wanted))
+
+        states: dict[str, TaskState] = {}
+        absent: list[str] = []
+        reads = 0
+        for task_id in wanted[:limit]:
+            snap = self._db.collection(TASKS).document(task_id).get()
+            reads += 1
+            if not snap.exists:
+                absent.append(task_id)
+                continue
+            data = snap.to_dict()
+            if data.get("tenant_id") != tenant_id:
+                absent.append(task_id)
+                continue
+            states[task_id] = TaskState(data["state"])
+        return StepStateRead(states=states, absent=absent, unread=wanted[limit:], reads=reads)
+
+    def set_workflow_state(self, workflow_id: str, state: TaskState) -> None:
+        """Write the derived state onto the workflow document.
+
+        The ONLY writer of `workflow.state` after `create_workflow`. It takes a
+        `TaskState`, not a string, so nothing can put `"UNKNOWN"` in a field that
+        `workflow_from_dict` decodes with `TaskState(...)` and would then raise on
+        for every subsequent read.
+
+        No `assert_transition`: the frozen state machine governs a TASK's
+        lifecycle, and a workflow's rollup legitimately moves in ways a task
+        never does -- QUEUED straight to RUNNING when the first step is admitted,
+        or RUNNING back to PARKED when the last live step parks on quota. Running
+        the task machine over it would reject the truth.
+        """
+        (
+            self._db.collection(WORKFLOWS)
+            .document(workflow_id)
+            .update({"state": state.value, "updated_at": self._now()})
+        )
 
     def cancel_workflow(self, tenant_id: str, workflow_id: str, *, by: str) -> dict[str, Any]:
         workflow = self.get_workflow(tenant_id, workflow_id)

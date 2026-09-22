@@ -12,6 +12,7 @@ import {
   type TaskDispatch,
   type Tone,
   type Workflow,
+  type WorkflowDrift,
   type WorkflowStep,
 } from './types'
 
@@ -108,26 +109,71 @@ function levelsOf(steps: WorkflowStep[]): WorkflowStep[][] {
 }
 
 /**
- * The computed rollup. Counts are SUPPRESSED when any step state is unknown:
- * "3 succeeded" computed over a partial join is a wrong number wearing the
- * clothes of a right one, and this screen exists partly to not do that.
+ * The rollup line, read off what the SERVER computed.
+ *
+ * This used to census the joined tasks here. It no longer does, and the reason
+ * is the whole point of the change behind it: the API now derives a workflow's
+ * state from its steps on every read, so a second census in the browser would be
+ * a restatement of the server's rule with nothing checking the two still agree
+ * -- `check-contract-parity.sh` does not cover TypeScript.
+ *
+ * Counts are still SUPPRESSED when any step state is unknown, because that
+ * property belongs to the numbers rather than to where they were computed:
+ * "3 succeeded" over a partial read is a wrong number wearing the clothes of a
+ * right one. The server reports `complete: false` for exactly that case.
  */
-function rollup(
-  steps: WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-): { text: string; trustworthy: boolean } {
-  const states = steps.map((s) => stepState(s, taskById))
-  const unknown = states.filter((s) => s.kind === 'unknown').length
-  if (unknown > 0) {
-    return { text: `${unknown} of ${steps.length} steps: state unread`, trustworthy: false }
+function rollupLine(workflow: Workflow): { text: string; trustworthy: boolean } {
+  const roll = workflow.rollup
+  const total = workflow.steps.length
+  if (!roll) {
+    // `state_source: 'stored'` -- no read route produces this, but a payload
+    // without a rollup must say it has no census rather than invent a zero one.
+    return { text: `${total} step${total === 1 ? '' : 's'} · not counted`, trustworthy: false }
   }
-  const done = states.filter((s) => s.kind === 'state' && s.state === 'SUCCEEDED').length
-  const failed = states.filter((s) => s.kind === 'state' && s.state === 'FAILED').length
-  const unstarted = states.filter((s) => s.kind === 'unstarted').length
-  const parts = [`${done}/${steps.length} done`]
+  if (!roll.complete) {
+    const n = roll.unreadable_steps.length
+    return { text: `${n} of ${total} steps: state unread`, trustworthy: false }
+  }
+  const done = roll.counts.SUCCEEDED ?? 0
+  const failed = roll.counts.FAILED ?? 0
+  const unstarted = roll.counts.unstarted ?? 0
+  const parts = [`${done}/${total} done`]
   if (failed > 0) parts.push(`${failed} failed`)
   if (unstarted > 0) parts.push(`${unstarted} not started`)
   return { text: parts.join(' · '), trustworthy: true }
+}
+
+/**
+ * The accounting-drift check, for a workflow's two records of its own state.
+ *
+ * Modelled on `Drift` in Holders.tsx and there for the same reason: the stored
+ * `workflow.state` and the state derived from the steps are two records of one
+ * fact, so a disagreement is never rounding. It is shown AFTER the server has
+ * already repaired it, on purpose -- a repair that leaves no trace is a silent
+ * resolution, and the thing worth seeing is that the stored copy was wrong at
+ * all, not the instant in which it was wrong.
+ *
+ * `agrees === null` is rendered as "not checked", never as a disagreement: the
+ * derivation was incomplete, so the two records were not compared.
+ */
+function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
+  if (!drift || drift.agrees === true) return null
+  if (drift.agrees === null) {
+    return (
+      <p className="rollup untrusted">
+        State could not be checked: {drift.unreadable_steps.length} step
+        {drift.unreadable_steps.length === 1 ? '' : 's'} unread ({drift.reason}). The
+        stored value is <code>{drift.stored}</code> and nothing has confirmed it.
+      </p>
+    )
+  }
+  return (
+    <p className="rollup untrusted">
+      Stored state was <code>{drift.stored}</code>; the steps say{' '}
+      <code>{drift.derived}</code>
+      {drift.repaired ? ' — the stored copy has been corrected' : ''}.
+    </p>
+  )
 }
 
 function WorkflowCard({
@@ -138,7 +184,7 @@ function WorkflowCard({
   taskById: ReadonlyMap<string, Task> | null
 }) {
   const levels = levelsOf(workflow.steps)
-  const roll = rollup(workflow.steps, taskById)
+  const roll = rollupLine(workflow)
   // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
   // server-side -- the frozen `Workflow` has no metadata field, so there is
   // nowhere else it could live. Null when the task join produced nothing to
@@ -156,8 +202,13 @@ function WorkflowCard({
       </h2>
       <p className={`rollup${roll.trustworthy ? '' : ' untrusted'}`}>
         {roll.text}
+        {/* Still a separate annotation, not folded into the state above.
+            `cancel_requested` is a REQUEST: a step holding a lease keeps it
+            until the worker or the reconciler releases it, so between the
+            request and the release the workflow really is still running. */}
         {workflow.cancel_requested && ' · cancel requested'}
       </p>
+      <StateDrift drift={workflow.drift} />
       <WorkflowDispatch
         dispatch={dispatch?.dispatch ?? null}
         integratorTaskId={dispatch?.integratorTaskId ?? null}

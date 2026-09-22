@@ -2010,7 +2010,31 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
         {
           workflow_id: 'wf_audit_01',
           tenant_id: 'u-bogdan',
+          // The fixture mirrors what the API now sends: a DERIVED state, the
+          // stored copy beside it, and the drift between them. `wf_audit_01`
+          // carries a deliberate disagreement so the drift line has something
+          // to render in development.
           state: 'RUNNING',
+          stored_state: 'QUEUED',
+          state_source: 'derived',
+          rollup: {
+            state: 'RUNNING',
+            complete: true,
+            reason: 'steps_hold_capacity',
+            counts: { SUCCEEDED: 1, RUNNING: 2, READY: 1, unstarted: 1 },
+            unreadable_steps: [],
+            unstarted_steps: ['publish'],
+            steps_read: 4,
+          },
+          drift: {
+            stored: 'QUEUED',
+            derived: 'RUNNING',
+            agrees: false,
+            reason: 'steps_hold_capacity',
+            steps_read: 4,
+            unreadable_steps: [],
+            repaired: true,
+          },
           created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
           updated_at: new Date().toISOString(),
           submitted_by: 'bogdan@saga.xyz',

@@ -1621,11 +1621,25 @@ function duration(msSpan: number): string {
 }
 
 /**
- * The computed workflow rollup, NEVER `workflow.state`. That field is written
- * once as QUEUED at service.py:258 and no component ever updates it --
- * nothing in apps/scheduler, apps/reconciler or apps/agent-worker writes the
- * workflows collection at all. Rendering it would label every finished
- * workflow "queued" forever.
+ * A rollup over the tasks ON THE CURRENT PAGE, for the "group by workflow"
+ * header on Agents. NOT a workflow's state.
+ *
+ * THE CLAIM THAT USED TO BE HERE IS NO LONGER TRUE, which is worth saying
+ * plainly rather than quietly deleting: this comment said `workflow.state` was
+ * written once as QUEUED and never updated, so rendering it would label every
+ * finished workflow "queued" forever. That was correct when it was written and
+ * is now fixed. `GET /v1/workflows` derives the state from the steps on every
+ * read, serves it as `state`, and writes the stored copy back
+ * (apps/swarm-api/swarm_api/rollup.py). `Workflow.state` is now the value to
+ * render.
+ *
+ * This function survives because it answers a DIFFERENT question: Agents groups
+ * whatever tasks the current page happens to contain, which is not the same set
+ * as a workflow's steps, and the heading says "in this page" for that reason.
+ * Its vocabulary deliberately does NOT match the server's -- it collapses
+ * CANCELLED into 'failed' and has no DEAD_LETTERED case -- so do not reach for
+ * it to describe a workflow. If a workflow's state is wanted on that screen, the
+ * workflow route serves one.
  */
 export function rollupState(states: TaskState[]): 'running' | 'succeeded' | 'failed' | 'waiting' {
   if (states.some((s) => CONCURRENCY_STATES.has(s))) return 'running'
@@ -1634,11 +1648,67 @@ export function rollupState(states: TaskState[]): 'running' | 'succeeded' | 'fai
   return 'waiting'
 }
 
-/** `workflow_to_api`, codec.py:343-366. Every field it actually sends. */
+/**
+ * The three parts of a workflow's state as `swarm_api.rollup` computes them.
+ *
+ * DERIVED SERVER-SIDE AND ONLY READ HERE. Nothing in this file may re-implement
+ * the precedence rule: `check-contract-parity.sh` does not cover TypeScript, so
+ * a copy would drift in silence -- which is the failure this whole feature was
+ * written to stop happening to `workflow.state` itself.
+ */
+export interface WorkflowRollupCounts {
+  /** TaskState value -> count, plus `unstarted` and `unreadable`. */
+  [key: string]: number
+}
+
+export interface WorkflowRollup {
+  /** A TaskState value, or 'UNKNOWN' when a step could not be read. */
+  state: string
+  /** False when any step's state could not be established. */
+  complete: boolean
+  reason: string
+  counts: WorkflowRollupCounts
+  unreadable_steps: string[]
+  unstarted_steps: string[]
+  steps_read: number
+}
+
+/**
+ * The comparison between the stored copy and the derived one.
+ *
+ * `agrees` is THREE-VALUED and the third value is the point: null means the two
+ * were not compared, because the derivation was incomplete. Rendering that as a
+ * disagreement would manufacture a finding out of a failed read -- the same
+ * caution the accounting-drift panel in Holders.tsx carries.
+ */
+export interface WorkflowDrift {
+  stored: string
+  derived: string
+  agrees: boolean | null
+  reason: string
+  steps_read: number
+  unreadable_steps: string[]
+  /** The server wrote the derived value back. `agrees` stays as observed. */
+  repaired: boolean
+}
+
+/** `workflow_to_api`, codec.py. Every field it actually sends. */
 export interface Workflow {
   workflow_id: string
-  tenant_id: string
+  /**
+   * The DERIVED state -- what the steps say, not what the document holds. Safe
+   * to render directly; it is 'UNKNOWN' when a step could not be read, which is
+   * why this is `string` rather than `TaskState`.
+   */
   state: string
+  tenant_id: string
+  /** The value in Firestore. Present so the cache can be audited. */
+  stored_state: string
+  /** 'derived' on a read route, 'stored' on the create response. */
+  state_source: 'derived' | 'stored'
+  /** Absent only where `state_source` is 'stored'. */
+  rollup?: WorkflowRollup
+  drift?: WorkflowDrift
   created_at: string
   updated_at: string
   submitted_by: string | null

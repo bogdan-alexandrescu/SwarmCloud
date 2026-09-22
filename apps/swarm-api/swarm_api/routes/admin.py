@@ -500,3 +500,50 @@ def list_tenants(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     return {"tenants": [tenant_to_api(t) for t in ctx.store.list_tenants()]}
+
+
+@router.post("/workflows/rollup")
+def rollup_workflows(
+    tenant_id: str = Query(..., min_length=1),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Refresh the stored workflow state for one tenant's live workflows.
+
+    WHY THIS EXISTS SEPARATELY from the write-back the read routes already do.
+    The read routes converge the cache for any workflow somebody looks at, which
+    is most of them -- the web UI polls `GET /v1/workflows?limit=100`. This route
+    converges the rest, so a query like "list my failed workflows" is answerable
+    without having first listed them. That is the half of the owner's decision
+    the write exists for, and without a sweep it would only hold for workflows a
+    human happened to open.
+
+    TENANT IS EXPLICIT, not derived from the admin's own identity. An admin's
+    `tenant_scope` is the admin's own tenant, and sweeping that would silently do
+    nothing for the tenant the operator meant.
+
+    Terminal workflows are skipped and truncation is reported rather than hidden;
+    see `WorkflowRollups.sweep`. A caller that reads `truncated: true` has not
+    been given a complete census, and the response says so.
+    """
+    results, report = ctx.rollups.sweep(tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="workflow_rollup").inc()
+    return {
+        "tenant_id": tenant_id,
+        "report": report.to_api(),
+        # Only the ones that did not agree. A sweep over a healthy tenant returns
+        # an empty list, which is an answer rather than the absence of one.
+        "drifted": [
+            {
+                "workflow_id": r.workflow.workflow_id,
+                "stored": r.drift["stored"],
+                "derived": r.drift["derived"],
+                "agrees": r.drift["agrees"],
+                "repaired": r.drift["repaired"],
+                "reason": r.drift["reason"],
+            }
+            for r in results
+            if r.drift["agrees"] is not True
+        ],
+    }

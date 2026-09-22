@@ -19,6 +19,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 4 | A typed artifact-manifest entry | open |
 | 5 | `gke_api_host` in a shared module (`swarm_common/kube.py`) | open |
 | 6 | A typed dispatch block | open |
+| 7 | `models.py`/`states.py`: the workflow rollup has no shared home | open |
+| 8 | `states.py`: `Workflow.state` reuses `TaskState`; a workflow vocabulary | open |
 
 ---
 
@@ -634,11 +636,166 @@ decides whether a workflow opens one pull request or five.
 
 ---
 
+## 7. The workflow rollup has no shared home, so only one service can own it
+
+**Status:** open, found 2026-09-22 while making `Workflow.state` advance at all.
+
+### The problem
+
+Nothing ever wrote `Workflow.state` after submission. It is now derived from the
+step tasks and written back, and the derivation lives in
+`apps/swarm-api/swarm_api/rollup.py`. It lives there because that is the only
+place it CAN live and still be used by more than one service — and it is used by
+exactly one.
+
+The scheduler would have been the better home for the write. It already runs on a
+guaranteed one-minute clock (`terraform/modules/scheduler/jobs.tf:3`, the safety
+tick into the wake topic) and it already owns "state advances over time". It
+cannot have the derivation, because:
+
+```
+images/swarm-scheduler/Dockerfile:59-60   COPY apps/common/  apps/scheduler/
+images/swarm-api/Dockerfile:59-60         COPY apps/common/  apps/swarm-api/
+```
+
+Each image installs the frozen contract plus its own package. `swarm-scheduler`
+cannot `import swarm_api` and `swarm-api` cannot `import scheduler`; a
+cross-package import would be an `ImportError` in production and nowhere else,
+which is the failure `apps/swarm-api/pyproject.toml` already carries a comment
+about for `google-cloud-storage`.
+
+So the choice was: one implementation in the API, or two implementations with a
+cron. Two was refused, because the second copy would be compared against the
+first by the drift check this feature also ships — and the check would then be
+reporting the two copies drifting rather than the data drifting, which is worse
+than no check.
+
+### What the change would be
+
+A new module in the frozen package — `swarm_common/rollup.py` — holding the pure
+derivation only:
+
+* the terminal-severity ranking (`DEAD_LETTERED > FAILED > CANCELLED > SUCCEEDED`)
+* the pending precedence (`READY > PARKED > QUEUED > SUBMITTED`)
+* `derive(readings) -> WorkflowRollup`
+* the `UNKNOWN` sentinel and the rule that an incomplete read produces it
+
+It defines no new dataclass field and changes no existing type. It is a pure
+function over `TaskState` and a small result object, so it adds no dependency to
+any image that does not already have `swarm_common`.
+
+### What it buys
+
+The scheduler's `_promote_dependencies` sweep (`scheduler/loop.py:472`) could then
+do the write on the existing one-minute tick, and the API would derive for
+display from the same function. One rule, two callers, nothing to drift.
+
+### What breaks if it is made
+
+Nothing imports it yet, so nothing breaks. The API's `swarm_api/rollup.py` would
+keep the impure half — the store reads, the write-back, the metric — and import
+the pure half instead of defining it.
+
+### What is left to live with if it is declined
+
+What ships today, which is not broken but is narrower than it should be:
+
+* the write-back fires on every workflow READ, so the stored copy converges for
+  any workflow anybody looks at — which is most of them, because the web UI polls
+  `GET /v1/workflows?limit=100`;
+* `POST /v1/admin/workflows/rollup` converges the rest on demand;
+* **there is no periodic caller for that route.** A workflow nobody lists and
+  nobody sweeps keeps a stale STORED state indefinitely. Every READER still sees
+  the truth, because every read derives; it is the *queryable* copy that lags,
+  which is the half the write exists for. Closing that needs either this request
+  or a Cloud Scheduler job against the admin route, which is Track C.
+
+---
+
+## 8. `Workflow.state` reuses `TaskState`; a workflow needs its own vocabulary
+
+**Status:** open, found 2026-09-22.
+
+### The claim that is imprecise
+
+`apps/common/swarm_common/models.py:344`:
+
+```python
+@dataclass
+class Workflow:
+    ...
+    state: TaskState
+```
+
+A workflow is not a task, and the task vocabulary is the one available to
+describe it. Most of it transfers cleanly — SUCCEEDED, FAILED, CANCELLED,
+DEAD_LETTERED, RUNNING, READY, PARKED and QUEUED all mean at the workflow level
+what they mean at the task level. Two things do not:
+
+* **There is no word for a partial failure.** A workflow whose steps are
+  SUCCEEDED, FAILED and CANCELLED derives FAILED, and "FAILED" is not wrong — but
+  it cannot distinguish "every step failed" from "four of five succeeded".
+  `rollup.counts` carries that today, and a caller filtering on state alone
+  cannot see it.
+* **`LEASED`, `DISPATCHED` and `STARTING` are meaningless for a workflow.** They
+  describe one task's relationship to one lease. The derivation collapses all
+  four capacity-holding states into RUNNING for exactly that reason, so three of
+  the twelve values are unreachable for a workflow and nothing says so.
+
+### What the change would be
+
+A `WorkflowState` enum in `swarm_common/states.py` and `Workflow.state` retyped
+to it:
+
+```python
+class WorkflowState(str, Enum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    PARKED = "PARKED"
+    SUCCEEDED = "SUCCEEDED"
+    PARTIALLY_FAILED = "PARTIALLY_FAILED"   # some steps succeeded, some did not
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+```
+
+### Why it was NOT done as part of the work that found it
+
+`Workflow` is in the frozen contract, and the existing vocabulary can express
+everything the platform currently needs to say. Deriving into `TaskState` needed
+no contract change and is what shipped. This is the request, not a plan.
+
+### What breaks if it is made
+
+More than request #7, and it should be costed before anyone agrees:
+
+* `codec.workflow_from_dict` decodes the stored field with `TaskState(...)`.
+  Every workflow document written before the change holds `"QUEUED"`, which is
+  in both enums, so the read survives — but any document holding `LEASED`,
+  `DISPATCHED`, `STARTING` or `DEAD_LETTERED` would stop decoding. Nothing writes
+  those today; nothing guarantees nothing ever did.
+* `apps/swarm-ui/src/types.ts` widens `Workflow.state` to `string` already, so
+  the UI tolerates a new value without a typecheck — which is the same property
+  that let it tolerate a wrong one. `check-contract-parity.sh` does not cover
+  TypeScript (see the surfaces table at the end of this file).
+* `PARTIALLY_FAILED` is a genuinely new concept and needs a decision about
+  whether it is terminal for the purposes of "list my failed workflows".
+
+### What is left to live with if it is declined
+
+The derivation stays inside `TaskState`, `rollup.counts` carries the partial
+picture, and a caller wanting "mostly succeeded" reads the counts rather than the
+state. That is what ships today and it is honest; it is just less queryable than
+a named state would be.
+---
+
 ## Why these requests keep arising
 
-Three of the four requests above -- #3, #4 and #6 -- are one situation: a value
+Four of the requests above -- #3, #4, #6 and #7 -- are one situation: a value
 with a single definition and several readers, in components that cannot import
-each other. #5 is the same situation with a function instead of a value.
+each other. #5 is the same situation with a function instead of a value, and #7
+is the same situation with a RULE instead of a value -- which is the sharpest
+form of it, because the thing that would notice the two copies drifting is the
+drift check that one of the copies exists to feed.
 `CONTRACT.md` permits a restatement where it is unavoidable, and
 `docs/architecture.md` pays for the one it permits with a test. There are three
 restatement surfaces in this repository. Two are paid for.
