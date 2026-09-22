@@ -584,3 +584,162 @@ def test_the_token_request_is_form_encoded_to_the_right_host():
     assert "client_id=" in captured["body"]
     # Not JSON, which is the mistake this guards.
     assert not captured["body"].startswith("{")
+
+
+# -- the record has to outlive the process ----------------------------------
+#
+# The in-process note shipped in c0175e5 stopped the every-five-minutes leak
+# and left a slower one nothing was looking for: `swarm-quota-broker` runs at
+# minScale=0 and is redeployed several times a day, and a note that lives in
+# the process is empty in every new one. Measured in saga-agents-staging on
+# 2026-09-22, revision creation against base-only secret writes:
+#
+#     rev 00039 created 00:17:50 -> writes at 00:20:06/07
+#     rev 00040 created 02:57:13 -> writes at 03:00:16/17
+#     rev 00041 created 03:25:44 -> writes at 03:30:03/04
+#     rev 00042 created 03:32:16 -> writes at 03:35:03/04
+#
+# Four deploys, four rounds of identical versions across all three live
+# credentials, and nothing between them. Every test above uses ONE refresher
+# for every sweep, so not one of them could see it.
+
+
+class _Ledger:
+    """A record that survives the refresher that wrote it.
+
+    Deliberately shared BETWEEN refresher instances in these tests: one
+    instance is one broker process, and the whole point is what happens to the
+    second one.
+    """
+
+    def __init__(self, initial=None, fail=None):
+        self.digests = dict(initial or {})
+        self.fail = fail
+        self.reads = 0
+        self.writes = 0
+
+    def published_digest(self, base):
+        self.reads += 1
+        if self.fail:
+            raise self.fail
+        return self.digests.get(base)
+
+    def record(self, base, digest):
+        self.writes += 1
+        self.digests[base] = digest
+
+
+def test_a_redeploy_does_not_add_one_more_identical_version():
+    """THE LEAK THAT SURVIVED THE FIRST FIX, at the rate that produced it.
+
+    Twelve broker processes -- twelve deploys, or twelve cold starts -- sweep
+    the same unchanged credential against a base secret none of them may read.
+    The first has no record and publishes once. The other eleven find the
+    record the first one left and must write NOTHING.
+
+    Anything above 1 here is the leak, just spread over deploys instead of
+    ticks, and it is what took `swarm-tenant-u-bogdan-anthropic` from 1,810 to
+    1,814 versions in the three hours AFTER it was declared fixed.
+    """
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    ledger = _Ledger()
+
+    for _ in range(12):
+        # A NEW refresher every time: a new process has no memory of the last.
+        out = CredentialRefresher(
+            store, _Endpoint(), logger=_Log(), now=lambda: NOW, ledger=ledger
+        ).refresh_tenant("eng", "anthropic")
+
+    assert store.writes == [base], (
+        f"twelve broker processes wrote {len(store.writes)} identical versions "
+        "of an unchanged credential; the record of what was published has to "
+        "outlive the process that published it"
+    )
+    assert out.reason == "still_valid"
+    assert ledger.writes == 1, "and the record is written once, not per sweep"
+    assert store.reads == 12, "it must keep TRYING to look; the grant may land"
+
+
+def test_a_process_that_can_read_neither_the_secret_nor_the_record_writes_nothing():
+    """NO EVIDENCE IS NOT EVIDENCE OF ABSENCE.
+
+    The read is refused and the ledger cannot answer either, so nothing in this
+    process knows anything about the secret's contents. The old code's answer
+    was to write anyway on the grounds that a redundant version is cheap; 1,741
+    of them on one secret is what that reasoning actually bought.
+    """
+    from quota_broker.publishledger import LedgerUnavailable
+
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    ledger = _Ledger(fail=LedgerUnavailable("ServiceUnavailable"))
+    log = _Log()
+
+    for _ in range(60):
+        out = CredentialRefresher(
+            store, _Endpoint(), logger=log, now=lambda: NOW, ledger=ledger
+        ).refresh_tenant("eng", "anthropic")
+
+    assert store.writes == [], (
+        "a guard that could not run wrote "
+        f"{len(store.writes)} versions it had no reason to believe were needed"
+    )
+    assert out.reason == "unverified_skipped"
+    assert out.refreshed is False
+
+    errors = [
+        json.loads(r) for r in log.records if json.loads(r)["severity"] == "ERROR"
+    ]
+    assert errors, "declining to write must be audible; silence is how this started"
+    # BOTH failures named, because they need different people: the secret read
+    # is an IAM grant, the ledger read is Firestore.
+    assert "secretAccessor" in errors[0]["message"]
+    assert "Firestore" in errors[0]["message"]
+    assert errors[0]["error"] == "PermissionError/ledger:ServiceUnavailable"
+
+
+def test_a_ledger_holding_an_older_token_still_publishes_the_new_one():
+    """The record is positive evidence in BOTH directions.
+
+    A refresh that wrote the `-refresh` half and died before the base half
+    leaves a record of the OLD token. The next sweep cannot read the secret,
+    but the record tells it the base does not hold the current token -- which
+    is a reason to write, and exactly the half-written state invariant 1 exists
+    to make recoverable.
+    """
+    from quota_broker.publishledger import fingerprint
+
+    base = "swarm-tenant-eng-anthropic"
+    store = _Unreadable(base, {f"{base}{REFRESH_SUFFIX}": _stored(8)})
+    ledger = _Ledger({base: fingerprint("access-ANCIENT")})
+
+    out = CredentialRefresher(
+        store, _Endpoint(), logger=_Log(), now=lambda: NOW, ledger=ledger
+    ).refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published_unverified"
+    assert store.writes == [base]
+    assert ledger.digests[base] == fingerprint("access-old")
+
+
+def test_a_readable_secret_never_consults_the_ledger():
+    """The ledger is the fallback, not the answer.
+
+    If the accessor grant lands, the comparison is authoritative again and the
+    record must not be able to veto it -- a stale record plus a real read would
+    otherwise leave a genuinely stale secret unwritten.
+    """
+    from quota_broker.publishledger import fingerprint
+
+    base = "swarm-tenant-eng-anthropic"
+    store = _Store({f"{base}{REFRESH_SUFFIX}": _stored(8), base: "something-else"})
+    ledger = _Ledger({base: fingerprint("access-old")})
+
+    out = CredentialRefresher(
+        store, _Endpoint(), logger=_Log(), now=lambda: NOW, ledger=ledger
+    ).refresh_tenant("eng", "anthropic")
+
+    assert out.reason == "published", "a successful comparison decides on its own"
+    assert store.writes == [base]
+    assert ledger.reads == 0, "the ledger is only consulted when the read fails"

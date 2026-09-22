@@ -1846,7 +1846,7 @@ export interface RefreshResult {
   provider: string
   /** THE ONLY FIELD THAT SAYS IT WORKED. The HTTP status does not. */
   refreshed: boolean
-  /** One of the ten reasons in credentials.py. Never rendered raw. */
+  /** One of the eleven reasons in credentials.py. Never rendered raw. */
   reason: string
   expires_at: string | null
 }

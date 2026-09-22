@@ -63,6 +63,8 @@ from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import AccountStore
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
+from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
+from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
 from .settings import BrokerSettings
@@ -727,6 +729,12 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
 #: sweep growing a second opinion about what "dead" means.
 CREDENTIAL_NEEDS_A_HUMAN = ("reauth_required", "unreadable")
 
+#: Outcomes that added at least one Secret Manager version. `refreshed` writes
+#: the pair; the other two write the worker-facing half alone. Named here
+#: rather than inline because both sweep summarisers count it and a second
+#: spelling would drift from this one.
+_WROTE_A_VERSION = ("refreshed", "published", "published_unverified")
+
 
 def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, Any]:
     """Refresh every registered account, and RECORD what came back.
@@ -851,6 +859,14 @@ def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, 
         #: is logged, because a detection that was never recorded is one the
         #: listing will not show.
         "marked_reauth_required": marked,
+        #: The same write-cadence counters `_sweep_block` reports, and for the
+        #: same reason: the account secrets carried 1,741 and 1,698 identical
+        #: versions while every tick of this sweep reported success.
+        "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
+        "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
+        "unverified_skipped": [
+            o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
+        ],
     }
 
 
@@ -872,6 +888,24 @@ def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
         "examined": len(outcomes),
         "refreshed": sum(1 for o in outcomes if o.refreshed),
         "reauth_required": [o.tenant_id for o in outcomes if o.reason == "reauth_required"],
+        # THE WRITE CADENCE, stated on every tick. Nothing reported the
+        # 1,741-version leak for four days except the secret-version count
+        # itself, because the sweep's own summary never said how many versions
+        # it had written. A steady state is `wrote: 0` on every tick but the
+        # one that actually rotates a credential; a `wrote` that is nonzero
+        # tick after tick is the leak, visible from the response and the log
+        # line that carries it rather than from a gcloud count days later.
+        "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
+        # Published without being able to confirm it was needed. Should be at
+        # most one per credential per deployment; a number that keeps growing
+        # means the ledger is not sticking.
+        "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
+        # Declined to write because neither the secret nor the ledger could be
+        # read. Not a failure of the credential -- a failure of this service's
+        # own evidence, and the credential is going stale while it lasts.
+        "unverified_skipped": [
+            o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
+        ],
     }
 
 
@@ -961,6 +995,26 @@ def create_app(
         # and populated in another.
         app.state.account_store = AccountStore(app.state.broker.db)
 
+    # THE RECORD THAT HAS TO OUTLIVE THE PROCESS. The broker cannot read the
+    # worker-facing secrets it writes -- it holds `versions.add` and not
+    # `versions.access` -- so when it asks "does that secret already hold this
+    # token?" the only admissible answer is a positive record of what it put
+    # there. An in-process note is not that record: this service runs at
+    # minScale=0 and is redeployed several times a day, and each new process
+    # published one more identical version before it learned anything. See
+    # quota_broker.publishledger for the four deploys and four writes that
+    # measured it.
+    #
+    # Built from the BROKER's own Firestore handle, for the same reason the
+    # account store is: a second client carries second settings, and the first
+    # symptom of that is a record that exists in one process and not another --
+    # which is precisely the failure this closes.
+    app.state.publish_ledger = (
+        FirestorePublishLedger(app.state.broker.db)
+        if getattr(app.state.broker, "db", None) is not None
+        else InMemoryPublishLedger()
+    )
+
     refresher, tenants = credential_refresher, subscription_tenants
     # Bound here rather than only inside the branch below: the usage poller
     # needs the same store, and reading it conditionally raised
@@ -970,7 +1024,12 @@ def create_app(
         project_id = os.environ.get("PROJECT_ID", "").strip()
         if project_id:
             store = secret_store = SecretManagerStore(project_id)
-            refresher = CredentialRefresher(store, HttpTokenEndpoint(), logger=log)
+            refresher = CredentialRefresher(
+                store,
+                HttpTokenEndpoint(),
+                logger=log,
+                ledger=app.state.publish_ledger,
+            )
             if tenants is None:
                 tenants = store.subscription_tenants
         else:
@@ -1323,6 +1382,25 @@ def create_app(
                 f"could not provision the secrets for {owner_tenant}:{label}: "
                 f"{type(exc).__name__}. No account was registered."
             ) from None
+
+        # THIS PATH IS A WRITER TOO, so it owes the ledger a record. Without
+        # it, the next sweep finds a base secret it cannot read and no record
+        # of what is in it, and publishes one more identical version -- the
+        # exact leak, restarted by the one code path that already knew the
+        # answer. Best effort: a registration that provisioned both secrets
+        # must not fail because a bookkeeping write did, and the cost of
+        # losing it is one redundant version within five minutes.
+        ledger = getattr(request.app.state, "publish_ledger", None)
+        if ledger is not None:
+            try:
+                ledger.record(base, publish_fingerprint(access_token))
+            except Exception as exc:
+                log.warning(
+                    "provisioned an account but could not record which access "
+                    "token was published; the next sweep may add one "
+                    "identical secret version",
+                    extra={"secret": base, "error": type(exc).__name__},
+                )
 
         account = store.register(
             owner_tenant, label, provider=provider, lend_to=lend_to

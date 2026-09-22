@@ -21,6 +21,7 @@ What these pin:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -679,3 +680,88 @@ def test_a_genuinely_dead_credential_is_still_marked_after_the_second_attempt(cl
 
     assert refresher.confirmations == [dead]
     assert _account(client, dead)["state"] == "REAUTH_REQUIRED"
+
+
+def test_registration_records_what_it_published_so_the_next_sweep_repeats_nothing(
+    client, db
+):
+    """REGISTRATION IS A WRITER TOO, and it owes the ledger a record.
+
+    The broker cannot read the base secret it just wrote -- it holds
+    `secretmanager.versions.add` on it and not `versions.access` -- so the very
+    next sweep would find a secret it cannot read and no record of what is in
+    it, and publish one more identical version. That is the 1,741-version leak
+    restarted by the one code path that already knew the answer, five minutes
+    after every registration.
+
+    The digest, never the token: this collection is readable by anything with
+    `roles/datastore.user` on the project, which is a far wider circle than the
+    secret's accessor binding.
+    """
+    from quota_broker.accounts import secret_name
+    from quota_broker.publishledger import COLLECTION, fingerprint
+
+    r = client.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "personal", "credential": _credential()},
+    )
+    assert r.status_code == 201, r.text
+
+    base = secret_name(TENANT, "personal")
+    record = db.docs[f"{COLLECTION}/{base}"]
+    assert record["digest"] == fingerprint("at-abcdefghijklmnop")
+    assert "at-abcdefghijklmnop" not in json.dumps(record), (
+        "the ledger stores a digest so that reading it cannot hand anyone a "
+        "live access token"
+    )
+
+
+def test_the_sweep_after_a_registration_adds_no_second_version(client, db):
+    """End to end over the seam the two writers share.
+
+    Registration publishes the access token and records it; the sweep that
+    follows cannot read the secret back, finds the record, and writes nothing.
+    Before the record was durable this cost one identical version per broker
+    process -- four deploys, four rounds of them, on 2026-09-22.
+    """
+    from quota_broker.accounts import secret_name
+    from quota_broker.credentials import CredentialRefresher
+
+    r = client.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "personal", "credential": _credential()},
+    )
+    assert r.status_code == 201, r.text
+
+    base = secret_name(TENANT, "personal")
+    secrets = client.secrets
+    before = len(secrets.versions[base])
+
+    class _Unreadable:
+        """The live IAM shape: writes accepted, reads refused."""
+
+        def access(self, name):
+            if name == base:
+                raise PermissionError("permission denied")
+            return secrets.access(name)
+
+        def add_version(self, name, payload):
+            secrets.add_version(name, payload)
+
+    class _Endpoint:
+        def exchange(self, refresh_token):
+            raise AssertionError("a valid token must not be spent")
+
+    for _ in range(3):   # three broker processes, i.e. three deploys
+        out = CredentialRefresher(
+            _Unreadable(),
+            _Endpoint(),
+            logger=logging.getLogger("test.sweep-after-registration"),
+            ledger=client.app_ref.state.publish_ledger,
+        ).refresh_secret(base, label="eng:personal")
+
+    assert out.reason == "still_valid"
+    assert len(secrets.versions[base]) == before, (
+        "the sweep republished a token registration had already published and "
+        "recorded"
+    )

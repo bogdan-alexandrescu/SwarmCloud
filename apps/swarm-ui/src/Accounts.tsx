@@ -1041,6 +1041,26 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
           </>
         ),
       }
+    case 'unverified_skipped':
+      return {
+        ok: false,
+        heading: 'Nothing could confirm what the secret holds, so nothing was written',
+        body: (
+          <>
+            The stored token is still valid, but the broker could read neither the
+            secret a pod mounts nor its own record of what it last published
+            there. With no evidence in either direction it declined to write &mdash;
+            deliberately, because writing on a failed read is what added ~1,700
+            identical versions to every account secret in September. The
+            credential itself is fine. Two things to check: the broker needs{' '}
+            <code>roles/secretmanager.secretAccessor</code> on this
+            account&rsquo;s secret, and its Firestore{' '}
+            <code>credential_publications</code> collection has to be reachable.
+            Until one of them works, this account&rsquo;s pod-facing secret is
+            only rewritten when the credential actually rotates.
+          </>
+        ),
+      }
     case 'still_valid':
       return {
         ok: true,
