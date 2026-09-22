@@ -5,7 +5,7 @@ import { Screen } from './Shell'
 import { poolKind, poolLabel, setBy, type Capacity, type Pool } from './types'
 
 /**
- * Admin settings: the concurrency ceilings, editable.
+ * Pool limits: the concurrency ceilings, editable.
  *
  * WHY THIS SCREEN EXISTS RATHER THAN A TFVARS EDIT. `pool_limits` in an
  * environment's tfvars is the ceiling a NEW environment is born with, and
@@ -33,7 +33,14 @@ export function AdminSettingsScreen() {
   return (
     <Screen
       key={nonce}
-      title="Admin settings"
+      // "Pool limits", not "Admin settings". The tab says Pool limits and it
+      // is the accurate one twice over: this screen edits concurrency ceilings
+      // and nothing else, so "Admin settings" over-claimed a settings page
+      // that does not exist, and it restated the section it already sits under
+      // ("Admin") instead of naming the thing on the screen. Someone arriving
+      // from Admin > Pool limits and reading "Admin settings" cannot tell
+      // whether the other admin tab is inside this page or beside it.
+      title="Pool limits"
       load={loadCapacity}
       summary={(d) => `${d.pools.length} pools · changes take effect immediately`}
       empty={{

@@ -14,7 +14,7 @@ const BUCKETS: Bucket[] = ['hour', 'day', 'week', 'month']
 const BUDGETS = [200, 500, 1000, 2000]
 
 /**
- * Screen A1 -- Activity.
+ * Screen A1 -- the Timeline pane of History.
  *
  * THE ONE DESIGN RULE: bound by ROWS, label by the SPAN those rows covered.
  * The window control says "Last 500 tasks", never "Last 7 days" -- the latter
@@ -34,7 +34,14 @@ export function ActivityScreen() {
 
   return (
     <Screen
-      title="Activity"
+      // "Timeline", not "Activity". "Activity" was this screen's own name when
+      // it was a top-level nav item, and the redesign retired it there for
+      // being a paraphrase of a question rather than a name for a thing; it
+      // then survived as the heading, so clicking History > Timeline landed on
+      // a page headed with the name of a section that no longer exists. What
+      // this renders IS a timeline: rows bucketed by hour, day, week or month
+      // across the span they turned out to cover.
+      title="Timeline"
       load={load}
       summary={(w) => <WindowSummary window={w} />}
       empty={{

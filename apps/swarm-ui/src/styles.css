@@ -23,6 +23,32 @@
   --info: #58a6ff;
   --paused: #a371f7;
 
+  /* INK: the accent as TEXT SITTING ON A TINT OF ITSELF.
+     Fourteen rules in this file pair `color: var(--X)` with a background mixed
+     from var(--X) -- the same hue on both sides, so the tint spends the margin
+     the accent had against the plain surface. Measured at the strongest tint
+     each accent is used at (info 22%, paused 20%, ok 18%, bad 18%, warn 10%),
+     over whichever of --surface / --surface-2 reads worse:
+
+         --paused 3.69:1   --bad 3.93:1   --info 4.39:1   --ok 4.72:1
+
+     the first three under the 4.5:1 WCAG AA floor for normal text, and every
+     one of these rules is set at 10-11.5px, where the large-text exemption
+     does not apply. They carry the state words -- failed, running, succeeded,
+     paused -- so they are the labels it is least acceptable to make hard to
+     read. Light mode was worse still; see the block below.
+
+     Each ink is its accent moved along its OWN hue until it clears 5:1 against
+     that worst tint, so there is margin over the floor rather than a value
+     sitting on it. The tints are untouched, so nothing changes shape, weight
+     or footprint. --warn already read 5.55:1 at the 10% it is used at, so its
+     dark ink IS the accent: using the ink token is never a regression. */
+  --ok-ink: #42bf53;
+  --warn-ink: #d29922;
+  --bad-ink: #fa7872;
+  --info-ink: #6fb2ff;
+  --paused-ink: #b892f9;
+
   --radius: 10px;
   --gutter: 16px;
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -43,10 +69,27 @@
        case here; dark mode needed the opposite correction. */
     --text-faint: #606a77;
     --ok: #1a7f37;
-    --warn: #9a6700;
+    /* Darkened from #9a6700, which measured 4.37:1 against --surface-2 -- the
+       one accent in either theme that failed the 4.5:1 AA floor as PLAIN text
+       on a plain surface, and --surface-2 is the striped-row and panel-header
+       background, so it is where the warning words actually sit. Now 4.82:1
+       at worst. Dark mode's --warn already cleared 6.49:1 and is unchanged. */
+    --warn: #916100;
     --bad: #cf222e;
     --info: #0969da;
     --paused: #8250df;
+
+    /* Ink. See the dark block for what these are for and how they were
+       derived. Light mode was the worse case by a distance -- all five failed
+       AA on a tint of themselves (info 3.45:1, paused 3.48:1, ok 3.60:1, bad
+       3.61:1, warn 4.22:1) because a light accent starts with only ~4.6-4.8:1
+       against white and the tint spends most of that. Each is darkened along
+       its own hue until it clears 5:1; measured after, 5.01-5.13:1. */
+    --ok-ink: #15662c;
+    --warn-ink: #805500;
+    --bad-ink: #a71b25;
+    --info-ink: #0751a9;
+    --paused-ink: #6629d8;
   }
 }
 
@@ -422,8 +465,8 @@ body {
   letter-spacing: .03em;
   vertical-align: middle;
 }
-.scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info); }
-.scope.tenant   { background: color-mix(in srgb, var(--paused) 15%, transparent); color: var(--paused); }
+.scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info-ink); }
+.scope.tenant   { background: color-mix(in srgb, var(--paused) 15%, transparent); color: var(--paused-ink); }
 
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table.pools { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -509,7 +552,7 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
   font: 600 11px var(--mono);
   font-variant-numeric: tabular-nums;
 }
-.tabs button.on .badge { background: color-mix(in srgb, var(--info) 22%, transparent); color: var(--info); }
+.tabs button.on .badge { background: color-mix(in srgb, var(--info) 22%, transparent); color: var(--info-ink); }
 
 .filters {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -548,9 +591,9 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
   padding: 2px 8px; border-radius: 999px;
   font: 600 10.5px var(--mono); letter-spacing: .04em;
 }
-.roll.running   { background: color-mix(in srgb, var(--info) 18%, transparent); color: var(--info); }
-.roll.succeeded { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
-.roll.failed    { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.roll.running   { background: color-mix(in srgb, var(--info) 18%, transparent); color: var(--info-ink); }
+.roll.succeeded { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok-ink); }
+.roll.failed    { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad-ink); }
 .roll.waiting   { background: var(--surface-2); color: var(--text-dim); }
 
 /* PHONE: nine columns do not fold, they are re-authored. The "why" line is
@@ -700,7 +743,7 @@ ol.timeline li::before {
   margin-bottom: 8px; padding: 9px 12px;
   border: 1px solid var(--bad); border-radius: 8px;
   background: color-mix(in srgb, var(--bad) 12%, var(--surface));
-  color: var(--bad); font-size: 13px; font-weight: 600; cursor: pointer;
+  color: var(--bad-ink); font-size: 13px; font-weight: 600; cursor: pointer;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -718,12 +761,12 @@ ol.timeline li::before {
 .banner.bad {
   border-color: var(--bad);
   background: color-mix(in srgb, var(--bad) 12%, var(--surface));
-  color: var(--bad);
+  color: var(--bad-ink);
 }
 .banner.warn {
   border-color: var(--warn);
   background: color-mix(in srgb, var(--warn) 10%, var(--surface));
-  color: var(--warn);
+  color: var(--warn-ink);
 }
 .banner.neutral { background: var(--surface); color: var(--text-dim); }
 /* Never collapsed, never truncated: an admin reading their own tenant's four
@@ -777,7 +820,7 @@ dl.kv dt.needs-human { color: var(--warn); font-weight: 600; }
   padding: 1px 8px; border-radius: 999px;
   font: 600 10.5px var(--mono); letter-spacing: .04em;
 }
-.q-chip.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.q-chip.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad-ink); }
 /* Never an ABSENT chip: absence reads as "not drained". */
 .q-chip.unknown { background: var(--surface-2); color: var(--text-faint); }
 
@@ -797,7 +840,7 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
 .ev-badge {
   margin-left: 8px; padding: 1px 6px; border-radius: 999px;
   background: color-mix(in srgb, var(--paused) 20%, transparent);
-  color: var(--paused); font: 600 10px var(--mono);
+  color: var(--paused-ink); font: 600 10px var(--mono);
 }
 button.copy {
   margin-left: 8px; padding: 1px 7px;
@@ -905,8 +948,8 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   border-radius: var(--radius); border: 1px solid var(--line);
   font-size: 12.5px; line-height: 1.5;
 }
-.bar.amber { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); color: var(--warn); }
-.bar.red   { border-color: var(--bad);  background: color-mix(in srgb, var(--bad) 10%, var(--surface)); color: var(--bad); }
+.bar.amber { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); color: var(--warn-ink); }
+.bar.red   { border-color: var(--bad);  background: color-mix(in srgb, var(--bad) 10%, var(--surface)); color: var(--bad-ink); }
 .blocker { padding: 2px 0; }
 .blocker code { font-size: 11.5px; background: transparent; color: var(--text-dim); }
 .blocker-copy { margin-left: 6px; color: var(--text-dim); font-style: italic; }
@@ -918,7 +961,7 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 
 /* ---- control room ---- */
 .banner.pill { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.banner.pill.ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--surface)); color: var(--ok); }
+.banner.pill.ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--surface)); color: var(--ok-ink); }
 /* Hatched: "we could not read whether it is paused" is a third state, and it
    must not look like either of the other two. */
 .banner.pill.unknown {

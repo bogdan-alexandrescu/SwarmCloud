@@ -44,7 +44,15 @@ export function CapacityScreen() {
 
   return (
     <Screen
-      title="Capacity"
+      // "Pools", not "Capacity". The tab that leads here says Pools, the
+      // section says Pools, the table below is a list of pools -- and a
+      // heading reading "Capacity" made the one screen look like two places,
+      // so a runbook step saying "go to Pools" named nothing on the screen it
+      // landed you on. The nav's own rule (App.tsx: sections are named after
+      // OBJECTS, not the question they answer) decides which side gives way:
+      // "Capacity" is the question, and it still leads the screen -- as the
+      // section's question line, printed under the tabs.
+      title="Pools"
       load={loadCapacity}
       summary={(d) => {
         const paused = d.pools.filter(isPaused).length
