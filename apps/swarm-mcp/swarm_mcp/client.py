@@ -127,6 +127,35 @@ def _is_edge(status: int, body: str) -> bool:
     return 300 <= status < 400 or _is_edge_page(body)
 
 
+def _explain_json(parsed: Any, stripped: str) -> str:
+    """The sentence out of an error body, whichever of two shapes it is in.
+
+    TWO SHAPES, AND `detail` MEANS A DIFFERENT THING IN EACH. FastAPI's own
+    `HTTPException` puts the whole message in `detail`, as a string. This
+    platform's `ApiError.to_payload` puts the SENTENCE in `message` and the
+    machine-readable evidence in `detail`, as an object.
+
+    Preferring `detail` unconditionally therefore threw the sentence away every
+    time this API refused something with evidence attached -- a cyclic workflow
+    came back as `{'cycle': ['build', 'test', 'build']}` with the words "the
+    workflow steps form a cycle" dropped, which is the half a reader needs first.
+    Both halves are kept, sentence first.
+    """
+    if not isinstance(parsed, dict):
+        return stripped[:300]
+    detail = parsed.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        return detail
+    message = parsed.get("message")
+    if isinstance(message, str) and message.strip():
+        if isinstance(detail, dict) and detail:
+            return f"{message} ({json.dumps(detail, default=str)})"
+        return message
+    if detail:
+        return str(detail)
+    return stripped[:300]
+
+
 def _explain(status: int, body: str) -> str:
     """Turn an edge's refusal into the sentence it was trying to be."""
     stripped = body.strip()
@@ -152,7 +181,7 @@ def _explain(status: int, body: str) -> str:
     if not _is_edge_page(body):
         try:
             parsed = json.loads(stripped)
-            return str(parsed.get("detail") or parsed.get("message") or stripped[:300])
+            return _explain_json(parsed, stripped)
         except json.JSONDecodeError:
             return stripped[:300] or f"HTTP {status}"
 

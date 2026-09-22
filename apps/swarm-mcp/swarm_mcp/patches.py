@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .client import SwarmClient, SwarmError
+from .client import SwarmClient, SwarmError, task_id_of
 
 _GCS = "https://storage.googleapis.com/storage/v1/b"
 
@@ -116,6 +116,41 @@ def explain_absence(task: dict[str, Any]) -> str:
     if not git.get("commits") and not git.get("dirty"):
         return "the agent changed nothing in the repository"
     return git.get("publish_reason") or "no patch was recorded"
+
+
+def describe_task(task: dict[str, Any]) -> dict[str, Any]:
+    """What one task produced, in the shape every read tool hands back.
+
+    IT LIVES HERE, not in `server.py`, because it is the composition of the two
+    functions above and because it now has three callers: `swarm_result`,
+    `swarm_wait`, and the per-step rollup a workflow read produces. It was
+    private to the MCP server while there was one consumer; a second copy for
+    the workflow tools is exactly how a task's result and a workflow step's
+    result would start disagreeing about what "no patch" means.
+    """
+    summary = task.get("result_summary") or {}
+    git = summary.get("git") or {}
+    out: dict[str, Any] = {
+        # The API names it `id`. Read as `task_id` this was null for every task
+        # on the platform, and a session reads a null id and a null state as
+        # "it has not started yet".
+        "task_id": task_id_of(task),
+        "state": task.get("state"),
+        "commits": git.get("commit_count", 0),
+        "insertions": git.get("insertions", 0),
+        "deletions": git.get("deletions", 0),
+        "uncommitted_files": git.get("dirty_count", 0),
+        "patch": patch_uri(task),
+    }
+    if not out["patch"]:
+        out["no_patch_because"] = explain_absence(task)
+    pr = git.get("pull_request")
+    out["pull_request"] = pr["url"] if pr else None
+    if not pr and git:
+        out["no_pull_request_because"] = git.get("publish_reason")
+    if task.get("last_error"):
+        out["error"] = task["last_error"]
+    return out
 
 
 @dataclass

@@ -14,8 +14,9 @@ CAN stream and can be run in the background. Pretending otherwise -- a
 `swarm_watch` tool that returned a 900-line transcript and called it live --
 would be the kind of almost-true that wastes an afternoon.
 
-Every tool here is a thin wrapper over `cli`/`patches`. Two implementations of
-"what does integrate mean" is how a CLI and a tool quietly start disagreeing.
+Every tool here is a thin wrapper over `cli`/`patches`/`workflows`. Two
+implementations of "what does integrate mean" is how a CLI and a tool quietly
+start disagreeing.
 """
 
 from __future__ import annotations
@@ -26,8 +27,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import workflows
 from .client import SwarmClient, SwarmError, task_id_of
-from .patches import apply_patch, download, explain_absence, integrate, patch_uri
+from .patches import (
+    apply_patch,
+    describe_task,
+    download,
+    explain_absence,
+    integrate,
+    patch_uri,
+)
 
 PROTOCOL_VERSION = "2024-11-05"
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTER", "DEAD_LETTERED"}
@@ -136,6 +145,208 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["task_ids", "branch"],
         },
     },
+    # -- workflows ---------------------------------------------------------
+    #
+    # The four below are the difference between "a convenient remote API" and
+    # the thing this platform was built to be. Without them a session can start
+    # N agents and must then join them by hand: poll each one, notice which
+    # finished, copy one's output into the next one's prompt, and keep the DAG
+    # in its own head. That IS the bookkeeping the platform removes, so leaving
+    # it out left the platform's actual feature unreachable from the place the
+    # work happens.
+    {
+        "name": "swarm_workflow",
+        "description": (
+            "Submit a DAG of agents and let SwarmCloud schedule it: fan-out, "
+            "dependencies, and one step's output staged into another's "
+            "workspace. Use this instead of several swarm_dispatch calls "
+            "whenever the units are not independent.\n"
+            "\n"
+            "Each step names a runner profile BY NAME and carries its own "
+            "prompt. `depends_on` lists step ids that must SUCCEED first; empty "
+            "means the step is eligible immediately, NOT that it runs first. "
+            "`input_from` maps an upstream step id to ONE artifact filename, "
+            "copied into this step's working directory before its agent starts "
+            "-- the upstream agent must have written that exact filename into "
+            "$SWARM_ARTIFACTS_DIR, and a declared input that cannot be staged "
+            "FAILS the attempt rather than starting the agent without it. Every "
+            "`input_from` source must also appear in `depends_on`, or the API "
+            "refuses the whole submission.\n"
+            "\n"
+            "Returns as soon as the workflow is accepted, with the task id of "
+            "every step. It does not wait and cannot stream: poll "
+            "swarm_workflow_status, or run the `swarm tail` command it hands "
+            "back in a background shell."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "The DAG. Order does not matter; dependencies do.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step_id": {
+                                "type": "string",
+                                "description": (
+                                    "Unique within the workflow; how other steps "
+                                    "name this one."
+                                ),
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": (
+                                    "This step's instructions. Required: a step "
+                                    "with no prompt is accepted by the API and "
+                                    "then fails at the agent, after it has been "
+                                    "admitted and dispatched."
+                                ),
+                            },
+                            "runner_profile": {
+                                "type": "string",
+                                "default": "claude-code",
+                                "description": (
+                                    "A profile BY NAME from the frozen "
+                                    "catalogue. The image, command and resource "
+                                    "spec come from the name and cannot be "
+                                    "supplied here."
+                                ),
+                            },
+                            "depends_on": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Step ids that must succeed before this one "
+                                    "is eligible."
+                                ),
+                            },
+                            "input_from": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"},
+                                "description": (
+                                    "{upstream_step_id: artifact_filename} to "
+                                    "stage into this step's workspace."
+                                ),
+                            },
+                            "resource_class": {
+                                "type": "string",
+                                "description": (
+                                    "A NAMED class from the catalogue, no larger "
+                                    "than the profile's own. Not a resource spec."
+                                ),
+                            },
+                            "timeout_seconds": {"type": "integer"},
+                        },
+                        "required": ["step_id", "prompt"],
+                    },
+                },
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "The repository EVERY step clones. Workflow-level, not "
+                        "per-step: the steps of one workflow integrate into one "
+                        "branch. Omit it and no step clones anything, which "
+                        "leaves `collect` as the only usable strategy."
+                    ),
+                },
+                "ref": {"type": "string", "description": "Branch, tag or commit."},
+                "strategy": {
+                    "type": "string",
+                    "description": (
+                        "How the work comes back. `integrate` produces ONE pull "
+                        "request from one nominated step; the response says "
+                        "which."
+                    ),
+                },
+                "carrier": {"type": "string", "description": "How changes are carried back."},
+                "on_step_failure": {
+                    "type": "string",
+                    "enum": ["fail_workflow", "continue"],
+                    "default": "fail_workflow",
+                    "description": (
+                        "`fail_workflow` cancels the dependents of a failed "
+                        "step; `continue` lets independent branches finish."
+                    ),
+                },
+                "priority": {"type": "integer"},
+                "label": {"type": "string", "description": "A short name, for the UI."},
+            },
+            "required": ["steps"],
+        },
+    },
+    {
+        "name": "swarm_workflow_status",
+        "description": (
+            "Where a workflow is: one row per step with its task's state, and "
+            "the workflow's own state.\n"
+            "\n"
+            "THE WORKFLOW STATE REPORTED HERE IS DERIVED FROM THE STEPS. A "
+            "workflow document also carries a stored `state` field that is a "
+            "cache written once at submission and advanced by nothing, so "
+            "workflows read QUEUED with every step already finished. That value "
+            "is reported separately as `stored_state` and is never served as "
+            "the state.\n"
+            "\n"
+            "So read the absences. `state: null` with "
+            "`state_unavailable_because` means this API did NOT derive on that "
+            "read -- the per-step states below are then the only trustworthy "
+            "answer and the server needs fixing; say so rather than quoting the "
+            "cache. `state: \"UNKNOWN\"` is a different thing: the server "
+            "derived and could not finish reading the steps, and "
+            "`state_incomplete_because` names which ones. A STEP whose `state` "
+            "is null was likewise not read -- it is neither queued nor gone. "
+            "`park_reason: DEPENDENCY_INCOMPLETE` means the step is waiting for "
+            "a parent and is holding no capacity, which costs nothing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "swarm_workflow_result",
+        "description": (
+            "What each step of a workflow PRODUCED: commits, insertions and "
+            "deletions, the patch uri and the pull request -- and, when there "
+            "is no patch or no pull request, WHY, with the same six causes "
+            "swarm_result distinguishes. A step that produced no patch is not a "
+            "step that did nothing; `no_patch_because` is what tells those "
+            "apart.\n"
+            "\n"
+            "Carries the same state discipline as swarm_workflow_status: the "
+            "workflow state is DERIVED from the steps, the Firestore cache is "
+            "reported beside it as `stored_state` and is never served as the "
+            "state, `state_unavailable_because` means this API did not derive "
+            "on that read, and `state_incomplete_because` means it derived over "
+            "a partial read. Bring a step's work into a local tree with "
+            "swarm_apply, or several steps' work onto one branch with "
+            "swarm_integrate, using the task ids below."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "swarm_workflow_cancel",
+        "description": (
+            "Cancel a workflow: it is marked cancel_requested and cancellation "
+            "is requested for every step task that has one. Work already done "
+            "stays checkpointed and harvestable. Steps that had already reached "
+            "a terminal state come back under `tasks_already_terminal` -- that "
+            "is the cancel arriving after they finished, not a failure of the "
+            "cancel."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
     # -- cluster state -----------------------------------------------------
     #
     # These return the SAME text `sc` prints, at a fixed 80 columns with no
@@ -222,32 +433,6 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
 ]
-
-
-def _describe(task: dict[str, Any]) -> dict[str, Any]:
-    summary = task.get("result_summary") or {}
-    git = summary.get("git") or {}
-    out: dict[str, Any] = {
-        # The API names it `id`. Read as `task_id` this was null for every
-        # task on the platform, and a session reads a null id and a null state
-        # as "it has not started yet".
-        "task_id": task_id_of(task),
-        "state": task.get("state"),
-        "commits": git.get("commit_count", 0),
-        "insertions": git.get("insertions", 0),
-        "deletions": git.get("deletions", 0),
-        "uncommitted_files": git.get("dirty_count", 0),
-        "patch": patch_uri(task),
-    }
-    if not out["patch"]:
-        out["no_patch_because"] = explain_absence(task)
-    pr = git.get("pull_request")
-    out["pull_request"] = pr["url"] if pr else None
-    if not pr and git:
-        out["no_pull_request_because"] = git.get("publish_reason")
-    if task.get("last_error"):
-        out["error"] = task["last_error"]
-    return out
 
 
 def _overview_view(snap, style):
@@ -351,7 +536,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             for task_id in list(pending):
                 task = client.task(task_id)
                 if task.get("state") in TERMINAL:
-                    finished[task_id] = _describe(task)
+                    finished[task_id] = describe_task(task)
                     pending.remove(task_id)
             remaining = deadline - time.monotonic()
             if not pending or remaining <= 0:
@@ -368,7 +553,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return json.dumps(out, indent=2)
 
     if name == "swarm_result":
-        return json.dumps(_describe(client.task(args["task_id"])), indent=2)
+        return json.dumps(describe_task(client.task(args["task_id"])), indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -398,6 +583,74 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             base=args.get("base"),
         )
         return result.render()
+
+    if name == "swarm_workflow":
+        envelope = workflows.submit(
+            client,
+            steps=workflows.build_steps(args.get("steps")),
+            strategy=args.get("strategy"),
+            carrier=args.get("carrier"),
+            repository_url=args.get("repo"),
+            repository_ref=args.get("ref"),
+            on_step_failure=args.get("on_step_failure"),
+            priority=args.get("priority"),
+            label=args.get("label"),
+        )
+        workflow = envelope["workflow"]
+        workflow_id = workflow.get("workflow_id")
+        if not workflow_id:
+            # Same refusal `swarm_dispatch` makes about a missing task id, for
+            # the same reason: every tool below takes this string, and handing
+            # back an empty one produces a session that polls "" forever.
+            raise SwarmError(
+                "the API accepted the workflow but its response named no id: "
+                f"{sorted(workflow)}"
+            )
+        steps = [
+            {
+                "step_id": step.get("step_id"),
+                "task_id": step.get("task_id"),
+                "runner_profile": step.get("runner_profile"),
+                "depends_on": step.get("depends_on") or [],
+                "input_from": step.get("input_from") or {},
+            }
+            for step in workflow.get("steps") or []
+        ]
+        created: dict[str, Any] = {
+            "workflow_id": workflow_id,
+            "steps": steps,
+            "dispatch": envelope.get("dispatch"),
+            # NO STATE HERE, deliberately. The create response is the one read
+            # that honestly says `state_source: "stored"`: the step tasks were
+            # written microseconds ago and deriving over them would spend a read
+            # per step to be told what this very request just decided. Echoing
+            # the stored QUEUED would look like an answer.
+            "state_available_from": (
+                "swarm_workflow_status -- a create response does not derive a "
+                "workflow state and this tool will not quote the stored one"
+            ),
+        }
+        task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
+        if task_ids:
+            created["follow_live_with"] = "swarm tail " + " ".join(task_ids)
+        return json.dumps(created, indent=2)
+
+    if name in ("swarm_workflow_status", "swarm_workflow_result"):
+        # ONE read for both. The difference is only how much of each step's task
+        # is unpacked, and a second route call to answer "and what did it
+        # produce" would be a second chance for the two answers to disagree
+        # about the same workflow.
+        envelope = workflows.fetch(client, args["workflow_id"])
+        return json.dumps(
+            workflows.report(
+                envelope,
+                describe=describe_task if name == "swarm_workflow_result" else None,
+            ),
+            indent=2,
+        )
+
+    if name == "swarm_workflow_cancel":
+        return json.dumps(workflows.cancel(client, args["workflow_id"]), indent=2)
 
     if name in _SC_VIEWS:
         from . import render

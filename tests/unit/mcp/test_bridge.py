@@ -18,6 +18,7 @@ Two properties get the most attention:
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import shutil
@@ -25,7 +26,7 @@ import subprocess
 
 import pytest
 
-from swarm_mcp import patches, server
+from swarm_mcp import cli, patches, server, workflows
 from swarm_mcp.client import SwarmError
 from swarm_mcp.cli import build_parser
 from swarm_mcp.patches import apply_patch, explain_absence, integrate, parse_gs_uri, patch_uri
@@ -381,6 +382,189 @@ def test_dispatch_cannot_be_told_which_image_to_run():
     assert forbidden.isdisjoint(schema["properties"])
 
 
+# -- workflows: the state rule, where the server does not hold it up -------
+#
+# The real-API file proves the happy path -- the server derives, the bridge
+# serves what it derived. These prove the OTHER branch, which cannot be produced
+# against a correct server: what the bridge does when a read comes back without
+# a derived state. That is not hypothetical. A live GET of
+# `wf_5e5ad3b6f7da4299a839` on 2026-09-22 answered `state: "QUEUED"` while five
+# of its six steps were dispatched, and carried no `state_source` at all.
+
+
+def _envelope(*, state_source=None, steps=None, tasks=None):
+    workflow = {
+        "workflow_id": "wf_x",
+        "state": "QUEUED",
+        "stored_state": "QUEUED",
+        "cancel_requested": False,
+        "on_step_failure": "fail_workflow",
+        "steps": steps
+        if steps is not None
+        else [
+            {
+                "step_id": "a",
+                "task_id": "task_a",
+                "runner_profile": "mock",
+                "depends_on": [],
+                "input_from": {},
+            }
+        ],
+    }
+    if state_source is not None:
+        workflow["state_source"] = state_source
+    return {
+        "workflow": workflow,
+        "tasks": tasks if tasks is not None else [{"id": "task_a", "state": "SUCCEEDED"}],
+    }
+
+
+def test_a_workflow_state_the_server_did_not_derive_is_not_reported_as_a_state():
+    """The stored field is never a fallback.
+
+    A bridge that served it would answer QUEUED for a workflow whose only step
+    had SUCCEEDED -- the defect the web UI was written up for, in a terminal,
+    which has no second panel to disagree with it.
+    """
+    report = workflows.report(_envelope())
+
+    assert report["state"] is None
+    assert "did not derive" in report["state_unavailable_because"]
+    assert "stored" not in str(report["state"]).lower()
+    # The cache is still reported, clearly labelled, so it can be audited.
+    assert report["stored_state"] == "QUEUED"
+    # And the live half is still given: the step states came from the TASKS.
+    assert [s["state"] for s in report["steps"]] == ["SUCCEEDED"]
+
+
+def test_a_stored_state_source_is_refused_as_loudly_as_a_missing_one():
+    """`state_source: "stored"` is the create response's honest answer and it
+    is still not a state. Recognising only the ABSENT field would let the
+    honest version through."""
+    report = workflows.report(_envelope(state_source="stored"))
+    assert report["state"] is None
+    assert "'stored'" in report["state_unavailable_because"]
+
+
+def test_an_incomplete_derivation_is_unknown_and_names_what_it_could_not_read():
+    """UNKNOWN is a failed read honestly reported, not a state the platform can
+    be in -- so it must not be confused with the refusal above, which is a
+    server defect, nor rounded up to the cheerful answer."""
+    envelope = _envelope(state_source="derived")
+    envelope["workflow"]["state"] = "UNKNOWN"
+    envelope["workflow"]["rollup"] = {
+        "state": "UNKNOWN",
+        "complete": False,
+        "reason": "1 step could not be read",
+        "counts": {"SUCCEEDED": 1},
+        "unreadable_steps": ["b"],
+        "unstarted_steps": [],
+        "steps_read": 1,
+    }
+    report = workflows.report(envelope)
+
+    assert report["state"] == "UNKNOWN"
+    assert "state_unavailable_because" not in report
+    assert "1 step could not be read" in report["state_incomplete_because"]
+    assert "['b']" in report["state_incomplete_because"]
+
+
+def test_a_step_whose_task_was_not_returned_is_not_reported_as_queued():
+    """Three different silences, and only one of them means "not started":
+    no task id at all, a task id whose document this read did not return, and a
+    task that was read. Collapsing any two is how a stalled step reads as fine.
+    """
+    steps = [
+        {"step_id": "read", "task_id": "task_a", "runner_profile": "mock"},
+        {"step_id": "missing", "task_id": "task_gone", "runner_profile": "mock"},
+        {"step_id": "idless", "task_id": None, "runner_profile": "mock"},
+    ]
+    rows = {
+        r["step_id"]: r
+        for r in workflows.step_rows(_envelope(state_source="derived", steps=steps))
+    }
+
+    assert rows["read"]["state"] == "SUCCEEDED"
+    assert rows["missing"]["state"] is None
+    assert "was NOT read" in rows["missing"]["state_unavailable_because"]
+    assert rows["idless"]["state"] is None
+    assert "no task id" in rows["idless"]["state_unavailable_because"]
+
+
+def test_a_step_with_no_prompt_is_refused_with_the_reason_it_would_have_failed():
+    """The W1 defect, refused where it costs nothing. The message has to name
+    the runtime failure, or the fix looks like "the API wants a field"."""
+    with pytest.raises(SwarmError) as exc:
+        workflows.build_steps([{"step_id": "a", "runner_profile": "mock"}])
+    assert "input.prompt" in str(exc.value)
+
+
+def test_a_step_cannot_be_handed_an_image_a_command_or_a_raw_input_dict():
+    """Invariant 10 at the workflow step. An unknown key is refused rather than
+    dropped: a caller that passed `input` believing it would be honoured has to
+    be told it was not."""
+    for key, value in (("image", "evil:latest"), ("command", ["sh"]), ("input", {})):
+        with pytest.raises(SwarmError) as exc:
+            workflows.build_steps(
+                [{"step_id": "a", "prompt": "x", key: value}]
+            )
+        assert key in str(exc.value)
+
+
+def test_the_workflow_tools_are_advertised_and_take_no_backend_parameters():
+    names = {t["name"] for t in server.TOOLS}
+    assert {
+        "swarm_workflow",
+        "swarm_workflow_status",
+        "swarm_workflow_result",
+        "swarm_workflow_cancel",
+    } <= names
+    schema = next(t for t in server.TOOLS if t["name"] == "swarm_workflow")["inputSchema"]
+    step = schema["properties"]["steps"]["items"]
+    forbidden = {"image", "command", "args", "cpu", "memory", "backend", "input"}
+    assert forbidden.isdisjoint(step["properties"])
+    assert set(step["required"]) == {"step_id", "prompt"}
+
+
+#: The keys a read tool's description names by hand, because each is a value the
+#: model has to treat differently from a state.
+DOCUMENTED_KEYS = (
+    "stored_state",
+    "state_unavailable_because",
+    "state_incomplete_because",
+)
+
+
+def test_the_read_tools_name_the_absence_fields_they_really_emit():
+    """A two-way check, because a description is what the model reads to decide
+    how to treat the value it was handed.
+
+    Forwards: every key named in the prose must be one a read really emits, or
+    the model is sent looking for something that is not there -- which is what a
+    rename in `workflows.py` would silently produce. Backwards: every key must
+    still be named, or a tool emits a field whose meaning is stated nowhere and
+    a null state reads as "nothing is running".
+    """
+    incomplete = _envelope(state_source="derived")
+    incomplete["workflow"]["state"] = "UNKNOWN"
+    incomplete["workflow"]["rollup"] = {
+        "state": "UNKNOWN",
+        "complete": False,
+        "reason": "a step could not be read",
+        "counts": {},
+        "unreadable_steps": ["b"],
+        "unstarted_steps": [],
+        "steps_read": 0,
+    }
+    emitted = set(workflows.report(_envelope())) | set(workflows.report(incomplete))
+
+    for name in ("swarm_workflow_status", "swarm_workflow_result"):
+        text = next(t for t in server.TOOLS if t["name"] == name)["description"]
+        for key in DOCUMENTED_KEYS:
+            assert key in text, f"{name} never explains {key}, which its reads emit"
+            assert key in emitted, f"{name} documents {key}, which no read emits"
+
+
 # -- the CLI ---------------------------------------------------------------
 
 
@@ -391,6 +575,45 @@ def test_the_cli_exposes_every_operation_the_mcp_server_does():
     actions = [a for a in parser._actions if hasattr(a, "choices") and a.choices]
     commands = set(actions[0].choices)
     assert {"dispatch", "tail", "result", "apply", "integrate", "cancel"} <= commands
+    # The workflow tools have terminal equivalents for the same reason, and
+    # because a workflow is the thing most worth following live -- which only a
+    # terminal command can do.
+    assert {"workflow", "workflow-status", "workflow-cancel"} <= commands
+
+
+def test_the_workflow_command_reads_a_spec_file_or_stdin():
+    """A DAG is nested -- per-step prompts, dependency lists, an input_from map
+    -- and every attempt to spell one in argv ends in a quoting bug that drops
+    a dependency without saying so."""
+    args = build_parser().parse_args(["workflow", "-", "--repo", "https://x/y"])
+    assert args.spec == "-" and args.repo == "https://x/y"
+    status = build_parser().parse_args(["workflow-status", "wf_x", "--result"])
+    assert status.workflow_id == "wf_x" and status.result is True
+
+
+class _WorkflowClient:
+    """Answers one workflow envelope. `workflows.fetch` speaks `request`."""
+
+    def __init__(self, envelope):
+        self.envelope = envelope
+
+    def request(self, method, path, *, payload=None, timeout=60):  # noqa: ARG002
+        return self.envelope
+
+
+def test_the_cli_exits_nonzero_when_no_workflow_state_could_be_established(capsys):
+    """Exit 0 would mean "fine". It is not fine -- the server did not derive,
+    so there is no workflow state to quote, and a script that branched on the
+    exit code would carry on as though the run were healthy."""
+    args = argparse.Namespace(workflow_id="wf_x", result=False, json=False)
+    code = cli.cmd_workflow_status(_WorkflowClient(_envelope()), args)
+
+    assert code == cli.EXIT_FAIL
+    printed = capsys.readouterr().out
+    assert "NO STATE" in printed
+    assert "did not derive" in printed
+    # The live half is still printed: the step read from its own task.
+    assert "SUCCEEDED" in printed
 
 
 def test_tail_takes_several_tasks_so_one_background_shell_follows_a_whole_batch():
