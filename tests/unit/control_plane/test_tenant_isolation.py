@@ -335,6 +335,13 @@ def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
         ("GET", f"/v1/tasks/{task_id}/events"),
         ("GET", f"/v1/tasks/{task_id}/attempts"),
         ("GET", f"/v1/tasks/{task_id}/artifacts"),
+        # The inspection routes. They read OBJECTS rather than documents, so
+        # forgetting `tenant_scope` on one of them would not merely show
+        # another tenant's metadata -- it would hand over their agent's stdout
+        # and their checkpoint archives. This list is the guard that catches a
+        # new route added without the dependency, so a new route belongs in it.
+        ("GET", f"/v1/tasks/{task_id}/checkpoints"),
+        ("GET", f"/v1/tasks/{task_id}/logs"),
         ("GET", "/v1/workflows"),
         ("GET", f"/v1/workflows/{workflow_id}"),
         ("GET", "/v1/stats"),

@@ -175,6 +175,29 @@ class ApiSettings:
     max_page_size: int = 200
     default_page_size: int = 50
 
+    #: How many object keys one checkpoint listing may examine.
+    #:
+    #: A bound is required because a task's prefix is unbounded in principle --
+    #: a long-running attempt checkpoints every few minutes for hours. It is
+    #: NEVER silent: `truncated` comes back true when the limit bit, because a
+    #: screen showing the first N of M and a screen showing all of them are
+    #: otherwise identical.
+    object_scan_limit: int = 5000
+
+    #: Log window sizes, in bytes of the RAW object.
+    #:
+    #: The ceiling exists because the worker's cap on a captured stream is
+    #: `max_stdout_bytes`, 32 MiB, and a route that served one in a single
+    #: response would put 32 MiB through JSON encoding into a browser. Paging
+    #: is what the offset/next_offset pair is for.
+    max_log_bytes: int = 1024 * 1024
+    default_log_bytes: int = 64 * 1024
+    #: The FLOOR, and it is a safety setting rather than a tuning knob. A log
+    #: window is cut back to a token boundary so paging can never split a
+    #: credential in half, and a window smaller than a line has no boundary to
+    #: cut at -- it can only be withheld. `limit_bytes` is clamped UP to this.
+    min_log_bytes: int = 4 * 1024
+
     #: Rate-limit burst. The sustained rate comes from the frozen Settings.
     rate_limit_burst: int = 40
 
@@ -229,6 +252,10 @@ class ApiSettings:
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),
             default_page_size=_int("DEFAULT_PAGE_SIZE", 50),
+            object_scan_limit=_int("OBJECT_SCAN_LIMIT", 5000),
+            max_log_bytes=_int("MAX_LOG_BYTES", 1024 * 1024),
+            default_log_bytes=_int("DEFAULT_LOG_BYTES", 64 * 1024),
+            min_log_bytes=_int("MIN_LOG_BYTES", 4 * 1024),
             rate_limit_burst=_int("RATE_LIMIT_BURST", max(40, core.requests_per_second * 2)),
             tenant_service_account_prefix=os.environ.get(
                 "TENANT_SERVICE_ACCOUNT_PREFIX", "swarm-agent-worker"

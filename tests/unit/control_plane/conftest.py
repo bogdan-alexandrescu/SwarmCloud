@@ -22,6 +22,7 @@ from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.objects import InMemoryObjectReader
 from swarm_api.settings import ApiSettings
 from swarm_api.store import Store
 from swarm_api.waker import NullWaker
@@ -116,7 +117,20 @@ def tokens(group_map) -> dict[str, dict[str, Any]]:
 
 
 @pytest.fixture
-def api_context(db, tokens, group_map):
+def objects() -> InMemoryObjectReader:
+    """The artifact bucket, in memory.
+
+    Injected for the same reason `db` is: the checkpoint and log routes must be
+    exercisable with no credentials and no network. It is a real reader over a
+    dict rather than a mock, so a test drives the shipped code path, and it can
+    be told to FAIL on a prefix -- which is the only way to prove that a failed
+    read is reported as a failed read rather than as an absence.
+    """
+    return InMemoryObjectReader(bucket=f"swarm-artifacts-{PROJECT}")
+
+
+@pytest.fixture
+def api_context(db, tokens, group_map, objects):
     return build_context(
         settings=api_settings(),
         db=db,
@@ -125,6 +139,7 @@ def api_context(db, tokens, group_map):
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         metrics=ApiMetrics(),
+        objects=objects,
     )
 
 

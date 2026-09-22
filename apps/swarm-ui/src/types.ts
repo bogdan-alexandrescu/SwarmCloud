@@ -1878,3 +1878,133 @@ export function pastedCodeHint(pasted: string): string | null {
   }
   return null
 }
+
+// --------------------------------------------------------------------------
+// Checkpoint and log inspection
+//
+// `GET /v1/tasks/{id}/checkpoints` and `GET /v1/tasks/{id}/logs`, added when
+// the server-side seam for them was built. Both endpoints answer in THREE
+// states rather than two, and these types keep that: a field that could not be
+// read is `null` and carries a `_detail` beside it, never a zero and never an
+// empty string. A screen that renders `content ?? ''` shows nothing rather
+// than an empty log that reads as a silent agent.
+// --------------------------------------------------------------------------
+
+// NOTE the names. `CheckpointRow` is already taken, by the type the UI built
+// to work around NOT having this route: it is assembled from
+// `checkpoint_completed` EVENTS, and its own comment says "CONTENTS ARE NOT
+// RECORDED ANYWHERE ... a file listing would need a new route and a manifest
+// read out of GCS". That route now exists, and `CheckpointRecord` below is
+// what it serves -- named after the worker's own `CheckpointRecord` dataclass,
+// which is what the manifest is a serialisation of.
+
+/** Was the manifest -- the worker's commit marker -- there and readable? */
+export type ManifestStatus = 'present' | 'absent' | 'unreadable'
+
+export interface CheckpointFile {
+  name: string
+  key: string
+  bytes: number
+}
+
+export interface CheckpointRecord {
+  checkpoint_id: string
+  attempt_id: string
+  /** False means NO ATTEMPT DOCUMENT was found, not that the attempt never ran. */
+  attempt_known: boolean
+  attempt_created_at: string | null
+  attempt_completed_at: string | null
+  prefix: string
+  uri: string
+  /** True when `task.latest_checkpoint` names exactly this checkpoint. */
+  is_latest_pointer: boolean
+  /** What is in the bucket under this prefix, from the listing -- no download. */
+  objects: CheckpointFile[]
+  stored_bytes: number
+  manifest: ManifestStatus
+  manifest_detail: string | null
+  created_at: string | null
+  seq: number | null
+  generation: number | null
+  label: string | null
+  archive_bytes: number | null
+  archive_sha256: string | null
+  /** Files inside the archive, from the manifest. Null when it was not readable. */
+  file_count: number | null
+  /**
+   * Would a retry restore from this? NULL, not false, when the manifest could
+   * not be read -- "cannot resume" and "cannot tell" are different sentences.
+   */
+  resumable: boolean | null
+  resumable_detail: string | null
+}
+
+/** What `task.latest_checkpoint` currently names. `outside_this_task` is a
+ *  finding: a resuming worker would ignore such a pointer entirely. */
+export interface LatestCheckpointPointer {
+  pointer: string | null
+  status: 'unset' | 'present' | 'missing' | 'outside_this_task'
+  checkpoint_id: string | null
+  detail?: string
+}
+
+export interface CheckpointsPage {
+  task_id: string
+  tenant_id: string
+  prefix: string
+  checkpoints: CheckpointRecord[]
+  count: number
+  total_found: number
+  next_page_token: string | null
+  /** The listing SUCCEEDED. This is what makes an empty array an answer. */
+  listed: boolean
+  /** The scan limit cut the prefix short. Never silent. */
+  truncated: boolean
+  latest_checkpoint: LatestCheckpointPointer
+}
+
+/** Which object was served: the completed record, or the live tail. */
+export type LogSource = 'final' | 'live'
+export type LogStatus = 'ok' | 'absent' | 'unreadable'
+
+export interface LogStream {
+  stream: 'stdout' | 'stderr'
+  source: LogSource | null
+  status: LogStatus
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null for absent and unreadable. NEVER `''` -- that is a real, empty log. */
+  content: string | null
+  /** Null when nothing could be read. Never 0, which is a real, empty object. */
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  /** True when read-time redaction actually replaced something in this window. */
+  redacted: boolean
+  redaction_count: number
+  /** From the `#swarm-tail` header, for a live window: where it sits in the
+   *  stream, so a reader can tell a gap from a continuation. */
+  tail_window: { object_offset: number; stream_size: number } | null
+}
+
+export interface TaskLogs {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: {
+    status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
+    known: boolean
+    generation: number | null
+    created_at: string | null
+    completed_at: string | null
+    exit_code: number | null
+  }
+  streams: LogStream[]
+  prefix: string
+  /** Stated by the server rather than assumed here. A deployment where
+   *  redaction somehow stopped would otherwise look identical to a working one. */
+  redaction: { applied_at_read_time: boolean; rules: number }
+}

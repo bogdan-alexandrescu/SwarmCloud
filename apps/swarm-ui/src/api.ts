@@ -3,6 +3,7 @@ import { noteFixtureProbe, read, write, type Result } from './fetch'
 // so a live task's newest attempt is rendered as live.
 import { TERMINAL_STATES } from './types'
 import type {
+  CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, ResourceClassSpec, Runtime, TaskState,
   TaskWindow, Tenant,
@@ -353,6 +354,80 @@ export async function loadResourceClasses(): Promise<Result<{ resource_classes: 
     '/v1/resource-classes',
     (d) => Object.keys(d.resource_classes ?? {}).length === 0,
   )
+}
+
+/**
+ * A task's checkpoints, across every attempt.
+ *
+ * `GET /v1/tasks/{id}/checkpoints`. Newest attempt first, newest checkpoint
+ * first within an attempt -- which is the order a resume would consider them
+ * in, because `CheckpointManager.find_latest` scans the whole task prefix.
+ *
+ * NO EMPTY PREDICATE IS PASSED, deliberately. `checkpoints: []` with
+ * `listed: true` is a real answer -- this task has written none -- and the
+ * server never returns it for a listing that failed: a failed listing is a
+ * 503, which `read` classifies as an error. Collapsing the two into `empty`
+ * here would throw away the distinction the endpoint was built to keep.
+ *
+ * Per-checkpoint failures survive INSIDE the rows: `manifest: 'unreadable'`
+ * with `resumable: null` is a checkpoint nothing could be established about,
+ * and it must not be drawn as one that cannot be resumed.
+ */
+export async function loadCheckpoints(
+  taskId: string,
+  options: { attemptId?: string; pageToken?: string; limit?: number } = {},
+): Promise<Result<CheckpointsPage>> {
+  const query = new URLSearchParams()
+  if (options.attemptId) query.set('attempt_id', options.attemptId)
+  if (options.pageToken) query.set('page_token', options.pageToken)
+  if (options.limit) query.set('limit', String(options.limit))
+  const suffix = query.toString() === '' ? '' : `?${query}`
+  // The path is a literal of its own and the query is concatenated after it,
+  // rather than interpolated into the same template. That is not style: the
+  // UI/API seam test in test_runtimes_screen.py scans this file for versioned
+  // path literals and compares their SHAPE against the router's declarations,
+  // and
+  // a trailing `${suffix}` inside the template normalises to a path segment
+  // the API does not serve. Keeping them apart keeps the seam checkable.
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints`
+  return read<CheckpointsPage>(path + suffix, () => false)
+}
+
+/**
+ * A window of an attempt's stdout and stderr, already redacted by the server.
+ *
+ * `GET /v1/tasks/{id}/logs`. The API applies credential redaction at READ
+ * time, unconditionally, because the worker's own pass replaces registered
+ * literal values only and is skipped entirely for a run that registered none.
+ * NOTHING IN THIS CLIENT MAY UNDO THAT, and nothing may render `content`
+ * without reading `status` first: `null` means absent or unreadable, and `''`
+ * means an object that exists and is empty.
+ *
+ * Paging is by RAW BYTE OFFSET (`next_offset`), not by line and not by the
+ * length of the text returned -- redaction makes the text shorter than the
+ * bytes it came from. Windows are aligned to whitespace by the server so a
+ * credential can never be split across two of them.
+ */
+export async function loadTaskLogs(
+  taskId: string,
+  options: {
+    attemptId?: string
+    stream?: 'stdout' | 'stderr'
+    source?: 'auto' | 'final' | 'live'
+    offset?: number
+    limitBytes?: number
+  } = {},
+): Promise<Result<TaskLogs>> {
+  const query = new URLSearchParams()
+  if (options.attemptId) query.set('attempt_id', options.attemptId)
+  if (options.stream) query.set('stream', options.stream)
+  if (options.source) query.set('source', options.source)
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
+  const suffix = query.toString() === '' ? '' : `?${query}`
+  // Path literal and query kept apart; see loadCheckpoints above for why.
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}/logs`
+  return read<TaskLogs>(path + suffix, () => false)
 }
 
 async function fixtureResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {

@@ -28,12 +28,19 @@ from .auth import (
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
 from .groups import CloudIdentityGroups, MembershipResolver
+from .inspect import InspectionService
 from .metrics import ApiMetrics
+from .objects import ObjectReader, build_object_reader
 from .ratelimit import TokenBucketLimiter
 from .service import SubmissionService
 from .settings import ApiSettings
 from .store import Store
 from .waker import NullWaker, PubSubWaker, SchedulerWaker
+
+#: Sentinel for "the caller did not pass this", kept distinct from None because
+#: None is a real value for `objects` -- it is how a deployment says it has no
+#: artifact store at all.
+_MISSING = object()
 
 
 @dataclass
@@ -47,6 +54,12 @@ class AppContext:
     limiter: TokenBucketLimiter
     metrics: ApiMetrics
     waker: SchedulerWaker
+    #: Reads checkpoints and logs out of the artifact bucket. The SERVICE is
+    #: always present; the READER inside it may be None when no bucket is
+    #: configured, which the service turns into "no artifact store is
+    #: configured for this deployment" -- a deployment problem with a named
+    #: fix -- rather than into an empty list.
+    inspection: InspectionService
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -83,6 +96,13 @@ def build_context(
     credentials: CredentialWriter | None = None,
     waker: SchedulerWaker | None = None,
     metrics: ApiMetrics | None = None,
+    # The artifact-bucket reader. Injected by the tests with an in-memory one
+    # for the same reason `db` is: the inspection routes must be exercisable
+    # with no credentials and no network. `_MISSING` rather than None, because
+    # None is a MEANINGFUL value here -- it is how a caller says "this
+    # deployment has no artifact store" -- and a default of None would make
+    # that indistinguishable from "not supplied".
+    objects: ObjectReader | None | object = _MISSING,
     now: Callable[[], Any] = utcnow,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
@@ -119,6 +139,21 @@ def build_context(
         rate_per_second=settings.core.requests_per_second,
         burst=settings.rate_limit_burst,
     )
+    reader = (
+        build_object_reader(
+            bucket=settings.core.artifact_bucket, project_id=settings.project_id
+        )
+        if objects is _MISSING
+        else objects
+    )
+    inspection = InspectionService(
+        store=store,
+        objects=reader,  # type: ignore[arg-type]
+        scan_limit=settings.object_scan_limit,
+        max_log_bytes=settings.max_log_bytes,
+        default_log_bytes=settings.default_log_bytes,
+        min_log_bytes=settings.min_log_bytes,
+    )
     return AppContext(
         settings=settings,
         db=db,
@@ -129,6 +164,7 @@ def build_context(
         limiter=limiter,
         metrics=metrics,
         waker=waker,
+        inspection=inspection,
         now=now,
     )
 

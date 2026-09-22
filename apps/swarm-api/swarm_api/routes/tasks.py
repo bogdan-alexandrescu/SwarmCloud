@@ -195,3 +195,103 @@ def list_artifacts(
     """
     result = ctx.store.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
     return {"task_id": task_id, **result}
+
+
+@router.get("/{task_id}/checkpoints")
+def list_checkpoints(
+    task_id: str,
+    attempt_id: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1),
+    page_token: str | None = Query(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Every checkpoint this task has written, across every attempt.
+
+    READ-ONLY, and it has to be: a checkpoint is the entire value of an attempt
+    that was parked or killed, and the only component allowed to remove one is
+    `reconciler.checkpoints`, which decides by reference rather than by age.
+    Nothing on this path writes, deletes or mutates an object or a document.
+
+    TENANT SCOPE. `tenant_scope` -- not `auth.tenant_id` -- then
+    `Store.get_task`, which 404s a task belonging to anyone else with the same
+    message a missing task gets. Only after both does a prefix exist, and it is
+    built from the task document's own tenant and id rather than from anything
+    in the request. `attempt_id` can only NARROW that prefix and is validated as
+    a single path segment first, so there is no value of it that reaches
+    another tenant's objects.
+
+    WHY ACROSS ATTEMPTS. A resume is by definition a new attempt, and
+    `CheckpointManager.find_latest` scans the whole task prefix to pick what to
+    restore from -- so the checkpoint that matters after a crash was written by
+    the attempt that died. Listing only the current attempt would hide it.
+
+    THE THREE ANSWERS. A failed LISTING is a 503, never `{"checkpoints": []}`
+    with a 200. A checkpoint whose manifest is missing is reported `absent` and
+    `resumable: false` -- the manifest is the commit marker, so there is nothing
+    to resume from. A checkpoint whose manifest could not be READ is reported
+    `unreadable` with `resumable: null`, because "cannot resume" and "cannot
+    tell" are different facts.
+    """
+    return ctx.inspection.list_checkpoints(
+        tenant_id,
+        task_id,
+        attempt_id=attempt_id,
+        limit=paged_limit(ctx, limit),
+        page_token=page_token,
+    )
+
+
+@router.get("/{task_id}/logs")
+def read_logs(
+    task_id: str,
+    attempt_id: str | None = Query(default=None),
+    stream: str | None = Query(default=None),
+    source: str = Query(default="auto"),
+    offset: int = Query(default=0, ge=0),
+    limit_bytes: int | None = Query(default=None, ge=1),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """An attempt's captured stdout and stderr, redacted at read time.
+
+    THE REDACTION IS NOT BELT-AND-BRACES, IT IS THE BRACES. The worker's own
+    scrubbing pass replaces REGISTERED LITERAL VALUES -- the provider key this
+    platform resolved out of Secret Manager -- and matches no patterns at all;
+    both `_redact_before_upload` and `_publish_live_logs` skip the pass
+    entirely when no secret was registered, which is every `mock`-profile run.
+    So a token the agent minted, an `Authorization:` header a tool echoed, or
+    an `.env` printed out of a cloned repository reaches the bucket in the
+    clear. Everything served here is therefore run through
+    `swarm_api.redaction` on the way out, unconditionally, and the response
+    says so in `redaction.applied_at_read_time`.
+
+    The same filter is applied to any upstream error string this route reports,
+    because a storage client's exception can quote the request that failed and
+    a signed URL is a credential with an expiry.
+
+    Nothing in this route reads, logs or echoes a request header. The
+    `Authorization` header is consumed by `deps.current_auth` and by nothing
+    else in the process.
+
+    TWO OBJECTS PER STREAM. `logs/<stream>.log` is the complete record, written
+    once when the attempt finishes; `logs/live/<stream>.tail.log` is a bounded
+    window republished every few seconds while it runs. `source=auto` (the
+    default) prefers the record and falls back to the tail when the record is
+    ABSENT -- never when it is unreadable, because serving a different object
+    in place of a failed read reports success over the wrong window.
+
+    Each stream reports `ok`, `absent` or `unreadable` independently, and
+    `content` is null rather than `""` in the latter two, so a client that
+    renders content without reading status shows nothing instead of an empty
+    log that looks like a silent agent.
+    """
+    return ctx.inspection.read_logs(
+        tenant_id,
+        task_id,
+        attempt_id=attempt_id,
+        stream=stream,
+        source=source,
+        offset=offset,
+        limit_bytes=limit_bytes,
+    )
