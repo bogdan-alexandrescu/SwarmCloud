@@ -2153,7 +2153,11 @@ const OVERVIEW_CSS = `
   align-items: baseline;
   gap: var(--ctl-s2);
   margin: 0;
-  font: 600 12px/1.4 var(--font);
+  /* §B4.1: the uppercase small-caps treatment that came OFF .section > h2
+     lands here, on a panel LABEL, which is the level it belongs to. --t-meta
+     is the step that owns 600/uppercase/tracking. (No backticks in this
+     comment: it lives inside a JS template literal, where one ends the CSS.) */
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   text-transform: uppercase;
   letter-spacing: .07em;
   color: var(--text-faint);
@@ -2163,13 +2167,13 @@ const OVERVIEW_CSS = `
   border-radius: 999px;
   background: color-mix(in srgb, var(--bad) 16%, transparent);
   color: var(--bad);
-  font: 600 11px var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   letter-spacing: 0;
 }
 
 .ov-link {
   color: var(--info);
-  font: 11px var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   white-space: nowrap;
@@ -2213,10 +2217,12 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   }
 }
 
+/* NOT --t-lead. A screen gets one lead paragraph; Overview draws one of these
+   per PANEL, and five leads on a page is no lead at all. --t-body. */
 .ov-lead {
   margin: 0 0 var(--ctl-s2);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
   color: var(--text-dim);
 }
 .ov-lead b { color: var(--text); font-weight: 600; }
@@ -2232,14 +2238,16 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   gap: var(--ctl-s3);
   align-items: baseline;
 }
-.ov-item > p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--text-dim); }
+.ov-item > p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 .ov-item > p > b { color: var(--text); font-weight: 600; }
 
 .ov-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: var(--ctl-s2); margin: 0; }
 .ov-kv > div { min-width: 0; }
-.ov-kv dt { font: 600 10.5px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
-.ov-kv dd { margin: 2px 0 0; font: 15px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
-.ov-kv dd.ov-figure { font-size: 19px; font-weight: 600; }
+.ov-kv dt { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.ov-kv dd { margin: 2px 0 0; font: var(--t-body)/var(--lh-body) var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
+/* The one figure in the pair gets --t-figure: this IS the number the panel is
+   for, and the 19px it used to take was a step nothing else in the sheet had. */
+.ov-kv dd.ov-figure { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; }
 
 /* An empty state INSIDE a panel, rather than as the page. The panel's own
    heading has already said what this is about, so the padding comes down. */
@@ -2256,13 +2264,15 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   display: flex;
   align-items: center;
   gap: var(--ctl-s2);
-  font-size: 14px;
+  /* A word, not a number, so --t-body -- the same rule .ctl-metric.is-absent
+     follows. Nothing but a measured figure takes --t-figure. */
+  font-size: var(--t-body);
   font-weight: 500;
   color: var(--text-faint);
   letter-spacing: 0;
 }
 .ov-bar { flex: 0 0 auto; width: 46px; height: 12px; }
-.ov-reading-word { font: 11px var(--mono); }
+.ov-reading-word { font: var(--t-micro)/var(--lh-micro) var(--mono); }
 
 /* A figure that is REAL but not CURRENT: its window reset, or the poll is past
    the staleness window. Grey, never the red or amber that says a ceiling is
@@ -2276,7 +2286,9 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ov-more { margin-top: var(--ctl-s2); }
 .ov-more > summary {
   cursor: pointer;
-  font: 11px var(--mono);
+  /* --t-meta, not --t-micro: this is a CONTROL, and the micro step is for
+     things you read, not things you click. */
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--info);
   list-style: none;
 }

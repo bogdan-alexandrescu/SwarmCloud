@@ -352,7 +352,10 @@ function Absent({
           border: '1px solid var(--line)',
           borderRadius: 'var(--ctl-radius-sm)',
           padding: '1px 6px',
-          font: '600 10px/1.7 var(--mono)',
+          fontWeight: 600,
+          fontSize: 'var(--t-meta)',
+          lineHeight: 'var(--lh-meta)',
+          fontFamily: 'var(--mono)',
           letterSpacing: '.06em',
           textTransform: 'uppercase',
           color: 'var(--text-dim)',
@@ -967,7 +970,9 @@ function AttemptLegend() {
         margin: 'var(--ctl-s3) 0 0',
         paddingTop: 'var(--ctl-s3)',
         borderTop: '1px solid var(--line)',
-        font: '11px/1.7 var(--mono)',
+        fontSize: 'var(--t-micro)',
+        lineHeight: 'var(--lh-micro)',
+        fontFamily: 'var(--mono)',
         color: 'var(--text-faint)',
       }}
     >
