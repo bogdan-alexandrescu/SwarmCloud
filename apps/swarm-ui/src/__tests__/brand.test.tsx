@@ -359,7 +359,7 @@ describe('the product header', () => {
 // ---------------------------------------------------------------------------
 
 describe('B17: an identifier is never restyled', () => {
-  it('leaves the workflow id alone inside a heading that uppercases', async () => {
+  it('leaves the workflow id alone inside the section heading', async () => {
     const style = withStyles()
     render(<WorkflowsScreen />)
 
@@ -368,24 +368,52 @@ describe('B17: an identifier is never restyled', () => {
     const heading = id.closest('h2')
     expect(heading, 'the workflow id is no longer inside the section heading').toBeTruthy()
 
-    // The heading really does uppercase -- so this is not a test that passes
-    // because the defect went away for some unrelated reason.
-    expect(getComputedStyle(heading!).textTransform).toBe('uppercase')
-    // And the id inside it does not.
     expect(getComputedStyle(id).textTransform).toBe('none')
     // The text is the id as the API serves it, in lower case, paste-ready.
     expect(id.textContent).toBe('wf_audit_01')
+
+    // §B4.1 MOVED THE OTHER HALF OF THIS TEST. `.section > h2` used to be
+    // `text-transform: uppercase`, and this test read that back to prove it
+    // was not passing because the defect had evaporated for some unrelated
+    // reason. The type scale fixed the inversion -- a panel title was drawn
+    // smaller and fainter than its own rows -- so the heading is now
+    // --t-title in --text and no longer uppercases anything. The precondition
+    // therefore moved to a rule that still DOES uppercase, in the next test;
+    // it did not get deleted, because a B17 assertion with nothing
+    // transforming above it passes on an empty stylesheet.
+    expect(getComputedStyle(heading!).textTransform).not.toBe('uppercase')
+    style.remove()
+  })
+
+  it('beats an uppercase ANCESTOR by inheritance, not by specificity', () => {
+    const style = withStyles()
+    // `.ctl-chip` is one of the rules that KEPT the uppercase treatment when
+    // §B4.1 dropped it from `.section > h2` -- chip text is exactly what
+    // --t-meta's 600/uppercase/tracking is for. So this is the live version of
+    // the case B17 was written for: an id inside something that case-shifts.
+    const { container } = render(
+      <span className="ctl-chip">
+        running <span className="id">wf_audit_01</span>
+      </span>,
+    )
+    const chip = container.querySelector('.ctl-chip')!
+    const id = container.querySelector('.id')!
+    // The ancestor really does uppercase, so the assertion below is not
+    // passing on a stylesheet that failed to load.
+    expect(getComputedStyle(chip).textTransform).toBe('uppercase')
+    expect(getComputedStyle(id).textTransform).toBe('none')
     style.remove()
   })
 
   it('and the rule reaches literals that were never wrapped in anything', () => {
     const style = withStyles()
     const { container } = render(
-      <section className="section">
-        <h2>
-          route <code>/v1/tasks</code>
-        </h2>
-      </section>,
+      <span className="ctl-chip">
+        route <code>/v1/tasks</code>
+      </span>,
+    )
+    expect(getComputedStyle(container.querySelector('.ctl-chip')!).textTransform).toBe(
+      'uppercase',
     )
     expect(getComputedStyle(container.querySelector('code')!).textTransform).toBe('none')
     style.remove()

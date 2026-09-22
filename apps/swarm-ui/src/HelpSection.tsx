@@ -123,7 +123,15 @@ function Topic({
         scrollMarginTop: 'var(--ctl-s5)',
       }}
     >
-      <h3 style={{ margin: '0 0 var(--ctl-s2)', fontSize: '14.5px', fontWeight: 600 }}>
+      <h3
+        style={{
+          margin: '0 0 var(--ctl-s2)',
+          // A help section's heading is the panel title of that section.
+          fontSize: 'var(--t-title)',
+          lineHeight: 'var(--lh-title)',
+          fontWeight: 600,
+        }}
+      >
         {t.title}
       </h3>
 
@@ -132,8 +140,11 @@ function Topic({
           key={i}
           style={{
             margin: '0 0 var(--ctl-s2)',
-            fontSize: '13px',
-            lineHeight: 1.6,
+            // --t-body, not --t-lead: Help is a reference document and draws
+            // many paragraphs; --t-lead is the ONE paragraph a screen leads
+            // with, and a document has no such thing.
+            fontSize: 'var(--t-body)',
+            lineHeight: 'var(--lh-body)',
             color: 'var(--text-dim)',
             maxWidth: '68ch',
           }}
@@ -154,12 +165,22 @@ function Topic({
         >
           {values.map((v) => (
             <div key={v.term} style={{ display: 'contents' }}>
-              <dt style={{ font: '600 11px/1.7 var(--mono)', color: 'var(--text)' }}>{v.term}</dt>
+              <dt
+                style={{
+                  fontWeight: 600,
+                  fontSize: 'var(--t-meta)',
+                  lineHeight: 'var(--lh-meta)',
+                  fontFamily: 'var(--mono)',
+                  color: 'var(--text)',
+                }}
+              >
+                {v.term}
+              </dt>
               <dd
                 style={{
                   margin: 0,
-                  fontSize: '12px',
-                  lineHeight: 1.7,
+                  fontSize: 'var(--t-body)',
+                  lineHeight: 'var(--lh-body)',
                   color: 'var(--text-dim)',
                 }}
               >
@@ -173,7 +194,10 @@ function Topic({
       <p
         style={{
           margin: 'var(--ctl-s3) 0 0',
-          font: '10.5px/1.5 var(--mono)',
+          // A raw anchor id: --t-micro, and it went UP from 10.5px.
+          fontSize: 'var(--t-micro)',
+          lineHeight: 'var(--lh-micro)',
+          fontFamily: 'var(--mono)',
           color: 'var(--text-faint)',
         }}
       >

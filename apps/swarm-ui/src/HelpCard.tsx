@@ -237,7 +237,11 @@ const GLYPH: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  font: '600 10px/1 var(--mono)',
+  fontWeight: 600,
+  fontSize: 'var(--t-meta)',
+  // --lh-flush: the box is the 14px circle below.
+  lineHeight: 'var(--lh-flush)',
+  fontFamily: 'var(--mono)',
   height: '14px',
   width: '14px',
   marginLeft: '5px',
@@ -266,7 +270,10 @@ const CARD: CSSProperties = {
 const CARD_TITLE: CSSProperties = {
   display: 'block',
   margin: '0 0 4px',
-  font: '600 11px/1.5 var(--mono)',
+  fontWeight: 600,
+  fontSize: 'var(--t-meta)',
+  lineHeight: 'var(--lh-meta)',
+  fontFamily: 'var(--mono)',
   letterSpacing: '.04em',
   textTransform: 'uppercase',
   color: 'var(--text-faint)',
@@ -275,8 +282,8 @@ const CARD_TITLE: CSSProperties = {
 const CARD_BODY: CSSProperties = {
   display: 'block',
   margin: 0,
-  fontSize: '12.5px',
-  lineHeight: 1.55,
+  fontSize: 'var(--t-body)',
+  lineHeight: 'var(--lh-body)',
   color: 'var(--text-dim)',
   // 52ch (§B7.2). A help card wider than a paragraph is a paragraph.
   maxWidth: '52ch',
@@ -295,7 +302,10 @@ const CARD_VALUE: CSSProperties = {
   border: '1px solid var(--line)',
   borderRadius: 'var(--ctl-radius-sm)',
   padding: '1px 6px',
-  font: '500 10.5px/1.6 var(--mono)',
+  fontWeight: 500,
+  fontSize: 'var(--t-meta)',
+  lineHeight: 'var(--lh-meta)',
+  fontFamily: 'var(--mono)',
   color: 'var(--text-dim)',
   background: 'var(--surface-2)',
 }
@@ -303,7 +313,8 @@ const CARD_VALUE: CSSProperties = {
 const CARD_LINK: CSSProperties = {
   display: 'inline-block',
   marginTop: '8px',
-  fontSize: '11.5px',
+  fontSize: 'var(--t-micro)',
+  lineHeight: 'var(--lh-micro)',
   color: 'var(--text-dim)',
 }
 
