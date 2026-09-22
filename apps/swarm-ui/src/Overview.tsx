@@ -227,7 +227,11 @@ export function OverviewScreen() {
         found={found}
       />
 
-      <div className="ov-cols">
+      {/* `has-alarm` rather than an inline span on the panel, because the
+          stylesheet needs to know it. The rules that stop this grid ending with
+          a blank right column are parity selectors over the panels, and a panel
+          that silently spans two tracks shifts every parity below it. */}
+      <div className={`ov-cols${found > 0 ? ' has-alarm' : ''}`}>
         {/* THE ALARM TAKES THE TOP WHEN IT IS RINGING. With something to say it
             spans both columns and is the first panel under the tiles; when
             every check came back clear it collapses into one column and gets
@@ -238,7 +242,7 @@ export function OverviewScreen() {
             oversight: there is no problem board to open. Every row carries the
             link to the object it is about, and the rows that do not fit expand
             in place rather than pointing at a screen that does not exist. */}
-        <section className="section panel" style={found > 0 ? { gridColumn: '1 / -1' } : undefined}>
+        <section className="section panel ov-alarm">
           <PanelHead title="Needs attention" count={found} />
           <AttentionBody checks={checks} />
         </section>
@@ -1010,6 +1014,54 @@ function bindingLabel(name: string, tenant: string | undefined): string {
   return poolLabel(name)
 }
 
+/**
+ * THE UTILISATION TRACK, and the three things it has to keep apart.
+ *
+ * `pct === null`  nothing measured it. Hatched, NO fill -- an unfilled plain
+ *                 track reads as "0% used", which is a claim.
+ * `pct === 0`     MEASURED zero. This used to render as a zero-width fill on a
+ *                 near-white track, which is pixel-for-pixel a widget that
+ *                 failed to paint: the same page is scrupulous about this
+ *                 distinction in prose and threw it away in the one place it is
+ *                 drawn. A measured zero now gets a visible BASELINE TICK at the
+ *                 origin, so "nothing is running" is legible as a reading.
+ * `pct > 0`       an ordinary fill.
+ *
+ * The tick is deliberately NOT a minimum width on the fill. A 3px fill would
+ * say "a little is in use", which is the absent-as-zero lie inverted: it would
+ * make 0 and 0.4% identical instead of making 0 and unmeasured identical.
+ */
+function UtilTrack({
+  pct,
+  fillClass,
+  over,
+  zeroTitle,
+}: {
+  /** null when nothing measured it. 0 is a reading. */
+  pct: number | null
+  fillClass: string
+  over: boolean
+  /** What the baseline tick means, for the one case that needs explaining. */
+  zeroTitle: string
+}) {
+  if (pct === null) return <span className="ctl-util-track is-unknown" />
+  if (pct === 0) {
+    return (
+      <span className="ctl-util-track is-zero" title={zeroTitle}>
+        <i className="ctl-util-zero" aria-hidden />
+      </span>
+    )
+  }
+  return (
+    <span className="ctl-util-track">
+      <i className={`ctl-util-fill ${fillClass}`.trimEnd()} style={{ width: `${Math.min(100, pct)}%` }} />
+      {/* Held above the ceiling: hatched rather than clipped at 100%, because a
+          bar pinned full hides the one thing worth seeing. */}
+      {over && <i className="ctl-util-over" style={{ width: '14%' }} />}
+    </span>
+  )
+}
+
 function ProfileRow({
   name,
   profile,
@@ -1079,22 +1131,16 @@ function ProfileRow({
         )}
       </span>
 
-      {/* An unfilled plain track reads as "0% used", which is a claim. When no
-          pool in the profile's list is configured there is no ceiling to draw
-          against, so the track is hatched and carries no fill at all. */}
-      <span className={`ctl-util-track${known ? '' : ' is-unknown'}`}>
-        {known && (
-          <>
-            <i
-              className={`ctl-util-fill ${fillClass}`}
-              style={{ width: `${Math.min(100, ratio * 100)}%` }}
-            />
-            {/* Held above the ceiling: hatched rather than clipped at 100%,
-                because a bar pinned full hides the one thing worth seeing. */}
-            {over && <i className="ctl-util-over" style={{ width: '14%' }} />}
-          </>
-        )}
-      </span>
+      <UtilTrack
+        pct={known ? ratio * 100 : null}
+        fillClass={fillClass}
+        over={over}
+        zeroTitle={
+          binding
+            ? `Measured: 0 of ${binding.effective_limit} in use on ${binding.name}. The bar has a baseline because this zero is a reading.`
+            : 'Measured zero.'
+        }
+      />
 
       <span className="ctl-util-figure">
         {binding ? (
@@ -1782,24 +1828,22 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                   measured. A PROJECTED reading does get a bar -- the figure is
                   real -- but a grey one, never the red or amber that says a
                   ceiling is being approached now. */}
-              <span className={`ctl-util-track${pct === null ? ' is-unknown' : ''}`}>
-                {pct !== null && (
-                  <i
-                    className={`ctl-util-fill ${
-                      projected
-                        ? 'ov-projected'
-                        : a.state !== 'AVAILABLE'
-                          ? 'is-paused'
-                          : pct > 90
-                            ? 'is-bad'
-                            : pct > 75
-                              ? 'is-warn'
-                              : ''
-                    }`}
-                    style={{ width: `${pct}%` }}
-                  />
-                )}
-              </span>
+              <UtilTrack
+                pct={pct}
+                fillClass={
+                  projected
+                    ? 'ov-projected'
+                    : a.state !== 'AVAILABLE'
+                      ? 'is-paused'
+                      : pct !== null && pct > 90
+                        ? 'is-bad'
+                        : pct !== null && pct > 75
+                          ? 'is-warn'
+                          : ''
+                }
+                over={false}
+                zeroTitle={`Measured: this account reported 0% of its binding window used. The bar has a baseline because this zero is a reading, not a missing one.`}
+              />
               <span
                 className="ctl-util-figure"
                 title={
@@ -2025,9 +2069,14 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
  * be folded into the primitive sheet the next time that file is opened; until
  * then it is scoped and it is here.
  *
- * The layout itself is `auto-fit` rather than a media query, so the two
- * columns become one below roughly 700px with no breakpoint to maintain and
- * no phone-specific copy of the grid to keep in step.
+ * THE LAYOUT USED TO BE TRACK-COUNT-AGNOSTIC and is not any more, which is a
+ * deliberate trade and worth stating here rather than only at the rule. An
+ * auto-fitting grid needs no breakpoints to maintain, and in exchange nothing
+ * -- not the stylesheet, not this file -- can know how many tracks it produced.
+ * That is exactly what the rules below need in order to stop the page ending
+ * with a blank right column under a column that is still going. Three stated
+ * breakpoints cost three lines; a page that wastes a third of a 1600px screen
+ * costs it every time anyone opens the product.
  */
 const OVERVIEW_CSS = `
 .ov-topline {
@@ -2041,16 +2090,53 @@ const OVERVIEW_CSS = `
 .ov-topline .head { margin-bottom: 0; }
 .ov-topline .sub { margin: 0; }
 
+/* THE COLUMN COUNT IS EXPLICIT, and it used to be fitted automatically.
+   The old declaration was correct about widths
+   and unknowable about COUNT, and the count is what the rules below need: the
+   only way to stop a grid ending with a blank right column is to know which
+   panel lands in the last row, and an nth-child selector cannot ask a browser
+   how many tracks were fitted. One column, then two, then three, each stated. */
 .ov-cols {
   display: grid;
-  /* min(400px, 100%), not a bare 400px. A minmax floor wider than the
-     container does not collapse -- auto-fit drops to one column and that one
-     column is still 400px wide, which is 26px of horizontal page scroll at
-     390pt. The min() clamps the floor to the container. */
-  grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--ctl-s3);
   align-items: start;
 }
+@media (min-width: 720px) {
+  .ov-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1400px) {
+  .ov-cols { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* The alarm spans every track when it has something to say. In CSS rather than
+   an inline style so the parity rules below can account for the two or three
+   tracks it consumes. */
+.ov-cols.has-alarm > .ov-alarm { grid-column: 1 / -1; }
+
+/* NO PAGE MAY END WITH A BLANK RIGHT COLUMN WHILE THE LEFT CONTINUES.
+   This grid holds five panels. In two tracks with no alarm that is 2+2+1, and
+   the odd one out leaves half a row of empty page under a column that is still
+   going -- on a console whose brief is "graphs and diagrams everywhere
+   possible", empty space is the most expensive thing on screen.
+
+   The last panel therefore widens to fill its row. WHICH panel that is depends
+   on the track count and on whether the alarm consumed a whole row first, so
+   every combination is stated. With T tracks and N panels the last row is
+   already full when N (no alarm) or N-1 (alarm) divides by T; otherwise the
+   last panel widens by the shortfall. Written as parity selectors so a sixth
+   panel added later is handled without anyone remembering this comment. */
+@media (min-width: 720px) and (max-width: 1399px) {
+  .ov-cols:not(.has-alarm) > section:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .ov-cols.has-alarm > section:last-child:nth-child(even) { grid-column: 1 / -1; }
+}
+@media (min-width: 1400px) {
+  .ov-cols:not(.has-alarm) > section:last-child:nth-child(3n + 1) { grid-column: 1 / -1; }
+  .ov-cols:not(.has-alarm) > section:last-child:nth-child(3n + 2) { grid-column: span 2; }
+  .ov-cols.has-alarm > section:last-child:nth-child(3n + 2) { grid-column: 1 / -1; }
+  .ov-cols.has-alarm > section:last-child:nth-child(3n) { grid-column: span 2; }
+}
+
 /* .section carries a 28px bottom margin for a stacked page; inside a grid that
    is dead space between rows that the gap already provides. */
 .ov-cols > section { margin-bottom: 0; }

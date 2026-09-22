@@ -1,10 +1,34 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { loadWorkflowBoard } from './api'
+import {
+  loadWorkflowBoard,
+  loadWorkflowUsage,
+  type StepUsage,
+  type WorkflowBoard,
+  type WorkflowUsage,
+} from './api'
 import { workflowDispatchOf } from './Dispatch'
+import {
+  absentCell,
+  costCell,
+  countCell,
+  durationText,
+  measuredCell,
+  tokenCell,
+  FINISH_NOT_RECORDED,
+  NEVER_RAN,
+  NO_ATTEMPT_YET,
+  STATE_UNREAD,
+  TOKENS_NOT_REPORTED,
+  USAGE_NOT_READ,
+  USAGE_NOT_SAMPLED,
+  type Absence,
+  type Cell,
+} from './measure'
 import { Id, Screen, timeAgo } from './Shell'
 import { StopRun } from './StopRun'
 import {
+  TERMINAL_STATES,
   consequenceOf,
   dispatchOf,
   stateGlyph,
@@ -33,6 +57,22 @@ import {
  * steps with no state field at all; it only exists on the task a step created.
  * See `stepState` in types.ts for the three ways that join can come up empty
  * and why they must not render alike.
+ *
+ * WHAT EACH STEP PRODUCED IS ALSO ON THE NODE, and it used to be nowhere. The
+ * node carried name, state, runner profile and dependency -- four facts about
+ * the PLAN and none about the RUN -- so the one screen in the product about a
+ * multi-agent run reported neither duration, nor cost, nor tokens, nor a way to
+ * reach what the step read or wrote. All four exist: duration comes off the
+ * joined task, the other three off the attempts (`codec.attempt_from_dict`
+ * decodes `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
+ * `cache_creation_input_tokens` and `cost_usd`), and the step id is now a link
+ * into the task's own screen, where its input and output are.
+ *
+ * Every one of those figures is nullable and NOT ONE of them may render as a
+ * zero it did not measure. `measure.ts` holds that rule; this screen holds only
+ * the four different reasons a workflow board can lack a figure, which are four
+ * different sentences: the step has no task, the task was not in the task read,
+ * the task was outside the attempt sample, or the attempt read failed.
  */
 export function WorkflowsScreen() {
   // Same reason as AgentDetail's: `Screen` keeps its retry nonce to itself, so
@@ -53,20 +93,129 @@ export function WorkflowsScreen() {
         body: 'The read succeeded and returned nothing. Tasks submitted individually do not belong to a workflow and appear only under Agents.',
       }}
     >
-      {(d) => (
+      {(d) => <Board board={d} reload={reload} />}
+    </Screen>
+  )
+}
+
+/**
+ * The board, plus the SECOND read the step figures need.
+ *
+ * Separate from `WorkflowsScreen` because `Screen`'s children is a render prop:
+ * hooks may not live inside it. It is also the right seam -- the attempt read
+ * is deliberately started only once the board itself has landed, so the graph
+ * is on screen while the figures are still arriving rather than after.
+ */
+function Board({ board, reload }: { board: WorkflowBoard; reload: () => void }) {
+  // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
+  // and caps; the order decides which steps fall inside the cap, so it is the
+  // board's own order rather than a set's iteration order.
+  const taskIds = useMemo(
+    () =>
+      board.workflows.flatMap((w) =>
+        w.steps.map((s) => s.task_id ?? null).filter((id): id is string => id !== null),
+      ),
+    [board.workflows],
+  )
+
+  const [usage, setUsage] = useState<UsageRead>({ kind: 'reading' })
+
+  useEffect(() => {
+    let live = true
+    setUsage({ kind: 'reading' })
+    loadWorkflowUsage(taskIds).then((r) => {
+      if (!live) return
+      if (r.status === 'ok') {
+        setUsage({ kind: 'ready', usage: r.data })
+        return
+      }
+      // `empty` is a real answer: no step has a task yet, so there is nothing
+      // to read and nothing failed. The per-step cells then say "not started",
+      // which is what the state join already says.
+      if (r.status === 'empty') {
+        setUsage({ kind: 'ready', usage: null })
+        return
+      }
+      if (r.status === 'stale') {
+        setUsage({ kind: 'ready', usage: r.data })
+        return
+      }
+      if (r.status === 'error') {
+        setUsage({ kind: 'failed', detail: r.error.message })
+        return
+      }
+      // `loading` is not a value this promise resolves to, but leaving the
+      // nodes in `reading` for ever if it ever did is a silent stall, and a
+      // placeholder that never stops moving is the worst of the three states.
+      setUsage({ kind: 'failed', detail: 'The attempt read did not complete.' })
+    })
+    return () => {
+      live = false
+    }
+  }, [taskIds])
+
+  // A running step's duration has no end, so it has to be recomputed rather
+  // than only redrawn when a fetch lands.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  return (
+    <>
+      {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
+      {usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
+      {board.workflows.map((w) => (
+        <WorkflowCard
+          key={w.workflow_id}
+          workflow={w}
+          taskById={board.taskById}
+          usage={usage}
+          now={now}
+          reload={reload}
+        />
+      ))}
+    </>
+  )
+}
+
+/**
+ * How the attempt read went, as the node needs to know it.
+ *
+ * `reading` is NOT an absence and must not render as one: "not reported" is a
+ * claim about the platform, and a request still in flight has made no claim at
+ * all. The node draws a moving placeholder for it instead -- the same
+ * distinction `Overview.tsx` draws between `is-absent` and `ov-reading`.
+ */
+type UsageRead =
+  | { kind: 'reading' }
+  | { kind: 'ready'; usage: WorkflowUsage | null }
+  | { kind: 'failed'; detail: string }
+
+/**
+ * What the sample covered, said once at the top rather than implied per node.
+ *
+ * Silent when every task on the board was read: a line saying "12 of 12" on
+ * every refresh is noise, and the per-node "not sampled" already carries the
+ * case that matters.
+ */
+function SampleNote({ usage }: { usage: WorkflowUsage }) {
+  const uncovered = usage.notSampled.size
+  const failed = usage.failed.size
+  if (uncovered === 0 && failed === 0) return null
+  return (
+    <p className="rollup untrusted">
+      Step figures cover {usage.byTaskId.size} of {usage.tasksRequested} tasks on this board.
+      {uncovered > 0 && (
         <>
-          {d.statesDetail !== null && <StatesUnavailable detail={d.statesDetail} />}
-          {d.workflows.map((w) => (
-            <WorkflowCard
-              key={w.workflow_id}
-              workflow={w}
-              taskById={d.taskById}
-              reload={reload}
-            />
-          ))}
+          {' '}
+          {uncovered} {uncovered === 1 ? 'is' : 'are'} outside the {usage.sampleLimit}-task
+          read ceiling — their cost and tokens are unknown here, not zero.
         </>
       )}
-    </Screen>
+      {failed > 0 && <> {failed} attempt read{failed === 1 ? '' : 's'} failed.</>}
+    </p>
   )
 }
 
@@ -195,10 +344,14 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
 function WorkflowCard({
   workflow,
   taskById,
+  usage,
+  now,
   reload,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
+  usage: UsageRead
+  now: number
   reload: () => void
 }) {
   const levels = levelsOf(workflow.steps)
@@ -258,6 +411,8 @@ function WorkflowCard({
                   key={s.step_id}
                   step={s}
                   state={stepState(s, taskById)}
+                  usage={usage}
+                  now={now}
                   workflow={workflow}
                   reload={reload}
                 />
@@ -342,14 +497,169 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
   }
 }
 
+/**
+ * HOW LONG THE STEP HAS BEEN RUNNING, or the reason that is not a number.
+ *
+ * `started_at` is written on DISPATCHED -> STARTING, so a QUEUED, LEASED or
+ * DISPATCHED step legitimately has none and "0s" for it would be a lie in the
+ * most literal sense. `completed_at` can also be missing on a task that went
+ * terminal between polls, which is a THIRD case: it ran, it ended, and the
+ * finish was never written -- "not recorded", exactly as the attempts drawer
+ * says for peak memory.
+ */
+function ranCell(task: Task, now: number): Cell {
+  const ms = (v: string | null) => (v ? new Date(v).getTime() : NaN)
+  const started = ms(task.started_at)
+  const completed = ms(task.completed_at)
+  const terminal = TERMINAL_STATES.has(task.state)
+
+  if (!Number.isFinite(started)) {
+    const created = ms(task.created_at)
+    return absentCell({
+      text: 'not started',
+      note: Number.isFinite(created)
+        ? `started_at is written on DISPATCHED → STARTING. This step has not begun; it was submitted ${durationText(now - created)} ago.`
+        : 'started_at is written on DISPATCHED → STARTING. This step has not begun.',
+    })
+  }
+  if (Number.isFinite(completed)) {
+    return measuredCell(durationText(completed - started), 'Start to finish, including any provider wait and any park.')
+  }
+  if (terminal) {
+    return absentCell(FINISH_NOT_RECORDED)
+  }
+  return measuredCell(`${durationText(now - started)} so far`, 'Still running. This figure moves.')
+}
+
+/** Every figure one node shows, and what to say where there is none. */
+interface StepFigures {
+  ran: Cell
+  cost: Cell
+  tokens: Cell
+  checkpoints: Cell
+  /** The single sentence explaining the usage absences, or null if measured. */
+  why: string | null
+}
+
+/**
+ * The four figures, for one step.
+ *
+ * FOUR DIFFERENT ABSENCES, and the whole value of this function is keeping them
+ * apart. A step with no task has nothing to measure; a step whose task was not
+ * in the task read has figures nobody fetched; a step outside the attempt
+ * sample has figures this board chose not to fetch; a step whose attempt read
+ * failed has figures that could not be fetched. One "—" for all four sends an
+ * operator to four different places at random.
+ */
+function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigures {
+  const allAbsent = (a: Absence): StepFigures => ({
+    ran: absentCell(a),
+    cost: absentCell(a),
+    tokens: absentCell(a),
+    checkpoints: absentCell(a),
+    why: a.note,
+  })
+
+  if (state.kind === 'unstarted') return allAbsent(NEVER_RAN)
+  if (state.kind === 'unknown') return allAbsent(STATE_UNREAD)
+
+  const ran = ranCell(state.task, now)
+  const taskId = state.task.id
+
+  // The read has not landed. NOT an absence: the node draws a placeholder for
+  // these rather than claiming the platform reported nothing.
+  if (usage.kind === 'reading') {
+    const pending: Absence = {
+      text: 'reading',
+      note: 'The attempt read for this step is still in flight.',
+    }
+    return { ran, cost: absentCell(pending), tokens: absentCell(pending), checkpoints: absentCell(pending), why: null }
+  }
+
+  const absentUsage = (a: Absence): StepFigures => ({
+    ran,
+    cost: absentCell(a),
+    tokens: absentCell(a),
+    checkpoints: absentCell(a),
+    why: a.note,
+  })
+
+  if (usage.kind === 'failed') {
+    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${usage.detail})` })
+  }
+  if (usage.usage === null) return absentUsage(USAGE_NOT_SAMPLED)
+
+  const failed = usage.usage.failed.get(taskId)
+  if (failed !== undefined) {
+    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${failed})` })
+  }
+  const u = usage.usage.byTaskId.get(taskId)
+  if (u === undefined) return absentUsage(USAGE_NOT_SAMPLED)
+  // The read succeeded and there is nothing to sum. A FOURTH thing, and not
+  // "the runner reported no cost": nothing has run.
+  if (u.attempts === 0) return absentUsage(NO_ATTEMPT_YET)
+
+  return {
+    ran,
+    cost: costCell(
+      u.costUsd,
+      `Summed over ${u.attemptsWithCost} of ${u.attempts} attempt${u.attempts === 1 ? '' : 's'} that reported one. Token cost only — no infrastructure cost is recorded anywhere.`,
+    ),
+    tokens: tokensOf(u),
+    // COUNTED, not reported: the attempt document carries its own list of
+    // checkpoint ids, so this figure is never absent once the attempts are in
+    // hand, and a zero here IS the measurement. It renders as a digit while its
+    // neighbours render as sentences, because its neighbours were not measured.
+    checkpoints: countCell(
+      u.checkpoints,
+      USAGE_NOT_SAMPLED,
+      u.checkpoints === 0
+        ? 'No attempt document lists one. This zero was counted, not assumed.'
+        : `Across ${u.attempts} attempt${u.attempts === 1 ? '' : 's'}. Contents are not recorded.`,
+    ),
+    why: null,
+  }
+}
+
+/**
+ * Input and output tokens as one cell.
+ *
+ * EACH HALF SUMS SEPARATELY, so a step whose runner reported input and no
+ * output shows the half it has and says which -- `(input ?? 0) + (output ?? 0)`
+ * counts the missing half as a zero, which is the same defect
+ * `AgentDetail.tsx:408` records having already been fixed once at the tile
+ * level.
+ */
+function tokensOf(u: StepUsage): Cell {
+  const tin = tokenCell(u.inputTokens, '')
+  const tout = tokenCell(u.outputTokens, '')
+  if (tin.kind === 'absent' && tout.kind === 'absent') return absentCell(TOKENS_NOT_REPORTED)
+  const parts: string[] = []
+  if (tin.kind === 'measured') parts.push(`${tin.text} in`)
+  if (tout.kind === 'measured') parts.push(`${tout.text} out`)
+  const both = tin.kind === 'measured' && tout.kind === 'measured'
+  return measuredCell(
+    parts.join(' · '),
+    both
+      ? `Summed over ${u.attemptsWithTokens} of ${u.attempts} attempt${u.attempts === 1 ? '' : 's'} that reported tokens.`
+      : tin.kind === 'measured'
+        ? 'Input only. No attempt reported an output count, which is not the same as none.'
+        : 'Output only. No attempt reported an input count, which is not the same as none.',
+  )
+}
+
 function StepNode({
   step,
   state,
+  usage,
+  now,
   workflow,
   reload,
 }: {
   step: WorkflowStep
   state: StepState
+  usage: UsageRead
+  now: number
   workflow: Workflow
   reload: () => void
 }) {
@@ -363,26 +673,62 @@ function StepNode({
   // what an absent or unrecognised block means, and a second one here is how
   // two screens start disagreeing about the same task.
   const role = state.kind === 'state' ? (dispatchOf(state.task)?.role ?? null) : null
+  const taskId = state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
+  const f = figuresFor(state, usage, now)
+  const pending = usage.kind === 'reading' && state.kind === 'state'
 
   return (
-    <div className={`node ${p.tone}`} title={p.title}>
+    <div className={`node ${p.tone}`}>
       <div className="node-id">
-        {step.step_id}
+        {/* THE NODE IS A DOORWAY, not a picture. The task id used to live only
+            in a native `title`, so from "draft is parked" there was no click
+            that reached draft: the route was Agents → Waiting → find the row.
+            The step's own screen is where its INPUT and its OUTPUT are. */}
+        {taskId === null ? (
+          <span title={p.title}>{step.step_id}</span>
+        ) : (
+          <a
+            className="node-open"
+            href={`#agents/task/${encodeURIComponent(taskId)}`}
+            title={`${p.title}\nOpen this step: its input, its output and every attempt.`}
+          >
+            {step.step_id}
+          </a>
+        )}
         {role === 'integrator' && (
           <span className="tag ok" title="This step merges the other steps' branches and opens the workflow's single pull request.">
             opens the PR
           </span>
         )}
       </div>
-      <div className="node-state">
+      <div className="node-state" title={p.title}>
         <span aria-hidden>{p.glyph}</span> {p.word}
       </div>
       <div className="node-meta">{step.runner_profile}</div>
+
+      {/* The run, as four figures. A placeholder while the attempt read is in
+          flight -- a request that has not landed has made no claim, and
+          "not reported" is a claim about the platform. */}
+      <dl className="node-nums">
+        <NodeNum label="ran" cell={f.ran} pending={false} />
+        <NodeNum label="cost" cell={f.cost} pending={pending} />
+        <NodeNum label="tokens" cell={f.tokens} pending={pending} />
+        <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
+      </dl>
+      {f.why !== null && <p className="node-why">{f.why}</p>}
+
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
           ← {step.depends_on.join(', ')}
         </div>
       )}
+      {taskId !== null && (
+        <div className="node-links">
+          <a href={`#agents/task/${encodeURIComponent(taskId)}`}>input &amp; output →</a>
+          <a href={`#agents/task/${encodeURIComponent(taskId)}/attempts`}>attempts →</a>
+        </div>
+      )}
+
       {/* B28, on the node. Only when the step's TASK was actually joined: a
           step whose state is `unknown` was not in the task read, and offering
           to stop something this screen could not read would be acting on a
@@ -400,6 +746,24 @@ function StepNode({
           />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * One figure on a node.
+ *
+ * `is-absent` is the dashed, faint treatment the metric tiles use, and it is
+ * applied to ABSENCE only. A read still in flight gets `is-reading` and a
+ * moving bar instead, because the two say different things: one is a statement
+ * about the platform, the other is a statement about this request.
+ */
+function NodeNum({ label, cell, pending }: { label: string; cell: Cell; pending: boolean }) {
+  const cls = pending ? 'is-reading' : cell.kind === 'absent' ? 'is-absent' : ''
+  return (
+    <div className={`node-num ${cls}`.trimEnd()} title={cell.note || undefined}>
+      <dt>{label}</dt>
+      <dd>{pending ? <span className="node-reading" aria-label="reading" /> : cell.text}</dd>
     </div>
   )
 }

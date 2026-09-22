@@ -4,6 +4,9 @@ import { noteFixtureProbe, read, write, type Result } from './fetch'
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
 import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
+// The one rule for summing a nullable measurement: null until something
+// actually reported it, so an unmeasured sample never becomes a confident zero.
+import { sumReported } from './measure'
 import type {
   ArtifactContent,
   CheckpointsPage, TaskLogs,
@@ -3199,6 +3202,217 @@ export async function loadSpend(page: TaskPage): Promise<Result<SpendRollup>> {
       cacheCreationTokens: cacheCreate,
       from: times[0] ?? null,
       to: times[times.length - 1] ?? null,
+    },
+  }
+}
+
+/**
+ * HOW MANY STEPS THE WORKFLOW BOARD READS ATTEMPTS FOR, and why it is bounded.
+ *
+ * Same wall as `loadSpend` above and the same arithmetic: `cost_usd` and the
+ * four token counts live on the ATTEMPT (codec.py:285) and no route aggregates
+ * them, so a per-step figure costs one `GET /v1/tasks/{id}/attempts` per step.
+ * A board showing ten workflows of five steps would be fifty requests against a
+ * 20 rps bucket shared with every other tab the operator has open.
+ *
+ * Twelve tasks at three in flight, started only after the board itself has
+ * landed. A step outside the sample renders `not sampled` -- which is a THIRD
+ * absence, distinct from "no attempt reported a cost" and from "the read
+ * failed", and the three must not render alike. An aggregation route is the
+ * standing request (audit S3); until it exists, a bounded sample that says so
+ * is the honest shape.
+ */
+const STEP_USAGE_SAMPLE_TASKS = 12
+const STEP_USAGE_CONCURRENCY = 3
+
+/** What one step's attempts add up to. Every summable field is nullable. */
+export interface StepUsage {
+  /** Attempts returned for this task. A real count -- 0 is possible and means the read succeeded with none. */
+  attempts: number
+  /** Of those, how many carried a cost. The rest are not zero. */
+  attemptsWithCost: number
+  /** Of those, how many carried any token figure. */
+  attemptsWithTokens: number
+  /** Checkpoint ids listed across the attempts. COUNTED, so 0 is a digit. */
+  checkpoints: number
+  costUsd: number | null
+  inputTokens: number | null
+  outputTokens: number | null
+  cacheReadTokens: number | null
+  cacheCreationTokens: number | null
+}
+
+export interface WorkflowUsage {
+  /** Usage for every task whose attempts were read. */
+  byTaskId: Map<string, StepUsage>
+  /** Task ids left out because the sample ceiling was reached. Not zero-cost. */
+  notSampled: Set<string>
+  /** Task id -> why its attempt read failed. Not zero-cost either. */
+  failed: Map<string, string>
+  /** Published so the screen can say what the ceiling was, rather than imply none. */
+  sampleLimit: number
+  /** Distinct task ids the board asked about. */
+  tasksRequested: number
+}
+
+/**
+ * Attempt usage for the tasks a workflow board has on screen.
+ *
+ * Takes the ids rather than re-reading the board: the screen has them in hand,
+ * and a second read could disagree with the graph that is already drawn.
+ */
+export async function loadWorkflowUsage(
+  taskIds: readonly string[],
+): Promise<Result<WorkflowUsage>> {
+  const wanted = Array.from(new Set(taskIds))
+  const sample = wanted.slice(0, STEP_USAGE_SAMPLE_TASKS)
+  const notSampled = new Set(wanted.slice(STEP_USAGE_SAMPLE_TASKS))
+
+  // No step has a task yet. A real zero -- the workflow has not reached any of
+  // them -- and distinct from "we could not read the attempts".
+  if (sample.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+
+  const results = await mapWithLimit(sample, STEP_USAGE_CONCURRENCY, (id) =>
+    USE_FIXTURES ? fixtureStepAttempts(id) : loadAttempts(id),
+  )
+
+  const byTaskId = new Map<string, StepUsage>()
+  const failed = new Map<string, string>()
+  results.forEach((r, i) => {
+    const id = sample[i]
+    if (id === undefined) return
+    if (r.status === 'error') {
+      failed.set(id, r.error.message)
+      return
+    }
+    // `loading` cannot be awaited into existence here, but the union permits
+    // it and a silent `continue` would record the task as measured-with-zero.
+    if (r.status === 'loading') {
+      failed.set(id, 'The attempt read did not complete.')
+      return
+    }
+    byTaskId.set(id, rollUpAttempts(r.status === 'empty' ? [] : r.data.attempts))
+  })
+
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      byTaskId,
+      notSampled,
+      failed,
+      sampleLimit: STEP_USAGE_SAMPLE_TASKS,
+      tasksRequested: wanted.length,
+    },
+  }
+}
+
+/**
+ * Sum one task's attempts.
+ *
+ * Each field is summed SEPARATELY and stays null until some attempt actually
+ * carried it -- `record_spend` writes only the keys the runner reported, so an
+ * attempt can have input tokens and no output, and `(input ?? 0) + (output ??
+ * 0)` counts the missing half as a zero. That is the same defect
+ * `AgentDetail.tsx:408` records having already been fixed once.
+ */
+function rollUpAttempts(attempts: readonly AttemptRow[]): StepUsage {
+  return {
+    attempts: attempts.length,
+    attemptsWithCost: attempts.filter((a) => typeof a.cost_usd === 'number' && Number.isFinite(a.cost_usd)).length,
+    attemptsWithTokens: attempts.filter((a) =>
+      [a.input_tokens, a.output_tokens, a.cache_read_input_tokens, a.cache_creation_input_tokens].some(
+        (v) => typeof v === 'number' && Number.isFinite(v),
+      ),
+    ).length,
+    checkpoints: attempts.reduce((t, a) => t + a.checkpoints.length, 0),
+    costUsd: sumReported(attempts, (a) => a.cost_usd),
+    inputTokens: sumReported(attempts, (a) => a.input_tokens),
+    outputTokens: sumReported(attempts, (a) => a.output_tokens),
+    cacheReadTokens: sumReported(attempts, (a) => a.cache_read_input_tokens),
+    cacheCreationTokens: sumReported(attempts, (a) => a.cache_creation_input_tokens),
+  }
+}
+
+/**
+ * Attempts for the workflow board's step figures.
+ *
+ * `fixtureAttempts` reports null for every usage field, which is faithful to an
+ * attempt that ran before usage capture and would mean every node on the board
+ * read "not reported" in development -- the one state that ships unlooked-at
+ * would be the ordinary one, which is the failure `fixtureSpendAttempts`
+ * already exists to avoid.
+ *
+ * The mix here is the one the node has to survive, and it is chosen per task id
+ * so it does not move between refreshes:
+ *
+ *   * `task_wf_plan`    figures present on both attempts;
+ *   * `task_wf_scan_a`  a MEASURED ZERO cost -- the digit case. A mock runner
+ *                       really does cost nothing, and `$0.00` here is a
+ *                       reading, not an absence;
+ *   * `task_wf_scan_b`  attempts that carry nothing. "not reported";
+ *   * anything else     one attempt with figures.
+ */
+async function fixtureStepAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
+  await new Promise((r) => setTimeout(r, 70))
+  noteFixtureProbe('/v1/tasks/{id}/attempts', 70, true)
+  const mk = (n: number, usage: Partial<AttemptRow>, checkpoints: string[] = []): AttemptRow => ({
+    attempt_id: `${taskId}-a${n}`,
+    task_id: taskId,
+    tenant_id: FIXTURE_TENANT,
+    generation: n,
+    lease_id: `lease-${taskId}-${n}`,
+    backend: 'CLOUD_RUN_JOB',
+    execution_name: null,
+    created_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    started_at: new Date(Date.now() - 19 * 60_000).toISOString(),
+    completed_at: null,
+    exit_code: null,
+    error: null,
+    peak_rss_bytes: null,
+    peak_disk_bytes: null,
+    oom_near_miss: false,
+    checkpoints,
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_input_tokens: null,
+    cache_creation_input_tokens: null,
+    cost_usd: null,
+    ...usage,
+  })
+
+  if (taskId === 'task_wf_scan_a') {
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      // cost_usd: 0 EXACTLY. A mock runner costs nothing and reported so; the
+      // node must print "$0.00" as a digit, never the absent sentence.
+      data: { attempts: [mk(1, { cost_usd: 0, input_tokens: 0, output_tokens: 0 })] },
+    }
+  }
+  if (taskId === 'task_wf_scan_b') {
+    return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(1, {})] } }
+  }
+  if (taskId === 'task_wf_plan') {
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        attempts: [
+          mk(2, { input_tokens: 21_400, output_tokens: 3_180, cache_read_input_tokens: 104_000, cache_creation_input_tokens: 9_900, cost_usd: 0.42 }, ['ckpt_plan_2']),
+          // A retry that predates usage capture: real attempt, no figures.
+          mk(1, {}),
+        ],
+      },
+    }
+  }
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      attempts: [
+        mk(1, { input_tokens: 8_200, output_tokens: 1_050, cache_read_input_tokens: 44_000, cache_creation_input_tokens: 5_100, cost_usd: 0.0061 }, ['ckpt_a', 'ckpt_b']),
+      ],
     },
   }
 }
