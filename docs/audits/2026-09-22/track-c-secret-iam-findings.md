@@ -1,8 +1,10 @@
-# Two secret-IAM findings for Track C, and one decision recorded
+# Three secret-IAM findings for Track C, and one decision recorded
 
-Found on 2026-09-22 while closing the secret-version leak (`7fe7660`). Neither
-is a change to Track C's files — both are reported here, per CLAUDE.md, rather
-than patched.
+Findings 1 and 2 were found on 2026-09-22 while closing the secret-version leak
+(`7fe7660`). Finding 3 was added the same day while adding retention to the
+publish path, which is the half of that leak `7fe7660` did not close. None of
+them is a change to Track C's files — all three are reported here, per
+CLAUDE.md, rather than patched.
 
 ---
 
@@ -109,6 +111,99 @@ the *sole* reason the still-valid publish path exists at all. If it wrote both
 halves, `UNVERIFIED_NEEDED` could be deleted outright — no IAM change, invariant
 preserved. Track D owns that script, so it is ours to do if the residual ever
 stops being acceptable.
+
+---
+
+## Finding 3 — the broker cannot expire a secret version, and retention needs it
+
+**This is a request for a binding, not a change to Track C's files.** Nothing in
+`terraform/` was edited.
+
+### The problem the binding is for
+
+Closing the leak (`7fe7660`) stopped the platform writing *identical* versions.
+It did not expire anything. Every LEGITIMATE refresh still appends a version and
+nothing has ever destroyed or disabled one: `swarm-tenant-u-bogdan-anthropic`
+held **1,816 versions, all ENABLED, zero destroyed** on 2026-09-22.
+
+Only `latest` is ever read — `agent_worker.secrets.SecretManagerClient.access`
+defaults to it, `quota_broker.secretstore.SecretManagerStore.access` pins
+`/versions/latest`, and the Cloud Run mount `scheduler.dispatch` builds sets
+`version="latest"`. So 1,815 of those versions had no consumer, and every one of
+them stayed **retrievable** by anything holding `secretAccessor` on the secret.
+That is the same principle `scripts/create-secrets.sh:226` already states: a
+credential that rotates but leaves its predecessor enabled has not rotated.
+
+The refresh cadence itself is correct and is not being changed — see
+`sweep_accounts` for why idle accounts are refreshed on purpose. At one exchange
+every ~5 hours per account, the steady state is ~1,752 new versions a year per
+account, forever, and the only lever is expiring what they supersede.
+
+### What was added, and how it behaves until the binding exists
+
+`quota_broker.secretstore.SecretManagerStore.add_version` now destroys every
+ENABLED version older than the newest three, guarded so that it can only ever
+act on `swarm-tenant-*` / `swarm-account-*` names, never on the version the
+publish just wrote, and never down to zero enabled versions.
+
+**It fails safe and loudly.** Retention runs after the write and cannot fail it:
+a `PermissionDenied` is logged once per secret per process, naming the two
+missing permissions, and the publish succeeds. The retained set is recomputed
+from a live listing on every publish, with no marker recording that a secret was
+pruned, so the moment the binding lands the next publish catches up — no
+backfill, no migration, no redeploy required for correctness.
+
+### Exactly what is missing, and on what
+
+Read from the live policies on 2026-09-22 (read-only; nothing was changed):
+
+| Grant | Where | Permissions relevant here |
+|---|---|---|
+| `projects/saga-agents-staging/roles/swarmSecretLister` | project | `secrets.create/get/list/getIamPolicy/setIamPolicy`, `versions.add` |
+| `roles/secretmanager.secretVersionAdder` | per secret, both halves | `versions.add`, `secrets.rotate` |
+| `roles/secretmanager.secretAccessor` | per secret, `-refresh` half only | `versions.access` |
+
+`swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com` therefore holds
+**neither `secretmanager.versions.list` nor `secretmanager.versions.destroy`**,
+anywhere. Both are needed: the retention pass lists the versions of the secret it
+just wrote and destroys the ones past the newest three.
+
+**Requested, for Track C to accept or reject:** grant the broker
+`secretmanager.versions.list` and `secretmanager.versions.destroy`
+**per secret**, in `terraform/modules/secret_manager/main.tf`, on the
+`swarm-tenant-*` and `swarm-account-*` secrets this platform creates — alongside
+the existing `version_adder` binding, and on the `-refresh` half too, which grows
+at the same rate.
+
+Three notes on the shape:
+
+* **Per secret, not project-wide.** Finding 1 above objects to
+  `swarmSecretLister` granting `versions.add` across a shared project; adding
+  `versions.destroy` to that role would repeat the same mistake with a strictly
+  worse blast radius. The code's name guard refuses to act outside this
+  platform's names, but a guard in one component is not a substitute for a grant
+  that cannot reach another team's secrets in the first place.
+* **`roles/secretmanager.secretVersionManager` would cover it and is wider than
+  needed.** It adds `versions.enable`, `versions.disable` and `versions.get`,
+  none of which this uses. A two-permission custom role is the closer fit.
+  (Incidentally: `terraform/bootstrap/variables.tf:178-190` says every role in
+  that refusal list "confers `secretmanager.versions.access`, directly or by
+  inheritance". That is true of `secretmanager.admin` and `secretAccessor`, but
+  the live definition of `secretVersionManager` does **not** include
+  `versions.access`. The role still does not belong on a CI identity — project-
+  wide destroy is reason enough — but the stated reason is not the real one, and
+  that is Track C's line to correct or keep.)
+* **`version_destroy_ttl` is already `86400s`** (`modules/secret_manager/
+  variables.tf:43`), which is the right pairing: a destroyed version becomes
+  unreadable immediately, so the security property lands at once, and stays
+  restorable for a day if a retention pass ever turns out to be wrong.
+
+### Not claimed
+
+No IAM policy was changed and no secret version was created, read or destroyed
+while establishing any of the above. The retention code has been exercised
+against a fake client only; it has never run against Secret Manager, because the
+permission to do so does not exist yet.
 
 ---
 
