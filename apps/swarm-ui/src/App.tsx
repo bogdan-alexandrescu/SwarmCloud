@@ -8,6 +8,8 @@ import { AttemptTimelineScreen } from './AttemptTimeline'
 import { CapacityScreen } from './Capacity'
 import { DataSourceStrip } from './DataSources'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
+import { HELP_ROUTE } from './help'
+import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -200,6 +202,17 @@ const SECTIONS: SectionDef[] = [
 const REFERENCE = 'reference'
 
 /**
+ * Help. Reachable, and deliberately NOT one of the sections either (§B7.3).
+ *
+ * Exactly the argument above, for exactly the same reason: it is a thing you
+ * look up, not a thing you work in. It takes a tail -- `#help/absent-vs-zero`
+ * -- because every `?` card in the product links to one topic, and a link that
+ * dumped the reader at the top of a page of thirteen would be a link nobody
+ * follows twice.
+ */
+const HELP = HELP_ROUTE
+
+/**
  * Every hash the eleven-item nav produced, still resolving.
  *
  * Not a courtesy. These hashes are in runbooks, in incident notes and in the
@@ -284,6 +297,12 @@ function fromHash(): Route {
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
 
+  // The tail is a topic id and is carried VERBATIM, including one this build
+  // does not have: HelpScreen says which topic was asked for and lists what it
+  // does carry. Silently rewriting an unknown topic to the top of the page
+  // would turn a stale link into a page that looks right and answers nothing.
+  if (head === HELP) return { sectionId: HELP, tab: tail.join('/'), ...blank }
+
   // THE AGENT DRAWER, in its current form and its old one. `agents/task/<id>`
   // is explicit so that a task whose id happens to spell a tab name cannot be
   // mistaken for one; `agents/<id>` is what the old nav wrote and is still
@@ -338,6 +357,7 @@ function canonical(r: Route): string {
     return r.taskPane === 'attempts' ? `${base}/attempts` : base
   }
   if (r.sectionId === REFERENCE) return REFERENCE
+  if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   return `${r.sectionId}/${r.tab}`
 }
 
@@ -378,7 +398,11 @@ export function App() {
       <Nav at={at} go={go} />
 
       {section === null ? (
-        <ReferenceScreen />
+        at.sectionId === HELP ? (
+          <HelpScreen topic={at.tab} />
+        ) : (
+          <ReferenceScreen />
+        )
       ) : (
         <>
           <SubNav section={section} tab={at.tab} go={go} />
@@ -426,6 +450,19 @@ function Nav({ at, go }: { at: Route; go: (to: string) => void }) {
           onClick={() => go(REFERENCE)}
         >
           Reference
+        </button>
+        {/* THE HEAD `?` (§B7.3). The way into Help from anywhere, for the
+            reader who has not got a `?` in front of them. A glyph and an
+            accessible name, not the word "Help" -- the rail is the product's
+            five questions and a sixth word beside them reads as a sixth. */}
+        <button
+          className={at.sectionId === HELP ? 'is-on' : ''}
+          aria-current={at.sectionId === HELP ? 'page' : undefined}
+          aria-label="Help"
+          title="Help"
+          onClick={() => go(HELP)}
+        >
+          ?
         </button>
       </div>
     </nav>

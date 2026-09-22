@@ -1,7 +1,9 @@
-import { useCallback, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useId, type CSSProperties, type ReactNode } from 'react'
 import { loadAgentRun, type AgentRun } from './api'
 import { DispatchFacts } from './Dispatch'
 import { num } from './fetch'
+import { HELP, type TopicId } from './help'
+import { HelpCard } from './HelpCard'
 import { LivenessBadge } from './Liveness'
 import { Screen, timeAgo } from './Shell'
 import {
@@ -106,7 +108,18 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
   )
 }
 
-function Run({ run }: { run: AgentRun }) {
+/**
+ * The screen's body, once the load has resolved.
+ *
+ * EXPORTED FOR ONE REASON. `tests/agentdetail.test.tsx` is the acceptance test
+ * for §B7.1 -- it renders this screen with a cost that was never reported and
+ * asserts that the surface, with every help card CLOSED, still tells absent
+ * from zero. `AgentDetailScreen` above wraps this in `Screen`, whose load runs
+ * in an effect, so rendering that statically yields a skeleton and would make
+ * the acceptance test assert nothing at all. The test drives the real
+ * component with a real `AgentRun` instead.
+ */
+export function Run({ run }: { run: AgentRun }) {
   const { task, events } = run
   const now = Date.now()
 
@@ -164,6 +177,18 @@ function Em() {
  * `tone` carries the two absences the platform keeps confusing:
  *   absent  the platform did not record it. The value is a SENTENCE.
  *   unread  we failed to read it. The platform may well have the number.
+ *
+ * WHAT `help` IS FOR, AND WHAT IT IS NOT FOR. The `?` carries the EXPLANATION
+ * -- why this figure can be absent, what would have written it. It never
+ * carries the FACT. `value` and `tone` still say, on the surface and without
+ * any interaction, whether there is a number here: an absent tile is dashed,
+ * faint, and reads as a phrase where its neighbours read as digits. If this
+ * tile needs its `?` opened before absent can be told from zero, the tile is
+ * wrong -- see `tests/agentdetail.test.tsx`, which renders this screen with
+ * every card CLOSED and asserts exactly that.
+ *
+ * The glyph sits INSIDE the label and after it, never after the value: a `?`
+ * tucked against a figure reads as a footnote marker on the figure.
  */
 function Metric({
   label,
@@ -172,6 +197,7 @@ function Metric({
   sub,
   foot,
   tone,
+  help,
 }: {
   label: string
   value: ReactNode
@@ -179,10 +205,15 @@ function Metric({
   sub?: ReactNode
   foot?: string
   tone?: 'absent' | 'unread' | 'alert' | 'good'
+  help?: TopicId
 }) {
+  const descId = useId()
   return (
     <div className={`ctl-metric${tone ? ` is-${tone}` : ''}`}>
-      <span className="ctl-metric-label">{label}</span>
+      <span className="ctl-metric-label" aria-describedby={help === undefined ? undefined : descId}>
+        {label}
+        {help !== undefined && <HelpCard topic={help} describedById={descId} />}
+      </span>
       <span className="ctl-metric-value">
         {value}
         {unit !== undefined && <span className="ctl-metric-unit">{unit}</span>}
@@ -253,22 +284,64 @@ function Util({
 /**
  * The four shapes an absent panel can have. They are four different facts and
  * this platform's defining bug was drawing them alike.
+ *
+ * THE MARK IS NOT DECORATION, AND IT IS WHY THE EXPLANATIONS COULD LEAVE.
+ * Until now these four were told apart by a border colour, a background tint
+ * and a paragraph. Move the paragraph into a `?` and colour is all that is
+ * left -- and colour alone is exactly what this file already refuses for state
+ * chips ("a colour-only chip fails in a greyscale incident screenshot"). The
+ * same argument applies with more force here, because the thing being told
+ * apart is whether a number exists at all.
+ *
+ * So every panel now carries a word. It is two syllables, it is in the corner,
+ * it is always rendered, and it survives greyscale, a screenshot and a reader
+ * who hovers nothing. That is the FACT. The `?` beside the heading carries
+ * only the reasoning.
  */
+const ABSENT_MARK: Readonly<Record<'zero' | 'failed' | 'partial' | 'admin', string>> = {
+  zero: 'real zero',
+  failed: 'read failed',
+  partial: 'partial',
+  admin: 'admin only',
+}
+
 function Absent({
   kind,
   heading,
   children,
   foot,
+  help,
 }: {
   kind: 'zero' | 'failed' | 'partial' | 'admin'
   heading: string
   children: ReactNode
   foot?: string
+  help?: TopicId
 }) {
   const cls = kind === 'zero' ? '' : ` is-${kind}`
+  const descId = useId()
   return (
     <div className={`ctl-empty${cls}`} role={kind === 'zero' ? undefined : 'status'}>
-      <h3>{heading}</h3>
+      <span
+        style={{
+          float: 'right',
+          marginLeft: 'var(--ctl-s3)',
+          border: '1px solid var(--line)',
+          borderRadius: 'var(--ctl-radius-sm)',
+          padding: '1px 6px',
+          font: '600 10px/1.7 var(--mono)',
+          letterSpacing: '.06em',
+          textTransform: 'uppercase',
+          color: 'var(--text-dim)',
+          background: 'var(--surface-2)',
+        }}
+      >
+        {ABSENT_MARK[kind]}
+      </span>
+      <h3 aria-describedby={help === undefined ? undefined : descId}>
+        {heading}
+        {help !== undefined && <HelpCard topic={help} describedById={descId} />}
+      </h3>
       <p>{children}</p>
       {foot !== undefined && <span className="ctl-empty-foot">{foot}</span>}
     </div>
@@ -389,8 +462,20 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         />
         {/* No number may appear for anything that came from the attempt read.
             A reassuring zero on a failed read is the worst output available. */}
-        <Metric label="Peak memory" value="read failed" tone="unread" sub="The attempt query did not answer." />
-        <Metric label="Spend" value="read failed" tone="unread" sub="The attempt query did not answer." />
+        <Metric
+          label="Peak memory"
+          value="read failed"
+          tone="unread"
+          sub="The attempt query did not answer."
+          help="read-failed"
+        />
+        <Metric
+          label="Spend"
+          value="read failed"
+          tone="unread"
+          sub="The attempt query did not answer."
+          help="read-failed"
+        />
       </div>
     )
   }
@@ -430,12 +515,12 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         tone={attempts.length === task.attempt_count ? undefined : 'unread'}
       />
       {peak === null ? (
-        <Metric
-          label="Peak memory"
-          value="not recorded"
-          tone="absent"
-          sub="Written when an attempt ends. A running attempt has none."
-        />
+        // THE VALUE IS THE FACT AND IT STAYS. "not recorded" on a dashed
+        // tile, in the faint colour, beside neighbours that are digits --
+        // three signals, none of them hover, none of them colour alone.
+        // The sentence that used to sit under it explained WHY it can be
+        // absent, which is the `?`'s job now.
+        <Metric label="Peak memory" value="not recorded" tone="absent" help="peak-memory" />
       ) : (
         <Metric
           label="Peak memory"
@@ -451,12 +536,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         />
       )}
       {tokIn === null && tokOut === null ? (
-        <Metric
-          label="Tokens"
-          value="not reported"
-          tone="absent"
-          sub="No attempt reported a token count. Not the same as a run that used none."
-        />
+        <Metric label="Tokens" value="not reported" tone="absent" help="tokens-reported" />
       ) : (
         <Metric
           label="Tokens"
@@ -472,28 +552,29 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         />
       )}
       {cost === null ? (
-        <Metric
-          label="Token cost"
-          value="not reported"
-          tone="absent"
-          sub="No attempt reported a cost. This is an absent measurement, not $0.00."
-        />
+        <Metric label="Token cost" value="not reported" tone="absent" help="token-cost" />
       ) : (
         <Metric
           label="Token cost"
           value={usd(cost)}
+          // The COVERAGE stays: "2 of 3 reported" is a fact about this run and
+          // the reason the total may not be the whole of it. That there is no
+          // infrastructure cost to add is a fact about the platform, and moved.
           sub={`Summed over ${plural(spent.length, 'attempt')} of ${attempts.length} that reported.`}
-          foot="tokens only — no infrastructure cost exists"
+          help="token-cost"
         />
       )}
+      {/* A DIGIT, INCLUDING WHEN IT IS 0, AND THAT IS THE POINT. This zero was
+          MEASURED -- the attempt documents were read and none lists a
+          checkpoint -- so it renders as a figure on a solid tile while its
+          unmeasured neighbours render as phrases on dashed ones. The contrast
+          between the two shapes IS the honesty rule, and it is visible with
+          every card shut. */}
       <Metric
         label="Checkpoints"
         value={`${ckpts}`}
-        sub={
-          ckpts === 0
-            ? 'No attempt document lists one.'
-            : `Across ${plural(attempts.length, 'attempt')}. Contents are not recorded.`
-        }
+        sub={ckpts === 0 ? undefined : `Across ${plural(attempts.length, 'attempt')}.`}
+        help="checkpoints"
       />
     </div>
   )
@@ -690,9 +771,13 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
     return (
       <section className="section">
         <h2>Attempts</h2>
-        <Absent kind="failed" heading="The attempt history could not be read">
-          This is a failed read, not a task that never ran. Nothing below may be
-          concluded from its absence. {attemptsDetail}
+        <Absent kind="failed" heading="The attempt history could not be read" help="read-failed">
+          {/* The DETAIL is the fact -- which read failed and how. What may not
+              be concluded from a failed read is a standing rule, and moved.
+              It is the whole body now, so a null one must not leave an empty
+              paragraph under a heading: the panel would still be marked READ
+              FAILED, but it would have stopped saying anything about which. */}
+          {attemptsDetail ?? 'The attempt query reported no detail.'}
         </Absent>
       </section>
     )
@@ -718,25 +803,27 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
                 ? 'This task finished, and no attempt document came back'
                 : 'The task counts attempts, and no document came back'
             }
+            help="attempt-documents"
           >
-            The task counts {plural(task.attempt_count, 'attempt')} and the query
-            returned none. An attempt document is written when capacity is
-            reserved, so these documents are missing, which is not the same as
-            never having run.
+            {/* THE TWO NUMBERS ARE THE FACT: what the task counts against what
+                came back. The reader needs no help card to see the gap. */}
+            Counts {plural(task.attempt_count, 'attempt')}, query returned 0.
             {!finished && (
               <>
                 {' '}
-                This task is <code>{task.state}</code>, so the attempt it counts
-                should be readable right now.
+                Task is <code>{task.state}</code>.
               </>
             )}
           </Absent>
         ) : (
-          <Absent kind="zero" heading="Nothing has been admitted yet">
-            The query succeeded and returned nothing. An attempt document is
-            written when capacity is reserved, so a task that is{' '}
-            <code>{task.state}</code> genuinely has none. This is a real zero,
-            not a failed read.
+          <Absent kind="zero" heading="Nothing has been admitted yet" help="attempt-documents">
+            {/* "REAL ZERO" is printed in the corner of this panel by `Absent`,
+                always, in words -- so the one thing a reader must not have to
+                hover for is the one thing they cannot miss. What remains here
+                is the measurement itself and the state it was taken in. WHY a
+                task in that state has no attempts is the `?`. */}
+            The query succeeded and returned nothing. Task is{' '}
+            <code>{task.state}</code>.
           </Absent>
         )}
       </section>
@@ -786,70 +873,61 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
 }
 
 /**
- * The standing rules behind every figure on the attempt cards, ONCE.
+ * THE STANDING RULES, NO LONGER PRINTED HERE.
  *
- * Each of these was originally a paragraph under the panel it applied to,
- * which meant a three-attempt run repeated the same four explanations three
- * times and none of them got read. They are invariants of the platform rather
- * than facts about this run, so they belong here -- the same shape
- * `QuotaDetail.tsx` uses for the six provider states.
+ * This was a `<dl>` of seven `<dt>/<dd>` pairs -- roughly a screen of prose
+ * under every agent, on every visit, whether or not the reader had ever
+ * wondered. It was already an improvement on what came before: each of those
+ * had once been a paragraph under the panel it applied to, so a three-attempt
+ * run repeated the same four explanations three times and none got read.
+ *
+ * The owner directive finishes the job. Not one of the seven is a fact about
+ * THIS run -- they are invariants of the platform, true of every run there has
+ * ever been, which is exactly the material the Help section exists to hold. So
+ * they live in `help.ts` now, and what stands here is the footer link §B7.3
+ * asks every card to carry.
+ *
+ * NOTHING MEASURED LEFT WITH THEM, and that is the test. Every figure these
+ * rules were qualifying still qualifies itself on the surface: an unmeasured
+ * one is a phrase on a dashed tile, a track with no ceiling to read is hatched
+ * rather than empty, and a panel that is a real zero says "real zero" in its
+ * corner. The prose explained why those shapes mean what they mean. It never
+ * carried the meaning itself.
+ *
+ * Seven pairs, six links: the two that were "a null spend figure is not a
+ * zero" and "token cost is the only cost that exists" were always one topic
+ * argued twice, and are one topic here.
  */
 function AttemptLegend() {
+  const topics: TopicId[] = [
+    'requests-are-ceilings',
+    'workspace-memory',
+    'oom-near-miss',
+    'cpu-not-sampled',
+    'token-cost',
+    'checkpoints',
+  ]
   return (
-    <section className="section legend">
-      <h2>Reading these cards</h2>
-      <dl>
-        <dt>The requested figure is a ceiling, not a target</dt>
-        <dd>
-          <code>requests == limits</code> platform-wide — there is no bursting,
-          so nothing absorbs an overshoot. A bar at 90% is not &ldquo;well
-          utilised&rdquo;; it is one chatty prompt from an OOM kill.
-        </dd>
-        <dt>The workspace is a slice OF memory</dt>
-        <dd>
-          Not capacity on top of it. The workspace is a memory-backed tmpfs,
-          because the Terraform google provider cannot express Cloud Run&apos;s
-          disk-backed one (<code>empty_dir.medium</code> accepts only{' '}
-          <code>MEMORY</code>), so workspace bytes come out of the memory
-          ceiling above them.
-        </dd>
-        <dt>
-          <code>oom_near_miss</code> is the claim; the colour is not
-        </dt>
-        <dd>
-          The flag is set by the worker against the cgroup counters the
-          kernel&apos;s OOM killer itself reads. The warn and bad colours on the
-          bars are presentation, and exist only so a tall bar is visible before
-          you reach the flag.
-        </dd>
-        <dt>CPU is never sampled</dt>
-        <dd>
-          The sampler measures memory and disk. A cpu bar is drawn with its
-          request and a hatched track rather than omitted, because a panel
-          headed &ldquo;requested vs utilised&rdquo; that silently drops a third
-          of the envelope reads as if cpu were known to be fine.
-        </dd>
-        <dt>A null spend figure is not a zero</dt>
-        <dd>
-          Only the CLI runners report tokens at all, and every attempt that ran
-          before the worker capture shipped carries null for all five fields. A
-          mock task costs nothing on purpose; an unparsed result cost an unknown
-          amount. Rendering both as <code>$0.00</code> would lie about one.
-        </dd>
-        <dt>Token cost is the only cost that exists</dt>
-        <dd>
-          There is no billing integration of any kind, so the Cloud Run,
-          Firestore and GCS cost of a run is not recorded anywhere this page can
-          read. It is missing, not zero.
-        </dd>
-        <dt>What is INSIDE a checkpoint is not recorded</dt>
-        <dd>
-          Only the id, the size and the uri. Nothing writes a manifest of an
-          archive&apos;s contents, so no screen can list its files — that needs
-          a new route and a read out of GCS. The uri is what to fetch.
-        </dd>
-      </dl>
-    </section>
+    <p
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'baseline',
+        gap: '4px var(--ctl-s2)',
+        margin: 'var(--ctl-s4) 0 0',
+        paddingTop: 'var(--ctl-s3)',
+        borderTop: '1px solid var(--line)',
+        font: '11px/1.7 var(--mono)',
+        color: 'var(--text-faint)',
+      }}
+    >
+      <span>Reading these cards:</span>
+      {topics.map((id) => (
+        <a key={id} href={`#${HELP[id].anchor}`} style={{ color: 'var(--text-dim)' }}>
+          {HELP[id].title}
+        </a>
+      ))}
+    </p>
   )
 }
 
