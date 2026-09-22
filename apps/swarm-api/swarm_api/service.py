@@ -38,6 +38,7 @@ from .auth import AuthContext
 from .codec import quota_to_api
 from .errors import Forbidden, ValidationFailed
 from .metrics import ApiMetrics
+from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
 from .settings import ApiSettings
 from .store import Store
@@ -526,6 +527,12 @@ class SubmissionService:
                 "provider": profile.provider,
                 "units": units,
                 "pools": required,
+                # What this profile's RUNNER refuses to start without, so a
+                # submit form can refuse locally instead of spending a slot on
+                # an attempt that cannot succeed. Served as data for the same
+                # reason `blocked_reason_groups` is: a client that restated it
+                # would be a second copy of a worker rule nothing checks.
+                "input_contract": input_contract(profile),
                 "admission": analyse_profile(
                     required=required,
                     pools=readable,

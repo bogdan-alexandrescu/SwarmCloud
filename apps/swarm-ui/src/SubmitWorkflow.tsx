@@ -7,6 +7,7 @@ import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
   consequenceOf,
+  requiredInputKeys,
   type DispatchStrategy,
   type RunnerProfile,
   type Workflow,
@@ -53,10 +54,16 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
     : { status: 'ok', data, fetchedAt: cap.fetchedAt, serverAt: cap.serverAt }
 }
 
-/** `rejected`: refused, so nothing was created and the form can be corrected.
+/** One reason this form refused to send, attributed to the step that caused it.
+ *  `stepId` is `''` for a step that has not been named yet. */
+interface StepProblem { stepId: string; message: string }
+
+/** `not_sent`: this browser refused; NOTHING left, so there is nothing to check for.
+ *  `rejected`: the API refused, so nothing was created and the form can be corrected.
  *  `uncertain`: no answer we can trust, so the workflow may already exist. */
 type Submission =
   | { kind: 'idle' | 'sending' }
+  | { kind: 'not_sent'; problems: StepProblem[] }
   | { kind: 'rejected' | 'uncertain'; error: ApiError }
   | { kind: 'created'; workflow: Workflow; dispatch: DispatchEcho | null }
 
@@ -141,7 +148,80 @@ async function postWorkflow(body: unknown): Promise<Submission> {
   return res.status < 500 ? { kind: 'rejected', error } : { kind: 'uncertain', error }
 }
 
-interface StepDraft { key: number; stepId: string; profile: string; dependsOn: string[] }
+interface StepDraft {
+  key: number
+  stepId: string
+  profile: string
+  dependsOn: string[]
+  /** RAW TEXT, not a parsed object -- the same choice `Submit.tsx` makes.
+   *  A half-typed JSON object has to survive a keystroke, and parsing on every
+   *  change would delete the character that made it invalid. */
+  input: string
+  /** upstream step_id -> artifact filename. Keyed by step id and NOT by the
+   *  dependency's position, so reordering or removing a step cannot silently
+   *  re-point a filename at a different upstream. */
+  inputFrom: Record<string, string>
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+type ParsedInput =
+  | { ok: true; input: Record<string, unknown> }
+  | { ok: false; message: string }
+
+/**
+ * One step's `input`, parsed exactly as `Submit.tsx` parses the single-agent
+ * form's: blank means `{}`, and anything that is not a JSON OBJECT is refused
+ * here rather than sent -- `WorkflowStepCreate.input` is `dict[str, Any]`, so a
+ * bare array or number is a 422 about a type the caller cannot see.
+ */
+function parseStepInput(text: string): ParsedInput {
+  try {
+    const parsed: unknown = JSON.parse(text.trim() === '' ? '{}' : text)
+    if (!isRecord(parsed)) {
+      return { ok: false, message: 'the API stores input as a JSON object, so this must be one' }
+    }
+    return { ok: true, input: parsed }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'this is not JSON' }
+  }
+}
+
+/**
+ * The keys this step's runner demands and this step's input does not carry.
+ *
+ * The test is the RUNNER's, restated from `run_cli_agent`: present, a string,
+ * and not blank. A looser one here would pass `{"prompt": ""}` through to the
+ * identical failure, which is the whole class of defect this control exists to
+ * close -- the screen accepted it, the platform accepted it, and the agent
+ * refused it minutes later having already spent a slot and mounted a credential.
+ */
+function missingInputKeys(input: Record<string, unknown>, required: string[]): string[] {
+  return required.filter((key) => {
+    const value = input[key]
+    return typeof value !== 'string' || value.trim() === ''
+  })
+}
+
+/**
+ * `input_from`, narrowed to the dependencies that still exist.
+ *
+ * `validate_dag` refuses a source that is not also a dependency -- "an artifact
+ * cannot be staged from a step that may not have run yet" -- so the map is
+ * built FROM the filtered `depends_on` rather than filtered afterwards. A
+ * filename typed against a dependency that was later unchecked is kept in the
+ * draft and simply not sent, so re-checking it restores what was typed.
+ */
+function stagedArtifacts(step: StepDraft, dependsOn: string[]): Record<string, string> {
+  const staged: Record<string, string> = {}
+  for (const source of dependsOn) {
+    const filename = (step.inputFrom[source] ?? '').trim()
+    if (filename !== '') staged[source] = filename
+  }
+  return staged
+}
 
 export function SubmitWorkflowScreen() {
   return (
@@ -155,7 +235,11 @@ export function SubmitWorkflowScreen() {
 
 function Form({ sources }: { sources: FormSources }) {
   const first = sources.profiles[0]
-  const blank = (key: number): StepDraft => ({ key, stepId: '', profile: first ? first[0] : '', dependsOn: [] })
+  const byName = new Map<string, RunnerProfile>(sources.profiles)
+  // `'{}'` and not `''`, so the textarea shows the shape the field takes before
+  // anything is typed into it. `Submit.tsx` seeds its own the same way.
+  const blank = (key: number): StepDraft =>
+    ({ key, stepId: '', profile: first ? first[0] : '', dependsOn: [], input: '{}', inputFrom: {} })
   const [steps, setSteps] = useState<StepDraft[]>([blank(1)])
   const [dispatch, setDispatch] = useState<DispatchDraft>({
     strategy: DEFAULT_STRATEGY,
@@ -178,15 +262,70 @@ function Form({ sources }: { sources: FormSources }) {
   const dependedOn = new Set(steps.flatMap((s) => s.dependsOn.filter((d) => ids.includes(d))))
   const terminals = ids.filter((id) => id !== '' && !dependedOn.has(id))
   const send = () => {
+    // BUILT AND CHECKED BEFORE ANYTHING IS SENT. Every problem found here is a
+    // workflow that would have been accepted by the API and then failed at the
+    // agent, one step at a time, having spent a slot on each -- so the refusal
+    // is worth more than the submission. Every step is checked, not just the
+    // first bad one: fixing them one round-trip at a time is the same wait.
+    const problems: StepProblem[] = []
+    const body: Array<Record<string, unknown>> = []
+    for (const s of steps) {
+      const stepId = s.stepId.trim()
+      const parsed = parseStepInput(s.input)
+      if (!parsed.ok) {
+        // Labelled "Not sent", as `Submit.tsx` labels its own: a refusal phrased
+        // like the API's sends someone looking at the platform for a typo that
+        // is in this textarea.
+        problems.push({ stepId, message: `Not sent — ${parsed.message}.` })
+        continue
+      }
+      // null means THIS API DID NOT SAY which keys the runner demands, which is
+      // not the same as demanding none. Nothing is checked in that case and the
+      // form says so above; inventing a rule here would refuse valid workflows.
+      const required = requiredInputKeys(byName.get(s.profile))
+      const missing = required === null ? [] : missingInputKeys(parsed.input, required)
+      if (missing.length > 0) {
+        problems.push({
+          stepId,
+          message:
+            // The KEYS are named rather than the word "prompt": `required_keys`
+            // is a list the API sends, and a message that hardcoded one of its
+            // values would start lying the first time a runner demanded another.
+            `Not sent — ${s.profile} refuses an attempt whose input has no ` +
+            `${missing.map((k) => `"${k}"`).join(' and no ')}. Add ` +
+            `${missing.map((k) => `"${k}": "…"`).join(', ')} to this step's input. ` +
+            'The runner raises that refusal only once the step has been dispatched ' +
+            'and given a credential, so it costs a slot and a wait to discover.',
+        })
+        continue
+      }
+      // depends_on is filtered to ids that still exist: renaming a step after another
+      // depends on it would otherwise send an edge to a step that is no longer here.
+      const dependsOn = s.dependsOn.filter((d) => ids.includes(d))
+      const staged = stagedArtifacts(s, dependsOn)
+      body.push({
+        step_id: stepId,
+        runner_profile: s.profile,
+        // SENT ALWAYS, including when it is `{}`. `WorkflowStepCreate.input` is
+        // `Field(default_factory=dict)`, so an omitted `input` is an accepted
+        // workflow whose every agent step fails -- the defect this screen had.
+        // An empty object here is a caller who chose it, not a form that forgot.
+        input: parsed.input,
+        depends_on: dependsOn,
+        // Omitted when empty, unlike `input`: an empty `input_from` is exactly
+        // the default and stages nothing, whereas an empty `input` is a payload
+        // the runner still has to read.
+        ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
+      })
+    }
+    if (problems.length > 0) {
+      setSub({ kind: 'not_sent', problems })
+      return
+    }
     setSub({ kind: 'sending' })
     const repo = dispatch.repositoryUrl.trim()
-    // depends_on is filtered to ids that still exist: renaming a step after another
-    // depends on it would otherwise send an edge to a step that is no longer here.
     void postWorkflow({
-      steps: steps.map((s) => ({
-        step_id: s.stepId.trim(), runner_profile: s.profile,
-        depends_on: s.dependsOn.filter((d) => ids.includes(d)),
-      })),
+      steps: body,
       // Workflow-level, not per step: `integrate` produces ONE pull request, so
       // "which repository" cannot be a per-step answer (schemas.WorkflowCreate).
       strategy: dispatch.strategy,
@@ -204,6 +343,7 @@ function Form({ sources }: { sources: FormSources }) {
             // Self-dependency and a dependency on a step not in the workflow are
             // both rejected by validate_dag; not offering them beats explaining them.
             others={ids.filter((id, j) => id !== '' && j !== i)}
+            required={requiredInputKeys(byName.get(s.profile))}
             onChange={(next) => setSteps(steps.map((o, j) => (j === i ? next : o)))}
             onRemove={() => setSteps(steps.filter((_, j) => j !== i))} />
         ))}
@@ -242,11 +382,27 @@ function Form({ sources }: { sources: FormSources }) {
   )
 }
 
-function StepRow({ step, profiles, others, removable, onChange, onRemove }: {
+function StepRow({ step, profiles, others, removable, required, onChange, onRemove }: {
   step: StepDraft; profiles: Array<[string, RunnerProfile]>; others: string[]
+  /** What this step's runner refuses to start without, or null when this API
+   *  did not say. Computed once by the form so both the live warning here and
+   *  the refusal in `send` read the same answer. */
+  required: string[] | null
   removable: boolean; onChange: (next: StepDraft) => void; onRemove: () => void
 }) {
   const chosen = profiles.find(([name]) => name === step.profile)
+  // Live, so a missing prompt is visible while it is still being typed rather
+  // than only on the click that would have submitted it. The refusal in `send`
+  // is still the thing that stops the submission -- this only stops the reader
+  // being surprised by it.
+  const parsed = parseStepInput(step.input)
+  const missing = parsed.ok && required !== null ? missingInputKeys(parsed.input, required) : []
+  // ONLY the dependencies. `validate_dag` refuses an `input_from` source that
+  // is not also a dependency, so offering one would be offering a 422 -- and
+  // worse, the workflow it describes stages a file from a step that may not
+  // have run. Unchecking a dependency removes its row and nothing else.
+  const stageable = step.dependsOn.filter((d) => others.includes(d))
+  const inputId = `wf-step-input-${step.key}`
   return (
     <div className="row" style={{ display: 'block', paddingBottom: 10 }}>
       <div className="filters">
@@ -277,6 +433,46 @@ function StepRow({ step, profiles, others, removable, onChange, onRemove }: {
             <span className="mono">{id}</span>
           </label>
         ))}
+      </div>
+      {/* THE FIELD WHOSE ABSENCE MADE EVERY WORKFLOW FROM THIS SCREEN FAIL.
+          Same control and same error handling as the single-agent form
+          (`Submit.tsx`), deliberately: two idioms for one field is how the two
+          halves drifted far enough apart for one of them to lose it entirely. */}
+      <label className="t-label" htmlFor={inputId}>input (JSON object)</label>
+      <textarea id={inputId} className="mono" rows={4} style={{ width: '100%' }} value={step.input}
+        spellCheck={false} onChange={(e) => onChange({ ...step, input: e.target.value })} />
+      <p className="muted small">
+        Opaque to the platform: handed to this step's agent, validated only for size.
+        {required !== null && required.length > 0 && (
+          <> <span className="mono">{step.profile}</span> reads{' '}
+            <code>{required.map((k) => `input.${k}`).join(', ')}</code> and refuses the
+            attempt without it.</>
+        )}
+        {required === null && ' This API did not say which keys this profile requires, so nothing is checked here.'}
+      </p>
+      {!parsed.ok && <p className="warn-text" role="alert">Not sent — {parsed.message}.</p>}
+      {missing.length > 0 && (
+        <p className="warn-text" role="alert">
+          {step.profile} requires <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a
+          non-empty string. Submitting without it produces a step that is dispatched, given a
+          credential, and then fails — so this form will not send it.
+        </p>
+      )}
+      <div className="filters">
+        <span className="muted small">stage an artifact from</span>
+        {stageable.length === 0
+          ? <span className="muted small">— depend on a step first; an artifact cannot be staged from one that may not have run</span>
+          : stageable.map((id) => (
+            <label key={id}>
+              <span className="mono">{id}</span>
+              {/* The filename as the UPSTREAM step wrote it into SWARM_ARTIFACTS_DIR.
+                  It arrives in this step's workspace under the same name. Blank
+                  means nothing is staged from that step. */}
+              <input className="mono" value={step.inputFrom[id] ?? ''} spellCheck={false}
+                placeholder="artifact filename"
+                onChange={(e) => onChange({ ...step, inputFrom: { ...step.inputFrom, [id]: e.target.value } })} />
+            </label>
+          ))}
       </div>
     </div>
   )
@@ -338,6 +534,27 @@ function Outcome({ sub }: { sub: Submission }) {
           own state is written once at submission and never updated.
         </p>
         <Accepted echo={sub.dispatch} steps={sub.workflow.steps.length} />
+      </div>
+    )
+  }
+  // REFUSED HERE, so the "it may exist anyway" warning below must not appear:
+  // nothing left this browser and the Workflows board has nothing new on it.
+  if (sub.kind === 'not_sent') {
+    return (
+      <div className="state failed" role="status">
+        <h3>Not submitted: {sub.problems.length === 1 ? 'a step' : `${sub.problems.length} steps`} would have failed</h3>
+        <p>
+          Nothing was sent, so nothing was created. Each step below was refused here rather
+          than submitted, because the API would have accepted it and the agent would then
+          have refused it — after the step was dispatched and a credential was mounted.
+        </p>
+        <ul>
+          {sub.problems.map((p, i) => (
+            <li key={`${p.stepId}-${i}`}>
+              <span className="mono">{p.stepId === '' ? '(unnamed step)' : p.stepId}</span> — {p.message}
+            </li>
+          ))}
+        </ul>
       </div>
     )
   }

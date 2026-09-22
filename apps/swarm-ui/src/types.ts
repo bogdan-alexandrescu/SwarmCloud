@@ -56,6 +56,38 @@ export interface RunnerProfile {
    * render as "not measured" rather than as a zero.
    */
   admission?: ProfileAdmission
+  /**
+   * What this profile's RUNNER refuses to start without (`swarm_api/
+   * runnerinputs.py`). Optional for the same reason `admission` is: an API
+   * older than the field sends none, and that is "this API did not say",
+   * NOT "this profile needs nothing" -- the two have different remedies and
+   * `requiredInputKeys` keeps them apart.
+   */
+  input_contract?: RunnerInputContract
+}
+
+/**
+ * The keys a runner demands on `input`, each of which must be present and a
+ * non-empty string. `claude-code` and `codex` demand `prompt` and raise
+ * "requires a non-empty string input.prompt" without it, minutes into an
+ * attempt that has already consumed a slot and mounted a credential.
+ */
+export interface RunnerInputContract {
+  required_keys: string[]
+}
+
+/**
+ * The required keys for a profile, or null when this API did not say.
+ *
+ * NULL IS NOT AN EMPTY LIST. An empty list is a measured "nothing is
+ * required"; null is an unread rule, and a form must say so rather than
+ * silently applying no check -- the same distinction `headroomFor` keeps for
+ * an unread pool.
+ */
+export function requiredInputKeys(profile: RunnerProfile | undefined): string[] | null {
+  const contract = profile?.input_contract
+  if (contract === undefined || !Array.isArray(contract.required_keys)) return null
+  return contract.required_keys.filter((k): k is string => typeof k === 'string')
 }
 
 /**
