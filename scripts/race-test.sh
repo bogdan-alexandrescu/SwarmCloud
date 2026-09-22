@@ -16,6 +16,76 @@
 # pool, so the rest of the platform keeps working while it runs. The original
 # limit is restored on every exit path.
 #
+# ---------------------------------------------------------------------------
+# THIS SUITE CANNOT RUN IN-VPC TODAY, AND THE REASON IS A DECISION NOBODY HAS
+# TAKEN YET.
+# ---------------------------------------------------------------------------
+#
+# Narrowing the pool is a WRITE. `swarm-verify` -- the identity that runs the
+# in-VPC gate, because swarm-api's ingress refuses a laptop -- holds
+# roles/datastore.viewer (terraform/infra/verify.tf), so `fs_patch` below is
+# refused and this is the one target of the four that fails. It is not broken;
+# it is unauthorised, and which authority to grant is a security question with
+# three real answers. They are written out here, next to the code that needs the
+# permission, rather than in a document somebody has to find.
+#
+# terraform/ is TRACK C. Whichever option is chosen, the grant is Track C's to
+# make; this comment is a request, not a change.
+#
+# OPTION A -- grant swarm-verify a Firestore write role.
+#   Cost: Firestore IAM cannot scope below the DATABASE. This repository already
+#   established that and pays for it elsewhere: Firestore does not evaluate IAM
+#   Conditions on the data plane (tests/integration/test_register_tenant_grants.py),
+#   so there is no such thing as a grant scoped to `pools/*`. roles/datastore.user
+#   therefore means create, update and DELETE on every document in the `swarm`
+#   database -- every tenant's tasks, leases, attempts and secrets metadata, and
+#   the `pools/*` documents the whole platform admits against. It is also
+#   unattributed: a direct REST PATCH writes no event, increments no metric and
+#   names no actor, so nothing afterwards can say the test did it.
+#   And it keeps alive the exact capability this file's own comment (below, at
+#   "Narrow ${POOL_NAME}") says must never be exercised: writing `active`
+#   outside the admission transaction, which silently inflates capacity on a
+#   live deployment and makes the oversubscription assertion pass on a platform
+#   that is oversubscribed.
+#
+# OPTION B (RECOMMENDED) -- make swarm-verify an admin and narrow through
+#   `PUT /v1/admin/limits/runner/{profile}`.
+#   The capability is shaped like the operation, in four ways that A is not:
+#     * BOUNDED. `LimitRequest.limit` is `ge=0, le=100000` and `_check_runner`
+#       refuses any profile not in the frozen catalogue, so the request cannot
+#       name a pool that does not exist.
+#     * INCAPABLE OF THE DANGEROUS WRITE. `Store.upsert_pool` sets `hard_limit`
+#       and `enabled` and touches nothing else -- there is no value of this
+#       request that writes `active`. The field this file warns about becomes
+#       unreachable rather than merely unwritten.
+#     * ATTRIBUTED AND AUDITED. The route runs under `admin_auth`, the actor is
+#       the verified identity from the token, and it increments
+#       `admin_actions{action="limit_runner"}`.
+#     * ALREADY THE SUPPORTED PATH. It is what an operator uses during an
+#       incident, so the test exercises the interface the platform actually
+#       offers instead of reaching behind it.
+#   Cost, stated rather than minimised: `admin_auth` is ONE boolean. Admin is
+#   not scoped to one pool, so this identity would also gain pause/resume
+#   dispatch, provider and resource drains, tenant limits, and the admin read
+#   surfaces. That is a genuine widening. It is still far narrower than A --
+#   every one of those operations is bounded, validated and recorded, none of
+#   them reads a secret or another tenant's artifact, and all of them are
+#   reversible through the same API. The grant is one line:
+#   `admin_users` in terraform/environments/<env>/<env>.tfvars gaining
+#   `swarm-verify@<project>.iam.gserviceaccount.com`, which
+#   terraform/infra/locals.tf already wires to ADMIN_USERS. Grant it in dev and
+#   staging; there is no reason for the gate to be an admin in prod.
+#
+# OPTION C -- add no permission and race the pool at its real limit.
+#   Submit `effective_limit + N` tasks and race those. Needs no grant at all,
+#   and is the wrong trade here: the limit on a real deployment is large, so
+#   forcing contention means saturating a pool with test work in a project
+#   SHARED with another team, and the contention window stops being
+#   deterministic -- which is the whole property this suite exists to pin.
+#
+# Until one is chosen, `make verify-remote` reports race-test as FAILED. That is
+# the correct reading: the property is unverified. Do not make it skip.
+#
 # Usage: scripts/race-test.sh [--profile mock] [--parallel 12] [--timeout 300]
 
 set -euo pipefail
@@ -38,7 +108,9 @@ while [[ $# -gt 0 ]]; do
     --parallel) PARALLEL="$2"; shift 2 ;;
     --limit)    SLOT_LIMIT="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,20p' "$0"; exit 0 ;;
+    # Through the permission section: an operator running --help on a target
+    # that fails needs to read WHY it fails, not just what its flags are.
+    -h|--help)  sed -n '2,89p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done

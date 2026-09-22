@@ -57,7 +57,7 @@ TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix
 TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
-        load-test quota-test concurrency-test failure-test race-test test tf-test lint \
+        load-test quota-test concurrency-test failure-test race-test e2e-test test tf-test lint \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -155,6 +155,15 @@ failure-test: ## Failures, cancellation and malformed input leak no capacity
 
 race-test: ## The last free slot goes to exactly one task
 	@$(SCRIPTS)/race-test.sh
+
+e2e-test: ## The seams: a workflow handoff, spend through the API, sign-in, state agreement
+	@# The other targets above check PROPERTIES of the platform. This one checks
+	@# that its halves are JOINED, which is the class of defect that produced
+	@# every outage of the last three days -- both ends built, the middle never
+	@# executed. tests/integration/test_e2e_suite_can_fail.py drives this same
+	@# script offline against a fake platform and proves each of its checks
+	@# fails when the fact it covers is false; that runs in `make test`.
+	@$(SCRIPTS)/e2e-test.sh
 
 test: ## Unit tests, terraform tests and the guard self-tests (no cloud resources needed)
 	@$(SCRIPTS)/destroy.sh --self-test

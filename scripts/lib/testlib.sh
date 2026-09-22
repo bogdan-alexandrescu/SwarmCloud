@@ -15,7 +15,9 @@ set -euo pipefail
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
+TESTS_SKIPPED=0
 FAILED_NAMES=()
+SKIPPED_NAMES=()
 SUITE_NAME="${SUITE_NAME:-suite}"
 SUITE_STARTED="$(date -u +%s)"
 
@@ -33,6 +35,32 @@ t_fail() {
   TESTS_FAILED=$((TESTS_FAILED + 1))
   FAILED_NAMES+=("$*")
   printf '%s  FAIL%s %s\n' "${C_RED}" "${C_RESET}" "$*" >&2
+}
+
+# A THIRD OUTCOME, because two are not enough and the missing one kept being
+# spelled as the wrong one of the other two.
+#
+# Some properties can only be checked when the deployment happens to carry the
+# evidence -- a spend figure exists only once something that reports usage has
+# run, and a backend execution can only be compared when one is in flight. The
+# honest answer there is "not measured", and the two ways of faking it are both
+# worse: a t_pass certifies something nobody looked at (the exact shape that put
+# `[[ "" -eq 0 ]]` in this file's history), and a t_fail blames the platform for
+# a condition it is entitled to be in.
+#
+# A skip is NOT a pass. It is counted apart, listed by name in the summary, and
+# `t_summary` prints it whether the suite passed or failed so it cannot be read
+# past. A caller that needs the check to be mandatory turns skips into failures
+# with SUITE_SKIPS_ARE_FAILURES=1 -- which is what CI should do once the
+# evidence is guaranteed to exist.
+t_skip() {
+  if [[ "${SUITE_SKIPS_ARE_FAILURES:-0}" == "1" ]]; then
+    t_fail "$* (not measured, and this run requires it)"
+    return 0
+  fi
+  TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+  SKIPPED_NAMES+=("$*")
+  printf '%s  SKIP%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*" >&2
 }
 
 t_info() { printf '       %s\n' "$*" >&2; }
@@ -98,13 +126,22 @@ assert_true() {
 
 t_summary() {
   local elapsed=$(( $(date -u +%s) - SUITE_STARTED ))
+  local name
   hr
+  # Printed BEFORE the verdict and on both paths: a green suite that silently
+  # measured nothing is the failure mode this counter exists to expose, so the
+  # list must not be reachable only through the failure branch.
+  if [[ "${TESTS_SKIPPED}" -gt 0 ]]; then
+    warn "${SUITE_NAME}: ${TESTS_SKIPPED} check(s) NOT MEASURED -- these are not passes"
+    for name in ${SKIPPED_NAMES[@]+"${SKIPPED_NAMES[@]}"}; do
+      printf '    ? %s\n' "${name}" >&2
+    done
+  fi
   if [[ "${TESTS_FAILED}" -eq 0 ]]; then
     ok "${SUITE_NAME}: ${TESTS_PASSED}/${TESTS_RUN} passed in ${elapsed}s"
     return 0
   fi
   err "${SUITE_NAME}: ${TESTS_FAILED} of ${TESTS_RUN} failed in ${elapsed}s"
-  local name
   for name in ${FAILED_NAMES[@]+"${FAILED_NAMES[@]}"}; do
     printf '    - %s\n' "${name}" >&2
   done
@@ -187,6 +224,84 @@ submit_task() {
 
 cancel_task() {
   api_post "/tasks/$1/cancel" '{}' >/dev/null
+}
+
+# api_fetch PATH OUTFILE -- a GET whose failure is a failure.
+#
+# The one correct spelling of `api_get`, wrapped once so no suite has to get it
+# right again. Two traps live here:
+#
+#   * `body="$(api_get ...)"` runs api_get in a SUBSHELL, so the API_STATUS it
+#     assigns dies with the subshell and the caller reads whatever status the
+#     last in-shell call left behind -- every response then looks like whatever
+#     the previous one was. Redirecting to a file keeps the assignment in this
+#     shell, which is the same shell the caller is in, because a function is
+#     not a subshell.
+#   * `api_get ... | jq ...` takes jq's exit status under pipefail, so a 500 with
+#     a JSON error body reads as a success with odd-looking data.
+#
+# Prints the HTTP status and a redacted body on failure, so a caller only has to
+# decide what to do about it.
+api_fetch() {
+  local path="$1" out="$2"
+  if api_get "${path}" >"${out}"; then
+    return 0
+  fi
+  err "GET ${API_PREFIX}${path} -> HTTP ${API_STATUS}"
+  redact <"${out}" | head -n 5 | sed 's/^/       /' >&2
+  return 1
+}
+
+# api_send METHOD PATH BODY OUTFILE -- the same discipline for a write.
+api_send() {
+  local method="$1" path="$2" body="$3" out="$4"
+  if api_request "${method}" "${API_PREFIX}${path}" "${body}" >"${out}"; then
+    return 0
+  fi
+  err "${method} ${API_PREFIX}${path} -> HTTP ${API_STATUS}"
+  redact <"${out}" | head -n 5 | sed 's/^/       /' >&2
+  return 1
+}
+
+# submit_workflow BODY_JSON -> the creation response on stdout.
+#
+# Separate from submit_task because a workflow is the only way to exercise
+# `input_from`, which is the seam this platform's headline feature runs through.
+# The response carries each step's task id, so the caller never has to guess the
+# mapping from step ids to tasks.
+submit_workflow() {
+  local body="$1" out response
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-wf.XXXXXX")"
+  if ! api_post "/workflows" "${body}" >"${out}"; then
+    response="$(cat "${out}")"
+    rm -f "${out}"
+    err "POST ${API_PREFIX}/workflows returned HTTP ${API_STATUS}"
+    printf '%s\n' "${response}" | redact >&2
+    return 1
+  fi
+  response="$(cat "${out}")"
+  rm -f "${out}"
+  if [[ -z "$(jq -r '.workflow.workflow_id // empty' <<<"${response}")" ]]; then
+    err "no workflow id in the API response"
+    printf '%s\n' "${response}" | redact >&2
+    return 1
+  fi
+  printf '%s' "${response}"
+}
+
+# workflow_step_task WORKFLOW_JSON STEP_ID -> the task id that step became.
+workflow_step_task() {
+  jq -r --arg s "$2" '.workflow.steps[] | select(.step_id == $s) | .task_id // empty' <<<"$1"
+}
+
+# Attempts of one task, newest first, straight from Firestore.
+#
+# `|| return 1` for the reason every other read in this file carries it: these
+# are called from inside `if` conditions, where set -e is suppressed, and a
+# failed query would otherwise read as "this task never ran".
+task_attempts() {
+  fs_query attempts "$(fs_field_filter task_id EQUAL "$(jq -nc --arg v "$1" '{stringValue:$v}')")" 50 \
+    | jq -c "${FS_JQ} doc" || return 1
 }
 
 # Authoritative read, straight from Firestore.
