@@ -7,31 +7,28 @@ import {
   loadSpend,
   loadStats,
   loadTasks,
+  loadWorkflows,
   type SpendRollup,
 } from './api'
+import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
   bindingWindow,
-  clearsIn,
   elapsed,
   headroomFor,
   isProjected,
-  leaseLiveliness,
   needsAHuman,
   overCeiling,
   poolLabel,
-  providerTone,
   readingOf,
   stateGlyph,
   stateTone,
   type AccountReading,
   type AccountsPage,
   type Capacity,
-  type LeasePage,
   type Pool,
-  type ProvidersPage,
   type Stats,
   type Task,
   type TaskPage,
@@ -55,18 +52,24 @@ import {
  *      an operator who cannot see which one binds raises the wrong one.
  *   2. WHAT IS RUNNING, with runtime so far.
  *   3. WHAT IS WRONG, derived from real state -- never from an alert model,
- *      because this platform has none.
+ *      because this platform has none. WORKFLOWS COUNT AS RUNNING THINGS
+ *      HERE. This screen used not to contain the word: with a three-step
+ *      workflow in the tenant holding one READY step and two PARKED ones it
+ *      said "nothing is running" and was, sentence by sentence, correct --
+ *      because a workflow that has stopped moving breaks no lease, holds no
+ *      capacity and fails no task, so not one of the six checks could see it.
+ *      `checks.ts` now asks about workflows and about parked work directly.
  *   4. SPEND, in tokens and dollars of token cost, with the scope named.
  *   5. THE SUBSCRIPTION POOL's headroom, which is the ceiling that binds
  *      first in practice and used to be buried three clicks down.
  *
- * SEVEN READS, INDEPENDENTLY -- six routes plus the spend rollup fanned out
+ * EIGHT READS, INDEPENDENTLY -- seven routes plus the spend rollup fanned out
  * over them. One failing must not blank the page and must not leave the page
  * looking complete, so each panel owns its own state and the line under the
  * title counts what landed, what is still in flight, what failed and what was
  * refused for want of admin. Those are four different things and the line says
  * which. `Screen` is deliberately not used here because it has exactly one
- * load and one failure, and this screen has seven of each.
+ * load and one failure, and this screen has eight of each.
  *
  * WHAT THIS SCREEN DOES NOT DRAW, and why it is not a placeholder:
  *   - infrastructure cost in dollars. There is no billing integration of any
@@ -114,14 +117,23 @@ export function OverviewScreen() {
   const leases = useRead(loadLeases, live)
   const providers = useRead(loadProviders, live)
   const accounts = useRead(loadAccountPool, live)
+  // ON THE LIVE CADENCE, with the other five, because a workflow that has
+  // stopped moving is the fact this screen was worst at reporting and a figure
+  // that only refreshes when someone presses a button cannot report it. It is
+  // one indexed list read of the same class as the others; the route derives
+  // each row's state from steps it has already loaded, so the browser does not
+  // pay for a second join.
+  const workflows = useRead(loadWorkflows, live)
   const stats = useRead(loadStats, heavy)
 
   const spend = useSpend(tasks, heavy)
 
   // Typed as `Result<unknown>` because this list only ever asks about a read's
-  // OUTCOME, never its payload. Leaving it to inference makes it a union of six
+  // OUTCOME, never its payload. Leaving it to inference makes it a union of
   // differently-parameterised Results that matches no single `Result<T>`.
-  const reads: Result<unknown>[] = [capacity, tasks, leases, providers, accounts, stats, spend]
+  const reads: Result<unknown>[] = [
+    capacity, tasks, leases, providers, accounts, workflows, stats, spend,
+  ]
 
   // A 401 is a PAGE-level state, not a panel-level one: an expired IAP session
   // fails all of them at once, and seven independently empty panels is the bug
@@ -160,9 +172,19 @@ export function OverviewScreen() {
   const refused = reads.filter((r) => isKind(r, 'admin_required')).length
   const broken = reads.length - landed - pending - refused
 
+  // `Date.now()` IS TAKEN HERE, not inside the checks, and the dependency list
+  // is deliberately the reads rather than a clock. Two checks measure an age
+  // and one of them decides whether a workflow is stalled; re-deriving on a
+  // ticking clock would re-render every panel on this screen once a second to
+  // move a threshold that is ten minutes wide. A read lands every twenty
+  // seconds, which is 3% of the narrowest age this panel reports.
   const checks = useMemo(
-    () => deriveChecks({ capacity, tasks, leases, providers, accounts, stats }),
-    [capacity, tasks, leases, providers, accounts, stats],
+    () =>
+      deriveChecks(
+        { capacity, tasks, leases, providers, accounts, workflows, stats },
+        Date.now(),
+      ),
+    [capacity, tasks, leases, providers, accounts, workflows, stats],
   )
   const found = checks.reduce((n, c) => n + (c.status === 'found' ? c.problems.length : 0), 0)
 
@@ -445,21 +467,6 @@ function isKind(r: Result<unknown>, kind: ApiError['kind']): boolean {
 /** When a read produced a reading, how old that reading is. */
 function ageOf(r: Result<unknown>): number | null {
   return r.status === 'ok' || r.status === 'stale' ? r.fetchedAt : null
-}
-
-/**
- * Why a panel has nothing, split by CAUSE.
- *
- * `admin` is carried separately rather than folded into the sentence because
- * the two render completely differently -- blue and calm versus amber and
- * wrong -- and a caller that has to read the copy to tell them apart will
- * eventually get it backwards.
- */
-function blindness(error: ApiError): { why: string; admin: boolean } {
-  if (error.kind === 'admin_required') {
-    return { why: 'Admin only. Nothing failed.', admin: true }
-  }
-  return { why: `${errorHeading(error)} — ${error.message}`, admin: false }
 }
 
 /**
@@ -1748,396 +1755,12 @@ function rank(a: AccountsPage['accounts'][number], w: ReturnType<typeof bindingW
 // ---------------------------------------------------------------------------
 // 5. Needs attention -- derived, never stored
 // ---------------------------------------------------------------------------
-
-interface Problem {
-  severity: 'bad' | 'warn'
-  /** The count this problem covers, so the panel can lead with a figure. */
-  n: number
-  headline: string
-  detail: string
-  href: string
-  /**
-   * What the link says, when "open" would land somewhere the reader may not be
-   * able to use.
-   *
-   * The quota problems are the case this exists for. `quotaCheck` reads
-   * `/v1/providers`, which every caller can read, precisely so the check does
-   * not render as "admin only" on the screen most people land on -- and then
-   * the only screen that goes deeper is `/v1/admin/quota`. Sending a non-admin
-   * to a blue admin-only panel behind a bare "open →" is the dead end this
-   * panel exists to avoid, so the link says what it is BEFORE the click, which
-   * is the same rule the section nav follows for its admin tabs. The problem's
-   * own detail already carries the full quota document, so nobody depends on
-   * the click.
-   */
-  linkLabel?: string
-}
-
-type Check =
-  | { label: string; status: 'reading' }
-  | { label: string; status: 'blind'; why: string; admin: boolean }
-  | { label: string; status: 'clear'; note: string }
-  | { label: string; status: 'found'; problems: Problem[] }
-
-/**
- * SIX CHECKS, each derived from state the platform genuinely records.
- *
- * There is no alert model on this platform -- nothing stores, routes or
- * acknowledges an alert, and nothing has a threshold anyone configured. So
- * this is not an inbox and does not pretend to be one: it is six queries over
- * live state, re-derived on every read, with no memory and no acknowledgement.
- * The upside of that is that it cannot go stale; the cost is that a check
- * whose read failed knows nothing, and SAYING SO is the entire difference
- * between this panel and a reassuring one.
- *
- * Each check has four outcomes and they render differently: reading, blind
- * (with whether it was an admin gate), clear (with what was actually
- * examined), and found. "Clear" always names the population it cleared, because
- * "no overdue leases" over zero leases read and over forty leases read are
- * different sentences.
- */
-function deriveChecks(s: {
-  capacity: Result<Capacity>
-  tasks: Result<TaskPage>
-  leases: Result<LeasePage>
-  providers: Result<ProvidersPage>
-  accounts: Result<AccountsPage>
-  stats: Result<Stats>
-}): Check[] {
-  return [
-    dispatchCheck(s.stats),
-    leaseCheck(s.leases),
-    quotaCheck(s.providers),
-    accountCheck(s.accounts),
-    poolCheck(s.capacity),
-    failureCheck(s.tasks),
-  ]
-}
-
-/** The loudest possible state: nothing is being admitted, platform-wide. */
-function dispatchCheck(stats: Result<Stats>): Check {
-  const label = 'Dispatch'
-  if (stats.status === 'loading') return { label, status: 'reading' }
-  if (stats.status === 'error') return { label, status: 'blind', ...blindness(stats.error) }
-  // AN UNKNOWN IS NOT A CLEAR. `loadStats` passes `() => false` as its empty
-  // predicate -- a successful read always yields twelve counts -- so this is
-  // unreachable today. It is still `blind` rather than `clear`, because the
-  // day that predicate changes, a `clear` here would be counted in "N of 6
-  // checks ran" and would feed "all N came back clear": a reassurance derived
-  // from a read that returned nothing. The other five checks all route an
-  // unknown this way.
-  if (stats.status === 'empty') {
-    return {
-      label,
-      status: 'blind',
-      why: 'The read succeeded but carried no counts, so whether dispatch is paused was not established.',
-      admin: false,
-    }
-  }
-  const st = stats.data
-  if (st.dispatch_paused) {
-    return {
-      label,
-      status: 'found',
-      problems: [
-        {
-          severity: 'bad',
-          n: 1,
-          headline: 'Dispatch is paused platform-wide',
-          detail:
-            'Admission still runs and leases are still taken, but nothing is handed to a backend. Every agent submitted from now on waits.',
-          href: '#admin/limits',
-        },
-      ],
-    }
-  }
-  return { label, status: 'clear', note: 'the platform is dispatching' }
-}
-
-/**
- * The freshest failure signal there is: a lease sees a quiet worker up to five
- * minutes before the reconciler acts on it.
- *
- * THE THRESHOLDS ARRIVE WITH THE DATA. 90 and 120 belong to the reconciler and
- * the grace derives from the heartbeat interval, so a local constant here
- * would mark a row overdue at a threshold the reconciler does not act on.
- */
-function leaseCheck(leases: Result<LeasePage>): Check {
-  const label = 'Leases'
-  if (leases.status === 'loading') return { label, status: 'reading' }
-  if (leases.status === 'error') return { label, status: 'blind', ...blindness(leases.error) }
-  if (leases.status === 'empty') {
-    return { label, status: 'clear', note: 'no lease is holding capacity' }
-  }
-  const page = leases.data
-  const rows = page.leases
-  const overdue = rows.filter((l) => l.dispatch_state === 'LEASED' && l.dispatch_overdue)
-  const dead = rows.filter((l) => leaseLiveliness(l, page.thresholds).kind === 'presumed-dead')
-  const silent = rows.filter(
-    (l) => !dead.includes(l) && leaseLiveliness(l, page.thresholds).kind === 'silent',
-  )
-
-  const problems: Problem[] = []
-  if (dead.length > 0) {
-    problems.push({
-      severity: 'bad',
-      n: dead.length,
-      headline: `${dead.length} lease${dead.length === 1 ? ' is' : 's are'} past the TTL`,
-      detail:
-        'The lease timeout has run out as well as the heartbeat going quiet. Capacity is held by something that is almost certainly gone.',
-      href: '#pools/holders',
-    })
-  }
-  if (silent.length > 0) {
-    problems.push({
-      severity: 'warn',
-      n: silent.length,
-      headline: `${silent.length} worker${silent.length === 1 ? '' : 's'} silent past the grace period`,
-      detail: `No heartbeat for ${page.thresholds.heartbeat_grace_seconds}s or more. This is already the reconciler's trigger, and its next pass is up to five minutes away.`,
-      href: '#pools/holders',
-    })
-  }
-  if (overdue.length > 0) {
-    problems.push({
-      severity: 'bad',
-      n: overdue.length,
-      headline: `${overdue.length} lease${overdue.length === 1 ? ' was' : 's were'} admitted but never dispatched`,
-      detail:
-        'Capacity was reserved and the backend was never handed the work. These hold units while doing nothing.',
-      href: '#pools/holders',
-    })
-  }
-
-  return problems.length > 0
-    ? { label, status: 'found', problems }
-    : {
-        label,
-        status: 'clear',
-        note: `${rows.length} unreleased lease${rows.length === 1 ? '' : 's'}, none overdue, silent or expired`,
-      }
-}
-
-/**
- * Provider quota, for THIS tenant.
- *
- * Read from `/v1/providers` rather than `/v1/admin/quota` on purpose: quota is
- * per provider per tenant because tenants bring their own keys, so one
- * tenant's 429 is not a platform outage. The tenant-scoped route carries the
- * same quota document and every caller can read it, whereas the admin route
- * would render this check as "admin only" for most people who open the landing
- * screen -- which teaches nothing. The platform-wide roll-up is one click
- * away under Capacity.
- */
-function quotaCheck(providers: Result<ProvidersPage>): Check {
-  const label = 'Provider quota'
-  if (providers.status === 'loading') return { label, status: 'reading' }
-  if (providers.status === 'error') {
-    return { label, status: 'blind', ...blindness(providers.error) }
-  }
-  if (providers.status === 'empty') {
-    return { label, status: 'clear', note: 'no provider is configured for this tenant' }
-  }
-
-  const rows = providers.data.providers
-  const problems: Problem[] = []
-  for (const p of rows) {
-    const q = p.quota
-    // No document is NOT a problem. One is written the first time a worker
-    // reports on a provider, so its absence means "never used", not "broken".
-    if (!q) continue
-    const tone = providerTone(q.state)
-    if (tone === 'bad') {
-      problems.push({
-        severity: 'bad',
-        n: 1,
-        headline: `${p.provider} is ${q.state}`,
-        detail:
-          q.state === 'DISABLED'
-            ? 'Disabled for this tenant. Its effective limit is 0 and nothing using it will be admitted.'
-            // `clearsIn`, not `timeAgo`: a reset is in the FUTURE and timeAgo
-            // floors at zero, so it would render every pending reset as
-            // "just now" -- the opposite of what it says.
-            : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, Date.now())}` : ''}. Work on this provider parks rather than fails.`,
-        href: '#pools/quota',
-        linkLabel: 'quota, all tenants · admin',
-      })
-    } else if (tone === 'wait') {
-      problems.push({
-        severity: 'warn',
-        n: 1,
-        headline: `${p.provider} is ${q.state}`,
-        detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at)}` : ''}. Throughput is reduced, not stopped.`,
-        href: '#pools/quota',
-        linkLabel: 'quota, all tenants · admin',
-      })
-    }
-  }
-
-  const measured = rows.filter((p) => p.quota !== null).length
-  return problems.length > 0
-    ? { label, status: 'found', problems }
-    : {
-        label,
-        status: 'clear',
-        note:
-          measured === 0
-            ? `${rows.length} providers, none with a quota document yet — never used, not healthy`
-            : `${measured} of ${rows.length} providers have a quota document; none is throttled, exhausted or disabled`,
-      }
-}
-
-/** The subscription pool's own faults. REAUTH_REQUIRED is the one only a person can clear. */
-function accountCheck(accounts: Result<AccountsPage>): Check {
-  const label = 'Accounts'
-  if (accounts.status === 'loading') return { label, status: 'reading' }
-  if (accounts.status === 'error') {
-    return { label, status: 'blind', ...blindness(accounts.error) }
-  }
-  if (accounts.status === 'empty') {
-    return { label, status: 'clear', note: 'no account is registered' }
-  }
-
-  const rows = accounts.data.accounts
-  const reauth = rows.filter(needsAHuman)
-  const never = rows.filter((a) => !needsAHuman(a) && a.observed_at === null)
-  const stale = rows.filter((a) => !needsAHuman(a) && a.observed_at !== null && a.stale)
-
-  const problems: Problem[] = []
-  if (reauth.length > 0) {
-    problems.push({
-      severity: 'bad',
-      n: reauth.length,
-      headline: `${reauth.length} account${reauth.length === 1 ? ' needs' : 's need'} signing in again`,
-      detail: `${reauth.map((a) => a.label).join(', ')} — the broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.`,
-      href: '#pools/accounts',
-    })
-  }
-  if (never.length > 0) {
-    problems.push({
-      severity: 'warn',
-      n: never.length,
-      headline: `${never.length} account${never.length === 1 ? ' has' : 's have'} never been polled`,
-      detail: `${never.map((a) => a.label).join(', ')} — no reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.`,
-      href: '#pools/accounts',
-    })
-  }
-  if (stale.length > 0) {
-    problems.push({
-      severity: 'warn',
-      n: stale.length,
-      headline: `${stale.length} account reading${stale.length === 1 ? ' is' : 's are'} too old to trust`,
-      detail: `${stale.map((a) => a.label).join(', ')} — the last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.`,
-      href: '#pools/accounts',
-    })
-  }
-
-  return problems.length > 0
-    ? { label, status: 'found', problems }
-    : {
-        label,
-        status: 'clear',
-        note: `${rows.length} accounts, all with a current reading and none needing sign-in`,
-      }
-}
-
-/**
- * Pools that are not admitting.
- *
- * Oversubscribed is its own problem and the loudest of the two: admission
- * cannot produce a pool holding more than its own ceiling, so it means a limit
- * was lowered under running work or a slot was never released. Folding it into
- * "full" hides it, because both have available == 0.
- */
-function poolCheck(capacity: Result<Capacity>): Check {
-  const label = 'Pools'
-  if (capacity.status === 'loading') return { label, status: 'reading' }
-  if (capacity.status === 'error') {
-    return { label, status: 'blind', ...blindness(capacity.error) }
-  }
-  if (capacity.status === 'empty') {
-    return { label, status: 'clear', note: 'no pool exists to be over or paused' }
-  }
-
-  const pools = capacity.data.pools
-  const over = pools.filter(overCeiling)
-  const paused = pools.filter(isPaused)
-
-  const problems: Problem[] = []
-  if (over.length > 0) {
-    problems.push({
-      severity: 'bad',
-      n: over.length,
-      headline: `${over.length} pool${over.length === 1 ? '' : 's'} holding more than the ceiling allows`,
-      detail: `${over.map((p) => poolLabel(p.name)).join(', ')} — admission cannot produce this, so it is a ceiling lowered under running work or a slot never released. Running "make pool-check" resolves which.`,
-      href: '#pools/pools',
-    })
-  }
-  if (paused.length > 0) {
-    problems.push({
-      severity: 'warn',
-      n: paused.length,
-      headline: `${paused.length} pool${paused.length === 1 ? '' : 's'} paused by an operator`,
-      detail: `${paused.map((p) => poolLabel(p.name)).join(', ')} — deliberate, and it admits nothing until resumed. Anything whose profile lists one of these can start no agents at all.`,
-      href: '#admin/limits',
-    })
-  }
-
-  return problems.length > 0
-    ? { label, status: 'found', problems }
-    : { label, status: 'clear', note: `${pools.length} pools, none over ceiling or paused` }
-}
-
-/**
- * Failures among the tasks this page can see.
- *
- * SCOPED, and the scope is stated: `/v1/tasks?limit=200` is the 200 most
- * recently CREATED tasks, so this is "recent failures" in the only sense the
- * API can serve cheaply. It is not the tenant's total and does not claim to
- * be; the exact per-state count lives on Platform counts.
- */
-function failureCheck(tasks: Result<TaskPage>): Check {
-  const label = 'Failures'
-  if (tasks.status === 'loading') return { label, status: 'reading' }
-  if (tasks.status === 'error') return { label, status: 'blind', ...blindness(tasks.error) }
-  if (tasks.status === 'empty') {
-    return { label, status: 'clear', note: 'no task has ever been submitted' }
-  }
-
-  const rows = tasks.data.tasks
-  const failed = rows.filter((t) => t.state === 'FAILED')
-  const exhausted = failed.filter((t) => t.attempt_count >= t.max_attempts)
-
-  if (failed.length === 0) {
-    return {
-      label,
-      status: 'clear',
-      note: `none of the ${rows.length} most recently created tasks is FAILED`,
-    }
-  }
-
-  return {
-    label,
-    status: 'found',
-    problems: [
-      {
-        severity: 'bad',
-        n: failed.length,
-        headline: `${failed.length} failed task${failed.length === 1 ? '' : 's'} among the ${rows.length} most recent`,
-        detail:
-          exhausted.length > 0
-            ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`
-            : `All still have attempts left and may retry. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
-        // A failed agent is a row in the agent list, not an entry on a board
-        // of its own. The list's Recent tab holds the terminal states; its tab
-        // is component state rather than part of the hash, so this lands on
-        // the list and the label says where to go from there rather than
-        // promising a filter the address bar cannot carry.
-        href: '#agents/running',
-        linkLabel: 'agents · Recent tab',
-      },
-    ],
-  }
-}
+//
+// The derivation itself lives in ./checks.ts. It moved there so it could be
+// RUN: it is the only part of this screen whose failure mode is silence, and
+// `apps/swarm-ui/test/checks.test.mjs` drives it directly -- a stalled
+// workflow, parked steps, and the healthy case that has to stay quiet. What is
+// left here draws what it returns.
 
 /** How many problems are open by default. The rest are one click away, here. */
 const ATTENTION_ROWS = 4

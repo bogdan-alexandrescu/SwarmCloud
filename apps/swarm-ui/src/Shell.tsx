@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { errorHeading, errorReassurance, type ApiError, type Result } from './fetch'
+import { timeAgo } from './types'
 
 /**
  * Every screen loads through this, so no screen can forget a state.
@@ -253,20 +254,18 @@ export function SkeletonRows({ rows = 6 }: { rows?: number }) {
   )
 }
 
-export function timeAgo(when: Date | string | number): string {
-  const t =
-    typeof when === 'number'
-      ? when
-      : typeof when === 'string'
-        ? new Date(when).getTime()
-        : when.getTime()
-  if (!Number.isFinite(t)) return 'at an unknown time'
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000))
-  if (s < 5) return 'just now'
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.round(s / 60)}m ago`
-  return `${Math.round(s / 3600)}h ago`
-}
+/**
+ * MOVED to types.ts, and re-exported here rather than left behind as a second
+ * copy.
+ *
+ * `checks.ts` needed it, and that module is pure on purpose -- Results in,
+ * `Check[]` out, no React anywhere in its import graph, which is what lets
+ * `node --test` exercise it without a DOM. Importing it from this file would
+ * have pulled every component in Shell.tsx along with it.
+ *
+ * The eleven existing `import { timeAgo } from './Shell'` sites are untouched.
+ */
+export { timeAgo }
 
 export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
   const tabs = [
