@@ -1263,10 +1263,10 @@ export function attemptRan(a: AttemptRow, now: number): string {
   if (a.started_at === null) return 'never started'
   const started = new Date(a.started_at).getTime()
   if (!Number.isFinite(started)) return 'start time unreadable'
-  if (a.completed_at === null) return `${duration(now - started)} so far`
+  if (a.completed_at === null) return `${formatDuration(now - started)} so far`
   const done = new Date(a.completed_at).getTime()
   if (!Number.isFinite(done)) return 'finish time unreadable'
-  return duration(done - started)
+  return formatDuration(done - started)
 }
 
 /** `SubmissionService.stats`, service.py:271-288. */
@@ -1729,14 +1729,20 @@ export function elapsed(task: Task, now: number): { text: string; ticking: boole
   if (Number.isFinite(completed)) {
     const from = Number.isFinite(started) ? started : created
     if (!Number.isFinite(from)) return { text: '\u2014', ticking: false }
-    return { text: duration(completed - from), ticking: false }
+    return { text: formatDuration(completed - from), ticking: false }
   }
-  if (Number.isFinite(started)) return { text: duration(now - started), ticking: true }
-  if (Number.isFinite(created)) return { text: `queued ${duration(now - created)}`, ticking: true }
+  if (Number.isFinite(started)) return { text: formatDuration(now - started), ticking: true }
+  if (Number.isFinite(created)) return { text: `queued ${formatDuration(now - created)}`, ticking: true }
   return { text: '\u2014', ticking: false }
 }
 
-function duration(msSpan: number): string {
+/**
+ * A span of milliseconds as a human duration. EXPORTED because `dag.ts` needs
+ * the same words on a workflow node that `elapsed` puts in the Agents table:
+ * two formatters would drift, and "68s" here beside "1m 8s" there is exactly
+ * the kind of disagreement that makes a reader distrust both.
+ */
+export function formatDuration(msSpan: number): string {
   const s = Math.max(0, Math.round(msSpan / 1000))
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)

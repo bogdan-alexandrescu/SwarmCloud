@@ -590,38 +590,183 @@ body {
 .row .when { color: var(--text-faint); }
 .row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 
-/* ---- workflow dag ---- */
-.dag { display: flex; flex-direction: column; }
-.level { display: flex; flex-direction: column; align-items: center; }
-.level-label {
+/* ---- the workflow board ---- */
+/* TWO FORMS OF ONE THING. Collapsed is a LIST ROW -- one horizontal line per
+   workflow, dense enough to choose between ten of them without opening any.
+   Expanded is a CANVAS -- real edges between generous cards, flowing left to
+   right along dependency depth.
+
+   THE FIELD THAT IS NOT NEGOTIABLE ON THE COLLAPSED ROW IS THE SHAPE. Five
+   steps in parallel and five steps in a chain have the same id, the same
+   state, the same fraction done and the same spend. They are different runs,
+   and a list that draws them identically has thrown away the one thing the
+   graph work exists to show. `.wf-shape` carries it twice: the widths as text
+   for a reader and a screen reader, and a mini-map drawn from the same layout
+   the expanded canvas uses for the eye. */
+
+.wf-modebar { display: flex; gap: 4px; margin-bottom: var(--ctl-s3); }
+.wf-mode {
   font: 500 10.5px/1 var(--mono);
   text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-dim);
+  background: var(--surface); border: 1px solid var(--line);
+  padding: 8px 12px; border-radius: 6px; cursor: pointer;
+}
+.wf-mode.is-on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--info) 55%, var(--line));
+  background: color-mix(in srgb, var(--info) 12%, var(--surface));
+}
+
+.wf-board { display: flex; flex-direction: column; gap: var(--ctl-s2); }
+/* The board is a LIST, so the hairline `.section + .section` draws between
+   panels would cut every row off from its own open body. */
+.wf-card { margin-bottom: 0; }
+.wf-card + .wf-card { border-top-width: 0; padding-top: 0; }
+
+/* The heading IS the bar. `.section > h2` still applies -- the row is how this
+   workflow is named, so it stays in the document outline -- and the button
+   inside it turns the uppercase back off for its own contents. B17's rule on
+   `.id` is what keeps the id lowercase regardless. */
+.wf-h { margin: 0; }
+.wf-bar {
+  width: 100%;
+  display: grid;
+  /* caret - id - state - progress - shape - runner mix - spend - age - flags */
+  grid-template-columns:
+    12px minmax(0, 1.3fr) 104px minmax(0, 1.2fr) minmax(0, 0.9fr)
+    minmax(0, 1.1fr) 96px 62px minmax(0, auto);
+  align-items: center; gap: 12px;
+  text-align: left; text-transform: none; letter-spacing: normal;
+  color: var(--text); font-family: var(--font); font-size: 12.5px; font-weight: 400;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 12px;
+  cursor: pointer;
+}
+.wf-bar:hover { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+.wf-card.is-open .wf-bar { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.wf-caret { color: var(--text-faint); font-size: 10px; }
+.wf-bar .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-state { font: 600 11px var(--mono); color: var(--text-dim); white-space: nowrap; }
+.wf-state.ok { color: var(--ok-ink); }
+.wf-state.bad { color: var(--bad-ink); }
+.wf-state.live { color: var(--info-ink); }
+.wf-state.wait { color: var(--warn-ink); }
+.wf-state.unknown { color: var(--text-faint); }
+
+.wf-progress { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* A METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the server
+   reports an incomplete rollup there is no bar at all -- only the struck-out
+   words -- because a two-thirds-empty bar over a failed read is exactly the
+   substitution this console refuses. */
+.wf-meter {
+  flex: none; display: block; width: 54px; height: 6px;
+  border-radius: 999px; background: var(--line); overflow: hidden;
+}
+.wf-meter-fill { display: block; height: 100%; background: var(--ok); }
+.wf-progress-text {
+  font: 11px var(--mono); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-progress.untrusted {
+  font: 11px var(--mono); color: var(--warn);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.wf-shape { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wf-shape-text { font: 500 11px var(--mono); color: var(--text-dim); white-space: nowrap; }
+.wf-mini { flex: none; overflow: visible; }
+.wf-mini-edge { stroke: var(--line); stroke-width: 1; }
+/* The dots carry state as well as shape, so the row says WHERE in the graph
+   the trouble is, not only that there is some. */
+.wf-mini-dot { fill: var(--text-faint); }
+.wf-mini-dot.ok { fill: var(--ok); }
+.wf-mini-dot.bad { fill: var(--bad); }
+.wf-mini-dot.live { fill: var(--info); }
+.wf-mini-dot.wait { fill: var(--text-faint); }
+.wf-mini-dot.unknown { fill: var(--warn); }
+
+.wf-mix { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+.wf-chip {
+  font: 500 10px/1.7 var(--mono);
+  border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 5px; color: var(--text-dim); white-space: nowrap;
+}
+.wf-chip-n { color: var(--text-faint); margin-left: 3px; }
+.wf-chip.more { color: var(--text-faint); }
+
+/* AN ABSENT COST IS NOT $0.00. The absent treatment is the one every unmeasured
+   figure in this console gets: faint and italic, with the word rather than a
+   number. A reported 0 is a MEASURED zero and renders as a digit, in the
+   ordinary colour. */
+/* `font-style: normal` is DECLARED, not left to the initial value. jsdom's
+   `getComputedStyle` answers "" for a property no rule sets, and "" is not
+   "italic" -- so the test that proves the absent treatment differs from the
+   measured one would pass with the italic rule deleted. A guard that is
+   strongest when it is broken is the failure mode this suite exists to
+   remove. */
+.wf-spend {
+  font: 11px var(--mono); font-style: normal;
+  color: var(--text-dim); white-space: nowrap; text-align: right;
+}
+.wf-spend.absent { color: var(--text-faint); font-style: italic; }
+.wf-spend-cov { color: var(--text-faint); margin-left: 5px; }
+
+.wf-when { font: 11px var(--mono); color: var(--text-faint); white-space: nowrap; text-align: right; }
+.wf-flags { display: flex; justify-content: flex-end; }
+
+.wf-body {
+  border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 8px 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+}
+/* It SCROLLS rather than shrinking. A twenty-step workflow across six levels
+   is genuinely wider than a phone, and scaling it to fit turns the step names
+   into texture -- which is the one thing a node must not become. */
+.wf-canvas-wrap { overflow-x: auto; padding-bottom: 6px; }
+.wf-legend { position: relative; height: 14px; margin: 0 0 6px; padding: 0; list-style: none; }
+.wf-legend li {
+  position: absolute; top: 0;
+  font: 500 10px/1.4 var(--mono);
+  text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-faint);
-  padding: 10px 0 8px;
-  position: relative;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* A short rule either side, so the label reads as a divider between depths
-   rather than as a caption belonging to the node under it. */
-.level-label::before, .level-label::after {
-  content: ""; position: absolute; top: 50%;
-  width: 22px; height: 1px; background: var(--line);
-}
-.level-label::before { right: calc(100% + 8px); }
-.level-label::after  { left: calc(100% + 8px); }
-.level-steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.wf-canvas { position: relative; }
+.wf-edges { position: absolute; left: 0; top: 0; pointer-events: none; }
+.wf-edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.wf-arrowhead { fill: var(--line); }
+
 .node {
+  position: absolute;
+  display: flex; flex-direction: column; gap: 3px;
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-  border-radius: 8px; padding: 8px 12px; min-width: 132px;
+  border-radius: 8px; padding: 9px 12px;
+  box-sizing: border-box;
 }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
 .node-id { font: 600 12.5px var(--mono); }
+.node-id a { color: var(--text); text-decoration: none; }
+.node-id a:hover { text-decoration: underline; }
 .node-state { font: 11px var(--mono); color: var(--text-dim); }
+/* FIVE KINDS OF TIME, FIVE TREATMENTS -- and the first one has no number at
+   all. A step that has not started HAS NO DURATION; `0s` would be a claim that
+   it ran instantly. Waiting (queued or parked) is not working, so it is drawn
+   in the waiting colour rather than the running one. */
+.node-dur { font: 11px var(--mono); font-style: normal; color: var(--text-dim); }
+.node-dur.is-ran { color: var(--text-dim); }
+.node-dur.is-running { color: var(--info-ink); }
+.node-dur.is-queued, .node-dur.is-parked { color: var(--warn-ink); }
+.node-dur.is-none { color: var(--text-faint); font-style: italic; }
 .node-dep {
   font: 10.5px var(--mono); color: var(--text-faint);
-  margin-top: 3px; max-width: 190px;
+  max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -633,14 +778,23 @@ body {
   .row .meta, .row .when { display: none; }
   .row .badges { grid-column: 2 / -1; justify-content: flex-start; }
   .nav button { padding: 8px 10px; font-size: 13px; }
-  /* Stacked, siblings would read as a sequence -- the exact thing the level
-     label exists to deny. Indenting by depth makes the hierarchy visible in a
-     single column, so "these two are parallel" survives the narrow viewport. */
-  .level { align-items: stretch; padding-left: calc(var(--depth, 0) * 14px); }
-  .level-steps { flex-direction: column; align-items: stretch; }
-  .level-label { align-self: flex-start; }
-  .level-label::before { display: none; }
-  .node { min-width: 0; }
+  /* The collapsed row drops the runner mix, the spend and the age before it
+     drops anything else: all three are on the open card, and none of them is
+     the thing a narrow viewport is worst at replacing. THE SHAPE STAYS AT
+     EVERY WIDTH -- a row that cannot tell a fan-out from a chain has lost the
+     only field that is not recoverable by squinting at the others. */
+  .wf-bar {
+    grid-template-columns: 12px minmax(0, 1.4fr) 88px 56px minmax(0, auto);
+    gap: 8px;
+  }
+  .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text { display: none; }
+}
+
+@media (min-width: 561px) and (max-width: 900px) {
+  .wf-bar {
+    grid-template-columns: 12px minmax(0, 1.4fr) 96px minmax(0, 1fr) minmax(0, 0.8fr) 60px;
+  }
+  .wf-mix, .wf-spend, .wf-flags { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3012,7 +3166,7 @@ table.pools tbody tr.unmeasured {
 .stop-btn.inline { padding: 2px 6px; font-size: 10px; }
 
 .run-stop { margin-left: auto; }
-.node-stop { margin-top: 6px; }
+.node-stop { margin-top: auto; padding-top: 4px; }
 
 /* "stop requested" is not a button and must not look like one: the request is
    already in, and something that invited a second press would imply the first

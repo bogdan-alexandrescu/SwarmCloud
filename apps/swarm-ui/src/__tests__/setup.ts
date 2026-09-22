@@ -14,6 +14,8 @@
 import { afterEach, beforeEach, expect } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
+import { forgetProbes } from '../fetch'
+
 const forbidden = (): never => {
   throw new Error(
     'a test reached the network: the UI suite is offline by contract. ' +
@@ -21,8 +23,18 @@ const forbidden = (): never => {
   )
 }
 
+// THE OTHER GLOBAL THIS SUITE HAS TO PUT BACK. `restoreMocks` and
+// `unstubGlobals` undo what a test did to a mock or a global; neither of them
+// knows about the API probe registry in `fetch.ts`, which is module state and
+// therefore outlives the test that filled it -- Vitest isolates per FILE, not
+// per test. A test that renders `<App />` and lets a fixture read land was
+// leaving a "newest read just now" behind for the next test in the file, and
+// `shell.test.tsx`'s B3 assertion -- that the head says "nothing has loaded"
+// when nothing has -- failed on every run of that file by itself and passed in
+// the full suite only on timing. See `forgetProbes` for the long version.
 beforeEach(() => {
   globalThis.fetch = forbidden as unknown as typeof fetch
+  forgetProbes()
 })
 
 afterEach(() => {

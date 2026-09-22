@@ -1,6 +1,23 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { loadWorkflowBoard } from './api'
+import {
+  edgePath,
+  layoutOf,
+  levelsOf,
+  profileMix,
+  shapeOf,
+  stepDuration,
+  workflowSpend,
+  NODE_H,
+  NODE_W,
+  PAD,
+  COL_GAP,
+  ROW_GAP,
+  type DagShape,
+  type StepDuration,
+  type WorkflowSpend,
+} from './dag'
 import { workflowDispatchOf } from './Dispatch'
 import { Id, Screen, timeAgo } from './Shell'
 import { StopRun } from './StopRun'
@@ -13,6 +30,7 @@ import {
   type StepState,
   type Task,
   type TaskDispatch,
+  type TaskState,
   type Tone,
   type Workflow,
   type WorkflowDrift,
@@ -20,14 +38,23 @@ import {
 } from './types'
 
 /**
- * The DAG view. These are REAL edges -- `depends_on` on each step -- so this is
- * a tree, not a star with the workflow in the middle. Laid out by dependency
- * depth: a step sits one level below its deepest parent.
+ * The workflow board. TWO FORMS OF ONE THING, and the collapsed one is the
+ * default because it is the one a reader lands on.
  *
- * Deliberately SVG-free. A workflow here has a handful of steps, and a column
- * layout with drawn connectors stays readable on a phone in a way a
- * force-directed graph does not. If workflows grow to dozens of steps this is
- * the thing to revisit, and the depth calculation is already the hard part.
+ * COLLAPSED is a single horizontal bar per workflow, the way a CI list is a
+ * row per run: identity, derived state, progress, SHAPE, runner mix, spend and
+ * when it last moved. The point of the line is to let somebody pick which of
+ * ten workflows to open WITHOUT OPENING ANY, and the field that earns its place
+ * hardest is the shape -- `1 → 5 → 1` next to a mini-map of the real edges.
+ * Five steps in parallel and five steps in a chain have the same count, the
+ * same fraction done and the same cost; they are completely different runs, and
+ * a list that renders them identically is the defect the graph work exists to
+ * fix. It must survive being collapsed or it has not been fixed.
+ *
+ * EXPANDED is a canvas: real edges drawn between generous node cards, flowing
+ * left to right along dependency depth. Every node keeps the three facts it has
+ * always carried -- the step NAME, its STATUS and its RUNNER PROFILE -- and
+ * adds the one that was missing, how long it has taken.
  *
  * Step state is JOINED, not read off the step. `GET /v1/workflows` returns
  * steps with no state field at all; it only exists on the task a step created.
@@ -41,6 +68,25 @@ export function WorkflowsScreen() {
   // saying it after the request was recorded.
   const [reloads, setReloads] = useState(0)
   const reload = useCallback(() => setReloads((n) => n + 1), [])
+
+  // ABOVE THE `key`, DELIBERATELY. `reloads` remounts `Screen`, so anything
+  // held inside it is lost on every stop-and-reload; a board that snapped every
+  // open workflow shut the moment you stopped one step would be unusable.
+  const [mode, setMode] = useState<BoardMode>('collapsed')
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+
+  // A board-wide instruction overrules the per-card ones. Keeping stale
+  // overrides would make "Collapse all" leave three cards open with no way to
+  // tell why.
+  const chooseMode = useCallback((m: BoardMode) => {
+    setMode(m)
+    setOpen({})
+  }, [])
+
+  const toggle = useCallback(
+    (id: string, expanded: boolean) => setOpen((o) => ({ ...o, [id]: !expanded })),
+    [],
+  )
 
   return (
     <Screen
@@ -56,17 +102,52 @@ export function WorkflowsScreen() {
       {(d) => (
         <>
           {d.statesDetail !== null && <StatesUnavailable detail={d.statesDetail} />}
-          {d.workflows.map((w) => (
-            <WorkflowCard
-              key={w.workflow_id}
-              workflow={w}
-              taskById={d.taskById}
-              reload={reload}
-            />
-          ))}
+          <ModeControl mode={mode} onChoose={chooseMode} />
+          <div className="wf-board">
+            {d.workflows.map((w) => (
+              <WorkflowCard
+                key={w.workflow_id}
+                workflow={w}
+                taskById={d.taskById}
+                expanded={open[w.workflow_id] ?? mode === 'full'}
+                onToggle={toggle}
+                reload={reload}
+              />
+            ))}
+          </div>
         </>
       )}
     </Screen>
+  )
+}
+
+type BoardMode = 'collapsed' | 'full'
+
+/**
+ * The board-wide default. Two states, named for what they show rather than for
+ * what they do: "Collapsed" is a list of one-line bars, "Full DAG" opens every
+ * canvas at once.
+ */
+function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardMode) => void }) {
+  return (
+    <div className="wf-modebar" role="group" aria-label="How much of each workflow to show">
+      {(
+        [
+          ['collapsed', 'Collapsed'],
+          ['full', 'Full DAG'],
+        ] as const
+      ).map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          className={`wf-mode${mode === value ? ' is-on' : ''}`}
+          aria-pressed={mode === value}
+          onClick={() => onChoose(value)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -93,37 +174,6 @@ function StatesUnavailable({ detail }: { detail: string }) {
   )
 }
 
-/** Depth of each step: 0 for roots, else 1 + max(depth of dependencies). */
-function levelsOf(steps: WorkflowStep[]): WorkflowStep[][] {
-  const byId = new Map(steps.map((s) => [s.step_id, s]))
-  const depth = new Map<string, number>()
-
-  const resolve = (id: string, seen: Set<string>): number => {
-    const cached = depth.get(id)
-    if (cached !== undefined) return cached
-    // A cycle should be impossible -- the scheduler rejects one at submission --
-    // but a UI that hangs on malformed data is worse than one that draws it
-    // flat, so this terminates rather than trusting that.
-    if (seen.has(id)) return 0
-    const step = byId.get(id)
-    if (!step || step.depends_on.length === 0) {
-      depth.set(id, 0)
-      return 0
-    }
-    seen.add(id)
-    const d = 1 + Math.max(...step.depends_on.map((p) => resolve(p, seen)))
-    seen.delete(id)
-    depth.set(id, d)
-    return d
-  }
-
-  steps.forEach((s) => resolve(s.step_id, new Set()))
-  const max = Math.max(0, ...steps.map((s) => depth.get(s.step_id) ?? 0))
-  return Array.from({ length: max + 1 }, (_, lvl) =>
-    steps.filter((s) => (depth.get(s.step_id) ?? 0) === lvl),
-  )
-}
-
 /**
  * The rollup line, read off what the SERVER computed.
  *
@@ -138,17 +188,27 @@ function levelsOf(steps: WorkflowStep[]): WorkflowStep[][] {
  * "3 succeeded" over a partial read is a wrong number wearing the clothes of a
  * right one. The server reports `complete: false` for exactly that case.
  */
-function rollupLine(workflow: Workflow): { text: string; trustworthy: boolean } {
+function rollupLine(workflow: Workflow): {
+  text: string
+  trustworthy: boolean
+  done: number
+  total: number
+} {
   const roll = workflow.rollup
   const total = workflow.steps.length
   if (!roll) {
     // `state_source: 'stored'` -- no read route produces this, but a payload
     // without a rollup must say it has no census rather than invent a zero one.
-    return { text: `${total} step${total === 1 ? '' : 's'} · not counted`, trustworthy: false }
+    return {
+      text: `${total} step${total === 1 ? '' : 's'} · not counted`,
+      trustworthy: false,
+      done: 0,
+      total,
+    }
   }
   if (!roll.complete) {
     const n = roll.unreadable_steps.length
-    return { text: `${n} of ${total} steps: state unread`, trustworthy: false }
+    return { text: `${n} of ${total} steps: state unread`, trustworthy: false, done: 0, total }
   }
   const done = roll.counts.SUCCEEDED ?? 0
   const failed = roll.counts.FAILED ?? 0
@@ -156,7 +216,7 @@ function rollupLine(workflow: Workflow): { text: string; trustworthy: boolean } 
   const parts = [`${done}/${total} done`]
   if (failed > 0) parts.push(`${failed} failed`)
   if (unstarted > 0) parts.push(`${unstarted} not started`)
-  return { text: parts.join(' · '), trustworthy: true }
+  return { text: parts.join(' · '), trustworthy: true, done, total }
 }
 
 /**
@@ -192,82 +252,271 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
   )
 }
 
-function WorkflowCard({
+export function WorkflowCard({
   workflow,
   taskById,
+  expanded,
+  onToggle,
   reload,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
+  expanded: boolean
+  onToggle: (id: string, expanded: boolean) => void
   reload: () => void
 }) {
-  const levels = levelsOf(workflow.steps)
   const roll = rollupLine(workflow)
-  // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
-  // server-side -- the frozen `Workflow` has no metadata field, so there is
-  // nowhere else it could live. Null when the task join produced nothing to
-  // read, which the banner above is already explaining.
-  const tasks = workflow.steps
-    .map((s) => (s.task_id ? (taskById?.get(s.task_id) ?? null) : null))
-    .filter((t): t is Task => t !== null)
-  const dispatch = workflowDispatchOf(tasks)
+  const shape = shapeOf(workflow.steps)
+  const spend = workflowSpend(workflow.steps, taskById)
+  const bodyId = `wf-body-${workflow.workflow_id}`
 
   return (
-    <section className="section">
-      <h2>
-        {/* B17. `.section > h2` uppercases, and this id is lowercase
-            everywhere it actually lives -- Firestore, the API, the logs and
-            the `#agents/task/<id>` address. Printed as WF_BCDC9180… it cannot
-            be pasted anywhere, which is the only thing an id is for. */}
-        <Id>{workflow.workflow_id}</Id> · {workflow.state.toLowerCase()} · updated{' '}
-        {timeAgo(workflow.updated_at)}
+    <section className={`section wf-card${expanded ? ' is-open' : ''}`}>
+      {/* STILL AN <h2>, and the button is inside it rather than around it. The
+          bar is this panel's heading -- it is how the workflow is named on the
+          board -- and demoting it to a bare <button> would take the row out of
+          the document outline that every other section is in. `.section > h2`
+          uppercases, so `.wf-bar` turns that off again for its own contents;
+          B17's rule on `.id` is what keeps the id itself lowercase either
+          way, and it is asserted on the rendered style in brand.test.tsx. */}
+      <h2 className="wf-h">
+        <button
+          type="button"
+          className="wf-bar"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={() => onToggle(workflow.workflow_id, expanded)}
+        >
+          <span className="wf-caret" aria-hidden>
+            {expanded ? '▾' : '▸'}
+          </span>
+          {/* B17. This id is lowercase everywhere it actually lives --
+              Firestore, the API, the logs and the `#agents/task/<id>` address.
+              Printed as WF_BCDC9180… it cannot be pasted anywhere, which is
+              the only thing an id is for. */}
+          <Id>{workflow.workflow_id}</Id>
+          <span className={`wf-state ${toneClass(workflow.state)}`}>
+            <span aria-hidden>{glyphOf(workflow.state)}</span> {workflow.state.toLowerCase()}
+          </span>
+          <Progress roll={roll} />
+          <Shape shape={shape} workflow={workflow} taskById={taskById} />
+          <Mix steps={workflow.steps} />
+          <Spend spend={spend} />
+          <span className="wf-when" title={`Last state change: ${workflow.updated_at}`}>
+            {timeAgo(workflow.updated_at)}
+          </span>
+          {/* ALWAYS RENDERED, empty or not. `.wf-bar` is a grid with one column
+              per field, and a conditionally-absent child would shift every
+              field after it into the wrong column on exactly the rows that
+              have something to say. */}
+          <span className="wf-flags">
+            {/* Still a separate annotation, not folded into the state above.
+                `cancel_requested` is a REQUEST: a step holding a lease keeps it
+                until the worker or the reconciler releases it, so between the
+                request and the release the workflow really is still running. */}
+            {workflow.cancel_requested && <span className="tag wait">cancel requested</span>}
+          </span>
+        </button>
       </h2>
-      <p className={`rollup${roll.trustworthy ? '' : ' untrusted'}`}>
-        {roll.text}
-        {/* Still a separate annotation, not folded into the state above.
-            `cancel_requested` is a REQUEST: a step holding a lease keeps it
-            until the worker or the reconciler releases it, so between the
-            request and the release the workflow really is still running. */}
-        {workflow.cancel_requested && ' · cancel requested'}
-      </p>
-      <StateDrift drift={workflow.drift} />
-      <WorkflowDispatch
-        dispatch={dispatch?.dispatch ?? null}
-        integratorTaskId={dispatch?.integratorTaskId ?? null}
-        steps={workflow.steps.length}
-        joined={tasks.length > 0}
-      />
-      <div className="dag">
-        {levels.map((level, i) => (
-          <div className="level" key={i} style={{ ['--depth' as string]: i }}>
-            {/* A single vertical stalk used to sit here. It was decorative and
-                it LIED: one line between levels reads as a linear chain, and
-                this is a DAG -- `plan` forks to two children and they join back
-                into `report`. Stacked on a phone it was worse, rendering four
-                parallel-and-sequential steps as one sequence.
-                The honest signal is the level itself, so the level says what it
-                is; exact edges stay on each node as `← dependency`. */}
-            {i > 0 && (
-              <div className="level-label">
-                {level.length > 1 ? `then ${level.length} in parallel` : 'then'}
-              </div>
-            )}
-            <div className="level-steps">
-              {level.map((s) => (
-                <StepNode
-                  key={s.step_id}
-                  step={s}
-                  state={stepState(s, taskById)}
-                  workflow={workflow}
-                  reload={reload}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+
+      {expanded && (
+        <div className="wf-body" id={bodyId}>
+          <StateDrift drift={workflow.drift} />
+          <WorkflowDispatchLine workflow={workflow} taskById={taskById} />
+          <WorkflowGraph workflow={workflow} taskById={taskById} reload={reload} />
+        </div>
+      )}
     </section>
   )
+}
+
+/**
+ * PROGRESS, and the reason it is not always a bar.
+ *
+ * A meter is a claim that the numbers behind it are a census. When the server
+ * reports `complete: false` the census failed, and drawing "2 of 6" as a
+ * two-thirds-empty bar would turn a failed read into a measurement -- the
+ * exact substitution this console exists to refuse. In that case the words
+ * survive, struck through, and no bar is drawn at all.
+ */
+function Progress({ roll }: { roll: { text: string; trustworthy: boolean; done: number; total: number } }) {
+  if (!roll.trustworthy) {
+    return <span className="wf-progress untrusted">{roll.text}</span>
+  }
+  const pct = roll.total === 0 ? 0 : Math.round((roll.done / roll.total) * 100)
+  return (
+    <span className="wf-progress">
+      <span
+        className="wf-meter"
+        role="img"
+        aria-label={`${roll.done} of ${roll.total} steps done`}
+        title={roll.text}
+      >
+        <span className="wf-meter-fill" style={{ width: `${pct}%` }} />
+      </span>
+      <span className="wf-progress-text">{roll.text}</span>
+    </span>
+  )
+}
+
+/**
+ * THE TOPOLOGY, COLLAPSED. Two renderings of one layout: the widths as text
+ * (`1 → 5 → 1`) and a mini-map drawn from the SAME `layoutOf` the expanded
+ * canvas uses, scaled down, with the real edges and one dot per step coloured
+ * by that step's state.
+ *
+ * The text is what a screen reader and a test can read; the map is what the eye
+ * gets in 90 pixels. Neither is decoration: without them a fan-out and a chain
+ * are the same row.
+ */
+function Shape({
+  shape,
+  workflow,
+  taskById,
+}: {
+  shape: DagShape
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+}) {
+  return (
+    <span className="wf-shape" title={shape.label}>
+      <MiniMap workflow={workflow} taskById={taskById} />
+      <span className="wf-shape-text" data-kind={shape.kind}>
+        {shape.text}
+      </span>
+    </span>
+  )
+}
+
+const MINI_COL = 15
+const MINI_ROW = 10
+const MINI_R = 3
+
+function MiniMap({
+  workflow,
+  taskById,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+}) {
+  const layout = layoutOf(workflow.steps)
+  if (layout.nodes.length === 0) return null
+
+  const sx = MINI_COL / (NODE_W + COL_GAP)
+  const sy = MINI_ROW / (NODE_H + ROW_GAP)
+  const mx = (x: number) => (x + NODE_W / 2 - PAD) * sx + MINI_R + 1
+  const my = (y: number) => (y + NODE_H / 2 - PAD) * sy + MINI_R + 1
+
+  const pts = layout.nodes.map((n) => ({ step: n.step, cx: mx(n.x), cy: my(n.y) }))
+  const w = Math.max(...pts.map((p) => p.cx)) + MINI_R + 1
+  const h = Math.max(...pts.map((p) => p.cy)) + MINI_R + 1
+
+  return (
+    <svg className="wf-mini" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden focusable="false">
+      {layout.edges.map((e) => (
+        <line
+          key={`${e.from}->${e.to}`}
+          className="wf-mini-edge"
+          x1={mx(e.x1 - NODE_W)}
+          y1={my(e.y1 - NODE_H / 2)}
+          x2={mx(e.x2)}
+          y2={my(e.y2 - NODE_H / 2)}
+        />
+      ))}
+      {pts.map((p) => (
+        <circle
+          key={p.step.step_id}
+          className={`wf-mini-dot ${toneOfStep(stepState(p.step, taskById))}`}
+          cx={p.cx}
+          cy={p.cy}
+          r={MINI_R}
+        />
+      ))}
+    </svg>
+  )
+}
+
+/**
+ * THE RUNNER MIX. Which models this workflow is spending the subscription on,
+ * commonest first, two named and the rest counted.
+ *
+ * It earns the line because it is the field that decides whether a quota park
+ * is about to matter to THIS workflow: a twenty-step run that is nine
+ * claude-code steps and a browser step behaves nothing like one that is twenty
+ * mock steps, and the difference is invisible from the id, the state and the
+ * progress. The full per-step profile stays on every expanded node; this never
+ * replaces it.
+ */
+function Mix({ steps }: { steps: WorkflowStep[] }) {
+  const mix = profileMix(steps)
+  if (mix.length === 0) return <span className="wf-mix" />
+  const shown = mix.slice(0, 2)
+  const rest = mix.length - shown.length
+  const all = mix.map((m) => `${m.profile} ×${m.count}`).join(', ')
+  return (
+    <span className="wf-mix" title={`Runner profiles: ${all}`}>
+      {shown.map((m) => (
+        <span className="wf-chip" key={m.profile}>
+          {m.profile}
+          <span className="wf-chip-n">×{m.count}</span>
+        </span>
+      ))}
+      {rest > 0 && <span className="wf-chip more">+{rest}</span>}
+    </span>
+  )
+}
+
+/**
+ * SPEND, and the one rule that outranks everything on this screen.
+ *
+ * `usd === null` means NO STEP REPORTED A COST. It is rendered "not reported",
+ * never `$0.00`: an absent measurement is not a free run. A step that reported
+ * `0` -- a mock profile does exactly that -- is a MEASURED zero and renders as
+ * a digit.
+ *
+ * The coverage travels with the figure whenever it is partial, because a total
+ * over three of six steps is not the workflow's spend. Four decimals under ten
+ * dollars for the same reason Overview uses them: a single attempt is routinely
+ * worth $0.0312, and $0.03 loses a third of the figures on this board.
+ */
+function Spend({ spend }: { spend: WorkflowSpend }) {
+  if (spend.usd === null) {
+    return (
+      <span
+        className="wf-spend absent"
+        title={
+          spend.joined === 0
+            ? 'No task was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
+            : `None of the ${spend.joined} joined step${spend.joined === 1 ? '' : 's'} reported a cost. This is an absent measurement, not $0.00.`
+        }
+      >
+        not reported
+      </span>
+    )
+  }
+  const partial = spend.covered < spend.steps
+  return (
+    <span
+      className="wf-spend"
+      title={`${spend.covered} of ${spend.steps} steps reported a cost.${
+        partial ? ' The rest have not reported one, so this is a floor rather than the total.' : ''
+      }`}
+    >
+      {money(spend.usd)}
+      {partial && (
+        <span className="wf-spend-cov">
+          {spend.covered}/{spend.steps}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** Dollars of token cost. Four decimals under ten dollars: a single attempt is
+ *  routinely worth $0.0312, and rounding that to $0.03 loses a third of the
+ *  figures on this board to "$0.00". */
+function money(v: number): string {
+  return v < 10 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`
 }
 
 /**
@@ -277,6 +526,37 @@ function WorkflowCard({
  * the same function over the same step count -- so "I picked one pull request"
  * and "this workflow will open one pull request" cannot come apart.
  *
+ * EXPANDED ONLY, and that is a judgement rather than an oversight: the strategy
+ * does not change while a workflow runs, so it cannot help a reader choose
+ * which of ten rows to open. It is a property of what comes out at the end,
+ * which is a thing you read once you have opened the one you care about.
+ */
+function WorkflowDispatchLine({
+  workflow,
+  taskById,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+}) {
+  // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
+  // server-side -- the frozen `Workflow` has no metadata field, so there is
+  // nowhere else it could live. Null when the task join produced nothing to
+  // read, which the banner above is already explaining.
+  const tasks = workflow.steps
+    .map((s) => (s.task_id ? (taskById?.get(s.task_id) ?? null) : null))
+    .filter((t): t is Task => t !== null)
+  const dispatch = workflowDispatchOf(tasks)
+  return (
+    <WorkflowDispatch
+      dispatch={dispatch?.dispatch ?? null}
+      integratorTaskId={dispatch?.integratorTaskId ?? null}
+      steps={workflow.steps.length}
+      joined={tasks.length > 0}
+    />
+  )
+}
+
+/**
  * Three absences, and they are not the same:
  *  - no task joined at all: the task read failed or has not reached any step,
  *    and the state banner above is already saying so. Nothing is claimed.
@@ -314,6 +594,116 @@ function WorkflowDispatch({
   )
 }
 
+/**
+ * A clock that ticks, so "running 4m 12s" is true a second later.
+ *
+ * SCOPED TO THE OPEN CANVAS, following the same rule Overview's `useNow`
+ * records: a 1Hz clock held at the top of the board would re-render every
+ * collapsed row once a second to move one number inside one expanded card. This
+ * hook only exists while a canvas is mounted, which is only while a workflow is
+ * open.
+ */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return now
+}
+
+/**
+ * THE CANVAS. Real edges between real node cards, flowing left to right.
+ *
+ * The positions come from `layoutOf`, which is pure and tested, so the edges
+ * and the cards cannot disagree: both read the same numbers. The SVG holds only
+ * the edges -- the cards are HTML on top of it, because a node carries an
+ * anchor, a `title` and a stop button, and those are not things to re-implement
+ * inside an `<svg>`.
+ *
+ * It scrolls horizontally rather than shrinking. A twenty-step workflow across
+ * six levels is genuinely wider than a phone, and scaling it down to fit turns
+ * the step names into texture.
+ */
+function WorkflowGraph({
+  workflow,
+  taskById,
+  reload,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  reload: () => void
+}) {
+  const now = useNow()
+  const layout = layoutOf(workflow.steps)
+  const levels = levelsOf(workflow.steps)
+
+  if (layout.nodes.length === 0) {
+    return <p className="muted small">This workflow has no steps.</p>
+  }
+
+  return (
+    <div className="wf-canvas-wrap">
+      {/* The column captions, positioned from the SAME constants the canvas
+          lays out with rather than from a number repeated in the stylesheet.
+          A caption that drifts one column off the nodes it names is worse
+          than no caption. */}
+      <ol className="wf-legend" aria-label="Dependency levels" style={{ width: layout.width }}>
+        {levels.map((level, i) => (
+          <li key={i} style={{ left: PAD + i * (NODE_W + COL_GAP), width: NODE_W }}>
+            {i === 0 ? 'starts' : 'then'}
+            {level.length > 1 ? ` ${level.length} in parallel` : ''}
+          </li>
+        ))}
+      </ol>
+      <div className="wf-canvas" style={{ width: layout.width, height: layout.height }}>
+        <svg
+          className="wf-edges"
+          width={layout.width}
+          height={layout.height}
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          aria-hidden
+          focusable="false"
+        >
+          <defs>
+            <marker
+              id={`arrow-${workflow.workflow_id}`}
+              viewBox="0 0 8 8"
+              refX="7"
+              refY="4"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
+            </marker>
+          </defs>
+          {layout.edges.map((e) => (
+            <path
+              key={`${e.from}->${e.to}`}
+              className="wf-edge"
+              d={edgePath(e)}
+              markerEnd={`url(#arrow-${workflow.workflow_id})`}
+            />
+          ))}
+        </svg>
+        {layout.nodes.map((n) => (
+          <StepNode
+            key={n.step.step_id}
+            step={n.step}
+            state={stepState(n.step, taskById)}
+            workflow={workflow}
+            now={now}
+            x={n.x}
+            y={n.y}
+            reload={reload}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** How each of the three step-state kinds presents. Kept together so the
  *  difference between "not started" and "not read" stays deliberate. */
 function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; word: string; title: string } {
@@ -342,18 +732,59 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
   }
 }
 
+function toneOfStep(state: StepState): Tone | 'unknown' {
+  return present(state).tone
+}
+
+/**
+ * The workflow's own derived state is a `string`, not a `TaskState`: the server
+ * sends 'UNKNOWN' when a step could not be read, and `rollup.py` is free to add
+ * another word without this bundle being redeployed.
+ *
+ * So it is NARROWED rather than cast. An unrecognised value falls through to
+ * the unknown treatment: faint, and a '?' rather than a state glyph. The one
+ * thing a word this screen does not understand must never look like is a
+ * healthy one, and a cast would have given it whatever tone the fallthrough
+ * happened to produce.
+ */
+const TASK_STATES: ReadonlySet<string> = new Set<TaskState>([
+  'SUBMITTED', 'QUEUED', 'PARKED', 'READY', 'LEASED', 'DISPATCHED',
+  'STARTING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
+])
+
+function asTaskState(state: string): TaskState | null {
+  return TASK_STATES.has(state) ? (state as TaskState) : null
+}
+
+function toneClass(state: string): Tone | 'unknown' {
+  const known = asTaskState(state)
+  return known === null ? 'unknown' : stateTone(known)
+}
+
+function glyphOf(state: string): string {
+  const known = asTaskState(state)
+  return known === null ? '?' : stateGlyph(known)
+}
+
 function StepNode({
   step,
   state,
   workflow,
+  now,
+  x,
+  y,
   reload,
 }: {
   step: WorkflowStep
   state: StepState
   workflow: Workflow
+  now: number
+  x: number
+  y: number
   reload: () => void
 }) {
   const p = present(state)
+  const dur = stepDuration(state, now)
   // Read off the step's own task, so the node that opens the pull request is
   // marked in the graph rather than only named in the line above it. Silent on
   // a step with no task and on a `contributor`: every step of an `integrate`
@@ -363,11 +794,24 @@ function StepNode({
   // what an absent or unrecognised block means, and a second one here is how
   // two screens start disagreeing about the same task.
   const role = state.kind === 'state' ? (dispatchOf(state.task)?.role ?? null) : null
+  const taskId = state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
 
   return (
-    <div className={`node ${p.tone}`} title={p.title}>
+    <div
+      className={`node ${p.tone}`}
+      title={p.title}
+      style={{ left: x, top: y, width: NODE_W, minHeight: NODE_H }}
+    >
       <div className="node-id">
-        {step.step_id}
+        {/* The step NAME, and where its run actually lives. An id you cannot
+            reach is a label; `#agents/task/<id>` is the address every other
+            screen uses for the same task. Only when a task exists: a step the
+            workflow has not reached has nothing to open. */}
+        {taskId ? (
+          <a href={`#agents/task/${encodeURIComponent(taskId)}`}>{step.step_id}</a>
+        ) : (
+          step.step_id
+        )}
         {role === 'integrator' && (
           <span className="tag ok" title="This step merges the other steps' branches and opens the workflow's single pull request.">
             opens the PR
@@ -377,7 +821,9 @@ function StepNode({
       <div className="node-state">
         <span aria-hidden>{p.glyph}</span> {p.word}
       </div>
+      {/* The llm used. The owner's "the way it's done today", kept verbatim. */}
       <div className="node-meta">{step.runner_profile}</div>
+      <StepTime dur={dur} />
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
           ← {step.depends_on.join(', ')}
@@ -400,6 +846,30 @@ function StepNode({
           />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * HOW LONG THIS STEP HAS TAKEN, AND WHAT KIND OF TIME THAT IS.
+ *
+ * Five different things are rendered five different ways, and the first one is
+ * the rule the whole product rests on: a step that has not started HAS NO
+ * DURATION. It reads "not started", never `0s`, because `0s` is a measurement
+ * and nothing measured it. `stepDuration`'s absent arm carries no number at
+ * all, so this component could not print one if it tried.
+ *
+ * The other four are distinguished because they answer different questions:
+ * time queued and time parked are time WAITED and are drawn as waiting; a
+ * running step's figure is elapsed and still moving; only a finished step has a
+ * duration in the ordinary sense. The measured six-step run this was designed
+ * against had five steps waiting exactly 153s and then running 68-92s -- one
+ * number covering both would have hidden the entire story of that workflow.
+ */
+function StepTime({ dur }: { dur: StepDuration }) {
+  return (
+    <div className={`node-dur is-${dur.kind}`} title={dur.note}>
+      {dur.text}
     </div>
   )
 }

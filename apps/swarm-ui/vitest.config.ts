@@ -69,6 +69,26 @@ export default defineConfig({
     // No watcher, no browser, no coverage instrumentation: this runs inside
     // `make test`, which is a gate rather than a development loop.
     reporters: ['default'],
+    // 30s, not Vitest's default 5s, AND THE REASON IS THE `css: true` ABOVE.
+    //
+    // The tests that matter most here inject the shipped 66KB `styles.css`
+    // into jsdom and read `getComputedStyle()` back off the elements the
+    // components rendered -- that is what makes them assertions about what
+    // ships rather than about a hand-written copy of a rule. jsdom's CSSOM is
+    // the slowest thing in this suite by an order of magnitude, and it scales
+    // with the size of that sheet.
+    //
+    // `brand.test.tsx`'s "tells the four apart WITHOUT USING COLOUR" runs in
+    // ~550ms on an idle machine and TIMED OUT AT 5461ms on this one while
+    // several other agent worktrees were running their own gates (load average
+    // 200). A gate that goes red because the machine was busy teaches everyone
+    // to re-run it until it passes, which is how a real failure gets re-run
+    // away too.
+    //
+    // 30s still fails fast on a genuine hang -- a test that deadlocks or awaits
+    // something that never resolves is 30s, not 30 minutes -- so this buys
+    // headroom without giving up the property the timeout exists for.
+    testTimeout: 30_000,
     // `globals` stays OFF. Every test imports `describe`/`it`/`expect` from
     // 'vitest' explicitly, so `tsc -b` typechecks the tests with no ambient
     // types injected into the app's own compilation.
