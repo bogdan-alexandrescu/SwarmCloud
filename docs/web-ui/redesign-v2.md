@@ -1118,3 +1118,67 @@ Reported, not patched, per CLAUDE.md.
    artifacts back to callers, so it reads objects." The API has no route that serves
    an artifact and no GCS client dependency. The grant is correct for the intended
    design and currently unused.
+
+---
+
+## 9. OWNER DIRECTIVE, 2026-09-22 — prose out of the app
+
+Stated directly by the owner:
+
+> we should try to remove all of the prose content from the app. Help should
+> sit in a dedicated help section but we could put everywhere we need to a
+> helper hover over question mark tooltip and house info there too
+
+This supersedes any part of this document, or of `redesign.md`, that puts
+explanatory sentences on a data surface. Three places to apply it:
+
+1. **A dedicated Help section**, carrying the long-form material that is
+   currently inlined: what a pool is, why capacity is the minimum across pools,
+   what each state means, why a paused pool is not a full one, what a
+   checkpoint is for.
+2. **A `?` affordance beside anything that needs a why**, hovering to a card.
+   The card is where the sentence lives now.
+3. **Data surfaces carry data**, not paragraphs.
+
+### The part that must NOT be lost, and why it is subtle
+
+The current UI's best property is implemented AS prose, so a naive removal
+deletes it. `redesign.md` §3 specifies that an absent metric renders "the value
+is a **sentence**, not a figure", and `PlatformCountsScreen` writes things like
+"2 states did not come back (LEASED, RUNNING). No total is shown, because a sum
+over a partial response would look like a complete one."
+
+The distinction to hold:
+
+* **The FACT stays on the surface, always, and stays impossible to miss.** That
+  a read failed, that a response was partial, that a figure is unmeasured, that
+  a total is being withheld — each keeps a visible marker: an em dash, a
+  hatched segment, a count of what is missing, a struck-through total.
+* **The EXPLANATION moves into the `?` card.** "Why is this an em dash" is a
+  hover. "Why is there no total" is a hover.
+
+A silent icon where a sentence used to be is NOT this directive satisfied; it
+is the honesty rule deleted. The test for any panel after the change: can a
+reader tell, WITHOUT hovering anything, that a number is missing rather than
+zero? If not, the marker is too quiet.
+
+### Measured example this directive should fix
+
+From the first real `claude-code` run, `task_b208fc8542724268b5f4`:
+
+```
+03:46:05  dispatched
+03:49:14  starting      +3m 09s
+03:49:14  running       +0.1s
+03:49:32  succeeded     +18s
+```
+
+3m09s of Cloud Run cold start, 18s of agent. `DISPATCHED` is where nearly all
+the wall clock goes and it is the state a poller almost always sees — and no
+screen distinguishes "waiting for a container" from "the agent is working".
+
+That is not fixed by prose OR by a tooltip. It needs a duration breakdown
+derived from the event stream (`queued → leased → dispatched → starting →
+running`), drawn as a segmented bar on the agent row. The fact is the bar; the
+`?` explains what each segment means. It is the clearest example in this
+document of data replacing sentences rather than being explained by them.
