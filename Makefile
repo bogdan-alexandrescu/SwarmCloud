@@ -58,6 +58,7 @@ TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
         load-test quota-test concurrency-test failure-test race-test test tf-test lint \
+        bench bench-baseline \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -156,6 +157,22 @@ failure-test: ## Failures, cancellation and malformed input leak no capacity
 race-test: ## The last free slot goes to exactly one task
 	@$(SCRIPTS)/race-test.sh
 
+bench: ## Performance benchmarks against baselines (SUITES=api,reconcile,cost)
+	@# READ-ONLY BY DEFAULT. The three suites in the default set submit nothing
+	@# and create nothing, so this is safe against a live environment. SUITES=
+	@# dispatch or admission SUBMIT TASKS (and cancel them); on --profile
+	@# claude-code they spend real provider tokens. docs/benchmarks.md states
+	@# what every suite costs in money and in minutes, because a benchmark
+	@# nobody runs because it is expensive is not a benchmark.
+	@$(SCRIPTS)/bench.sh $${SUITES:+--suites $$SUITES}
+
+bench-baseline: ## Record this run's numbers as the reference (SUITES=api,...)
+	@# Recording a baseline asserts "this is what normal looks like". Read the
+	@# diff before committing it: a cold cache, a busy platform or a
+	@# half-deployed revision all produce numbers every honest run afterwards
+	@# will then fail against.
+	@$(SCRIPTS)/bench.sh --record-baseline $${SUITES:+--suites $$SUITES}
+
 test: ## Unit tests, terraform tests and the guard self-tests (no cloud resources needed)
 	@$(SCRIPTS)/destroy.sh --self-test
 	@$(SCRIPTS)/lib/plan-guard.sh --self-test
@@ -163,6 +180,13 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
 	@$(SCRIPTS)/lib/check-env-parity.sh
+	@# The benchmark engine, offline. It gates on percentiles, on baselines and
+	@# on the difference between "fast" and "never measured", and every one of
+	@# those decisions is testable without a cloud. Wired in here for the reason
+	@# the comment under `test` gives about tests/integration: a suite that is
+	@# in no target rots, and this one decides whether a performance regression
+	@# is reported or swallowed.
+	@$(SCRIPTS)/bench.sh --self-test
 	@# NO "if the directory exists" GUARD on either suite below. `make test` is
 	@# the gate CLAUDE.md names before anyone may say a change is done, and a
 	@# guard that turns "I could not find the tests" into a green run is a gate
