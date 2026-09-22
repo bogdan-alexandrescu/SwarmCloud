@@ -2229,3 +2229,153 @@ table.pools tbody tr.unmeasured {
   .cf-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .blocker-at { margin-left: 0; flex-basis: 100%; }
 }
+
+/* ---------------------------------------------------------------------------
+   B28 -- the stop control
+   ---------------------------------------------------------------------------
+   Deliberately QUIET until it is opened. A destructive control that shouts
+   from every row trains people to ignore it, and this one sits on every
+   non-terminal agent in the product. The confirmation is where the weight is:
+   it is a panel with a real border and the danger colour, because that is the
+   moment the decision is actually being made. */
+
+.stop-btn {
+  font: 500 10.5px/1 var(--mono); letter-spacing: .04em;
+  padding: 4px 8px; border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+  cursor: pointer;
+}
+.stop-btn:hover {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+}
+.stop-btn.inline { padding: 2px 6px; font-size: 10px; }
+
+.run-stop { margin-left: auto; }
+.node-stop { margin-top: 6px; }
+
+/* "stop requested" is not a button and must not look like one: the request is
+   already in, and something that invited a second press would imply the first
+   had not taken. */
+.stop-pending {
+  font: 500 10px/1 var(--mono); letter-spacing: .04em;
+  color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-radius: var(--ctl-radius-sm); padding: 3px 7px; white-space: nowrap;
+}
+
+.stop-confirm {
+  margin-top: var(--ctl-s2);
+  padding: var(--ctl-s3);
+  border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--line));
+  border-left-width: 3px;
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+  max-width: 62ch;             /* a measure, so the copy is readable prose */
+}
+.stop-confirm h4 { margin: 0 0 var(--ctl-s2); font-size: 13px; color: var(--bad); }
+.stop-confirm p { margin: 0 0 var(--ctl-s2); font-size: 12.5px; line-height: 1.55; }
+.stop-confirm code { font: 11.5px var(--mono); }
+
+/* The sentence that makes the decision small gets the affirmative colour, not
+   the warning one: "the work is kept" is reassurance, and colouring it like a
+   hazard would undo what it is there to do. */
+.stop-keeps { color: var(--text-dim); }
+.stop-keeps strong { color: var(--ok); }
+.stop-when { color: var(--text-dim); }
+.stop-blast { border-top: 1px solid var(--line); padding-top: var(--ctl-s2); }
+.stop-blast strong { color: var(--warn); }
+
+.stop-actions { display: flex; gap: var(--ctl-s2); margin-top: var(--ctl-s3); }
+.stop-actions button {
+  font: 500 11px/1 var(--mono); padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text-dim); cursor: pointer;
+}
+.stop-actions button.danger {
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+}
+.stop-actions button:disabled { opacity: .55; cursor: default; }
+.stop-note { font-size: 12.5px; color: var(--text-dim); margin: var(--ctl-s2) 0 0; }
+.stop-note.small { font-size: 11px; }
+
+/* ---------------------------------------------------------------------------
+   B29 -- the artifact viewer
+   --------------------------------------------------------------------------- */
+
+.art-open {
+  font: inherit; color: var(--text); background: none; border: 0; padding: 0;
+  cursor: pointer; text-align: left;
+  border-bottom: 1px dotted var(--line);
+}
+.art-open:hover { border-bottom-color: var(--text-dim); }
+tr.is-open > th .art-open { border-bottom-style: solid; }
+
+.art-viewer {
+  margin-top: var(--ctl-s3);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); padding: var(--ctl-s3);
+}
+.art-head { display: flex; align-items: baseline; gap: var(--ctl-s2); }
+.art-head h3 { margin: 0; font-size: 12.5px; flex: 1 1 auto; }
+.art-close {
+  background: none; border: 0; color: var(--text-faint);
+  cursor: pointer; font-size: 13px; line-height: 1;
+}
+.art-close:hover { color: var(--text); }
+
+.art-prov { margin: var(--ctl-s2) 0 var(--ctl-s3); }
+.art-prov p { margin: 0 0 var(--ctl-s1); }
+.art-prov-actions { display: inline-flex; gap: var(--ctl-s2); margin-top: var(--ctl-s1); }
+.art-binary-meta { display: block; margin-top: var(--ctl-s2); font-size: 11.5px; }
+
+/* A MEASURE ON THE PROSE. A synthesis document set to the full width of a
+   1600px console is a wall nobody reads; 78ch is the same rule the rest of the
+   ctl-* vocabulary applies to body text. Code and transcripts are exempt --
+   wrapping a command is worse than scrolling to it. */
+.art-md { max-width: 78ch; font-size: 13px; line-height: 1.6; }
+.art-md p { margin: 0 0 var(--ctl-s3); }
+.art-md .art-h { margin: var(--ctl-s4) 0 var(--ctl-s2); line-height: 1.3; }
+.art-md .art-h[data-level="1"] { font-size: 16px; }
+.art-md .art-h[data-level="2"] { font-size: 14.5px; }
+.art-md .art-h[data-level="3"] { font-size: 13.5px; }
+.art-md .art-list { margin: 0 0 var(--ctl-s3); padding-left: 1.3em; }
+.art-md .art-list li { margin-bottom: var(--ctl-s1); }
+.art-md .art-quote {
+  margin: 0 0 var(--ctl-s3); padding-left: var(--ctl-s3);
+  border-left: 2px solid var(--line); color: var(--text-dim);
+}
+.art-md code { font: 12px var(--mono); color: var(--text); }
+.art-md a { color: var(--info); }
+.art-md hr { border: 0; border-top: 1px solid var(--line); margin: var(--ctl-s4) 0; }
+
+.art-text, .art-code {
+  font: 11.5px/1.5 var(--mono);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  padding: var(--ctl-s2); margin: 0 0 var(--ctl-s3);
+  overflow-x: auto; white-space: pre;
+}
+.art-text { max-height: 60vh; overflow-y: auto; }
+
+.art-turns { display: flex; flex-direction: column; gap: var(--ctl-s2); }
+.art-turn {
+  border: 1px solid var(--line); border-left: 3px solid var(--text-faint);
+  border-radius: var(--ctl-radius-sm); padding: var(--ctl-s2); background: var(--surface);
+}
+.art-turn-assistant { border-left-color: var(--info); }
+.art-turn-user { border-left-color: var(--ok); }
+.art-turn-result { border-left-color: var(--warn); }
+.art-turn-head { display: flex; align-items: baseline; gap: var(--ctl-s2); }
+.art-turn-role {
+  font: 600 10px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-dim); flex: 1 1 auto;
+}
+.art-turn-body {
+  margin-top: var(--ctl-s2); font-size: 12.5px; line-height: 1.55;
+  white-space: pre-wrap; max-width: 78ch;
+}
+
+@media (max-width: 640px) {
+  .stop-confirm { max-width: none; }
+  .run-stop { margin-left: 0; }
+}

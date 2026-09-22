@@ -5,6 +5,7 @@ import { noteFixtureProbe, read, write, type Result } from './fetch'
 // four states, not a second list written out here.
 import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 import type {
+  ArtifactContent,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -456,6 +457,132 @@ export async function loadTaskLogs(
   // Path literal and query kept apart; see loadCheckpoints above for why.
   const path = `/v1/tasks/${encodeURIComponent(taskId)}/logs`
   return read<TaskLogs>(path + suffix, () => false)
+}
+
+/**
+ * ONE artifact's content, resolved by the SERVER from the task's manifest.
+ *
+ * `GET /v1/tasks/{id}/artifacts/content?name=`. The parameter is a NAME, not a
+ * path: the server matches it for exact equality against the manifest the
+ * worker wrote into this task's own `result_summary` and rebuilds the object
+ * key from the task document. Nothing in this client may construct a key, a
+ * prefix or a `gs://` uri and send it -- a route that accepted one would be a
+ * path-traversal hole into another tenant's prefix, and the reason it does not
+ * is that no caller can express one.
+ *
+ * `status` MUST be read before `content`. `null` is absent, unreadable or
+ * binary; `''` is a real, empty artifact. And `truncated` must be surfaced: a
+ * capped window rendered without it reads as the whole output, which is the
+ * thing the server went out of its way to make visible.
+ */
+export async function loadArtifactContent(
+  taskId: string,
+  name: string,
+  options: { offset?: number; limitBytes?: number } = {},
+): Promise<Result<ArtifactContent>> {
+  if (USE_FIXTURES) return fixtureArtifactContent(taskId, name)
+  const query = new URLSearchParams({ name })
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
+  // Path literal and query kept apart; see loadCheckpoints above for why.
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}/artifacts/content`
+  return read<ArtifactContent>(path + `?${query}`, () => false)
+}
+
+/**
+ * STOP ONE AGENT. `POST /v1/tasks/{id}/cancel`.
+ *
+ * The only write in this product that ends work rather than shaping it, so the
+ * caller confirms first -- see `StopRun.tsx`, which owns the confirmation and
+ * is the only thing that calls this.
+ *
+ * `released_immediately` is the field that matters in the response and it is
+ * NOT the HTTP status: a 200 means the request was recorded. False means the
+ * task held capacity and keeps it until the worker acts on the flag, which is
+ * a different thing to tell someone than "it stopped".
+ */
+export async function cancelTask(taskId: string): Promise<Result<CancelResult>> {
+  if (USE_FIXTURES) return fixtureCancel(taskId)
+  return write(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, 'POST') as Promise<
+    Result<CancelResult>
+  >
+}
+
+/**
+ * ONLY WHAT THIS CLIENT READS.
+ *
+ * The response also carries the re-read `task`, and it is deliberately not
+ * typed here: the stop control reloads the screen rather than trusting an echo,
+ * so nothing consumes it -- and declaring a field nothing reads is what forced
+ * the fixture below to fabricate a whole Task in order to satisfy a shape.
+ * A fixture that invents data is the thing README.md says fixtures must not be.
+ */
+export interface CancelResult {
+  /**
+   * TRUE only when the task held no capacity and went straight to CANCELLED.
+   * False means the flag is set and a live container is still running.
+   */
+  released_immediately: boolean
+}
+
+async function fixtureArtifactContent(
+  taskId: string,
+  name: string,
+): Promise<Result<ArtifactContent>> {
+  await new Promise((r) => setTimeout(r, 30))
+  const path = `/v1/tasks/${taskId}/artifacts/content`
+  noteFixtureProbe(path, 30, true)
+  const bodies: Record<string, string> = {
+    'synthesis.md':
+      '# Synthesis\n\nFive agents looked at the same question.\n\n' +
+      '- cold start dominates the wall clock\n' +
+      '- fencing held on every retry\n\n' +
+      '```\nreserve(all_or_nothing)\n```\n\nSee `rollup.py` for the derivation.\n',
+    'claude-transcript.json': JSON.stringify(
+      [
+        { type: 'system', subtype: 'init', model: 'claude-opus-4' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the repository.' }] } },
+        { type: 'result', subtype: 'success', total_cost_usd: 0.0937 },
+      ],
+      null,
+      2,
+    ),
+  }
+  const content = bodies[name] ?? `fixture artifact ${name}\n`
+  const bytes = new TextEncoder().encode(content).length
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_fixture',
+      artifact: { name, bytes, uri: `gs://swarm-artifacts/${name}` },
+      status: 'ok',
+      detail: null,
+      key: `tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/artifacts/${name}`,
+      uri: `gs://swarm-artifacts/${name}`,
+      content,
+      total_bytes: bytes,
+      offset: 0,
+      returned_bytes: bytes,
+      next_offset: null,
+      truncated: false,
+      redacted: false,
+      redaction_count: 0,
+      redaction: { applied_at_read_time: true, rules: 11 },
+    },
+  }
+}
+
+async function fixtureCancel(taskId: string): Promise<Result<CancelResult>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(`/v1/tasks/${taskId}/cancel`, 60, true)
+  // `released_immediately: false` is the fixture's answer on purpose: it is
+  // the case the confirmation copy is written for, and a fixture that always
+  // reported an instant stop would let that copy be developed against the
+  // easier half.
+  return { status: 'ok', fetchedAt: Date.now(), data: { released_immediately: false } }
 }
 
 async function fixtureResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
