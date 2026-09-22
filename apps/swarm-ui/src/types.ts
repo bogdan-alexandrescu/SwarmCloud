@@ -51,6 +51,18 @@ export interface RunnerProfile {
   units: number
   pools: string[]
   /**
+   * Whether this profile may be dispatched at all.
+   *
+   * OPTIONAL, and absent means AVAILABLE. An older API does not send the field,
+   * and defaulting an unknown answer to "disabled" would empty the picker
+   * against a deployment that is working fine. The submit gate refuses a
+   * disabled profile regardless, so the cost of guessing wrong here is a
+   * refused submission rather than a task that should not have run.
+   */
+  available?: boolean
+  /** Why it is refused. Served whenever `available` is false. */
+  disabled_reason?: string
+  /**
    * Computed by `swarm_api/headroom.py` from `evaluate_capacity` itself.
    * Optional because an older API does not send it, and an absent block must
    * render as "not measured" rather than as a zero.
@@ -1011,6 +1023,17 @@ export interface ResourceClassSpec {
 export interface Runtime {
   /** The exact string to send as `runner_profile`. */
   name: string
+  /**
+   * Whether this profile may be dispatched at all.
+   *
+   * The catalogue serves DISABLED profiles too, on purpose: a task that names
+   * `codex` still needs its image, backend and resource class to be rendered,
+   * and omitting the entry would make an existing run unreadable rather than
+   * merely unrepeatable. This flag is what a submit form filters on.
+   */
+  available: boolean
+  /** Why it is refused. Empty when `available` is true. */
+  disabled_reason: string
   image: string
   /**
    * DECLARED. `AUTO` is a value the frozen `Backend` enum permits, and a caller

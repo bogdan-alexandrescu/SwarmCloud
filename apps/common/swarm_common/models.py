@@ -204,12 +204,39 @@ class Task:
     result_summary: dict[str, Any] | None = None
     latest_checkpoint: str | None = None
 
+    def retries_exhausted(self) -> bool:
+        """This task has used its last attempt. See `retries_exhausted`."""
+        return retries_exhausted(self.attempt_count, self.max_attempts)
+
     def to_firestore(self) -> dict[str, Any]:
         d = asdict(self)
         d["state"] = self.state.value
         d["park_reason"] = self.park_reason.value if self.park_reason else None
         return d
 
+
+
+def retries_exhausted(attempt_count: int, max_attempts: int) -> bool:
+    """Whether a task has used its last attempt.
+
+    A FREE FUNCTION as well as a method because the two enforcement points do
+    not both hold a `Task`: the reconciler decides inside a Firestore
+    transaction, from the raw document, where constructing one would mean
+    decoding a task to read two integers.
+
+    THIS EXISTS BECAUSE THE RULE WAS RESTATED AND THEN OMITTED. It lived only
+    in `reconciler/store.py`, on the path that repairs a task to READY. The
+    scheduler's `return_to_ready_after_failed_dispatch` -- the OTHER path that
+    returns a task to READY -- wrote the state unconditionally, so a task whose
+    dispatch kept failing retried for ever. Observed 2026-09-23:
+    `task_d18d8d8b044d469cb43c` reached 83 attempts against a cap of 3,
+    re-dispatching every 30 seconds for hours on `gke_create_job_failed`.
+
+    The scheduler and the reconciler are separate images and cannot import each
+    other, so a rule they both need has exactly one home that is not a
+    restatement: here.
+    """
+    return attempt_count >= max_attempts
 
 @dataclass
 class Attempt:

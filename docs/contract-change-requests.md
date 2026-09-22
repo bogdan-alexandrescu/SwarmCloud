@@ -23,6 +23,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 8 | `states.py`: `Workflow.state` reuses `TaskState`; a workflow vocabulary | open |
 | 9 | `models.py`: `Lease.dispatch_overdue` excluded the leases it names | APPLIED 2026-09-22 |
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
+| 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
+| 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
 
 ---
 
@@ -1060,3 +1062,136 @@ Three tests were added in
 was proved by mutation — restoring the guard turns
 `test_a_dispatched_lease_past_its_deadline_is_overdue` red.
 
+---
+
+## 11. `profiles.py`: a runner profile had no way to be turned off
+
+**Status: ACCEPTED and applied 2026-09-23, by the owner's decision.** This edits
+`apps/common/swarm_common/`, which is frozen; it is recorded here as such.
+
+### What was asked
+
+"disable codex support for now. just focus on support and deep integration with
+claude."
+
+### Why a flag and not a deletion
+
+`RunnerProfile` had no availability concept at all, so the only way to stop a
+profile being dispatched was to remove it from `RUNNER_PROFILES`. That would
+have:
+
+* stranded anything already queued against it — nothing was, which was checked,
+  but the mechanism should not depend on that being true;
+* broken the catalogue entry that four existing `codex` task documents in
+  `saga-agents-staging` still name, making those runs unreadable rather than
+  merely unrepeatable;
+* made re-enabling a revert rather than a word, for something explicitly asked
+  for "for now".
+
+So `available: bool = True` and `disabled_reason: str = ""` were added, with
+`__post_init__` refusing a profile that is disabled without a reason. A caller
+told only that a known profile was refused has nothing to act on.
+
+### The distinction that matters
+
+`validate_runner_profile` now separates **unknown** from **known but refused**.
+Collapsing them sends a caller hunting for a typo that is not there: `codex` is
+spelled correctly, exists, and will not run. The 422 carries `disabled: true`
+and the reason.
+
+The suggestion list in that error is now the AVAILABLE set, not the whole
+catalogue — offering a profile that would also be refused is not a suggestion.
+
+### What is deliberately NOT narrowed
+
+`known_providers()` still reads the whole catalogue, so `openai` stays
+registrable. A tenant already holds `swarm-tenant-eng-openai`; narrowing this
+would make that secret unregisterable, unrotatable and undeletable through the
+route that owns it. Disabling a runner must not strand a credential someone has
+to be able to clean up.
+
+### Why codex specifically
+
+A twenty-step load test on 2026-09-23 dispatched four codex steps across all
+five profiles. All four failed with `openai refused the credential`. The
+tenant's `swarm-tenant-eng-openai` holds a single version written 2026-09-16
+that the provider rejects. Nine `claude-code` and four `mock` steps in the same
+run succeeded.
+
+### Proved by
+
+Three mutations, each caught: re-enabling codex reddens two named guard tests;
+skipping the availability check reddens
+`test_a_disabled_profile_is_refused_as_disabled_not_as_unknown`; and disabling
+without a reason raises at import.
+
+The route-to-type parity tests caught the rest — `/v1/runtimes` serves both new
+fields, `types.ts` had to match field-for-field, and
+`test_the_screen_reads_every_field_the_route_publishes` then obliged the
+Runtimes screen to actually render the disabled state and its reason rather
+than accept a field it ignored.
+
+---
+
+## 12. `models.py`: the retry cap had no shared home, so one path forgot it
+
+**Status: ACCEPTED and applied 2026-09-23.** This edits
+`apps/common/swarm_common/`, which is frozen, and is recorded here as such.
+
+### The outage
+
+`task_d18d8d8b044d469cb43c` -- the browser step of a twenty-step workflow --
+reached **83 attempts against a `max_attempts` of 3**, re-dispatching roughly
+every 30 seconds for hours on `gke_create_job_failed`. It was still climbing
+when an operator stopped it by hand. Its `current_generation` had reached 83,
+so every one of those attempts burned a fencing generation as well as a lease.
+
+### Why
+
+TWO paths return a task to READY and only one enforced the cap.
+
+`reconciler/store.py` checked it, on the path that REPAIRS a task to READY.
+`scheduler/store.py`'s `return_to_ready_after_failed_dispatch` -- reached
+whenever a dispatch fails after the lease is taken -- wrote
+`state: READY` unconditionally.
+
+That function is not careless. Its docstring reasons at length about retry
+PRESSURE: "a backend that is refusing one dispatch is usually about to refuse
+the next, and a tight retry would burn the whole run's lease budget on one
+broken task", and it applies a 30-second backoff for exactly that reason. It
+spaced the attempts out and never counted them. A backoff is not a cap.
+
+### The change
+
+`retries_exhausted(attempt_count, max_attempts)` in `swarm_common.models`, plus
+`Task.retries_exhausted()` delegating to it. Both call sites now use it.
+
+A FREE FUNCTION as well as a method because the two enforcement points do not
+both hold a `Task`: the reconciler decides inside a Firestore transaction from
+the raw document, where constructing one would mean decoding a task to read two
+integers.
+
+### Why it belongs in the frozen contract
+
+The scheduler and the reconciler are separate images and cannot import each
+other. A rule they both need therefore has exactly one home that is not a
+restatement, and `scripts/lib/check-contract-parity.sh` exists because
+restatements drift. This one did worse than drift: the second copy was never
+written.
+
+### Proved by
+
+Two mutations, each caught by named tests. Reinstating the original bug
+(`exhausted = False` on the dispatch path) reddens
+`test_a_task_at_its_cap_fails_instead_of_retrying` and
+`test_a_terminal_task_is_not_given_a_retry_time`. An off-by-one (`>` for `>=`)
+reddens four.
+
+The tests pin BOTH paths deliberately, because pinning one is what produced the
+bug.
+
+### Also fixed on the way past
+
+A task sent to FAILED by this path was getting a `next_eligible_at`, which
+promises a retry that is not coming and renders in the console as a scheduled
+attempt. It now gets a `completed_at` and no eligibility time.

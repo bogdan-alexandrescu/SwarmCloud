@@ -105,9 +105,17 @@ succeeded.
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref` and `label`. The
 profile is a **name** from the frozen catalogue — `mock`, `generic`,
-`claude-code`, `codex`, `browser` — and the image, command and resource class
-come from the name. There is no parameter for an image and asking for one is
-not a thing a caller may do.
+`claude-code`, `browser` — and the image, command and resource class come from
+the name. There is no parameter for an image and asking for one is not a thing
+a caller may do.
+
+**`codex` is DISABLED and will be refused on submit.** It is still in the
+catalogue so that existing runs which name it stay readable, but this platform
+is focused on Claude and the provider refused the registered credential — on
+2026-09-23 four codex steps of a twenty-step run failed with "openai refused
+the credential". The refusal says `disabled` and carries a reason, so it is
+distinguishable from a typo; do not retry it, and do not suggest it. Use
+`claude-code`.
 
 Always pass `label`. It is the short name the console shows, and an operator
 looking at eight running agents should not have to open each one to find out

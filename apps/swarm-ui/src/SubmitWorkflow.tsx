@@ -415,7 +415,17 @@ function StepRow({ step, profiles, others, removable, required, onChange, onRemo
         <label>
           runner profile
           <select value={step.profile} onChange={(e) => onChange({ ...step, profile: e.target.value })}>
-            {profiles.map(([name]) => <option key={name} value={name}>{name}</option>)}
+            {/* Only what the API would accept. Offering a disabled profile
+                and then refusing it on submit makes the form the liar. `?? true`
+                and not `|| true`: an older API omits the field, and `false ||
+                true` is true, which would show a profile we know is refused. */}
+            {profiles
+              .filter(([, p]) => (p.available ?? true) !== false)
+              .map(([name]) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
           </select>
         </label>
         {/* UNITS, never "agents": admission increments every pool this step needs

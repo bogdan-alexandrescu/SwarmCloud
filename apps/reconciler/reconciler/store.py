@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable
 
 from swarm_common.admission import _snapshot
 from swarm_common.admission import release_lease_in_transaction
-from swarm_common.models import TaskEvent, new_id, utcnow
+from swarm_common.models import TaskEvent, new_id, retries_exhausted, utcnow
 from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
@@ -295,9 +295,14 @@ class ControlStore:
                 return None
             target = to_state
             if target is TaskState.READY:
-                attempts = int(data.get("attempt_count", 0))
-                max_attempts = int(data.get("max_attempts", 3))
-                if attempts >= max_attempts:
+                # The shared predicate, not a second copy of the comparison.
+                # This path had the rule and the scheduler's dispatch-failure
+                # path did not, which is how a task reached 83 attempts against
+                # a cap of 3 on 2026-09-23.
+                if retries_exhausted(
+                    int(data.get("attempt_count", 0)),
+                    int(data.get("max_attempts", 3)),
+                ):
                     target = TaskState.FAILED
             if current is target:
                 return None

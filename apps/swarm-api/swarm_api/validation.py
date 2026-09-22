@@ -50,7 +50,18 @@ FORBIDDEN_CALLER_FIELDS = (
 
 
 def known_providers() -> tuple[str, ...]:
-    """Providers the catalogue actually references. Nothing else is registrable."""
+    """Providers the catalogue actually references. Nothing else is registrable.
+
+    DELIBERATELY THE WHOLE CATALOGUE, not `available_runner_profiles()`. Codex
+    is disabled and openai is now referenced only by a disabled profile -- but
+    a tenant already holds an openai credential, and narrowing this would make
+    that secret unmanageable through the API: unregistrable, unrotatable, and
+    undeletable by the route that owns it. Disabling a runner should not strand
+    a credential someone has to be able to clean up.
+
+    It also keeps re-enabling cheap: the key can be replaced before the profile
+    is switched back on, rather than after.
+    """
     return tuple(sorted({p.provider for p in RUNNER_PROFILES.values() if p.provider}))
 
 
@@ -59,9 +70,33 @@ def validate_runner_profile(name: str) -> RunnerProfile:
     if profile is None:
         raise ValidationFailed(
             f"unknown runner_profile {name!r}",
-            detail={"known_runner_profiles": sorted(RUNNER_PROFILES)},
+            detail={"known_runner_profiles": sorted(available_runner_profiles())},
+        )
+    # KNOWN BUT REFUSED IS NOT THE SAME AS UNKNOWN, and collapsing them sends a
+    # caller hunting for a typo that is not there. The profile exists, it is
+    # spelled correctly, and the platform will not run it -- so say that, and
+    # say why, because the reason is the only part they can act on.
+    if not profile.available:
+        raise ValidationFailed(
+            f"runner_profile {name!r} is disabled: {profile.disabled_reason}",
+            detail={
+                "runner_profile": name,
+                "disabled": True,
+                "reason": profile.disabled_reason,
+                "known_runner_profiles": sorted(available_runner_profiles()),
+            },
         )
     return profile
+
+
+def available_runner_profiles() -> dict[str, RunnerProfile]:
+    """The profiles a caller may actually dispatch.
+
+    Every list OFFERED to a caller comes from here rather than from
+    RUNNER_PROFILES, so a disabled profile cannot be advertised on one screen
+    and refused on submit from another.
+    """
+    return {n: p for n, p in RUNNER_PROFILES.items() if p.available}
 
 
 def validate_resource_class_override(profile: RunnerProfile, requested: str | None) -> str:

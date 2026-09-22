@@ -74,6 +74,11 @@ def test_each_runtime_matches_the_frozen_catalogue_field_for_field(client):
                 "disk_gib": rc.disk_gib,
                 "units": rc.units,
             },
+            # Served for EVERY profile, including disabled ones. A caller
+            # reading a task that names a disabled profile still needs its
+            # shape to render that task.
+            "available": profile.available,
+            "disabled_reason": profile.disabled_reason,
         }, f"{name} drifted from the frozen catalogue"
 
 

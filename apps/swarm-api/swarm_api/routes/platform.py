@@ -124,12 +124,21 @@ def runtimes(
     `secrets` lists environment variable NAMES. This route reads no environment,
     no secret store and no Firestore document.
     """
+    # EVERY profile, including disabled ones, each carrying its own
+    # `available` flag and reason. A caller reading a task that names `codex`
+    # still needs its image, backend and resource class to render that task;
+    # omitting the entry would make an existing run unreadable rather than
+    # merely unrepeatable. The flag is what a submit form filters on.
     catalogue = {}
     for name, profile in sorted(RUNNER_PROFILES.items()):
         rc = RESOURCE_CLASSES[profile.resource_class]
         catalogue[name] = {
-            # Exactly the string to send as `runner_profile` on a submission.
+            # Exactly the string to send as `runner_profile` on a submission --
+            # unless `available` is false, in which case submitting it is
+            # refused with `disabled_reason`.
             "name": profile.name,
+            "available": profile.available,
+            "disabled_reason": profile.disabled_reason,
             "image": profile.image,
             # DECLARED and RESOLVED, both, because they are different questions.
             # `Backend.AUTO` is a value the frozen enum permits and

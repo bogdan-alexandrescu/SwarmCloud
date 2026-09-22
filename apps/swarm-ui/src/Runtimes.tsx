@@ -414,7 +414,21 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
             that only one file knew about. */}
         <Id>{runtime.name}</Id>
         <span className="count-chip">{runtime.resolved_backend}</span>
+        {/* A DISABLED PROFILE IS MARKED WHERE IT IS READ, not only where it is
+            refused. The catalogue serves it because an existing task that names
+            it still has to render; a reader scanning this list needs to know at
+            a glance that it cannot be dispatched, or the entry reads as an
+            option. */}
+        {runtime.available === false && <span className="tag bad">disabled</span>}
       </h2>
+
+      {runtime.available === false && (
+        <p className="warn-text">
+          {/* The REASON, not just the state. It is the only part a reader can
+              act on, and "disabled" alone sends them looking for a setting. */}
+          {runtime.disabled_reason}
+        </p>
+      )}
 
       <dl className="kv">
         <dt>Runs on</dt>

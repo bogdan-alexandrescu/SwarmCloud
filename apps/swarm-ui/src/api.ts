@@ -876,6 +876,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     provider: 'demo-vendor', secrets: ['DEMO_API_KEY', 'DEMO_OAUTH_TOKEN'], secrets_any_of: true,
     timeout_seconds: 7200, resource_class: 'demo-small',
     resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
+    available: true, disabled_reason: '',
   },
   'demo-probe': {
     name: 'demo-probe', image: 'demo-runtime-base',
@@ -883,6 +884,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     provider: null, secrets: [], secrets_any_of: false,
     timeout_seconds: 300, resource_class: 'demo-small',
     resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
+    available: true, disabled_reason: '',
   },
   'demo-viewport': {
     name: 'demo-viewport', image: 'demo-runtime-viewport',
@@ -890,6 +892,12 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     provider: 'demo-vendor', secrets: ['DEMO_API_KEY'], secrets_any_of: false,
     timeout_seconds: 5400, resource_class: 'demo-medium',
     resources: { name: 'demo-medium', cpu: 6, memory_gib: 15, disk_gib: 7, units: 2 },
+    // THE DISABLED EXEMPLAR. A fixture set where every profile is available
+    // means the disabled branch of the catalogue screen ships unexercised --
+    // the same argument `demo-wide` makes for declaring AUTO, since nothing in
+    // the shipped catalogue is AUTO either.
+    available: false,
+    disabled_reason: 'demo-vendor refused the registered credential. Use demo-small.',
   },
   'demo-wide': {
     name: 'demo-wide', image: 'demo-runtime-wide',
@@ -899,6 +907,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     provider: 'other-vendor', secrets: ['OTHER_API_KEY', 'OTHER_REGION'], secrets_any_of: false,
     timeout_seconds: 10800, resource_class: 'demo-wide',
     resources: { name: 'demo-wide', cpu: 7, memory_gib: 30, disk_gib: 15, units: 4 },
+    available: true, disabled_reason: '',
   },
 }
 
