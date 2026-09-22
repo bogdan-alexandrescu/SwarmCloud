@@ -25,6 +25,10 @@
 
   --radius: 10px;
   --gutter: 16px;
+  /* The comfortable reading measure. 45-90 characters is the range; 78ch sits
+     inside it and leaves room for the monospaced ids that run through this
+     product's prose. Nothing in the sheet constrained a line before this. */
+  --measure: 78ch;
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
@@ -66,7 +70,38 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
+/* THE PAGE IS NO LONGER CAPPED AT 1100px.
+ *
+ * Content ran x=266..1334 on a 1600px viewport -- 250px of dead page on each
+ * side -- on a console whose brief asks for "graphs and diagrams everywhere
+ * possible". Empty space is the most expensive thing on this screen.
+ *
+ * The cap widens in steps rather than disappearing, because the two things a
+ * max-width was doing must not be lost with it:
+ *
+ *  1. PROSE MEASURE. Lines of 157-192 characters were already being rendered
+ *     against a comfortable 45-90, and widening the page makes that worse, not
+ *     better. `--measure` below caps the text elements directly, which is where
+ *     the cap belonged in the first place -- the container was capping the
+ *     CHARTS to protect the PARAGRAPHS.
+ *  2. A GRID THAT STILL MAKES SENSE. `.ov-cols` goes to three tracks at
+ *     1400px, which is what the extra width buys.
+ */
 .app { max-width: 1100px; margin: 0 auto; padding: 24px var(--gutter) 64px; }
+@media (min-width: 1400px) { .app { max-width: 1320px; } }
+@media (min-width: 1720px) { .app { max-width: 1600px; } }
+@media (min-width: 2040px) { .app { max-width: 1880px; } }
+
+/* THE MEASURE. Applied to the running text, never to a table, a grid or a
+   chart -- those want the width. `ch` rather than px so it tracks the font. */
+.sub,
+.state p,
+.ctl-section-q,
+.ctl-ref-lead,
+.ctl-empty > p,
+.chart-legend,
+.node-why,
+.muted.small { max-width: var(--measure); }
 
 /* ---- header ---- */
 .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
@@ -235,8 +270,13 @@ body {
 .row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 
 /* ---- workflow dag ---- */
+/* LEFT-ALIGNED, not centred. `align-items: center` here and
+   `justify-content: center` on `.level-steps` drew the graph as a ~132px column
+   in the middle of a full-width container, leaving roughly 430px of blank page
+   beside it at 1024px. The level label keeps its rules either side, so it still
+   reads as a divider rather than a caption. */
 .dag { display: flex; flex-direction: column; }
-.level { display: flex; flex-direction: column; align-items: center; }
+.level { display: flex; flex-direction: column; align-items: flex-start; }
 .level-label {
   font: 500 10.5px/1 var(--mono);
   text-transform: uppercase; letter-spacing: .06em;
@@ -250,24 +290,84 @@ body {
   content: ""; position: absolute; top: 50%;
   width: 22px; height: 1px; background: var(--line);
 }
+/* The label sat centred over a centred column; left-aligned it needs its own
+   inset so the left-hand rule has somewhere to be. */
+.level-label { margin-left: 30px; }
 .level-label::before { right: calc(100% + 8px); }
 .level-label::after  { left: calc(100% + 8px); }
-.level-steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.level-steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-start; }
 .node {
+  display: flex; flex-direction: column; gap: 2px;
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-  border-radius: 8px; padding: 8px 12px; min-width: 132px;
+  border-radius: 8px; padding: 8px 12px;
+  /* Wider than 132px because the node now carries four figures. Capped so a
+     three-step level still sits side by side on a 1320px page. */
+  min-width: 210px; max-width: 280px;
 }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
-.node-id { font: 600 12.5px var(--mono); }
+.node-id { font: 600 12.5px var(--mono); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+/* THE NODE IS A DOORWAY. The step id is the link to the task's own screen,
+   where its input and its output are; it used to be a `title` on a `<div>`. */
+.node-open { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line); }
+.node-open:hover { color: var(--info); border-bottom-color: currentColor; }
+.node-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
 .node-state { font: 11px var(--mono); color: var(--text-dim); }
+.node-meta { font: 11px var(--mono); color: var(--text-faint); }
 .node-dep {
   font: 10.5px var(--mono); color: var(--text-faint);
   margin-top: 3px; max-width: 190px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ---- what the step actually did ----
+   Four figures per node. THE ABSENT TREATMENT IS THE POINT: a measurement the
+   platform never recorded renders as a phrase in the faint token, dashed, and
+   a measurement that IS zero renders as an ordinary digit in the ordinary
+   colour. Making those two look alike is the single most expensive misreading
+   this screen can produce, and `measure.ts` is where the rule lives. */
+.node-nums {
+  display: flex; flex-direction: column; gap: 1px; margin: 5px 0 0;
+  padding-top: 5px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+/* A grid per row rather than `display: contents` on the row: the row carries
+   the `title` that explains an absence, and an element with no box has nothing
+   to hover. */
+.node-num { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.node-num dt {
+  font: 10px var(--mono); letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-faint); align-self: baseline;
+}
+.node-num dd {
+  margin: 0; font: 11.5px var(--mono); color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A SENTENCE, never a numeral. Dashed underline so it reads as "there is no
+   figure here" rather than as a small figure. */
+.node-num.is-absent dd {
+  color: var(--ctl-absent);
+  font-variant-numeric: normal;
+  border-bottom: 1px dashed color-mix(in srgb, var(--ctl-absent) 55%, transparent);
+  width: max-content; max-width: 100%;
+}
+/* A read still in flight is NOT an absence: it has made no claim about the
+   platform at all, so it gets a moving placeholder instead of a sentence. */
+.node-num.is-reading dd { color: var(--text-faint); }
+.node-reading {
+  display: block; width: 44px; height: 9px; border-radius: 999px;
+  background: var(--surface-2);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.node-why {
+  margin: 5px 0 0; font: 10.5px/1.45 var(--font); color: var(--text-faint);
+}
+.node-links { display: flex; gap: 10px; margin-top: 5px; }
+.node-links a { font: 10.5px var(--mono); color: var(--info); text-decoration: none; }
+.node-links a:hover { text-decoration: underline; }
+.node-links a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
 
 @media (max-width: 560px) {
   /* The task row loses its runner and age columns rather than shrinking into
@@ -282,9 +382,9 @@ body {
      single column, so "these two are parallel" survives the narrow viewport. */
   .level { align-items: stretch; padding-left: calc(var(--depth, 0) * 14px); }
   .level-steps { flex-direction: column; align-items: stretch; }
-  .level-label { align-self: flex-start; }
+  .level-label { align-self: flex-start; margin-left: 0; }
   .level-label::before { display: none; }
-  .node { min-width: 0; }
+  .node { min-width: 0; max-width: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -489,9 +589,12 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
 /* Agents screen (Screen A)                                                  */
 /* ------------------------------------------------------------------------ */
 
-.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+/* `flex: 1` made Live/Waiting/Recent three ~356px buttons for four-character
+   labels, and every pixel of page width added another 100px each. A tab is as
+   wide as its label. */
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; }
 .tabs button {
-  flex: 1;
+  flex: 0 0 auto;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -665,10 +768,39 @@ ol.timeline li::before {
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
+
+/* COLLAPSED BY DEFAULT. Sixteen identical cells sat at the foot of every route
+   and spent ~200px of every screen saying the same thing. One line says how
+   many routes this tab has called and how slow the slowest of them are; the
+   cells are one click away and the full table is on Reference. The strip opens
+   itself when something is failing, and the re-auth button is OUTSIDE the
+   disclosure entirely -- a control that appears only after a click is not
+   there. */
+.sources-line {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  cursor: pointer; list-style: none;
+  padding: 2px 0;
+  font: 11.5px var(--mono); color: var(--text-faint);
+}
+.sources-line::-webkit-details-marker { display: none; }
+.sources-line::before { content: '▸'; color: var(--text-faint); }
+.sources-detail[open] > .sources-line::before { content: '▾'; }
+.sources-line:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.sl-count { color: var(--text-dim); }
+.sl-p95 { font-variant-numeric: tabular-nums; }
+.sl-ok  { color: var(--ok); }
+.sl-bad { color: var(--bad); font-weight: 600; }
+/* An admin gate is information, not breakage. */
+.sl-info { color: var(--info); }
+.sources-more { margin: 8px 0 0; font: 11px var(--mono); color: var(--text-faint); }
+.sources-more a { color: var(--info); text-decoration: none; }
+.sources-more a:hover { text-decoration: underline; }
+
 .source-cells {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 6px;
+  margin-top: 10px;
 }
 .source {
   display: grid;
@@ -833,8 +965,12 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   display: flex; align-items: flex-end; gap: 3px;
   height: 150px; padding-top: 8px;
   overflow-x: auto; -webkit-overflow-scrolling: touch;
+  /* Left-aligned and capped. `flex: 1` on the columns drew two ~534px-wide,
+     120px-tall bars for seven tasks; widening the page made that worse, not
+     better, so the cap lands with the width. */
+  justify-content: flex-start;
 }
-.chart .col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 26px; flex: 1; }
+.chart .col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 26px; flex: 1 1 auto; max-width: 72px; }
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
 .stackcol > i.succeeded { background: var(--ok); }
@@ -869,7 +1005,10 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .coverage { display: block; height: 4px; margin-bottom: 5px; border-radius: 999px; background: var(--surface-2); }
 .coverage > i { display: block; height: 100%; border-radius: 999px; background: var(--info); }
 
-.split-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) 46px; align-items: center; gap: 10px; padding: 3px 0; }
+/* The bar column is capped for the same reason as `.chart .col`: "claude-code 5"
+   got a bar the width of the content column, and a bar whose length means
+   nothing is worse at 900px than at 500px. */
+.split-row { display: grid; grid-template-columns: 110px minmax(0, 300px) 46px; align-items: center; gap: 10px; padding: 3px 0; justify-content: start; }
 .sr-name { font: 12px var(--mono); color: var(--text-dim); }
 .sr-bar { height: 9px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .sr-bar > i { display: block; height: 100%; background: var(--info); }
@@ -1397,6 +1536,27 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    rather than as more of the same measurement. */
 .ctl-util-over { height: 100%; background: var(--ctl-hatch-bad); }
 .ctl-util-track.is-unknown { background: var(--ctl-hatch); }
+
+/* A MEASURED ZERO MUST LOOK MEASURED.
+ *
+ * `width: 0%` on a fill over a near-white track is pixel-for-pixel a widget
+ * that failed to paint. The figure beside it said "0 / 10" and the page could
+ * not tell an operator whether that zero was a reading or a rendering bug --
+ * on the one screen that is scrupulous about exactly this distinction in prose.
+ *
+ * So a measured zero draws a BASELINE TICK at the origin: a 3px mark in the
+ * text colour, plus a 1px hairline along the track. Deliberately not a
+ * `min-width` on the fill, which would say "a little is in use" and make 0
+ * indistinguishable from 0.4% instead of from unmeasured. The tick is a
+ * different mark from a fill for the same reason the hatch is. */
+.ctl-util-track.is-zero {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-faint) 55%, transparent);
+}
+.ctl-util-zero {
+  width: 3px; height: 100%;
+  border-radius: 999px 0 0 999px;
+  background: var(--text-dim);
+}
 
 .ctl-util-figure {
   font: 12.5px var(--mono);
