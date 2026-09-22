@@ -57,7 +57,7 @@ TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix
 TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
-        load-test quota-test concurrency-test failure-test race-test test tf-test lint \
+        load-test quota-test concurrency-test failure-test race-test test tf-test ui-component-test lint \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -179,7 +179,25 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@# status code, the fake curl had never honoured `-o`/`-w`, and all three
 	@# files errored in their fixture for 95 commits with nothing to report it.
 	@uv run --project . pytest tests/integration -q
+	@$(MAKE) ui-component-test
 	@$(MAKE) tf-test
+
+ui-component-test: ## swarm-ui typecheck + component tests (Vitest/jsdom, offline, no credentials)
+	@# 20,445 lines of TypeScript had NO test runner, and the Python files that
+	@# "test the UI" read `.tsx` as text and assert on source strings -- which
+	@# cannot catch a render error, cannot catch a runtime exception, and pass
+	@# when the string they look for appears in a comment. These files are full
+	@# of comments quoting the very copy those greps search for.
+	@#
+	@# The honesty rules are the product's best property and nothing enforced
+	@# them at runtime: a failed read renders no zero, a partial read says what
+	@# it could not see, an unmeasured figure is an em dash while a measured
+	@# zero is 0, and no total appears over a partial response.
+	@#
+	@# The script keeps the three failure reasons apart -- suite missing is a
+	@# FAILURE, node missing is the one skip, dependencies missing is an install
+	@# -- for the reason recorded under tf-test.
+	@$(SCRIPTS)/ui-component-test.sh
 
 tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no credentials)
 	@# 86 assertions covering the platform promises the docs lean on. This suite

@@ -171,24 +171,19 @@ def test_both_submit_screens_send_the_choice():
         assert "repository_url: repo" in source, f"{screen} does not send `repository_url`"
 
 
-def test_the_default_option_never_promises_a_pull_request():
-    """`collect` PUSHES NOTHING and the screen must not let anyone think otherwise.
-
-    This is the one claim in the control that costs a person real time when it
-    is wrong: they submit, wait for a review that is never coming, and go
-    looking at the forge. `consequenceOf('collect', n)` is what the option
-    renders, so its headline is asserted to say no pull request and its
-    `pullRequests` to be zero.
-    """
-    source = _src("types.ts")
-    collect = re.search(r"case 'collect':(.*?)case 'direct-pr':", source, re.S)
-    assert collect is not None, "consequenceOf no longer has a 'collect' case"
-    body = collect.group(1)
-    assert "pullRequests: 0" in body, "collect must produce zero pull requests"
-    assert "pushes: false" in body, "collect must push nothing"
-    assert re.search(r"headline:\s*'No pull request", body), (
-        "collect's headline must say so in the place the other options put a count"
-    )
+# REPLACED BY A COMPONENT TEST: test_the_default_option_never_promises_a_pull_request
+#
+# It read the `case 'collect':` arm of `consequenceOf` out of types.ts and
+# asserted on the literals in it. The claim is about what a person picking the
+# default is told, and the literals are also what the file's own explanatory
+# comments quote -- so the grep passed on a `consequenceOf` that had been
+# rewritten to return the right object from the wrong branch.
+#
+# Now: apps/swarm-ui/src/__tests__/dispatch.test.ts, "says plainly that collect
+# pushes nothing" and "the default option never promises a pull request", which
+# CALL `consequenceOf` and `STRATEGY_LABEL[DEFAULT_STRATEGY]` and read the
+# values back -- across every strategy and 0, 1, 2 and 7 steps, which also
+# catches the broken plurals a grep never looked for.
 
 
 # --------------------------------------------------------------------------
@@ -497,27 +492,18 @@ def test_the_publish_reason_strings_reach_the_screen_through_the_worker_shape(cl
 # The read-back surface
 # --------------------------------------------------------------------------
 
-def test_an_api_that_reports_no_dispatch_is_not_rendered_as_collect():
-    """The distinction the whole read-back rests on.
-
-    `dispatch_of` fills the defaults for an old TASK, and that substitution is
-    correct. An old API sends no `dispatch` key at all, and reading that as
-    `collect` would invent a caller's choice out of a version skew -- "nothing
-    was pushed because you asked for collect" is a different sentence from
-    "nothing was pushed and we cannot say why".
-    """
-    source = _src("types.ts")
-    fn = re.search(r"export function dispatchOf\(task: Task\).*?\n\}", source, re.S)
-    assert fn is not None, "types.ts no longer exports dispatchOf"
-    body = fn.group(0)
-    assert body.count("return null") >= 2, (
-        "dispatchOf must return null for a missing block AND for an unrecognised "
-        "value, rather than substituting a default for either"
-    )
-    assert f"'{DEFAULT_STRATEGY}'" not in body, (
-        "dispatchOf must not substitute the default strategy: that is the API's "
-        "job for an old task, and doing it here hides an old API"
-    )
+# REPLACED BY A COMPONENT TEST: test_an_api_that_reports_no_dispatch_is_not_rendered_as_collect
+#
+# It counted `return null` statements in the body of `dispatchOf` and asserted
+# the default strategy's literal was absent from it. Both are proxies: a
+# function with two `return null` statements on unreachable branches passes,
+# and so does one that reaches the right branch and then has its answer
+# discarded by the caller.
+#
+# Now: apps/swarm-ui/src/__tests__/dispatch.test.ts, which calls `dispatchOf`
+# with a missing block, a null block, an array, a scalar, the worker's
+# `patches` spelling and an unknown strategy, and asserts null for each --
+# alongside the positive case, without which "always null" would pass.
 
 
 def test_the_workflow_board_does_not_invent_a_strategy_when_the_join_failed():

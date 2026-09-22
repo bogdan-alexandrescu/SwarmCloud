@@ -176,83 +176,62 @@ def test_blocker_group_prefers_the_served_grouping():
 
 
 # --------------------------------------------------------------------------
-# 2. What the screens actually render
+# 2. What the screens actually render -- MOVED OUT OF PYTHON
 # --------------------------------------------------------------------------
-
-def test_the_capacity_board_renders_every_blocker_not_the_binding_one():
-    """`h.blockers.map` is the fix; `h.binding` alone in that cell was the bug."""
-    fn = body_of(src("Capacity.tsx"), "function HeldBackBy(")
-    assert "h.blockers.map(" in fn, (
-        "the 'Held back by' cell must list every refusing pool -- mapping the "
-        "list is the difference between naming one ceiling and naming all of them"
-    )
-
-
-def test_a_paused_blocker_is_drawn_differently_from_a_full_one():
-    """Same headroom of 0, opposite remedies, so they cannot share a chip.
-
-    Both files pick the class from the REASON rather than from the count: a
-    paused pool can read 0 of 8 units in use and still admit nothing, which is
-    the case that looks healthiest and is not.
-    """
-    for name, fn_sig in (("Capacity.tsx", "function HeldBackBy("), ("Blockers.tsx", "function BlockerRow(")):
-        fn = body_of(src(name), fn_sig)
-        assert "MANUAL_PAUSE" in fn, f"{name} must tell a pause from a full pool"
-        assert "'paused'" in fn or '"paused"' in fn or "tag paused" in fn
-        assert "'full'" in fn or '"full"' in fn or "tag full" in fn
-
-
-def test_an_incomplete_list_says_so():
-    """The word has to reach the screen, not just the function's own name.
-
-    Asserted against the rendered markup rather than against the source text:
-    `IncompleteNote` contains "incomplete" in its identifier, so a substring
-    test over the whole body passes even when the banner has been reworded to
-    say the opposite.
-    """
-    fn = body_of(src("Blockers.tsx"), "export function IncompleteNote(")
-    assert "h.complete" in fn, "it must render only when the list is partial"
-    assert "<strong>incomplete</strong>" in fn, (
-        "the banner has to say the list is incomplete in words -- an "
-        "incomplete blocker list presented as complete tells an operator they "
-        "have cleared everything when they have not"
-    )
-    assert "h.unread" in fn, "it must say WHICH pools it could not see"
-
-
-def test_a_missing_headroom_renders_an_em_dash_and_never_a_zero():
-    fn = body_of(src("Blockers.tsx"), "export function headroomFigure(")
-    assert "h.agents === null" in fn
-    # Either spelling: the file may carry the character or the escape.
-    assert "\u2014" in fn or "\\u2014" in fn, "not measured must render as an em dash"
-    # And the two kinds of not-measured are worded differently, because
-    # "nothing caps this" and "a pool could not be read" are opposite facts.
-    assert "uncapped" in fn
-
-
-def test_the_counterfactual_is_worded_as_a_snapshot_and_not_as_a_promise():
-    """It is a prediction, and this is where a screen most easily starts lying.
-
-    A lease can be released between the read and the render, so every line is
-    past-conditional and anchored to the server's own `generated_at` rather
-    than to the browser's clock.
-    """
-    text = src("Blockers.tsx")
-    fn = body_of(text, "function counterfactualText(")
-    assert "would have" in fn, "the effect must be past-conditional"
-    for promise in ("will start", "you can start", "can start now", "are free"):
-        assert promise not in fn.lower(), f"{promise!r} states a prediction as a fact"
-    panel = body_of(text, "export function Counterfactuals(")
-    assert "generatedAt" in panel, "the snapshot's own timestamp must be shown"
-    assert "instant" in panel or "at that" in panel
-
-
-def test_a_zero_delta_names_what_still_binds():
-    """A bare "no change" reads as a glitch and gets ignored."""
-    fn = body_of(src("Blockers.tsx"), "function counterfactualText(")
-    assert "next_binding" in fn
-    assert "still binds" in fn
-
+#
+# Six tests lived here and asserted on the TEXT of Capacity.tsx and
+# Blockers.tsx. Every one of them was a claim about what a person SEES, and a
+# source grep cannot make that claim: it cannot catch a render error, it cannot
+# catch a runtime exception, and it passes when the string it looks for appears
+# in a comment -- which, in files written in this repository's house style, is
+# where most of these strings also appear. `test_an_incomplete_list_says_so`
+# said so about itself in its own docstring.
+#
+# They are now rendered and asserted on the DOM, in
+# apps/swarm-ui/src/__tests__/ (vitest + jsdom + Testing Library), run by
+# `scripts/ui-test.sh` from `make test` and by the `ui` job in
+# .github/workflows/application.yml. Replaced one for one:
+#
+#   test_the_capacity_board_renders_every_blocker_not_the_binding_one
+#     -> honesty.capacity.test.tsx
+#        "names EVERY refusing pool, so raising one is not mistaken for the fix"
+#        -- counts the rendered chips instead of grepping for `h.blockers.map(`.
+#
+#   test_a_paused_blocker_is_drawn_differently_from_a_full_one
+#     -> honesty.capacity.test.tsx
+#        "draws a paused pool differently from a full one" -- reads the class
+#        on the rendered element for a pool at 0 of 8, the case that looks
+#        healthiest and is not.
+#
+#   test_an_incomplete_list_says_so
+#     -> honesty.capacity.test.tsx, "an incomplete read" (four cases) -- asserts
+#        the banner's rendered words AND that an empty blocker list under an
+#        incomplete read is not reported as "no pool is refusing this profile".
+#        The grep could not reach that second half at all.
+#
+#   test_a_missing_headroom_renders_an_em_dash_and_never_a_zero
+#     -> honesty.capacity.test.tsx, "renders an em dash, not a 0, when the API
+#        sent no admission block" plus "renders 0 when zero is what was
+#        measured". Both the em dash and the 0 are in the SOURCE of those
+#        components, so no grep can tell those two cases apart; only rendering
+#        can, and both halves are needed or the rule is kept by accident.
+#
+#   test_the_counterfactual_is_worded_as_a_snapshot_and_not_as_a_promise
+#     -> honesty.capacity.test.tsx, "is worded in the past conditional, against
+#        the server's own instant" -- and additionally checks the rendered
+#        <time dateTime> carries `generated_at`.
+#
+#   test_a_zero_delta_names_what_still_binds
+#     -> honesty.capacity.test.tsx, "a zero delta names what still binds".
+#
+# WHAT STAYED IN PYTHON, and why it is not a grep in disguise. Section 1 above
+# asserts the ABSENCE of arithmetic in `headroomFor` -- `Infinity`,
+# `Math.floor`, `.available`. No behavioural test can assert that a function
+# does not re-derive something: a re-derivation that happens to agree with the
+# server produces identical pixels. That is a genuine static property of the
+# source, and it is the one that collapsed a list of blockers to a single pool.
+# Section 3 below holds the dev fixture to what `analyse_profile` really
+# produces, which is a Python-side comparison and could not move.
 
 # --------------------------------------------------------------------------
 # 3. The dev fixture is the server's answer, not an invented one
