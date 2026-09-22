@@ -21,6 +21,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 6 | A typed dispatch block | open |
 | 7 | `models.py`/`states.py`: the workflow rollup has no shared home | open |
 | 8 | `states.py`: `Workflow.state` reuses `TaskState`; a workflow vocabulary | open |
+| 9 | `models.py`: `Lease.dispatch_overdue` is switched off by `mark_dispatched` | open |
 
 ---
 
@@ -786,6 +787,108 @@ The derivation stays inside `TaskState`, `rollup.counts` carries the partial
 picture, and a caller wanting "mostly succeeded" reads the counts rather than the
 state. That is what ships today and it is honest; it is just less queryable than
 a named state would be.
+---
+
+## 9. `models.py`: `Lease.dispatch_overdue` is switched off by `mark_dispatched`
+
+**Status:** open, found 2026-09-22 while landing "A lease whose container is
+still booting is not silent, it is not yet alive" onto
+`fix/silent-failures-env-parity-and-audits`.
+
+### The claim that is false
+
+`apps/common/swarm_common/models.py:144-146`:
+
+```python
+def dispatch_overdue(self, now: datetime | None = None) -> bool:
+    """Admitted but never started. The reconciler reclaims these."""
+    return self.state is TaskState.LEASED and (now or utcnow()) > self.dispatch_deadline
+```
+
+Both sentences of that docstring are wrong, for the same reason.
+
+`mark_dispatched` (`apps/scheduler/scheduler/store.py:229-237`) writes
+`DISPATCHED` to the lease document the moment the backend *accepts* the create
+call — long before a container runs. So `state is TaskState.LEASED` is False for
+essentially every lease whose dispatch is in flight, which is exactly the
+population the method names. Measured on `task_b5dc2568713a40158851` in
+`saga-agents-staging` on 2026-09-22: `dispatch_overdue` was still False 301
+seconds after admission.
+
+"The reconciler reclaims these" is no longer true either. After the commit
+above, `apps/reconciler/reconciler/detect.py` computes the deadline itself,
+without the state guard, rather than calling this method — it had to, for the
+same reason. The frozen helper and the reconciler now disagree about what an
+overdue dispatch is, and the frozen one is the wrong one.
+
+### Who still reads it, and what they are told
+
+* `apps/swarm-api/swarm_api/codec.py:355` — `lease_to_api` puts
+  `dispatch_overdue` on **every** lease row the API serves. Its docstring
+  defends the guard with "`dispatch_overdue` is only meaningful while the lease
+  is still LEASED, because nothing ever writes STARTING or RUNNING to a lease
+  document". The premise is true and the conclusion does not follow: the state
+  that ends the window is `DISPATCHED`, written by `mark_dispatched`, and the
+  same function says so eleven lines earlier ("Only ever LEASED or DISPATCHED").
+* `apps/swarm-api/swarm_api/routes/admin.py:433` — the `overdue_only=1` filter
+  on the lease-holders route. That is the query an operator runs during a
+  capacity incident to find stuck dispatches, and it returns an empty list at
+  exactly the moment it is asked.
+* `apps/swarm-ui/src/Overview.tsx:1874` — narrows again with
+  `l.dispatch_state === 'LEASED' && l.dispatch_overdue`, a second copy of a
+  guard that has already emptied the set.
+
+### What the change would be
+
+Drop the state guard, and say what the method actually decides:
+
+```python
+def dispatch_overdue(self, now: datetime | None = None) -> bool:
+    """Past the dispatch deadline with no worker to show for it.
+
+    NOT guarded on `state is LEASED`: `mark_dispatched` leaves that state as
+    soon as the backend accepts the create call, so the guard excluded every
+    lease this is meant to find.
+    """
+    return (now or utcnow()) > self.dispatch_deadline
+```
+
+A `heartbeat_at is None` conjunct is deliberately NOT proposed. The reconciler
+needs that distinction because it decides whether to fence a generation; this
+method answers a narrower question — has the deadline passed — and a lease that
+heartbeated and then went quiet past 300s is still, factually, overdue.
+
+### Why it was NOT done as part of the work that found it
+
+`apps/common/swarm_common/` is frozen, and the reconciler could be corrected
+without touching it: `detect_stale_leases` inlines the comparison. That is what
+shipped. This is the request, not a plan.
+
+### What breaks if it is made
+
+Little, and it is worth checking rather than assuming:
+
+* `admin.py:433` starts returning rows it previously hid, and `codec.py:355`
+  starts reporting `dispatch_overdue: true` on DISPATCHED leases past 300s.
+  That is the fix, but anything tuned to "overdue_only is always empty" would
+  start firing. Nothing in `terraform/` defines such an alert today.
+* `Overview.tsx:1874` would keep its own `dispatch_state === 'LEASED'` guard and
+  so would keep showing nothing. The UI copy needs the same edit, and it is a
+  second restatement of the rule rather than a use of it.
+* `apps/reconciler/reconciler/detect.py` could then call the method instead of
+  restating it — the drift this file exists to prevent — but only if the
+  reconciler's `heartbeat_at is None` branch stays outside it.
+* `scripts/lib/check-contract-parity.sh` does not cover this helper; there is no
+  shell or jq restatement of it to fall out of step.
+
+### What is left to live with if it is declined
+
+`Lease.dispatch_overdue` stays a method whose docstring describes a population it
+cannot return, `overdue_only=1` stays an operator-facing filter that answers
+"none" during the incident it was built for, and the Overview's "admitted but
+never dispatched" count stays permanently zero. The reconciler is unaffected
+either way — it stopped calling this method — so the cost is confined to the
+admin API, the UI, and the next person who reads the docstring and believes it.
 ---
 
 ## Why these requests keep arising
