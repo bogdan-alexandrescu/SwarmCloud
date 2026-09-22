@@ -301,8 +301,11 @@ function TaskRow({
       </span>
 
       <span className="wf">
+        {/* `.ident` on the chip: `.tag` uppercases, and a step id is the string
+            the DAG is built from and the one a 422 names back. One rule for
+            every identifier on every screen; see `.ident` in styles.css. */}
         {task.step_id ? (
-          <span className="tag" title={`workflow ${task.workflow_id}`}>
+          <span className="tag ident" title={`workflow ${task.workflow_id}`}>
             {task.step_id}
           </span>
         ) : (

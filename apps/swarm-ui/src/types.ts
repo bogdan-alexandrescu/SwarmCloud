@@ -1718,6 +1718,90 @@ export interface Workflow {
   steps: WorkflowStep[]
 }
 
+/** What a workflow's heading prints, and whether it is a confirmed answer. */
+export interface WorkflowHeaderState {
+  /** The word shown. Never a stored value dressed as a fact. */
+  word: string
+  tone: Tone | 'unknown'
+  glyph: string
+  /** True only when THIS read derived the state from the step tasks. */
+  derived: boolean
+  /** The hover sentence. Says which record the word came from, always. */
+  title: string
+}
+
+/**
+ * THE ONLY READER OF A WORKFLOW'S STATE FOR DISPLAY.
+ *
+ * The defect this exists to make unrepeatable: the workflow card printed
+ * `workflow.state.toLowerCase()` in its heading while the step chips under it
+ * read succeeded, failed and cancelled. Both were in one card, in one typeface,
+ * and nothing said which to believe.
+ *
+ * `workflow.state` LOOKS like the answer and is not, because the same field name
+ * carries two different meanings depending on which server answered:
+ *
+ *  - `state_source: 'derived'` -- codec.py served `rollup.state`, computed from
+ *    the step tasks on this read. This is the answer.
+ *  - `state_source: 'stored'`, or the field missing entirely -- the value is the
+ *    cache in Firestore. Nothing advanced that cache before `rollup.py` existed,
+ *    so it reads QUEUED for the workflow's whole life. An API deployed before
+ *    that change sends exactly this: `state: "QUEUED"`, no `state_source`, no
+ *    `rollup`. That is not hypothetical -- it is what the live deployment
+ *    returned for `wf_5e5ad3b6f7da4299a839` on 2026-09-22 while five of its six
+ *    steps were dispatched, and it is the payload that produced the screenshot.
+ *
+ * So an UNDERIVED read prints no state at all. It says the state was not derived
+ * and names the stored copy as a stored copy. Printing "queued" there would
+ * reproduce the exact contradiction, and would do it against the server half the
+ * fleet is still running.
+ *
+ * The rollup's own vocabulary is preserved rather than flattened: `complete:
+ * false` means a step could not be read, and `rollup.state` is then the string
+ * 'UNKNOWN', which is not a TaskState and must not be toned as one.
+ */
+export function workflowHeaderState(workflow: Workflow): WorkflowHeaderState {
+  const rollup = workflow.rollup
+  if (workflow.state_source !== 'derived' || !rollup) {
+    return {
+      word: 'state not derived',
+      tone: 'unknown',
+      glyph: '?',
+      derived: false,
+      title:
+        `This API did not derive the state from the steps on this read, so no ` +
+        `state is claimed here. The stored copy says ` +
+        `${workflow.stored_state ?? workflow.state}; nothing has confirmed it, ` +
+        `and until rollup.py is deployed that copy stays at whatever it was ` +
+        `written as. Read the step chips below instead.`,
+    }
+  }
+  if (!rollup.complete) {
+    const n = rollup.unreadable_steps.length
+    return {
+      word: 'state unread',
+      tone: 'unknown',
+      glyph: '?',
+      derived: true,
+      title:
+        `The state was derived but ${n} step${n === 1 ? '' : 's'} could not be ` +
+        `read (${rollup.reason}), so the derivation is incomplete. This is not ` +
+        `an idle workflow -- it is a workflow whose state nothing could establish.`,
+    }
+  }
+  const state = rollup.state as TaskState
+  return {
+    word: state.toLowerCase(),
+    tone: stateTone(state),
+    glyph: stateGlyph(state),
+    derived: true,
+    title:
+      `Derived from ${rollup.steps_read} step task${rollup.steps_read === 1 ? '' : 's'} ` +
+      `on this read (${rollup.reason}). The step chips below are the same records ` +
+      `this was computed from, so they agree with it by construction.`,
+  }
+}
+
 /**
  * codec.py:354-365. NOTE WHAT IS NOT HERE: there is no `state`.
  *

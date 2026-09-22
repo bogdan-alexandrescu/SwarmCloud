@@ -459,7 +459,10 @@ export function TenantsScreen() {
                     <td>
                       {t.credentials.length > 0 ? (
                         t.credentials.map((c) => (
-                          <span className="tag" key={c}>
+                          // `.ident`: these are Secret Manager NAMES, and `.tag`
+                          // uppercases. An uppercased secret name is one nobody
+                          // can look up.
+                          <span className="tag ident" key={c}>
                             {c}
                           </span>
                         ))

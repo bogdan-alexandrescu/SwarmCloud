@@ -274,7 +274,7 @@ function StepRow({ step, profiles, others, removable, onChange, onRemove }: {
             <input type="checkbox" checked={step.dependsOn.includes(id)}
               onChange={(e) => onChange({ ...step, dependsOn: e.target.checked
                 ? [...step.dependsOn, id] : step.dependsOn.filter((d) => d !== id) })} />
-            <span className="mono">{id}</span>
+            <span className="mono ident">{id}</span>
           </label>
         ))}
       </div>

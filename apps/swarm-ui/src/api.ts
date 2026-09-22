@@ -1963,6 +1963,30 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
             integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],
           },
         }),
+        // THE FAN-IN, reproduced from the live workflow that proved the graph
+        // could not express one: `wf_5e5ad3b6f7da4299a839`, five independent
+        // steps and a sixth depending on ALL five. Rendered by the old view it
+        // was indistinguishable from a chain of five, so a fixture that only
+        // ever held the two-fork shape would have let that ship again.
+        //
+        // The step ids are the real ones, `allornothing` included, because the
+        // join's dependency line is the string that used to be ellipsed and its
+        // length is the reason.
+        ...(['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'].map(
+          (stepId, i) =>
+            mk(`task_fan_${i}`, i === 3 ? 'FAILED' : 'SUCCEEDED', 'claude-code', 40 - i, {
+              workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: stepId, depends_on: [],
+              dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+            }),
+        )),
+        mk('task_fan_join', 'CANCELLED', 'claude-code', 35, {
+          workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: 'synthesis',
+          depends_on: ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+          dispatch: {
+            strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
+            integrates: ['task_fan_0', 'task_fan_1', 'task_fan_2', 'task_fan_3', 'task_fan_4'],
+          },
+        }),
       ],
       next_page_token: null,
       tenant_id: 'u-bogdan',
@@ -2049,6 +2073,69 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
             // No task_id: the workflow has not reached it. Renders as
             // "not started", which is NOT the same as "state unknown".
             step('publish', ['report'], null),
+          ],
+        },
+        {
+          // THE FAN-IN. Five roots and one join, which is the shape that proved
+          // the old view could not draw a graph: one "THEN" bar between the five
+          // and the sixth, identical to the bar a linear workflow draws. Five
+          // edges now arrive at `synthesis` and four would arrive at the last
+          // step of a chain, so the two no longer render alike.
+          workflow_id: 'wf_5e5ad3b6f7da4299a839',
+          tenant_id: 'u-bogdan',
+          state: 'FAILED',
+          stored_state: 'FAILED',
+          state_source: 'derived',
+          rollup: {
+            state: 'FAILED',
+            complete: true,
+            reason: 'terminal_worst_first',
+            counts: { SUCCEEDED: 4, FAILED: 1, CANCELLED: 1 },
+            unreadable_steps: [],
+            unstarted_steps: [],
+            steps_read: 6,
+          },
+          created_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
+          updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+          submitted_by: 'bogdan@saga.xyz',
+          priority: 0,
+          on_step_failure: 'FAIL_WORKFLOW',
+          cancel_requested: false,
+          steps: [
+            step('cold-start', [], 'task_fan_0'),
+            step('fencing', [], 'task_fan_1'),
+            step('allornothing', [], 'task_fan_2'),
+            step('checkpoints', [], 'task_fan_3'),
+            step('absentzero', [], 'task_fan_4'),
+            step(
+              'synthesis',
+              ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+              'task_fan_join',
+            ),
+          ],
+        },
+        {
+          // AN API OLDER THAN `rollup.py`, which is what production was still
+          // running on 2026-09-22: `state` straight off the Firestore document,
+          // no `state_source`, no `rollup`, no `drift`. This payload is the one
+          // that printed "QUEUED" over steps reading succeeded, failed and
+          // cancelled, so it has to be renderable in development or the fix for
+          // it cannot be looked at. The heading must claim NO state here.
+          workflow_id: 'wf_bcdc9180e4fb4a209f31',
+          tenant_id: 'u-bogdan',
+          state: 'QUEUED',
+          stored_state: 'QUEUED',
+          state_source: 'stored',
+          created_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
+          updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+          submitted_by: 'bogdan@saga.xyz',
+          priority: 0,
+          on_step_failure: 'FAIL_WORKFLOW',
+          cancel_requested: false,
+          steps: [
+            step('research', [], 'task_a3881bec'),
+            step('draft', ['research'], 'task_8e33a3de'),
+            step('review', ['draft'], 'task_1beb89a5'),
           ],
         },
       ],
