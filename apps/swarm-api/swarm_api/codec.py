@@ -226,6 +226,27 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         peak_disk_bytes=data.get("peak_disk_bytes"),
         oom_near_miss=bool(data.get("oom_near_miss", False)),
         checkpoints=list(data.get("checkpoints") or []),
+        # THE FIVE SPEND FIELDS, which this decoder used to drop.
+        #
+        # `control.record_spend` merge-sets all five into the attempt document
+        # and they arrive intact -- but they were never read back here, so the
+        # dataclass defaults applied and `attempt_to_api` faithfully served
+        # None for every attempt that ever ran. Every cost and token figure in
+        # the product was unreachable, and the serialiser's own comment blamed
+        # a worker fix that had already shipped.
+        #
+        # `peak_rss_bytes` above is the control: same document, same decoder,
+        # and it round-tripped throughout. Exactly these five were missing.
+        #
+        # NOTE the `is None` checks rather than `or`: 0 tokens and $0.00 are
+        # measurements, and `data.get(k) or None` would turn a real zero back
+        # into "not measured" -- the same conflation this codebase has spent
+        # three days removing, reintroduced in the line that fixes it.
+        input_tokens=data.get("input_tokens"),
+        output_tokens=data.get("output_tokens"),
+        cache_read_input_tokens=data.get("cache_read_input_tokens"),
+        cache_creation_input_tokens=data.get("cache_creation_input_tokens"),
+        cost_usd=data.get("cost_usd"),
     )
 
 
@@ -327,9 +348,16 @@ def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
         "peak_disk_bytes": attempt.peak_disk_bytes,
         "oom_near_miss": attempt.oom_near_miss,
         "checkpoints": attempt.checkpoints,
-        # Null until the worker fix ships in an agent-runtime-base image and
-        # attempts run on it. NULL IS NOT ZERO: a caller must render an em
-        # dash, never $0.00, or a run with no measurement reads as a free one.
+        # NULL IS NOT ZERO: a caller must render an em dash, never $0.00, or a
+        # run with no measurement reads as a free one.
+        #
+        # This comment used to say "null until the worker fix ships in an
+        # agent-runtime-base image". That was false by the time anyone read it:
+        # the worker records all five, and `attempt_from_dict` was silently
+        # dropping them on the way back out. A comment naming the wrong cause
+        # is worse than none -- it was read, believed, and cited as the reason
+        # AgentDetail.tsx omits the cost columns, so a working feature stayed
+        # hidden behind an explanation that had stopped being true.
         "input_tokens": attempt.input_tokens,
         "output_tokens": attempt.output_tokens,
         "cache_read_input_tokens": attempt.cache_read_input_tokens,
