@@ -267,7 +267,7 @@ const LEGACY_SETTINGS: Record<string, { section: string; tab: string }> = {
 /** Which pane of one agent is open. */
 type TaskPane = 'detail' | 'attempts'
 
-interface Route {
+export interface Route {
   /** A section id, or REFERENCE. */
   sectionId: string
   /** Meaningless when sectionId is REFERENCE; carried anyway so Route is flat. */
@@ -288,7 +288,15 @@ function firstTab(s: SectionDef): string {
   return s.tabs[0]?.id ?? ''
 }
 
-function fromHash(): Route {
+/**
+ * The hash, resolved to a route.
+ *
+ * EXPORTED FOR THE ROUTE TESTS. `#help/<topic>` is a new destination and the
+ * links to it are generated, so a typo in this function would produce a `?`
+ * card whose "Full explanation" link lands on Home -- silently, and only for
+ * the reader who followed it. `tests/route.test.ts` drives it directly.
+ */
+export function fromHash(): Route {
   const hash = window.location.hash.replace(/^#/, '')
   const seg = hash.split('/')
   const head = seg[0] ?? ''
@@ -351,7 +359,7 @@ function fromHash(): Route {
 }
 
 /** The one spelling of a route. What the address bar is rewritten to. */
-function canonical(r: Route): string {
+export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `agents/task/${encodeURIComponent(r.taskId)}`
     return r.taskPane === 'attempts' ? `${base}/attempts` : base
