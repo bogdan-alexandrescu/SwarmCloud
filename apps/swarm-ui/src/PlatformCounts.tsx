@@ -43,9 +43,12 @@ export function PlatformCountsScreen() {
 
   return (
     <>
+      {/* The hardcoded "dev" chip that used to sit here is gone, with the one
+          Shell.tsx drew for every other screen. Nothing in this app measured
+          that word; Brand.tsx now draws the environment once, in the product
+          header, from something that was established. */}
       <div className="head">
         <h1>Platform counts</h1>
-        <span className="env">dev</span>
       </div>
 
       <section className="section panel">

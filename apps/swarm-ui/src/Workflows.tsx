@@ -1,6 +1,6 @@
 import { loadWorkflowBoard } from './api'
 import { workflowDispatchOf } from './Dispatch'
-import { Screen, timeAgo } from './Shell'
+import { Id, Screen, timeAgo } from './Shell'
 import {
   consequenceOf,
   dispatchOf,
@@ -197,7 +197,11 @@ function WorkflowCard({
   return (
     <section className="section">
       <h2>
-        {workflow.workflow_id} · {workflow.state.toLowerCase()} · updated{' '}
+        {/* B17. `.section > h2` uppercases, and this id is lowercase
+            everywhere it actually lives -- Firestore, the API, the logs and
+            the `#agents/task/<id>` address. Printed as WF_BCDC9180… it cannot
+            be pasted anywhere, which is the only thing an id is for. */}
+        <Id>{workflow.workflow_id}</Id> · {workflow.state.toLowerCase()} · updated{' '}
         {timeAgo(workflow.updated_at)}
       </h2>
       <p className={`rollup${roll.trustworthy ? '' : ' untrusted'}`}>

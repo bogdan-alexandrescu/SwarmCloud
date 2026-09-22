@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
-import { Screen } from './Shell'
+import { Id, Screen } from './Shell'
 import {
   CONCURRENCY_STATES,
   RESOURCE_UNITS,
@@ -234,7 +234,10 @@ function GroupedRows({
         return (
           <section className="section group" key={wf || 'standalone'}>
             <h2>
-              {wf === '' ? 'No workflow' : wf}
+              {/* B17: the same workflow id the Workflows screen prints, and
+                  the same reason it is not uppercased here either. "No
+                  workflow" is a sentence, not an id, so it is not wrapped. */}
+              {wf === '' ? 'No workflow' : <Id>{wf}</Id>}
               <span className={`roll ${roll}`}>{roll}</span>
               <span className="client-side">
                 {tasks.length} step{tasks.length === 1 ? '' : 's'} in this page
