@@ -1360,7 +1360,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 
 .ctl-util {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(90px, 160px) 78px 92px;
+  /* The last column now carries "five-hour · 2m ago", not just "five-hour":
+     a current reading has an age and the age is part of the figure. 128px is
+     what 19 monospace characters at 11px need; at 92px it ellipsed the age
+     away, which is the one part that was just added. */
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 160px) 78px 128px;
   align-items: center;
   gap: var(--ctl-s3);
   padding: 5px 0;

@@ -1543,39 +1543,72 @@ function accountHeadroom(state: Result<AccountsPage>): {
   }
 
   const accounts = state.data.accounts
-  let best: { pct: number; key: string } | null = null
-  let usable = 0
-  let cleared = 0
+  // THE SCOPE IS PART OF THE FIGURE. `/v1/accounts` returns the accounts this
+  // TENANT owns or has been lent, never the platform's -- so `accounts.length`
+  // is not the number registered, and a sentence here that says "registered"
+  // makes a platform-wide claim out of a tenant-wide list. On 2026-09-22 the
+  // tile read "every registered account has a current reading" for tenant
+  // `eng`, which owned the one account that had one, while two accounts in
+  // `u-bogdan` had never been polled at all.
+  const scope = state.data.tenant_id ? `in ${state.data.tenant_id}` : 'across every tenant'
+
+  let best: { pct: number; key: string; observedAt: string } | null = null
+  // Accounts whose headroom is UNKNOWN: never polled, or polled with no
+  // window in the answer. Named, not counted -- "1 account excluded" does not
+  // tell anyone which credential to go and look at.
+  const unread: string[] = []
+  // Real figures that are no longer current: stale, or describing a window
+  // that has since reset. Kept apart from `unread`, because "old information"
+  // and "no information" are opposite facts.
+  const projected: string[] = []
+  // PAUSED, DRAINING and REAUTH_REQUIRED. Deliberate or broken, but not
+  // serving, so not headroom either.
+  const notServing: string[] = []
 
   for (const a of accounts) {
     // PAUSED and DRAINING are deliberate operator states, not faults -- but
     // they do not serve, so they are not counted as headroom either.
-    if (a.state !== 'AVAILABLE') continue
-    const w = bindingWindow(a)
-    if (!w) continue
-    const r = readingOf(a, w.key)
-    if (r.kind === 'reset') {
-      // The account may well have a full window. Nothing has measured it
-      // since it refilled, and a projection is not headroom.
-      cleared++
+    if (a.state !== 'AVAILABLE') {
+      notServing.push(a.label)
       continue
     }
-    if (r.kind !== 'live') continue
-    usable++
+    // The two ways a reading can be missing, told apart the same way the pool
+    // panel's rows tell them apart: nobody has ever polled this account, or
+    // the poll landed and reported no window. Both are unknown headroom; NEITHER
+    // is 100%. `usagepoll.py` fails safe by recording nothing when it cannot
+    // read an account's token, so this is the shape the live platform produces.
+    if (a.observed_at === null) {
+      unread.push(a.label)
+      continue
+    }
+    const w = bindingWindow(a)
+    if (w === null) {
+      unread.push(a.label)
+      continue
+    }
+    const r = readingOf(a, w.key)
+    if (r.kind === 'never' || r.kind === 'absent') {
+      unread.push(a.label)
+      continue
+    }
+    if (r.kind !== 'live') {
+      // `reset` and `stale`. The account may well have a full window. Nothing
+      // has measured it since, and a projection is not headroom.
+      projected.push(a.label)
+      continue
+    }
     const left = Math.max(0, Math.min(100, 100 - r.pct))
     if (best === null || left > best.pct) {
-      best = { pct: left, key: w.key }
+      best = { pct: left, key: w.key, observedAt: r.observedAt }
     }
   }
 
-  const unusable = accounts.length - usable
+  const usable = accounts.length - unread.length - projected.length - notServing.length
+
   if (best === null) {
     return {
       pct: null,
-      sub:
-        cleared > 0
-          ? `${accounts.length} accounts registered · ${cleared} binding window${cleared === 1 ? ' has' : 's have'} reset since the last reading`
-          : `${accounts.length} accounts registered, none with a current reading`,
+      sub: `${countOf(accounts.length, 'account')} ${scope} · ${absenceSentence(unread, projected, notServing)}`,
       foot: 'a missing reading is not 0% used, and a window that has cleared has not been read since',
       reading: false,
       absent: 'nothing measured',
@@ -1584,14 +1617,61 @@ function accountHeadroom(state: Result<AccountsPage>): {
 
   return {
     pct: best.pct,
-    sub: `best of ${usable} usable account${usable === 1 ? '' : 's'} · its ${best.key.replace('_', '-')} window binds`,
-    foot:
-      unusable > 0
-        ? `${unusable} account${unusable === 1 ? '' : 's'} excluded — paused, stale, cleared or needing sign-in`
-        : 'every registered account has a current reading',
+    // THE AGE IS PART OF THE FIGURE, and it was missing. Every other tile on
+    // this row carries the age of the read behind it; this one showed a
+    // percentage with nothing saying whether it was measured a minute or four
+    // days ago. A reading from four days ago is not a current one.
+    sub: `best of ${countOf(usable, 'usable account')} · its ${best.key.replace('_', '-')} window binds · read ${timeAgo(best.observedAt)}`,
+    // DERIVED, NEVER ASSERTED, AND IT NAMES NAMES. The previous wording --
+    // "every registered account has a current reading" -- was a sentence
+    // chosen by `unusable === 0` over a tenant-scoped list, and the accounts
+    // it was silent about were exactly the ones worth knowing about.
+    foot: unread.length > 0 || projected.length > 0 || notServing.length > 0
+      ? absenceSentence(unread, projected, notServing)
+      : `all ${countOf(accounts.length, 'account')} ${scope} ${accounts.length === 1 ? 'has' : 'have'} a current reading`,
     reading: false,
     absent: null,
   }
+}
+
+/** "1 account", "3 accounts". A figure the reader can read out loud. */
+function countOf(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * What the pool figure does NOT cover, in words, naming the accounts.
+ *
+ * Three clauses, kept separate on purpose. An account nobody has polled has
+ * unknown headroom; an account whose reading is stale or whose window has
+ * cleared has a real figure that is no longer current; an account that is
+ * paused or needs signing in has headroom that cannot be spent. Collapsing
+ * them into one count -- "N accounts excluded -- paused, stale, cleared or
+ * needing sign-in" -- was the old wording, and it did not even list the case
+ * that actually applies here.
+ */
+function absenceSentence(
+  unread: string[],
+  projected: string[],
+  notServing: string[],
+): string {
+  const parts: string[] = []
+  if (unread.length > 0) {
+    parts.push(
+      `${unread.join(', ')} ${unread.length === 1 ? 'has' : 'have'} no reading, so ${unread.length === 1 ? 'its' : 'their'} headroom is unknown rather than full`,
+    )
+  }
+  if (projected.length > 0) {
+    parts.push(
+      `${projected.join(', ')} ${projected.length === 1 ? 'is' : 'are'} stale or cleared, so the last figure describes an earlier window`,
+    )
+  }
+  if (notServing.length > 0) {
+    parts.push(`${notServing.join(', ')} not serving`)
+  }
+  // Only reachable with every list empty when the caller has a figure, and
+  // that caller words it itself; this is the honest fallback either way.
+  return parts.length > 0 ? parts.join(' · ') : 'nothing has been read'
 }
 
 const ACCOUNT_ROWS = 3
@@ -1702,6 +1782,13 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                   <span className="ctl-em">—</span>
                 )}
               </span>
+              {/* A CURRENT READING CARRIES ITS AGE TOO. `stale` and `cleared`
+                  have said how old they are for as long as this panel has
+                  existed; a `live` reading printed only the window name, so
+                  the one row on the panel with a confident figure was the one
+                  row that did not say when it was measured. Thirty minutes is
+                  the staleness window, so "live" spans a range wide enough to
+                  matter. */}
               <span className="ctl-util-by">
                 {needsAHuman(a)
                   ? 'sign in again'
@@ -1715,14 +1802,16 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                           ? `stale ${timeAgo(r.observedAt)}`
                           : a.state !== 'AVAILABLE'
                             ? a.state.toLowerCase()
-                            : (windowName ?? '—')}
+                            : r.kind === 'live' && windowName !== null
+                              ? `${windowName} · ${timeAgo(r.observedAt)}`
+                              : (windowName ?? '—')}
               </span>
             </div>
           )
         })}
       </div>
       <p className="provenance">
-        {total} accounts
+        {countOf(total, 'account')}
         {total > accounts.length && (
           <> · showing the {accounts.length} that most need looking at</>
         )}{' '}
@@ -2036,7 +2125,12 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
     : {
         label,
         status: 'clear',
-        note: `${rows.length} accounts, all with a current reading and none needing sign-in`,
+        // Scoped, and pluralised. This route is tenant-scoped, so "1 accounts,
+        // all with a current reading" was both ungrammatical and a claim about
+        // a set wider than the one it counted.
+        note: `${countOf(rows.length, 'account')}${
+          accounts.data.tenant_id ? ` in ${accounts.data.tenant_id}` : ' across every tenant'
+        }, all with a current reading and none needing sign-in`,
       }
 }
 

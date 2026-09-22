@@ -265,7 +265,14 @@ export function timeAgo(when: Date | string | number): string {
   if (s < 5) return 'just now'
   if (s < 60) return `${s}s ago`
   if (s < 3600) return `${Math.round(s / 60)}m ago`
-  return `${Math.round(s / 3600)}h ago`
+  // DAYS, above 48 hours. This used to end at hours, so a reading four days
+  // old printed "96h ago" -- arithmetic a reader has to divide before they can
+  // react to it, on exactly the figures where age is the whole point. The
+  // threshold is `humaniseUntil`'s in types.ts, so a duration and an age agree
+  // about where hours stop being the readable unit.
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h ago`
+  return `${Math.round(h / 24)}d ago`
 }
 
 export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
