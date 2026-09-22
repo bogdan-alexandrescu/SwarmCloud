@@ -309,6 +309,28 @@ def run_cli_agent(
         "TERM": "dumb",
         "CI": "1",
         "NO_COLOR": "1",
+        # WHERE TO PUT ITS WORK. runners/base.py documents SWARM_ARTIFACTS_DIR
+        # as the contract -- "files written here are uploaded when the attempt
+        # ends" -- and runners/generic.py exports it. This runner did not, so a
+        # claude-code agent was never told where its output should go.
+        #
+        # Measured on the first real multi-agent workflow
+        # (wf_bcdc9180e4fb4a209f31, step `research`): the agent replied "The
+        # environment variable SWARM_ARTIFACTS_DIR is not set in this
+        # environment, so I can't determine the target directory" and exited 0
+        # having written nothing. The attempt still SUCCEEDED, because writing
+        # an artifact is not a success condition.
+        #
+        # The consequence was the platform's headline feature: this runner uses
+        # ctx.artifacts_dir for its OWN stdout/stderr (above), so
+        # result_summary.artifacts always contained exactly the runner's logs
+        # and the transcript and never anything the agent produced. With no
+        # agent artifact there is nothing for a downstream step's `input_from`
+        # to stage, so work could not be routed between agents at all -- while
+        # `input_from` itself was correct and tested, against the generic
+        # runner.
+        "SWARM_ARTIFACTS_DIR": str(ctx.artifacts_dir),
+        "SWARM_WORK_DIR": str(ctx.work_dir),
         credential_env: os.environ[credential_env],
     }
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
