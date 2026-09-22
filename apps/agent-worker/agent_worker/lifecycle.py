@@ -1660,12 +1660,30 @@ class Worker:
         return [t.strip() for t in raw if isinstance(t, str) and t.strip()]
 
     def _dispatch_carrier(self) -> str:
-        """How intermediate work travels between steps. Defaults to patches."""
+        """Where a step's work is kept for the next step. Defaults to checkpoints.
+
+        THE VOCABULARY IS swarm-api's, and it is written out here rather than
+        imported because the worker must not pull the control plane into the
+        image every agent runs in. That copy had already drifted: this accepted
+        `("patches", "branches")` and fell back to `"patches"`, a word
+        `DISPATCH_CARRIERS` has never contained and the validator REFUSES at
+        submission. The real default block says `carrier: "checkpoints"`, which
+        this read as unrecognised -- so the two ends agreed on one word out of
+        three, and never on the one almost every dispatch carries.
+
+        It had broken nothing only because no decision in this worker branches
+        on the carrier yet. The first one that did would have read "patches"
+        for a dispatch that said "checkpoints".
+
+        `tests/unit/worker/test_dispatch_contract_parity.py` imports swarm-api's
+        own constants and asserts this set matches them, so the next divergence
+        fails there instead of in a deployed worker.
+        """
         value = self._dispatch_block().get("carrier")
         if not isinstance(value, str):
-            return "patches"
+            return "checkpoints"
         value = value.strip().lower()
-        return value if value in ("patches", "branches") else "patches"
+        return value if value in ("checkpoints", "branches") else "checkpoints"
 
     def _credential_refusal(self) -> dict[str, Any] | None:
         """The runner's `credential.json`, if it wrote one.
@@ -1764,13 +1782,42 @@ class Worker:
                 "drops the rest of the change"
             )
 
-        if work.is_empty:
+        # AN INTEGRATOR IS THE ONE STEP WHOSE DELIVERABLE IS NOT ITS OWN WORK.
+        #
+        # For every other step "changed nothing" means there is nothing to
+        # push and nothing to open, and returning here is right. For an
+        # integrator it meant the opposite of what the caller was promised: a
+        # step whose agent edited no files -- an entirely ordinary outcome for
+        # one whose prompt is "bring these together" -- returned before
+        # `_publish_git` ran, so no contributor branch was ever merged, no
+        # branch was pushed, and the ONE pull request `integrate` promises was
+        # never opened. Zero, for a workflow whose contributors had all already
+        # run, been billed and pushed their branches.
+        #
+        # It was invisible because it depended on whether the integrator's
+        # agent happened to touch a file. Found by running the strategy against
+        # a real repository, not by reading it.
+        if work.is_empty and not self._integration_is_pending():
             out["published"] = False
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
 
         out.update(self._publish_git(repo=repo, work_head=work.head, publish=publish))
         return out
+
+    def _integration_is_pending(self) -> bool:
+        """True when this step still owes a merge even having changed nothing.
+
+        Narrow on purpose: `integrate` AND the integrator role AND at least one
+        upstream task to merge. A single-step `integrate` workflow that changed
+        nothing has genuinely nothing to publish and keeps the short circuit
+        above, and no other strategy is affected at all.
+        """
+        return (
+            self._dispatch_strategy() == "integrate"
+            and self._dispatch_role() == "integrator"
+            and bool(self._dispatch_integrates())
+        )
 
     def _publish_git(
         self, *, repo: Path, work_head: str | None, publish: bool

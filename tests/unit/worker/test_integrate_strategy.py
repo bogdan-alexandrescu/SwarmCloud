@@ -82,8 +82,16 @@ def test_integrates_ignores_non_string_entries(worker_factory):
     assert w._dispatch_integrates() == ["t-a", "t-b"]
 
 
-def test_carrier_defaults_to_patches_and_reads_branches(worker_factory):
-    assert _worker(worker_factory, {"strategy": "integrate"})._dispatch_carrier() == "patches"
+def test_carrier_defaults_to_checkpoints_and_reads_branches(worker_factory):
+    """`checkpoints`, not `patches`.
+
+    This test used to assert `patches` -- a word swarm-api's validator refuses
+    at submission and can never send -- and so pinned the drift in place rather
+    than catching it. `test_dispatch_contract_parity.py` now imports
+    `DISPATCH_CARRIERS` instead of restating it, which is what makes this pair
+    of values checkable rather than merely written down twice.
+    """
+    assert _worker(worker_factory, {"strategy": "integrate"})._dispatch_carrier() == "checkpoints"
     assert (
         _worker(worker_factory, {"strategy": "integrate", "carrier": "branches"})._dispatch_carrier()
         == "branches"
