@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import workflows
 from .auth import REACHES, WHY_NOT, Tier, detect
 from .client import (
     SwarmClient,
@@ -36,6 +37,7 @@ from .client import (
 )
 from .patches import (
     apply_patch,
+    describe_task,
     download,
     explain_absence,
     integrate,
@@ -300,6 +302,113 @@ def cmd_cancel(client: SwarmClient, args) -> int:
     return EXIT_OK
 
 
+# -- workflows -------------------------------------------------------------
+#
+# The same three operations the MCP tools expose, through the same functions in
+# `workflows.py`. A terminal command exists for each because a workflow is the
+# thing most worth following live, and only a terminal command can stream: the
+# ids printed by `swarm workflow` are what `swarm tail` takes.
+
+
+def cmd_workflow(client: SwarmClient, args) -> int:
+    """Submit a DAG read from a JSON file, or from stdin with `-`.
+
+    A FILE RATHER THAN FLAGS. A DAG is a nested structure -- per-step prompts,
+    dependency lists, an `input_from` map -- and every attempt to spell one in
+    argv ends in a quoting bug that silently drops a dependency. The file is
+    also the artifact a person edits and re-submits, which is what actually
+    happens when the first run fails at one step.
+    """
+    raw = sys.stdin.read() if args.spec == "-" else Path(args.spec).read_text()
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SwarmError(f"{args.spec} is not valid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise SwarmError(f"{args.spec} must hold an object with a `steps` list")
+
+    envelope = workflows.submit(
+        client,
+        steps=workflows.build_steps(document.get("steps")),
+        strategy=args.strategy or document.get("strategy"),
+        carrier=args.carrier or document.get("carrier"),
+        repository_url=args.repo or document.get("repository_url"),
+        repository_ref=args.ref or document.get("repository_ref"),
+        on_step_failure=document.get("on_step_failure"),
+        priority=document.get("priority"),
+        label=args.label or document.get("label"),
+    )
+    workflow = envelope["workflow"]
+    workflow_id = workflow.get("workflow_id")
+    if not workflow_id:
+        raise SwarmError(
+            f"the API accepted the workflow but named no id: {sorted(workflow)}"
+        )
+    if args.json:
+        print(json.dumps(envelope, indent=2))
+        return EXIT_OK
+    print(workflow_id)
+    task_ids = []
+    for step in workflow.get("steps") or []:
+        task_id = step.get("task_id") or "—"
+        task_ids.append(task_id)
+        deps = ", ".join(step.get("depends_on") or []) or "—"
+        print(f"  {step.get('step_id')}  {task_id}  after: {deps}")
+    followable = [t for t in task_ids if t != "—"]
+    if followable:
+        print(f"  follow: swarm tail {' '.join(followable)}")
+    return EXIT_OK
+
+
+def cmd_workflow_status(client: SwarmClient, args) -> int:
+    """Per-step state, and the DERIVED workflow state -- never the stored one.
+
+    Exit 1 when no workflow state could be established, which is the case a
+    script must be able to branch on: it means the server did not derive on this
+    read and there is no answer to quote, not that the workflow is fine.
+    """
+    envelope = workflows.fetch(client, args.workflow_id)
+    report = workflows.report(
+        envelope, describe=describe_task if args.result else None
+    )
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return EXIT_FAIL if report.get("state") is None else EXIT_OK
+
+    state = report.get("state") or "NO STATE"
+    print(f"{report['workflow_id']}  {state}  (stored: {report.get('stored_state')})")
+    if report.get("state_unavailable_because"):
+        print(f"  ! {report['state_unavailable_because']}")
+    if report.get("state_incomplete_because"):
+        print(f"  ! {report['state_incomplete_because']}")
+    for row in report["steps"]:
+        print(f"  {row['step_id']}  {row.get('state') or '—'}  {row.get('task_id') or '—'}")
+        for key in ("state_unavailable_because", "park_reason", "blocked_by", "error"):
+            if row.get(key):
+                print(f"      {key}: {row[key]}")
+        produced = row.get("produced") or {}
+        if produced:
+            print(
+                f"      commits {produced.get('commits')}  "
+                f"patch {produced.get('patch') or produced.get('no_patch_because')}"
+            )
+    if report.get("follow_live_with"):
+        print(f"  follow: {report['follow_live_with']}")
+    return EXIT_FAIL if report.get("state") is None else EXIT_OK
+
+
+def cmd_workflow_cancel(client: SwarmClient, args) -> int:
+    result = workflows.cancel(client, args.workflow_id)
+    print(f"{result.get('workflow_id')} cancel_requested")
+    for task_id in result.get("tasks_cancelled") or []:
+        print(f"  cancelled {task_id}")
+    # Printed, not swallowed. A step that had already finished is not a failed
+    # cancel, and an operator who cannot see the difference re-runs the cancel.
+    for task_id in result.get("tasks_already_terminal") or []:
+        print(f"  already terminal {task_id}")
+    return EXIT_OK
+
+
 # -- cluster state ---------------------------------------------------------
 #
 # `sc` is its own console script, because a status command wants a short name.
@@ -530,6 +639,30 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("cancel", help="cancel running tasks")
     c.add_argument("task_ids", nargs="+")
     c.set_defaults(func=cmd_cancel)
+
+    w = sub.add_parser("workflow", help="submit a DAG of agents from a JSON spec")
+    w.add_argument("spec", help="path to the workflow JSON, or - to read stdin")
+    w.add_argument("--repo", default=os.environ.get("SWARM_REPO") or None)
+    w.add_argument("--ref", default=None)
+    w.add_argument("--strategy", default=None)
+    w.add_argument("--carrier", default=None)
+    w.add_argument("--label", default=None)
+    w.add_argument("--json", action="store_true")
+    w.set_defaults(func=cmd_workflow)
+
+    ws = sub.add_parser(
+        "workflow-status", help="per-step state, and the DERIVED workflow state"
+    )
+    ws.add_argument("workflow_id")
+    ws.add_argument(
+        "--result", action="store_true", help="also show what each step produced"
+    )
+    ws.add_argument("--json", action="store_true")
+    ws.set_defaults(func=cmd_workflow_status)
+
+    wc = sub.add_parser("workflow-cancel", help="cancel a workflow and its steps")
+    wc.add_argument("workflow_id")
+    wc.set_defaults(func=cmd_workflow_cancel)
 
     sc_cmd = sub.add_parser(
         "sc", help="cluster state: accounts, capacity, agents, trouble (same as the `sc` command)"

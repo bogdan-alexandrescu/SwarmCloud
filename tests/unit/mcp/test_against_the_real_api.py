@@ -67,8 +67,18 @@ AUTH = {"Authorization": "Bearer token-alice"}
 
 
 @pytest.fixture()
-def api() -> TestClient:
-    db = FakeFirestore()
+def db() -> FakeFirestore:
+    """The store behind the real application.
+
+    Exposed because the only way to put a workflow's steps into the states that
+    reproduce the rollup defect is to move the step TASKS -- there is no route
+    that sets a task state, and there should not be one.
+    """
+    return FakeFirestore()
+
+
+@pytest.fixture()
+def api(db) -> TestClient:
     ctx = build_context(
         settings=api_settings(),
         db=db,
@@ -177,7 +187,7 @@ _CALL = re.compile(r'request\(\s*"(GET|POST|PUT|DELETE)"\s*,\s*f?"(/v1[^"]*)"')
 
 def calls() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
-    for name in ("client.py", "cli.py", "sc.py"):
+    for name in ("client.py", "cli.py", "sc.py", "workflows.py"):
         source = (REPO / "apps/swarm-mcp/swarm_mcp" / name).read_text()
         for method, raw in _CALL.findall(source):
             # A query string is not part of the route, and an f-string hole is
@@ -223,6 +233,11 @@ def test_the_route_scan_actually_found_the_calls():
         ("GET", "/v1/tenants/me"),
         ("POST", "/v1/tasks"),
         ("GET", "/v1/tasks/{task_id}/attempts"),
+        # The workflow routes are the whole of G1 and they are spoken from a
+        # fourth module; a scan that did not read it would pass by silence.
+        ("POST", "/v1/workflows"),
+        ("GET", "/v1/workflows/{workflow_id}"),
+        ("POST", "/v1/workflows/{workflow_id}/cancel"),
     ):
         assert expected in found, f"{expected} was not scanned out of the source"
 
@@ -353,7 +368,7 @@ def test_the_mcp_result_tool_reports_the_task_it_was_asked_about(swarm, api):
     """`swarm_result` answered `{"task_id": null, "state": null}` for every
     task on the platform, which a session reads as "it has not started yet"."""
     task_id = submit(api)
-    described = server._describe(swarm.task(task_id))
+    described = patches.describe_task(swarm.task(task_id))
     assert described["task_id"] == task_id
     assert described["state"], "swarm_result reported no state"
 
@@ -419,6 +434,217 @@ def test_integrate_skips_a_task_for_the_right_reason(swarm, api, tmp_path):
     assert not why.startswith("unknown:"), (
         f"the reason describes the envelope, not the task: {why}"
     )
+
+
+# --------------------------------------------------------------------------
+# Workflows: the feature the bridge could not reach at all
+# --------------------------------------------------------------------------
+#
+# `server.py` contained the string "workflow" zero times, so every test below is
+# of something that had no caller. They run against the REAL application for the
+# reason this whole file exists: the thing most likely to be wrong is the shape
+# of the response, and a fake of the control plane agrees with whoever wrote it.
+
+#: A fan-in in miniature: one step, then a second that depends on it AND stages
+#: its artifact. `mock` because the catalogue gives it `provider=None`, so it
+#: needs no credential and the suite stays offline.
+DAG = {
+    "steps": [
+        {"step_id": "research", "prompt": "read the code", "runner_profile": "mock"},
+        {
+            "step_id": "draft",
+            "prompt": "write it up",
+            "runner_profile": "mock",
+            "depends_on": ["research"],
+            "input_from": {"research": "research.md"},
+        },
+    ]
+}
+
+
+def _submit_dag(swarm) -> dict:
+    return json.loads(server._call(swarm, "swarm_workflow", json.loads(json.dumps(DAG))))
+
+
+def test_the_workflow_tool_submits_a_dag_the_real_api_accepts(swarm, api):
+    created = _submit_dag(swarm)
+    assert created["workflow_id"].startswith("wf_")
+    steps = {s["step_id"]: s for s in created["steps"]}
+    assert set(steps) == {"research", "draft"}
+    assert steps["draft"]["depends_on"] == ["research"]
+    assert steps["draft"]["input_from"] == {"research": "research.md"}
+    for step in steps.values():
+        # A step with no task id can be neither followed, applied nor cancelled,
+        # and every tool downstream of this one takes that string.
+        assert step["task_id"], f"{step['step_id']} came back with no task id"
+    assert created["follow_live_with"].startswith("swarm tail task_")
+    # A create response derives nothing, and the tool says where a state comes
+    # from rather than quoting the stored QUEUED as though it were one.
+    assert "state" not in created
+    assert "swarm_workflow_status" in created["state_available_from"]
+
+
+def test_the_step_prompt_reaches_the_task_the_api_created(swarm, api):
+    """The submitted prompt must be in `input.prompt` on the step's own task.
+
+    This is the W1 defect measured from the other end. The web UI's New Workflow
+    screen sends steps with no `input` at all; the API accepts them and every
+    CLI-agent step then fails at the agent, after admission and dispatch. A tool
+    whose steps arrived with `input == {}` would be the same bug with a
+    different keyboard in front of it.
+    """
+    created = _submit_dag(swarm)
+    task_id = next(s["task_id"] for s in created["steps"] if s["step_id"] == "research")
+    task = api.get(f"/v1/tasks/{task_id}", headers=AUTH).json()["task"]
+    assert task["input"] == {"prompt": "read the code"}
+
+
+def test_a_step_with_no_prompt_is_refused_before_a_workflow_exists(swarm, api, db):
+    """Refused at the keyboard, where it costs nothing.
+
+    The same submission four minutes later costs a dispatch, a lease and a pod,
+    and fails at every step deterministically. The assertion that nothing was
+    written matters as much as the refusal: a partial workflow would leave step
+    tasks nobody is going to look for.
+    """
+    with pytest.raises(SwarmError) as exc:
+        server._call(
+            swarm,
+            "swarm_workflow",
+            {"steps": [{"step_id": "a", "runner_profile": "mock"}]},
+        )
+    assert "prompt" in str(exc.value)
+    assert not [key for key in db.docs if key.startswith("workflows/")]
+    assert not [key for key in db.docs if key.startswith("tasks/")]
+
+
+def test_the_workflow_status_tool_reports_the_derived_state_not_the_stored_field(
+    swarm, api, db
+):
+    """THE named test for G1(b), end to end through the real routes.
+
+    `Workflow.state` in Firestore is written once at submission and nothing
+    advances it: on 2026-09-22 `wf_bcdc9180e4fb4a209f31` read QUEUED while its
+    three steps were SUCCEEDED, FAILED and CANCELLED, and a six-step workflow
+    whose steps had ALL succeeded read QUEUED too. So the two steps below are
+    moved to terminal states and the workflow document is deliberately NOT
+    touched -- which is exactly what the platform does to itself.
+
+    What the bridge may report is then the derived value and only the derived
+    value. Serving `stored_state` here would put "QUEUED" in a developer's
+    terminal directly above two steps that had already finished.
+    """
+    created = _submit_dag(swarm)
+    workflow_id = created["workflow_id"]
+    tasks = {s["step_id"]: s["task_id"] for s in created["steps"]}
+    db.docs[f"tasks/{tasks['research']}"]["state"] = "SUCCEEDED"
+    db.docs[f"tasks/{tasks['draft']}"]["state"] = "FAILED"
+
+    report = json.loads(
+        server._call(swarm, "swarm_workflow_status", {"workflow_id": workflow_id})
+    )
+
+    assert report["stored_state"] == "QUEUED", "the fixture did not reproduce the defect"
+    assert report["state_source"] == "derived"
+    assert report["state"] == "FAILED", (
+        "the bridge served something other than the derived rollup; the stored "
+        f"field says {report['stored_state']!r}"
+    )
+    assert report["state"] != report["stored_state"]
+    # The cache WAS wrong at the moment of this read, even though the route
+    # repaired it on the way past. A caller needs that to distrust earlier reads.
+    assert report["stored_state_was_wrong"] is True
+    assert report["counts"] == {"SUCCEEDED": 1, "FAILED": 1}
+    assert {s["step_id"]: s["state"] for s in report["steps"]} == {
+        "research": "SUCCEEDED",
+        "draft": "FAILED",
+    }
+    # And no refusal: the server DID derive on this read, so the bridge has a
+    # state to give and must not also be reporting one as unavailable.
+    assert "state_unavailable_because" not in report
+
+
+def test_the_workflow_status_tool_reports_why_a_step_is_parked(swarm, api):
+    """`draft` depends on `research`, so it parks. PARKED holds no capacity
+    (invariant 1), and the reason is the whole content of that fact."""
+    created = _submit_dag(swarm)
+    report = json.loads(
+        server._call(
+            swarm, "swarm_workflow_status", {"workflow_id": created["workflow_id"]}
+        )
+    )
+    draft = next(s for s in report["steps"] if s["step_id"] == "draft")
+    assert draft["state"] == "PARKED"
+    assert draft["park_reason"] == "DEPENDENCY_INCOMPLETE"
+    assert draft["depends_on"] == ["research"]
+
+
+def test_the_workflow_result_tool_says_why_a_step_has_no_patch(swarm, api, db):
+    """A step that produced no patch is not a step that did nothing. The six
+    causes `swarm_result` distinguishes have to survive the trip through a
+    workflow, or the workflow view is the one place they collapse into one."""
+    created = _submit_dag(swarm)
+    tasks = {s["step_id"]: s["task_id"] for s in created["steps"]}
+    db.docs[f"tasks/{tasks['research']}"]["state"] = "SUCCEEDED"
+    db.docs[f"tasks/{tasks['draft']}"]["state"] = "SUCCEEDED"
+
+    report = json.loads(
+        server._call(
+            swarm, "swarm_workflow_result", {"workflow_id": created["workflow_id"]}
+        )
+    )
+    assert report["state"] == "SUCCEEDED"
+    produced = {s["step_id"]: s["produced"] for s in report["steps"]}
+    assert produced["research"]["patch"] is None
+    assert produced["research"]["no_patch_because"], "a missing patch with no reason"
+    assert produced["research"]["pull_request"] is None
+
+
+def test_the_workflow_cancel_tool_separates_cancelled_from_already_finished(
+    swarm, api, db
+):
+    """A step that had already finished is the cancel arriving late, not a
+    failed cancel. An operator who cannot see the difference runs it again."""
+    created = _submit_dag(swarm)
+    tasks = {s["step_id"]: s["task_id"] for s in created["steps"]}
+    db.docs[f"tasks/{tasks['research']}"]["state"] = "SUCCEEDED"
+
+    report = json.loads(
+        server._call(
+            swarm, "swarm_workflow_cancel", {"workflow_id": created["workflow_id"]}
+        )
+    )
+    assert report["cancel_requested"] is True
+    assert report["tasks_already_terminal"] == [tasks["research"]]
+    assert report["tasks_cancelled"] == [tasks["draft"]]
+
+
+def test_a_refused_dag_keeps_the_sentence_that_says_why(swarm, api):
+    """`ApiError.to_payload` puts the sentence in `message` and the evidence in
+    `detail`; `_explain` preferred `detail` and threw the sentence away, so a
+    cycle came back as `{'cycle': [...]}` with no words at all."""
+    with pytest.raises(SwarmError) as exc:
+        server._call(
+            swarm,
+            "swarm_workflow",
+            {
+                "steps": [
+                    {"step_id": "build", "prompt": "x", "runner_profile": "mock",
+                     "depends_on": ["test"]},
+                    {"step_id": "test", "prompt": "y", "runner_profile": "mock",
+                     "depends_on": ["build"]},
+                ]
+            },
+        )
+    message = str(exc.value)
+    # The SENTENCE, which only `message` carries. `detail` for this refusal is
+    # `{"cycle": ["build", "test", "build"]}`, whose repr also contains the word
+    # "cycle" and both step ids -- so asserting on those alone passes against
+    # the defect. The arrow-joined path is in the message and nowhere else.
+    assert "workflow dependency graph contains a cycle" in message
+    assert "build -> test -> build" in message
+    # ... and the evidence is kept too, rather than one half traded for the other.
+    assert '"cycle"' in message
 
 
 # --------------------------------------------------------------------------
