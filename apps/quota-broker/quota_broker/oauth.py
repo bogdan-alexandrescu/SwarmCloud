@@ -115,7 +115,9 @@ class HttpTokenEndpoint:
         self._url = url
         self._client_id = client_id
 
-    def redeem(self, *, code: str, verifier: str, redirect_uri: str) -> dict[str, Any]:
+    def redeem(
+        self, *, code: str, verifier: str, redirect_uri: str, state: str = ""
+    ) -> dict[str, Any]:
         """Trade an authorization code for a credential pair.
 
         The other half of `exchange`: that one renews a credential this
@@ -131,20 +133,39 @@ class HttpTokenEndpoint:
         import urllib.parse
         import urllib.request
 
-        body = urllib.parse.urlencode(
-            {
-                "grant_type": "authorization_code",
-                "code": code,
-                "client_id": self._client_id,
-                "redirect_uri": redirect_uri,
-                "code_verifier": verifier,
-            }
-        ).encode("utf-8")
+        # JSON, and NOT form-encoded -- the opposite of `exchange` below, and
+        # the asymmetry is measured rather than assumed.
+        #
+        # This method sent RFC 6749 form-encoding, which is what the spec says
+        # a token endpoint takes and what `exchange` demonstrably needs. The
+        # authorization_code grant answered
+        #
+        #   400 {"type":"error","error":{"type":"invalid_request_error",
+        #        "message":"Invalid request format"}}   req_011CfHkoFVrh7ZqoY6jFzz4R
+        #
+        # on a freshly issued code -- an "invalid request FORMAT", not an
+        # invalid code, so the code was never examined. `state` is sent too,
+        # which Claude Code includes and the form-encoded version omitted
+        # entirely.
+        #
+        # Nothing could have caught this from inside the repository: redeeming
+        # requires a real authorization code from a real person signing in, so
+        # the first execution of this method was against the live endpoint.
+        payload: dict[str, Any] = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": self._client_id,
+            "redirect_uri": redirect_uri,
+            "code_verifier": verifier,
+        }
+        if state:
+            payload["state"] = state
+        body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self._url,
             data=body,
             headers={
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": CLIENT_USER_AGENT,
             },

@@ -1443,6 +1443,10 @@ def create_app(
                 code=code,
                 verifier=str(pending.get("verifier") or ""),
                 redirect_uri=OAUTH_REDIRECT_URI,
+                # The state the pending record is keyed by, which is the same
+                # value the authorize URL carried. Claude Code sends it on the
+                # token request and the form-encoded version here omitted it.
+                state=body.state,
             )
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
