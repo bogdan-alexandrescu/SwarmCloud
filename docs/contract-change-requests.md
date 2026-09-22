@@ -19,6 +19,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 4 | A typed artifact-manifest entry | open |
 | 5 | `gke_api_host` in a shared module (`swarm_common/kube.py`) | open |
 | 6 | A typed dispatch block | open |
+| 7 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 
 ---
 
@@ -301,8 +302,12 @@ neither needs this request:
 * `reject_reserved_metadata` should reserve `input_from`, or `_build_task`
   should validate it for a standalone task. Right now the DAG rule is
   enforceable on only one of the two ways a task is created.
-* `swarm-ui/src/types.ts:1227` should be `Record<string, string>`. It is wrong
-  today and nothing will tell anybody (see the closing section).
+* `swarm-ui/src/types.ts` should declare `input_from` as
+  `Record<string, string>`. **Done**, along with the fixture in `api.ts` that
+  built it as a bare string, and `check-contract-parity.sh` section 5 now
+  asserts the declaration against the frozen annotation -- so "nothing will tell
+  anybody", which is what this bullet used to end on, is no longer true. Neither
+  change touches the frozen module, which is why neither needed this request.
 
 ---
 
@@ -634,11 +639,95 @@ decides whether a workflow opens one pull request or five.
 
 ---
 
+## 7. `profiles.py`: `requires_preview_disk` names a feature this platform does not use
+
+**Status: open.** Raised while sweeping the documentation for the retracted
+workspace-storage story, because the docs were not the only place it survived.
+
+### What is there
+
+```python
+#: Cloud Run ephemeral disk is a Preview feature and, per Google's docs,
+#: disables live migration -- which is why mandatory checkpointing exists.
+requires_preview_disk: bool = False
+```
+
+`ResourceClass.requires_preview_disk`, `swarm_common/profiles.py`.
+
+### Why it is a defect and not merely tidy-up
+
+Three separate things, in increasing order of cost:
+
+1. **Nothing sets it and nothing reads it.**
+   `grep -rn requires_preview_disk` over the whole repository returns exactly
+   one line: the declaration. No resource class passes it, no dispatcher
+   branches on it, no test asserts it. It is a field whose every value is the
+   default.
+2. **Its docstring states a retracted premise, inside the frozen module.**
+   The correction at the end of `CONTRACT.md` and of `CLAUDE.md` says this
+   platform does NOT use Cloud Run ephemeral disk -- the Terraform google
+   provider cannot express it, `empty_dir.medium` accepts only `"MEMORY"` -- so
+   workspaces are memory-backed tmpfs on the fully-GA path, **with** live
+   migration. The comment above therefore contradicts the contract it lives in,
+   and it is the copy a reader is most likely to trust, because it sits beside
+   the numbers.
+3. **The clause "which is why mandatory checkpointing exists" is the dangerous
+   half.** If the stated reason for invariant 8 is a feature the platform does
+   not use, the invariant looks obsolete -- and the one conclusion nobody may
+   draw is that the checkpoint interval can be relaxed. The real reasons are a
+   quota park-and-exit, a cancellation, a reconciler reclaim of a stale
+   generation and an ordinary crash; live migration covers none of them.
+   `docs/checkpointing.md` now says so at the top of the file, but this comment
+   still says the other thing.
+
+### The requested change
+
+Either:
+
+* **remove the field** and its comment, since nothing sets or reads it; or
+* **keep the field** (as a placeholder for the day the Preview feature becomes
+  expressible) and rewrite the comment to say that it is unused today, that
+  nothing may branch on it until a provider can express the feature, and that
+  invariant 8 does not depend on it.
+
+Removing it is cleaner. Keeping it is defensible only if somebody intends to
+revisit the feature, which is a product decision rather than an engineering one.
+
+### What it would break if accepted
+
+Nothing detectable. There is no reader, so no decoder, no manifest, no test and
+no Terraform mirror changes. `make test` covers the catalogue through
+`tests/terraform/catalogue_mirror/`, which mirrors name, cpu, memory, disk,
+units and the runner fields -- not this flag.
+
+### If it is declined
+
+The comment should still be corrected even if the field stays, and that is the
+part that actually matters: a retracted premise stated inside the frozen module,
+next to the reason for an invariant, is how the invariant gets argued away in six
+months. Every doc that told the old story has now been corrected in place --
+`README.md`, `docs/architecture.md`, `docs/checkpointing.md`,
+`docs/cost-control.md`, `docs/concurrency.md`, `docs/execution-backends.md` --
+so this comment and one other line are what is left.
+
+**The other line is `CONTRACT.md` invariant 8 itself**, which still reads
+"Mandatory periodic checkpointing. Cloud Run ephemeral disk is Preview and
+disables live migration, so checkpoints are what make interruption survivable."
+The correction is 50 lines further down the same file, which is better than
+nothing and worse than the invariant being true where it is stated. Restating
+invariant 8 on its real grounds -- park-and-exit, cancellation, reclaim, crash --
+is a second request, made here rather than taken, because `CONTRACT.md` is the
+document these requests are addressed to.
+
+---
+
 ## Why these requests keep arising
 
-Three of the four requests above -- #3, #4 and #6 -- are one situation: a value
-with a single definition and several readers, in components that cannot import
-each other. #5 is the same situation with a function instead of a value.
+Three of the requests above -- #3, #4 and #6 -- are one situation: a value with a
+single definition and several readers, in components that cannot import each
+other. #5 is the same situation with a function instead of a value. (#7 is not:
+it is a stale comment on a field nothing uses, and it is here only because the
+field is inside the frozen module.)
 `CONTRACT.md` permits a restatement where it is unavoidable, and
 `docs/architecture.md` pays for the one it permits with a test. There are three
 restatement surfaces in this repository. Two are paid for.
@@ -647,43 +736,61 @@ restatement surfaces in this repository. Two are paid for.
 |---|---|---|
 | shell / jq | `scripts/lib/check-contract-parity.sh` -- four checks | `make test` (Makefile:164), and the `shell` job in `.github/workflows/application.yml` |
 | Terraform's runner catalogue | `tests/terraform/catalogue.tftest.hcl` with `tests/terraform/catalogue_mirror/` | `make tf-test` |
-| TypeScript | **nothing** | -- |
+| TypeScript | `scripts/lib/check-contract-parity.sh` section 5 -- nine checks | the same |
 
-Verified rather than assumed, because an earlier report asserted it:
+Verified rather than assumed, because an earlier report asserted it. **The
+TypeScript row was `nothing` when that was written, and the two drifts the table
+below recorded are why.** Both have since been fixed and the surface is now
+covered; the paragraphs are kept because the reasoning is what justifies the
+check rather than a second route.
 
 * `grep -c 'tsc\|typescript\|swarm-ui' scripts/lib/check-contract-parity.sh
-  Makefile` -> `0` and `0`. The parity script reads no `.ts` file; its four
-  checks are `SlotPool.effective_limit`, `Tenant.secret_name()`, the four
-  `TaskState` arrays, and the tenant-id length budget.
+  Makefile` -> `0` and `0` **at the time**. The parity script read no `.ts` file;
+  its four checks were `SlotPool.effective_limit`, `Tenant.secret_name()`, the
+  four `TaskState` arrays, and the tenant-id length budget.
 * `grep -rc 'tsc\|npm \|typecheck\|swarm-ui' .github/workflows/` -> `0` in all
-  four workflow files.
+  four workflow files. **Still true**, and it does not need to change: section 5
+  is pure Python and `re`, reads `types.ts` as text, and needs no node toolchain
+  on the machine or in CI.
 * `apps/swarm-ui/package.json` does define `"typecheck": "tsc -b --noEmit"`.
   Nothing in this repository runs it.
 
 And running it would not help. `tsc` checks `types.ts` against itself; it has no
-way to know what `swarm_common` says. Only a comparison, or a route, can.
+way to know what `swarm_common` says. Only a comparison, or a route, can. Section
+5 is the comparison: it reads the literals out of `types.ts` with regular
+expressions and asserts them against the imported frozen modules, and it
+**refuses** rather than skips when a literal is not where it expects -- because a
+parity check that passes because it could not find what it compares reports an
+agreement it never established.
 
-What that costs, measured today:
+What that cost, measured before the check existed:
 
 | in `apps/swarm-ui/src/types.ts` | frozen source | state |
 |---|---|---|
-| `RESOURCE_UNITS` (`:1100`): standard 1, browser 2, large 4 | `profiles.RESOURCE_CLASSES` units 1 / 2 / 4 | agrees today. Hand-copied, and the comment at `:1096-1098` says so plainly |
-| `TaskState` union (`:923-925`), 12 values | `states.TaskState`, 12 values | agrees |
-| `QuotaState.state` (`:903`): `'HEALTHY' \| 'COOLDOWN' \| 'EXHAUSTED' \| 'DISABLED' \| string` | `models.ProviderState`: `AVAILABLE`, `THROTTLED`, `EXHAUSTED`, `COOLDOWN`, `UNKNOWN`, `DISABLED` | **drifted** |
-| `WorkflowStep.input_from` (`:1227`): `string \| null` | `codec.workflow_to_api:486` serves `dict[str, str]` | **drifted** (request #3) |
-| `ResourceClassSpec` (`:561`) | served by `GET /v1/resource-classes` | **not copied, deliberately** |
+| `RESOURCE_UNITS`: standard 1, browser 2, large 4 | `profiles.RESOURCE_CLASSES` units 1 / 2 / 4 | agreed. Hand-copied; **now asserted** |
+| `TaskState` union, 12 values | `states.TaskState`, 12 values | agreed; **now asserted** |
+| `ParkReason` union, 8 values | `states.ParkReason`, 8 values | agreed; **now asserted** |
+| `CONCURRENCY_STATES`, `TERMINAL_STATES` | the frozen frozensets | agreed; **now asserted** |
+| `REAL_STATES` + `NEVER_WRITTEN` | must partition `TaskState` | agreed; **now asserted** |
+| `PoolKind`, `POOL_FAMILY_ORDER`, `poolKind`'s switch | the families `models.pool_names_for` emits | agreed; **now asserted** |
+| `QuotaState.state`: `'HEALTHY' \| 'COOLDOWN' \| 'EXHAUSTED' \| 'DISABLED' \| string` | `models.ProviderState`: `AVAILABLE`, `THROTTLED`, `EXHAUSTED`, `COOLDOWN`, `UNKNOWN`, `DISABLED` | **was drifted; FIXED** -- the field now reuses `ProviderStateName`, which is asserted |
+| `WorkflowStep.input_from`: `string \| null` | `codec.workflow_to_api` serves `dict[str, str]` | **was drifted; FIXED** to `Record<string, string>`, and asserted |
+| `ResourceClassSpec` | served by `GET /v1/resource-classes` | **not copied, deliberately** |
 
-The `QuotaState` row is worth spelling out. There is no provider state called
-`HEALTHY` anywhere in this platform -- the only other occurrence of the word in
-the repository is an unrelated fixture name at `tests/unit/mcp/test_sc.py:28`.
-Three states that *do* exist (`AVAILABLE`, `THROTTLED`, `UNKNOWN`) are missing
-from the union. And the trailing `| string` widens the whole thing back to
-`string`, so even a typechecker that ran would report nothing: the union
-documents a vocabulary rather than enforcing one, and the vocabulary it
-documents is wrong.
+The `QuotaState` row is worth spelling out, because it is the one that shows why
+a typechecker would not have helped. There is no provider state called `HEALTHY`
+anywhere in this platform -- the only other occurrence of the word in the
+repository is an unrelated fixture name at `tests/unit/mcp/test_sc.py:28`. Three
+states that *do* exist (`AVAILABLE`, `THROTTLED`, `UNKNOWN`) were missing from
+the union. And the trailing `| string` widens the whole thing back to `string`,
+so even a typechecker that ran would have reported nothing: the union documented
+a vocabulary rather than enforcing one, and the vocabulary it documented was
+wrong. The `| string` is kept -- a value the server adds must still decode and
+render as itself -- and the vocabulary half is now a named type with an assertion
+behind it.
 
-The last row is the remedy the repository has already found and used. The
-comment at `types.ts:556-559` gives this exact reasoning for **not** copying the
+The last row is the remedy the repository found first and used best. The comment
+on `ResourceClassSpec` gives this exact reasoning for **not** copying the
 resource-class numbers:
 
 > `check-contract-parity.sh` asserts that shell and jq restatements of the
@@ -691,13 +798,24 @@ resource-class numbers:
 > copy here would drift the first time a class is resized and nothing would
 > notice.
 
-So somebody has already worked this out once, wrote a route instead of a copy,
-and the two drifted rows above are what happens in the places where that was not
-done.
+So somebody had already worked this out once, wrote a route instead of a copy,
+and the two drifted rows above are what happened in the places where that was
+not done. **The second clause of that comment is no longer true** -- the check
+does cover TypeScript now -- but the decision it justified is still the better
+one, and it stands: a route beats an asserted copy, because an asserted copy
+still has to be edited in two places.
 
 Which gives the shape of the answer to all of these:
 
 * where every reader is Python, a shared type ends it -- requests #3, #4, #5, #6;
-* where one reader is jq or Terraform, a parity check ends it, and both exist;
-* where one reader is TypeScript, nothing ends it today, and a route that serves
-  the value is the only remedy this repository has actually made work.
+* where one reader is jq, Terraform or TypeScript, a parity check ends it, and
+  all three exist;
+* a route that serves the value is better than any of them where the value can
+  be served, because nothing has to be kept in step at all. That is what
+  `GET /v1/resource-classes` and `GET /v1/runtimes` are, and it is the remedy to
+  reach for first.
+
+**A parity check is not a substitute for a shared type.** It catches drift after
+it is written, at `make test` rather than in review, and it cannot catch drift in
+a value that is restated somewhere it does not read. The requests above are still
+requests.

@@ -76,12 +76,38 @@ fi
 # State is the one thing whose loss is unrecoverable-by-replay: without it,
 # terraform no longer knows which resources in a SHARED project are ours, and
 # `make destroy`'s label assertion has nothing to assert against.
-if gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" \
-     --project "${PROJECT_ID}" --format='value(versioning.enabled)' 2>/dev/null | grep -qi true; then
-  ok "object versioning is on (state history is recoverable)"
+#
+# THREE ANSWERS, for the same reason `_shared_probe` in lib/common.sh has three.
+# This was `gcloud ... 2>/dev/null | grep -qi true`, which reports a bucket
+# whose describe FAILED -- an expired session, a missing permission, the API not
+# enabled -- as "object versioning is OFF ... a corrupted state file would be
+# unrecoverable". That is a claim about the bucket made on the strength of never
+# having read it, and TF_STATE_BUCKET is overridable: the branch above exists
+# precisely because it can be pointed at a bucket this repository shares with
+# another team, so the false sentence can be printed about theirs.
+#
+# Not routed through `_shared_probe`: that answers "does it exist", and the
+# question here is the value of one field on a bucket that does exist. Kept
+# local to its single call site rather than added to common.sh as a second
+# almost-the-same helper.
+VERSIONING_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-versioning-err.XXXXXX")"
+if VERSIONING_ENABLED="$(gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" \
+     --project "${PROJECT_ID}" --format='value(versioning.enabled)' 2>"${VERSIONING_ERR}")"; then
+  # `tr`, not `${var,,}`: bash 3.2 has no case modification.
+  case "$(printf '%s' "${VERSIONING_ENABLED}" | tr '[:upper:]' '[:lower:]')" in
+    true)
+      ok "object versioning is on (state history is recoverable)"
+      ;;
+    *)
+      warn "object versioning is OFF on gs://${TF_STATE_BUCKET}; a corrupted state file would be unrecoverable"
+      ;;
+  esac
 else
-  warn "object versioning is OFF on gs://${TF_STATE_BUCKET}; a corrupted state file would be unrecoverable"
+  warn "could NOT read the versioning setting of gs://${TF_STATE_BUCKET}."
+  warn "This is not evidence that versioning is off and not evidence that it is on."
+  redact <"${VERSIONING_ERR}" | head -n 3 | sed 's/^/     /' >&2
 fi
+rm -f "${VERSIONING_ERR}"
 
 step "Bootstrap layer"
 BOOTSTRAP_DIR="${REPO_ROOT}/terraform/bootstrap"

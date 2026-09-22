@@ -341,9 +341,11 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
  * `GET /v1/resource-classes` serves `RESOURCE_CLASSES` from the frozen
  * contract. Added for exactly one screen -- the agent run detail, which
  * renders peak RSS and peak disk against the ceiling they were measured
- * under -- and it is a route rather than a table in this repository because
- * `check-contract-parity.sh` does not cover TypeScript, so a hand copy would
- * drift silently the first time a class is resized.
+ * under -- and it is a route rather than a table because a served value
+ * cannot drift at all. (`check-contract-parity.sh` gained a TypeScript section
+ * and now asserts the copies this client does keep; a copy of these five
+ * numbers would still be a copy, edited in two places every time a class is
+ * resized. The route is the better answer, not merely the safer one.)
  *
  * There is no empty case: the catalogue always has three classes, so a 200
  * with an empty object is a failure wearing a success code, not a platform
@@ -1989,7 +1991,11 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
     step_id: string,
     depends_on: string[],
     task_id: string | null,
-    input_from: string | null = null,
+    // A MAP, as the API serves it -- upstream step_id -> artifact filename.
+    // This fixture built a bare string, which is the shape nothing ever sends;
+    // a fixture that disagrees with the response is a development screen that
+    // renders correctly and a production one that does not.
+    input_from: Record<string, string> = {},
   ) => ({
     step_id,
     runner_profile: 'claude-code',
@@ -2019,8 +2025,8 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
           cancel_requested: false,
           steps: [
             step('plan', [], 'task_wf_plan'),
-            step('scan-scripts', ['plan'], 'task_wf_scan_a', 'plan'),
-            step('scan-terraform', ['plan'], 'task_wf_scan_b', 'plan'),
+            step('scan-scripts', ['plan'], 'task_wf_scan_a', { plan: 'plan.md' }),
+            step('scan-terraform', ['plan'], 'task_wf_scan_b', { plan: 'plan.md' }),
             step('report', ['scan-scripts', 'scan-terraform'], 'task_wf_report'),
             // No task_id: the workflow has not reached it. Renders as
             // "not started", which is NOT the same as "state unknown".

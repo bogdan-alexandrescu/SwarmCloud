@@ -367,12 +367,31 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
   # `swarm-database-only-admin-ops`. A hardcoded title produces a command that
   # silently removes nothing for every tenant terraform provisioned, which is
   # the majority of them.
-  STALE="$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+  #
+  # Redirected to a file rather than `2>/dev/null`, and the exit status read.
+  # An empty answer here means "no stale binding" and is printed as silence, so
+  # discarding the failure made a policy read that never happened -- an expired
+  # session, a missing resourcemanager.projects.getIamPolicy -- indistinguishable
+  # from a clean tenant. That is the one reading this block must not produce:
+  # the advisory exists precisely for tenants provisioned before the fix, and
+  # they are the ones a failed read would silently clear.
+  STALE_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-stale-binding-err.XXXXXX")"
+  STALE=""
+  STALE_READ=0
+  if STALE_RAW="$(gcloud projects get-iam-policy "${PROJECT_ID}" \
     --flatten='bindings[].members' \
     --filter="bindings.role=${FIRESTORE_ROLE} AND bindings.members:${GSA_EMAIL} AND bindings.condition.expression:databases" \
     --format='csv[no-heading,separator="|"](bindings.condition.title,bindings.condition.expression,bindings.condition.description)' \
-    2>/dev/null | head -1)"
-  if [[ -n "${STALE}" ]]; then
+    2>"${STALE_ERR}")"; then
+    STALE_READ=1
+    STALE="$(printf '%s\n' "${STALE_RAW}" | head -1)"
+  else
+    warn "could NOT read the project IAM policy, so whether ${GSA_ID} still carries"
+    warn "a stale conditional ${FIRESTORE_ROLE##*/} binding is UNKNOWN -- not 'no'."
+    redact <"${STALE_ERR}" | head -n 3 | sed 's/^/     /' >&2
+  fi
+  rm -f "${STALE_ERR}"
+  if [[ "${STALE_READ}" -eq 1 && -n "${STALE}" ]]; then
     STALE_TITLE="${STALE%%|*}"
     STALE_REST="${STALE#*|}"
     STALE_EXPR="${STALE_REST%%|*}"
