@@ -27,6 +27,7 @@ from typing import Any
 
 from .auth import REACHES, WHY_NOT, Tier, detect
 from .client import (
+    TERMINAL,
     SwarmClient,
     SwarmError,
     project_id,
@@ -34,6 +35,7 @@ from .client import (
     service_name,
     task_id_of,
 )
+from .follow import DEFAULT_LOG_BUDGET, follow, render
 from .patches import (
     apply_patch,
     download,
@@ -41,8 +43,6 @@ from .patches import (
     integrate,
     patch_uri,
 )
-
-TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTER", "DEAD_LETTERED"}
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -239,6 +239,50 @@ def cmd_tail(client: SwarmClient, args) -> int:
                     failed = True
         if len(done) < len(tasks):
             time.sleep(args.interval)
+    return EXIT_FAIL if failed else EXIT_OK
+
+
+def cmd_follow(client: SwarmClient, args) -> int:
+    """The same answer `swarm_follow` gives a model, printed for a person.
+
+    WHY BOTH THIS AND `tail`. They read different things and neither is
+    redundant. `tail` reads the GCS objects DIRECTLY with the operator's own
+    credentials, which is the only thing that works when the API is the part
+    that is broken. `follow` goes through `GET /v1/tasks/{id}/logs`, which
+    redacts at read time and enforces the tenant boundary -- and which is the
+    only path an MCP tool has. Having the command print the tool's own report
+    is deliberate: when a session says an agent produced nothing, this is how a
+    person checks whether that was true, against the same bytes.
+
+    It deliberately does NOT re-derive anything. `follow` builds the report and
+    `render` turns it into lines; a second answer to "what is new" living here
+    is how a CLI and a tool start disagreeing.
+    """
+    cursor: dict[str, Any] | None = None
+    report: dict[str, Any] = {"tasks": []}
+    while True:
+        report = follow(
+            client,
+            list(args.task_ids),
+            cursor=cursor,
+            max_log_bytes=args.max_log_bytes,
+            include_heartbeats=args.verbose,
+        )
+        cursor = report["cursor"]
+        for line in render(report):
+            print(line, flush=True)
+        if args.once or report["all_finished"]:
+            break
+        time.sleep(args.interval)
+
+    # A task that could not be READ is a failure even though it never reached a
+    # terminal state -- reporting exit 0 for it would tell a script the run was
+    # fine because nothing said otherwise.
+    failed = any(
+        task["read"] == "failed"
+        or (task["terminal"] and task["state"] != "SUCCEEDED")
+        for task in report["tasks"]
+    )
     return EXIT_FAIL if failed else EXIT_OK
 
 
@@ -509,6 +553,16 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--interval", type=float, default=3.0)
     t.add_argument("--verbose", action="store_true", help="include heartbeat events")
     t.set_defaults(func=cmd_tail)
+
+    f = sub.add_parser(
+        "follow", help="what is new since the last look, through the API (what the MCP tool sees)"
+    )
+    f.add_argument("task_ids", nargs="+")
+    f.add_argument("--interval", type=float, default=3.0)
+    f.add_argument("--once", action="store_true", help="one poll, then exit")
+    f.add_argument("--max-log-bytes", type=int, default=DEFAULT_LOG_BUDGET, dest="max_log_bytes")
+    f.add_argument("--verbose", action="store_true", help="include heartbeat events")
+    f.set_defaults(func=cmd_follow)
 
     r = sub.add_parser("result", help="what a finished task produced")
     r.add_argument("task_id")
