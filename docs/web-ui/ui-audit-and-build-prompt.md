@@ -2246,3 +2246,174 @@ silently drops its tail, and a long agent currently renders as one that never
 finished. S3 is the one that stops an N+1 loop being written in the browser by
 whoever builds History. They are independent and the order is a priority call,
 not an engineering one.
+
+---
+
+# HALF THREE — what the screenshots show (2026-09-22, signed in, live data)
+
+Half one was written against screenshots taken while a workflow was mid-flight.
+This half was captured after it finished, against `https://swarm.saga.xyz`, all
+15 routes, with the probe in `scratchpad/uiaudit/probe.js` running in-page on
+each. It supersedes nothing; it adds what only became visible once there was
+completed work to render.
+
+**Method.** Each route: navigate, `wait --networkidle`, run the probe
+(error-boundary detection, clipped-x/y, past-viewport, ellipsis truncation,
+pointer-without-target), screenshot. 15/15 captured.
+
+**No route crashed.** The `ErrorBoundary` ("The interface crashed",
+ErrorBoundary.tsx:38) did not fire on any of the 15. Every defect below is a
+layout or truth defect in a page that rendered successfully.
+
+## V1 — The workflow DAG is jammed against the right edge (severity: high)
+
+`agents/workflows`. The three step nodes render in a narrow column at roughly
+x=930..1070 of a 1554px content area. Everything from x=445 to x=930 is blank.
+The single most important diagram in the product uses about a third of the width
+available to it and is visually off-centre, which reads as a rendering fault
+rather than a layout choice.
+
+This is the screen the redesign is FOR. It has to be the widest, most deliberate
+thing in the app, not the narrowest.
+
+## V2 — The header contradicts the steps, on one screen, at one glance (high)
+
+Also `agents/workflows`, and this is the sharpest instance of the dead-field
+problem half one predicted:
+
+```
+WF_BCDC9180E4FB4A209F31 · QUEUED · UPDATED 2H AGO
+3 steps · not counted                      <- struck through, amber
+  research  ✓ succeeded
+  draft     ✗ failed
+  review    ø cancelled
+```
+
+The header says **QUEUED**. The steps say succeeded, failed and cancelled. Both
+are on screen simultaneously, in the same card, and nothing says which one the
+reader should believe. `QUEUED` is the field nothing ever updated; the step
+states are live. A reader's eye goes to the header first because it is the
+heading.
+
+Fix: the header must render the DERIVED rollup, never the stored `state` field.
+`apps/swarm-api/swarm_api/rollup.py` already computes it.
+
+## V3 — "3 steps · not counted" renders with a STRIKETHROUGH (high)
+
+Same card. Amber, struck through. Strikethrough universally means *retracted* or
+*superseded*. Here it is the only place the step COUNT appears, so the one
+number telling you how big the workflow is looks like it has been invalidated.
+Whatever the intent, no reader recovers it.
+
+If the count is known (it is — three nodes are drawn from it), print it plainly.
+"not counted" belongs to the rollup, not to the step count.
+
+## V4 — The workflow id is uppercased by CSS and cannot be pasted (medium)
+
+`WF_BCDC9180E4FB4A209F31` is displayed; the real id is lowercase. This is the
+exact mistake `QuotaDetail.tsx:94-96` refuses to make two screens away, with the
+reason written beside it: "a displayed id that differs from the real one is
+unusable". The workflow screen does not honour its own codebase's rule.
+
+## V5 — No step carries a duration, a cost, or a token figure (high)
+
+The step nodes show: name, state, runner profile, dependency. That is all. The
+brief for this redesign asks for "resource consumption and costs, duration,
+inputs and outputs" — and the one screen about a multi-agent run reports none of
+the four, even though `attempt_from_dict` now decodes all five spend fields and
+the attempt rows carry them.
+
+## V6 — The API telemetry strip occupies the bottom of EVERY page (medium)
+
+Sixteen green cards, roughly 200px tall, on all 15 routes, below the content:
+
+```
+/v1/accounts  200 · 382ms   /v1/admin/leases?acti… 200 · 275ms
+/v1/capacity  200 · 274ms   /v1/providers          200 · 187ms   ...
+```
+
+It is genuinely useful and should not be deleted, but it currently outranks the
+page's own content for vertical space on the shorter screens and it is identical
+everywhere. It belongs behind a disclosure, or in the Help/diagnostics section,
+not stapled to every view.
+
+## V7 — Vast dead space in the right column (medium)
+
+`overview/now`: the left column runs to roughly y=900; the right column stops at
+y=600 after "Nothing is running", leaving a blank half-page. `agents/workflows`
+ends at y≈820 on a 1150px-tall viewport. The content is centred in a ~1100px
+column on a 2000px screen, so on a wide display the app uses under half the
+glass. For a console whose brief is "graphs and diagrams everywhere possible",
+empty space is the most expensive thing on screen.
+
+## V8 — The capacity bars are invisible at zero (medium)
+
+`overview/now`, "Capacity, by what binds it": five rows, each with a light-grey
+track and a fill of zero width, reading `0 / 10`. A zero-width fill on a
+near-white track is indistinguishable from "this widget failed to render". The
+same page is careful in prose about measured-zero vs absent; its bars are not.
+
+## V9 — Confirmed still live: Overview never says "workflow" (high, from half one)
+
+Re-verified on 2026-09-22 with a completed 3-step workflow in the tenant. The
+word "workflow" appears nowhere on `overview/now`. The panel reads:
+
+> Nothing is running — No task on the 7 most recently created is in LEASED,
+> DISPATCHED, STARTING or RUNNING. The state counts agree: zero.
+
+Every sentence true; the conclusion a reader draws is false. `deriveChecks` now
+runs 6 of 6 and surfaces "2 failed tasks among the 7 most recent", which is an
+improvement — but there is still no workflow check and no parked check.
+
+## V10 — The tenants table clips the IDENTITY column (low)
+
+`admin/tenants`: `swarm-agent-worker-eng@sag…`, `swarm-agent-worker-u-bogda…`
+truncated at the table's right boundary. This is the only route where the probe
+reported `past-viewport` (×2), so it is the one genuine horizontal overflow in
+the app. Service-account emails are the thing an operator copies.
+
+## Probe findings across all 15 routes
+
+`clipped-x` ×2 and `ellipsis-truncated` ×2 on every route — these are the shell
+chrome, not per-page defects, and should be fixed once in the nav.
+`past-viewport` ×2 on `admin/tenants` only (V10).
+
+## Build-prompt additions
+
+Append to the B-series, in dependency order:
+
+* **B14 — Workflow canvas owns the full width.** The DAG is the centrepiece.
+  Full content width, nodes laid out left-to-right or top-to-bottom with the
+  graph centred in its own box, never floated to one edge. Blocks V1.
+* **B15 — One state, derived, in the header.** Delete every render of the stored
+  `state` field on a workflow. The header shows the rollup from `rollup.py` and
+  the step chips agree with it by construction. Blocks V2.
+* **B16 — Step nodes carry the four numbers.** Duration, cost, tokens in/out,
+  and a link to inputs/outputs, on every node, with the absent-value discipline
+  the agent drawer already gets right ("not reported" ≠ "$0.00"). Blocks V5.
+* **B17 — Never restyle an identifier.** Remove `text-transform` from every id.
+  One rule, applied globally, matching QuotaDetail's stated reason. Blocks V4.
+* **B18 — Telemetry behind a disclosure.** Collapse the request strip to a
+  single line with a count and p95; expand on click; full detail in Help. Blocks
+  V6.
+* **B19 — Layout fills the viewport.** Wide-screen breakpoints; no page may end
+  with a half-empty right column while the left column continues. Blocks V7.
+* **B20 — A zero bar must look measured.** A visible baseline tick or a
+  hairline at zero, distinct from an unrendered track. Blocks V8.
+* **B21 — Overview gains a workflow check and a parked check.** `deriveChecks`
+  must be able to say "a workflow has not advanced in N minutes" and "N steps
+  are parked". Blocks V9 and is the highest-value single change in this
+  document.
+
+## What was not verified
+
+* No route was tested below 1554px content width, so these are desktop
+  findings only; the mobile/narrow story is unaudited.
+* Task-detail (`agents/task/<id>`) and its attempts pane were NOT captured —
+  the link-harvest returned nothing on the workflows route and I did not reach
+  them. They remain the deepest unaudited surface and are the most likely home
+  of a genuine `ErrorBoundary` crash.
+* The `ui-test.sh` lane reported `fail — Treat this as a harness failure, never
+  as a pass`, so its assertions did not run; that failure is unexplained here.
+* `e2e-test.sh` reported `swarm-api .../readyz answered HTTP 404`, which is a
+  platform finding, not a UI one, and is unresolved.
