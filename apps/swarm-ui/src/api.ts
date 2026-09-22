@@ -409,6 +409,7 @@ export async function loadCheckpoints(
   taskId: string,
   options: { attemptId?: string; pageToken?: string; limit?: number } = {},
 ): Promise<Result<CheckpointsPage>> {
+  if (USE_FIXTURES) return fixtureCheckpoints(taskId)
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   if (options.pageToken) query.set('page_token', options.pageToken)
@@ -450,6 +451,7 @@ export async function loadTaskLogs(
     limitBytes?: number
   } = {},
 ): Promise<Result<TaskLogs>> {
+  if (USE_FIXTURES) return fixtureTaskLogs(taskId)
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   if (options.stream) query.set('stream', options.stream)
@@ -460,6 +462,171 @@ export async function loadTaskLogs(
   // Path literal and query kept apart; see loadCheckpoints above for why.
   const path = `/v1/tasks/${encodeURIComponent(taskId)}/logs`
   return read<TaskLogs>(path + suffix, () => false)
+}
+
+/**
+ * THE CHECKPOINT FIXTURE EXERCISES THE ABSENCES, not the happy path.
+ *
+ * One checkpoint whose manifest is present and resumable, and one whose
+ * manifest is `unreadable` with `resumable: null` -- the row that must not
+ * render as "cannot be resumed". A fixture that only ever produced good rows
+ * would let `resumable ?? false` ship looking correct in development, which is
+ * exactly how the absent-measurement bugs in this product got in.
+ */
+async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPage>> {
+  await new Promise((r) => setTimeout(r, 90))
+  noteFixtureProbe(`/v1/tasks/{id}/checkpoints`, 90, true)
+  const prefix = `tenants/u-bogdan/tasks/${taskId}/checkpoints`
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      prefix,
+      count: 2,
+      total_found: 2,
+      next_page_token: null,
+      listed: true,
+      truncated: false,
+      latest_checkpoint: {
+        pointer: `${prefix}/ckpt_0002`,
+        status: 'present',
+        checkpoint_id: 'ckpt_0002',
+      },
+      checkpoints: [
+        {
+          checkpoint_id: 'ckpt_0002',
+          attempt_id: 'att_2',
+          attempt_known: true,
+          attempt_created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+          attempt_completed_at: null,
+          prefix: `${prefix}/ckpt_0002`,
+          uri: `gs://swarm-workspaces/${prefix}/ckpt_0002`,
+          is_latest_pointer: true,
+          objects: [
+            { name: 'manifest.json', key: `${prefix}/ckpt_0002/manifest.json`, bytes: 412 },
+            { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0002/workspace.tar.zst`, bytes: 18_442_240 },
+          ],
+          stored_bytes: 18_442_652,
+          manifest: 'present',
+          manifest_detail: null,
+          created_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+          seq: 2,
+          generation: 2,
+          label: 'periodic',
+          archive_bytes: 18_442_240,
+          archive_sha256: '3b1f…c7a2',
+          file_count: 184,
+          resumable: true,
+          resumable_detail: null,
+        },
+        {
+          checkpoint_id: 'ckpt_0001',
+          attempt_id: 'att_1',
+          attempt_known: false,
+          attempt_created_at: null,
+          attempt_completed_at: null,
+          prefix: `${prefix}/ckpt_0001`,
+          uri: `gs://swarm-workspaces/${prefix}/ckpt_0001`,
+          is_latest_pointer: false,
+          objects: [
+            { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0001/workspace.tar.zst`, bytes: 9_102_336 },
+          ],
+          stored_bytes: 9_102_336,
+          manifest: 'unreadable',
+          manifest_detail: 'The object is there and did not parse as JSON.',
+          created_at: null,
+          seq: null,
+          generation: 1,
+          label: null,
+          archive_bytes: null,
+          archive_sha256: null,
+          file_count: null,
+          // NULL, NOT FALSE. "cannot tell" and "cannot resume" are different
+          // sentences and the row renders them differently.
+          resumable: null,
+          resumable_detail: 'Nothing could be established without the manifest.',
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * THE LOG FIXTURE CARRIES ALL THREE CONTENT STATES.
+ *
+ * stdout has text and is a LIVE tail; stderr exists and is EMPTY (`''`, which
+ * is a real answer about a quiet agent and must not render as a failed read).
+ * The distinction between `null` and `''` is the whole reason `LogStream.content`
+ * is nullable, and a fixture that never produced `''` would leave the branch
+ * that renders it unexercised.
+ */
+async function fixtureTaskLogs(taskId: string): Promise<Result<TaskLogs>> {
+  await new Promise((r) => setTimeout(r, 110))
+  noteFixtureProbe(`/v1/tasks/{id}/logs`, 110, true)
+  const body = [
+    '[13:42:01] cloning https://github.com/saga-xyz/example.git',
+    '[13:42:09] workspace ready at /workspace (tmpfs)',
+    '[13:42:09] claude-code: starting',
+    '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
+  ].join('\n')
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_2',
+      attempt: {
+        status: 'latest',
+        known: true,
+        generation: 2,
+        created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+        completed_at: null,
+        exit_code: null,
+      },
+      prefix: `tenants/u-bogdan/tasks/${taskId}/logs`,
+      redaction: { applied_at_read_time: true, rules: 6 },
+      streams: [
+        {
+          stream: 'stdout',
+          source: 'live',
+          status: 'ok',
+          detail: null,
+          key: `tenants/u-bogdan/tasks/${taskId}/logs/att_2.stdout`,
+          uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/logs/att_2.stdout`,
+          content: body,
+          total_bytes: 4096,
+          offset: 0,
+          returned_bytes: body.length,
+          next_offset: 4096,
+          truncated: true,
+          redacted: false,
+          redaction_count: 0,
+          tail_window: { object_offset: 0, stream_size: 4096 },
+        },
+        {
+          stream: 'stderr',
+          source: 'live',
+          status: 'ok',
+          detail: null,
+          key: `tenants/u-bogdan/tasks/${taskId}/logs/att_2.stderr`,
+          uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/logs/att_2.stderr`,
+          // An object that exists and is empty. NOT the same as `null`.
+          content: '',
+          total_bytes: 0,
+          offset: 0,
+          returned_bytes: 0,
+          next_offset: null,
+          truncated: false,
+          redacted: false,
+          redaction_count: 0,
+          tail_window: null,
+        },
+      ],
+    },
+  }
 }
 
 /**
@@ -2219,6 +2386,71 @@ function fixtureWorkflowRows(): Workflow[] {
         // No task_id: the workflow has not reached it. Renders as
         // "not started", which is NOT the same as "state unknown".
         step('publish', ['report'], null),
+      ],
+    },
+    {
+      // THE SHAPE THE GRAPH EXISTS TO DISTINGUISH, as it was actually run:
+      // `wf_5e5ad3b6f7da4299a839` on 2026-09-22, five independent steps and a
+      // sixth joining all five through `input_from`. The old view drew this as
+      // five boxes, one `THEN` bar and one box -- the identical marks a chain
+      // of five draws -- and the dependency line that would have disambiguated
+      // it was ellipsed at `allorn...`.
+      //
+      // It is in the fixture because a development set whose only workflow is a
+      // two-way join never shows the case that was got wrong. No step carries a
+      // task id: this is a workflow the scheduler has not reached, which is a
+      // real state, and it keeps the fixture honest -- inventing six task
+      // documents to colour it in would be a fixture agreeing with itself.
+      workflow_id: 'wf_fanin_05',
+      tenant_id: 'u-bogdan',
+      state: 'QUEUED',
+      stored_state: 'QUEUED',
+      state_source: 'derived',
+      rollup: {
+        state: 'QUEUED',
+        complete: true,
+        reason: 'no_step_has_started',
+        counts: { unstarted: 6 },
+        unreadable_steps: [],
+        unstarted_steps: [
+          'cold-start',
+          'fencing',
+          'allornothing',
+          'checkpoints',
+          'absentzero',
+          'synthesis',
+        ],
+        steps_read: 6,
+      },
+      created_at: new Date(Date.now() - 3 * 60_000).toISOString(),
+      updated_at: new Date(Date.now() - 3 * 60_000).toISOString(),
+      submitted_by: 'bogdan@saga.xyz',
+      priority: 0,
+      on_step_failure: 'FAIL_WORKFLOW',
+      cancel_requested: false,
+      steps: [
+        step('cold-start', [], null),
+        step('fencing', [], null),
+        step('allornothing', [], null),
+        step('checkpoints', [], null),
+        step('absentzero', [], null),
+        // `input_from` MIRRORS `depends_on` here, as a map rather than the bare
+        // string this row was first written with: the API serves upstream
+        // step_id -> artifact filename, and a synthesis step that joins five
+        // parents reads all five. One entry would have made the fixture say
+        // "depends on five, reads one", which is a shape nothing sends.
+        step(
+          'synthesis',
+          ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+          null,
+          {
+            'cold-start': 'cold-start.md',
+            fencing: 'fencing.md',
+            allornothing: 'allornothing.md',
+            checkpoints: 'checkpoints.md',
+            absentzero: 'absentzero.md',
+          },
+        ),
       ],
     },
   ]

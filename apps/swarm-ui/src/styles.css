@@ -613,42 +613,133 @@ body {
 .row .when { color: var(--text-faint); }
 .row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 
-/* ---- workflow dag ---- */
-/* LEFT-ALIGNED, not centred. `align-items: center` here and
-   `justify-content: center` on `.level-steps` drew the graph as a ~132px column
-   in the middle of a full-width container, leaving roughly 430px of blank page
-   beside it at 1024px. The level label keeps its rules either side, so it still
-   reads as a divider rather than a caption. */
-.dag { display: flex; flex-direction: column; }
-.level { display: flex; flex-direction: column; align-items: flex-start; }
-.level-label {
+/* ---- workflow dag ----------------------------------------------------- */
+/* WHAT THIS REPLACED, and why none of it survived.
+   `.level-label` drew ONE separator bar between one depth and the next -- the
+   same bar whether five independent steps joined into a sixth or five steps ran
+   strictly one after another. There were no edges at all, so the view could not
+   express the one thing it exists to show. `.node-dep` then ellipsed the only
+   complete statement of the graph in words (`← cold-start, fencing, allorn…`,
+   two of five parents hidden). Both are gone: edges are drawn as real paths,
+   one per (parent, child) pair, and the dependency list wraps. */
+
+/* The board-level mode switch. */
+.dagx-modes {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.dagx-modes-label {
   font: 500 10.5px/1 var(--mono);
   text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-faint);
-  padding: 10px 0 8px;
+}
+.dagx-modes button {
+  font: 500 12px var(--font);
+  color: var(--text-dim);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 999px; padding: 4px 12px; cursor: pointer;
+}
+.dagx-modes button.on { color: var(--text); border-color: var(--info); }
+.dagx-modes-note { font: 11.5px var(--font); color: var(--text-faint); }
+
+/* The collapsed mode. Shape, not just a count. */
+.dagx-topo {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 0 2px;
+}
+.dagx-mini { flex: 0 0 auto; overflow: visible; }
+.dagx-mini line { stroke: var(--text-faint); stroke-width: 1.2; }
+.dagx-mini circle { fill: var(--text-faint); }
+.dagx-mini circle.t-ok { fill: var(--ok); }
+.dagx-mini circle.t-bad { fill: var(--bad); }
+.dagx-mini circle.t-live { fill: var(--info); }
+.dagx-mini circle.t-wait { fill: var(--text-faint); }
+/* An unread state is not a muted state: hollow, so it cannot be mistaken for
+   a step that is simply waiting. */
+.dagx-mini circle.t-unknown { fill: none; stroke: var(--warn); stroke-width: 1.2; }
+.dagx-topo-text { display: flex; flex-direction: column; min-width: 0; }
+.dagx-shape { font: 12.5px var(--font); color: var(--text); }
+.dagx-topo-sub { font: 11px var(--mono); color: var(--text-faint); }
+.dagx-open {
+  margin-left: auto;
+  font: 500 12px var(--font); color: var(--text-dim);
+  background: transparent; border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 12px; cursor: pointer;
+}
+.dagx-open:hover { color: var(--text); border-color: var(--info); }
+
+/* The canvas. Relative, because the edge layer is positioned inside it. */
+.dagx {
   position: relative;
+  margin-top: 10px;
+  padding: 12px 0 4px;
+  overflow-x: auto;
 }
-/* A short rule either side, so the label reads as a divider between depths
-   rather than as a caption belonging to the node under it. */
-.level-label::before, .level-label::after {
-  content: ""; position: absolute; top: 50%;
-  width: 22px; height: 1px; background: var(--line);
+/* FULL CONTENT WIDTH, and wider than the 1100px `.app` measure once there is
+   glass for it. The most important diagram in the product used about 700px of
+   a 1070px column; this bleeds it out symmetrically about the card's centre,
+   which is the page's centre, without touching `.app` -- a global measure
+   change belongs to the layout item, not to this one. */
+@media (min-width: 1240px) {
+  .dagx {
+    width: min(calc(100vw - 48px), 1520px);
+    margin-left: calc(50% - min(calc(50vw - 24px), 760px));
+  }
 }
-/* The label sat centred over a centred column; left-aligned it needs its own
-   inset so the left-hand rule has somewhere to be. */
-.level-label { margin-left: 30px; }
-.level-label::before { right: calc(100% + 8px); }
-.level-label::after  { left: calc(100% + 8px); }
-.level-steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-start; }
+.dagx-edges {
+  position: absolute; top: 0; left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+/* `--text-faint`, NOT `--line`. The hairline token measures 1.18-1.36:1 against
+   both surfaces -- about a third of the 3:1 floor for a non-text mark -- and an
+   edge is not a hairline between two cells here: it is the entire content of
+   this view. Drawing the one signal the screen was rebuilt to add in the
+   faintest colour in the sheet would have shipped the defect back with extra
+   steps. `--text-faint` is the token this sheet already raised to ~4.9:1. */
+.dagx-edge {
+  fill: none;
+  stroke: var(--text-faint);
+  stroke-width: 1.5;
+}
+.dagx-edges marker path { fill: var(--text-faint); }
+.dagx-levels { display: flex; flex-direction: column; gap: 34px; position: relative; }
+.dagx-level {
+  display: flex; gap: 16px; justify-content: center; align-items: stretch;
+  /* NO WRAP. A level that wraps reads as two levels, which is the confusion
+     this whole block exists to remove; the host scrolls instead. */
+  flex-wrap: nowrap;
+}
+
+/* THE WRAPPER IS THE BOX, because the node is an anchor AND carries a stop
+   control, and a <button> inside an <a> is invalid HTML with two activations
+   fighting over one click. They are siblings; this element is what the level
+   lays out, what the edges are measured to, and what a reader sees as "the
+   node". It carries the sizing that used to sit on `.node` itself. */
+.node-wrap {
+  display: flex; flex-direction: column;
+  flex: 1 1 0; min-width: 168px; max-width: 268px;
+  /* Above the edge layer, so a curve passes behind the box it points at. */
+  position: relative; z-index: 1;
+}
+
 .node {
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-width: 0;
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
   border-radius: 8px; padding: 8px 12px;
-  /* Wider than 132px because the node now carries four figures. Capped so a
-     three-step level still sits side by side on a 1320px page. */
-  min-width: 210px; max-width: 280px;
+  position: relative; z-index: 1;
 }
+/* A node with no run yet is not wrapped -- there is nothing to link to -- so it
+   is its own flex child and needs the sizing the wrapper would have given it. */
+.node.is-unreachable { flex: 1 1 0; min-width: 168px; max-width: 268px; }
+/* The stop control and the two deep links sit under the anchor, inside the
+   wrapper's border-free column, so neither is inside the clickable box. */
+.node-wrap > .node-stop, .node-wrap > .node-links { margin-top: 4px; }
+a.node { text-decoration: none; color: inherit; }
+a.node:hover, a.node:focus-visible { border-color: var(--info); }
+a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
@@ -662,9 +753,17 @@ body {
 .node-meta { font: 11px var(--mono); color: var(--text-faint); }
 .node-dep {
   font: 10.5px var(--mono); color: var(--text-faint);
-  margin-top: 3px; max-width: 190px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-top: 4px;
+  /* NEVER TRUNCATED. This list is the complete statement of the graph in
+     words. It wraps; it does not ellipse. */
+  overflow-wrap: anywhere;
 }
+.node-dep-list { color: var(--text-dim); }
+.node-go {
+  margin-top: 6px;
+  font: 10.5px var(--mono); color: var(--info);
+}
+.node-go.is-none { color: var(--text-faint); }
 
 /* ---- what the step actually did ----
    Four figures per node. THE ABSENT TREATMENT IS THE POINT: a measurement the
@@ -721,14 +820,11 @@ body {
   .row .meta, .row .when { display: none; }
   .row .badges { grid-column: 2 / -1; justify-content: flex-start; }
   .nav button { padding: 8px 10px; font-size: 13px; }
-  /* Stacked, siblings would read as a sequence -- the exact thing the level
-     label exists to deny. Indenting by depth makes the hierarchy visible in a
-     single column, so "these two are parallel" survives the narrow viewport. */
-  .level { align-items: stretch; padding-left: calc(var(--depth, 0) * 14px); }
-  .level-steps { flex-direction: column; align-items: stretch; }
-  .level-label { align-self: flex-start; margin-left: 0; }
-  .level-label::before { display: none; }
-  .node { min-width: 0; max-width: none; }
+  /* A level keeps its row on a phone rather than stacking: stacked, siblings
+     read as a sequence, which is exactly what the edges are here to deny. The
+     host scrolls sideways and the nodes stay narrow but whole. */
+  .dagx-level { gap: 10px; }
+  .node { min-width: 132px; max-width: 200px; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3344,4 +3440,47 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   height: 10px;
   border: 1px solid var(--ctl-hairline);
   background: var(--ctl-hatch);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Checkpoints and log windows  (RunFiles.tsx)                               */
+/* ------------------------------------------------------------------------ */
+/* These are the first renderings of `GET /v1/tasks/{id}/checkpoints` and
+   `GET /v1/tasks/{id}/logs`. Both payloads distinguish "absent", "unreadable"
+   and "present and empty", so nothing here may style two of those alike: the
+   untrusted amber is reserved for a read that failed or could not be
+   established, and a plain muted line is what a measured emptiness gets. */
+
+.ckpt-rows { display: flex; flex-direction: column; gap: 10px; }
+.ckpt {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); padding: 10px 12px;
+}
+.ckpt-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.ckpt-head .mono { font-weight: 600; }
+.ckpt > details { margin-top: 8px; }
+.ckpt > details > summary { cursor: pointer; }
+
+.logwin {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.logwin-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.logwin-head .mono { font-weight: 600; }
+.logwin-body {
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  max-height: 320px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font: 11.5px/1.55 var(--mono); color: var(--text);
+  /* Log lines are wrapped by the writer, not by us: re-wrapping a column of
+     timestamps makes a continuation line indistinguishable from a new entry. */
+  white-space: pre;
 }

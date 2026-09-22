@@ -376,7 +376,9 @@ def test_the_usage_loader_has_a_reader():
     assert "loadWorkflowUsage" in src("Workflows.tsx"), (
         "loadWorkflowUsage is exported and no screen calls it"
     )
-    assert "<Board board={d}" in src("Workflows.tsx"), "the board is not rendered"
+    assert re.search(r"<Board\s+board=\{d\}", src("Workflows.tsx")), (
+        "the board is not rendered"
+    )
 
 
 def test_the_sample_ceiling_is_stated_rather_than_implied():
@@ -550,15 +552,35 @@ def test_widening_the_page_did_not_widen_the_prose():
         assert selector in measure_rule.group(0), f"{selector} has no measure"
 
 
-def test_the_dag_is_left_aligned():
+def test_the_dag_fills_the_width_it_is_given():
     """`align-items: center` plus `justify-content: center` drew the graph as a
-    ~132px column with roughly 430px of blank page beside it at 1024px."""
+    ~132px column with roughly 430px of blank page beside it at 1024px.
+
+    THE MECHANISM CHANGED AND THE MEASUREMENT DID NOT. `.level`/`.level-steps`
+    are gone: the graph is now a canvas (`.dagx`) that draws real edges, and it
+    stops being a narrow column by making the nodes GROW into the canvas rather
+    than by aligning a fixed-width stack to the left. `justify-content: center`
+    on a level is now correct -- with `flex-grow` there is no free space to
+    centre in until a level is narrower than the glass, and a two-node level
+    centred under its parent is what makes the edges read.
+
+    MUTATION: drop the `flex: 1 1 0` from the node, or cap the canvas. Either
+    puts the blank page back and this goes red.
+    """
     css = src("styles.css")
-    level = re.search(r"\n\.level \{[^}]*\}", css, re.S)
-    steps = re.search(r"\n\.level-steps \{[^}]*\}", css, re.S)
-    assert level is not None and steps is not None
-    assert "align-items: center" not in level.group(0), ".level still centres the DAG"
-    assert "justify-content: center" not in steps.group(0), ".level-steps still centres the nodes"
+    # The box the level lays out. It is the wrapper, because the node is an
+    # anchor with a stop control beside it.
+    wrap = re.search(r"\n\.node-wrap \{[^}]*\}", css, re.S)
+    assert wrap is not None, ".node-wrap has no rule; the level lays out nothing"
+    assert "flex: 1 1 0" in wrap.group(0), (
+        "the node no longer grows into the canvas, so a wide page puts the graph "
+        "back in a narrow column with blank page beside it"
+    )
+    host = re.search(r"\n\.dagx \{[^}]*\}", css, re.S)
+    assert host is not None, ".dagx has no rule; the canvas has no container styling"
+    assert "max-width" not in host.group(0), (
+        ".dagx caps its own width, so the graph is confined again"
+    )
 
 
 def test_no_overview_row_ends_with_a_blank_right_column():
