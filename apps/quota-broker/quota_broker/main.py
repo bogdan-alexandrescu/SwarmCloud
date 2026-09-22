@@ -917,6 +917,7 @@ def create_app(
     credential_refresher: CredentialRefresher | None = None,
     subscription_tenants: Any | None = None,
     account_store: AccountStore | None = None,
+    token_endpoint: Any | None = None,
 ) -> FastAPI:
     # The other three services do this and the broker did not, so every
     # `extra={...}` field it logged was discarded and its records arrived as
@@ -979,6 +980,24 @@ def create_app(
                 "working when their access token expires"
             )
     app.state.credential_refresher = refresher
+
+    # THE SEAM THAT WAS MISSING. `finish_account_authorization` reads
+    # `app.state.token_endpoint` to redeem the authorization code, and nothing
+    # ever set it -- so every /v1/accounts/exchange raised
+    # `AttributeError: 'State' object has no attribute 'token_endpoint'`,
+    # answered 500, and swarm-api turned that into a 503 reading "the account
+    # pool answered HTTP 500". Registering an account has never once completed.
+    #
+    # HttpTokenEndpoint's own docstring says "Injected so tests never make a
+    # network call" -- it was written to be injected and then never was. The
+    # refresh path does not hit this because it calls `exchange` through
+    # CredentialRefresher, which IS constructed above; only the redeem path
+    # went through app.state.
+    #
+    # Injectable for the same reason as every other collaborator here: a test
+    # that reaches the real endpoint is a test that needs the network and a
+    # real authorization code.
+    app.state.token_endpoint = token_endpoint or HttpTokenEndpoint()
     app.state.subscription_tenants = tenants or (lambda: [])
     # Registering an account writes two secrets, so the account routes need the
     # same store the refresher and the poller use. Exposed on app.state rather
