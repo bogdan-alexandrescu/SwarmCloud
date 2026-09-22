@@ -257,7 +257,9 @@ function Form({ capacity }: { capacity: Capacity }) {
 /** What the chosen name actually selects, and whether it can be admitted now. */
 function ProfileFacts({ profile, pools }: { profile: RunnerProfile; pools: Pool[] }) {
   const byName = new Map<string, Pool>(pools.map((p) => [p.name, p]))
-  const room = headroomFor(profile, byName)
+  // Read off `profile.admission`: the server computed it from
+  // `evaluate_capacity`, so this box and the Capacity board cannot disagree.
+  const room = headroomFor(profile)
   const binding = room.binding ? byName.get(room.binding) ?? null : null
   // headroomFor's contract: a profile's pool list is the CALLING TENANT'S, so
   // this answers "how many more could I submit", never "what the platform has"
@@ -275,12 +277,45 @@ function ProfileFacts({ profile, pools }: { profile: RunnerProfile; pools: Pool[
         {profile.pools.length} pools, every one of which must admit it in the same transaction.
       </p>
       <p className="muted">
-        Room for <strong>{room.agents}</strong> more task{room.agents === 1 ? '' : 's'} of this
-        profile right now, for {tenant ?? 'a tenant this response does not name'}
-        {binding && (isPaused(binding)
-          ? <> — <code>{binding.name}</code> is paused and admits nothing at all</>
-          : <> — held down by <code>{binding.name}</code>, {binding.active} of {binding.effective_limit} weighted units in use</>)}.
+        {room.agents === null ? (
+          /* Never a 0. Either nothing caps this, or a required pool could not
+             be read -- and a submitter told "room for 0" when the truth is
+             "we do not know" stops submitting for the wrong reason. */
+          room.basis === 'uncapped' ? (
+            <>No pool in this profile&apos;s list is configured, so nothing caps it right now.</>
+          ) : (
+            <>
+              How much room is left could not be measured: {room.unread.length} of its
+              pools could not be read. That is not zero.
+            </>
+          )
+        ) : (
+          <>
+            Room for <strong>{room.agents}</strong> more task{room.agents === 1 ? '' : 's'} of this
+            profile right now, for {tenant ?? 'a tenant this response does not name'}
+            {binding && (isPaused(binding)
+              ? <> — <code>{binding.name}</code> is paused and admits nothing at all</>
+              : <> — held down by <code>{binding.name}</code>, {binding.active} of {binding.effective_limit} weighted units in use</>)}.
+          </>
+        )}
       </p>
+      {/* EVERY pool refusing it, not the tightest. Two ceilings can bind at
+          the same moment, and a submitter shown one of them raises it, tries
+          again and gets refused by the other. */}
+      {room.blockers.length > 0 && (
+        <ul className="blocker-list compact">
+          {room.blockers.map((b) => (
+            <li key={b.pool} className="blocker-row">
+              <span className="tags">
+                <span className={`tag ${b.reason === 'MANUAL_PAUSE' ? 'paused' : 'full'}`}>
+                  {b.reason === 'MANUAL_PAUSE' ? 'paused' : 'full'}
+                </span>
+              </span>
+              <code>{b.pool}</code> — {b.active} of {b.limit} units in use
+            </li>
+          ))}
+        </ul>
+      )}
       {/* Unconfigured means uncapped: skipped, not counted as a zero reading "full". */}
       {room.missing.length > 0 && (
         <p className="muted small">Not in the response, so not counted: {room.missing.join(', ')}.</p>

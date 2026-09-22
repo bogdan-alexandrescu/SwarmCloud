@@ -1013,7 +1013,10 @@ function ProfileRow({
   byName: ReadonlyMap<string, Pool>
   tenant: string | undefined
 }) {
-  const h = headroomFor(profile, byName)
+  // Read off `profile.admission`, which the server computed from
+  // `evaluate_capacity`. `h.agents` can now be NULL -- a pool that could not
+  // be read is not a zero -- and every branch below has to say which it is.
+  const h = headroomFor(profile)
   const binding = h.binding !== null ? (byName.get(h.binding) ?? null) : null
 
   // THE BAR IS THE BINDING POOL'S, not an average and not the global pool's.
@@ -1040,8 +1043,29 @@ function ProfileRow({
         {/* Short on purpose: this sits in a column that is ~200px wide in a
             two-up layout, and a truncated headroom figure is worse than a terse
             one. */}
-        {h.agents === 0 ? (
-          <span className="ov-stop">· none can start</span>
+        {h.agents === null ? (
+          /* An em dash, never a 0. `uncapped` means nothing limits this;
+             `unknown` means a required pool could not be read and the true
+             figure may be anything, including zero. Two different sentences
+             because they have two different remedies. */
+          <span
+            className="ctl-em"
+            title={
+              h.basis === 'uncapped'
+                ? 'No pool in this profile is configured, so nothing caps it.'
+                : `Not measured: ${h.unread.length} required pool(s) could not be read.`
+            }
+          >
+            · &mdash;
+          </span>
+        ) : h.agents === 0 ? (
+          <span className="ov-stop">
+            · none can start
+            {/* The count, because more than one pool can refuse at the same
+                moment and a panel that implies one sends an operator to raise
+                a ceiling that changes nothing. */}
+            {h.blockers.length > 1 && ` (${h.blockers.length} pools)`}
+          </span>
         ) : (
           <>· {h.agents} can start</>
         )}
@@ -1075,14 +1099,31 @@ function ProfileRow({
         )}
       </span>
 
-      <span className="ctl-util-by" title={h.binding ?? undefined}>
-        {paused
-          ? 'paused'
-          : h.binding
-            ? bindingLabel(h.binding, tenant)
-            : h.missing.length > 0
-              ? `${h.missing.length} uncapped`
-              : '—'}
+      <span
+        className="ctl-util-by"
+        title={
+          h.blockers.length > 0
+            ? h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit})`).join(', ')
+            : (h.binding ?? undefined)
+        }
+      >
+        {/* More than one pool can be at its ceiling at once. This column has
+            room for one name, so when several refuse it says SO rather than
+            picking one -- the detail is on the Capacity board. */}
+        {/* "refusing", not "full": one of them may be PAUSED, which is a
+            different fact with the opposite remedy, and a single word here
+            cannot carry both. */}
+        {h.blockers.length > 1
+          ? `${h.blockers.length} pools refusing`
+          : paused
+            ? 'paused'
+            : !h.complete
+              ? `${h.unread.length} unread`
+              : h.binding
+                ? bindingLabel(h.binding, tenant)
+                : h.missing.length > 0
+                  ? `${h.missing.length} uncapped`
+                  : '—'}
       </span>
     </div>
   )

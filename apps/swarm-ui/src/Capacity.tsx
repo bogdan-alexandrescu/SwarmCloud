@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { loadCapacity } from './api'
 import { isPaused } from './fetch'
 import { Screen } from './Shell'
+import { Counterfactuals, IncompleteNote, headroomFigure } from './Blockers'
 import {
   POOL_FAMILY_ORDER,
   headroomFor,
@@ -11,6 +12,7 @@ import {
   poolScope,
   setBy,
   type Capacity,
+  type Headroom,
   type Pool,
   type PoolKind,
 } from './types'
@@ -106,13 +108,19 @@ function Headroom({ capacity }: { capacity: Capacity }) {
   const profiles = Object.entries(capacity.runner_profiles)
   if (profiles.length === 0) return null
 
-  const byName = new Map(capacity.pools.map((p) => [p.name, p]))
-  // Any tenant-scoped pool tells us whose view this is. There is no tenant id
-  // on /v1/capacity itself, so it is read off the pool names rather than
-  // assumed or left blank.
-  const tenant = capacity.pools
-    .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
-    .find((t): t is string => Boolean(t))
+  // `/v1/capacity` names the tenant itself -- service.capacity() has always
+  // sent `tenant_id`, and this file used to guess it back out of the pool
+  // names. The regex stays as the fallback for an API that predates the
+  // field, because a blank here silently drops the scope from every figure.
+  const tenant =
+    capacity.tenant_id ??
+    capacity.pools
+      .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
+      .find((t): t is string => Boolean(t))
+
+  const rows = profiles
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, profile]) => ({ name, profile, h: headroomFor(profile) }))
 
   return (
     <section className="section">
@@ -129,44 +137,133 @@ function Headroom({ capacity }: { capacity: Capacity }) {
               <th scope="col">Runner profile</th>
               <th scope="col" className="n">Could start</th>
               <th scope="col" className="n">Weight</th>
+              {/* Plural on purpose. A task must clear EVERY pool at once, so
+                  more than one can refuse at the same moment -- and while this
+                  column named a single one, an operator would raise it and
+                  nothing would move. */}
               <th scope="col">Held back by</th>
               <th scope="col">Backend</th>
             </tr>
           </thead>
           <tbody>
-            {profiles
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([name, profile]) => {
-                const h = headroomFor(profile, byName)
-                return (
-                  <tr key={name} className={h.agents === 0 ? 'over' : undefined}>
-                    <th scope="row">{name}</th>
-                    <td className="n">{h.agents}</td>
-                    <td className="n">{profile.units}u</td>
-                    <td title={h.binding ?? undefined}>
-                      {h.agents === 0 && h.binding
-                        ? poolLabel(h.binding)
-                        : h.binding
-                          ? poolLabel(h.binding)
-                          : '\u2014'}
-                      {h.missing.length > 0 && (
-                        <span className="client-side"> · {h.missing.length} uncapped</span>
-                      )}
-                    </td>
-                    <td>{profile.backend}</td>
-                  </tr>
-                )
-              })}
+            {rows.map(({ name, profile, h }) => {
+              const figure = headroomFigure(h)
+              return (
+                <tr
+                  key={name}
+                  className={
+                    h.agents === 0 ? 'over' : h.agents === null ? 'unmeasured' : undefined
+                  }
+                >
+                  <th scope="row">{name}</th>
+                  <td className="n" title={figure.title}>
+                    {figure.text}
+                  </td>
+                  <td className="n">{profile.units}u</td>
+                  <td>
+                    <HeldBackBy h={h} />
+                  </td>
+                  <td>{profile.backend}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
       <p className="muted small">
         How many more agents of each profile could be admitted right now, for
         this tenant. A task must clear every pool in its list at once, so this
-        is the minimum across them divided by the profile&apos;s weight — not a
-        platform figure, and not a sum.
+        is the minimum across them divided by the profile&apos;s weight &mdash; not
+        a platform figure, and not a sum. An em dash is not a zero: it means the
+        number was not measured, and the cell says why.
       </p>
+      {rows.map(({ name, profile, h }) =>
+        h.blockers.length > 0 || !h.complete || h.counterfactual.length > 0 ? (
+          <details key={name} className="admission-details">
+            <summary>
+              <span className="mono">{name}</span>
+              {h.blockers.length > 0 ? (
+                <>
+                  {' '}
+                  &mdash; {h.blockers.length} pool
+                  {h.blockers.length === 1 ? '' : 's'} refusing it
+                </>
+              ) : !h.complete ? (
+                <> &mdash; not fully measured</>
+              ) : (
+                <> &mdash; what lifting each ceiling would buy</>
+              )}
+            </summary>
+            <IncompleteNote h={h} />
+            <Counterfactuals h={h} generatedAt={capacity.generated_at} />
+            <p className="provenance">
+              {profile.pools.length} pools in its list &middot; {profile.units} unit
+              {profile.units === 1 ? '' : 's'} added to each on admission
+            </p>
+          </details>
+        ) : null,
+      )}
     </section>
+  )
+}
+
+/**
+ * EVERY pool refusing this profile, not the tightest one.
+ *
+ * The bug this replaces: `headroomFor` kept a running minimum and overwrote
+ * `binding` on each new one, so with `resource:large` and `provider:anthropic`
+ * both at their ceilings the cell named one of them. An operator raised it,
+ * nothing changed, and the pool still refusing never appeared anywhere.
+ *
+ * A pause and a full pool are drawn differently because the remedies are
+ * opposite -- resume it, versus wait or raise it -- and a paused pool can read
+ * 0 of 8 units in use while admitting nothing at all, which is the case that
+ * looks healthiest and is not.
+ */
+function HeldBackBy({ h }: { h: Headroom }) {
+  if (h.blockers.length === 0) {
+    return (
+      <>
+        <span
+          className="ctl-em"
+          title={
+            h.complete
+              ? 'No pool is refusing this profile.'
+              : 'At least one required pool could not be read, so nothing can be said about what refuses this.'
+          }
+        >
+          &mdash;
+        </span>
+        {!h.complete && (
+          <span className="client-side"> &middot; {h.unread.length} unread</span>
+        )}
+        {h.missing.length > 0 && (
+          <span className="client-side"> &middot; {h.missing.length} uncapped</span>
+        )}
+      </>
+    )
+  }
+  return (
+    <>
+      <span className="tags">
+        {h.blockers.map((b) => (
+          <span
+            key={b.pool}
+            className={`tag ${b.reason === 'MANUAL_PAUSE' ? 'paused' : 'full'}`}
+            title={`${b.pool} — ${b.reason}, ${b.active} of ${b.limit} units in use`}
+          >
+            {poolLabel(b.pool)}
+            {b.reason === 'MANUAL_PAUSE' ? ' paused' : ` ${b.active}/${b.limit}`}
+          </span>
+        ))}
+      </span>
+      {!h.complete && (
+        <span className="client-side"> &middot; and {h.unread.length} unread</span>
+      )}
+      {h.missing.length > 0 && (
+        <span className="client-side"> &middot; {h.missing.length} uncapped</span>
+      )}
+    </>
   )
 }
 

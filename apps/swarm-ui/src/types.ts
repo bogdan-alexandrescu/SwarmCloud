@@ -28,6 +28,19 @@ export interface Pool {
 export interface Capacity {
   pools: Pool[]
   runner_profiles: Record<string, RunnerProfile>
+  /** Present since the admission block was added. The caller's own tenant. */
+  tenant_id?: string
+  /**
+   * False when the pool listing hit its page size, so a required pool missing
+   * from `pools` may exist and be full rather than being unconfigured. The
+   * server has already folded this into each profile's `admission.unread`;
+   * it is carried here so a screen can say WHY a figure is unavailable.
+   */
+  pools_complete?: boolean
+  /** `headroom.blocked_reason_groups()`. Served so nothing here restates it. */
+  blocked_reason_groups?: Record<string, string[]>
+  /** The instant the pool counts below were read. Everything derived from them
+   * is a statement about this moment and no other. */
   generated_at: string
 }
 
@@ -37,6 +50,66 @@ export interface RunnerProfile {
   provider: string | null
   units: number
   pools: string[]
+  /**
+   * Computed by `swarm_api/headroom.py` from `evaluate_capacity` itself.
+   * Optional because an older API does not send it, and an absent block must
+   * render as "not measured" rather than as a zero.
+   */
+  admission?: ProfileAdmission
+}
+
+/**
+ * How a headroom number was arrived at. `swarm_api/headroom.py`.
+ *
+ * Three cases one integer cannot tell apart, with three different remedies:
+ * a measurement, nothing capping this at all, and a pool nobody could read.
+ */
+export type HeadroomBasis = 'measured' | 'uncapped' | 'unknown'
+
+/** One pool refusing a profile. `evaluate_capacity` + the remedy group. */
+export interface ProfileBlocker {
+  pool: string
+  reason: string
+  limit: number
+  active: number
+  /** 'needs_action' | 'no_room' | null when the reason is in neither. */
+  group: string | null
+}
+
+/**
+ * What ONE relaxed ceiling would have bought, at the instant `generated_at`
+ * names. A prediction, and the place a screen like this most easily starts
+ * lying: a lease can be released between the read and the render.
+ */
+export interface Counterfactual {
+  pool: string
+  /** 'resume' for a paused pool, 'raise' for one at its ceiling. */
+  action: 'resume' | 'raise' | string
+  headroom_after: number | null
+  basis_after: HeadroomBasis
+  /** null when either side is unbounded: that is not a delta. */
+  delta: number | null
+  /** What would bind INSTEAD. Empty means nothing else would. */
+  next_binding: string[]
+}
+
+/** `analyse_profile` in `swarm_api/headroom.py`. */
+export interface ProfileAdmission {
+  units: number
+  /** null means NOT MEASURED. Read `basis` to learn which kind. */
+  headroom: number | null
+  basis: HeadroomBasis
+  /** EVERY pool refusing a task right now, in the order a task clears them. */
+  blockers: ProfileBlocker[]
+  /** Every pool capping the next task beyond what fits. */
+  binding: string[]
+  counterfactual: Counterfactual[]
+  /** False means the list below is incomplete and must say so. */
+  complete: boolean
+  /** Required pools whose state could not be established. */
+  unread: string[]
+  /** Required pools that are not configured, therefore unlimited. */
+  uncapped: string[]
 }
 
 /** The kind of pool, parsed from its name. `global` has no prefix. */
@@ -70,51 +143,105 @@ export function poolLabel(name: string): string {
   return `${parts[1]} · ${parts[3] ?? parts[2]}`
 }
 
+/** What `headroomFor` hands a screen. Every field comes off the response. */
+export interface Headroom {
+  /**
+   * How many more agents of this profile could be admitted. NULL MEANS NOT
+   * MEASURED and must render as an em dash -- `basis` says which kind of
+   * not-measured it is. A 0 here is a measured zero.
+   */
+  agents: number | null
+  basis: HeadroomBasis
+  /** The first binding pool, for the columns that have room for one name. */
+  binding: string | null
+  /** EVERY pool refusing a task right now. The fix for the single-name bug. */
+  blockers: ProfileBlocker[]
+  counterfactual: Counterfactual[]
+  /** False when a required pool could not be read: the list is incomplete. */
+  complete: boolean
+  /** Required pools nobody could read. Non-empty => `complete` is false. */
+  unread: string[]
+  /** Required pools that are not configured, therefore unlimited. */
+  missing: string[]
+}
+
 /**
  * How many more agents of one runner profile could be admitted right now.
  *
- * The conjunction made arithmetic: a task must clear EVERY pool in its list at
- * the same moment, so headroom is the minimum across them -- never a sum --
- * and it is divided by the profile's weight because admission increments each
- * pool by `units`, not by one.
+ * THIS FUNCTION NO LONGER COMPUTES ANYTHING. It reads `profile.admission`,
+ * which `swarm_api/headroom.py` produced by calling `evaluate_capacity` -- the
+ * same function the admission transaction calls.
  *
- * TRAP D, and it is the most plausible misreading on the whole screen: the
- * `pools` list on a runner profile is the CALLING TENANT'S list, including for
- * an admin, because service.capacity() calls pool_names_for(tenant_id=
- * ctx.tenant_id) unconditionally. So this number answers "how many more could
- * I submit", never "how much capacity does the platform have". Every caller of
- * this function must render the tenant beside the number.
+ * It used to re-derive the rule here, and that is where the bug was: the
+ * conjunction is "clear EVERY pool at once", so `evaluate_capacity` returns a
+ * LIST of everything that refused, and this function kept only the running
+ * minimum. `binding = name` overwrote on each new minimum, so with
+ * `resource:large` and `provider:anthropic` both at their ceilings the screen
+ * named one, an operator raised it, and nothing moved.
  *
- * A pool named in the profile but absent from the response is unconfigured,
- * which means unlimited by construction -- the global and tenant pools always
- * exist, so a missing one is a narrow named pool that was never capped. It is
- * skipped rather than treated as zero.
+ * Serving it instead of restating it was chosen over pinning the restatement
+ * with a parity check, for the reason `docs/contract-change-requests.md`
+ * already records under "Why these requests keep arising": shell and jq
+ * restatements are held to the Python by check-contract-parity.sh, Terraform's
+ * by a tftest, and TypeScript by nothing at all -- neither `make lint` nor
+ * `make test` runs `tsc`. A parity check can pin a table of constants; it
+ * cannot pin an algorithm, and the counterfactual is an algorithm.
+ *
+ * TRAP D still holds and still has to be rendered: the `pools` list on a
+ * runner profile is the CALLING TENANT'S, including for an admin, because
+ * service.capacity() calls pool_names_for(tenant_id=ctx.tenant_id)
+ * unconditionally. So this answers "how many more could I submit", never "how
+ * much capacity does the platform have". Every caller must render the tenant
+ * beside the number.
  */
-export function headroomFor(
-  profile: RunnerProfile,
-  poolsByName: ReadonlyMap<string, Pool>,
-): { agents: number; binding: string | null; missing: string[] } {
-  let agents = Infinity
-  let binding: string | null = null
-  const missing: string[] = []
-
-  for (const name of profile.pools) {
-    const pool = poolsByName.get(name)
-    if (!pool) {
-      missing.push(name)
-      continue
-    }
-    // A paused pool admits nothing at all, whatever its headroom says.
-    if (pool.enabled === false) return { agents: 0, binding: name, missing }
-    const units = profile.units > 0 ? profile.units : 1
-    const fits = Math.floor(Math.max(0, pool.available) / units)
-    if (fits < agents) {
-      agents = fits
-      binding = name
+export function headroomFor(profile: RunnerProfile): Headroom {
+  const a = profile.admission
+  if (!a) {
+    // An API that does not send the block. NOT a zero: this screen does not
+    // know, and inventing the old client-side sum here would reintroduce the
+    // restatement that the block exists to delete.
+    return {
+      agents: null,
+      basis: 'unknown',
+      binding: null,
+      blockers: [],
+      counterfactual: [],
+      complete: false,
+      unread: [...profile.pools],
+      missing: [],
     }
   }
+  return {
+    agents: a.headroom,
+    basis: a.basis,
+    binding: a.binding[0] ?? a.blockers[0]?.pool ?? null,
+    blockers: a.blockers,
+    counterfactual: a.counterfactual,
+    complete: a.complete,
+    unread: a.unread,
+    missing: a.uncapped,
+  }
+}
 
-  return { agents: Number.isFinite(agents) ? agents : 0, binding, missing }
+/**
+ * The two groups, split by REMEDY: somebody must act, versus waiting is a
+ * valid answer. Read off the response when the server sent it.
+ *
+ * The fallback is not a second opinion about the split -- it is the statement
+ * that this screen does not know, which renders as an ungrouped list rather
+ * than as a confident one. A hard-coded copy here would be exactly the
+ * TypeScript restatement `admission` was added to remove.
+ */
+export function blockerGroup(
+  blocker: ProfileBlocker,
+  groups: Record<string, string[]> | undefined,
+): 'needs_action' | 'no_room' | null {
+  if (blocker.group === 'needs_action' || blocker.group === 'no_room') return blocker.group
+  if (groups) {
+    if (groups.needs_action?.includes(blocker.reason)) return 'needs_action'
+    if (groups.no_room?.includes(blocker.reason)) return 'no_room'
+  }
+  return null
 }
 
 /**

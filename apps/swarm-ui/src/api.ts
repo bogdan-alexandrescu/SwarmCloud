@@ -5,7 +5,8 @@ import { TERMINAL_STATES } from './types'
 import type {
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, Pool, QuotaState, ResourceClassSpec, Runtime, TaskState,
+  AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow,
   Account, AccountStateName, AccountsPage, RefreshResponse,
@@ -1270,6 +1271,454 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 // found. A fixture that shows a tidy platform teaches the wrong thing about
 // what this screen is for.
 
+/**
+ * The `admission` block /v1/capacity serves for the pool rows below.
+ *
+ * NOT hand-written and NOT recomputed here: the literal output of
+ * `swarm_api.headroom.analyse_profile` over exactly those rows. That is why a
+ * fixture can carry it without becoming a second implementation of the rule --
+ * and `tests/unit/control_plane/test_blocker_ui_surface.py` re-runs the
+ * analyser over the same rows and asserts this is still what it produces, so a
+ * fixture that drifts from the server fails a test rather than teaching a shape
+ * the API never sends.
+ *
+ * STRICT JSON ON PURPOSE, quoted keys and all: that test parses this literal,
+ * and `make test` runs with no node, so it has to be readable as text.
+ *
+ * Two entries teach the thing the panel exists for. `mock` is capped by THREE
+ * pools tied at 15 and `codex` by two tied at 10, so every single-ceiling
+ * counterfactual on them reads zero. Those zeros are the shape an operator has
+ * to recognise, and they are real numbers off the dev platform, not staged ones.
+ */
+const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
+  "mock": {
+    "units": 1,
+    "headroom": 15,
+    "basis": "measured",
+    "blockers": [],
+    "binding": [
+      "global",
+      "resource:standard",
+      "backend:CLOUD_RUN_JOB"
+    ],
+    "counterfactual": [
+      {
+        "pool": "global",
+        "action": "raise",
+        "headroom_after": 15,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "resource:standard",
+          "backend:CLOUD_RUN_JOB"
+        ]
+      },
+      {
+        "pool": "tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 15,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "global",
+          "resource:standard",
+          "backend:CLOUD_RUN_JOB"
+        ]
+      },
+      {
+        "pool": "resource:standard",
+        "action": "raise",
+        "headroom_after": 15,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "global",
+          "backend:CLOUD_RUN_JOB"
+        ]
+      },
+      {
+        "pool": "runner:mock",
+        "action": "raise",
+        "headroom_after": 15,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "global",
+          "resource:standard",
+          "backend:CLOUD_RUN_JOB"
+        ]
+      },
+      {
+        "pool": "backend:CLOUD_RUN_JOB",
+        "action": "raise",
+        "headroom_after": 15,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "global",
+          "resource:standard"
+        ]
+      }
+    ],
+    "complete": true,
+    "unread": [],
+    "uncapped": []
+  },
+  "generic": {
+    "units": 1,
+    "headroom": 10,
+    "basis": "measured",
+    "blockers": [],
+    "binding": [
+      "runner:generic"
+    ],
+    "counterfactual": [
+      {
+        "pool": "global",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:generic"
+        ]
+      },
+      {
+        "pool": "tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:generic"
+        ]
+      },
+      {
+        "pool": "resource:standard",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:generic"
+        ]
+      },
+      {
+        "pool": "runner:generic",
+        "action": "raise",
+        "headroom_after": 15,
+        "basis_after": "measured",
+        "delta": 5,
+        "next_binding": [
+          "global",
+          "resource:standard",
+          "backend:CLOUD_RUN_JOB"
+        ]
+      },
+      {
+        "pool": "backend:CLOUD_RUN_JOB",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:generic"
+        ]
+      }
+    ],
+    "complete": true,
+    "unread": [],
+    "uncapped": []
+  },
+  "claude-code": {
+    "units": 1,
+    "headroom": 0,
+    "basis": "measured",
+    "blockers": [
+      {
+        "pool": "provider:anthropic:tenant:u-bogdan",
+        "reason": "PROVIDER_CONCURRENCY_LIMIT",
+        "limit": 5,
+        "active": 5,
+        "group": "no_room"
+      }
+    ],
+    "binding": [
+      "provider:anthropic:tenant:u-bogdan"
+    ],
+    "counterfactual": [
+      {
+        "pool": "global",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "resource:standard",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "runner:claude-code",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "backend:CLOUD_RUN_JOB",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:anthropic",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:anthropic:tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 5,
+        "basis_after": "measured",
+        "delta": 5,
+        "next_binding": [
+          "runner:claude-code",
+          "provider:anthropic"
+        ]
+      }
+    ],
+    "complete": true,
+    "unread": [],
+    "uncapped": []
+  },
+  "codex": {
+    "units": 1,
+    "headroom": 10,
+    "basis": "measured",
+    "blockers": [],
+    "binding": [
+      "runner:codex",
+      "provider:openai"
+    ],
+    "counterfactual": [
+      {
+        "pool": "global",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:codex",
+          "provider:openai"
+        ]
+      },
+      {
+        "pool": "tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:codex",
+          "provider:openai"
+        ]
+      },
+      {
+        "pool": "resource:standard",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:codex",
+          "provider:openai"
+        ]
+      },
+      {
+        "pool": "runner:codex",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:openai"
+        ]
+      },
+      {
+        "pool": "backend:CLOUD_RUN_JOB",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:codex",
+          "provider:openai"
+        ]
+      },
+      {
+        "pool": "provider:openai",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:codex"
+        ]
+      }
+    ],
+    "complete": true,
+    "unread": [],
+    "uncapped": []
+  },
+  "browser": {
+    "units": 2,
+    "headroom": 0,
+    "basis": "measured",
+    "blockers": [
+      {
+        "pool": "provider:anthropic:tenant:u-bogdan",
+        "reason": "PROVIDER_CONCURRENCY_LIMIT",
+        "limit": 5,
+        "active": 5,
+        "group": "no_room"
+      }
+    ],
+    "binding": [
+      "provider:anthropic:tenant:u-bogdan"
+    ],
+    "counterfactual": [
+      {
+        "pool": "global",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "resource:browser",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "runner:browser",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "backend:GKE_AUTOPILOT",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:anthropic",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:anthropic:tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 2,
+        "basis_after": "measured",
+        "delta": 2,
+        "next_binding": [
+          "resource:browser",
+          "runner:browser",
+          "backend:GKE_AUTOPILOT",
+          "provider:anthropic"
+        ]
+      }
+    ],
+    "complete": true,
+    "unread": [],
+    "uncapped": []
+  }
+}
+
+/** `headroom.blocked_reason_groups()`, verbatim. Same test pins it. */
+const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
+  "needs_action": [
+    "BUDGET_LIMIT",
+    "DEPENDENCY",
+    "MANUAL_PAUSE",
+    "QUOTA_EXHAUSTED"
+  ],
+  "no_room": [
+    "BACKEND_LIMIT",
+    "COOLDOWN",
+    "GLOBAL_CONCURRENCY_LIMIT",
+    "PROVIDER_CONCURRENCY_LIMIT",
+    "RESOURCE_CLASS_LIMIT",
+    "RUNNER_LIMIT",
+    "SCHEDULED_RETRY",
+    "TENANT_LIMIT"
+  ]
+}
+
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   noteFixtureProbe('/v1/capacity', 400, true)
@@ -1296,6 +1745,11 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
     fetchedAt: Date.now(),
     data: {
       generated_at: new Date().toISOString(),
+      tenant_id: 'u-bogdan',
+      // The listing was not truncated, so a pool absent from it is
+      // unconfigured rather than unread.
+      pools_complete: true,
+      blocked_reason_groups: FIXTURE_REASON_GROUPS,
       // The real five from the frozen catalogue, with the pool lists
       // pool_names_for builds for one tenant. Not invented: an empty map here
       // meant the headroom rows never rendered in development, which is how a
@@ -1304,10 +1758,12 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         mock: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
+          admission: FIXTURE_ADMISSION.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
+          admission: FIXTURE_ADMISSION.generic,
         },
         'claude-code': {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
@@ -1315,6 +1771,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
             'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
           ],
+          admission: FIXTURE_ADMISSION['claude-code'],
         },
         codex: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
@@ -1322,6 +1779,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
             'backend:CLOUD_RUN_JOB', 'provider:openai',
           ],
+          admission: FIXTURE_ADMISSION.codex,
         },
         browser: {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
@@ -1329,6 +1787,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
           ],
+          admission: FIXTURE_ADMISSION.browser,
         },
       },
       pools: [

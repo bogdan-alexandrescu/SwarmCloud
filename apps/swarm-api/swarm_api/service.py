@@ -455,21 +455,44 @@ class SubmissionService:
         return payload
 
     def capacity(self, ctx: AuthContext) -> dict[str, Any]:
-        """Pools this caller is entitled to see.
+        """Pools this caller is entitled to see, and what refuses each profile.
 
         A caller sees the shared pools (global, resource, runner, backend,
         provider) plus their OWN tenant pool. Another tenant's pool is not
         listed: its `active` count is a usage signal about that tenant.
+
+        Each runner profile carries an `admission` block computed here by
+        `headroom.analyse_profile`, which asks `evaluate_capacity` -- the same
+        function the admission transaction calls -- rather than re-deriving its
+        arithmetic. It is served rather than left to the client because the two
+        clients that computed it themselves both collapsed a LIST of blockers
+        to one pool; see the header of `swarm_api/headroom.py` for why a route
+        is the remedy here and a parity check is not.
         """
         from .codec import pool_to_api
+        from .headroom import analyse_profile, blocked_reason_groups
 
         # Same guard as `stats`: a pool's `active` count is a usage signal about
         # whoever really owns the id, so the id has to be the checked one.
         tenant_id = self.scope_for(ctx)
         own_tenant_pool = f"tenant:{tenant_id}"
         own_provider_suffix = f":tenant:{tenant_id}"
+
+        # An EXPLICIT page size, because whether the listing was truncated is
+        # the difference between "this pool does not exist, so it is unlimited"
+        # and "this pool was not read, so nothing is known". `list_pools`
+        # defaults to the same 500; naming it here is what makes the comparison
+        # below possible at all, and a default that is read but never compared
+        # is how a truncated list gets reported as a complete one.
+        page = 500
+        rows = self._store.list_pools(limit=page)
+        # `>=` not `==`: a store that returned more than asked for is still not
+        # evidence that there is no next page.
+        listing_complete = len(rows) < page
+
+        by_name = {pool.name: pool for pool in rows}
         visible = []
-        for pool in self._store.list_pools():
+        for pool in rows:
             if not ctx.is_admin:
                 # Another tenant's pool leaks that tenant's live usage, so it is
                 # filtered here rather than at the route.
@@ -479,25 +502,51 @@ class SubmissionService:
                     continue
             visible.append(pool_to_api(pool))
         visible.sort(key=lambda p: p["name"])
+
+        profiles: dict[str, Any] = {}
+        for name, profile in RUNNER_PROFILES.items():
+            backend = resolve_backend(profile).value
+            required = pool_names_for(
+                tenant_id=tenant_id,
+                provider=profile.provider,
+                resource_class=profile.resource_class,
+                runner_profile=name,
+                backend=backend,
+            )
+            units = RESOURCE_CLASSES[profile.resource_class].units
+            # Narrowed to `required` before the analyser sees it. Every name in
+            # `required` is built from THIS caller's tenant id, so none of them
+            # is another tenant's pool -- and restricting the map here is what
+            # keeps that true if `pool_names_for` ever grows a name that the
+            # visibility filter above would have hidden.
+            readable = {n: by_name[n] for n in required if n in by_name}
+            profiles[name] = {
+                "resource_class": profile.resource_class,
+                "backend": backend,
+                "provider": profile.provider,
+                "units": units,
+                "pools": required,
+                "admission": analyse_profile(
+                    required=required,
+                    pools=readable,
+                    units=units,
+                    # Absent from a COMPLETE listing means unconfigured, which
+                    # is unlimited by construction. Absent from a truncated one
+                    # means unread, and the two must never be conflated.
+                    unread=() if listing_complete else [n for n in required if n not in readable],
+                ),
+            }
+
         return {
             "tenant_id": tenant_id,
             "pools": visible,
-            "runner_profiles": {
-                name: {
-                    "resource_class": profile.resource_class,
-                    "backend": resolve_backend(profile).value,
-                    "provider": profile.provider,
-                    "units": RESOURCE_CLASSES[profile.resource_class].units,
-                    "pools": pool_names_for(
-                        tenant_id=tenant_id,
-                        provider=profile.provider,
-                        resource_class=profile.resource_class,
-                        runner_profile=name,
-                        backend=resolve_backend(profile).value,
-                    ),
-                }
-                for name, profile in RUNNER_PROFILES.items()
-            },
+            # False means the pool listing hit its page size, so any required
+            # pool missing from it is unread rather than unconfigured.
+            "pools_complete": listing_complete,
+            "runner_profiles": profiles,
+            # Served as data so no client restates the split. The grouping is
+            # by remedy: somebody must act, versus waiting is a valid answer.
+            "blocked_reason_groups": blocked_reason_groups(),
             "generated_at": self._now(),
         }
 

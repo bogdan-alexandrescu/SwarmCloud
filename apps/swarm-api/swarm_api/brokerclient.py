@@ -202,33 +202,19 @@ class AccountPool(Protocol):
 
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]: ...
 
+    # DECLARATIONS ONLY, like every other member of this Protocol.
+    #
+    # These two carried full implementations that called `self._call` -- a
+    # method this Protocol does not declare and an implementer need not have.
+    # They were dead here and, worse, they were the copy BrokerClient's own
+    # versions were pasted from, which is how one wrong keyword argument came
+    # to exist in two places at once.
     def begin_sign_in(
         self, *, owner_tenant: str, label: str, provider: str, lend_to: list[str]
-    ) -> dict[str, Any]:
-        """Start a browser sign-in. Returns the URL and the state that keys it.
+    ) -> dict[str, Any]: ...
 
-        The PKCE verifier stays in the broker, keyed by that state. It is never
-        returned here and must never be: a verifier the client holds is a PKCE
-        flow that proves nothing.
-        """
-        return self._call(
-            "POST",
-            "/v1/accounts/authorize",
-            body={
-                "owner_tenant": owner_tenant,
-                "label": label,
-                "provider": provider,
-                "lend_to": lend_to,
-            },
-        )
+    def finish_sign_in(self, *, state: str, code: str) -> dict[str, Any]: ...
 
-    def finish_sign_in(self, *, state: str, code: str) -> dict[str, Any]:
-        """Redeem the code the callback page displayed, and register the account."""
-        return self._call(
-            "POST",
-            "/v1/accounts/exchange",
-            body={"state": state, "code": code},
-        )
     def refresh(self, account_id: str) -> dict[str, Any]: ...
 
     def remove(self, account_id: str) -> dict[str, Any]: ...
@@ -491,7 +477,13 @@ class BrokerClient:
         return self._call(
             "POST",
             "/v1/accounts/authorize",
-            body={
+            # `payload`, not `body`. _call has never had a `body` parameter, so
+            # this raised TypeError on every call -- and both sign-in routes had
+            # the same mistake, because both were pasted from an implementation
+            # that should never have been in a Protocol. Nothing caught it: the
+            # broker was faked at a higher layer in every test, so the one
+            # signature that mattered was never exercised.
+            payload={
                 "owner_tenant": owner_tenant,
                 "label": label,
                 "provider": provider,
@@ -504,7 +496,7 @@ class BrokerClient:
         return self._call(
             "POST",
             "/v1/accounts/exchange",
-            body={"state": state, "code": code},
+            payload={"state": state, "code": code},
         )
     def refresh(self, account_id: str) -> dict[str, Any]:
         return self._call(

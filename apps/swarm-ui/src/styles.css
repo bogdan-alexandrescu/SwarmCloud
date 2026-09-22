@@ -1875,3 +1875,102 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   .ctl-nav-link { padding: 9px 10px; font-size: 13px; }
   .ctl-empty { padding: var(--ctl-s3); }
 }
+
+/* ---------------------------------------------------------------------------
+   Blockers and the counterfactual
+
+   A profile can be refused by several pools at the same moment, and the two
+   things that go wrong when they are drawn are drawing only one of them, and
+   drawing a PAUSED pool the same as a FULL one. Those two have opposite
+   remedies -- resume it, versus wait or raise it -- so they never share a
+   colour here: paused is --paused, at-its-ceiling is --bad, and both carry the
+   word as well as the hue, because roughly 8% of male viewers cannot separate
+   them. The existing `.tag.paused` / `.tag.full` rules already do the colour;
+   everything below is layout around them.
+   --------------------------------------------------------------------------- */
+
+/* A headroom that was not measured is not a full one and not an empty one, so
+   the row is hatched rather than tinted -- the same third-state treatment
+   `.banner.pill.unknown` already uses for "we could not read whether it is
+   paused". */
+table.pools tbody tr.unmeasured {
+  background: repeating-linear-gradient(
+    45deg, transparent, transparent 6px,
+    color-mix(in srgb, var(--text-faint) 9%, transparent) 6px,
+    color-mix(in srgb, var(--text-faint) 9%, transparent) 12px
+  );
+}
+
+.admission-panel { margin-top: 12px; }
+
+.blocker-group { margin-top: 12px; }
+.blocker-group > h3 {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+/* The heading carries the remedy, not just the category: "somebody has to act"
+   is the whole reason the two groups are separated. */
+.blocker-group.needs-action > h3 { color: var(--warn); }
+.blocker-group-note {
+  font: 400 11px/1.4 var(--font); letter-spacing: 0; text-transform: none;
+  color: var(--text-faint);
+}
+
+.blocker-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.blocker-row {
+  padding: 7px 10px;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
+  background: var(--surface);
+  font-size: 12.5px; line-height: 1.5;
+}
+.blocker-row.is-paused { border-left-color: var(--paused); }
+.blocker-row.is-full   { border-left-color: var(--bad); }
+.blocker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.blocker-pool { font-size: 12px; background: transparent; color: var(--text); }
+.blocker-reason { font: 700 10.5px var(--mono); letter-spacing: .04em; color: var(--text-dim); }
+/* The numbers that made it fail, on the entry that failed -- never rolled up
+   into a single figure at the top of the panel. */
+.blocker-at { margin-left: auto; font: 11.5px var(--mono); color: var(--text-dim); }
+.blocker-row .blocker-copy { display: block; margin: 3px 0 0; }
+
+/* The submit box has one column and no room for the fraction on its own line. */
+.blocker-list.compact .blocker-row { padding: 5px 8px; font-size: 12px; }
+
+.counterfactual { margin-top: 14px; }
+.counterfactual > h3 {
+  margin: 0 0 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.cf-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.cf-row {
+  display: grid; grid-template-columns: minmax(0, 200px) minmax(0, 1fr); gap: 10px;
+  padding: 4px 0; font-size: 12.5px; line-height: 1.5;
+}
+.cf-action { color: var(--text); }
+.cf-action code { font-size: 12px; background: transparent; color: var(--text); }
+.cf-effect { color: var(--ok); }
+/* The zeros are the valuable half -- they say which ceilings are POINTLESS to
+   raise -- so they are dimmed rather than hidden, and never coloured as a
+   result. A green "no change" reads as a success. */
+.cf-row.is-pointless .cf-action,
+.cf-row.is-pointless .cf-effect { color: var(--text-faint); }
+
+.admission-details {
+  margin-top: 10px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+}
+.admission-details > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--text-dim);
+}
+.admission-details > summary .mono { color: var(--text); }
+.admission-details[open] > summary { margin-bottom: 8px; }
+
+@media (max-width: 640px) {
+  /* One column: at 390pt the effect wraps to two words per line beside a
+     200px label, which is less readable than stacking. */
+  .cf-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .blocker-at { margin-left: 0; flex-basis: 100%; }
+}

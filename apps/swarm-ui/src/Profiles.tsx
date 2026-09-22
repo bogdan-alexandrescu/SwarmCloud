@@ -1,6 +1,7 @@
 import { loadCapacity } from './api'
 import { isPaused } from './fetch'
 import { Screen } from './Shell'
+import { ProfileAdmissionPanel, headroomFigure } from './Blockers'
 import { headroomFor, poolLabel, poolScope, type Capacity, type Pool, type RunnerProfile } from './types'
 
 /**
@@ -101,7 +102,7 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
         what the platform as a whole can run.
       </p>
       {entries.map(([name, profile]) => (
-        <ProfileCard key={name} name={name} profile={profile} byName={byName} tenant={tenant} />
+        <ProfileCard key={name} name={name} profile={profile} byName={byName} tenant={tenant} capacity={capacity} />
       ))}
       <p className="provenance">
         {entries.length} profiles · the whole catalogue this response carried, not a page of it
@@ -111,21 +112,28 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
   )
 }
 
-function ProfileCard({ name, profile, byName, tenant }: {
+function ProfileCard({ name, profile, byName, tenant, capacity }: {
   name: string
   profile: RunnerProfile
   /** Every pool this caller may see, by name. A name absent from it is uncapped. */
   byName: ReadonlyMap<string, Pool>
   tenant: string | null
+  capacity: Capacity
 }) {
-  const head = headroomFor(profile, byName)
-  // The guard headroomFor applies, repeated so a per-pool "fits" can never
-  // disagree with the headline it is supposed to explain.
+  // Read, not computed. `profile.admission` is what swarm_api/headroom.py got
+  // out of `evaluate_capacity`; this card used to re-derive it and kept only
+  // the running minimum, which is how two pools refusing at once became one
+  // name on the screen.
+  const head = headroomFor(profile)
+  const figure = headroomFigure(head)
   const weight = profile.units > 0 ? profile.units : 1
   const rows = profile.pools.map((pool) => ({ pool, row: byName.get(pool) ?? null }))
-  // Counted here rather than read off head.missing: headroomFor returns early
-  // on the first paused pool, so its `missing` stops wherever that happened.
   const uncapped = rows.filter((r) => r.row === null).length
+  // EVERY pool refusing this profile, and every pool capping it. Two sets,
+  // because "refusing now" and "would run out first" are different facts and
+  // the row tags have to say which one a pool is.
+  const refusing = new Set(head.blockers.map((b) => b.pool))
+  const unread = new Set(head.unread)
 
   return (
     <section className="section panel">
@@ -135,14 +143,16 @@ function ProfileCard({ name, profile, byName, tenant }: {
             would be a name nobody can copy. Overridden here rather than in
             styles.css, where it would change every other screen's headings. */}
         <span className="mono" style={{ textTransform: 'none' }}>{name}</span>
-        {/* headroomFor returns agents: 0 when NOTHING constrained it, because
-            it will not report an unbounded number. Printing that 0 beside a
-            profile nothing is limiting would read as blocked, so that case says
-            so in words instead. */}
-        <span className="count-chip">
-          {head.binding === null
-            ? 'nothing here caps this'
-            : `${head.agents} could start for ${tenant ?? 'your tenant'}`}
+        {/* Three cases, not two. A measured count, a profile nothing caps (no
+            number exists), and a profile with an unread pool (a number exists
+            and we do not have it). The last two both render an em dash and
+            must not be worded the same. */}
+        <span className="count-chip" title={figure.title}>
+          {head.agents !== null
+            ? `${head.agents} could start for ${tenant ?? 'your tenant'}`
+            : head.basis === 'uncapped'
+              ? 'nothing here caps this'
+              : 'not measured — a pool could not be read'}
         </span>
       </h2>
 
@@ -152,7 +162,7 @@ function ProfileCard({ name, profile, byName, tenant }: {
         <dt>Provider</dt>
         {/* null is not "unknown": the profile needs no provider key at all, so
             no provider pool exists and no provider quota can block it. */}
-        <dd className="mono">{profile.provider ?? <span title="Uses no provider">—</span>}</dd>
+        <dd className="mono">{profile.provider ?? <span title="Uses no provider">&mdash;</span>}</dd>
         <dt>Resource class</dt>
         <dd className="mono">{profile.resource_class}</dd>
         {/* Weight straight from the payload. RESOURCE_UNITS in types.ts is a
@@ -180,10 +190,13 @@ function ProfileCard({ name, profile, byName, tenant }: {
           <tbody>
             {rows.map(({ pool, row }) => {
               const paused = row !== null && isPaused(row)
-              const binding = head.binding === pool
+              // Every refusing pool is marked, not just the tightest one.
+              const blocking = refusing.has(pool)
+              const capping = head.binding === pool || blocking
+              const notRead = unread.has(pool)
               const scope = poolScope(pool)
               return (
-                <tr key={pool} className={paused ? 'paused' : binding ? 'full' : undefined}>
+                <tr key={pool} className={paused ? 'paused' : blocking ? 'full' : undefined}>
                   <th scope="row" className="pool-name" title={pool}>
                     {poolLabel(pool)}
                     <span className="raw">{pool}</span>
@@ -192,18 +205,24 @@ function ProfileCard({ name, profile, byName, tenant }: {
                     <span className={`scope ${scope}`}>{scope === 'platform' ? 'platform-wide' : 'this tenant'}</span>
                   </td>
                   <td className="n">{row === null ? '—' : row.available}</td>
-                  {/* A paused pool fits 0 however much headroom it reports — that is
+                  {/* A paused pool fits 0 however much headroom it reports &mdash; that is
                       a fact admission enforces, not a missing value coalesced to zero. */}
                   <td className="n">{row === null ? '—' : paused ? 0 : Math.floor(Math.max(0, row.available) / weight)}</td>
                   <td>
                     <span className="tags">
-                      {row === null && (
+                      {notRead && (
+                        <span className="tag unknown" title="This pool could not be read. It is not uncapped and it is not empty: nothing is known about it, and it may be the one refusing.">not read</span>
+                      )}
+                      {row === null && !notRead && (
                         <span className="tag ok" title="No pool of this name is configured, so nothing caps it. The global and tenant pools always exist, so this is a narrow named pool that was never given a limit.">uncapped</span>
                       )}
                       {paused && (
-                        <span className="tag paused" title="An operator paused this pool. It admits nothing until resumed, whatever its headroom says.">paused</span>
+                        <span className="tag paused" title="An operator paused this pool. It admits nothing until resumed, whatever its headroom says &mdash; raising its limit changes nothing.">paused</span>
                       )}
-                      {binding && <span className="tag capped">binding</span>}
+                      {blocking && !paused && (
+                        <span className="tag full" title="At its ceiling right now: this pool is refusing the next task of this profile.">full</span>
+                      )}
+                      {capping && !blocking && <span className="tag capped">binding</span>}
                     </span>
                   </td>
                 </tr>
@@ -214,14 +233,21 @@ function ProfileCard({ name, profile, byName, tenant }: {
       </div>
 
       <p className="muted small">
-        {head.binding === null
-          ? 'No pool in this list is configured, so nothing here limits this profile and there is no number to report.'
+        {head.agents === null
+          ? head.basis === 'uncapped'
+            ? 'No pool in this list is configured, so nothing here limits this profile and there is no number to report.'
+            : 'A pool in this list could not be read, so there is no number to report. That is not the same as zero.'
           : head.agents === 0
-            ? `Nothing more of this profile can start: ${poolLabel(head.binding)} is holding it at zero.`
-            : `${head.agents} more could start; ${poolLabel(head.binding)} is the first pool that would run out.`}
-        {uncapped > 0 && head.binding !== null &&
+            ? `Nothing more of this profile can start: ${head.blockers.length} of these ${rows.length} pools ${head.blockers.length === 1 ? 'is' : 'are'} refusing it right now.`
+            : `${head.agents} more could start; ${head.binding ? poolLabel(head.binding) : 'one of these pools'} would run out first.`}
+        {uncapped > 0 && head.basis === 'measured' &&
           ` ${uncapped} of these ${rows.length} pools ${uncapped === 1 ? 'is' : 'are'} unconfigured and constrains nothing.`}
       </p>
+
+      {/* The object that is stuck, on its own page: every reason it is stuck,
+          grouped by what would clear it, and what lifting each ceiling would
+          have bought at the last read. */}
+      <ProfileAdmissionPanel profile={profile} capacity={capacity} />
     </section>
   )
 }
