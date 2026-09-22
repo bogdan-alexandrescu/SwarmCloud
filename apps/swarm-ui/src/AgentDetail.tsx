@@ -1,6 +1,7 @@
 import { useCallback, useId, useState, type CSSProperties, type ReactNode } from 'react'
 import { loadAgentRun, type AgentRun } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
+import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
@@ -888,6 +889,14 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           </p>
         </div>
       )}
+
+      {/* SPEND OVER THE RUN, before the cards rather than after them: with
+          three or more attempts the question "did the retries cost anything"
+          is asked of the run, and answering it requires reading three cards
+          and doing the arithmetic -- over a series where some attempts have
+          no figure at all, which is where that arithmetic goes wrong. The
+          chart states the coverage with the total, always. */}
+      <TokenSpendChart attempts={ordered} profile={task.runner_profile} />
 
       {ordered.map((a, i) => (
         <AttemptCard
