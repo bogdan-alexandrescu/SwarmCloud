@@ -199,10 +199,15 @@ require_platform() {
   # the same "did not answer" verdict below. Probe directly, the same way
   # api_url() does above it in common.sh, so the die message names the real
   # cause instead of sending every one of those cases at 'make deploy'.
+  #
+  # api_credential, not id_token: the front door is behind IAP and refuses a
+  # Google ID token whatever its audience. And through `-K -`, not argv --
+  # this line used to interpolate the token straight into curl's command line,
+  # where every process on the box can read it out of ps.
   local ready_err ready_status detail
   ready_err="$(mktemp "${TMPDIR:-/tmp}/swarm-readyz.XXXXXX")"
-  if ! ready_status="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
-        -H "Authorization: Bearer $(id_token)" \
+  if ! ready_status="$(auth_config "$(api_credential)" \
+        | curl -sS -m 10 -K - -o /dev/null -w '%{http_code}' \
         "$(api_url)/readyz" 2>"${ready_err}")"; then
     detail="$(cat "${ready_err}")"
     rm -f "${ready_err}"
@@ -216,10 +221,33 @@ require_platform() {
   case "${ready_status}" in
     2*) ;;
     401|403)
-      die "the API at $(api_url)/readyz answered HTTP ${ready_status}. That is an auth/IAM problem -- an expired session, or the caller missing roles/run.invoker -- not a missing deployment. Do not run 'make deploy' for this."
+      die "the API at $(api_url)/readyz answered HTTP ${ready_status}. That is an auth/IAM problem -- an expired session, the caller missing roles/run.invoker, or IAP refusing the credential -- not a missing deployment. Do not run 'make deploy' for this."
+      ;;
+    404)
+      # 404 HAS ITS OWN CASE BECAUSE IT IS THE ONE THAT LIES.
+      #
+      # This gate used to fold it into the catch-all below and print "rule out
+      # auth/IAM before running 'make deploy'", which is advice that cannot
+      # help: the request never reached the application. A Cloud Run service
+      # whose ingress is internal-and-cloud-load-balancing answers every
+      # external request 404 from Google's frontend -- /readyz, /v1/anything
+      # and a route that does not exist all return the identical 272-byte HTML
+      # page. Measured against the live deployment on 2026-09-22, while the
+      # same routes served through the load balancer.
+      #
+      # common.sh's api_url refuses that address now, so reaching here means
+      # something set API_URL to it by hand, or the front door itself is
+      # serving a 404.
+      err "the API at $(api_url)/readyz answered HTTP 404."
+      err "A 404 here is almost never a missing route. Cloud Run's frontend answers 404 to"
+      err "every external request for a service whose ingress is not 'all' -- so this is the"
+      err "wrong ADDRESS, not a broken deployment and not an IAM problem."
+      err "Check: is API_URL pinned to the *.run.app hostname? From outside the VPC it cannot"
+      err "serve. Unset it and let api_url resolve the load balancer, or set API_HOST."
+      die "do not run 'make deploy' for this; nothing about the deployment is wrong."
       ;;
     *)
-      die "the API at $(api_url)/readyz answered HTTP ${ready_status}, not 2xx. Rule out auth/IAM before running 'make deploy' -- this was not a transport failure and not a 401/403."
+      die "the API at $(api_url)/readyz answered HTTP ${ready_status}, not 2xx. Rule out auth/IAM before running 'make deploy' -- this was not a transport failure, not a 401/403 and not a 404."
       ;;
   esac
 }
