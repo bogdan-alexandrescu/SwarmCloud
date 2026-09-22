@@ -1,0 +1,211 @@
+"""The plugin's skills, checked against the bridge they describe.
+
+A skill is prose, so nothing at runtime refuses a sentence that has stopped
+being true. The two ways that happens here are both mechanical, and both are
+checked below rather than proof-read:
+
+* **A skill names a tool that does not exist.** `allowed-tools` is a permission
+  rule, not a lookup: a typo or a wished-for name is accepted silently and the
+  model simply never gets the tool, which reads as "delegation does not work"
+  rather than as a broken manifest.
+* **A skill keeps saying a tool does not exist after it lands.** The delegation
+  skill tells a session to hand-roll a join because `swarm_workflow` is not
+  there. The day that tool ships, that paragraph starts costing the platform
+  the exact feature it was built for -- and nothing about shipping a tool would
+  otherwise make anyone reopen a markdown file two directories away. So the
+  "does not exist yet" list is asserted to still be true, and goes red on the
+  commit that makes it false.
+
+Offline and dependency-free by construction: the frontmatter is parsed here by
+hand rather than with PyYAML, which is present only as a transitive dependency
+of uvicorn and the kubernetes client and could leave without notice.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from swarm_mcp import server
+
+_REPO = Path(__file__).resolve().parents[3]
+_PLUGIN = _REPO / "plugin"
+_SKILLS = sorted(_PLUGIN.glob("skills/*/SKILL.md"))
+
+#: The bridge's own list is the only statement of what exists.
+_REAL = {tool["name"] for tool in server.TOOLS}
+
+#: The MCP server id in `.mcp.json`; a permission rule is `mcp__<server>__<tool>`.
+_PREFIX = "mcp__swarmcloud__"
+
+#: A fully backticked bare identifier -- `swarm_dispatch`, but NOT the
+#: `swarm_mcp` inside a backticked module path, which is not a tool name.
+_BACKTICKED = re.compile(r"`([^`\n]+)`")
+_IDENTIFIER = re.compile(r"^swarm_[a-z_]+$")
+
+#: The heading the "not yet" list lives under, and the shape of one entry:
+#: a top-level bullet whose lead is a bolded, backticked tool name.
+_NOT_YET_HEADING = "## Tools that do not exist yet"
+_NOT_YET_ENTRY = re.compile(r"^\s*\*\s+\*\*`(swarm_[a-z_]+)`\*\*")
+
+#: Anything that dispatches, cancels, or writes to the operator's tree.
+_WRITE_TOOLS = {"swarm_dispatch", "swarm_apply", "swarm_integrate", "swarm_cancel"}
+
+
+def _split(text: str) -> tuple[list[str], str]:
+    """Frontmatter lines and body, or a failure naming what is wrong.
+
+    Deliberately strict. A skill whose frontmatter does not open and close with
+    `---` is not loaded by the host at all, and the symptom -- a skill that
+    never triggers -- looks nothing like the cause.
+    """
+    lines = text.split("\n")
+    assert lines and lines[0].strip() == "---", "frontmatter must open with ---"
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return lines[1:index], "\n".join(lines[index + 1 :])
+    raise AssertionError("frontmatter opened with --- and never closed")
+
+
+def _frontmatter(text: str) -> dict[str, object]:
+    """The subset of YAML a skill header may use: scalars and `- ` lists.
+
+    Anything else raises rather than being ignored, because a silently dropped
+    key here is a permission that was never granted.
+    """
+    fields: dict[str, object] = {}
+    key: str | None = None
+    for raw in _split(text)[0]:
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if raw.startswith((" ", "\t")):
+            item = raw.strip()
+            assert item.startswith("- "), f"not a list item: {raw!r}"
+            assert key is not None, f"list item before any key: {raw!r}"
+            value = fields[key]
+            assert isinstance(value, list), f"{key} has both a value and items"
+            value.append(item[2:].strip())
+            continue
+        assert ":" in raw, f"not `key: value`: {raw!r}"
+        key, _, value_text = raw.partition(":")
+        key = key.strip()
+        assert key, f"empty key: {raw!r}"
+        value_text = value_text.strip()
+        # `: ` inside an unquoted scalar makes the line a mapping to a real
+        # YAML parser, which is the host's, not this one's. Rejected here so
+        # the header that loads in this test is the header that loads there.
+        assert ": " not in value_text or value_text[0] in "\"'", (
+            f"{key} needs quoting -- an unquoted scalar may not contain ': ': {raw!r}"
+        )
+        fields[key] = value_text if value_text else []
+    return fields
+
+
+def _load(path: Path) -> tuple[dict[str, object], str]:
+    text = path.read_text()
+    return _frontmatter(text), _split(text)[1]
+
+
+def _identifiers(body: str) -> set[str]:
+    return {
+        span
+        for span in _BACKTICKED.findall(body)
+        if _IDENTIFIER.match(span)
+    }
+
+
+def test_there_are_skills_to_check():
+    """`glob` returning nothing is how this file would pass hardest at the
+    moment the plugin directory moved out from under it."""
+    assert _SKILLS, f"no SKILL.md under {_PLUGIN}/skills"
+
+
+@pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)
+def test_the_frontmatter_parses_and_carries_a_name_and_description(path):
+    fields, _ = _load(path)
+    assert fields.get("name") == path.parent.name, "name must match the directory"
+    description = fields.get("description")
+    assert isinstance(description, str) and description.strip()
+    assert isinstance(fields.get("allowed-tools"), list)
+    assert fields["allowed-tools"], "a skill with no allowed-tools can do nothing"
+
+
+@pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)
+def test_every_tool_a_skill_is_allowed_is_a_tool_the_bridge_serves(path):
+    """An `allowed-tools` entry is matched, not resolved. A name that is wrong
+    grants nothing, silently, and the model behaves as if the feature is
+    missing rather than as if the manifest is."""
+    fields, _ = _load(path)
+    allowed = [entry for entry in fields["allowed-tools"] if entry.startswith(_PREFIX)]
+    unknown = sorted(
+        entry for entry in allowed if entry[len(_PREFIX) :] not in _REAL
+    )
+    assert not unknown, f"{path.parent.name} allows tools that do not exist: {unknown}"
+
+
+@pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)
+def test_every_tool_named_in_the_prose_exists_or_is_marked_as_not_existing(path):
+    fields, body = _load(path)
+    cited = _identifiers(body) | _identifiers(str(fields.get("description", "")))
+    unexplained = sorted(cited - _REAL - _not_yet(body))
+    assert not unexplained, (
+        f"{path.parent.name} names {unexplained}, which the bridge does not serve. "
+        "Either it exists and this list is stale, or say plainly that it does not."
+    )
+
+
+def _not_yet(body: str) -> set[str]:
+    """The tools a skill declares as not-yet-built, from its own section."""
+    if _NOT_YET_HEADING not in body:
+        return set()
+    section = body.split(_NOT_YET_HEADING, 1)[1]
+    section = re.split(r"^## ", section, maxsplit=1, flags=re.MULTILINE)[0]
+    return {m.group(1) for line in section.split("\n") if (m := _NOT_YET_ENTRY.match(line))}
+
+
+def test_the_delegation_skill_still_tells_the_truth_about_what_is_missing():
+    """When the other lane ships `swarm_workflow`, this goes red -- which is
+    the point. The skill currently instructs a session to join fan-out by hand
+    BECAUSE no workflow tool exists; that instruction becomes wrong, and
+    expensive, on the commit that makes the tool real."""
+    path = _PLUGIN / "skills" / "delegate" / "SKILL.md"
+    _, body = _load(path)
+    declared = _not_yet(body)
+    assert declared, (
+        f"{_NOT_YET_HEADING!r} lists no tool. If the gaps closed, delete the "
+        "section and the workarounds it justifies."
+    )
+    landed = sorted(declared & _REAL)
+    assert not landed, (
+        f"{landed} now exist(s) in swarm_mcp.server.TOOLS while the skill still "
+        "tells sessions to work around their absence. Rewrite that section."
+    )
+
+
+def test_the_read_only_skill_never_gains_a_tool_that_writes():
+    """`sc`'s text promises it "never writes, never refreshes a credential and
+    never cancels anything, so it is always safe to run". That promise is a
+    permission rule, so it is checked as one."""
+    fields, _ = _load(_PLUGIN / "skills" / "sc" / "SKILL.md")
+    granted = {
+        entry[len(_PREFIX) :]
+        for entry in fields["allowed-tools"]
+        if entry.startswith(_PREFIX)
+    }
+    assert not granted & _WRITE_TOOLS, "sc is documented as read-only"
+
+
+def test_the_delegation_skill_can_reach_every_tool_it_tells_a_session_to_call():
+    """The opposite failure to the one above: prose that names a real tool the
+    skill was never granted. The model reads the instruction, calls the tool,
+    and is refused."""
+    fields, body = _load(_PLUGIN / "skills" / "delegate" / "SKILL.md")
+    granted = {
+        entry[len(_PREFIX) :]
+        for entry in fields["allowed-tools"]
+        if entry.startswith(_PREFIX)
+    }
+    needed = _identifiers(body) & _REAL
+    assert needed <= granted, f"named but not allowed: {sorted(needed - granted)}"
