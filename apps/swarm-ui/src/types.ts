@@ -2014,6 +2014,31 @@ export interface Account {
    * whether to believe it, and the server owns the clock.
    */
   stale: boolean
+  /**
+   * Tenants that were handed this account and reported they could not read its
+   * secret. THE RECORD, with no ages in it -- a report five minutes old and
+   * one three days old are the same string here.
+   */
+  unreadable_by: string[]
+  /**
+   * THE VERDICT: the tenants the broker will refuse to hand this account to
+   * right now. `accounts.choose()` skips an account that is unreadable for the
+   * asking tenant, and `Account.is_unreadable_for` forgets a report after
+   * thirty minutes, so this is time-limited and computed server-side for the
+   * same reason `stale` and `reset` are -- the server owns the clock.
+   *
+   * WHY THE SCREEN MUST READ IT. An account nobody can read looks, on a
+   * listing that ignores this, exactly like a healthy idle one: full headroom,
+   * zero agents, and every task for that tenant failing somewhere else. The
+   * broker added the field to stop that; discarding it here puts it back.
+   */
+  unreadable_now: string[]
+  /**
+   * When an agent was last handed this account. NULL MEANS NEVER, which is the
+   * shape of "this account is registered and no worker can reach the broker at
+   * all" -- indistinguishable, without this, from a healthy idle account.
+   */
+  last_assigned_at: string | null
 }
 
 /** `GET /v1/accounts`. `tenant_id` is the scope the server actually applied. */
@@ -2021,6 +2046,19 @@ export interface AccountsPage {
   accounts: Account[]
   /** null when a platform caller asked for every tenant. */
   tenant_id: string | null
+  /**
+   * Account documents the store could not parse, narrowed to the ones this
+   * caller may see. A document id is `<owner_tenant>:<label>`, so the broker
+   * filters it rather than naming another tenant's accounts to a borrower.
+   */
+  unreadable_documents: string[]
+  /**
+   * How many there were in TOTAL, unfiltered. This is the number that makes
+   * the shortfall sayable to every caller: `accounts` is short by exactly this
+   * much, and a page that reports only the rows it received presents an
+   * incomplete pool as the whole one.
+   */
+  unreadable_document_count: number
 }
 
 /** `RefreshOutcome.as_dict()` in quota_broker/credentials.py. */
@@ -2066,6 +2104,36 @@ export function accountTone(state: string): AccountTone {
 /** The one state only a person can clear. The sweep stops trying on it. */
 export function needsAHuman(a: Account): boolean {
   return a.state === 'REAUTH_REQUIRED'
+}
+
+/**
+ * Whether the broker will currently refuse to hand this account to `tenantId`.
+ *
+ * READ, NEVER DERIVED. The rule is `Account.is_unreadable_for`, it is
+ * time-limited, and the only clock that may decide it is the platform's --
+ * `unreadable_now` is that verdict, already taken. `unreadable_by` is the raw
+ * record and is deliberately NOT what this asks: it carries no ages, so a
+ * five-minute-old onboarding blip and a three-day-old report read alike.
+ *
+ * A null scope is a platform caller looking at every tenant's accounts. There
+ * is no single asking tenant then, so there is no verdict to give and this
+ * answers false rather than inventing one. The row still says who reported it.
+ */
+export function unreadableFor(a: Account, tenantId: string | null): boolean {
+  if (tenantId === null) return false
+  return (a.unreadable_now ?? []).includes(tenantId)
+}
+
+/**
+ * Registered, and no agent has ever been handed it.
+ *
+ * On its own this is the ordinary shape of an account added a minute ago. On
+ * EVERY account at once it is the shape of workers that cannot reach the
+ * broker at all, which the broker logs and nothing else can see -- so the
+ * screen has to be able to say it per row for the panel to be able to count.
+ */
+export function neverAssigned(a: Account): boolean {
+  return a.last_assigned_at === null
 }
 
 /**

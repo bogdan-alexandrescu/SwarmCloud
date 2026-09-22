@@ -23,8 +23,10 @@ import {
   humaniseUntil,
   isProjected,
   needsAHuman,
+  neverAssigned,
   pastedCodeHint,
   readingOf,
+  unreadableFor,
   type Account,
   type AccountAuthorization,
   type AccountReading,
@@ -225,9 +227,22 @@ function isOwned(a: Account, scope: string | null): boolean {
   return scope === null || a.owner_tenant === scope
 }
 
+/**
+ * How many documents the store could not turn into an account.
+ *
+ * `?? 0` because an older API serves neither field, and a page that crashed on
+ * a missing count would be a worse failure than the one this reports. Zero is
+ * also what the screen says nothing about, so an old deployment reads exactly
+ * as it did before rather than claiming a shortfall it cannot measure.
+ */
+function shortfall(board: AccountsBoard): number {
+  return board.page.unreadable_document_count ?? 0
+}
+
 function SummaryLine({ board }: { board: AccountsBoard }) {
   const n = board.page.accounts.length
   const scope = board.page.tenant_id
+  const missing = shortfall(board)
   const broken = board.page.accounts.filter(needsAHuman)
   // Split, because they are two different jobs for two different people: one is
   // "open the row and sign in", the other is "this is not yours to fix".
@@ -237,6 +252,18 @@ function SummaryLine({ board }: { board: AccountsBoard }) {
     <>
       {n} account{n === 1 ? '' : 's'} &middot;{' '}
       {scope === null ? 'every tenant' : `${scope} — owned and lent to it`}
+      {/* BEFORE anything derived from the rows, because it is the sentence
+          that says how much of the pool the rows are. A count of accounts is
+          not a fact when documents were dropped reaching it. */}
+      {missing > 0 && (
+        <>
+          {' '}
+          &middot;{' '}
+          <strong>
+            {missing} document{missing === 1 ? '' : 's'} unreadable, so this list is short
+          </strong>
+        </>
+      )}
       {mine > 0 && (
         <>
           {' '}
@@ -429,11 +456,20 @@ function Pool({
         scope={board.page.tenant_id}
         now={now}
         readAt={board.readAt}
+        unreadableDocuments={board.page.unreadable_documents ?? []}
+        unreadableDocumentCount={shortfall(board)}
       />
       <p className="provenance">
-        {accounts.length} rows returned &middot; 5H and 7D are the provider&rsquo;s
-        own windows, reported by workers &middot; a figure marked ~ is projected,
-        not measured
+        {accounts.length} rows returned
+        {shortfall(board) > 0 && (
+          <>
+            {' '}
+            of {accounts.length + shortfall(board)} documents &mdash;{' '}
+            {shortfall(board)} could not be read
+          </>
+        )}{' '}
+        &middot; 5H and 7D are the provider&rsquo;s own windows, reported by
+        workers &middot; a figure marked ~ is projected, not measured
       </p>
     </section>
   )
@@ -464,10 +500,20 @@ function PoolRows({
   const tone = accountTone(account.state)
   const five = readingOf(account, FIVE_HOUR)
   const seven = readingOf(account, SEVEN_DAY)
+  // THE ROW THAT READS HEALTHIEST AND SERVES NOBODY. `choose()` skips an
+  // account this tenant has reported unreadable, so its window, its headroom
+  // and its state all describe an account that will not be handed out here --
+  // and every one of those cells says so confidently. Marked like a row that
+  // cannot serve, because that is what it is.
+  const unusable = unreadableFor(account, board.page.tenant_id)
 
   return (
     <>
-      <tr className={tone === 'bad' ? 'over' : tone === 'paused' ? 'paused' : undefined}>
+      <tr
+        className={
+          tone === 'bad' || unusable ? 'over' : tone === 'paused' ? 'paused' : undefined
+        }
+      >
         <th scope="row" className="pool-name">
           <button type="button" className="acct-open" aria-expanded={open} onClick={onToggle}>
             <span className="acct-caret" aria-hidden>
@@ -484,6 +530,19 @@ function PoolRows({
         <ClearsCell account={account} now={now} readAt={readAt} />
         <td>
           <span className={`tag acct-state ${tone}`}>{account.state}</span>
+          {/* BEFORE the state's own note, and not instead of it. The state is
+              still AVAILABLE and that is still true: the account is fine, the
+              pool simply will not hand it to THIS tenant while the report
+              stands. Two facts, and the one that decides whether work runs
+              here is this one. */}
+          {unusable && (
+            <span
+              className="acct-why acct-unusable"
+              title={`This tenant reported it could not read this account's secret, and the broker's own assignment rule (accounts.choose) is skipping it for this tenant because of that. It is not skipping it for anyone else. The report is forgotten thirty minutes after it was made, so this clears by itself if the cause was a freshly onboarded account; if it persists, the missing piece is a roles/secretmanager.secretAccessor grant on the secret for this tenant's worker service account.`}
+            >
+              the pool is skipping this account for {board.page.tenant_id}
+            </span>
+          )}
           <StateNote account={account} />
         </td>
       </tr>
@@ -699,15 +758,53 @@ function Warnings({
   scope,
   now,
   readAt,
+  unreadableDocuments,
+  unreadableDocumentCount,
 }: {
   accounts: Account[]
   scope: string | null
   now: number
   /** When the board was read. The age of a figure is part of the figure. */
   readAt: number
+  /** Documents the store could not parse, narrowed to what this caller may see. */
+  unreadableDocuments: string[]
+  /** How many there were in total. Never smaller than the list above. */
+  unreadableDocumentCount: number
 }) {
   const lines: string[] = []
+
+  // FIRST, because it is the only line that is about the LIST rather than
+  // about a row in it. Every other warning here, and every figure above it,
+  // was computed over accounts that were read; this says how many were not.
+  if (unreadableDocumentCount > 0) {
+    lines.push(
+      unreadableDocuments.length > 0
+        ? `${unreadableDocumentCount} account document${unreadableDocumentCount === 1 ? '' : 's'} could not be read, so ${unreadableDocumentCount === 1 ? 'it is' : 'they are'} missing from this table and from every count on this screen. ${unreadableDocuments.length === unreadableDocumentCount ? '' : `${unreadableDocuments.length} of them belong${unreadableDocuments.length === 1 ? 's' : ''} to this tenant: `}${unreadableDocuments.join(', ')}. The broker logs the parse error against each document id.`
+        : `${unreadableDocumentCount} account document${unreadableDocumentCount === 1 ? '' : 's'} could not be read, so ${unreadableDocumentCount === 1 ? 'it is' : 'they are'} missing from this table and from every count on this screen. None belongs to this tenant, so their ids are not shown here -- the broker logs the parse error against each one.`,
+    )
+  }
+
+  // EVERY account registered and not one ever handed out. Per-row this is just
+  // a new account; across the whole pool it is the one symptom of workers that
+  // cannot reach the broker at all -- no QUOTA_BROKER_URL, or a missing
+  // run.invoker grant -- which otherwise looks exactly like a quiet week. The
+  // broker logs this from its sweep; nothing showed it to a person.
+  if (accounts.length > 0 && accounts.every(neverAssigned)) {
+    lines.push(
+      `No account in this pool has ever been assigned to an agent. An idle pool and a pool nothing can reach look identical on this screen, and this is the shape of the second: check that the scheduler sets QUOTA_BROKER_URL on the jobs it dispatches, and that each tenant's worker service account holds roles/run.invoker on swarm-quota-broker. Until a worker asks, every figure above describes accounts nothing is using.`,
+    )
+  }
+
   for (const a of accounts) {
+    // BEFORE `needsAHuman`, because this one is invisible without it. A
+    // REAUTH_REQUIRED row already carries a red chip and a reason; an account
+    // the pool is skipping for this tenant carries AVAILABLE, a full window
+    // and no explanation of why nothing runs on it.
+    if (unreadableFor(a, scope)) {
+      lines.push(
+        `${a.account_id} is being skipped for ${scope}: this tenant reported it could not read the account's secret, and accounts.choose() excludes it on that report -- for this tenant only, so its owner and any other borrower are unaffected. Its headroom above is real and is not available here. The report is forgotten thirty minutes after it was made; if it keeps coming back, the missing piece is roles/secretmanager.secretAccessor on that secret for this tenant's worker service account.`,
+      )
+    }
     if (needsAHuman(a)) {
       // The instruction only goes to the person who can carry it out. A lent
       // row has no sign-in control and no state control by design, so sending a
@@ -830,6 +927,41 @@ function Detail({
             </>
           )}
         </dd>
+        {/* NEVER IS NOT RECENTLY. An account registered and never handed to an
+            agent is indistinguishable, everywhere else on this screen, from a
+            healthy one nobody happened to need -- and it is also the per-row
+            shape of a pool no worker can reach. The broker serves the instant
+            precisely so this row can tell the two apart. */}
+        <dt>Last assigned</dt>
+        <dd>
+          {neverAssigned(account) ? (
+            <>
+              never
+              <span className="acct-why">
+                no agent has ever been handed this account; on its own that is
+                simply a new account, and across the whole pool it is the shape
+                of workers that cannot reach the broker
+              </span>
+            </>
+          ) : (
+            timeAgo(account.last_assigned_at as string)
+          )}
+        </dd>
+        {/* Only when there is something to say. An empty list here every time
+            would train the eye to skip the one row that matters. */}
+        {(account.unreadable_by ?? []).length > 0 && (
+          <>
+            <dt>Reported unreadable by</dt>
+            <dd className="mono">
+              {account.unreadable_by.join(', ')}
+              <span className="acct-why">
+                {(account.unreadable_now ?? []).length > 0
+                  ? `the pool is skipping this account right now for ${account.unreadable_now.join(', ')} -- for those tenants only, and the report is forgotten thirty minutes after it was made`
+                  : 'every one of those reports has aged out, so the pool is skipping this account for nobody; the record is kept because a report that keeps coming back is a missing secretAccessor grant rather than an onboarding delay'}
+              </span>
+            </dd>
+          </>
+        )}
       </dl>
 
       <AllWindows account={account} now={now} />
@@ -3311,6 +3443,35 @@ function Legend() {
           for the account, or the provider reported no such window. Those cells
           draw <em>no bar at all</em>, because an empty five-cell bar and a
           measured 0% are the same picture.
+        </dd>
+        <dt>A row can read AVAILABLE and still serve nobody here</dt>
+        <dd>
+          When a tenant reports that it cannot read an account&rsquo;s secret,
+          the broker&rsquo;s own assignment rule skips that account{' '}
+          <em>for that tenant</em> and for nobody else. Its state stays
+          AVAILABLE, its windows stay real, and its headroom is genuinely
+          there &mdash; just not for you. Such a row says so under the state
+          chip, because without that it is the healthiest-looking row on the
+          screen and nothing runs on it. The report is forgotten thirty minutes
+          after it was made; one that keeps returning is a missing{' '}
+          <code>secretAccessor</code> grant, not an onboarding delay.
+        </dd>
+        <dt>&ldquo;Never assigned&rdquo; on every row is not a quiet week</dt>
+        <dd>
+          It is what a pool no worker can reach looks like: accounts registered,
+          nothing ever asking for one. On a single row it means nothing
+          &mdash; a new account has not been used yet. Across the whole pool it
+          points at <code>QUOTA_BROKER_URL</code> missing from dispatched jobs,
+          or a worker service account without{' '}
+          <code>roles/run.invoker</code> on the broker.
+        </dd>
+        <dt>A count of accounts is only a fact if every document was read</dt>
+        <dd>
+          The store skips an account document it cannot parse so that one bad
+          document does not hide the fleet. It now reports how many it skipped,
+          and this screen says so above the table &mdash; because a row count,
+          a headroom figure and a &ldquo;none need attention&rdquo; are each
+          computed over what was read, and silently wrong otherwise.
         </dd>
         <dt>CLEARS is the binding window, not the five-hour</dt>
         <dd>

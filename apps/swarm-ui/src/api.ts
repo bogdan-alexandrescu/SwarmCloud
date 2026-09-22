@@ -2645,6 +2645,13 @@ function fixtureAccount(
     windows: {},
     observed_at: ISO(-4 * 60_000),
     stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    // A fixture default of `null` would make EVERY development row say "never
+    // assigned", which is the one warning that means "no worker can reach the
+    // broker" -- the fixture must not teach that shape as normal. The rows
+    // that carry it do so deliberately, below.
+    last_assigned_at: ISO(-26 * 60_000),
     ...extra,
   }
 }
@@ -2681,6 +2688,10 @@ let fixtureAccounts: Account[] = [
     observed_at: null,
     stale: true,
     windows: {},
+    // And never handed to an agent either. On one row that is just a new
+    // account; the panel counts it because on EVERY row it is the shape of
+    // workers that cannot reach the broker at all.
+    last_assigned_at: null,
   }),
   fixtureAccount('u-bogdan', 'retired-laptop', {
     state: 'REAUTH_REQUIRED',
@@ -2696,6 +2707,15 @@ let fixtureAccounts: Account[] = [
   fixtureAccount('eng', 'shared', {
     assigned: 3,
     lend_to: ['u-bogdan'],
+    // THE ROW THAT LOOKS HEALTHIEST AND SERVES NOBODY HERE. A borrower that was
+    // never granted secretAccessor on a lent secret reports the account
+    // unreadable; `choose()` then skips it for that tenant and for nobody else,
+    // so it keeps its window, its headroom and three agents of the OWNER's --
+    // and without these two fields it renders as the best account on the
+    // screen. This is the fixture for the defect, and it is in development so
+    // the treatment cannot ship unlooked-at.
+    unreadable_by: ['u-bogdan'],
+    unreadable_now: ['u-bogdan'],
     windows: {
       // Only one window came back. The 7D column says so rather than showing 0%.
       five_hour: { utilization: 0.56, resets_at: ISO(3600_000 + 12 * 60_000), reset: false },
@@ -2721,7 +2741,16 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       // what `for_tenant` returns. It is deliberately not removable, pausable
       // or refreshable from here, and the fixture is what makes that path
       // visible in development.
-      page: { accounts: fixtureAccounts.map((a) => ({ ...a })), tenant_id: FIXTURE_TENANT },
+      page: {
+        accounts: fixtureAccounts.map((a) => ({ ...a })),
+        tenant_id: FIXTURE_TENANT,
+        // A document this tenant owns and the store could not parse. The rows
+        // above are six; the pool is seven. Development has to be able to see
+        // the case where the list is SHORT, because that is the one where
+        // every figure on the screen is quietly computed over the wrong set.
+        unreadable_documents: ['u-bogdan:half-written'],
+        unreadable_document_count: 1,
+      },
       tenants: null,
       tenantsDetail: 'Admin group membership is required for this endpoint.',
       readAt: Date.now(),
@@ -2982,7 +3011,15 @@ async function fixtureAccountPool(): Promise<Result<AccountsPage>> {
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { accounts: fixtureAccounts.map((a) => ({ ...a })), tenant_id: FIXTURE_TENANT },
+    data: {
+      accounts: fixtureAccounts.map((a) => ({ ...a })),
+      tenant_id: FIXTURE_TENANT,
+      // The same shortfall the Accounts board fixture carries. Both fixtures
+      // read the same route, so a difference between them would be a shape the
+      // API never sends.
+      unreadable_documents: ['u-bogdan:half-written'],
+      unreadable_document_count: 1,
+    },
   }
 }
 

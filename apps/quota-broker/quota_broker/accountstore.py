@@ -27,6 +27,7 @@ writers invalidate each other's tokens.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -45,6 +46,27 @@ log = logging.getLogger(__name__)
 COLLECTION = "accounts"
 
 
+@dataclass(frozen=True)
+class AccountListing:
+    """Every account that could be read, AND the documents that could not.
+
+    THE SECOND FIELD IS THE POINT. `list()` skips a malformed document and logs
+    it, which is right -- one bad document must not hide the fleet -- but the
+    skip left the caller holding a shorter list with nothing to say it was
+    short. A pool of five then renders as four accounts, "4 accounts
+    registered", and a headroom figure taken over four, and every one of those
+    figures is wrong in a way no reader can see. Returning the count alongside
+    the rows is what makes the shortfall sayable.
+
+    `unreadable` holds Firestore DOCUMENT IDS, which is what an operator needs
+    to go and look at the offending document -- a bare count says something is
+    wrong without saying where.
+    """
+
+    accounts: list[Account] = field(default_factory=list)
+    unreadable: list[str] = field(default_factory=list)
+
+
 class AccountStore:
     def __init__(self, db: Any, *, now: Any = None) -> None:
         self._db = db
@@ -52,26 +74,47 @@ class AccountStore:
 
     # -- reading ----------------------------------------------------------
 
-    def list(self) -> list[Account]:
-        """Every account. Deliberately unfiltered.
+    def list_reporting(self) -> AccountListing:
+        """Every account, AND every document that could not be turned into one.
 
-        The refresher needs ALL of them, including paused, draining and idle
-        ones, because an account nobody is using is an account whose refresh
-        token is quietly expiring. A filter here would be the kind of
-        optimisation that breaks the property the pool exists for.
+        Deliberately unfiltered: the refresher needs ALL of them, including
+        paused, draining and idle ones, because an account nobody is using is
+        an account whose refresh token is quietly expiring. A filter here would
+        be the kind of optimisation that breaks the property the pool exists
+        for.
+
+        Skipping a malformed document is right -- one of them must not hide the
+        rest of the fleet -- but a skip that only reaches a log line is this
+        platform's defining bug happening inside the store: the caller gets a
+        shorter list and no way to know it is short, and every figure derived
+        from it (the row count, "N accounts registered", the pool's headroom)
+        is then confidently wrong. So the ids come back with the rows.
         """
         out: list[Account] = []
+        unreadable: list[str] = []
         for doc in self._db.collection(COLLECTION).stream():
             data = doc.to_dict() or {}
             try:
                 out.append(Account.from_firestore(data))
             except (KeyError, ValueError) as exc:
-                # One malformed document must not hide the rest of the fleet.
+                # One malformed document must not hide the rest of the fleet --
+                # and must not hide itself either. See `AccountListing`.
+                unreadable.append(str(doc.id))
                 log.warning(
                     "skipping an unreadable account document",
                     extra={"account_id": doc.id, "error": str(exc)},
                 )
-        return out
+        return AccountListing(accounts=out, unreadable=sorted(unreadable))
+
+    def list(self) -> list[Account]:
+        """The readable accounts alone.
+
+        Kept because the refresher, the poller and the hold sweep all want
+        exactly this and have nothing to say about a document they cannot
+        parse. Anything that RENDERS the pool calls `list_reporting` instead,
+        because for a reader the shortfall is part of the answer.
+        """
+        return self.list_reporting().accounts
 
     def get(self, account_id: str) -> Account | None:
         snap = self._db.collection(COLLECTION).document(account_id).get()

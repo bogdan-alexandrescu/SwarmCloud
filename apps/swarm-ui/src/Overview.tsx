@@ -25,6 +25,7 @@ import {
   readingOf,
   stateGlyph,
   stateTone,
+  unreadableFor,
   type AccountReading,
   type AccountsPage,
   type Capacity,
@@ -1550,14 +1551,26 @@ function accountHeadroom(state: Result<AccountsPage>): {
   }
 
   const accounts = state.data.accounts
+  const scope = state.data.tenant_id
   let best: { pct: number; key: string } | null = null
   let usable = 0
   let cleared = 0
+  let skipped = 0
 
   for (const a of accounts) {
     // PAUSED and DRAINING are deliberate operator states, not faults -- but
     // they do not serve, so they are not counted as headroom either.
     if (a.state !== 'AVAILABLE') continue
+    // NOR DOES AN ACCOUNT THE BROKER IS ALREADY SKIPPING FOR THIS TENANT.
+    // `accounts.choose()` excludes an account this tenant reported unreadable,
+    // so its headroom is real and is not available here -- and it is usually
+    // the largest figure on the screen, because nothing has been spending it.
+    // Counting it made this tile answer "can anything run?" with the headroom
+    // of the one account that cannot.
+    if (unreadableFor(a, scope)) {
+      skipped++
+      continue
+    }
     const w = bindingWindow(a)
     if (!w) continue
     const r = readingOf(a, w.key)
@@ -1580,10 +1593,19 @@ function accountHeadroom(state: Result<AccountsPage>): {
     return {
       pct: null,
       sub:
-        cleared > 0
-          ? `${accounts.length} accounts registered · ${cleared} binding window${cleared === 1 ? ' has' : 's have'} reset since the last reading`
-          : `${accounts.length} accounts registered, none with a current reading`,
-      foot: 'a missing reading is not 0% used, and a window that has cleared has not been read since',
+        // The skip is named FIRST when it is the whole story. "None with a
+        // current reading" sends an operator to look at the poller; "the pool
+        // is skipping them for you" sends them to a secretAccessor grant, and
+        // those are not the same afternoon.
+        skipped > 0 && cleared === 0 && usable === 0
+          ? `${accounts.length} accounts registered · the pool is skipping ${skipped === 1 ? 'the only usable one' : `all ${skipped} usable ones`} for ${scope ?? 'this scope'}`
+          : cleared > 0
+            ? `${accounts.length} accounts registered · ${cleared} binding window${cleared === 1 ? ' has' : 's have'} reset since the last reading`
+            : `${accounts.length} accounts registered, none with a current reading`,
+      foot:
+        skipped > 0
+          ? 'an account this tenant cannot read is not headroom for it, however much it has left'
+          : 'a missing reading is not 0% used, and a window that has cleared has not been read since',
       reading: false,
       absent: 'nothing measured',
     }
@@ -1593,9 +1615,13 @@ function accountHeadroom(state: Result<AccountsPage>): {
     pct: best.pct,
     sub: `best of ${usable} usable account${usable === 1 ? '' : 's'} · its ${best.key.replace('_', '-')} window binds`,
     foot:
-      unusable > 0
-        ? `${unusable} account${unusable === 1 ? '' : 's'} excluded — paused, stale, cleared or needing sign-in`
-        : 'every registered account has a current reading',
+      // The skipped ones are named rather than folded into "excluded", because
+      // the remedy is specific and is nobody's guess from the word.
+      skipped > 0
+        ? `${unusable} account${unusable === 1 ? '' : 's'} excluded — ${skipped} the pool is skipping for this tenant, the rest paused, stale, cleared or needing sign-in`
+        : unusable > 0
+          ? `${unusable} account${unusable === 1 ? '' : 's'} excluded — paused, stale, cleared or needing sign-in`
+          : 'every registered account has a current reading',
     reading: false,
     absent: null,
   }
@@ -1712,7 +1738,12 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
               <span className="ctl-util-by">
                 {needsAHuman(a)
                   ? 'sign in again'
-                  : r.kind === 'never'
+                  : // Before every reading word, because it outranks all of
+                    // them: whatever this row's figure says, the pool will not
+                    // hand this account to this tenant while the report stands.
+                    unreadableFor(a, state.data.tenant_id)
+                    ? 'pool is skipping it here'
+                    : r.kind === 'never'
                     ? 'never polled'
                     : r.kind === 'absent'
                       ? 'no window reported'
