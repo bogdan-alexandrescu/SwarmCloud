@@ -243,7 +243,16 @@ jobs:
         # one that throws, so a test that forgets to stub a response fails by
         # name instead of reaching a machine.
         working-directory: apps/swarm-ui
-        run: npm test -- --run
+        # `npm test` now chains TWO runners: vitest over src/**/*.test.ts(x),
+        # then node:test over tests/*.test.ts(x). The suites cannot share a
+        # runner -- one uses vitest's API, the other node:test's -- and vitest's
+        # include glob is scoped to src/ so neither swallows the other.
+        #
+        # NOT `npm test -- --run`: the trailing argument would be appended to
+        # the LAST command in the chain, not to vitest, so node tests/run.mjs
+        # would receive a flag it never asked for. `vitest run` is already
+        # non-watching.
+        run: npm test
 
   integration:
     name: integration tests (emulator)

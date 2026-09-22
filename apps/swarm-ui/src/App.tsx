@@ -8,6 +8,8 @@ import { AttemptTimelineScreen } from './AttemptTimeline'
 import { CapacityScreen } from './Capacity'
 import { DataSourceStrip } from './DataSources'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
+import { HELP_ROUTE } from './help'
+import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -263,6 +265,17 @@ const REFERENCE = 'reference'
 const REFERENCE_LABEL = 'API reads'
 
 /**
+ * Help. Reachable, and deliberately NOT one of the sections either (§B7.3).
+ *
+ * Exactly the argument above, for exactly the same reason: it is a thing you
+ * look up, not a thing you work in. It takes a tail -- `#help/absent-vs-zero`
+ * -- because every `?` card in the product links to one topic, and a link that
+ * dumped the reader at the top of a page of thirteen would be a link nobody
+ * follows twice.
+ */
+const HELP = HELP_ROUTE
+
+/**
  * Every hash the eleven-item nav produced, still resolving.
  *
  * Not a courtesy. These hashes are in runbooks, in incident notes and in the
@@ -317,7 +330,7 @@ const LEGACY_SETTINGS: Record<string, { section: string; tab: string }> = {
 /** Which pane of one agent is open. */
 type TaskPane = 'detail' | 'attempts'
 
-interface Route {
+export interface Route {
   /** A section id, or REFERENCE. */
   sectionId: string
   /** Meaningless when sectionId is REFERENCE; carried anyway so Route is flat. */
@@ -338,7 +351,15 @@ function firstTab(s: SectionDef): string {
   return s.tabs[0]?.id ?? ''
 }
 
-function fromHash(): Route {
+/**
+ * The hash, resolved to a route.
+ *
+ * EXPORTED FOR THE ROUTE TESTS. `#help/<topic>` is a new destination and the
+ * links to it are generated, so a typo in this function would produce a `?`
+ * card whose "Full explanation" link lands on Home -- silently, and only for
+ * the reader who followed it. `tests/route.test.ts` drives it directly.
+ */
+export function fromHash(): Route {
   const hash = window.location.hash.replace(/^#/, '')
   const seg = hash.split('/')
   const head = seg[0] ?? ''
@@ -346,6 +367,12 @@ function fromHash(): Route {
   const blank: Pick<Route, 'taskId' | 'taskPane'> = { taskId: null, taskPane: 'detail' }
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
+
+  // The tail is a topic id and is carried VERBATIM, including one this build
+  // does not have: HelpScreen says which topic was asked for and lists what it
+  // does carry. Silently rewriting an unknown topic to the top of the page
+  // would turn a stale link into a page that looks right and answers nothing.
+  if (head === HELP) return { sectionId: HELP, tab: tail.join('/'), ...blank }
 
   // THE AGENT DRAWER, in its current form and its old one. `agents/task/<id>`
   // is explicit so that a task whose id happens to spell a tab name cannot be
@@ -395,12 +422,13 @@ function fromHash(): Route {
 }
 
 /** The one spelling of a route. What the address bar is rewritten to. */
-function canonical(r: Route): string {
+export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `agents/task/${encodeURIComponent(r.taskId)}`
     return r.taskPane === 'attempts' ? `${base}/attempts` : base
   }
   if (r.sectionId === REFERENCE) return REFERENCE
+  if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   return `${r.sectionId}/${r.tab}`
 }
 
@@ -441,7 +469,11 @@ export function App() {
       <Nav at={at} go={go} />
 
       {section === null ? (
-        <ReferenceScreen />
+        at.sectionId === HELP ? (
+          <HelpScreen topic={at.tab} />
+        ) : (
+          <ReferenceScreen />
+        )
       ) : (
         <>
           <SubNav section={section} tab={at.tab} go={go} />
@@ -489,6 +521,19 @@ function Nav({ at, go }: { at: Route; go: (to: string) => void }) {
           onClick={() => go(REFERENCE)}
         >
           {REFERENCE_LABEL}
+        </button>
+        {/* THE HEAD `?` (§B7.3). The way into Help from anywhere, for the
+            reader who has not got a `?` in front of them. A glyph and an
+            accessible name, not the word "Help" -- the rail is the product's
+            five questions and a sixth word beside them reads as a sixth. */}
+        <button
+          className={at.sectionId === HELP ? 'is-on' : ''}
+          aria-current={at.sectionId === HELP ? 'page' : undefined}
+          aria-label="Help"
+          title="Help"
+          onClick={() => go(HELP)}
+        >
+          ?
         </button>
       </div>
     </nav>
