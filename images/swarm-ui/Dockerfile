@@ -51,6 +51,19 @@ RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
 COPY apps/swarm-ui/ ./
 # `npm run build` runs tsc first, so a type error FAILS THE IMAGE rather than
 # shipping a bundle nobody typechecked.
+# THE ENVIRONMENT THE BADGE NAMES, baked in at build time.
+#
+# Vite inlines `import.meta.env.VITE_*` at build, so this cannot be supplied at
+# run time by the Cloud Run service -- a static bundle has already decided.
+# Without it `classifyEnvironment` falls through to `unknown` and the header
+# draws a loud full-width "ENVIRONMENT UNKNOWN" bar on every screen.
+#
+# It is deliberately NOT defaulted to "dev". A wrong-but-quiet environment
+# label is the exact failure the badge replaced: the old `<span class="env">`
+# was hardcoded to "dev" and said so in production too. An unset build should
+# say it does not know, loudly, rather than guess and be believed.
+ARG VITE_SWARM_ENV=""
+ENV VITE_SWARM_ENV=$VITE_SWARM_ENV
 RUN npm run build
 
 # --- runtime ---------------------------------------------------------------
