@@ -21,6 +21,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 6 | A typed dispatch block | open |
 | 7 | `models.py`/`states.py`: the workflow rollup has no shared home | open |
 | 8 | `states.py`: `Workflow.state` reuses `TaskState`; a workflow vocabulary | open |
+| 9 | `models.py`: `Lease.dispatch_overdue` excluded the leases it names | APPLIED 2026-09-22 |
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 
 ---
