@@ -436,9 +436,19 @@ def test_the_thresholds_arrive_with_the_leases_rather_than_being_restated(seeded
     )
 
     # And every caller passes the served block rather than one of its own.
+    #
+    # BOTH extensions, not just .tsx. The derivation moved out of Overview.tsx
+    # into checks.ts so it could be RUN -- it is the part of that screen whose
+    # failure mode is silence, and a module a test can import is the only way
+    # to drive it. A .tsx-only glob then found no caller and this assertion
+    # failed for a refactor rather than for a regression, which is the wrong
+    # thing for a contract test to notice.
     callers = [
-        p for p in sorted((REPO / "apps/swarm-ui/src").glob("*.tsx"))
+        p for p in sorted(
+            (REPO / "apps/swarm-ui/src").glob("*.ts"),
+        ) + sorted((REPO / "apps/swarm-ui/src").glob("*.tsx"))
         if "leaseLiveliness(" in p.read_text()
+        and "export function leaseLiveliness" not in p.read_text()
     ]
     assert callers, "nothing calls leaseLiveliness; the thresholds reach no pixel"
     for path in callers:

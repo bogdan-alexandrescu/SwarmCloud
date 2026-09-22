@@ -1511,6 +1511,85 @@ export type ParkReason =
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING'
 
 /**
+ * The same eight as a value, so a test can compare the list against
+ * `swarm_common.states.ParkReason` and the three sets below can be checked for
+ * covering it. A union type erases at build time and can be checked against
+ * nothing.
+ */
+export const PARK_REASONS = [
+  // ONE PER LINE, and not for taste. `SCHEDULED_RETRY` and `MANUAL_PAUSE` are
+  // spelled identically in `BlockedReason`, a different enum, and
+  // `test_no_screen_declares_its_own_grouping_of_reasons` reads any LINE
+  // carrying two of those names as a screen inventing its own blocker
+  // grouping. Wrapping these three declarations one-per-line keeps that check
+  // able to do its job instead of teaching it about a second enum.
+  'PROVIDER_QUOTA_EXHAUSTED',
+  'PROVIDER_COOLDOWN',
+  'PROVIDER_OUTAGE',
+  'SCHEDULED_RETRY',
+  'DEPENDENCY_INCOMPLETE',
+  'MANUAL_PAUSE',
+  'BUDGET_EXHAUSTED',
+  'CREDENTIAL_MISSING',
+] as const
+
+/**
+ * WHAT ENDS A PARK. The three sets below partition `PARK_REASONS`, and the
+ * partition is the only thing that decides how loudly a parked step is
+ * reported.
+ *
+ * A PARKED task holds NO capacity -- CONTRACT invariant 1 gives demand to
+ * LEASED, DISPATCHED, STARTING and RUNNING only -- so none of this is a
+ * capacity problem and none of the copy derived from it may say it is. Parking
+ * is how this platform declines to pay for a wait. What a reader needs to know
+ * is not "how much is this costing" (nothing) but "will it come back by
+ * itself", and that has exactly three answers.
+ */
+
+/**
+ * Nothing will clear these. No timer runs out, no provider recovers: a person
+ * registers a key, raises a budget or resumes a pool, or the work waits
+ * forever. `next_eligible_at` is null on all three, which is the field-level
+ * form of the same fact.
+ */
+export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
+  'CREDENTIAL_MISSING',
+  'BUDGET_EXHAUSTED',
+  'MANUAL_PAUSE',
+])
+
+/**
+ * These end on their own -- a quota window resets, a cooldown expires, a
+ * provider comes back, a retry falls due. `next_eligible_at` carries when,
+ * where the writer knew it. Worth watching, not worth waking anyone.
+ *
+ * PROVIDER_OUTAGE is here rather than above deliberately. An outage is not
+ * something an operator of THIS platform can fix, and moving it into the
+ * act-now group would send someone to a screen with no control on it.
+ */
+export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
+  'PROVIDER_QUOTA_EXHAUSTED',
+  'PROVIDER_COOLDOWN',
+  'PROVIDER_OUTAGE',
+  'SCHEDULED_RETRY',
+])
+
+/**
+ * The ordinary state of a workflow step that is waiting its turn, and the one
+ * reason that is NOT a problem on its own.
+ *
+ * A three-step chain has two steps parked like this for its whole life and
+ * nothing is wrong. Raising it would mean every healthy workflow lit the
+ * attention panel, which trains a reader to ignore the panel -- the exact
+ * failure the panel exists to avoid. It becomes interesting only when the
+ * workflow holding it has stopped moving, and that is `workflowCheck`'s
+ * question, asked once, over the workflow rather than over each step.
+ */
+export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
+  'DEPENDENCY_INCOMPLETE',
+])
+
+/**
  * Copy for every reason that is ever actually written -- the seven from
  * admission plus the eight ParkReasons.
  *
@@ -1757,12 +1836,60 @@ export interface Workflow {
   rollup?: WorkflowRollup
   drift?: WorkflowDrift
   created_at: string
+  /**
+   * WHEN THE DOCUMENT LAST CHANGED, which on a workflow means WHEN ITS DERIVED
+   * STATE LAST CHANGED -- and that is a stronger fact than it looks.
+   *
+   * Only two writers touch it: `Store.set_workflow_state` (store.py:733-737),
+   * which the rollup calls ONLY when the derived value disagrees with the
+   * stored one, and `cancel_workflow`. `rollup._persist` refuses to write a
+   * value that already agrees precisely so that "`updated_at` keeps meaning
+   * 'the document changed' rather than 'something looked at it'"
+   * (rollup.py:602-605).
+   *
+   * So this is a progress timestamp, and it is the only one on this API that
+   * is. A STEP TASK's `updated_at` is not: `scheduler/store.py:192-201` rewrites
+   * `blocked_by` with a fresh `updated_at` on every pass in which a READY task
+   * was not admitted, so a task that has been stuck at the front of a full pool
+   * for an hour looks like it changed a minute ago. Anything asking "has this
+   * moved" must ask the workflow, never the step.
+   */
   updated_at: string
   submitted_by: string | null
   priority: number
   on_step_failure: string
   cancel_requested: boolean
   steps: WorkflowStep[]
+}
+
+/**
+ * `GET /v1/workflows`, routes/workflows.py:64-84.
+ *
+ * `rollup_report` is the page's own provenance and is the reason this is a
+ * declared shape rather than an inline `{ workflows }`. A page whose step-read
+ * budget ran out carries rows that read UNKNOWN because the route stopped
+ * reading, not because anything is wrong with those workflows, and a screen
+ * that cannot tell those apart is this repository's defining bug.
+ */
+export interface WorkflowPage {
+  workflows: Workflow[]
+  next_page_token?: string | null
+  tenant_id?: string
+  rollup_report?: WorkflowRollupReport
+}
+
+/** `SweepReport.to_api`, rollup.py:463-478. */
+export interface WorkflowRollupReport {
+  examined: number
+  written: number
+  agreed: number
+  disagreed: number
+  unknown: number
+  /** The LIST was cut short, so these counts are not a census of the tenant. */
+  truncated: boolean
+  step_reads: number
+  /** The route stopped reading step tasks. Rows below it read UNKNOWN. */
+  step_read_budget_exhausted: boolean
 }
 
 /**
@@ -2035,6 +2162,34 @@ export function clearsIn(iso: string | null | undefined, now: number): string {
   const t = new Date(iso).getTime()
   if (!Number.isFinite(t)) return '—'
   return humaniseUntil(t - now)
+}
+
+/**
+ * Time SINCE an instant, humanised. The past-facing twin of `humaniseUntil`.
+ *
+ * It lived in Shell.tsx, which is a components file, and moved here when
+ * `checks.ts` needed it: the derived-checks layer is pure by construction --
+ * no React, no DOM -- and an import from a `.tsx` module would have put a
+ * renderer in its dependency graph. Shell.tsx re-exports it, so every existing
+ * `import { timeAgo } from './Shell'` is unchanged.
+ *
+ * It floors at zero, so it must NEVER be pointed at a future instant: a reset
+ * two hours away renders "just now", which is the opposite of the truth. That
+ * is what `clearsIn` above is for.
+ */
+export function timeAgo(when: Date | string | number, now: number = Date.now()): string {
+  const t =
+    typeof when === 'number'
+      ? when
+      : typeof when === 'string'
+        ? new Date(when).getTime()
+        : when.getTime()
+  if (!Number.isFinite(t)) return 'at an unknown time'
+  const s = Math.max(0, Math.round((now - t) / 1000))
+  if (s < 5) return 'just now'
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.round(s / 60)}m ago`
+  return `${Math.round(s / 3600)}h ago`
 }
 
 /**

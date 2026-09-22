@@ -10,7 +10,7 @@ import type {
   AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   Runtime, TaskState,
   TaskWindow, Tenant,
-  Workflow,
+  Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
 } from './types'
@@ -99,6 +99,29 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
   return { workflows, taskById: null, statesDetail: 'The task read did not complete.' }
+}
+
+/**
+ * The workflow LIST alone -- no join, for the landing screen.
+ *
+ * `loadWorkflowBoard` above exists to draw the graph, so it pays for a second
+ * request to learn each step's state. Overview does not draw a graph: it asks
+ * whether anything has stopped moving, and `GET /v1/workflows` already answers
+ * that without help. Every row carries `rollup.counts`, which the route derived
+ * server-side from the step tasks it read (routes/workflows.py:64-84), so the
+ * per-state breakdown this screen needs is in the first response and a join
+ * here would be a second read of documents the API has already read.
+ *
+ * The page also carries `rollup_report`, which says whether the derivation was
+ * complete. A caller that ignores it can report an all-clear over workflows
+ * whose state was never established.
+ */
+export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
+  if (USE_FIXTURES) return fixtureWorkflows()
+  // 100, matching loadWorkflowBoard: `max_workflow_steps` is 50 and the route's
+  // step-read budget is what actually binds, so a larger page buys rows whose
+  // rollup is incomplete rather than more information.
+  return read<WorkflowPage>('/v1/workflows?limit=100', (d) => d.workflows.length === 0)
 }
 
 /**
@@ -1987,6 +2010,23 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   const taskById = new Map<string, Task>()
   if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
 
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { taskById, statesDetail: null, workflows: fixtureWorkflowRows() },
+  }
+}
+
+/**
+ * The workflow rows, ONCE, because two screens read them.
+ *
+ * `loadWorkflowBoard` (the graph) and `loadWorkflows` (Overview's progress
+ * check) hit the same route in production, so a fixture that gave them
+ * different rows would let the two screens disagree in development about what
+ * exists -- which is precisely the class of defect the live UI audit kept
+ * finding.
+ */
+function fixtureWorkflowRows(): Workflow[] {
   const step = (
     step_id: string,
     depends_on: string[],
@@ -2006,58 +2046,84 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
     task_id,
   })
 
+  return [
+    {
+      workflow_id: 'wf_audit_01',
+      tenant_id: 'u-bogdan',
+      // The fixture mirrors what the API now sends: a DERIVED state, the
+      // stored copy beside it, and the drift between them. `wf_audit_01`
+      // carries a deliberate disagreement so the drift line has something
+      // to render in development.
+      state: 'RUNNING',
+      stored_state: 'QUEUED',
+      state_source: 'derived',
+      rollup: {
+        state: 'RUNNING',
+        complete: true,
+        reason: 'steps_hold_capacity',
+        counts: { SUCCEEDED: 1, RUNNING: 2, READY: 1, unstarted: 1 },
+        unreadable_steps: [],
+        unstarted_steps: ['publish'],
+        steps_read: 4,
+      },
+      drift: {
+        stored: 'QUEUED',
+        derived: 'RUNNING',
+        agrees: false,
+        reason: 'steps_hold_capacity',
+        steps_read: 4,
+        unreadable_steps: [],
+        repaired: true,
+      },
+      created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      updated_at: new Date().toISOString(),
+      submitted_by: 'bogdan@saga.xyz',
+      priority: 0,
+      on_step_failure: 'FAIL_WORKFLOW',
+      cancel_requested: false,
+      steps: [
+        step('plan', [], 'task_wf_plan'),
+        step('scan-scripts', ['plan'], 'task_wf_scan_a', { plan: 'plan.md' }),
+        step('scan-terraform', ['plan'], 'task_wf_scan_b', { plan: 'plan.md' }),
+        step('report', ['scan-scripts', 'scan-terraform'], 'task_wf_report'),
+        // No task_id: the workflow has not reached it. Renders as
+        // "not started", which is NOT the same as "state unknown".
+        step('publish', ['report'], null),
+      ],
+    },
+  ]
+}
+
+/**
+ * The same rows as a PAGE, for Overview's workflow check.
+ *
+ * `rollup_report` is filled in as the route would fill it for this page --
+ * one workflow examined, one written because the fixture's stored state
+ * deliberately disagrees, nothing truncated and no read budget spent. A
+ * fixture that omitted it would exercise the `undefined` branch of every
+ * provenance test on this screen and never the populated one.
+ */
+async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
+  await new Promise((r) => setTimeout(r, 300))
+  noteFixtureProbe('/v1/workflows', 300, true)
+  const workflows = fixtureWorkflowRows()
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
-      taskById,
-      statesDetail: null,
-      workflows: [
-        {
-          workflow_id: 'wf_audit_01',
-          tenant_id: 'u-bogdan',
-          // The fixture mirrors what the API now sends: a DERIVED state, the
-          // stored copy beside it, and the drift between them. `wf_audit_01`
-          // carries a deliberate disagreement so the drift line has something
-          // to render in development.
-          state: 'RUNNING',
-          stored_state: 'QUEUED',
-          state_source: 'derived',
-          rollup: {
-            state: 'RUNNING',
-            complete: true,
-            reason: 'steps_hold_capacity',
-            counts: { SUCCEEDED: 1, RUNNING: 2, READY: 1, unstarted: 1 },
-            unreadable_steps: [],
-            unstarted_steps: ['publish'],
-            steps_read: 4,
-          },
-          drift: {
-            stored: 'QUEUED',
-            derived: 'RUNNING',
-            agrees: false,
-            reason: 'steps_hold_capacity',
-            steps_read: 4,
-            unreadable_steps: [],
-            repaired: true,
-          },
-          created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
-          updated_at: new Date().toISOString(),
-          submitted_by: 'bogdan@saga.xyz',
-          priority: 0,
-          on_step_failure: 'FAIL_WORKFLOW',
-          cancel_requested: false,
-          steps: [
-            step('plan', [], 'task_wf_plan'),
-            step('scan-scripts', ['plan'], 'task_wf_scan_a', { plan: 'plan.md' }),
-            step('scan-terraform', ['plan'], 'task_wf_scan_b', { plan: 'plan.md' }),
-            step('report', ['scan-scripts', 'scan-terraform'], 'task_wf_report'),
-            // No task_id: the workflow has not reached it. Renders as
-            // "not started", which is NOT the same as "state unknown".
-            step('publish', ['report'], null),
-          ],
-        },
-      ],
+      workflows,
+      next_page_token: null,
+      tenant_id: 'u-bogdan',
+      rollup_report: {
+        examined: workflows.length,
+        written: 1,
+        agreed: 0,
+        disagreed: 1,
+        unknown: 0,
+        truncated: false,
+        step_reads: 4,
+        step_read_budget_exhausted: false,
+      },
     },
   }
 }

@@ -88,4 +88,14 @@ fi
 info "typechecking swarm-ui (tsc -b --noEmit)"
 ( cd -- "${UI_DIR}" && "${NPM_BIN}" run --silent typecheck )
 
-( cd -- "${UI_DIR}" && "${NPM_BIN}" run --silent test -- --run )
+# NOT `test -- --run`. `npm test` now CHAINS three runners -- vitest over
+# src/**/*.test.ts(x), node:test over tests/, and node --import register-ts
+# over test/ -- because three separate lanes each found this app had no test
+# runner and each fixed it differently, with mutually incompatible APIs.
+# A trailing argument is appended to the LAST command in a chain, so `--run`
+# reached the third runner, which looked for a FILE called `--run` and failed
+# the whole gate after 272 assertions had already passed.
+#
+# `vitest run` is already non-watching, so the flag was buying nothing even
+# when there was only one runner to give it to.
+( cd -- "${UI_DIR}" && "${NPM_BIN}" run --silent test )
