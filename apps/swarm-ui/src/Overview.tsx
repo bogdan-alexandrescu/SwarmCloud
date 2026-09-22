@@ -11,6 +11,8 @@ import {
   type SpendRollup,
 } from './api'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
+import type { TopicId } from './help'
+import { HelpCard } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { timeAgo } from './Shell'
 import {
@@ -109,7 +111,7 @@ export function OverviewScreen() {
   }, [])
 
   useEffect(() => {
-    const id = setInterval(() => setLive((n) => n + 1), 20_000)
+    const id = setInterval(() => setLive((n) => n + 1), POLL_MS)
     return () => clearInterval(id)
   }, [])
 
@@ -144,8 +146,8 @@ export function OverviewScreen() {
       <div className="state failed">
         <h3>Your session expired</h3>
         <p>
-          The API answered a sign-in page instead of data. Nothing on this
-          screen is a reading of the platform right now.
+          The API answered a sign-in page instead of data — nothing on this
+          screen is a reading of the platform.
         </p>
         <button className="retry" onClick={() => window.location.reload()}>
           Reload to sign in
@@ -214,6 +216,11 @@ export function OverviewScreen() {
             refused={refused}
             broken={broken}
           />{' '}
+          {/* THE CADENCE, INTERPOLATED, NEVER TYPED OUT. It used to be the
+              words "every 20 seconds" in the spend panel, three hundred
+              lines away from the constant -- the shape §5 of the migration
+              table lists as a restatement nothing checks. */}
+          · re-read every {POLL_MS / 1000}s{' '}
           <button onClick={refresh}>refresh</button>
         </p>
       </div>
@@ -248,6 +255,7 @@ export function OverviewScreen() {
             title="Capacity, by what binds it"
             href="#pools/profiles"
             cta="all pools"
+            help="pools-all-at-once"
           />
           <CapacityBody state={capacity} />
         </section>
@@ -263,13 +271,42 @@ export function OverviewScreen() {
         </section>
 
         <section className="section panel">
-          <PanelHead title="Subscription pool" href="#pools/accounts" cta="all accounts" />
+          <PanelHead
+            title="Subscription pool"
+            href="#pools/accounts"
+            cta="all accounts"
+            help="binding-window"
+          />
           <AccountsBody state={accounts} />
         </section>
       </div>
     </>
   )
 }
+
+/*
+ * NO FOOTER OF HELP LINKS ON THIS SCREEN, and that is a decision.
+ *
+ * `Runtimes.tsx` and `Accounts.tsx` carry one because each HAD a legend --
+ * a `<dl>` of titles and paragraphs -- and deleting a legend outright takes
+ * away the index of what a screen's marks mean along with the essay. This
+ * screen never had one, so a row of nine links here would be prose the
+ * migration ADDED to the default route. Measured: it cost 35 rendered words
+ * against the 16 the panels gave up, which is the opposite of the
+ * instruction.
+ *
+ * Every `?` on this screen already links to `#help/<id>` in its own footer,
+ * so nothing is unreachable without it.
+ */
+
+/**
+ * How often the cheap reads re-run.
+ *
+ * NAMED, because the spend panel has to say that it does NOT move on this
+ * cadence, and the only honest way to say that is to render the figure the
+ * timer actually uses.
+ */
+const POLL_MS = 20_000
 
 // ---------------------------------------------------------------------------
 // Read plumbing
@@ -847,9 +884,18 @@ function PanelHead({
   count,
   href,
   cta,
+  help,
 }: {
   title: string
   count?: number
+  /**
+   * The topic that used to be a paragraph under this panel.
+   *
+   * ON THE TITLE, NEVER ON A FIGURE. A `?` tucked against a number reads
+   * as a footnote marker on the number, which is how a measured figure
+   * becomes one nobody trusts.
+   */
+  help?: TopicId
   /**
    * Omitted by exactly one panel, "Needs attention", and the reason is that
    * there is no screen that is a deeper version of it: it is derived from six
@@ -865,6 +911,7 @@ function PanelHead({
     <div className="ov-h">
       <h2>
         {title}
+        {help !== undefined && <HelpCard topic={help} />}
         {typeof count === 'number' && count > 0 && <span className="ov-count">{count}</span>}
       </h2>
       {href !== undefined && cta !== undefined && (
@@ -880,16 +927,27 @@ function PanelHead({
 function Nothing({
   kind,
   heading,
+  help,
   children,
 }: {
   kind: 'zero' | 'failed' | 'partial' | 'admin'
   heading: string
+  /** Where the paragraph that used to be `children` went. */
+  help?: TopicId
   children: ReactNode
 }) {
   const cls = kind === 'zero' ? '' : `is-${kind}`
   return (
     <div className={`ctl-empty ov-tight ${cls}`}>
-      <h3>{heading}</h3>
+      {/* THE HEADING IS THE MARKER and it stays a sentence: `is-failed`,
+          `is-partial` and `is-admin` are colour, and colour is not a
+          distinction a screenshot in an incident channel preserves. The
+          BODY is what shrank -- to the fact, with its explanation behind
+          the `?` beside the heading. */}
+      <h3>
+        {heading}
+        {help !== undefined && <HelpCard topic={help} />}
+      </h3>
       <p>{children}</p>
     </div>
   )
@@ -927,18 +985,19 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
   if (state.status === 'error') {
     const b = blindness(state.error)
     return (
-      <Nothing kind={b.admin ? 'admin' : 'failed'} heading="Pool state could not be read">
-        {b.why} Nothing on this panel is a claim about whether there is room —
-        that is different from there being none.
+      <Nothing
+        kind={b.admin ? 'admin' : 'failed'}
+        heading="Pool state could not be read"
+        help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+      >
+        {b.why} No figure here is a claim about room.
       </Nothing>
     )
   }
   if (state.status === 'empty') {
     return (
-      <Nothing kind="zero" heading="No pools exist">
-        The read succeeded and returned nothing. Pools are created at
-        provisioning time, so an environment with none has not been fully
-        applied.
+      <Nothing kind="zero" heading="No pools exist" help="capacity">
+        The read succeeded and returned nothing — a real zero.
       </Nothing>
     )
   }
@@ -949,10 +1008,13 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
 
   if (profiles.length === 0) {
     return (
-      <Nothing kind="partial" heading="No runner profile came back">
-        {cap.pools.length} pools were read, but the response carried no runner
-        profiles — so there is nothing to compute a per-profile ceiling from.
-        The pool table itself is intact.
+      <Nothing
+        kind="partial"
+        heading="No runner profile came back"
+        help="pools-all-at-once"
+      >
+        {cap.pools.length} pools read, no runner profile — so no ceiling is
+        computed here.
       </Nothing>
     )
   }
@@ -966,11 +1028,6 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
 
   return (
     <>
-      <p className="ov-lead">
-        A task clears <b>every</b> pool in its list at once, so its ceiling is
-        the <b>minimum</b> across them. Raising a pool that is not the binding
-        one changes nothing.
-      </p>
       <div className="ov-card">
         {profiles.map(([name, profile]) => (
           <ProfileRow
@@ -1165,7 +1222,11 @@ function RunningBody({
   if (tasks.status === 'error') {
     const b = blindness(tasks.error)
     return (
-      <Nothing kind={b.admin ? 'admin' : 'failed'} heading="The task list could not be read">
+      <Nothing
+        kind={b.admin ? 'admin' : 'failed'}
+        heading="The task list could not be read"
+        help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+      >
         {b.why} This panel is blind; it is not reporting that nothing is
         running.
       </Nothing>
@@ -1173,9 +1234,8 @@ function RunningBody({
   }
   if (tasks.status === 'empty') {
     return (
-      <Nothing kind="zero" heading="No task exists yet">
-        The read succeeded and returned nothing at all — not one task has ever
-        been submitted for this tenant.
+      <Nothing kind="zero" heading="No task exists yet" help="absent-vs-zero">
+        The read succeeded and returned nothing — a real zero.
       </Nothing>
     )
   }
@@ -1352,9 +1412,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       )
     }
     return (
-      <Nothing kind="failed" heading="No attempt read completed">
-        {errorHeading(state.error)} — {state.error.message} No figure is shown,
-        because a partial sum here would be indistinguishable from a small bill.
+      <Nothing kind="failed" heading="No attempt read completed" help="read-failed">
+        {errorHeading(state.error)} — {state.error.message} No figure is shown.
       </Nothing>
     )
   }
@@ -1365,17 +1424,15 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
     // "No task exists yet" from this same read and the two must not disagree.
     if (tasks.status === 'empty') {
       return (
-        <Nothing kind="zero" heading="No task exists yet">
-          The task read succeeded and returned nothing at all — not one task has
-          ever been submitted for this tenant, so there are no attempts to sum
-          and no request is outstanding. This is a real zero.
+        <Nothing kind="zero" heading="No task exists yet" help="absent-vs-zero">
+          The task read succeeded and returned nothing — a real zero, so there
+          are no attempts to sum.
         </Nothing>
       )
     }
     return (
-      <Nothing kind="zero" heading="No task has ever run">
-        Every task on the page has an attempt count of zero, so there are no
-        attempts to sum. The read succeeded — this is a real zero.
+      <Nothing kind="zero" heading="No task has ever run" help="attempt-documents">
+        Every task on the page has an attempt count of 0 — a real zero.
       </Nothing>
     )
   }
@@ -1412,22 +1469,22 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
 
       {s.failedReads > 0 && (
         <p className="warn-text">
+          {/* THE COUNT IS THE MARKER and it stays first: these figures are a
+              sum over a sample with a hole in it, and the size of the hole is
+              the thing that must not need a hover. ONE MESSAGE IS ONE
+              FAILURE'S -- the rollup keeps only the first error it saw
+              (api.ts, loadSpend), so the rest are named as unexplained
+              rather than explained wrongly, and WHY that is the right shape
+              is behind the `?`. */}
           {s.failedReads} of {s.tasksSampled} attempt reads failed, so their
-          spend is in none of these figures.{' '}
-          {/* ONE MESSAGE IS ONE FAILURE'S. The rollup keeps only the first
-              error it saw (api.ts, loadSpend), so attaching that sentence to
-              all N of them would present a 404, a 429 and a 500 as three
-              instances of whichever resolved first -- and send the operator
-              after the wrong cause twice. It is attributed to the one read it
-              came from, and the others are named as unexplained rather than
-              explained wrongly. */}
+          spend is in none of these figures.
+          <HelpCard topic="partial-read" />{' '}
           {s.failedReads === 1 ? (
             <>It failed with: {s.failedDetail ?? 'no message was recorded'}</>
           ) : (
             <>
-              One of them failed with: {s.failedDetail ?? 'no message was recorded'} — the
-              other {s.failedReads - 1} may have failed for other reasons, which this
-              rollup does not carry. Open an agent to see its own attempts.
+              One failed with: {s.failedDetail ?? 'no message was recorded'} — the
+              other {s.failedReads - 1} are unexplained here.
             </>
           )}
         </p>
@@ -1450,19 +1507,21 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           span of `created_at` across the sample, which moves with the sample
           and not with the read; this is when the fan-out actually ran. They
           differ by however long ago someone last pressed refresh, because this
-          is the one panel on the screen that does not re-poll. */}
+          is the one panel on the screen that does not re-poll -- which stays
+          on the surface, in three words, because a figure that ages while its
+          neighbours refresh is indistinguishable from them otherwise. */}
       <p className="provenance">
-        summed {timeAgo(state.fetchedAt)} · this figure does not re-poll — it
-        moves only when you press refresh, unlike the capacity, task, lease,
-        provider and account reads, which re-run every 20 seconds
+        summed {timeAgo(state.fetchedAt)} · does not re-poll
+        <HelpCard topic="poll-cadence" />
       </p>
       <p className="provenance">
-        {/* Both halves matter. The first says the sum is incomplete; the second
-            says the whole category does not exist at all. */}
+        {/* THE COUNT OF WHAT IS MISSING, kept as a digit on the surface. The
+            second half -- that no infrastructure cost is recorded anywhere on
+            this platform -- is the `token-cost` topic. */}
         {unmeasured > 0
           ? `${unmeasured} attempt${unmeasured === 1 ? ' carries' : 's carry'} no cost figure and ${unmeasured === 1 ? 'is' : 'are'} counted as unmeasured, not as zero`
-          : 'every attempt in the sample carried a cost figure'}{' '}
-        · GCP infrastructure cost is not recorded anywhere on this platform
+          : 'every attempt in the sample carried a cost figure'}
+        <HelpCard topic="token-cost" />
       </p>
     </>
   )
@@ -1720,16 +1779,23 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
   if (state.status === 'error') {
     const b = blindness(state.error)
     return (
-      <Nothing kind={b.admin ? 'admin' : 'failed'} heading="The account pool could not be read">
+      <Nothing
+        kind={b.admin ? 'admin' : 'failed'}
+        heading="The account pool could not be read"
+        help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+      >
         {b.why} This says nothing about whether the accounts have room.
       </Nothing>
     )
   }
   if (state.status === 'empty') {
     return (
-      <Nothing kind="zero" heading="No account is registered">
-        The read succeeded and returned nothing. Agents on a subscription
-        profile have no account to run against until one is added.
+      <Nothing
+        kind="zero"
+        heading="No account is registered"
+        help="park-on-missing-credential"
+      >
+        The read succeeded and returned nothing — a real zero.
       </Nothing>
     )
   }
@@ -1855,12 +1921,16 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
         })}
       </div>
       <p className="provenance">
+        {/* THE TRUNCATION MARKER STAYS, because a list showing five of nine
+            and a list showing all five are the same picture otherwise. The
+            two rules that used to be spelled out here -- which window binds,
+            and what the tilde means -- are drawn in the rows themselves: a
+            hatched track with no fill, an em dash, a tilde. The sentences
+            are in the panel's `?` and in the footer. */}
         {countOf(total, 'account')}
         {total > accounts.length && (
           <> · showing the {accounts.length} that most need looking at</>
-        )}{' '}
-        · utilisation is of the BINDING window, never an average of the two · ~
-        marks a figure that is real but not current
+        )}
         {state.data.tenant_id ? ` · scope ${state.data.tenant_id}` : ' · every tenant'}
       </p>
     </>
@@ -1912,12 +1982,14 @@ function AttentionBody({ checks }: { checks: Check[] }) {
         reading.length === 0 &&
         (blind.length === 0 ? (
           <div className="ctl-empty ov-tight">
-            <h3>Nothing is wrong that this platform records</h3>
-            <p>
-              All {clear.length} checks ran and all {clear.length} came back
-              clear. This is an all-clear from successful reads, not from
-              silence.
-            </p>
+            <h3>
+              Nothing is wrong that this platform records
+              <HelpCard topic="all-clear-basis" />
+            </h3>
+            {/* THE COUNT IS THE BASIS and it never leaves the surface: an
+                all-clear over six checks and an all-clear over one are the
+                same sentence without it. */}
+            <p>All {clear.length} checks ran and all {clear.length} came back clear.</p>
           </div>
         ) : (
           // NOT an all-clear, and it must not be drawn as one. Some of what
@@ -1928,11 +2000,15 @@ function AttentionBody({ checks }: { checks: Check[] }) {
             <h3>
               Nothing wrong in the {clear.length} check
               {clear.length === 1 ? '' : 's'} that ran
+              <HelpCard topic="all-clear-basis" />
             </h3>
+            {/* NOT AN ALL-CLEAR, and the count of what was never looked at is
+                what says so. It is a digit on the surface for the same reason
+                an unmeasured figure is an em dash: the alternative reads as
+                good news. */}
             <p>
-              {blind.length} of {clear.length + blind.length} could not run, so
-              this is not an all-clear — it is a partial one, and what it did
-              not look at is listed below.
+              {blind.length} of {clear.length + blind.length} could not run — a
+              partial all-clear, and what it did not look at is listed below.
             </p>
           </div>
         ))}

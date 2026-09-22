@@ -253,6 +253,28 @@ export function noteFixtureProbe(
   })
 }
 
+/**
+ * Forget every probe, as a fresh tab has none.
+ *
+ * THE REGISTRY IS MODULE STATE, so inside one test file it outlives the
+ * component that filled it. `src/__tests__/shell.test.tsx` asserts that a
+ * head with no successful read says "nothing has loaded" and prints no
+ * digit -- the defining bug of this product, in the frame -- and that test
+ * passed on its own while failing in the file, because an earlier test in
+ * the same file had rendered screens whose fixture reads registered
+ * successes here.
+ *
+ * A test that is green alone and red in company is worse than a red one: it
+ * is a gate that reports the order tests ran in. So `src/__tests__/setup.ts`
+ * calls this after every test, and it is a real function rather than a mock
+ * -- there is nothing to mock, the state is a Map in this module.
+ */
+export function forgetProbes(): void {
+  probes.clear()
+  snapshotStale = true
+  for (const fn of probeListeners) fn()
+}
+
 export function subscribeProbes(fn: () => void): () => void {
   probeListeners.add(fn)
   return () => probeListeners.delete(fn)

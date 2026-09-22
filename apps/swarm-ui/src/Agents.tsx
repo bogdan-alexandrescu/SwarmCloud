@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
+import { HelpCard } from './HelpCard'
 import { Id, Screen } from './Shell'
 import {
   CONCURRENCY_STATES,
@@ -169,12 +170,17 @@ function AgentsBody({
       {rows.length === 0 ? (
         <div className="state">
           <h3>Nothing in this tab</h3>
+          {/* A REAL ZERO, SAID AS ONE. The two state names that used to be in
+              the middle branch are a restatement of the contract in prose
+              (§5); `#help/capacity` lists which states cost nothing, read
+              from the set that owns them at render time. */}
           <p>
             {tab === 'live'
-              ? 'No agent is holding a pool slot right now. This is a real zero from a successful read.'
+              ? 'No agent is holding a pool slot right now — a real zero from a successful read.'
               : tab === 'waiting'
-                ? 'Nothing is waiting. READY and PARKED work costs nothing, so an empty tab here is normal.'
+                ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
                 : 'Nothing has finished in the loaded page.'}
+            <HelpCard topic="capacity" />
           </p>
         </div>
       ) : grouped && tab !== 'live' ? (

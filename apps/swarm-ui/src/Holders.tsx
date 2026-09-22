@@ -1,4 +1,5 @@
 import { loadHolders, type HoldersBoard } from './api'
+import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
 import { poolLabel, type LeaseRow } from './types'
 
@@ -142,16 +143,14 @@ function Drift({ board }: { board: HoldersBoard }) {
         </div>
       )}
 
+      {/* THE SAMPLE SIZE IS THE MARKER, and the tool that settles a
+          disagreement is an ACTION, so both stay. A comparison computed over
+          a truncated page is not the same claim as one computed over the
+          fleet, and the row count is what says which this is. */}
       <p className="muted small">
-        Admission writes the lease and increments every pool in its list in one
-        transaction, so these are two records of the same fact and a
-        disagreement is never rounding. It is <em>not</em> proof of a leak on
-        its own: the lease side is computed over the{' '}
-        {board.page.leases.length} rows returned, and the route takes the
-        newest rows before dropping released ones — so a truncated page
-        produces a delta that looks the same. A counter above the lease sum
-        means units reserved that no loaded lease accounts for;{' '}
-        <code>make pool-check</code> is the tool that resolves which.
+        Computed over the {board.page.leases.length} rows returned.
+        <HelpCard topic="lease-and-pool-are-two-records" /> To resolve a
+        disagreement, run <code>make pool-check</code>.
       </p>
     </section>
   )

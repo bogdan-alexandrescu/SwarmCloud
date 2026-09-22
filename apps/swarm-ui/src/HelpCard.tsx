@@ -357,8 +357,16 @@ export function HelpCardView({
 
       {/* ALWAYS PRESENT, never drawn. `aria-describedby` on the label points
           here, so the explanation is available to assistive technology at the
-          label without any interaction at all. */}
-      <span id={descriptionId} style={HIDDEN}>
+          label without any interaction at all.
+
+          `data-help-description` MARKS IT, and that attribute is not
+          decoration. This node is in `document.body.textContent` whether the
+          card is open or shut, so a test asking "what can a reader see with
+          every card closed" reads the whole explanation back out of it and
+          passes for the wrong reason -- the exact shape of failure the prose
+          migration is most at risk of. `visibleText()` in
+          `src/__tests__/honesty.prose.test.tsx` strips it by this attribute. */}
+      <span id={descriptionId} data-help-description="" style={HIDDEN}>
         {t.short}
       </span>
 
@@ -416,5 +424,63 @@ export function HelpCard({
       trigger={trigger}
       hover={hover}
     />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The footer a migrated panel carries in place of its legend
+// ---------------------------------------------------------------------------
+
+const LINKS: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'baseline',
+  gap: '4px var(--ctl-s2)',
+  margin: 'var(--ctl-s3) 0 0',
+  paddingTop: 'var(--ctl-s3)',
+  borderTop: '1px solid var(--line)',
+  font: '11px/1.7 var(--mono)',
+  color: 'var(--text-faint)',
+}
+
+const LINK: CSSProperties = { color: 'var(--text-dim)' }
+
+/**
+ * A `<section className="section legend">` block, after its prose has moved.
+ *
+ * WHY A LIST OF LINKS RATHER THAN NOTHING. The legends this replaces were the
+ * only index of what a screen's marks mean, and deleting one takes the index
+ * out along with the essay. So the titles stay on the surface -- two to six
+ * words each -- and the paragraphs live at `#help/<id>`.
+ *
+ * NOTHING MEASURED MAY DEPEND ON IT. A screen that needs this footer followed
+ * before an absent figure can be told from a zero has moved a fact rather than
+ * an explanation, and `src/__tests__/honesty.prose.test.tsx` renders those
+ * screens with every card closed and asserts otherwise.
+ *
+ * `AgentDetail.tsx` grew this shape first, as its own `AttemptLegend`. That
+ * file belongs to the exemplar lane, so this is the same markup lifted rather
+ * than that component reused.
+ *
+ * Inline styles for the reason the rest of this file gives: `styles.css`
+ * belongs to another track this pass, and an inline style adds no selector and
+ * therefore cannot restyle another screen. Every value is an existing token.
+ */
+export function HelpLinks({
+  topics,
+  label = 'Reading this screen:',
+}: {
+  topics: readonly TopicId[]
+  label?: string
+}) {
+  return (
+    <p style={LINKS}>
+      <span>{label}</span>
+      {topics.map((id) => (
+        <a key={id} href={`#${HELP[id].anchor}`} style={LINK}>
+          {HELP[id].title}
+        </a>
+      ))}
+    </p>
   )
 }

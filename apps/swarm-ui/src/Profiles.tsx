@@ -1,5 +1,7 @@
 import { loadCapacity } from './api'
 import { isPaused } from './fetch'
+import type { TopicId } from './help'
+import { HelpLinks } from './HelpCard'
 import { Screen } from './Shell'
 import { ProfileAdmissionPanel, headroomFigure } from './Blockers'
 import { headroomFor, poolLabel, poolScope, type Capacity, type Pool, type RunnerProfile } from './types'
@@ -107,7 +109,7 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
       <p className="provenance">
         {entries.length} profiles · the whole catalogue this response carried, not a page of it
       </p>
-      <Legend />
+      <HelpLinks topics={PROFILE_TOPICS} />
     </>
   )
 }
@@ -252,26 +254,17 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
   )
 }
 
-function Legend() {
-  return (
-    <section className="section legend">
-      <h2>Reading this screen</h2>
-      <dl>
-        <dt>Units, not agents</dt>
-        <dd>
-          Every number in the pool columns is weighted units. A profile&apos;s weight
-          is what one agent of it adds to each of its pools, which is why &ldquo;fits&rdquo;
-          is free units divided by that weight rather than the free units themselves.
-        </dd>
-        <dt>Callers pick a profile by name</dt>
-        <dd>
-          The API accepts <code>runner_profile</code> and nothing else — never an image,
-          a command, a resource spec or a backend. What a name <em>means</em> — its image,
-          its declared and resolved backend, its credentials, its ceiling and its size — is
-          served by <code>/v1/runtimes</code> and drawn under Runtimes. Only the command is
-          served nowhere, so it is absent here rather than copied in.
-        </dd>
-      </dl>
-    </section>
-  )
-}
+/**
+ * The two `<dt>`/`<dd>` pairs this screen used to end on, as links.
+ *
+ * Both were arguments made on other screens too -- `units-not-agents` on six
+ * files and `runner-profile-by-name` on three -- so collapsing them into one
+ * topic each is where the page actually gets shorter rather than merely
+ * tidier.
+ */
+const PROFILE_TOPICS: readonly TopicId[] = [
+  'units-not-agents',
+  'runner-profile-by-name',
+  'pools-all-at-once',
+  'tenant-scope',
+]

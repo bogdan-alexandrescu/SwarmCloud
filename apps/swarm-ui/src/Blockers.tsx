@@ -13,6 +13,7 @@
 // making a second one. See the header of headroom.py for why that is served
 // rather than restated here.
 
+import { HelpCard } from './HelpCard'
 import { timeAgo } from './Shell'
 import {
   blockerGroup,
@@ -256,15 +257,16 @@ export function Counterfactuals({
           )
         })}
       </ul>
+      {/* THE AGE OF THE COUNTS IS THE MARKER: a conclusion drawn from a
+          snapshot is only as current as the snapshot, and that is the one
+          thing a reader cannot recover from the lines themselves. */}
       <p className="muted small">
-        Worked out from the pool counts read{' '}
+        From pool counts read{' '}
         <time dateTime={generatedAt} title={generatedAt}>
           {timeAgo(generatedAt)}
         </time>
-        . Leases are taken and released continuously, so each line says what
-        those counts implied at that instant — not what will happen when a
-        limit is changed. One pool at a time, because lifting two at once is a
-        different question.
+        , one pool at a time.
+        <HelpCard topic="blockers-at-an-instant" />
       </p>
     </div>
   )

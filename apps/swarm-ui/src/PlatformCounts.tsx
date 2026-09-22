@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { HelpCard } from './HelpCard'
 import { timeAgo } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, type Stats } from './types'
 
@@ -53,13 +54,16 @@ export function PlatformCountsScreen() {
 
       <section className="section panel">
         <h2>Run the aggregation</h2>
+        {/* THE COUNT OF QUERIES IS THE FACT -- it is what the button costs --
+            and it is now DERIVED rather than typed out. "twelve, or
+            twenty-four as an admin" was a copy of the size of the frozen
+            state enum, in prose, with nothing checking it; §5 of the prose
+            migration table lists it as one of nine such copies. */}
         <p className="muted">
-          This is not loaded automatically. Each run performs one Firestore{' '}
-          <code>count()</code> per task state —{' '}
-          {admin === null ? 'twelve, or twenty-four as an admin' : admin ? 'twenty-four' : 'twelve'}{' '}
-          — and <code>count()</code> bills per 1000 index entries scanned. The
-          cost therefore grows with how much history this platform has, not with
-          how busy it is right now.
+          Not loaded automatically: each run performs one{' '}
+          <code>count()</code> per task state,{' '}
+          {STATE_COUNT} of them{admin === false ? '' : ', and again across every tenant as an admin'}.
+          <HelpCard topic="api-reads" />
         </p>
         <button className="retry" onClick={go} disabled={busy}>
           {busy ? 'Counting…' : runs === 0 ? 'Run the count' : 'Run it again'}
@@ -77,10 +81,12 @@ export function PlatformCountsScreen() {
       {run?.status === 'empty' && (
         <section className="section panel">
           <p className="muted">
-            The read succeeded and returned no counts at all. That should be
-            impossible — <code>count_tasks_by_state</code> iterates the whole
-            enum and writes a key for every state — so treat this as a failed
-            query rather than an idle platform.
+            <strong>
+              The read succeeded and returned no counts at all, which should be
+              impossible.
+            </strong>{' '}
+            Treat it as a failed query rather than an idle platform.
+            <HelpCard topic="read-failed" />
           </p>
         </section>
       )}
@@ -103,10 +109,12 @@ export function PlatformCountsScreen() {
           ) : (
             <section className="section panel">
               <h2>Every tenant</h2>
+              {/* ABSENT, NOT ZERO, and the sentence that says so stays: this
+                  panel has no figure of its own to carry the marker. */}
               <p className="muted admin-only">
-                Admin only. The platform figures are absent from this response
-                rather than zero — the API omits the field for a non-admin, and
-                an omitted field is not a count of nothing.
+                Admin only — these figures are{' '}
+                <strong>absent from this response rather than zero</strong>.
+                <HelpCard topic="admin-gate-not-failure" />
               </p>
             </section>
           )}
@@ -115,6 +123,15 @@ export function PlatformCountsScreen() {
     </>
   )
 }
+
+/**
+ * How many `count()` queries one run costs, for one scope.
+ *
+ * DERIVED, because the alternative is a number in prose that nothing
+ * checks. `check-contract-parity.sh` covers shell and jq and does not read
+ * TypeScript, so "twelve" here would have outlived the twelfth state.
+ */
+const STATE_COUNT = REAL_STATES.length + NEVER_WRITTEN.size
 
 function Failed({ error }: { error: ApiError }) {
   if (error.kind === 'admin_required') {
@@ -168,11 +185,14 @@ function Scope({
         <span className={`scope ${scope}`}>{subtitle}</span>
       </h2>
 
+      {/* THE COUNT AND THE WITHHELD TOTAL ARE BOTH MARKERS. Neither may
+            move: a panel that simply omitted the total would look like a
+            panel that never had one. */}
       {missing.length > 0 && (
         <p className="warn-text">
           {missing.length} state{missing.length === 1 ? '' : 's'} did not come
-          back ({missing.join(', ')}). No total is shown, because a sum over a
-          partial response would look like a complete one.
+          back ({missing.join(', ')}). <strong>No total is shown.</strong>
+          <HelpCard topic="withheld-total" />
         </p>
       )}
 
@@ -192,17 +212,22 @@ function Scope({
       ))}
 
       {total !== null && (
-        <p className="provenance">{total} task documents across the nine states that are written</p>
+        <p className="provenance">
+          {/* `REAL_STATES.length`, not the word "nine": the list is imported
+             into this very file and the number was still typed out. */}
+          {total} task documents across the {REAL_STATES.length} states that are
+          written
+        </p>
       )}
 
       <p className="muted small">
         {/* Derived from the contract sets, not typed out, so the copy cannot
-            drift if a state is ever added. */}
+            drift if a state is ever added. WHICH states are missing is the
+            fact; WHY a bucket that cannot fill is not drawn is the topic. */}
         {NEVER_WRITTEN.size} of the {REAL_STATES.length + NEVER_WRITTEN.size} states in the
         contract are never written to a task document and are not listed above:{' '}
-        {Array.from(NEVER_WRITTEN).join(', ')}. A row that can only ever read
-        zero teaches that nothing is wrong, rather than that the bucket cannot
-        fill.
+        {Array.from(NEVER_WRITTEN).join(', ')}.
+        <HelpCard topic="states" />
       </p>
     </section>
   )

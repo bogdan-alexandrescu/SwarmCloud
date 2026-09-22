@@ -14,6 +14,8 @@
 import { afterEach, beforeEach, expect } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
+import { forgetProbes } from '../fetch'
+
 const forbidden = (): never => {
   throw new Error(
     'a test reached the network: the UI suite is offline by contract. ' +
@@ -27,6 +29,13 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // AFTER `cleanup`, so nothing is still subscribed when the registry is
+  // emptied. The probe registry is module state in fetch.ts and therefore
+  // outlives a test: without this, a screen rendered in one test leaves its
+  // successful reads registered for every test after it in the same file,
+  // and "nothing has loaded in this tab" becomes untestable. See the header
+  // of `forgetProbes`.
+  forgetProbes()
 })
 
 // A shared assertion, because it is the rule this whole product is built on
