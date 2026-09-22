@@ -7,6 +7,7 @@ import { num } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { LivenessBadge } from './Liveness'
+import { RunFiles } from './RunFiles'
 import { Screen, timeAgo } from './Shell'
 import { StopRun } from './StopRun'
 import {
@@ -149,6 +150,12 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
       <Output run={run} />
+      {/* The checkpoint and log READ ROUTES, which no screen had ever called.
+          They are a separate component because they are separate reads with
+          their own failure states: a failed checkpoint listing must not blank
+          this page, and it must not render as "this task has no checkpoints"
+          either. See RunFiles.tsx. */}
+      <RunFiles task={task} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </>
@@ -1806,13 +1813,24 @@ function Logs({
   )
 }
 
-/** The standing fact about logs on this platform, in both branches above. */
+/**
+ * The standing fact about logs on this platform, in both branches above.
+ *
+ * THIS USED TO SAY "there is no log-tail read path on the API, so a running
+ * agent's output is not readable here at all". That was true when it was
+ * written and had stopped being true: `GET /v1/tasks/{id}/logs` serves a byte
+ * window of either the final object or the live tail, redacted at read time.
+ * Nothing had called it, so the screen went on stating the old constraint --
+ * which is worse than a missing feature, because it tells a reader not to look.
+ * The "Output, as the agent wrote it" panel below reads it.
+ */
 function LogsFoot() {
   return (
     <p className="muted small">
-      These are the files uploaded when the attempt ended. Nothing streams while
-      an agent is running: there is no log-tail read path on the API, so a
-      running agent&apos;s output is not readable here at all.
+      These are the object locations recorded in the attempt&apos;s result
+      summary, which is written when the attempt ends. The window of text itself
+      — including the live tail of an attempt that is still running — is read
+      separately, and is in &ldquo;Output, as the agent wrote it&rdquo; below.
     </p>
   )
 }

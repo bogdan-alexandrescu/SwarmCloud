@@ -13,9 +13,11 @@
 # objection this repository raises to justify create-secrets.sh's design.
 #
 # So the header goes to curl on stdin (`curl -K -`), built by a shell builtin,
-# and never appears in any argv. Audience and impersonation are handled by
-# lib/common.sh's id_token(), so `SWARM_IMPERSONATE_SA` and `API_AUDIENCE` work
-# here and a bare gcloud token is only the fallback.
+# and never appears in any argv. Which credential is presented is decided by
+# lib/common.sh's api_credential(): an OAuth access token at the IAP-protected
+# load balancer, a Google ID token at Cloud Run. `SWARM_IMPERSONATE_SA` works
+# for both, and is REQUIRED for the front door -- a user credential is refused
+# there whatever form it takes. `API_AUDIENCE` applies only to the ID token.
 #
 # Usage:
 #   scripts/api.sh GET  /tasks/tsk_123

@@ -4,6 +4,9 @@ import { noteFixtureProbe, read, write, type Result } from './fetch'
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
 import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
+// The one rule for summing a nullable measurement: null until something
+// actually reported it, so an unmeasured sample never becomes a confident zero.
+import { sumReported } from './measure'
 import type {
   ArtifactContent,
   CheckpointsPage, TaskLogs,
@@ -406,6 +409,7 @@ export async function loadCheckpoints(
   taskId: string,
   options: { attemptId?: string; pageToken?: string; limit?: number } = {},
 ): Promise<Result<CheckpointsPage>> {
+  if (USE_FIXTURES) return fixtureCheckpoints(taskId)
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   if (options.pageToken) query.set('page_token', options.pageToken)
@@ -447,6 +451,7 @@ export async function loadTaskLogs(
     limitBytes?: number
   } = {},
 ): Promise<Result<TaskLogs>> {
+  if (USE_FIXTURES) return fixtureTaskLogs(taskId)
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   if (options.stream) query.set('stream', options.stream)
@@ -457,6 +462,171 @@ export async function loadTaskLogs(
   // Path literal and query kept apart; see loadCheckpoints above for why.
   const path = `/v1/tasks/${encodeURIComponent(taskId)}/logs`
   return read<TaskLogs>(path + suffix, () => false)
+}
+
+/**
+ * THE CHECKPOINT FIXTURE EXERCISES THE ABSENCES, not the happy path.
+ *
+ * One checkpoint whose manifest is present and resumable, and one whose
+ * manifest is `unreadable` with `resumable: null` -- the row that must not
+ * render as "cannot be resumed". A fixture that only ever produced good rows
+ * would let `resumable ?? false` ship looking correct in development, which is
+ * exactly how the absent-measurement bugs in this product got in.
+ */
+async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPage>> {
+  await new Promise((r) => setTimeout(r, 90))
+  noteFixtureProbe(`/v1/tasks/{id}/checkpoints`, 90, true)
+  const prefix = `tenants/u-bogdan/tasks/${taskId}/checkpoints`
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      prefix,
+      count: 2,
+      total_found: 2,
+      next_page_token: null,
+      listed: true,
+      truncated: false,
+      latest_checkpoint: {
+        pointer: `${prefix}/ckpt_0002`,
+        status: 'present',
+        checkpoint_id: 'ckpt_0002',
+      },
+      checkpoints: [
+        {
+          checkpoint_id: 'ckpt_0002',
+          attempt_id: 'att_2',
+          attempt_known: true,
+          attempt_created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+          attempt_completed_at: null,
+          prefix: `${prefix}/ckpt_0002`,
+          uri: `gs://swarm-workspaces/${prefix}/ckpt_0002`,
+          is_latest_pointer: true,
+          objects: [
+            { name: 'manifest.json', key: `${prefix}/ckpt_0002/manifest.json`, bytes: 412 },
+            { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0002/workspace.tar.zst`, bytes: 18_442_240 },
+          ],
+          stored_bytes: 18_442_652,
+          manifest: 'present',
+          manifest_detail: null,
+          created_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+          seq: 2,
+          generation: 2,
+          label: 'periodic',
+          archive_bytes: 18_442_240,
+          archive_sha256: '3b1f…c7a2',
+          file_count: 184,
+          resumable: true,
+          resumable_detail: null,
+        },
+        {
+          checkpoint_id: 'ckpt_0001',
+          attempt_id: 'att_1',
+          attempt_known: false,
+          attempt_created_at: null,
+          attempt_completed_at: null,
+          prefix: `${prefix}/ckpt_0001`,
+          uri: `gs://swarm-workspaces/${prefix}/ckpt_0001`,
+          is_latest_pointer: false,
+          objects: [
+            { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0001/workspace.tar.zst`, bytes: 9_102_336 },
+          ],
+          stored_bytes: 9_102_336,
+          manifest: 'unreadable',
+          manifest_detail: 'The object is there and did not parse as JSON.',
+          created_at: null,
+          seq: null,
+          generation: 1,
+          label: null,
+          archive_bytes: null,
+          archive_sha256: null,
+          file_count: null,
+          // NULL, NOT FALSE. "cannot tell" and "cannot resume" are different
+          // sentences and the row renders them differently.
+          resumable: null,
+          resumable_detail: 'Nothing could be established without the manifest.',
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * THE LOG FIXTURE CARRIES ALL THREE CONTENT STATES.
+ *
+ * stdout has text and is a LIVE tail; stderr exists and is EMPTY (`''`, which
+ * is a real answer about a quiet agent and must not render as a failed read).
+ * The distinction between `null` and `''` is the whole reason `LogStream.content`
+ * is nullable, and a fixture that never produced `''` would leave the branch
+ * that renders it unexercised.
+ */
+async function fixtureTaskLogs(taskId: string): Promise<Result<TaskLogs>> {
+  await new Promise((r) => setTimeout(r, 110))
+  noteFixtureProbe(`/v1/tasks/{id}/logs`, 110, true)
+  const body = [
+    '[13:42:01] cloning https://github.com/saga-xyz/example.git',
+    '[13:42:09] workspace ready at /workspace (tmpfs)',
+    '[13:42:09] claude-code: starting',
+    '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
+  ].join('\n')
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_2',
+      attempt: {
+        status: 'latest',
+        known: true,
+        generation: 2,
+        created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+        completed_at: null,
+        exit_code: null,
+      },
+      prefix: `tenants/u-bogdan/tasks/${taskId}/logs`,
+      redaction: { applied_at_read_time: true, rules: 6 },
+      streams: [
+        {
+          stream: 'stdout',
+          source: 'live',
+          status: 'ok',
+          detail: null,
+          key: `tenants/u-bogdan/tasks/${taskId}/logs/att_2.stdout`,
+          uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/logs/att_2.stdout`,
+          content: body,
+          total_bytes: 4096,
+          offset: 0,
+          returned_bytes: body.length,
+          next_offset: 4096,
+          truncated: true,
+          redacted: false,
+          redaction_count: 0,
+          tail_window: { object_offset: 0, stream_size: 4096 },
+        },
+        {
+          stream: 'stderr',
+          source: 'live',
+          status: 'ok',
+          detail: null,
+          key: `tenants/u-bogdan/tasks/${taskId}/logs/att_2.stderr`,
+          uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/logs/att_2.stderr`,
+          // An object that exists and is empty. NOT the same as `null`.
+          content: '',
+          total_bytes: 0,
+          offset: 0,
+          returned_bytes: 0,
+          next_offset: null,
+          truncated: false,
+          redacted: false,
+          redaction_count: 0,
+          tail_window: null,
+        },
+      ],
+    },
+  }
 }
 
 /**
@@ -2115,6 +2285,30 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
             integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],
           },
         }),
+        // THE FAN-IN, reproduced from the live workflow that proved the graph
+        // could not express one: `wf_5e5ad3b6f7da4299a839`, five independent
+        // steps and a sixth depending on ALL five. Rendered by the old view it
+        // was indistinguishable from a chain of five, so a fixture that only
+        // ever held the two-fork shape would have let that ship again.
+        //
+        // The step ids are the real ones, `allornothing` included, because the
+        // join's dependency line is the string that used to be ellipsed and its
+        // length is the reason.
+        ...(['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'].map(
+          (stepId, i) =>
+            mk(`task_fan_${i}`, i === 3 ? 'FAILED' : 'SUCCEEDED', 'claude-code', 40 - i, {
+              workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: stepId, depends_on: [],
+              dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+            }),
+        )),
+        mk('task_fan_join', 'CANCELLED', 'claude-code', 35, {
+          workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: 'synthesis',
+          depends_on: ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+          dispatch: {
+            strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
+            integrates: ['task_fan_0', 'task_fan_1', 'task_fan_2', 'task_fan_3', 'task_fan_4'],
+          },
+        }),
       ],
       next_page_token: null,
       tenant_id: 'u-bogdan',
@@ -2218,6 +2412,93 @@ function fixtureWorkflowRows(): Workflow[] {
         step('publish', ['report'], null),
       ],
     },
+      // THE SHAPE THE GRAPH EXISTS TO DISTINGUISH, reproduced from the live
+      // workflow that proved the view could not express one:
+      // `wf_5e5ad3b6f7da4299a839` on 2026-09-22, five independent steps and a
+      // sixth depending on ALL five. Rendered by the old view it was
+      // indistinguishable from a chain of five -- one `THEN` bar between the
+      // five and the sixth, the identical mark a linear workflow draws -- and
+      // the dependency line that would have disambiguated it was ellipsed at
+      // `allorn...`. Five edges now arrive at `synthesis` and four would arrive
+      // at the last step of a chain, so the two no longer render alike.
+      //
+      // JOINED to the six `task_fan_*` documents in the task fixture, so this
+      // row exercises the derived rollup and the census as well as the shape. A
+      // fixture whose only workflow is a two-way join never shows the case that
+      // was got wrong, and one with no tasks never shows the heading deriving.
+      //
+      // The step ids are the real ones, `allornothing` included, because the
+      // join's dependency line is the string that used to be ellipsed and its
+      // length is the reason.
+      {
+        workflow_id: 'wf_5e5ad3b6f7da4299a839',
+        tenant_id: 'u-bogdan',
+        state: 'FAILED',
+        stored_state: 'FAILED',
+        state_source: 'derived',
+        rollup: {
+          state: 'FAILED',
+          complete: true,
+          reason: 'terminal_worst_first',
+          counts: { SUCCEEDED: 4, FAILED: 1, CANCELLED: 1 },
+          unreadable_steps: [],
+          unstarted_steps: [],
+          steps_read: 6,
+        },
+        created_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
+        updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        submitted_by: 'bogdan@saga.xyz',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [
+          step('cold-start', [], 'task_fan_0'),
+          step('fencing', [], 'task_fan_1'),
+          step('allornothing', [], 'task_fan_2'),
+          step('checkpoints', [], 'task_fan_3'),
+          step('absentzero', [], 'task_fan_4'),
+          // `input_from` MIRRORS `depends_on` here, and it is a MAP -- upstream
+          // step_id to artifact filename -- because that is what the API serves
+          // and what `WorkflowStep.input_from` is typed as. This row was first
+          // written with a bare string, which is the shape nothing ever sends.
+          step(
+            'synthesis',
+            ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+            'task_fan_join',
+            {
+              'cold-start': 'cold-start.md',
+              fencing: 'fencing.md',
+              allornothing: 'allornothing.md',
+              checkpoints: 'checkpoints.md',
+              absentzero: 'absentzero.md',
+            },
+          ),
+        ],
+      },
+      {
+        // AN API OLDER THAN `rollup.py`, which is what production was still
+        // running on 2026-09-22: `state` straight off the Firestore document,
+        // no `state_source: 'derived'`, no `rollup`, no `drift`. This payload
+        // is the one that printed "QUEUED" over steps reading succeeded, failed
+        // and cancelled, so it has to be renderable in development or the fix
+        // for it cannot be looked at. The heading must claim NO state here.
+        workflow_id: 'wf_bcdc9180e4fb4a209f31',
+        tenant_id: 'u-bogdan',
+        state: 'QUEUED',
+        stored_state: 'QUEUED',
+        state_source: 'stored',
+        created_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
+        updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        submitted_by: 'bogdan@saga.xyz',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [
+          step('research', [], 'task_a3881bec'),
+          step('draft', ['research'], 'task_8e33a3de'),
+          step('review', ['draft'], 'task_1beb89a5'),
+        ],
+      },
   ]
 }
 
@@ -3199,6 +3480,217 @@ export async function loadSpend(page: TaskPage): Promise<Result<SpendRollup>> {
       cacheCreationTokens: cacheCreate,
       from: times[0] ?? null,
       to: times[times.length - 1] ?? null,
+    },
+  }
+}
+
+/**
+ * HOW MANY STEPS THE WORKFLOW BOARD READS ATTEMPTS FOR, and why it is bounded.
+ *
+ * Same wall as `loadSpend` above and the same arithmetic: `cost_usd` and the
+ * four token counts live on the ATTEMPT (codec.py:285) and no route aggregates
+ * them, so a per-step figure costs one `GET /v1/tasks/{id}/attempts` per step.
+ * A board showing ten workflows of five steps would be fifty requests against a
+ * 20 rps bucket shared with every other tab the operator has open.
+ *
+ * Twelve tasks at three in flight, started only after the board itself has
+ * landed. A step outside the sample renders `not sampled` -- which is a THIRD
+ * absence, distinct from "no attempt reported a cost" and from "the read
+ * failed", and the three must not render alike. An aggregation route is the
+ * standing request (audit S3); until it exists, a bounded sample that says so
+ * is the honest shape.
+ */
+const STEP_USAGE_SAMPLE_TASKS = 12
+const STEP_USAGE_CONCURRENCY = 3
+
+/** What one step's attempts add up to. Every summable field is nullable. */
+export interface StepUsage {
+  /** Attempts returned for this task. A real count -- 0 is possible and means the read succeeded with none. */
+  attempts: number
+  /** Of those, how many carried a cost. The rest are not zero. */
+  attemptsWithCost: number
+  /** Of those, how many carried any token figure. */
+  attemptsWithTokens: number
+  /** Checkpoint ids listed across the attempts. COUNTED, so 0 is a digit. */
+  checkpoints: number
+  costUsd: number | null
+  inputTokens: number | null
+  outputTokens: number | null
+  cacheReadTokens: number | null
+  cacheCreationTokens: number | null
+}
+
+export interface WorkflowUsage {
+  /** Usage for every task whose attempts were read. */
+  byTaskId: Map<string, StepUsage>
+  /** Task ids left out because the sample ceiling was reached. Not zero-cost. */
+  notSampled: Set<string>
+  /** Task id -> why its attempt read failed. Not zero-cost either. */
+  failed: Map<string, string>
+  /** Published so the screen can say what the ceiling was, rather than imply none. */
+  sampleLimit: number
+  /** Distinct task ids the board asked about. */
+  tasksRequested: number
+}
+
+/**
+ * Attempt usage for the tasks a workflow board has on screen.
+ *
+ * Takes the ids rather than re-reading the board: the screen has them in hand,
+ * and a second read could disagree with the graph that is already drawn.
+ */
+export async function loadWorkflowUsage(
+  taskIds: readonly string[],
+): Promise<Result<WorkflowUsage>> {
+  const wanted = Array.from(new Set(taskIds))
+  const sample = wanted.slice(0, STEP_USAGE_SAMPLE_TASKS)
+  const notSampled = new Set(wanted.slice(STEP_USAGE_SAMPLE_TASKS))
+
+  // No step has a task yet. A real zero -- the workflow has not reached any of
+  // them -- and distinct from "we could not read the attempts".
+  if (sample.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+
+  const results = await mapWithLimit(sample, STEP_USAGE_CONCURRENCY, (id) =>
+    USE_FIXTURES ? fixtureStepAttempts(id) : loadAttempts(id),
+  )
+
+  const byTaskId = new Map<string, StepUsage>()
+  const failed = new Map<string, string>()
+  results.forEach((r, i) => {
+    const id = sample[i]
+    if (id === undefined) return
+    if (r.status === 'error') {
+      failed.set(id, r.error.message)
+      return
+    }
+    // `loading` cannot be awaited into existence here, but the union permits
+    // it and a silent `continue` would record the task as measured-with-zero.
+    if (r.status === 'loading') {
+      failed.set(id, 'The attempt read did not complete.')
+      return
+    }
+    byTaskId.set(id, rollUpAttempts(r.status === 'empty' ? [] : r.data.attempts))
+  })
+
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      byTaskId,
+      notSampled,
+      failed,
+      sampleLimit: STEP_USAGE_SAMPLE_TASKS,
+      tasksRequested: wanted.length,
+    },
+  }
+}
+
+/**
+ * Sum one task's attempts.
+ *
+ * Each field is summed SEPARATELY and stays null until some attempt actually
+ * carried it -- `record_spend` writes only the keys the runner reported, so an
+ * attempt can have input tokens and no output, and `(input ?? 0) + (output ??
+ * 0)` counts the missing half as a zero. That is the same defect
+ * `AgentDetail.tsx:408` records having already been fixed once.
+ */
+function rollUpAttempts(attempts: readonly AttemptRow[]): StepUsage {
+  return {
+    attempts: attempts.length,
+    attemptsWithCost: attempts.filter((a) => typeof a.cost_usd === 'number' && Number.isFinite(a.cost_usd)).length,
+    attemptsWithTokens: attempts.filter((a) =>
+      [a.input_tokens, a.output_tokens, a.cache_read_input_tokens, a.cache_creation_input_tokens].some(
+        (v) => typeof v === 'number' && Number.isFinite(v),
+      ),
+    ).length,
+    checkpoints: attempts.reduce((t, a) => t + a.checkpoints.length, 0),
+    costUsd: sumReported(attempts, (a) => a.cost_usd),
+    inputTokens: sumReported(attempts, (a) => a.input_tokens),
+    outputTokens: sumReported(attempts, (a) => a.output_tokens),
+    cacheReadTokens: sumReported(attempts, (a) => a.cache_read_input_tokens),
+    cacheCreationTokens: sumReported(attempts, (a) => a.cache_creation_input_tokens),
+  }
+}
+
+/**
+ * Attempts for the workflow board's step figures.
+ *
+ * `fixtureAttempts` reports null for every usage field, which is faithful to an
+ * attempt that ran before usage capture and would mean every node on the board
+ * read "not reported" in development -- the one state that ships unlooked-at
+ * would be the ordinary one, which is the failure `fixtureSpendAttempts`
+ * already exists to avoid.
+ *
+ * The mix here is the one the node has to survive, and it is chosen per task id
+ * so it does not move between refreshes:
+ *
+ *   * `task_wf_plan`    figures present on both attempts;
+ *   * `task_wf_scan_a`  a MEASURED ZERO cost -- the digit case. A mock runner
+ *                       really does cost nothing, and `$0.00` here is a
+ *                       reading, not an absence;
+ *   * `task_wf_scan_b`  attempts that carry nothing. "not reported";
+ *   * anything else     one attempt with figures.
+ */
+async function fixtureStepAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
+  await new Promise((r) => setTimeout(r, 70))
+  noteFixtureProbe('/v1/tasks/{id}/attempts', 70, true)
+  const mk = (n: number, usage: Partial<AttemptRow>, checkpoints: string[] = []): AttemptRow => ({
+    attempt_id: `${taskId}-a${n}`,
+    task_id: taskId,
+    tenant_id: FIXTURE_TENANT,
+    generation: n,
+    lease_id: `lease-${taskId}-${n}`,
+    backend: 'CLOUD_RUN_JOB',
+    execution_name: null,
+    created_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    started_at: new Date(Date.now() - 19 * 60_000).toISOString(),
+    completed_at: null,
+    exit_code: null,
+    error: null,
+    peak_rss_bytes: null,
+    peak_disk_bytes: null,
+    oom_near_miss: false,
+    checkpoints,
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_input_tokens: null,
+    cache_creation_input_tokens: null,
+    cost_usd: null,
+    ...usage,
+  })
+
+  if (taskId === 'task_wf_scan_a') {
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      // cost_usd: 0 EXACTLY. A mock runner costs nothing and reported so; the
+      // node must print "$0.00" as a digit, never the absent sentence.
+      data: { attempts: [mk(1, { cost_usd: 0, input_tokens: 0, output_tokens: 0 })] },
+    }
+  }
+  if (taskId === 'task_wf_scan_b') {
+    return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(1, {})] } }
+  }
+  if (taskId === 'task_wf_plan') {
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        attempts: [
+          mk(2, { input_tokens: 21_400, output_tokens: 3_180, cache_read_input_tokens: 104_000, cache_creation_input_tokens: 9_900, cost_usd: 0.42 }, ['ckpt_plan_2']),
+          // A retry that predates usage capture: real attempt, no figures.
+          mk(1, {}),
+        ],
+      },
+    }
+  }
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      attempts: [
+        mk(1, { input_tokens: 8_200, output_tokens: 1_050, cache_read_input_tokens: 44_000, cache_creation_input_tokens: 5_100, cost_usd: 0.0061 }, ['ckpt_a', 'ckpt_b']),
+      ],
     },
   }
 }

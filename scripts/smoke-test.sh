@@ -70,9 +70,19 @@ for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}"; do
   # identity to the invoker list of the service holding every tenant's
   # subscription credentials.
   if [[ "${service}" == "${API_SERVICE}" ]]; then
+    # PROBED AT api_url, NOT at the *.run.app URL this loop just resolved.
+    #
+    # `cloud_run_service_uri` answers with status.url, and swarm-api's ingress
+    # is internal-and-cloud-load-balancing: from outside the VPC that hostname
+    # answers 404 to every path, including /readyz, before the request reaches
+    # the container. This suite reported that as "swarm-api /readyz 404" -- a
+    # health failure against a healthy service, for the second time in this
+    # file. api_url resolves the address that actually serves, and
+    # api_credential presents the kind of token that address accepts.
     readyz_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-readyz.XXXXXX")"
-    if code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
-        -H "Authorization: Bearer $(id_token)" "${url%/}/readyz" 2>"${readyz_err}")"; then
+    if code="$(auth_config "$(api_credential)" \
+        | curl -sS -m 15 -K - -o /dev/null -w '%{http_code}' \
+        "$(api_url)/readyz" 2>"${readyz_err}")"; then
       rm -f "${readyz_err}"
       if [[ "${code}" == "200" ]]; then
         t_pass "${service} /readyz 200"

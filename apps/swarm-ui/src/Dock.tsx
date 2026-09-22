@@ -141,6 +141,16 @@ export function Dock() {
         />
       )}
 
+      {/* OUTSIDE THE DISCLOSURE, deliberately. An expired session is the one
+          thing in here that carries an ACTION, and a control that appears only
+          after a click is a control that is not there. The collapsed line's
+          dot turns `is-bad` for the same state, but a dot is not a button. */}
+      {s.expired && (
+        <button className="reauth" onClick={() => window.location.reload()}>
+          Session expired — reload to sign in
+        </button>
+      )}
+
       <button
         type="button"
         className="ctl-dock-line"
@@ -180,11 +190,6 @@ export function Dock() {
             {' · '}
             <a href="#reference">Every read, in a table &rarr;</a>
           </p>
-          {s.expired && (
-            <button className="reauth" onClick={() => window.location.reload()}>
-              Session expired — reload to sign in
-            </button>
-          )}
           <DataSourceCells probes={probes} />
           <p className="ctl-dock-foot">
             p95 is taken over the <strong>last attempt of each route</strong> —
