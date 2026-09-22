@@ -535,6 +535,20 @@ hand.
 **Status:** open, recorded 2026-09-21, from the defect fixed in 1cfdf57
 ("`integrate` promised ONE pull request and opened one per step").
 
+> **Half of this was done on 2026-09-22, as this entry recommended.** "If it is
+> declined" below says the carrier vocabulary has to be reconciled regardless
+> because both sides are unfrozen. It has been: `_dispatch_carrier` now accepts
+> `("checkpoints", "branches")` and defaults to `checkpoints`, and
+> `tests/unit/worker/test_integrate_strategy.py` no longer pins `"patches"`.
+> `tests/unit/worker/test_dispatch_contract_parity.py` imports swarm-api's own
+> `DISPATCH_CARRIERS`, `DISPATCH_STRATEGIES` and `DispatchOptions.to_metadata()`
+> and asserts the worker's parsers agree with them — which is the "something for
+> a parity check to assert" this entry asked for, obtained without unfreezing
+> anything. **The request itself stays open**: the vocabularies are still typed
+> out twice, still in components that cannot import each other, and only a test
+> now stops them drifting. That test lives in the unit suite, so it protects the
+> repository and not a worker image built from an older commit.
+
 ### What is restated, and where
 
 **swarm-api writes it.** `validation.py:186-229` resolves `DispatchOptions`
