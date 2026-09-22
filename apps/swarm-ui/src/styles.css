@@ -2229,3 +2229,103 @@ table.pools tbody tr.unmeasured {
   .cf-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .blocker-at { margin-left: 0; flex-basis: 100%; }
 }
+
+/* -------------------------------------------------------------------------- */
+/* 14. Charts                                                                  */
+/* -------------------------------------------------------------------------- */
+/* Every rule here is used by ONE component, src/charts/TimeSeries.tsx, which
+   is the only module in this app that imports a charting library. The colours
+   are tokens, never library defaults, so a chart flips with the theme like
+   everything else and nothing in it needs a second definition for light mode.
+
+   THE THREE MARKS, AND WHY THEY MUST NOT LOOK ALIKE:
+
+     a measured value   a filled dot on the line          --info
+     a measured ZERO    a HOLLOW dot, sitting ON the      --info ring,
+                        zero rule                         --surface centre
+     an ABSENT value    a hatched vertical band, no dot   --ctl-absent
+
+   A measured zero and an absent measurement are the two this product exists
+   to keep apart, so they are separated by SHAPE (ring vs. stripes) and by
+   POSITION (on the axis vs. spanning it), not by colour alone -- the same
+   argument `.ctl-util-fill` makes for its textures, and it survives a
+   greyscale screenshot pasted into an incident channel. */
+
+.ctl-chart { margin: 0 0 var(--ctl-s4); }
+
+.ctl-chart-title {
+  margin: 0 0 var(--ctl-s2);
+  font: 600 12px var(--font);
+  letter-spacing: .02em;
+  color: var(--text-dim);
+}
+
+/* Responsive WITHOUT measuring the DOM. The SVG has an intrinsic size and a
+   viewBox, so it renders identically under renderToStaticMarkup and under
+   jsdom, where layout is 0x0. A container that measures its parent renders an
+   empty box in both -- the measured reason recharts was rejected. The cap
+   keeps the type from scaling past its compact size in a wide column. */
+.ctl-chart-svg {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  overflow: visible;
+}
+
+.ctl-chart-line {
+  fill: none;
+  stroke: var(--info);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.ctl-chart-dot { fill: var(--info); }
+.ctl-chart-dot.is-zero {
+  fill: var(--surface);
+  stroke: var(--info);
+  stroke-width: 1.5;
+}
+/* Dashed, hairline, and never the line colour: the zero rule is an axis, not
+   a measurement. */
+.ctl-chart-zeroline {
+  stroke: var(--ctl-hairline);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+/* The absence texture, as an SVG pattern -- `--ctl-hatch` is a CSS gradient
+   and cannot paint into a shape. Same 45 degrees, same meaning. */
+.ctl-chart-hatch line { stroke: var(--ctl-absent); }
+.ctl-chart-absent { opacity: .6; }
+
+.ctl-chart-axisline,
+.ctl-chart-tick line { stroke: var(--ctl-hairline); }
+.ctl-chart-tick text {
+  fill: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.ctl-chart-cov {
+  margin-top: var(--ctl-s2);
+  font: 12px var(--font);
+  color: var(--text-dim);
+}
+.ctl-chart-cov strong { color: var(--text); font-weight: 600; }
+
+.ctl-chart-note {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ctl-s2);
+  margin: var(--ctl-s1) 0 0;
+  font: 11.5px/1.5 var(--font);
+  color: var(--text-faint);
+}
+/* The key for the hatched band, so the note that explains the absences is
+   tied to the mark that draws them. */
+.ctl-chart-key {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--ctl-hairline);
+  background: var(--ctl-hatch);
+}
