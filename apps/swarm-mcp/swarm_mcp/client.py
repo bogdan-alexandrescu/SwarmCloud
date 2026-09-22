@@ -17,6 +17,7 @@ import os
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,17 @@ from typing import Any
 #: subprocess and avoids the failure mode where a long `tail` dies at the
 #: 59-minute mark with a 401 that looks like a permission problem.
 _TOKEN_TTL_SECONDS = 45 * 60
+
+
+#: The states in which a task has stopped and will not move again. Stated ONCE,
+#: here, at the bottom of the package: `cli` and `server` each had their own
+#: copy, and a third one in `follow` would have made it three places where "has
+#: this agent finished" is decided -- which is the shape every drift in this
+#: repository has taken. `DEAD_LETTER` and `DEAD_LETTERED` are both carried
+#: because the frozen enum spells it `dead_lettered` and older payloads spell
+#: it `DEAD_LETTER`; accepting only one would leave a finished task polled
+#: forever.
+TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTER", "DEAD_LETTERED"}
 
 
 class SwarmError(RuntimeError):
@@ -501,6 +513,46 @@ class SwarmClient:
         if isinstance(data, dict):
             return list(data.get("events") or [])
         return list(data or [])
+
+    def logs(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str | None = None,
+        stream: str | None = None,
+        source: str = "auto",
+        offset: int = 0,
+        limit_bytes: int | None = None,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
+        """One window of one attempt's captured output, as the route serves it.
+
+        NOT UNWRAPPED, and not flattened. The envelope is the answer here: it
+        carries the attempt the window came from, the redaction statement, and
+        a per-stream `status` of ok / absent / unreadable that a caller must
+        read before it reads `content`. Collapsing it to the text would throw
+        away the difference between an agent that printed nothing and a read
+        that failed, which is the distinction the route was built to keep.
+
+        The parameters are the route's own, deliberately: `offset` and
+        `limit_bytes` are byte positions in the RAW object and belong to
+        whoever is paging, and this client does not have an opinion about them.
+        """
+        params: list[tuple[str, str]] = [("source", source), ("offset", str(max(0, offset)))]
+        if attempt_id:
+            params.append(("attempt_id", attempt_id))
+        if stream:
+            params.append(("stream", stream))
+        if limit_bytes is not None:
+            params.append(("limit_bytes", str(limit_bytes)))
+        query = urllib.parse.urlencode(params)
+        data = self.request("GET", f"/v1/tasks/{task_id}/logs?{query}", timeout=timeout)
+        if not isinstance(data, dict) or not isinstance(data.get("streams"), list):
+            raise SwarmError(
+                f"GET /v1/tasks/{task_id}/logs answered without a `streams` list; "
+                "this deployment's logs route is not the one this client speaks to"
+            )
+        return data
 
     def cancel(self, task_id: str) -> dict[str, Any]:
         return unwrap_task(self.request("POST", f"/v1/tasks/{task_id}/cancel", payload={}))

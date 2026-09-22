@@ -8,11 +8,20 @@ eighty lines mean `uv run swarm-mcp` works in a fresh checkout.
 
 WHAT THIS SERVER DELIBERATELY DOES NOT DO: stream. An MCP tool call returns
 exactly once, so there is no way for a tool to print a log line while an agent
-is still writing it. `swarm_wait` therefore blocks and returns the outcome, and
-the tool descriptions point at `swarm tail`, which is a terminal command that
-CAN stream and can be run in the background. Pretending otherwise -- a
-`swarm_watch` tool that returned a 900-line transcript and called it live --
-would be the kind of almost-true that wastes an afternoon.
+is still writing it. `swarm_wait` therefore blocks and returns the outcome.
+Pretending otherwise -- a `swarm_watch` tool that returned a 900-line transcript
+and called it live -- would be the kind of almost-true that wastes an afternoon.
+
+WHAT IT DOES INSTEAD, and why that is not the same thing. `swarm_follow` is a
+RESUMABLE CURSOR, not a stream: it returns what is new since a cursor and hands
+back the next one, so a session polls it between other work and narrates
+progress. That shape was forced twice over -- an MCP call returns once, and
+`client.py:25` records that a long-lived tail inside a subprocess dies with a
+401 that looks like a permission problem -- so nothing here holds a connection
+open. Before it existed, every description in this file pointed at `swarm
+tail`, a terminal command the model cannot run, which meant the one question a
+session asks of a remote agent ("what is it doing?") had no answer it could
+reach.
 
 Every tool here is a thin wrapper over `cli`/`patches`/`workflows`. Two
 implementations of "what does integrate mean" is how a CLI and a tool quietly
@@ -28,7 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from . import workflows
-from .client import SwarmClient, SwarmError, task_id_of
+from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
+from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow
 from .patches import (
     apply_patch,
     describe_task,
@@ -39,7 +49,6 @@ from .patches import (
 )
 
 PROTOCOL_VERSION = "2024-11-05"
-TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTER", "DEAD_LETTERED"}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -48,8 +57,8 @@ TOOLS: list[dict[str, Any]] = [
             "Run an agent in SwarmCloud instead of locally. Returns a task id "
             "immediately; the agent runs remotely on its own tenant identity. "
             "Use this the way you would spawn a local subagent, then call "
-            "swarm_wait, or run `swarm tail <id>` in a background shell to "
-            "follow its output live as it works."
+            "swarm_follow with the returned id to watch it work, and "
+            "swarm_wait or swarm_result for the outcome."
         ),
         "inputSchema": {
             "type": "object",
@@ -76,14 +85,77 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Block until the given tasks reach a terminal state, then return what "
             "each produced: commits, files changed, patch uri and pull request. "
-            "This does NOT stream -- an MCP tool returns once. For live output "
-            "while an agent works, run `swarm tail <id>` in a background shell."
+            "This does NOT stream -- an MCP tool returns once, so it is silent "
+            "for as long as the work takes. To show progress while it runs, "
+            "poll swarm_follow instead and call this at the end."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "task_ids": {"type": "array", "items": {"type": "string"}},
                 "timeout_seconds": {"type": "integer", "default": 3600},
+            },
+            "required": ["task_ids"],
+        },
+    },
+    {
+        "name": "swarm_follow",
+        "description": (
+            "What these agents have produced SINCE a cursor: new events and new "
+            "log lines, plus the cursor to pass back next time. This is how you "
+            "watch remote work the way you watch a local subagent -- call it, "
+            "narrate what came back, do something else, call it again. It "
+            "returns immediately and holds nothing open, and nothing is ever "
+            "returned twice, so polling it is cheap and safe. Pass every task "
+            "you are running in ONE call; the fan-out case is five or six "
+            "agents at once. READ THREE FIELDS BEFORE TRUSTING THE OUTPUT: "
+            "`truncated` -- when true this is NOT all the output and "
+            "`truncation` names what was withheld and how to get it; each "
+            "task's `read` -- `failed` means the task could not be read at all, "
+            "which is not the same as an agent that printed nothing; and each "
+            "stream's `status` -- `absent`, `unreadable` and `up_to_date` are "
+            "three different facts and none of them mean 'the agent is idle'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Every task to follow, in one call.",
+                },
+                "cursor": {
+                    "type": "object",
+                    "description": (
+                        "The `cursor` object a previous swarm_follow returned, "
+                        "passed back VERBATIM. Omit it on the first call, or for "
+                        "a task id it does not mention, and that task is read "
+                        "from the beginning."
+                    ),
+                },
+                "max_log_bytes": {
+                    "type": "integer",
+                    "default": DEFAULT_LOG_BUDGET,
+                    "description": (
+                        "How much log text this call may return in total, across "
+                        "every task. Raise it when `truncation` says a stream was "
+                        "not reached; lower it when following many agents at once."
+                    ),
+                },
+                "max_new_events": {
+                    "type": "integer",
+                    "default": DEFAULT_EVENT_PAGE,
+                    "description": "How many new events to report per task.",
+                },
+                "include_heartbeats": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Heartbeat events are hidden by default -- at one every "
+                        "few seconds they bury the agent's own output. The count "
+                        "hidden is always reported."
+                    ),
+                },
             },
             "required": ["task_ids"],
         },
@@ -404,8 +476,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_agents",
         "description": (
             "Agents running and queued, with why each queued one is waiting. "
-            "Returns immediately; it does not follow anything. For live output "
-            "run `swarm tail <id>` in a background shell."
+            "Returns immediately; it does not follow anything. For the events "
+            "and log lines an agent has produced since you last looked, call "
+            "swarm_follow."
         ),
         "inputSchema": {
             "type": "object",
@@ -433,6 +506,48 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+def _int_arg(args: dict[str, Any], name: str, default: int) -> int:
+    """An integer argument, with zero surviving as zero.
+
+    A model sends `"20000"` as often as `20000`, and `args.get(name) or default`
+    turns a deliberate 0 into the default -- the same `false // true` shape this
+    repository documents for jq and that `swarm_wait` was bitten by.
+    """
+    value = args.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _describe(task: dict[str, Any]) -> dict[str, Any]:
+    summary = task.get("result_summary") or {}
+    git = summary.get("git") or {}
+    out: dict[str, Any] = {
+        # The API names it `id`. Read as `task_id` this was null for every
+        # task on the platform, and a session reads a null id and a null state
+        # as "it has not started yet".
+        "task_id": task_id_of(task),
+        "state": task.get("state"),
+        "commits": git.get("commit_count", 0),
+        "insertions": git.get("insertions", 0),
+        "deletions": git.get("deletions", 0),
+        "uncommitted_files": git.get("dirty_count", 0),
+        "patch": patch_uri(task),
+    }
+    if not out["patch"]:
+        out["no_patch_because"] = explain_absence(task)
+    pr = git.get("pull_request")
+    out["pull_request"] = pr["url"] if pr else None
+    if not pr and git:
+        out["no_pull_request_because"] = git.get("publish_reason")
+    if task.get("last_error"):
+        out["error"] = task["last_error"]
+    return out
 
 
 def _overview_view(snap, style):
@@ -505,6 +620,34 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             },
             indent=2,
         )
+
+    if name == "swarm_follow":
+        # `cursor` crosses the model boundary, so it arrives as whatever the
+        # model sent -- including a string it decided to quote. `follow`
+        # normalises every field it reads, and a cursor it cannot use re-reads
+        # from the beginning rather than skipping ahead: a position that
+        # quietly became zero costs a repeat, a position that quietly became
+        # large loses output silently, and only one of those is recoverable.
+        report = follow(
+            client,
+            list(args["task_ids"]),
+            cursor=args.get("cursor"),
+            # NOT `args.get(...) or DEFAULT`, for the reason swarm_wait's
+            # timeout spells out: zero is a legitimate value here too -- "tell
+            # me the events and the states, spend nothing on logs" -- and it is
+            # falsy, so the `or` form would turn the smallest request into the
+            # largest one.
+            max_log_bytes=_int_arg(args, "max_log_bytes", DEFAULT_LOG_BUDGET),
+            max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
+            include_heartbeats=bool(args.get("include_heartbeats")),
+        )
+        # The finished ones carry their outcome, so a session that was polling
+        # does not have to notice `terminal` and make a second call to find out
+        # what the agent actually produced.
+        for task in report["tasks"]:
+            if task["read"] == "ok" and task["terminal"]:
+                task["result"] = _describe(client.task(task["task_id"]))
+        return json.dumps(report, indent=2, default=str)
 
     if name == "swarm_status":
         return json.dumps(
