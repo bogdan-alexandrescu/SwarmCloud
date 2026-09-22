@@ -35,6 +35,12 @@ class _Lease:
         self.state = __import__("swarm_common.states", fromlist=["TaskState"]).TaskState.LEASED
         self.expires_at = NOW - timedelta(minutes=50)
         self.dispatch_deadline = NOW - timedelta(minutes=47)
+        # `LeaseView.heartbeat_at`. None is the shape this scenario actually
+        # has -- a lease stranded at an old generation with no execution never
+        # had a worker to beat for it -- and `detect_stale_leases` now reads it
+        # to tell NOT YET ALIVE apart from SILENT. The dispatch deadline above
+        # is 47 minutes past, so this lease is reclaimable either way.
+        self.heartbeat_at = None
         self.is_released = released
 
     def silent_seconds(self, now):  # noqa: ANN001
