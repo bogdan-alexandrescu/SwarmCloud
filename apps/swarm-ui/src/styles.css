@@ -613,6 +613,21 @@ body {
 .row .when { color: var(--text-faint); }
 .row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* ---- the workflow card heading ---- */
+.wf-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+/* The DERIVED state, and the only state this heading prints. A chip rather than
+   a word in the sentence because the reader's eye lands on the heading first
+   and this is the claim being made. `text-transform: none` because `.section >
+   h2` uppercases and a state word shouted in caps reads as an alarm. */
+.wf-state { font: 600 11.5px var(--mono); letter-spacing: 0; text-transform: none; }
+.wf-state.ok      { color: var(--ok); }
+.wf-state.bad     { color: var(--bad); }
+.wf-state.live    { color: var(--info); }
+.wf-state.wait    { color: var(--warn); }
+.wf-state.unknown { color: var(--text-faint); }
+.wf-when { font-weight: 400; color: var(--text-faint); }
+.wf-size code { font-size: inherit; }
+
 /* ---- workflow dag ----------------------------------------------------- */
 /* WHAT THIS REPLACED, and why none of it survived.
    `.level-label` drew ONE separator bar between one depth and the next -- the
