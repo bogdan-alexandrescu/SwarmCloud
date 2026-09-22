@@ -32,6 +32,12 @@ And one about not writing for the sake of writing:
      anything. There are exactly two admissible sources -- a successful
      comparison, or a durable record of what this platform last published --
      and when neither can answer, nothing is written and the sweep says so.
+
+     That rule applies to the BASE secret only, and deliberately. The
+     `-refresh` half changes on every single exchange -- measured, see the
+     comment beside its `add_version` below -- so there is no unchanged write
+     to suppress there and a digest comparison over it could never match. Its
+     growth is bounded by retention in `quota_broker.secretstore`, not by this.
 """
 
 from __future__ import annotations
@@ -344,6 +350,25 @@ class CredentialRefresher:
         # expiry to decide whether to refresh. Skipping the write when the
         # endpoint returns the same refresh token would leave a stale expiry
         # behind and refresh again on every tick, forever.
+        #
+        # AND THE TOKEN DOES ROTATE, EVERY TIME -- so there is nothing here for
+        # a ledger to suppress, and the `-refresh` half will never get the
+        # deduplication the base half got. Measured on 2026-09-22 from this
+        # deployment's own logs, over the 14 days to that date: 76 exchanges
+        # logged "subscription credential refreshed" and 76 logged "refresh
+        # token rotated and persisted", with the same per-account distribution
+        # (20 / 15 / 15 / 14 / 4 / 4 / 4). That log line fires only on
+        # `fresh.refresh_token != credential.refresh_token`, so every exchange
+        # returned a NEW refresh token. `oauth.refresh` still carries the
+        # presented token forward when the endpoint omits one, because that
+        # costs nothing and losing it strands the account -- but no exchange
+        # has yet omitted one.
+        #
+        # The consequence is worth stating plainly, because it is the reason
+        # the retention rule exists: every legitimate refresh MUST append a
+        # version here, ~4.8 a day per account, forever. The waste was never
+        # the write; it was that nothing ever expired what the write
+        # superseded. See `RETAINED_VERSIONS` in quota_broker.secretstore.
         self._store.add_version(refresh_secret, serialise(fresh))
         if fresh.refresh_token != credential.refresh_token:
             self._log.info(
