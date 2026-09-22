@@ -57,7 +57,7 @@ TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix
 TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
-        load-test quota-test concurrency-test failure-test race-test test tf-test lint \
+        load-test quota-test concurrency-test failure-test race-test test tf-test ui-test lint \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -180,6 +180,23 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@# files errored in their fixture for 95 commits with nothing to report it.
 	@uv run --project . pytest tests/integration -q
 	@$(MAKE) tf-test
+
+ui-test: ## Drive the real UI in a headed browser and assert what a person would eyeball
+	@# DELIBERATELY NOT A PREREQUISITE OF `test`, AND `test` IS NOT A
+	@# PREREQUISITE OF THIS.
+	@#
+	@# `make test` is offline, needs no credentials, creates nothing and
+	@# finishes in seconds. That is load-bearing: it is the gate CLAUDE.md names
+	@# before anyone may say a change is done, so it has to stay cheap enough
+	@# that nobody is tempted to skip it. This suite builds a bundle, starts an
+	@# HTTP server and drives a headed Chromium, and takes minutes.
+	@#
+	@# Folding it in would also, the first time Chromium was missing on a
+	@# machine, teach somebody to add an "if the browser exists" guard -- and a
+	@# guard that turns "I could not find the browser" into a green run is the
+	@# exact shape the comment under `test` above refuses. Separate target, no
+	@# guard, and it exits 3 rather than 0 when it could not run at all.
+	@$(SCRIPTS)/ui-test.sh $(UI_TEST_ARGS)
 
 tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no credentials)
 	@# 86 assertions covering the platform promises the docs lean on. This suite
