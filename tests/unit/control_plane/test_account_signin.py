@@ -145,8 +145,10 @@ class _Endpoint:
         }
         self._error = error
 
-    def redeem(self, *, code, verifier, redirect_uri):
-        self.calls.append({"code": code, "verifier": verifier, "redirect_uri": redirect_uri})
+    def redeem(self, *, code, verifier, redirect_uri, state=""):
+        self.calls.append(
+            {"code": code, "verifier": verifier, "redirect_uri": redirect_uri, "state": state}
+        )
         if self._error:
             raise self._error
         return dict(self._payload)
@@ -177,6 +179,14 @@ def client(broker, monkeypatch):
         account_store=AccountStore(broker.db),
     )
     app.state.secret_store = _Secrets()
+    # NOTE FOR ANYONE READING THIS FIXTURE. Assigning app.state.token_endpoint
+    # here is why the missing production wiring was invisible for so long:
+    # create_app did not set it, every request to /v1/accounts/exchange raised
+    # AttributeError and answered 500, and this suite passed throughout because
+    # the fixture did the wiring the application never did. A fixture that
+    # supplies a collaborator the app is supposed to construct tests the
+    # handler and hides the assembly. test_broker_app_state_wiring.py now
+    # covers the assembly separately.
     app.state.token_endpoint = _Endpoint()
     c = TestClient(app, raise_server_exceptions=False)
     c.app_ref = app
@@ -223,6 +233,10 @@ def test_the_code_is_redeemed_with_the_verifier_that_started_this_sign_in(client
     client.post("/v1/accounts/exchange", json={"state": started["state"], "code": "code-abc"})
 
     call = client.app_ref.state.token_endpoint.calls[0]
+    # The state reaches the token endpoint. Claude Code sends it on the token
+    # request and the form-encoded version omitted it entirely, which the live
+    # endpoint answered 400 invalid_request_error.
+    assert call["state"], "the state was not passed through to the token endpoint"
     assert call["redirect_uri"] == OAUTH_REDIRECT_URI
     assert call["verifier"]
     assert call["code"] == "code-abc"
