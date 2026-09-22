@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { loadCapacity, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError } from './fetch'
+import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
 import { poolKind, poolLabel, setBy, type Capacity, type Pool } from './types'
 
@@ -61,8 +62,8 @@ function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => vo
     <>
       <p className="conjunction">
         A task must clear <strong>every</strong> pool its profile lists, so its
-        ceiling is the <strong>minimum</strong> across them. Raising one pool
-        changes nothing while another binds lower.
+        ceiling is the <strong>minimum</strong> across them.
+        <HelpCard topic="pools-all-at-once" />
       </p>
 
       {profiles.length > 0 && (
@@ -107,10 +108,14 @@ function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => vo
               </tbody>
             </table>
           </div>
+          {/* THE UNIT OF THE COLUMN STAYS ON THE SURFACE -- agents, not units,
+              and the two are different numbers. The WEIGHTS that used to be
+              typed out here are platform figures nothing checked (§5); the
+              sizing table under Runtimes reads them from the catalogue. */}
           <p className="muted small">
-            &ldquo;Ceiling&rdquo; is how many agents of that profile could run at
-            once, not units: a browser agent weighs 2 and a large one 4, so a
-            pool of 40 units is 20 browser agents.
+            &ldquo;Ceiling&rdquo; is how many <strong>agents</strong> of that
+            profile could run at once, not units.
+            <HelpCard topic="units-not-agents" />
           </p>
         </section>
       )}
@@ -144,12 +149,13 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
           </tbody>
         </table>
       </div>
+      {/* THE CONSEQUENCE OF THE CONTROL STAYS BESIDE THE CONTROL (§6): an
+          operator lowering a ceiling has to know, before pressing it, that
+          nothing is evicted. */}
       <p className="muted small">
-        A change writes <code>hard_limit</code> and nothing else — the{' '}
-        <code>active</code> counter is owned by the admission transaction and is
-        never touched here. Lowering a ceiling below what is currently in use
-        does not evict anything: running work keeps its slots and the pool
-        simply admits nothing new until it drains.
+        <strong>Lowering a ceiling evicts nothing.</strong> Running work keeps
+        its slots; the pool admits nothing new until it drains.
+        <HelpCard topic="ceiling-change-evicts-nothing" />
       </p>
     </section>
   )

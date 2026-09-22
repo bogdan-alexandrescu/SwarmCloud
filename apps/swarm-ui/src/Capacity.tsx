@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { loadCapacity } from './api'
 import { isPaused } from './fetch'
+import type { TopicId } from './help'
+import { HelpLinks } from './HelpCard'
 import { Screen } from './Shell'
 import { Counterfactuals, IncompleteNote, headroomFigure } from './Blockers'
 import {
@@ -91,7 +93,7 @@ export function CapacityScreen() {
               <Family key={kind} kind={kind} pools={pools} asTable={asTable} />
             )
           })}
-          <Legend capacity={d} />
+          <HelpLinks topics={CAPACITY_TOPICS} />
         </>
       )}
     </Screen>
@@ -454,36 +456,19 @@ function PoolCard({ pool }: { pool: Pool }) {
  * The two things about this data that are counter-intuitive enough to need
  * saying on the screen rather than in a doc nobody opens.
  */
-function Legend({ capacity }: { capacity: Capacity }) {
-  return (
-    <section className="section legend">
-      <h2>Reading this screen</h2>
-      <dl>
-        <dt>Units, not agents</dt>
-        <dd>
-          Admission counts weighted units — standard 1, browser 2, large 4 — so
-          8 units in use may be two large agents or eight standard ones. Agent
-          counts live on the Agents screen and are a different number.
-        </dd>
-        <dt>Freshness is this page's own read time</dt>
-        <dd>
-          A pool's <code>updated_at</code> is not a change time: pools bootstrapped
-          by Terraform carry none and the API fills it with "now" on every
-          request, and the quota broker rewrites it on every provider pool each
-          pass whether or not anything changed. So it is never shown here as
-          "last changed".
-        </dd>
-        {Object.keys(capacity.runner_profiles).length > 0 && (
-          <>
-            <dt>Headroom is for your tenant</dt>
-            <dd>
-              Runner-profile pool lists come from <code>pool_names_for</code> for
-              the calling tenant — including for an admin. They describe what a
-              task <em>you</em> submit must clear, not a platform figure.
-            </dd>
-          </>
-        )}
-      </dl>
-    </section>
-  )
-}
+/**
+ * The legend this screen used to end on, as links.
+ *
+ * The middle entry carried "standard 1, browser 2, large 4" -- three platform
+ * figures typed into a paragraph, which §5 of the prose migration table lists
+ * as a restatement nothing checks. `units-not-agents` states the RULE and
+ * names no figure, and the weights themselves are on the sizing table under
+ * Runtimes, where they are read from the catalogue.
+ */
+const CAPACITY_TOPICS: readonly TopicId[] = [
+  'units-not-agents',
+  'pools-all-at-once',
+  'pool-freshness',
+  'tenant-scope',
+  'absent-vs-zero',
+]

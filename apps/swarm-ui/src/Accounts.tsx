@@ -10,6 +10,8 @@ import {
   type AccountsBoard,
 } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import type { TopicId } from './help'
+import { HelpCard, HelpLinks } from './HelpCard'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import {
   BAR_CELLS,
@@ -300,8 +302,7 @@ function Body({
       <Broken accounts={accounts} scope={board.page.tenant_id} />
       <Pool board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
       <AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
-      <Instructions />
-      <Legend />
+      <HelpLinks topics={ACCOUNT_TOPICS} />
     </>
   )
 }
@@ -335,30 +336,27 @@ function Broken({ accounts, scope }: { accounts: Account[]; scope: string | null
       {mine.length > 0 && (
         <div>
           {mine.map((a) => a.account_id).join(', ')} &mdash; the refresh token is
-          gone or unreadable, so the sweep has stopped trying rather than spend the
-          token endpoint&rsquo;s rate limit learning the same answer every five
-          minutes. Nothing new is assigned to {mine.length === 1 ? 'it' : 'them'}.
-          Open the row and press <em>Sign in again</em>: one trip to a Claude
-          login page, one short code, and this screen puts the state back for you.
+          gone or unreadable. Nothing new is assigned to{' '}
+          {mine.length === 1 ? 'it' : 'them'}.{' '}
+          <strong>Open the row and press Sign in again.</strong>
+          <HelpCard topic="reauth-required" />
         </div>
       )}
       {lent.length > 0 && (
         <div>
           {lent.map((a) => `${a.account_id} (owned by ${a.owner_tenant})`).join(', ')}{' '}
           &mdash; broken the same way, and <strong>not yours to fix</strong>.
-          Signing in again, refreshing and changing state stay with the owning
-          tenant, so those rows carry no controls and the routes answer{' '}
-          <em>404, no such account in this tenant&rsquo;s pool</em> here. Nothing
-          of yours will be assigned to{' '}
+          Nothing of yours will be assigned to{' '}
           {lent.length === 1 ? 'it' : 'them'} until{' '}
           {lent.length === 1 ? 'its owner signs in' : 'their owners sign in'}{' '}
-          again, so the thing to do is ask{' '}
+          again, so ask{' '}
           {soleLentOwner !== null ? (
             <strong>{soleLentOwner}</strong>
           ) : (
             'the owners named above'
           )}
           .
+          <HelpCard topic="lent-account" />
         </div>
       )}
     </div>
@@ -401,13 +399,15 @@ function Pool({
       <section className="section panel">
         <h2>The pool</h2>
         <div className="state" role="status">
-          <h3>No accounts registered</h3>
+          {/* A REAL ZERO, SAID AS ONE, on the surface. What the zero COSTS --
+              that work waits rather than fails, quietly -- is the topic. */}
+          <h3>
+            No accounts registered
+            <HelpCard topic="park-on-missing-credential" />
+          </h3>
           <p>
-            The read succeeded and returned nothing &mdash; this is a real zero,
-            not a failed query. Until an account exists, every task whose runner
-            profile names a subscription provider parks on a missing credential
-            rather than failing, which costs nothing but also runs nothing. Add
-            the first one below: it is a sign-in, and it takes about a minute.
+            The read succeeded and returned nothing &mdash; a real zero, not a
+            failed query. Add the first one below.
           </p>
         </div>
       </section>
@@ -468,8 +468,11 @@ function Pool({
             {shortfall(board)} could not be read
           </>
         )}{' '}
-        &middot; 5H and 7D are the provider&rsquo;s own windows, reported by
-        workers &middot; a figure marked ~ is projected, not measured
+        {/* THE SHORTFALL AND THE TILDE BOTH STAY. A row count over documents
+            that were dropped is not a count, and a figure that is real but
+            not current has to say so where it is read. */}
+        &middot; ~ is projected, not measured
+        <HelpCard topic="projected-not-measured" />
       </p>
     </section>
   )
@@ -564,19 +567,36 @@ function PoolRows({
   )
 }
 
-/** Why a reading is what it is, in the cell's own tooltip. Never decoration. */
+/**
+ * Why a reading is what it is, in the cell's own tooltip.
+ *
+ * SHORT, AND CARRYING NO ARGUMENT. These were five sentences each, reachable
+ * only by hovering a table cell with a mouse -- which is the failure mode the
+ * `?` exists to fix, not a use of it. The reasoning is at
+ * `#help/absent-vs-zero` and `#help/projected-not-measured`, reachable from
+ * the provenance line under the table and from the footer.
+ *
+ * NOTHING MEASURED LEFT WITH THEM. An unmeasured cell still draws NO BAR at
+ * all and still prints an em dash; a projected one still prints its tilde.
+ * That is what a reader sees without hovering anything, and it is what
+ * `src/__tests__/honesty.prose.test.tsx` asserts.
+ *
+ * The 'stale' case also drops a restatement of the broker's staleness
+ * window, which §5 of the migration table lists as one of five copies of a
+ * platform figure no route publishes.
+ */
 function readingTitle(r: AccountReading, window: string): string {
   switch (r.kind) {
     case 'never':
-      return 'No reading has ever arrived for this account, so its utilisation is unknown. Unknown is not zero.'
+      return 'No reading has ever arrived. Unknown is not zero.'
     case 'absent':
-      return `The last reading carried no ${window} window, so this is unmeasured. Unmeasured is not zero: the provider defines which windows it reports, and a new one appearing does not need a change here.`
+      return `The last reading carried no ${window} window. Unmeasured is not zero.`
     case 'reset':
-      return `This window passed its reset ${timeAgo(r.resetsAt)}, so the figure describes the window before it and says nothing about now. Marked ~ for that reason.`
+      return `Passed its reset ${timeAgo(r.resetsAt)}; this describes the window before it. Marked ~.`
     case 'stale':
-      return `Last read ${timeAgo(r.observedAt)}, older than the 30 minutes a reading is trusted for. These accounts are also used by a person at a laptop, so utilisation can move without the platform seeing any of it. Marked ~: projected, not measured.`
+      return `Last read ${timeAgo(r.observedAt)}, past the age a reading is trusted for. Marked ~.`
     case 'live':
-      return `Read ${timeAgo(r.observedAt)}, within the window a reading is trusted for.`
+      return `Read ${timeAgo(r.observedAt)}, within the age a reading is trusted for.`
   }
 }
 
@@ -779,8 +799,8 @@ function Warnings({
   if (unreadableDocumentCount > 0) {
     lines.push(
       unreadableDocuments.length > 0
-        ? `${unreadableDocumentCount} account document${unreadableDocumentCount === 1 ? '' : 's'} could not be read, so ${unreadableDocumentCount === 1 ? 'it is' : 'they are'} missing from this table and from every count on this screen. ${unreadableDocuments.length === unreadableDocumentCount ? '' : `${unreadableDocuments.length} of them belong${unreadableDocuments.length === 1 ? 's' : ''} to this tenant: `}${unreadableDocuments.join(', ')}. The broker logs the parse error against each document id.`
-        : `${unreadableDocumentCount} account document${unreadableDocumentCount === 1 ? '' : 's'} could not be read, so ${unreadableDocumentCount === 1 ? 'it is' : 'they are'} missing from this table and from every count on this screen. None belongs to this tenant, so their ids are not shown here -- the broker logs the parse error against each one.`,
+        ? `${unreadableDocumentCount} account document${unreadableDocumentCount === 1 ? '' : 's'} could not be read, so ${unreadableDocumentCount === 1 ? 'it is' : 'they are'} missing from this table and from every count on this screen: ${unreadableDocuments.join(', ')}.`
+        : `${unreadableDocumentCount} account document${unreadableDocumentCount === 1 ? '' : 's'} could not be read, so ${unreadableDocumentCount === 1 ? 'it is' : 'they are'} missing from this table and from every count on this screen. None belongs to this tenant.`,
     )
   }
 
@@ -791,7 +811,7 @@ function Warnings({
   // broker logs this from its sweep; nothing showed it to a person.
   if (accounts.length > 0 && accounts.every(neverAssigned)) {
     lines.push(
-      `No account in this pool has ever been assigned to an agent. An idle pool and a pool nothing can reach look identical on this screen, and this is the shape of the second: check that the scheduler sets QUOTA_BROKER_URL on the jobs it dispatches, and that each tenant's worker service account holds roles/run.invoker on swarm-quota-broker. Until a worker asks, every figure above describes accounts nothing is using.`,
+      `No account in this pool has ever been assigned to an agent. An idle pool and a pool nothing can reach look identical on this screen, and this is the shape of the second.`,
     )
   }
 
@@ -802,7 +822,7 @@ function Warnings({
     // and no explanation of why nothing runs on it.
     if (unreadableFor(a, scope)) {
       lines.push(
-        `${a.account_id} is being skipped for ${scope}: this tenant reported it could not read the account's secret, and accounts.choose() excludes it on that report -- for this tenant only, so its owner and any other borrower are unaffected. Its headroom above is real and is not available here. The report is forgotten thirty minutes after it was made; if it keeps coming back, the missing piece is roles/secretmanager.secretAccessor on that secret for this tenant's worker service account.`,
+        `${a.account_id} is being skipped for ${scope}: this tenant reported it could not read the account's secret. Its headroom above is real and is not available here.`,
       )
     }
     if (needsAHuman(a)) {
@@ -811,8 +831,8 @@ function Warnings({
       // borrower there is sending them to a dead end.
       lines.push(
         isOwned(a, scope)
-          ? `${a.account_id} needs a sign-in. Open its row, press Sign in again, and this screen puts its state back afterwards.`
-          : `${a.account_id} needs a sign-in, and ${a.owner_tenant} owns it. Signing in again and changing its state belong to that tenant -- those routes answer 404 here -- so its row has no controls and this one is fixed by its owner, not from this screen.`,
+          ? `${a.account_id} needs a sign-in. Open its row and press Sign in again.`
+          : `${a.account_id} needs a sign-in, and ${a.owner_tenant} owns it -- ask them; its row has no controls here.`,
       )
       continue
     }
@@ -825,14 +845,14 @@ function Warnings({
       // about the platform that the platform contradicts.
       lines.push(
         a.state === 'AVAILABLE'
-          ? `${a.account_id} has never been observed: no worker has reported a rate-limit reading for it yet. It is still assignable, because the broker treats an unobserved account as having room on purpose -- a new account has to be assignable before it can report anything.`
-          : `${a.account_id} has never been observed: no worker has reported a rate-limit reading for it yet. Its headroom is treated as full for that reason, but it is in ${a.state}, and AVAILABLE is the only state a new agent may be started on -- so nothing will be assigned to it until its state changes.`,
+          ? `${a.account_id} has never been observed -- unmeasured, not idle. It is still assignable.`
+          : `${a.account_id} has never been observed -- unmeasured, not idle. It is in ${a.state}, so nothing will be assigned to it until its state changes.`,
       )
       continue
     }
     if (a.stale) {
       lines.push(
-        `${a.account_id} reading is ${timeAgo(a.observed_at)}, older than the 30 minutes a reading is trusted for, so its figures are shown projected.`,
+        `${a.account_id} reading is ${timeAgo(a.observed_at)}, past the age a reading is trusted for, so its figures are shown projected.`,
       )
     }
     const binding = bindingWindow(a)
@@ -850,7 +870,7 @@ function Warnings({
         // produces the same condition with perfectly synchronised clocks, so
         // it now names no cause at all and says what to do instead.
         lines.push(
-          `${a.account_id}: the ${binding.key.replace(/_/g, '-')} window's reset instant has passed, and the board this row came from -- read ${timeAgo(readAt)} -- had not marked that window reset. Nothing here compares the two clocks, so this page cannot tell you whether it has cleared since that read: reload, and the platform answers. Until then CLEARS on that row is a countdown that has run out, not a reading.`,
+          `${a.account_id}: the ${binding.key.replace(/_/g, '-')} window's reset instant has passed, and the board this row came from -- read ${timeAgo(readAt)} -- had not marked that window reset. Reload, and the platform answers. Until then CLEARS on that row is a countdown that has run out, not a reading.`,
         )
       }
     }
@@ -993,14 +1013,16 @@ function Detail({
 function Borrowed({ account }: { account: Account }) {
   return (
     <div className="acct-action">
-      <h4>Lent to you</h4>
+      <h4>
+        Lent to you
+        <HelpCard topic="lent-account" />
+      </h4>
+      {/* THE ABSENCE OF CONTROLS IS THE FACT, and it needs a name beside it:
+          a row with no buttons and no sentence reads as a row that failed to
+          render them. */}
       <p className="muted small">
-        <strong>{account.owner_tenant}</strong> owns this account and has lent it
-        to you. Your agents can run on it, and pausing, draining, re-lending,
-        refreshing and signing in again stay with its owner. Those routes answer{' '}
-        <em>404, no such account in this tenant&rsquo;s pool</em> here &mdash; the
-        same answer a label that does not exist gets, so that asking cannot
-        confirm somebody else&rsquo;s account names.
+        <strong>{account.owner_tenant}</strong> owns it. Your agents can run on
+        it; nothing here can change it.
       </p>
     </div>
   )
@@ -1020,20 +1042,19 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
   if (keys.length === 0) {
     return (
       <p className="muted small">
-        The provider has reported no windows for this account, so 5H, 7D and
-        CLEARS are all unmeasured above rather than zero.
+        No windows reported &mdash; 5H, 7D and CLEARS above are{' '}
+        <strong>unmeasured, not zero</strong>.
+        <HelpCard topic="provider-defines-windows" />
       </p>
     )
   }
   if (extra.length === 0) return null
   return (
     <div className="acct-extra-windows">
-      <h4>Windows with no column</h4>
-      <p className="muted small">
-        The provider defines its own window names and may add one at any time.
-        These arrived in the reading and have no column of their own, so they are
-        listed rather than dropped.
-      </p>
+      <h4>
+        Windows with no column
+        <HelpCard topic="provider-defines-windows" />
+      </h4>
       {extra.map((k) => {
         const r = readingOf(account, k)
         const w = account.windows[k]
@@ -1337,12 +1358,10 @@ function RefreshControl({
 
   return (
     <div className="acct-action">
-      <h4>Refresh now</h4>
-      <p className="muted small">
-        Runs the same code path the sweep runs, for this account, and reports what
-        happened. It exists because a timer gives you no way to answer
-        &ldquo;did that work?&rdquo;.
-      </p>
+      <h4>
+        Refresh now
+        <HelpCard topic="refresh-now-probe" />
+      </h4>
       <button type="button" disabled={state.kind === 'sending'} onClick={() => void run()}>
         {state.kind === 'sending' ? 'exchanging…' : 'Refresh this account'}
       </button>
@@ -1354,11 +1373,15 @@ function RefreshControl({
           {/* A write is not a read. A failure after the request left the browser
               does not prove nothing happened, and here "something happened"
               means a token may already have been revoked. */}
+          {/* THE INSTRUCTION STAYS ON THE SURFACE (§6: an actionable
+              explanation may be summarised in the card, but its imperative
+              clause stays next to the control it constrains). Burying this
+              one costs a revoked token. */}
           <p className="warn-text">
-            This failed on a write. If it failed after reaching the broker, the
-            credential may have been exchanged anyway and the previous access
-            token revoked with it &mdash; reload this screen before pressing
-            refresh again.
+            <strong>Reload this screen before pressing refresh again.</strong>{' '}
+            This failed on a write, so the credential may have been exchanged
+            anyway.
+            <HelpCard topic="ambiguous-write" />
           </p>
         </>
       )}
@@ -1456,18 +1479,21 @@ function Lending({
 
   return (
     <div className="acct-action">
-      <h4>Lending</h4>
+      <h4>
+        Lending
+        <HelpCard topic="lending" />
+      </h4>
+      {/* WHO IT SERVES IS THE FACT, and it is the whole reason the panel is
+          open. What lending means is the topic. */}
       <p className="muted small">
         {account.lend_to.length === 0 ? (
           <>
-            This account serves <strong>{owner}</strong> only. No other
-            tenant&rsquo;s pod can reach its credential.
+            Serves <strong>{owner}</strong> only.
           </>
         ) : (
           <>
-            Besides <strong>{owner}</strong>, this account will serve{' '}
-            <strong>{account.lend_to.join(', ')}</strong>. A pod belonging to any
-            of those tenants can mount its access token.
+            Serves <strong>{owner}</strong> and{' '}
+            <strong>{account.lend_to.join(', ')}</strong>.
           </>
         )}
       </p>
@@ -1492,16 +1518,17 @@ function Lending({
       </span>
       {includesOwner && (
         <p className="muted small">
-          <code>{owner}</code> owns this account, so it is not sent as a loan: an
-          account cannot be lent to itself, and the platform would drop it anyway.
+          <code>{owner}</code> owns this account, so it is not sent as a loan.
         </p>
       )}
+      {/* THE CONTROL IS ABSENT AND SAYS WHY. A picker that is simply not
+            drawn is indistinguishable from one that failed to render. */}
       {board.tenants === null && (
         <p className="muted small">
-          There is no tenant picker here because the tenant list could not be
-          read: {board.tenantsDetail} That endpoint is admin-only, so a non-admin
-          genuinely cannot list tenants. Nothing is broken, and tenant ids typed
-          here are still checked by the platform when work is admitted.
+          <strong>No tenant picker:</strong> the tenant list could not be read.{' '}
+          {board.tenantsDetail} Ids typed here are still checked by the
+          platform.
+          <HelpCard topic="admin-gate-not-failure" />
         </p>
       )}
       {board.tenants !== null && (
@@ -1572,11 +1599,14 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
 
   return (
     <div className="acct-action">
-      <h4>State</h4>
-      <p className="muted small">
-        The reason is stored with the change and shown in the STATE column,
-        because the next person to look is usually not you.
-      </p>
+      <h4>
+        State
+        <HelpCard topic="account-states" />
+      </h4>
+      <span className="t-label">
+        reason
+        <HelpCard topic="state-change-reason" />
+      </span>
       <span className="limit-edit">
         <input
           type="text"
@@ -1863,36 +1893,33 @@ function ExchangeAdvice({
   if (refusal === 'accepted_unnamed') {
     return (
       <>
+        {/* THE IMPERATIVE IS THE WHOLE PANEL and it never moves (§6). The
+            mechanism -- what the success code means and why the record is
+            already gone -- is the topic. */}
         <p className="warn-text">
           <strong>Do not sign in again until you have looked.</strong> The
-          message above is the platform saying yes: 201 is the answer it gives
-          once the account has been written, and it deletes the pending record
-          on that same path. What is missing from the answer is the account's
-          name, not the account.
+          platform said yes; what is missing from its answer is the
+          account&rsquo;s name, not the account.
+          <HelpCard topic="signin-201-no-name" />
         </p>
         <p className="muted small">
           {mode === 'add' ? (
             <>
-              Reload the pool and look for the label you typed. If it is there,
-              this worked and there is nothing left to do &mdash; open its row
-              to see its state. If it is not, <em>start over</em> asks for a
-              fresh sign-in; the platform kept no copy of the label or the
-              lending list, so read both off the form before you press
-                anything here — reloading the pool clears them.
+              Reload the pool and look for the label you typed.{' '}
+              <strong>
+                Read the label and the lending list off the form first
+              </strong>
+              {' '}&mdash; reloading clears them.
             </>
           ) : (
             <>
               Reload the pool and open this account&rsquo;s row.{' '}
               <strong>
-                Treat the credential as already replaced until you have looked
+                Treat the credential as already replaced until you have looked.
               </strong>
-              : a replacement revokes the one before it, so this is not a
-              failure to repeat blindly. A replacement keeps the id, the
-              readings and the lending list, so the row will look much as it
-              did. If it is still asking for a sign-in, <em>start over</em>{' '}
-              begins a fresh one.
             </>
           )}
+          <HelpCard topic="signin-verify-by-reload" />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -1912,18 +1939,15 @@ function ExchangeAdvice({
         <p className="warn-text">
           <strong>Nothing refused this &mdash; nothing answered it.</strong> The
           request did not complete, so this page never learned what the platform
-          did with it. It may have been redeemed in full and only the answer
-          lost; it may never have arrived. Nothing here measures which, so
-          nothing here will tell you which.
+          did with it, and <strong>nothing here measures which</strong>.
+          <HelpCard topic="ambiguous-write" />
         </p>
         <p className="muted small">
           Reload the pool and look{' '}
           {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
-          first, because that is measurable and this is not. If{' '}
-          {mode === 'add' ? 'it is not there' : 'it still needs a sign-in'}, the
-          paste field above is still live and the code on the callback page is
-          still the right one to paste &mdash; if the exchange did go through,
-          pasting it says so rather than doing it twice.
+          first &mdash; that is measurable and this is not. The paste field
+          above is still live.
+          <HelpCard topic="signin-verify-by-reload" />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -1937,24 +1961,22 @@ function ExchangeAdvice({
   if (refusal === 'sign_in_expired') {
     return (
       <>
+        {/* THE BLUNT CLAUSE STAYS. This is the one ending where the platform
+            deletes BEFORE it redeems, so it is the one ending that can say
+            nothing happened -- and saying it is the whole value of the
+            panel. */}
         <p className="warn-text">
           <strong>
             This sign-in was held past its deadline, and pasting cannot reopen
             it.
           </strong>{' '}
-          The platform deletes a pending record once it is too old, and it does
-          that <em>before</em> it tries to redeem anything &mdash; which is why
-          this one can be blunt: <strong>nothing was created and nothing was
-          changed</strong>. What is missing is the record the code is checked
-          against, not the code, so a fresh code from the same page is refused
-          in exactly the same way.
+          <strong>Nothing was created and nothing was changed.</strong>
+          <HelpCard topic="signin-is-over" />
         </p>
         <p className="muted small">
-          <em>start over</em> above asks the platform for a new sign-in; the
-          button below does the same thing.{' '}
           {mode === 'add'
-            ? 'The platform kept no copy of the label or the lending list, so read both off the form before you press anything here \u2014 reloading the pool clears them.'
-            : 'The account in the row is untouched — its credential and its state are exactly as they were before this sign-in was started.'}
+            ? 'Read the label and the lending list off the form before you start over \u2014 nothing kept a copy.'
+            : 'The account in the row is untouched.'}
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={onStartOver}>
@@ -1970,36 +1992,27 @@ function ExchangeAdvice({
       <>
         <p className="warn-text">
           <strong>This sign-in is over, and it may well have worked.</strong>{' '}
-          The platform is not holding a record for it any more, and the ordinary
-          reason a record is missing is that it was <em>redeemed</em>: the
-          delete that does not raise is the one immediately after an account has
-          been written. Pasting cannot reopen it &mdash; a code is now checked
-          against nothing &mdash; and this page cannot tell you from here
-          whether it completed.{' '}
-          <strong>So this is not &ldquo;nothing happened&rdquo;</strong>, which
-          is what this panel used to say.
+          The platform is not holding a record for it, and this page cannot
+          tell you whether it completed.{' '}
+          <strong>So this is not &ldquo;nothing happened&rdquo;.</strong>
+          <HelpCard topic="signin-is-over" />
         </p>
         <p className="muted small">
           {mode === 'add' ? (
             <>
-              Reload the pool and look for the label before you start another
-              sign-in. If it is there, this worked. If it is not, <em>start
-              over</em> asks for a fresh one &mdash; the platform kept no copy
-              of the label or the lending list, so read both off the form
-              before you press anything here &mdash; reloading the pool clears
-              them.
+              Reload the pool and look for the label{' '}
+              <strong>before you start another sign-in</strong>. Read the label
+              and the lending list off the form first.
             </>
           ) : (
             <>
               Reload the pool and open this account&rsquo;s row.{' '}
               <strong>
-                Treat the credential as possibly already replaced
+                Treat the credential as possibly already replaced.
               </strong>
-              : a replacement revokes the one before it, so a row that has
-              stopped asking for a sign-in was fixed rather than left alone. If
-              it still needs one, <em>start over</em> begins a fresh sign-in.
             </>
           )}
+          <HelpCard topic="signin-verify-by-reload" />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -2016,15 +2029,10 @@ function ExchangeAdvice({
   if (refusal === 'other_sign_in') {
     return (
       <p className="muted small">
-        <strong>That code belongs to a different sign-in.</strong> The platform
-        compares the part after the <code>#</code> with the sign-in this page
-        started, and they did not match &mdash; the usual cause is a second tab,
-        opened from its own{' '}
-        <em>{mode === 'add' ? 'Add account' : 'Sign in again'}</em>, showing its
-        own code. That
-        check runs before the platform reads anything, so{' '}
-        <strong>this sign-in is untouched and still open</strong>: paste the
-        code from the page <em>this</em> panel opened.
+        <strong>That code belongs to a different sign-in.</strong>{' '}
+        <strong>This sign-in is untouched and still open</strong> &mdash; paste
+        the code from the page <em>this</em> panel opened.
+        <HelpCard topic="signin-still-open" />
       </p>
     )
   }
@@ -2033,11 +2041,9 @@ function ExchangeAdvice({
     return (
       <p className="muted small">
         <strong>The code was refused, and this sign-in is still open.</strong>{' '}
-        The platform deletes the sign-in only once an account exists, so a code
-        that was mistyped, already spent or too old costs one paste and nothing
-        else. Paste again above, or press <em>Open the sign-in page again</em>{' '}
-        for a fresh one &mdash; the label and the lending list are held by this
-        sign-in, so nothing needs re-entering.
+        Paste again above, or press <em>Open the sign-in page again</em> for a
+        fresh code.
+        <HelpCard topic="signin-still-open" />
       </p>
     )
   }
@@ -2049,18 +2055,15 @@ function ExchangeAdvice({
           The platform refused the exchange, and what it said above is all it
           said.
         </strong>{' '}
-        This page recognises the refusals that end a sign-in by their wording,
-        and this is none of them. So it does not know whether the record is
-        still there, and it does not know whether an account was written before
-        whatever went wrong &mdash; and it will not tell you either way from a
-        message it did not recognise.
+        This page does not recognise that refusal, so it does not know whether
+        an account was written.
+        <HelpCard topic="ambiguous-write" />
       </p>
       <p className="muted small">
         Reload the pool and look{' '}
         {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
-        first, because that is measurable and this is not. The paste field above
-        is still live if you need it, and <em>start over</em> begins a fresh
-        sign-in.
+        first &mdash; that is measurable and this is not.
+        <HelpCard topic="signin-verify-by-reload" />
       </p>
       <p className="acct-buttons">
         <button type="button" onClick={reload}>
@@ -2108,21 +2111,17 @@ function SignInFailure({
   if (isRouteMissing(error)) {
     return (
       <div className="ctl-empty is-partial" role="status">
-        <h3>This deployment&rsquo;s API does not serve the sign-in yet</h3>
+        <h3>
+          This deployment&rsquo;s API does not serve the sign-in yet
+          <HelpCard topic="signin-route-missing" />
+        </h3>
+        {/* THE STATUS AND THE ROUTE STAY: they are what distinguishes "this
+            deployment lacks the route" from "your request was refused". */}
         <p>
           The API answered <strong>HTTP {error.httpStatus}</strong> for{' '}
-          <code>{what}</code> itself. That is what an API which has not been
-          given the sign-in route answers &mdash; not an answer about your
-          request, and not one about your account. Both steps exist in this
-          repository &mdash; quota-broker serves them and swarm-api proxies
-          them &mdash; so the API that answered this is not the one this page
-          was built against.
+          <code>{what}</code> itself &mdash; not an answer about your request.
         </p>
-        <p>
-          Nothing was created and nothing was changed. The pool above loaded, so
-          your sign-in to this platform is fine and the account routes are
-          reachable &mdash; it is this one route that is missing.
-        </p>
+        <p>Nothing was created and nothing was changed.</p>
         <span className="ctl-empty-foot">
           {error.code ? `${error.code} · ` : ''}
           {error.message}
@@ -2166,12 +2165,15 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
     return () => clearInterval(t)
   }, [])
 
+  // NO COUNTDOWN, AND THE ABSENCE IS NAMED where a countdown would be. A
+  // plausible number here would be this screen guessing at a deadline the
+  // platform declined to give.
   if (auth.expires_in_seconds === null) {
     return (
       <p className="muted small">
-        The platform did not say how long it holds this sign-in, so there is no
-        countdown here rather than a plausible one. Finish it promptly:{' '}
-        <strong>the code is single-use and expires quickly</strong>.
+        <strong>No deadline was given</strong>, so there is no countdown here.
+        Finish promptly: <strong>the code is single-use</strong>.
+        <HelpCard topic="signin-deadlines" />
       </p>
     )
   }
@@ -2179,21 +2181,17 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
   if (left <= 0) {
     return (
       <p className="warn-text">
-        The platform said it would hold this sign-in for{' '}
-        {humaniseUntil(auth.expires_in_seconds * 1000)}, and that has passed on
-        this browser&rsquo;s clock. A code pasted now will most likely be refused.
-        The field is still live because the platform owns the clock and this one
-        may be ahead of it &mdash; and being refused costs nothing.
+        The platform&rsquo;s {humaniseUntil(auth.expires_in_seconds * 1000)} hold
+        has passed on this browser&rsquo;s clock. The field is still live.
+        <HelpCard topic="signin-deadlines" />
       </p>
     )
   }
   return (
     <p className="muted small">
-      This platform holds the sign-in for another{' '}
-      <strong>{humaniseUntil(left)}</strong>. The code itself is{' '}
-      <strong>single-use and expires sooner than that</strong>, on
-      Anthropic&rsquo;s schedule rather than ours &mdash; so paste it when you
-      see it rather than leaving the tab open.
+      Held for another <strong>{humaniseUntil(left)}</strong> · the code itself{' '}
+      <strong>expires sooner</strong>.
+      <HelpCard topic="signin-deadlines" />
     </p>
   )
 }
@@ -2220,30 +2218,27 @@ function DifferentBrowserNote({ mode }: { mode: 'add' | 'reauth' }) {
     // that was always here, not the result of something the person just did.
     <div className="banner warn" role="note">
       <strong>A different account needs a different browser application</strong>
+      {/* THE INSTRUCTION IS THE BANNER (§6). Nothing here fails loudly --
+          signing in as the wrong organisation SUCCEEDS -- so this has to be
+          read before the button, not diagnosed after it. */}
       <div>
         {mode === 'add' ? (
           <>
-            Which organisation you sign in as comes from the cookies this browser
-            already holds, and nothing in this request overrides it.{' '}
             <strong>A private window is not enough</strong> &mdash; it shares the
-            same cookie jar, so it signs you in as the same organisation and you
-            end up with a second row holding an account you already had. To add a
-            genuinely different account, copy the link below and open it in a{' '}
-            <em>different browser application</em> &mdash; Chrome beside Safari
-            beside Firefox &mdash; or sign out of Claude in this one first.
+            same cookie jar. Copy the link below into a{' '}
+            <em>different browser application</em>, or sign out of Claude in
+            this one first.
           </>
         ) : (
           <>
-            This replaces the credential behind this account with whichever
-            organisation <em>this browser</em> is currently signed in as. That
-            comes from the cookie jar and nothing in the request overrides it,
-            and <strong>a private window shares that jar</strong> rather than
-            clearing it. If this browser is signed in as a different organisation
-            than the one this account is for, copy the link below and open it in
-            a different browser application instead &mdash; otherwise this label
-            quietly starts pointing at the wrong subscription.
+            This replaces the credential with whichever organisation{' '}
+            <em>this browser</em> is signed in as, and{' '}
+            <strong>a private window shares that jar</strong>. If it is the
+            wrong organisation, copy the link below into a different browser
+            application instead.
           </>
         )}
+        <HelpCard topic="second-browser-application" />
       </div>
     </div>
   )
@@ -2316,10 +2311,9 @@ function SignInLink({ url }: { url: string }) {
       </div>
       {copied === 'unavailable' && (
         <p className="muted small">
-          This browser would not give the page access to the clipboard, which it
-          refuses outside a secure context and when the window is not focused.
-          Select the link below and copy it by hand &mdash; it is the same value,
-          and nothing is wrong with the sign-in.
+          <strong>This browser refused the clipboard.</strong> Select the link
+          below and copy it by hand.
+          <HelpCard topic="clipboard-secure-context" />
         </p>
       )}
       <p className="acct-fixed" style={{ wordBreak: 'break-all' }}>
@@ -2408,21 +2402,22 @@ function SignInSteps({
   return (
     <>
       <div className="acct-action">
-        <h4>2 &middot; Sign in to Claude</h4>
+        <h4>
+          2 &middot; Sign in to Claude
+          <HelpCard topic="signin-is-anthropics-page" />
+        </h4>
         <DifferentBrowserNote mode={mode} />
+        {/* THE HOST IS THE CHECKABLE FACT -- it is what a reader compares
+            against the address bar of the tab that opens. The paragraph
+            around it was the explanation. */}
         <p className="muted small">
-          This opens Claude&rsquo;s own sign-in page in a new tab. You sign in
-          there exactly as you normally would &mdash; this platform never sees
-          your password &mdash; and the page you land on afterwards is
           {host ? (
             <>
-              {' '}
-              <code>{host}</code>, which is
+              Opens <code>{host}</code> in a new tab.
             </>
           ) : (
-            <> the one Claude sends you to, which is</>
-          )}{' '}
-          Anthropic&rsquo;s, not ours.
+            <>Opens Claude&rsquo;s own sign-in page in a new tab.</>
+          )}
         </p>
         {/* BOTH DISABLED WHILE A CODE IS IN FLIGHT, and `start over` is the one
             that matters: abandoning a sign-in whose exchange is already on its
@@ -2454,9 +2449,9 @@ function SignInSteps({
             moment the platform said it had finished with it. */}
         {at.opened === 'blocked' && !dead && (
           <p className="warn-text">
-            This browser refused to open the tab, which is what a popup blocker
-            or an extension does. Nothing failed on the platform and the sign-in
-            is still open &mdash; use the link below instead.
+            <strong>This browser refused to open the tab</strong> (a popup
+            blocker or an extension). The sign-in is still open &mdash; use the
+            link below.
           </p>
         )}
         {dead ? (
@@ -2466,10 +2461,7 @@ function SignInSteps({
              works, it just produces a dead end two browsers away from here,
              where nothing explains it. */
           <p className="muted small">
-            <strong>The sign-in link has been withdrawn.</strong> It carries
-            the same <code>state</code> that the reopen button above is disabled
-            for, and it is the one control that can be carried to another
-            browser, where none of this is on screen. {deadWhy}
+            <strong>The sign-in link has been withdrawn.</strong> {deadWhy}
           </p>
         ) : (
           <SignInLink url={at.auth.authorize_url} />
@@ -2477,16 +2469,16 @@ function SignInSteps({
       </div>
 
       <form className="acct-action" onSubmit={(e) => void submit(e)}>
-        <h4>3 &middot; Paste the code that page shows you</h4>
+        <h4>
+          3 &middot; Paste the code that page shows you
+          <HelpCard topic="signin-paste-the-code" />
+        </h4>
+        {/* THE IMPERATIVE STAYS (§6). "Paste all of it" is what stops a
+            credential landing on the wrong account from a second tab; the
+            mechanism behind it is the topic. */}
         <p className="muted small">
-          When you have signed in, Claude prints a short code on the page.{' '}
-          <strong>
-            It shows the code, then a <code>#</code>, then a long string.
-          </strong>{' '}
-          Paste <em>all of it</em> &mdash; the platform splits it, and uses the
-          part after the <code>#</code> to check the paste belongs to{' '}
-          <em>this</em> sign-in rather than another tab&rsquo;s. Pasting only the
-          part before the <code>#</code> works too.
+          <strong>Paste all of it</strong> &mdash; the code, the{' '}
+          <code>#</code>, and the long string after it.
         </p>
         {/* NOT WHEN THE SIGN-IN IS OVER. This counts down the platform's hold
             on a pending record that no longer exists, and its expired branch
@@ -2628,16 +2620,17 @@ function AddAccount({
       <section className="section panel">
         <h2>Add an account</h2>
         <div className="ctl-empty is-partial" role="status">
-          <h3>Adding an account is unavailable until your tenant is named</h3>
+          {/* THE HEADING IS THE MARKER: the form is WITHDRAWN, and a form that
+              is simply not drawn is indistinguishable from one that failed to
+              render. */}
+          <h3>
+            Adding an account is unavailable until your tenant is named
+            <HelpCard topic="account-owned-by-one-tenant" />
+          </h3>
           <p>
-            An account is owned by exactly one tenant, and the API decides which
-            from your verified sign-in rather than from anything typed here. This
-            response did not name one, so this form cannot tell you whose pool an
-            account would land in &mdash; and that is not something to guess at.
-          </p>
-          <p>
-            This is a gap in what was read, not a fault in the platform. It says
-            nothing about the accounts above, which loaded.
+            This response named no tenant, so this form cannot tell you whose
+            pool an account would land in. This is a gap in what was read, not a
+            fault in the platform, and it says nothing about the accounts above.
           </p>
         </div>
       </section>
@@ -2698,13 +2691,8 @@ function AddAccount({
     <section className="section panel">
       <h2>Add an account</h2>
       <p className="conjunction">
-        Owned by <strong>{owner}</strong>. This is a sign-in, not a paste: you
-        open Claude&rsquo;s own login page, sign in as you normally would, and
-        copy back one short code. This platform never sees your password and
-        never asks you for a keychain item. What it receives is stored{' '}
-        <strong>write-only</strong> &mdash; split into two Secret Manager
-        secrets, returned by no route here, and never rendered on this screen,
-        not even as a length.
+        Owned by <strong>{owner}</strong>. This is a sign-in, not a paste.
+        <HelpCard topic="sign-in-not-paste" />
       </p>
 
       {state.kind === 'done' && (
@@ -2721,9 +2709,14 @@ function AddAccount({
       {state.kind === 'open' ? (
         <>
           <div className="acct-action">
-            <h4>1 &middot; Named</h4>
+            <h4>
+              1 &middot; Named
+              <HelpCard topic="signin-holds-label-and-lending" />
+            </h4>
+            {/* THE EXACT ID AND THE LENDING LIST STAY. This is the last point
+                at which either can be changed, so both are printed in full. */}
             <p className="muted small">
-              This sign-in is reserved for{' '}
+              Reserved for{' '}
               <code>
                 {owner}:{state.label}
               </code>
@@ -2734,9 +2727,7 @@ function AddAccount({
               ) : (
                 <>, lent to nobody</>
               )}
-              . The platform is holding those alongside the sign-in, so they
-              cannot be changed from here without starting a new one &mdash;{' '}
-              <em>start over</em> below does exactly that.
+              . <em>start over</em> below is the only way to change either.
             </p>
           </div>
           <SignInSteps
@@ -2771,21 +2762,21 @@ function AddAccount({
               the request carries and the form never mentions is a decision made
               for the operator with nothing on screen admitting it. So it is
               shown, named, and said to be fixed. */}
-          <span className="t-label">provider</span>
+          <span className="t-label">
+            provider
+            <HelpCard topic="subscription-only-no-api-key" />
+          </span>
+          {/* SHOWN, NAMED, AND SAID TO BE FIXED. A value the request carries
+              and the form never mentions is a decision made for the operator
+              with nothing on screen admitting it. */}
           <p className="acct-fixed mono">
             {SUBSCRIPTION_PROVIDER}
-            <span className="acct-why">
-              fixed, and the only kind this pool handles: a Claude subscription.
-              The sign-in yields the OAuth pair quota-broker can exchange for a
-              successor indefinitely &mdash; that is what makes &ldquo;the only
-              manual step is the first one&rdquo; true. There is deliberately no
-              API-key option: a key that cannot be exchanged has nothing for the
-              sweep to keep alive.
-            </span>
+            <span className="acct-why">fixed — the only kind this pool handles</span>
           </p>
 
           <label className="t-label" htmlFor="acct-label">
             label
+            <HelpCard topic="account-label-rules" />
           </label>
           <input
             id="acct-label"
@@ -2796,33 +2787,31 @@ function AddAccount({
             placeholder="laptop"
             onChange={(e) => setLabel(e.target.value)}
           />
+          {/* THE CONSTRAINT STAYS BESIDE THE INPUT. A field whose rule is one
+              hover away is a field people fill in wrong. The id preview stays
+              for the same reason: it is what the label becomes. */}
           <p className="muted small">
-            A name for this subscription, for you. The account id will be{' '}
+            The account id will be{' '}
             <code>
               {owner}:{trimmed || 'label'}
             </code>
             . Lowercase letters, digits and dashes, starting and ending
-            alphanumeric, at most 40 characters &mdash; it becomes part of a
-            Secret Manager name and a Kubernetes annotation. The platform checks
-            it <strong>before it hands back a sign-in link</strong>, so a name it
-            cannot use costs you a message rather than a wasted login. That check
-            is the platform&rsquo;s own and is not repeated here, because a
-            second copy of the rule would eventually refuse a name the platform
-            would have taken.
+            alphanumeric, at most 40 characters.
           </p>
+          {/* A DESTRUCTIVE OUTCOME, NAMED BEFORE IT HAPPENS (§6). */}
           {replacing && (
             <p className="warn-text">
               <strong>{trimmed} already exists in this pool.</strong> Signing in
-              under that label REPLACES its credential rather than adding a second
-              account &mdash; the id, the readings, the lending list and the state
-              are all kept. If you meant another subscription, give it a different
-              name. If you meant to fix that one, its own row has{' '}
-              <em>Sign in again</em>, which also puts its state back afterwards.
+              under that label <strong>REPLACES its credential</strong> rather
+              than adding a second account. For another subscription, give it a
+              different name.
+              <HelpCard topic="signin-keeps-readings" />
             </p>
           )}
 
           <label className="t-label" htmlFor="acct-lend">
             lend to (optional)
+            <HelpCard topic="lending-narrows-isolation" />
           </label>
           <input
             id="acct-lend"
@@ -2833,12 +2822,7 @@ function AddAccount({
             placeholder="tenant ids, comma separated; empty means this account serves only you"
             onChange={(e) => setLend(e.target.value)}
           />
-          <p className="muted small">
-            Isolation is the default. Naming a tenant here lets that
-            tenant&rsquo;s pods mount this account&rsquo;s access token, which is
-            a narrowing of invariant 9 rather than a hole in it. It is a decision
-            with a name on it, and it can be changed per account afterwards.
-          </p>
+          <p className="muted small">Isolation is the default.</p>
 
           <p className="acct-buttons">
             <button type="submit" disabled={state.kind === 'starting' || trimmed === ''}>
@@ -2860,13 +2844,16 @@ function AddAccount({
                 what="POST /v1/accounts/authorize"
                 onRetry={trimmed === '' ? undefined : () => void start()}
               />
+              {/* THE MISSING CONTROL IS NAMED WHERE IT WOULD BE. A "Try
+                    again" that cannot re-send is worse than none, and none
+                    with no explanation reads as a panel that failed to draw
+                    its own button. */}
               {trimmed === '' && (
                 <p className="warn-text">
-                  There is no <em>Try again</em> on this failure because the{' '}
-                  <strong>label field above is empty</strong>, and the platform
-                  checks the label before it hands back a sign-in link. Type the
-                  name this account should have and press{' '}
-                  <em>Start the sign-in</em>.
+                  No <em>Try again</em>: the{' '}
+                  <strong>label field above is empty</strong>. Type a name and
+                  press <em>Start the sign-in</em>.
+                  <HelpCard topic="account-label-rules" />
                 </p>
               )}
             </>
@@ -2900,35 +2887,36 @@ function SignInDone({
         {partial ? 'Signed in, but the state was not put back' : 'Signed in'}{' '}
         &mdash; {state.account.account_id}
       </h3>
+      {/* AN EXPIRY, OR THE ABSENCE OF ONE, NEVER A GUESS. The figure and the
+          phrase are different shapes on purpose: "expires in 8h" and "no
+          expiry was reported" are different facts and must not read alike. */}
       <p>
-        Two secrets were written: the pair, which only quota-broker reads, and
-        the access token, which is what a pod mounts into{' '}
-        <code>CLAUDE_CODE_OAUTH_TOKEN</code>.{' '}
+        Two secrets were written.
+        <HelpCard topic="credential-split" />{' '}
         {state.expiresAt ? (
           <>
-            That access token expires in{' '}
-            <strong>{clearsIn(state.expiresAt, Date.now())}</strong>, and that is
-            not a deadline for you: the sweep exchanges the refresh half for a
-            successor before it lapses, which is exactly what makes this a
-            one-time sign-in.
+            The mounted token expires in{' '}
+            <strong>{clearsIn(state.expiresAt, Date.now())}</strong> &mdash; not
+            a deadline for you.
+            <HelpCard topic="credential-refresh-sweep" />
           </>
         ) : (
           <>
-            The platform did not report when the access token expires, so there
-            is no figure here rather than a guessed one. That says nothing about
-            whether the credential is good &mdash; <em>Refresh this account</em>{' '}
-            in its row asks the broker directly.
+            <strong>No expiry was reported</strong>, so there is no figure here
+            rather than a guessed one. <em>Refresh this account</em> in its row
+            asks the broker directly.
           </>
         )}
       </p>
+      {/* THE SECOND BRANCH IS A SUCCESS AND A PROBLEM AT ONCE, and its
+          required follow-up stays on the surface (§6): a credential that is
+          in place and good, on an account nothing will be assigned to. */}
       {restore !== null &&
         (restore.ok ? (
           <p>
-            This account was in REAUTH_REQUIRED, and signing in deliberately does
-            not clear that by itself &mdash; the same rule that stops a
-            credential replacement silently un-pausing an account somebody
-            paused. So its state was put back to AVAILABLE as a second, separate
-            call, and that call succeeded.
+            Its state was put back to AVAILABLE as a second, separate call, and
+            that call succeeded.
+            <HelpCard topic="reauth-does-not-unpause" />
           </p>
         ) : (
           <p>
@@ -2936,11 +2924,10 @@ function SignInDone({
               This account is STILL in REAUTH_REQUIRED, so nothing will be
               assigned to it.
             </strong>{' '}
-            The credential is in place and is good; what failed was the second
-            call that puts the state back:{' '}
+            The credential is good; the second call failed:{' '}
             {restore.error?.message ?? 'the request did not complete.'} Use{' '}
-            <em>move to AVAILABLE</em> in the row above &mdash; nothing needs
-            signing in again.
+            <em>move to AVAILABLE</em> in the row above.
+            <HelpCard topic="reauth-does-not-unpause" />
           </p>
         ))}
       {/* WHAT THE POOL WILL SHOW FOR IT, READ OFF THE ACCOUNT THE EXCHANGE
@@ -2954,20 +2941,14 @@ function SignInDone({
           The fact was in hand and was never consulted. */}
       {state.account.observed_at === null ? (
         <p className="checked-at">
-          It appears in the pool with no reading yet &mdash; that is{' '}
-          <em>unmeasured</em>, not idle. The first worker to run on it reports
-          one.
+          No reading yet &mdash; <em>unmeasured</em>, not idle.
+          <HelpCard topic="absent-vs-zero" />
         </p>
       ) : (
         <p className="checked-at">
-          Its readings were kept: the last one arrived{' '}
-          {timeAgo(state.account.observed_at)}
-          {state.account.stale
-            ? ', which is older than the 30 minutes a reading is trusted for, so the table above marks its figures ~'
-            : ''}
-          . Signing in replaces the credential and nothing else &mdash; the id,
-          the readings and the lending list are the same ones that table is
-          showing.
+          Readings kept: the last arrived {timeAgo(state.account.observed_at)}
+          {state.account.stale ? ', so the table above marks its figures ~' : ''}.
+          <HelpCard topic="signin-keeps-readings" />
         </p>
       )}
       {/* NOT AVAILABLE, AND NOTHING PUT IT BACK. `restore === null` means there
@@ -2983,10 +2964,9 @@ function SignInDone({
             It is in {state.account.state}, and AVAILABLE is the only state an
             agent is started on.
           </strong>{' '}
-          The credential is in place; the state was left exactly as it was,
-          which is deliberate &mdash; replacing a credential does not un-pause
-          an account somebody paused. Its row has <em>move to AVAILABLE</em> for
-          when it should take work again.
+          Its row has <em>move to AVAILABLE</em> for when it should take work
+          again.
+          <HelpCard topic="reauth-does-not-unpause" />
         </p>
       )}
       <p className="acct-buttons">
@@ -3045,19 +3025,14 @@ function Reauth({
       <div className="acct-action">
         <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
         <div className="ctl-empty is-partial" role="status">
-          <h3>This screen cannot sign in for this account</h3>
+          <h3>
+            This screen cannot sign in for this account
+            <HelpCard topic="subscription-only-no-api-key" />
+          </h3>
           <p>
-            Its provider is <code>{account.provider}</code>, and the sign-in
-            this platform performs produces a{' '}
-            <code>{SUBSCRIPTION_PROVIDER}</code> credential &mdash; the request
-            carries no provider, so there is no way to ask it for the other one.
-            Signing in here would replace the credential and leave the row
-            describing something it is not.
-          </p>
-          <p>
-            Nothing about the account has changed, and nothing here failed. Its
-            readings, its lending list and its state are the ones the row above
-            shows.
+            Its provider is <code>{account.provider}</code>; this sign-in
+            produces a <code>{SUBSCRIPTION_PROVIDER}</code> credential.{' '}
+            <strong>Nothing here failed and nothing changed.</strong>
           </p>
         </div>
       </div>
@@ -3108,18 +3083,15 @@ function Reauth({
       <p className="muted small">
         {broken ? (
           <>
-            The refresh token behind <code>{account.account_id}</code> is gone or
-            unreadable, and only a person can replace it. This is the same
-            sign-in that adds an account: a login page and one short code. The
-            id, the readings and the lending list are all kept, because the label
-            is the same.
+            <strong>Only a person can replace this.</strong> The refresh token
+            behind <code>{account.account_id}</code> is gone or unreadable.
+            <HelpCard topic="reauth-required" />
           </>
         ) : (
           <>
-            Replaces the credential behind <code>{account.account_id}</code> with
-            a fresh one, keeping the id, the readings, the lending list and the
-            state. Nothing here needs doing on a healthy account &mdash; the
-            sweep keeps it alive on its own.
+            Replaces the credential behind <code>{account.account_id}</code>.
+            Nothing here needs doing on a healthy account.
+            <HelpCard topic="credential-refresh-sweep" />
           </>
         )}
       </p>
@@ -3201,11 +3173,16 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
 
   return (
     <div className="acct-action danger">
-      <h4>Remove</h4>
+      <h4>
+        Remove
+        <HelpCard topic="account-removal-is-reversible" />
+      </h4>
+      {/* THE COUNT OF AFFECTED AGENTS IS THE FACT (§6) and it is a digit on
+          the surface: it is the difference between a reversible tidy-up and
+          pulling an account out from under running work. */}
       <p className="muted small">
-        Removes the account from the pool. The credential in Secret Manager is{' '}
-        <strong>retained</strong>, not deleted, so this is reversible by signing
-        in again under the same label and no version history is lost.
+        Removes the account from the pool. The credential is{' '}
+        <strong>retained</strong>, not deleted.
         {account.assigned > 0 && (
           <>
             {' '}
@@ -3246,271 +3223,46 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
     </div>
   )
 }
-
 // ---------------------------------------------------------------------------
-// Instructions
+// Reading this screen
 // ---------------------------------------------------------------------------
 
 /**
- * Real operator instructions, in the page, because this is the screen someone
- * opens at the moment they need them and a wiki link is a second place to be
- * wrong. Every step below is one this screen performs.
+ * WHAT USED TO BE HERE: `Instructions()`, four numbered sections with a
+ * paragraph and a list each, and `Legend()`, eleven `<dt>`/`<dd>` pairs. About
+ * 1,400 rendered words, under every load of this screen, under a table.
+ *
+ * NONE OF IT WAS ANNOTATING ANYTHING ON SCREEN. It was a help article that
+ * happened to be rendered below a pool, which is exactly what the owner
+ * directive means by prose that belongs in a dedicated Help section. Every
+ * sentence of it is now a topic in `help.ts`, reachable from the `?` beside the
+ * control it is about and from the links below.
+ *
+ * THE MARKS THEMSELVES DID NOT MOVE, and that is the test. The legend was the
+ * only index of what they mean, so the titles stay on the surface -- but an
+ * unmeasured cell still draws NO BAR and an em dash, a projected figure still
+ * carries its tilde, a row count still says how many documents it is short by,
+ * and a row nothing can be assigned on still says so under its state chip. A
+ * reader who never opens one of these links can still tell a missing figure
+ * from a measured zero; `src/__tests__/honesty.prose.test.tsx` renders this
+ * screen with every card closed and asserts it.
  */
-function Instructions() {
-  return (
-    <section className="section panel acct-instructions">
-      <h2>How to run this pool</h2>
-
-      <h3>1 &middot; Adding an account is a sign-in</h3>
-      <p>
-        Name it, press <em>Start the sign-in</em>, open the page it gives you,
-        sign in to Claude as you normally would, and paste back the short code
-        that page shows. That is the whole procedure. There is no keychain item
-        to find, no JSON to preserve, no wrapper to keep intact, and nothing to
-        run on your laptop.
-      </p>
-      <ul>
-        <li>
-          <strong>Why a code is still pasted.</strong> Anthropic&rsquo;s OAuth
-          client accepts exactly one redirect target &mdash; its own callback
-          page, which <em>displays</em> a code. A third-party application cannot
-          register <code>https://swarm.saga.xyz/callback</code>, so your browser
-          cannot be sent back here, and the code on that page is what closes the
-          loop. One short string is as close to &ldquo;just a button&rdquo; as
-          this can get.
-        </li>
-        <li>
-          <strong>Paste the whole thing.</strong> The page shows the code, then a{' '}
-          <code>#</code>, then a long string. The platform splits it, and uses
-          the part after the <code>#</code> to check the paste belongs to the
-          sign-in <em>this</em> page started rather than another tab&rsquo;s
-          &mdash; two tabs open is how a credential lands on the wrong account.
-          Pasting only the part before the <code>#</code> works too.
-        </li>
-        <li>
-          <strong>Codes are single-use and expire quickly.</strong> A refused
-          code almost always means it was already redeemed or that too much time
-          passed. Press <em>Open the sign-in page again</em> for a new one: the
-          sign-in itself stays open, so the label and the lending list do not
-          need re-entering.
-        </li>
-        <li>
-          <strong>
-            A second account needs a different browser application, not a private
-            window.
-          </strong>{' '}
-          Which organisation you sign in as comes from the cookies the browser
-          already holds, and nothing in the request overrides it. A private
-          window shares the same cookie jar, so it signs you in as the same
-          organisation and you get a second row for a subscription you already
-          had, with nothing explaining why the pool did not really grow. Copy the
-          sign-in link and open it in another browser application, or sign out of
-          Claude in this one first.
-        </li>
-        <li>
-          <strong>Nothing secret passes through this page.</strong> The PKCE
-          verifier stays on the server, keyed by the sign-in &mdash; a verifier
-          the browser holds is a PKCE flow that proves nothing. What comes back
-          is an account and an expiry: never key material, and never its length.
-        </li>
-      </ul>
-      <p>
-        What the platform does with what it receives: two secrets.{' '}
-        <code>&lt;base&gt;-refresh</code> holds the pair and is read only by
-        quota-broker. <code>&lt;base&gt;</code> holds <em>only</em> the access
-        token, and is what a tenant&rsquo;s pod mounts into{' '}
-        <code>CLAUDE_CODE_OAUTH_TOKEN</code>. That split is the security
-        boundary: a compromised pod holds a credential that expires, not one that
-        can mint successors forever.
-      </p>
-
-      <h3>2 &middot; How refreshing works</h3>
-      <ul>
-        <li>
-          <strong>
-            quota-broker is the only thing that may exchange a credential.
-          </strong>{' '}
-          Refreshing an OAuth credential revokes the access token it replaces, so
-          two components doing it concurrently brick the account. swarm-api
-          proxies to the broker and never touches Secret Manager for accounts;
-          this screen calls those same routes.
-        </li>
-        <li>
-          <strong>The sweep visits every account, including idle ones.</strong> A
-          refresh token that is never exchanged eventually dies, so a pool where
-          three accounts are busy and two are idle is a pool where two are quietly
-          rotting until the day you need them.
-        </li>
-        <li>
-          <strong>An exchange happens inside the last three hours</strong> of the
-          access token&rsquo;s life. Before that, the sweep publishes the token it
-          already holds if the pod-facing secret is missing it, and otherwise does
-          nothing at all. &ldquo;Nothing to do&rdquo; is the healthy answer.
-        </li>
-        <li>
-          <strong>Refresh this account</strong> runs that exact code path now, for
-          one account, and tells you which of those things happened. It exists
-          because a timer cannot answer &ldquo;did that work?&rdquo;.
-        </li>
-      </ul>
-
-      <h3>3 &middot; When an account goes REAUTH_REQUIRED</h3>
-      <p>
-        It means the refresh token is gone or unreadable. The broker stops trying
-        on purpose: retrying every five minutes spends the token endpoint&rsquo;s
-        rate limit to learn the same answer. Nothing new is assigned to the
-        account, and agents already on it will fail when their token expires.
-      </p>
-      <ol>
-        <li>
-          Open that account&rsquo;s row here and press <em>Sign in again</em>. It
-          is the same sign-in as adding an account, aimed at the label already in
-          the pool, so the id, the readings and the lending list are kept. A new
-          label would instead create a second account and leave the broken one
-          sitting there.
-        </li>
-        <li>
-          <strong>Check which organisation this browser is signed in as.</strong>{' '}
-          The sign-in replaces the credential with whoever this browser is
-          currently logged in as, and nothing in the request overrides that. If
-          it is not the subscription this label is for, copy the link into a
-          different browser application first.
-        </li>
-        <li>
-          <strong>
-            The state is put back for you, as a visible second step.
-          </strong>{' '}
-          Signing in deliberately does <em>not</em> change state on its own
-          &mdash; that rule is what stops it silently un-pausing an account
-          somebody paused &mdash; so this screen makes a second call to move the
-          account back to AVAILABLE, and says plainly if that second call fails.
-          An account left in REAUTH_REQUIRED is unassignable no matter how good
-          its new credential is.
-        </li>
-        <li>
-          Press <em>Refresh this account</em> if you want independent
-          confirmation. <code>refreshed</code> or <code>still_valid</code> means
-          it is alive. The state chip alone is not that confirmation.
-        </li>
-      </ol>
-
-      <h3>4 &middot; Why a credential with no refresh token is refused</h3>
-      <p>
-        A sign-in normally yields a pair: an access token, and the refresh token
-        that mints its successors. If the token endpoint ever answers with an
-        access token and nothing beside it, the platform refuses it and stores
-        nothing, with a 422 saying the credential could not be kept alive. The
-        same refusal is what a <code>claude setup-token</code> value used to get
-        when this screen still took pastes.
-      </p>
-      <p>
-        The refusal is the feature. Such a credential cannot be exchanged, so
-        when it expires a person has to log in again. Accepted, it would look
-        perfectly healthy &mdash; the account would sit at AVAILABLE, agents
-        would be assigned to it, and at its first expiry every one of them would
-        fail on an expired token with nothing on any screen pointing at the
-        cause. Being refused costs you one error message now. Being accepted
-        costs an outage later, at a time nobody chose.
-      </p>
-    </section>
-  )
-}
-
-function Legend() {
-  return (
-    <section className="section legend">
-      <h2>Reading this screen</h2>
-      <dl>
-        <dt>The columns are the ones `cs status` prints, on purpose</dt>
-        <dd>
-          ACCOUNT, 5H, 7D, CLEARS, STATE &mdash; same order, same five-cell bar,
-          same meanings. If you read that on your laptop, this is the same line.
-          Every extra fact lives in the row you open, so the table you scan never
-          changes shape.
-        </dd>
-        <dt>
-          <span className="acct-tilde">~</span> means projected, not measured
-        </dt>
-        <dd>
-          Either the reading is older than the 30 minutes one is trusted for, or
-          the window it describes has already reset. These accounts are also used
-          by a person at a laptop, so utilisation moves without the platform
-          seeing it. A figure without the mark is a claim that it is current.
-        </dd>
-        <dt>An em dash is not zero</dt>
-        <dd>
-          It means nothing has been measured: either no reading has ever arrived
-          for the account, or the provider reported no such window. Those cells
-          draw <em>no bar at all</em>, because an empty five-cell bar and a
-          measured 0% are the same picture.
-        </dd>
-        <dt>A row can read AVAILABLE and still serve nobody here</dt>
-        <dd>
-          When a tenant reports that it cannot read an account&rsquo;s secret,
-          the broker&rsquo;s own assignment rule skips that account{' '}
-          <em>for that tenant</em> and for nobody else. Its state stays
-          AVAILABLE, its windows stay real, and its headroom is genuinely
-          there &mdash; just not for you. Such a row says so under the state
-          chip, because without that it is the healthiest-looking row on the
-          screen and nothing runs on it. The report is forgotten thirty minutes
-          after it was made; one that keeps returning is a missing{' '}
-          <code>secretAccessor</code> grant, not an onboarding delay.
-        </dd>
-        <dt>&ldquo;Never assigned&rdquo; on every row is not a quiet week</dt>
-        <dd>
-          It is what a pool no worker can reach looks like: accounts registered,
-          nothing ever asking for one. On a single row it means nothing
-          &mdash; a new account has not been used yet. Across the whole pool it
-          points at <code>QUOTA_BROKER_URL</code> missing from dispatched jobs,
-          or a worker service account without{' '}
-          <code>roles/run.invoker</code> on the broker.
-        </dd>
-        <dt>A count of accounts is only a fact if every document was read</dt>
-        <dd>
-          The store skips an account document it cannot parse so that one bad
-          document does not hide the fleet. It now reports how many it skipped,
-          and this screen says so above the table &mdash; because a row count,
-          a headroom figure and a &ldquo;none need attention&rdquo; are each
-          computed over what was read, and silently wrong otherwise.
-        </dd>
-        <dt>CLEARS is the binding window, not the five-hour</dt>
-        <dd>
-          An account at 5% on its five-hour and 90% on its weekly is stopped by
-          the weekly, and refilling the five-hour does nothing for it. CLEARS
-          counts down to whichever window will refuse first.
-        </dd>
-        <dt>There is no amber band, deliberately</dt>
-        <dd>
-          Any threshold between &ldquo;fine&rdquo; and &ldquo;getting full&rdquo;
-          would be a number invented in the browser. The platform&rsquo;s own
-          assign floor lives in quota-broker, and nothing checks that a copy of it
-          here still matches. The one treatment that is a fact rather than a
-          judgement is a window that is fully spent.
-        </dd>
-        <dt>Adding a second account needs a second browser application</dt>
-        <dd>
-          Not a private window. The organisation you sign in as comes from the
-          browser&rsquo;s cookie jar, a private window shares that jar, and
-          nothing this platform sends overrides it. Without a different browser
-          application you will add the same subscription twice and have no way to
-          see why the pool did not grow.
-        </dd>
-        <dt>Four states, and they are not degrees of one thing</dt>
-        <dd>
-          <code>AVAILABLE</code> is the only state a <em>new</em> agent may be
-          started on. <code>PAUSED</code> means no new work while the agents on it
-          keep running. <code>DRAINING</code> means they are being moved off.{' '}
-          <code>REAUTH_REQUIRED</code> is a verdict the broker reached, not a
-          state to declare &mdash; only a person clears it, and signing in again
-          is how.
-        </dd>
-        <dt>&ldquo;Agents on it&rdquo; is advisory</dt>
-        <dd>
-          The lease is the authoritative record of who holds what. This counter
-          exists to make a listing readable, and a disagreement between it and the
-          Holders screen is not rounding.
-        </dd>
-      </dl>
-    </section>
-  )
-}
+const ACCOUNT_TOPICS: readonly TopicId[] = [
+  'accounts-table-shape',
+  'absent-vs-zero',
+  'projected-not-measured',
+  'binding-window',
+  'no-amber-band',
+  'unreadable-documents',
+  'account-states',
+  'skipped-for-this-tenant',
+  'never-assigned-pool',
+  'advisory-vs-lease',
+  'sign-in-not-paste',
+  'credential-split',
+  'credential-refresh-sweep',
+  'reauth-required',
+  'refresh-token-required',
+  'second-browser-application',
+  'lending-narrows-isolation',
+]

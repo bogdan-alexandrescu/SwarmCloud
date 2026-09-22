@@ -1,5 +1,7 @@
 import { loadRuntimeTopology, type ResourceClasses, type RuntimeTopology } from './api'
 import { isPaused } from './fetch'
+import type { TopicId } from './help'
+import { HelpCard, HelpLinks } from './HelpCard'
 import { Id, Screen } from './Shell'
 import {
   humaniseUntil,
@@ -77,13 +79,8 @@ function Topology({ data }: { data: RuntimeTopology }) {
     <>
       <p className="conjunction">
         A caller picks a runtime by <strong>name</strong> and supplies nothing
-        else — no image, no command, no size, no backend. Everything on this
-        screen is what that one name already decides.
-      </p>
-      <p className="muted">
-        This is the <strong>dispatch</strong> topology, not a machine inventory.
-        No route in this platform serves nodes, Cloud Run executions or GKE
-        Jobs, so none is drawn here and none is guessed at.
+        else.
+        <HelpCard topic="runner-profile-by-name" />
       </p>
 
       <Backends runtimes={runtimes} pools={data.pools} poolsDetail={data.poolsDetail} />
@@ -99,7 +96,7 @@ function Topology({ data }: { data: RuntimeTopology }) {
         {runtimes.length} runtime{runtimes.length === 1 ? '' : 's'} · the whole
         catalogue this response carried, not a page of it
       </p>
-      <Legend />
+      <HelpLinks topics={RUNTIME_TOPICS} />
     </>
   )
 }
@@ -170,16 +167,19 @@ function Backends({
             name. Nothing on this row is "yours"; per-tenant headroom is the
             Runner profiles pane under Pools. */}
         <span className="scope platform">platform-wide</span>
+        <HelpCard topic="declared-vs-resolved-backend" />
       </h2>
 
       {capped === null && (
         <div className="state partial" role="status">
-          <h3>Pool counters could not be read</h3>
+          <h3>
+            Pool counters could not be read
+            <HelpCard topic="absent-vs-zero" />
+          </h3>
           <p>
-            The catalogue below loaded, so which runtimes land on which backend
-            is trustworthy. The <strong>load</strong> on each backend is not
-            available: {poolsDetail ?? 'the capacity read did not complete.'}{' '}
-            The columns that would have carried it are dashes, not zeros.
+            The catalogue loaded; the <strong>load</strong> on each backend did
+            not: {poolsDetail ?? 'the capacity read did not complete.'}{' '}
+            <strong>Those columns are dashes, not zeros.</strong>
           </p>
         </div>
       )}
@@ -217,8 +217,8 @@ function Backends({
       </div>
 
       <p className="muted small">
-        Grouped by the backend each runtime <em>resolves</em> to. The full pool
-        board — every family, not just these — is under Pools.
+        Grouped by <em>resolved</em> backend · the full pool board is under
+        Pools.
       </p>
     </section>
   )
@@ -444,7 +444,10 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
         <dt>Image</dt>
         <dd className="mono">{runtime.image}</dd>
 
-        <dt>Credential</dt>
+        <dt>
+          Credential
+          <HelpCard topic="credential-names-not-values" />
+        </dt>
         <dd>
           <Credential runtime={runtime} />
         </dd>
@@ -461,13 +464,18 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
           <SizeLine spec={runtime.resources} />
         </dd>
 
-        <dt>What sets it apart</dt>
+        <dt>
+          What sets it apart
+          <HelpCard topic="what-sets-it-apart-is-arithmetic" />
+        </dt>
         <dd>
+          {/* A MEASURED "nothing", not a blank. The comparison ran and found
+              no difference; a blank cell here would read as a comparison
+              nobody made. */}
           {facts.length === 0 ? (
             <span className="muted">
               Nothing in this response separates it from the rest of the
-              catalogue — same backend, same image, same credential shape, and
-              neither the largest nor the smallest of anything.
+              catalogue.
             </span>
           ) : (
             facts.join(' · ')
@@ -493,11 +501,8 @@ function Credential({ runtime }: { runtime: Runtime }) {
       <>
         {/* Not "unknown", and not an em dash: em dash means "not measured", and
             this is measured. The answer is that it needs nothing. */}
-        <span className="tag ok">none needed</span>{' '}
-        <span className="muted">
-          This runtime consumes no external provider&apos;s quota, so it works on a
-          tenant that has registered no credential.
-        </span>
+        <span className="tag ok">none needed</span>
+        <HelpCard topic="runtime-needs-no-provider" />
       </>
     )
   }
@@ -505,10 +510,11 @@ function Credential({ runtime }: { runtime: Runtime }) {
     return (
       <>
         <span className="mono">{runtime.provider}</span>{' '}
-        <span className="muted">
-          — the catalogue names this provider and lists no environment variable
-          for it. That is what the response says; it is not a failed read.
-        </span>
+        {/* THE EM DASH AND THE CLAUSE BOTH STAY. An empty credential cell
+            beside a named provider is exactly what a failed read would look
+            like, and this is not one. */}
+        <span className="muted">— no variable names in the response; not a failed read</span>
+        <HelpCard topic="credential-names-not-values" />
       </>
     )
   }
@@ -620,12 +626,16 @@ function Sizing({
 
       {!fromRoute && (
         <div className="state partial" role="status">
-          <h3>The size catalogue could not be read</h3>
+          <h3>
+            The size catalogue could not be read
+            <HelpCard topic="catalogue-from-route" />
+          </h3>
           <p>
-            Every size below is the one the runtime itself reported, so each row
-            is accurate for the runtimes named beside it. What is missing is a
-            class that <em>no</em> runtime resolves to: this list cannot contain
-            one. {classesDetail ?? 'The resource-class read did not complete.'}
+            Sizes below came from the runtimes themselves.{' '}
+            <strong>
+              A class no runtime resolves to cannot appear in this list.
+            </strong>{' '}
+            {classesDetail ?? 'The resource-class read did not complete.'}
           </p>
         </div>
       )}
@@ -638,7 +648,10 @@ function Sizing({
               <th scope="col" className="n">vCPU</th>
               <th scope="col" className="n">Memory</th>
               <th scope="col" className="n">Workspace</th>
-              <th scope="col" className="n">Weight</th>
+              <th scope="col" className="n">
+                Weight
+                <HelpCard topic="units-not-agents" />
+              </th>
               <th scope="col">Runtimes that resolve to it</th>
             </tr>
           </thead>
@@ -674,59 +687,29 @@ function Sizing({
         </table>
       </div>
 
-      <p className="muted small">
-        Weight is what one agent of a class adds to <em>every</em> pool it has
-        to clear, which is why capacity is counted in units and never in agents.
-      </p>
     </section>
   )
 }
 
-function Legend() {
-  return (
-    <section className="section legend">
-      <h2>Reading this screen</h2>
-      <dl>
-        <dt>Nothing here is written down in this client</dt>
-        <dd>
-          Every name, size, weight, backend and timeout on this screen came from{' '}
-          <code>/v1/runtimes</code> in this page load. The catalogue is frozen
-          contract data that can gain entries, so a runtime added to it appears
-          here without anyone editing this screen — and no figure here can
-          disagree with the platform, because none of them is stored here.
-        </dd>
-        <dt>Declared backend and resolved backend</dt>
-        <dd>
-          A profile is allowed to declare that the platform should choose, and
-          that declaration is not itself somewhere a task can run. Where the
-          declared value and the resolved one differ, the card above shows both:
-          seeing only the declared one tells you nothing about where the work
-          goes, and seeing only the resolved one hides that the platform, not
-          the profile, chose it.
-        </dd>
-        <dt>Workspace comes out of memory</dt>
-        <dd>
-          The workspace is a memory-backed tmpfs, so its size is a slice of the
-          container&apos;s memory rather than storage on top of it. An agent that
-          fills its workspace has that much less memory left for the process,
-          and with <code>requests == limits</code> there is no burst headroom to
-          absorb the overshoot.
-        </dd>
-        <dt>Credential names, never values</dt>
-        <dd>
-          The route publishes the environment variable <em>names</em> a runtime
-          reads. It reads no environment, no secret store and no tenant
-          document — whether <em>your</em> tenant holds one of these is a
-          different question, answered under Pools.
-        </dd>
-        <dt>&ldquo;What sets it apart&rdquo; is arithmetic, not commentary</dt>
-        <dd>
-          Each line compares one runtime against the others in the same
-          response. Nobody wrote a description of any runtime, and nothing here
-          knows what a particular name means — which is what keeps it true for a
-          catalogue that has changed since this screen was written.
-        </dd>
-      </dl>
-    </section>
-  )
-}
+/**
+ * WHAT USED TO BE `Legend()` -- five `<dt>`/`<dd>` pairs, ~230 words, under
+ * every load of this screen.
+ *
+ * The five titles are still on the surface, because they were the index of
+ * what this screen's marks mean and deleting the block would have taken the
+ * index out with the essay. The paragraphs are at `#help/<id>`, written once
+ * and shared with every other screen that used to argue the same point --
+ * `workspace-memory` and `requests-are-ceilings` were also spelled out on
+ * the agent screen, and `units-not-agents` on four more.
+ */
+const RUNTIME_TOPICS: readonly TopicId[] = [
+  'catalogue-from-route',
+  'runner-profile-by-name',
+  'not-a-machine-inventory',
+  'declared-vs-resolved-backend',
+  'workspace-memory',
+  'requests-are-ceilings',
+  'units-not-agents',
+  'credential-names-not-values',
+  'what-sets-it-apart-is-arithmetic',
+]

@@ -1,5 +1,7 @@
 import { loadAdminQuota } from './api'
 import { num } from './fetch'
+import type { TopicId } from './help'
+import { HelpLinks } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
 import { providerTone, type QuotaState } from './types'
 
@@ -79,7 +81,7 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
             </div>
           </section>
         ))}
-      <Legend />
+      <HelpLinks topics={QUOTA_TOPICS} />
     </>
   )
 }
@@ -112,39 +114,18 @@ function Row({ q }: { q: QuotaState }) {
   )
 }
 
-function Legend() {
-  return (
-    <section className="section legend">
-      <h2>Reading this screen</h2>
-      <dl>
-        <dt>Six states, not five</dt>
-        <dd>
-          <code>AVAILABLE</code>, <code>THROTTLED</code>, <code>EXHAUSTED</code>,{' '}
-          <code>COOLDOWN</code>, <code>DISABLED</code>, <code>UNKNOWN</code>.
-          THROTTLED is the common case during a squeeze and the one most easily
-          missed — a chip that fell through to &ldquo;unknown&rdquo; for it
-          would mislabel exactly the condition this screen is for.
-        </dd>
-        <dt>UNKNOWN is not healthy</dt>
-        <dd>
-          It means no worker has reported on this provider for this tenant
-          recently. That is an absence of information, not an assurance.
-        </dd>
-        <dt>An effective limit of 0 is a fact</dt>
-        <dd>
-          It is returned deliberately when the state is EXHAUSTED, DISABLED or
-          COOLDOWN — the only zero here that means something rather than
-          nothing.
-        </dd>
-        <dt>A provider with no document does not appear</dt>
-        <dd>
-          This route lists quota documents, not providers. A provider that no
-          tenant has ever driven has no document, so its absence here means
-          &ldquo;never used&rdquo;, not &ldquo;no such provider&rdquo;. The
-          tenant-scoped <code>/v1/providers</code> derives its list from the
-          frozen runner-profile catalogue and does not have this gap.
-        </dd>
-      </dl>
-    </section>
-  )
-}
+/**
+ * Four `<dt>`/`<dd>` pairs, as two topics.
+ *
+ * "Six states, not five", "unknown is not healthy" and "an effective limit of
+ * 0 is a fact" were three statements of one thing: which state a row is in is
+ * the measurement, and only one kind of zero on this screen means anything.
+ * They are one topic now. The fourth -- that this route lists documents rather
+ * than providers -- is its own, because it is the one that makes an ABSENCE
+ * here mean something specific.
+ */
+const QUOTA_TOPICS: readonly TopicId[] = [
+  'provider-quota-states',
+  'quota-document-absent',
+  'absent-vs-zero',
+]

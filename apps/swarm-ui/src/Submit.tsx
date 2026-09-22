@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { loadCapacity } from './api'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
 import { isPaused, type ApiError } from './fetch'
+import { HelpCard } from './HelpCard'
 import { FailedPanel, Screen } from './Shell'
 import {
   DEFAULT_CARRIER,
@@ -216,9 +217,11 @@ function Form({ capacity }: { capacity: Capacity }) {
       </select>
       {bad.runner_profile && <p className="warn-text" role="alert">{bad.runner_profile}</p>}
       {profile && <ProfileFacts profile={profile} pools={capacity.pools} />}
-      <label className="t-label" htmlFor="in">input (JSON object)</label>
+      <label className="t-label" htmlFor="in">
+        input (JSON object)
+        <HelpCard topic="input-is-opaque" />
+      </label>
       <textarea id="in" className="mono" rows={5} style={{ width: '100%' }} value={draft.input} onChange={(ev) => set('input', ev.target.value)} />
-      <p className="muted small">Opaque to the platform: handed to the profile's agent, validated only for size.</p>
       {bad.input && <p className="warn-text" role="alert">{bad.input}</p>}
       {/* `steps={1}`: a standalone task IS one step, and that is the number the
           pull-request counts on the options are computed from. `scale="task"`
@@ -246,7 +249,9 @@ function Form({ capacity }: { capacity: Capacity }) {
           {/* A write is not a read: a failure after the request left the browser
               does not prove nothing was created. */}
           <p className="warn-text">
-            This failed on a write. If it failed after reaching the API the task may exist anyway — check Agents before submitting again.
+            <strong>Check Agents before submitting again.</strong> This failed on
+            a write, so the task may exist anyway.
+            <HelpCard topic="ambiguous-write" />
           </p>
         </>
       )}
@@ -274,7 +279,8 @@ function ProfileFacts({ profile, pools }: { profile: RunnerProfile; pools: Pool[
         <strong>{profile.resource_class}</strong> on <strong>{profile.backend}</strong>
         {profile.provider ? <> · provider <strong>{profile.provider}</strong></> : <> · needs no provider key</>}
         {' '}· costs {profile.units} weighted unit{profile.units === 1 ? '' : 's'} in each of its{' '}
-        {profile.pools.length} pools, every one of which must admit it in the same transaction.
+        {profile.pools.length} pools.
+        <HelpCard topic="pools-all-at-once" />
       </p>
       <p className="muted">
         {room.agents === null ? (
@@ -285,8 +291,13 @@ function ProfileFacts({ profile, pools }: { profile: RunnerProfile; pools: Pool[
             <>No pool in this profile&apos;s list is configured, so nothing caps it right now.</>
           ) : (
             <>
-              How much room is left could not be measured: {room.unread.length} of its
-              pools could not be read. That is not zero.
+              {/* NEVER A ZERO HERE. A submitter told "room for 0" when the
+                  truth is "we do not know" stops submitting for the wrong
+                  reason, so the count of unread pools is the figure and the
+                  clause that it is not zero stays beside it. */}
+              Room could not be measured: {room.unread.length} of its pools could
+              not be read. <strong>That is not zero.</strong>
+              <HelpCard topic="room-unknown-not-zero" />
             </>
           )
         ) : (
@@ -328,9 +339,14 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
   return (
     <div className="state" role="status">
       <h3>Created at {task.state}</h3>
+      {/* THE FOUR STATE NAMES ARE GONE FROM THE PROSE, not from the product:
+          `#help/capacity` lists them, read from `CONCURRENCY_STATES` at
+          render time. §5 of the migration table names this line as one of
+          nine places a frozen value was restated where nothing checks it. */}
       <p>
-        That is not a running agent: only LEASED, DISPATCHED, STARTING and RUNNING hold capacity,
-        so it costs nothing until admission takes it.
+        That is not a running agent — it costs nothing until admission takes
+        it.
+        <HelpCard topic="capacity" />
         {task.park_reason ? <> It is parked: <code>{String(task.park_reason)}</code>.</> : null}</p>
       {/* The id verbatim: not truncated, not transformed. This is what gets pasted. */}
       <p className="mono">{task.id}</p>

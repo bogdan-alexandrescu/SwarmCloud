@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
+import { HelpCard } from './HelpCard'
 import {
-  CARRIER_DETAIL,
   CARRIER_LABEL,
   CARRIER_NOTE,
   DISPATCH_CARRIERS,
@@ -91,7 +91,10 @@ export function DispatchChoice({
 
   return (
     <fieldset className="dsp">
-      <legend className="t-label">how this work gets merged</legend>
+      <legend className="t-label">
+        how this work gets merged
+        <HelpCard topic="dispatch-strategies" />
+      </legend>
 
       <div className="dsp-options" role="radiogroup" aria-label="dispatch strategy">
         {DISPATCH_STRATEGIES.map((s) => {
@@ -124,9 +127,8 @@ export function DispatchChoice({
                 <span className={`dsp-count${c.pushes ? '' : ' is-none'}`}>{c.headline}</span>
                 {unavailable && (
                   <span className="dsp-off-why">
-                    Not available for a single task: it names a final step that receives
-                    the other steps&rsquo; patches, and there are no other steps. Submit a
-                    workflow whose last step depends on the rest.
+                    Not available for a single task
+                    <HelpCard topic="integrate-needs-final-step" />
                   </span>
                 )}
               </span>
@@ -145,6 +147,7 @@ export function DispatchChoice({
 
       <label className="t-label" htmlFor="dsp-carrier" style={{ marginTop: 14 }}>
         what carries work between steps
+        <HelpCard topic="dispatch-carrier" />
       </label>
       <select
         id="dsp-carrier"
@@ -158,15 +161,17 @@ export function DispatchChoice({
           </option>
         ))}
       </select>
-      <p className="muted small">{CARRIER_DETAIL[draft.carrier]}</p>
       {/* Said on every carrier, not only on `branches`: the control records a
           preference the platform does not act on yet, and a caller is entitled
-          to know that before they choose one. */}
+          to know that before they choose one. `CARRIER_DETAIL` -- what the
+          carrier would mean if something read it -- moved to
+          `#help/dispatch-carrier`; this did not, and must not. */}
       <p className="warn-text">{CARRIER_NOTE}</p>
       {errors?.carrier && <p className="warn-text" role="alert">{errors.carrier}</p>}
 
       <label className="t-label" htmlFor="dsp-repo" style={{ marginTop: 14 }}>
         repository url {repoRequired ? '(required by this choice)' : '(optional)'}
+        <HelpCard topic="repository-url" />
       </label>
       <input
         id="dsp-repo"
@@ -176,10 +181,6 @@ export function DispatchChoice({
         value={draft.repositoryUrl}
         onChange={(e) => set({ repositoryUrl: e.target.value })}
       />
-      <p className="muted small">
-        The repository the agent clones. Without one the agent starts in an empty
-        workspace, whatever the strategy says.
-      </p>
       {repoMissing && (
         // A warning, never a block. The API owns this rule
         // (`DispatchOptions.needs_repository`) and names its own refusal; this
@@ -212,7 +213,6 @@ function Consequence({
   return (
     <div className={`dsp-consequence${c.pushes ? '' : ' is-none'}`} role="status">
       <p className="dsp-consequence-head">{c.headline}</p>
-      <p className="muted">{c.detail}</p>
       {strategy === 'integrate' && scale === 'workflow' && terminals !== undefined && (
         <IntegratorPreview terminals={terminals} steps={steps} />
       )}
@@ -346,13 +346,15 @@ function strategyOutcome(d: TaskDispatch): string {
 function DispatchUnreported() {
   return (
     <div className="ctl-empty is-partial" role="status">
-      <h3>This API did not report a dispatch</h3>
-      <p>
-        <code>task_to_api</code> sends <code>dispatch</code> on every task, filling
-        the defaults for tasks that predate the feature — so its absence is a
-        deployment older than the field, not a caller who chose <code>collect</code>.
-        Nothing here says what this run would have published.
-      </p>
+      {/* THE HEADING IS THE MARKER. "Did not report" and "reported that it
+          published nothing" are two different facts, and the panel exists so
+          they never render alike. Why an absence means an old deployment
+          rather than a caller's choice is the topic. */}
+      <h3>
+        This API did not report a dispatch
+        <HelpCard topic="dispatch-absent-is-old-api" />
+      </h3>
+      <p>Nothing here says what this run would have published.</p>
     </div>
   )
 }
