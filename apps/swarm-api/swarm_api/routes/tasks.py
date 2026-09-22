@@ -197,6 +197,52 @@ def list_artifacts(
     return {"task_id": task_id, **result}
 
 
+@router.get("/{task_id}/artifacts/content")
+def read_artifact(
+    task_id: str,
+    name: str = Query(..., min_length=1, max_length=512),
+    offset: int = Query(default=0, ge=0),
+    limit_bytes: int | None = Query(default=None, ge=1),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """ONE artifact's content, resolved by the server from the task's manifest.
+
+    THE PARAMETER IS A NAME AND NOT A PATH, and that is deliberate to the point
+    of being the reason this route is shaped the way it is. A route that
+    accepted a GCS path, or a key, or even a "relative" one, would be a
+    path-traversal hole into another tenant's prefix the moment any segment
+    check was missed -- and the only thing standing between it and invariant 9
+    would be the completeness of a sanitiser. Here `name` is matched for exact
+    equality against the entries `AgentLifecycle._upload_outputs` wrote into
+    THIS task's `result_summary`, and the object key is rebuilt from the task
+    document's own tenant and id. A caller who sends a path gets a 404 about an
+    artifact this task does not list, because that is what it is.
+
+    The tenant boundary is the SAME one the listing route uses and is not
+    re-derived: `tenant_scope` decides the scope, `Store.get_task` 404s a task
+    belonging to anyone else with the message a missing task gets, and only
+    then does a key exist.
+
+    BOUNDED AND REDACTED. `limit_bytes` is clamped into the service's range and
+    every response carries `truncated` and `next_offset`; a cut window also
+    carries a `detail` saying so in words, because a reader who takes a
+    truncated transcript for the whole output has been misled by the response
+    rather than by the data. Content is run through `swarm_api.redaction` on
+    the way out whatever happened at write time -- see `read_artifact`'s
+    docstring for why the worker's pass is not a guarantee this route may lean
+    on. An artifact that is not text is reported as `binary` with no bytes, not
+    base64-encoded: bytes nothing can scan are bytes this route does not serve.
+    """
+    return ctx.inspection.read_artifact(
+        tenant_id,
+        task_id,
+        name=name,
+        offset=offset,
+        limit_bytes=limit_bytes,
+    )
+
+
 @router.get("/{task_id}/checkpoints")
 def list_checkpoints(
     task_id: str,

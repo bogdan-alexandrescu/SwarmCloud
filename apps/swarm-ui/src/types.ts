@@ -2232,3 +2232,93 @@ export interface TaskLogs {
    *  redaction somehow stopped would otherwise look identical to a working one. */
   redaction: { applied_at_read_time: boolean; rules: number }
 }
+
+// ---------------------------------------------------------------------------
+// Artifact CONTENT -- `GET /v1/tasks/{id}/artifacts/content?name=`
+// ---------------------------------------------------------------------------
+
+/**
+ * Four answers, and the fourth is the one a viewer keeps getting wrong.
+ *
+ *  - `ok`         the object was read. `content` is a string, possibly `''`,
+ *                 which is a real empty artifact and not a failure.
+ *  - `absent`     the manifest lists it and the object is not in the bucket.
+ *  - `unreadable` the bucket could not be read. Nothing may be concluded.
+ *  - `binary`     it is not text, so the server deliberately served no bytes.
+ *                 NOT an error, and not an empty document either: rendering it
+ *                 as either turns "this file is a tarball" into "this agent
+ *                 produced nothing".
+ */
+export type ArtifactContentStatus = 'ok' | 'absent' | 'unreadable' | 'binary'
+
+export interface ArtifactContent {
+  task_id: string
+  tenant_id: string
+  attempt_id: string
+  artifact: { name: string | null; bytes: number | null; uri: string | null }
+  status: ArtifactContentStatus
+  /** Why, in a sentence, whenever the status alone does not carry it. */
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null for every non-`ok` status. NEVER `''` -- that is a real empty file. */
+  content: string | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  /** Where the next window starts. Null means this window reached the end. */
+  next_offset: number | null
+  /** True when bytes were withheld by the cap. The viewer must SAY so. */
+  truncated: boolean
+  redacted: boolean
+  redaction_count: number
+  redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+/**
+ * How a viewer presents one artifact, decided from its NAME alone.
+ *
+ * Deliberately not from a server-supplied content type: nothing in the upload
+ * path sets one (`lifecycle._upload_outputs` passes `content_type` for the two
+ * log objects and for nothing else), so a viewer that branched on it would be
+ * branching on `undefined` for every artifact a run actually produces.
+ */
+export type ArtifactKind = 'markdown' | 'transcript' | 'text'
+
+export function artifactKind(name: string): ArtifactKind {
+  const lower = name.toLowerCase()
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
+  // `claude-transcript.json` and `codex-transcript.json` -- `spec.transcript_name`
+  // in the two cliagent runners. Matched on the suffix rather than on either
+  // exact name, so a third runner's transcript renders as a transcript too.
+  if (lower.endsWith('transcript.json')) return 'transcript'
+  return 'text'
+}
+
+/**
+ * WHICH STATES A STOP CONTROL MAY BE OFFERED ON.
+ *
+ * `Store.request_cancel` raises a 409 for the four terminal states and accepts
+ * everything else, so this is that rule stated once on the client -- a button
+ * that 409s is a button that should not have been drawn.
+ *
+ * It is NOT `CONCURRENCY_STATES`: a QUEUED or PARKED task is perfectly
+ * cancellable and cancelling it is free, which is exactly the case where an
+ * operator most wants the control.
+ */
+export function canBeStopped(task: { state: TaskState; cancel_requested?: boolean }): boolean {
+  return !TERMINAL_STATES.has(task.state) && task.cancel_requested !== true
+}
+
+/**
+ * Whether stopping this task will end an ATTEMPT that is already under way.
+ *
+ * The distinction the confirmation turns on. A task holding capacity has a
+ * live container: `request_cancel` only sets a flag, the worker acts on it at
+ * its next heartbeat, and `lifecycle` checkpoints and uploads before it exits
+ * -- so the work is kept. A task in QUEUED/READY/PARKED has no attempt at all,
+ * goes straight to CANCELLED, and has nothing to keep.
+ */
+export function stoppingEndsALiveAttempt(task: { state: TaskState }): boolean {
+  return CONCURRENCY_STATES.has(task.state)
+}

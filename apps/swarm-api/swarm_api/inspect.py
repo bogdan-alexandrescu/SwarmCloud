@@ -54,7 +54,7 @@ from typing import Any
 
 from swarm_common.models import Attempt, Task
 
-from .errors import UpstreamUnavailable, ValidationFailed
+from .errors import NotFound, UpstreamUnavailable, ValidationFailed
 from .objects import (
     ObjectAbsent,
     ObjectInfo,
@@ -76,6 +76,12 @@ TENANTS_ROOT = "tenants/"
 CHECKPOINTS_SEGMENT = "checkpoints"
 #: `agent_worker.config.WorkerConfig.log_prefix` -> `.../logs`.
 LOGS_SEGMENT = "logs"
+#: `agent_worker.config.WorkerConfig.artifact_prefix` -> `.../artifacts`, and
+#: `lifecycle._upload_outputs` writes each file at `<artifact_prefix>/<rel>`
+#: where `rel` is the manifest entry's `name`. That one line is the whole key
+#: layout, and `read_artifact` REBUILDS the key from it rather than trusting
+#: the `uri` the manifest carries.
+ARTIFACTS_SEGMENT = "artifacts"
 #: `agent_worker.lifecycle._publish_live_logs` -> `.../logs/live/<stream>.tail.log`.
 LIVE_SEGMENT = "live"
 #: Written LAST by the worker, and therefore the commit marker: a checkpoint
@@ -93,6 +99,13 @@ _TAIL_HEADER = re.compile(r"^#swarm-tail offset=(\d+) size=(\d+)\n")
 #: A manifest is a small JSON document. This cap is what stops a hand-written or
 #: corrupted object at that key turning a list request into a large download.
 MANIFEST_MAX_BYTES = 64 * 1024
+
+#: How much of an artifact's HEAD decides whether it can be served as text.
+#: A NUL byte is the standard "this is not text" signal -- it is what `git
+#: diff` uses -- and it is checked over a fixed prefix rather than over the
+#: window being served, so the answer for one artifact does not depend on
+#: which page of it was asked for.
+ARTIFACT_SNIFF_BYTES = 4096
 
 
 def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
@@ -251,6 +264,15 @@ class InspectionService:
         max_log_bytes: int = 1024 * 1024,
         default_log_bytes: int = 64 * 1024,
         min_log_bytes: int = 4 * 1024,
+        # An artifact is the thing a person actually asked the agent to
+        # produce, so the default window is larger than a log's: a
+        # `synthesis.md` arriving in four pages would read as four documents.
+        # The ceiling is what stops one request becoming an unbounded
+        # download, and it is REPORTED on every response rather than applied
+        # quietly -- a silent truncation reads as "that was the whole output".
+        max_artifact_bytes: int = 4 * 1024 * 1024,
+        default_artifact_bytes: int = 512 * 1024,
+        min_artifact_bytes: int = 4 * 1024,
     ) -> None:
         self._store = store
         self._objects = objects
@@ -258,6 +280,9 @@ class InspectionService:
         self._max_log_bytes = max_log_bytes
         self._default_log_bytes = default_log_bytes
         self._min_log_bytes = min(min_log_bytes, max_log_bytes)
+        self._max_artifact_bytes = max_artifact_bytes
+        self._default_artifact_bytes = min(default_artifact_bytes, max_artifact_bytes)
+        self._min_artifact_bytes = min(min_artifact_bytes, max_artifact_bytes)
 
     # -- shared ------------------------------------------------------------
     def _reader(self) -> ObjectReader:
@@ -820,6 +845,321 @@ class InspectionService:
         if withheld is not None:
             row["detail"] = withheld
         return row
+
+    # -- artifacts ---------------------------------------------------------
+    def read_artifact(
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        name: str,
+        offset: int = 0,
+        limit_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        """One artifact's CONTENT. The server picks the object; the caller names it.
+
+        THE ROUTE TAKES A NAME, NEVER A PATH, AND THAT IS THE WHOLE SECURITY
+        ARGUMENT. `name` is matched for EXACT equality against the manifest the
+        worker wrote into this task's own `result_summary` -- a name that is
+        not in that list resolves to nothing at all, so there is no value of it
+        that addresses an object. The key is then REBUILT from three things
+        that did not come from the request:
+
+          * `task.tenant_id` and `task.id`, off the document `Store.get_task`
+            already refused to return for another tenant;
+          * the attempt segment, taken from the manifest entry and validated by
+            `safe_segment`;
+          * the manifest entry's own `name`.
+
+        A path the caller supplies therefore cannot reach the key even in
+        principle, which is a stronger statement than "we sanitise it" -- the
+        sanitising is still there, on every segment, but nothing depends on it
+        being complete.
+
+        THE STORED `uri` IS EVIDENCE, NOT AN ADDRESS. It is Firestore data
+        written by a worker, so it is compared against the rebuilt key and a
+        disagreement is REFUSED (`manifest_inconsistent`) rather than
+        followed. A manifest that pointed at another tenant's prefix -- through
+        corruption or through anything else -- would be reported, not proxied.
+
+        BOUNDED, AND IT SAYS SO. A transcript is routinely megabytes.
+        `truncated` and `next_offset` are on every successful response, and
+        when the window was cut the response also carries a `detail` sentence,
+        because the failure mode being closed here is a reader concluding that
+        a truncated artifact was the whole output.
+
+        REDACTED AT READ TIME, unconditionally, exactly as `read_logs` is, and
+        for exactly the same reason. The worker's pass is over REGISTERED
+        LITERAL VALUES only; `lifecycle._redact_before_upload` short-circuits
+        entirely on `if not self.log.has_secrets`, and `redact.scrub_file`
+        skips any file that is binary, a symlink, or over 64 MiB. So an agent
+        that printed an `Authorization:` header, minted its own GitHub token or
+        catted an `.env` out of a cloned repository put those bytes in the
+        bucket untouched. `swarm_api.redaction` runs over every byte served
+        here and the response states that it did.
+
+        NOT TEXT IS AN ANSWER. An artifact whose head carries a NUL byte is
+        reported `binary` with its size and its `gs://` reference and NO
+        content. Serving it base64-encoded would hand out bytes that no
+        redaction rule can scan, which is the one thing the paragraph above
+        exists to prevent; the listing route's position -- the caller reads GCS
+        with their own credentials -- is the honest one for those.
+        """
+        task, _prefix = self._scoped(tenant_id, task_id)
+        manifest = self._store.artifact_manifest(task)
+
+        if not isinstance(name, str) or not name:
+            raise ValidationFailed("an artifact name is required")
+        entry = manifest.find(name)
+        if entry is None:
+            # The SAME 404 whether the task produced nothing, has not finished,
+            # or produced something under a different name. `complete` is
+            # carried so the caller can still tell "not yet" from "not ever"
+            # without a second request -- that distinction is the artifact
+            # listing's whole job and it would be lost here otherwise.
+            raise NotFound(
+                f"task {task.id!r} lists no artifact named {name!r}",
+                detail={
+                    "task_id": task.id,
+                    "complete": manifest.complete,
+                    "known_artifacts": [
+                        str(a.get("name")) for a in manifest.artifacts if a.get("name")
+                    ],
+                },
+            )
+
+        stored_uri = entry.get("uri")
+        attempt_id = _attempt_of_artifact_uri(
+            stored_uri, tenant_id=task.tenant_id, task_id=task.id
+        )
+        if attempt_id is None:
+            raise UpstreamUnavailable(
+                f"the manifest entry for {name!r} does not record a usable location "
+                "inside this task's own prefix, so its content cannot be served"
+            )
+        key = self._artifact_key(task=task, attempt_id=attempt_id, name=name)
+        reader = self._reader()
+        if reader.uri(key) != stored_uri:
+            # Two records of one fact disagreeing. `_upload_outputs` writes the
+            # key and the uri from the same expression, so they cannot differ
+            # in a run this platform produced -- which is exactly why a
+            # difference is refused rather than resolved in either direction.
+            raise UpstreamUnavailable(
+                f"the recorded location of {name!r} does not match where this "
+                "platform writes it, so nothing was read; the manifest and the "
+                "object layout disagree"
+            )
+
+        window = self._default_artifact_bytes if limit_bytes is None else limit_bytes
+        if offset < 0:
+            raise ValidationFailed("offset must not be negative")
+        if window < 1:
+            raise ValidationFailed("limit_bytes must be at least 1")
+        window = min(max(window, self._min_artifact_bytes), self._max_artifact_bytes)
+
+        row = _artifact_row(task=task, entry=entry, attempt_id=attempt_id)
+        row.update(key=key, uri=reader.uri(key))
+
+        probe = 1 if offset > 0 else 0
+        try:
+            chunk = reader.read_range(key, offset=offset - probe, length=window + probe)
+        except ObjectAbsent:
+            row.update(
+                status="absent",
+                detail=(
+                    "the manifest records this artifact but the object is not in the "
+                    "bucket; it was removed, or the upload the manifest records did "
+                    "not complete"
+                ),
+            )
+            return row
+        except ObjectUnreadable as exc:
+            row.update(
+                status="unreadable",
+                detail=(
+                    "the artifact store could not be read, so nothing may be concluded "
+                    "about this artifact's content: " + redact_detail(exc.reason)
+                ),
+            )
+            return row
+
+        row["total_bytes"] = chunk.total_bytes
+        if self._looks_binary(reader, key, chunk, offset=offset, probe=probe):
+            row.update(
+                status="binary",
+                offset=0,
+                detail=(
+                    "this artifact is not text, so its bytes are not served here: "
+                    "nothing can scan them for a credential before they leave, and a "
+                    "redaction that cannot run is not a redaction. Read it from the "
+                    "uri above with your own credentials."
+                ),
+            )
+            return row
+
+        if not chunk.data:
+            # Paged past the end, or a zero-byte artifact. Both are an object
+            # that EXISTS and is empty, which is not absent and not a failure.
+            row.update(
+                status="ok",
+                content="",
+                offset=min(offset, chunk.total_bytes),
+                truncated=False,
+            )
+            return row
+
+        previous = chunk.data[:probe]
+        raw = chunk.data[probe:]
+        start = chunk.offset + probe
+        raw, start, end, withheld = _align(
+            raw,
+            start=start,
+            previous=previous,
+            at_eof=chunk.end >= chunk.total_bytes,
+            read_end=chunk.end,
+        )
+        scrubbed = redact(raw.decode("utf-8", errors="replace"))
+        complete = end >= chunk.total_bytes
+        row.update(
+            status="ok",
+            content=scrubbed.text,
+            # Byte accounting is over the RAW object, never over the redacted
+            # string: the redacted text is shorter and paging on its length
+            # would drift away from the object.
+            offset=start,
+            returned_bytes=len(raw),
+            next_offset=None if complete else end,
+            truncated=not complete,
+            redacted=scrubbed.any,
+            redaction_count=scrubbed.count,
+        )
+        if withheld is not None:
+            row["detail"] = withheld
+        elif not complete:
+            row["detail"] = (
+                f"{end} of {chunk.total_bytes} bytes are shown. This is a window, not "
+                "the whole artifact -- continue from next_offset, or read the object "
+                "from its uri."
+            )
+        return row
+
+    def _artifact_key(self, *, task: Task, attempt_id: str, name: str) -> str:
+        """`tenants/<t>/tasks/<id>/attempts/<a>/artifacts/<name>`, rebuilt.
+
+        Every segment is validated even though every segment came from the
+        control plane rather than from the request. `safe_segment`'s own
+        docstring makes the argument: a boundary built by concatenation is only
+        as strong as its weakest segment, and "the store we happen to use does
+        not normalise `..`" is not an access-control argument.
+
+        `name` may legitimately contain slashes -- `_upload_outputs` walks
+        `artifacts/` recursively and records `rel` as a POSIX relative path --
+        so it is validated segment by segment rather than as one segment.
+        """
+        base = attempt_prefix(
+            tenant_id=self._segment(task.tenant_id, what="tenant id"),
+            task_id=self._segment(task.id, what="task id"),
+            attempt_id=self._segment(attempt_id, what="attempt id"),
+        )
+        parts = name.split("/")
+        safe = "/".join(
+            self._segment(part, what="artifact name segment") for part in parts
+        )
+        return f"{base}/{ARTIFACTS_SEGMENT}/{safe}"
+
+    def _looks_binary(
+        self,
+        reader: ObjectReader,
+        key: str,
+        chunk: Any,
+        *,
+        offset: int,
+        probe: int,
+    ) -> bool:
+        """Whether this artifact is text, decided ONCE over its head.
+
+        Deciding per window would make the same artifact text on page one and
+        binary on page four, which is not a property an artifact has. When the
+        caller asked for the head the window already contains it; otherwise the
+        head is read separately, and a head that cannot be read is treated as
+        NOT binary -- the content path below then serves it with replacement
+        characters, which is a visibly mangled document rather than a silent
+        refusal.
+        """
+        if offset == 0:
+            return b"\x00" in chunk.data[:ARTIFACT_SNIFF_BYTES]
+        try:
+            head = reader.read_range(key, offset=0, length=ARTIFACT_SNIFF_BYTES)
+        except (ObjectAbsent, ObjectUnreadable):
+            return False
+        return b"\x00" in head.data
+
+
+def _attempt_of_artifact_uri(uri: Any, *, tenant_id: str, task_id: str) -> str | None:
+    """The attempt segment of a manifest `uri`, or None if it is not ours.
+
+    The ONLY thing taken from the stored uri, and it is taken only after the
+    uri has been shown to sit under this task's own attempts prefix. Anything
+    else -- a uri for another tenant, another task, a relative path, a value
+    that is not a string -- yields None and the caller refuses.
+
+    Sliced from `tenants/` rather than parsed as a URL so it works for the
+    `gs://` form the worker writes in production and for the `file:///` form a
+    `LOCAL_ARTIFACT_ROOT` run writes, which is the same reading
+    `pointer_to_prefix` takes of the checkpoint pointer.
+    """
+    if not isinstance(uri, str) or not uri:
+        return None
+    marker = uri.find(TENANTS_ROOT)
+    if marker < 0:
+        return None
+    key = uri[marker:]
+    root = attempts_prefix(tenant_id=tenant_id, task_id=task_id)
+    if not key.startswith(root):
+        return None
+    rest = key[len(root) :]
+    attempt, _, remainder = rest.partition("/")
+    if not attempt or not remainder.startswith(f"{ARTIFACTS_SEGMENT}/"):
+        return None
+    return attempt
+
+
+def _artifact_row(*, task: Task, entry: dict[str, Any], attempt_id: str) -> dict[str, Any]:
+    """The constant shape every artifact response has, whatever happened.
+
+    `content` is None -- never `""` -- in every non-ok case, for the reason
+    `_entry` gives about log streams: a client that renders content without
+    reading status must show nothing rather than an empty document that looks
+    like a successful read of an artifact the agent left blank.
+    """
+    return {
+        "task_id": task.id,
+        "tenant_id": task.tenant_id,
+        "attempt_id": attempt_id,
+        "artifact": {
+            "name": entry.get("name"),
+            "bytes": entry.get("bytes"),
+            "uri": entry.get("uri"),
+        },
+        "status": "ok",
+        "detail": None,
+        "key": None,
+        "uri": None,
+        "content": None,
+        "total_bytes": None,
+        "offset": 0,
+        "returned_bytes": 0,
+        "next_offset": None,
+        "truncated": False,
+        "redacted": False,
+        "redaction_count": 0,
+        "redaction": {
+            # Stated in the payload so a reader never has to assume it, and so
+            # a deployment where it somehow stopped is visible from outside.
+            "applied_at_read_time": True,
+            "rules": len(REDACTION_RULES),
+        },
+    }
 
 
 # --------------------------------------------------------------------------

@@ -164,6 +164,41 @@ class Page:
     next_page_token: str | None
 
 
+@dataclass(frozen=True)
+class ArtifactManifest:
+    """What one task's `result_summary` says it wrote, unresolved.
+
+    `complete` is the field that stops an empty list reading as an answer, and
+    `skipped` is the same idea for a list that is short rather than empty: the
+    worker drops files once an attempt passes `max_artifact_bytes`, and a
+    listing that omitted them silently would show a short list with no reason
+    for it.
+
+    Nothing here has been resolved to an object. The `uri` on each entry is
+    Firestore DATA, written by a worker, and the reader that turns one into a
+    GCS key re-derives the key rather than trusting it -- see
+    `InspectionService.read_artifact`.
+    """
+
+    artifacts: list[dict[str, Any]]
+    skipped: list[str]
+    artifact_bytes: Any
+    complete: bool
+
+    def find(self, name: str) -> dict[str, Any] | None:
+        """The entry the SERVER already knows about, by exact name.
+
+        Exact equality, never a prefix, a suffix or a normalised path: the
+        caller names something this manifest lists or it names nothing. That is
+        what makes the content route's key a function of the manifest rather
+        than of the request.
+        """
+        for entry in self.artifacts:
+            if entry.get("name") == name:
+                return entry
+        return None
+
+
 @dataclass
 class StepStateRead:
     """The outcome of reading a set of workflow steps' task states.
@@ -566,6 +601,38 @@ class Store:
         )
         return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
+    @staticmethod
+    def artifact_manifest(task: Task) -> "ArtifactManifest":
+        """WHERE THE MANIFEST LIVES, spelled once.
+
+        Two readers need this now -- the metadata listing below and
+        `InspectionService.read_artifact`, which resolves one entry to a GCS
+        key -- and CLAUDE.md is explicit that every rule restated twice in this
+        repository has since drifted. So the location is a single pure function
+        over a task document, and neither reader is allowed its own copy.
+
+        Pure on purpose: it takes the task the caller has ALREADY resolved
+        inside its tenant rather than a `(tenant_id, task_id)` pair. A second
+        `get_task` here would be a second tenant check, and two checks of one
+        boundary are two chances for them to differ.
+        """
+        summary = task.result_summary or {}
+        entries = summary.get("artifacts")
+        if not isinstance(entries, list):
+            entries = []
+        skipped = summary.get("artifacts_skipped")
+        if not isinstance(skipped, list):
+            skipped = []
+        return ArtifactManifest(
+            artifacts=[dict(e) for e in entries if isinstance(e, dict)],
+            skipped=[str(name) for name in skipped],
+            artifact_bytes=summary.get("artifact_bytes"),
+            # `result_summary` is written once, by `finish()`, at terminal
+            # state. Until then "no artifacts yet" and "produced none" are the
+            # same empty list, and only this flag tells them apart.
+            complete=bool(task.result_summary),
+        )
+
     def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> dict:
         """Artifact METADATA only, read from where the worker actually writes it.
 
@@ -597,19 +664,12 @@ class Store:
         yet, so `artifacts` is empty and `complete` is false -- which is a
         different statement from "this task produced nothing".
         """
-        task = self.get_task(tenant_id, task_id)
-        summary = task.result_summary or {}
-        entries = summary.get("artifacts")
-        if not isinstance(entries, list):
-            entries = []
-        skipped = summary.get("artifacts_skipped")
-        if not isinstance(skipped, list):
-            skipped = []
+        manifest = self.artifact_manifest(self.get_task(tenant_id, task_id))
         return {
-            "artifacts": [dict(e) for e in entries[:limit] if isinstance(e, dict)],
-            "artifacts_skipped": [str(name) for name in skipped],
-            "artifact_bytes": summary.get("artifact_bytes"),
-            "complete": bool(task.result_summary),
+            "artifacts": manifest.artifacts[:limit],
+            "artifacts_skipped": manifest.skipped,
+            "artifact_bytes": manifest.artifact_bytes,
+            "complete": manifest.complete,
         }
 
     def count_tasks_by_state(self, tenant_id: str | None = None) -> dict[str, int]:

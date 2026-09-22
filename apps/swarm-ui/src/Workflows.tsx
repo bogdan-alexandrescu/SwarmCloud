@@ -1,6 +1,9 @@
+import { useCallback, useState } from 'react'
+
 import { loadWorkflowBoard } from './api'
 import { workflowDispatchOf } from './Dispatch'
 import { Screen, timeAgo } from './Shell'
+import { StopRun } from './StopRun'
 import {
   consequenceOf,
   dispatchOf,
@@ -32,8 +35,16 @@ import {
  * and why they must not render alike.
  */
 export function WorkflowsScreen() {
+  // Same reason as AgentDetail's: `Screen` keeps its retry nonce to itself, so
+  // a mutation inside the board (stopping a step) needs a key bump to make the
+  // board re-read. Without it the node a moment ago said RUNNING would keep
+  // saying it after the request was recorded.
+  const [reloads, setReloads] = useState(0)
+  const reload = useCallback(() => setReloads((n) => n + 1), [])
+
   return (
     <Screen
+      key={reloads}
       title="Workflows"
       load={loadWorkflowBoard}
       summary={(d) => `${d.workflows.length} workflow${d.workflows.length === 1 ? '' : 's'}`}
@@ -46,7 +57,12 @@ export function WorkflowsScreen() {
         <>
           {d.statesDetail !== null && <StatesUnavailable detail={d.statesDetail} />}
           {d.workflows.map((w) => (
-            <WorkflowCard key={w.workflow_id} workflow={w} taskById={d.taskById} />
+            <WorkflowCard
+              key={w.workflow_id}
+              workflow={w}
+              taskById={d.taskById}
+              reload={reload}
+            />
           ))}
         </>
       )}
@@ -179,9 +195,11 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
 function WorkflowCard({
   workflow,
   taskById,
+  reload,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
+  reload: () => void
 }) {
   const levels = levelsOf(workflow.steps)
   const roll = rollupLine(workflow)
@@ -232,7 +250,13 @@ function WorkflowCard({
             )}
             <div className="level-steps">
               {level.map((s) => (
-                <StepNode key={s.step_id} step={s} state={stepState(s, taskById)} />
+                <StepNode
+                  key={s.step_id}
+                  step={s}
+                  state={stepState(s, taskById)}
+                  workflow={workflow}
+                  reload={reload}
+                />
               ))}
             </div>
           </div>
@@ -314,7 +338,17 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
   }
 }
 
-function StepNode({ step, state }: { step: WorkflowStep; state: StepState }) {
+function StepNode({
+  step,
+  state,
+  workflow,
+  reload,
+}: {
+  step: WorkflowStep
+  state: StepState
+  workflow: Workflow
+  reload: () => void
+}) {
   const p = present(state)
   // Read off the step's own task, so the node that opens the pull request is
   // marked in the graph rather than only named in the line above it. Silent on
@@ -343,6 +377,23 @@ function StepNode({ step, state }: { step: WorkflowStep; state: StepState }) {
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
           ← {step.depends_on.join(', ')}
+        </div>
+      )}
+      {/* B28, on the node. Only when the step's TASK was actually joined: a
+          step whose state is `unknown` was not in the task read, and offering
+          to stop something this screen could not read would be acting on a
+          guess. `StopRun` then decides for itself whether the state is one the
+          cancel route accepts, so a terminal node draws nothing at all. */}
+      {state.kind === 'state' && (
+        <div className="node-stop">
+          <StopRun
+            task={state.task}
+            what={`step ${step.step_id}`}
+            workflow={workflow}
+            step={step}
+            reload={reload}
+            variant="inline"
+          />
         </div>
       )}
     </div>

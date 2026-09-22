@@ -1,9 +1,11 @@
-import { useCallback, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
 import { loadAgentRun, type AgentRun } from './api'
+import { ArtifactViewer } from './ArtifactViewer'
 import { DispatchFacts } from './Dispatch'
 import { num } from './fetch'
 import { LivenessBadge } from './Liveness'
 import { Screen, timeAgo } from './Shell'
+import { StopRun } from './StopRun'
 import {
   GIB,
   REASON_COPY,
@@ -66,6 +68,13 @@ import {
  */
 export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose: () => void }) {
   const load = useCallback(() => loadAgentRun(taskId), [taskId])
+  // `Screen` owns its own retry nonce and does not expose it to children, so
+  // the stop control needs one of its own: bumping this re-keys `Screen`,
+  // which remounts it and re-runs the load. It is in the key rather than in a
+  // prop for the reason the comment below gives -- `Screen`'s effect depends
+  // on its nonce alone, so nothing short of a remount refetches.
+  const [reloads, setReloads] = useState(0)
+  const reload = useCallback(() => setReloads((n) => n + 1), [])
 
   return (
     // The drawer and its close button are drawn here AND by App.tsx's
@@ -88,7 +97,7 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         // than either. The key remounts `Screen`, which is the fix available
         // from inside this file; Shell.tsx belongs to another track and the
         // dependency list is theirs to widen.
-        key={taskId}
+        key={`${taskId}:${reloads}`}
         title={taskId}
         load={load}
         summary={(r) => (
@@ -100,19 +109,19 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
           </>
         )}
       >
-        {(r) => <Run run={r} />}
+        {(r) => <Run run={r} reload={reload} />}
       </Screen>
     </div>
   )
 }
 
-function Run({ run }: { run: AgentRun }) {
+function Run({ run, reload }: { run: AgentRun; reload: () => void }) {
   const { task, events } = run
   const now = Date.now()
 
   return (
     <>
-      <Headline run={run} now={now} />
+      <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
       <RunMetrics run={run} now={now} />
       <Why task={task} />
@@ -322,7 +331,15 @@ function tokens(v: number | null | undefined): ReactNode {
 // Head
 // ---------------------------------------------------------------------------
 
-function Headline({ run, now }: { run: AgentRun; now: number }) {
+function Headline({
+  run,
+  now,
+  reload,
+}: {
+  run: AgentRun
+  now: number
+  reload: () => void
+}) {
   const { task, events } = run
   const el = elapsed(task, now)
 
@@ -338,6 +355,14 @@ function Headline({ run, now }: { run: AgentRun; now: number }) {
           <span aria-hidden>{stateGlyph(task.state)}</span> {task.state}
         </Chip>
         <LivenessBadge task={task} events={events} now={now} />
+        {/* B28. The route has existed and worked since it was written and
+            nothing in this app called it, so an operator watching an agent
+            spend on the wrong thing had to leave the console to stop it. The
+            control confirms first and every claim the confirmation makes is
+            pinned by tests/unit/control_plane/test_cancel_semantics.py. */}
+        <span className="run-stop">
+          <StopRun task={task} what="this agent" reload={reload} />
+        </span>
       </h2>
       <dl className="kv">
         <dt>Elapsed</dt>
@@ -1495,7 +1520,12 @@ function Output({ run }: { run: AgentRun }) {
       ) : (
         <>
           <GitOutcome git={summary.git} artifacts={artifacts} task={task} />
-          <Artifacts artifacts={artifacts} summary={summary} malformed={artifactsMalformed} />
+          <Artifacts
+            artifacts={artifacts}
+            summary={summary}
+            malformed={artifactsMalformed}
+            taskId={task.id}
+          />
           <Logs logs={logs} malformed={logsMalformed} raw={logsRaw} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
@@ -1508,14 +1538,19 @@ function Artifacts({
   artifacts,
   summary,
   malformed,
+  taskId,
 }: {
   artifacts: ArtifactRef[]
   summary: ResultSummary
   /** `artifacts` was present but not an array. Not the same as none. */
   malformed: boolean
+  /** B29: the viewer names an ARTIFACT on a TASK; it never sends a location. */
+  taskId: string
 }) {
   const skippedRaw = summary.artifacts_skipped
   const skipped = Array.isArray(skippedRaw) ? skippedRaw : []
+  const [open, setOpen] = useState<string | null>(null)
+  const showing = open === null ? null : artifacts.find((a) => a.name === open) ?? null
 
   if (malformed) {
     return (
@@ -1553,12 +1588,27 @@ function Artifacts({
             </thead>
             <tbody>
               {artifacts.map((a) => (
-                <tr key={a.uri}>
-                  <th scope="row">{a.name}</th>
+                <tr key={a.uri} className={a.name === open ? 'is-open' : undefined}>
+                  <th scope="row">
+                    {/* THE WAY IN. `GET /v1/tasks/{id}/artifacts/content` sends
+                        the NAME as this row spells it and nothing else: the
+                        server resolves the object from the task's own manifest,
+                        which is why no path, key or uri from this table is ever
+                        put in a request. */}
+                    <button
+                      type="button"
+                      className="art-open"
+                      aria-expanded={a.name === open}
+                      onClick={() => setOpen((cur) => (cur === a.name ? null : a.name))}
+                    >
+                      {a.name}
+                    </button>
+                  </th>
                   <td className="is-num">{bytesLabel(a.bytes)}</td>
-                  {/* Passed by reference. No download URL is minted here -- the
-                      reader uses their own credentials against GCS, which keeps
-                      the tenant boundary in one place. */}
+                  {/* Still passed by reference as well. The viewer serves a
+                      bounded, redacted window; the uri is how someone reads the
+                      whole object with their own credentials, which keeps that
+                      half of the tenant boundary where IAM already enforces it. */}
                   <td>
                     <span className="mono uri">{a.uri}</span>
                     <button
@@ -1573,6 +1623,9 @@ function Artifacts({
             </tbody>
           </table>
         </div>
+      )}
+      {showing !== null && (
+        <ArtifactViewer taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
       )}
       {skipped.length > 0 && (
         <p className="warn-text">
