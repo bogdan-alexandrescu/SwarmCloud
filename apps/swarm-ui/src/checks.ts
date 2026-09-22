@@ -22,6 +22,7 @@ import {
   type TaskPage,
   type Workflow,
   type WorkflowPage,
+  pluralise,
 } from './types'
 
 /**
@@ -364,7 +365,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
     : {
         label,
         status: 'clear',
-        note: `${rows.length} accounts, all with a current reading and none needing sign-in`,
+        note: `${pluralise(rows.length, 'account')}, all with a current reading and none needing sign-in`,
       }
 }
 

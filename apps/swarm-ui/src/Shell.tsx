@@ -266,7 +266,6 @@ export function SkeletonRows({ rows = 6 }: { rows?: number }) {
  * The eleven existing `import { timeAgo } from './Shell'` sites are untouched.
  */
 export { timeAgo }
-
 export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
   const tabs = [
     ['home', 'Home'],

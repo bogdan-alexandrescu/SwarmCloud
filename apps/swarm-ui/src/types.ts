@@ -2257,7 +2257,14 @@ export function timeAgo(when: Date | string | number, now: number = Date.now()):
   if (s < 5) return 'just now'
   if (s < 60) return `${s}s ago`
   if (s < 3600) return `${Math.round(s / 60)}m ago`
-  return `${Math.round(s / 3600)}h ago`
+  // DAYS, above 48 hours. This used to end at hours, so a reading four days old
+  // printed "96h ago" -- arithmetic a reader has to do before they can react to
+  // it, on exactly the figures where age is the whole point. The threshold is
+  // `humaniseUntil`'s, so a duration and an age agree about where hours stop
+  // being the readable unit.
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h ago`
+  return `${Math.round(h / 24)}d ago`
 }
 
 /**
@@ -2600,4 +2607,22 @@ export function canBeStopped(task: { state: TaskState; cancel_requested?: boolea
  */
 export function stoppingEndsALiveAttempt(task: { state: TaskState }): boolean {
   return CONCURRENCY_STATES.has(task.state)
+}
+
+
+/**
+ * "1 account", "2 accounts". A count and its noun, agreeing.
+ *
+ * Here rather than in a screen because BOTH Overview.tsx and the pure
+ * checks.ts need it, and the second copy is not hypothetical: "1 accounts, all
+ * with a current reading" was on a shipped screenshot. The sentence was true
+ * and a reader stops trusting a sentence that cannot count to one -- which
+ * matters more than usual beside a figure being read as a measurement.
+ *
+ * checks.ts already has its own `countOf`, counting a workflow's steps by
+ * state. Different question, so this has a different name rather than a
+ * clashing one.
+ */
+export function pluralise(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
 }

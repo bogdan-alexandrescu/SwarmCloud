@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  timeAgo,
   headroomFor,
   limitedBy,
   overCeiling,
@@ -22,7 +23,6 @@ import {
   type ProfileBlocker,
   type RunnerProfile,
 } from '../types'
-import { timeAgo } from '../Shell'
 
 function pool(over: Partial<Pool>): Pool {
   return {
@@ -355,5 +355,40 @@ describe('timeAgo', () => {
   it('clamps a future timestamp to "just now" rather than counting backwards', () => {
     at('2026-09-22T12:00:00Z')
     expect(timeAgo('2026-09-22T12:05:00Z')).toBe('just now')
+  })
+})
+
+// -- timeAgo arithmetic ----------------------------------------------------
+//
+// A verifier found this unguarded on 2026-09-22: changing `h / 24` to `h / 12`
+// left the whole suite green, so a four-day-old reading could print "8d ago"
+// and ship. The test that existed only asserted the literal tokens 'd ago' and
+// 'h ago' APPEARED IN THE SOURCE -- which a comment satisfies.
+//
+// These assert the arithmetic, which is possible because timeAgo takes `now`.
+describe('timeAgo reports the right unit and the right number', () => {
+  const NOW = Date.UTC(2026, 8, 22, 12, 0, 0)
+  const ago = (ms: number) => timeAgo(NOW - ms, NOW)
+
+  it('counts seconds, then minutes, then hours', () => {
+    expect(ago(2_000)).toBe('just now')
+    expect(ago(30_000)).toBe('30s ago')
+    expect(ago(5 * 60_000)).toBe('5m ago')
+    expect(ago(3 * 3_600_000)).toBe('3h ago')
+  })
+
+  it('stays in hours right up to 48, then switches to days', () => {
+    expect(ago(47 * 3_600_000)).toBe('47h ago')
+    expect(ago(48 * 3_600_000)).toBe('2d ago')
+  })
+
+  it('divides by 24, not by anything else', () => {
+    // The exact mutation that went undetected: h/12 would make this '8d ago'.
+    expect(ago(4 * 24 * 3_600_000)).toBe('4d ago')
+    expect(ago(10 * 24 * 3_600_000)).toBe('10d ago')
+  })
+
+  it('refuses to invent a time it cannot read', () => {
+    expect(timeAgo('not a date', NOW)).toBe('at an unknown time')
   })
 })
