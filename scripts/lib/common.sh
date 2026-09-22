@@ -180,13 +180,19 @@ load_env() {
   API_PREFIX="${API_PREFIX:-/v1}"
   HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"
 
+  # The FRONT DOOR: the hostname of the external load balancer in front of
+  # swarm-api. Empty means "resolve it" (see front_door_host below), not "there
+  # isn't one" -- swarm-api's ingress is internal-and-cloud-load-balancing, so
+  # from outside the VPC the load balancer is the ONLY address that serves it.
+  API_HOST="${API_HOST:-}"
+
   IMAGE_HOST="${IMAGE_HOST:-${REGION}-docker.pkg.dev}"
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
   export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
-  export API_PREFIX HTTP_TIMEOUT IMAGE_HOST IMAGE_REPO
+  export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 
   mkdir -p "${BUILD_DIR}"
 
@@ -520,6 +526,16 @@ access_token() {
         | jq -r '.access_token // empty')" \
         || die "the metadata server refused an access token"
       [[ -n "${_ACCESS_TOKEN}" ]] || die "the metadata server returned no access token"
+    elif [[ -n "${SWARM_IMPERSONATE_SA:-}" ]]; then
+      # IAP is the reason this branch exists. The front door accepts an OAuth
+      # ACCESS token (see api_credential below) and authorises the principal it
+      # names, so reaching the API from a laptop means presenting a service
+      # account's access token rather than the operator's own. gcloud's
+      # `--impersonate-service-account` is the one way to get one without a key
+      # file, which this repository does not issue.
+      _ACCESS_TOKEN="$(gcloud auth print-access-token \
+        --impersonate-service-account="${SWARM_IMPERSONATE_SA}" 2>/dev/null)" \
+        || die "could not mint an access token by impersonating ${SWARM_IMPERSONATE_SA}; you need roles/iam.serviceAccountTokenCreator on it"
     else
       _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
         || die "no gcloud credentials; run: gcloud auth login"
@@ -695,6 +711,11 @@ gcs_object_count() {
 
 # A Google ID token for the API.
 #
+# THIS IS THE CLOUD RUN CREDENTIAL, not the front door's. Going through the load
+# balancer, an ID token is refused by IAP whatever its audience -- see
+# api_credential below for the measurements. Callers ask for api_credential and
+# let it choose; this stays the way to get an ID token specifically.
+#
 # The API verifies the token itself and checks the `hd` claim, so the useful
 # source depends on who is calling:
 #   SWARM_ID_TOKEN        -- CI supplies its own, already minted by WIF
@@ -748,17 +769,121 @@ auth_config() { printf 'header = "Authorization: Bearer %s"\n' "$1"; }
 # ---------------------------------------------------------------------------
 # Control-plane API
 # ---------------------------------------------------------------------------
+#
+# THE *.run.app URL IS NOT THE ADDRESS OF THIS API. Measured 2026-09-22:
+#
+#   curl https://swarm-api-tonstldhta-uc.a.run.app/readyz              -> 404
+#   curl -H 'Authorization: Bearer <id token>' .../readyz              -> 404
+#   curl .../v1/workflows  and  .../definitely-not-a-route             -> 404
+#
+# All four answers are byte-identical: the same 272-byte Google HTML page.
+# swarm-api's own 404 is FastAPI JSON, so nothing in those requests ever
+# reached the container. `gcloud run services describe swarm-api` explains it:
+#
+#   run.googleapis.com/ingress: internal-and-cloud-load-balancing
+#
+# which is the setting the external load balancer in front of Cloud Run
+# REQUIRES (terraform/modules/frontend/main.tf says so at length), and which
+# makes the run.app hostname unreachable from outside the VPC by design.
+# Google's frontend refuses the request there and renders the refusal as 404 --
+# the same status a missing route produces, which is why scripts/e2e-test.sh
+# read a healthy control plane as a broken one and told its operator to
+# rule out IAM and then redeploy.
+#
+# So a 404 here is not a routing bug and not an IAM problem. It is the wrong
+# ADDRESS, and it was this library handing it out.
+#
+# The front door is the load balancer. See front_door_host and api_credential.
+
+# The load balancer's hostname, or empty when there is no front door.
+#
+# THREE SOURCES, IN ORDER, AND NONE OF THEM RESTATES THE VALUE:
+#
+#   1. API_HOST          -- the operator, or a test.
+#   2. `terraform output frontend_url` -- does not exist yet. Track C's root
+#      outputs (terraform/infra/outputs.tf) export frontend_iap_audiences and
+#      quota_broker_url but NOT the URL itself, and `tf_output api_url`, which
+#      this function used to consult first, has never existed either -- which is
+#      why the Cloud Run fallback below was in fact the only branch that ever
+#      ran. Asked for as a cross-track request; the moment it lands it wins here
+#      without another change.
+#   3. terraform/environments/<env>/<env>.tfvars -- Track C's INPUT, read rather
+#      than copied. `frontend_hostname` is where the hostname is decided, so
+#      reading it is the "change your side to match theirs" move rather than a
+#      second place for the name to drift.
+_FRONT_DOOR_HOST=""
+_FRONT_DOOR_RESOLVED=0
+front_door_host() {
+  if [[ "${_FRONT_DOOR_RESOLVED}" -eq 1 ]]; then
+    printf '%s' "${_FRONT_DOOR_HOST}"
+    return 0
+  fi
+  _FRONT_DOOR_RESOLVED=1
+
+  if [[ -n "${API_HOST:-}" ]]; then
+    _FRONT_DOOR_HOST="${API_HOST#https://}"
+    _FRONT_DOOR_HOST="${_FRONT_DOOR_HOST#http://}"
+    _FRONT_DOOR_HOST="${_FRONT_DOOR_HOST%/}"
+    printf '%s' "${_FRONT_DOOR_HOST}"
+    return 0
+  fi
+
+  local from_tf
+  from_tf="$(tf_output frontend_url)"
+  if [[ -n "${from_tf}" ]]; then
+    _FRONT_DOOR_HOST="${from_tf#https://}"
+    _FRONT_DOOR_HOST="${_FRONT_DOOR_HOST%/}"
+    printf '%s' "${_FRONT_DOOR_HOST}"
+    return 0
+  fi
+
+  local tfvars="${REPO_ROOT}/terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars"
+  [[ -f "${tfvars}" ]] || { printf '%s' ""; return 0; }
+  # `enable_frontend = false` means the load balancer is not deployed. The
+  # hostname is usually still written down next to it, and using it then would
+  # send every script at a name that resolves to nothing.
+  if grep -Eq '^[[:space:]]*enable_frontend[[:space:]]*=[[:space:]]*false' "${tfvars}"; then
+    printf '%s' ""
+    return 0
+  fi
+  _FRONT_DOOR_HOST="$(sed -n 's/^[[:space:]]*frontend_hostname[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "${tfvars}" | head -n 1)"
+  printf '%s' "${_FRONT_DOOR_HOST}"
+}
+
+# Is the resolved API URL the IAP-protected front door rather than Cloud Run?
+#
+# It decides which CREDENTIAL to present, so it asks about the address that is
+# actually in use rather than about configuration: an operator who sets API_URL
+# to the load balancer by hand gets the IAP path too.
+api_is_front_door() {
+  local host
+  host="$(front_door_host)"
+  [[ -n "${host}" ]] || return 1
+  case "$(api_url)" in
+    "https://${host}"|"https://${host}/"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 _API_URL=""
 api_url() {
   if [[ -n "${_API_URL}" ]]; then printf '%s' "${_API_URL}"; return 0; fi
   if [[ -n "${API_URL:-}" ]]; then
+    # An explicit override wins, and it is not only an escape hatch:
+    # terraform/infra/verify.tf sets API_URL to the *.run.app address for the
+    # in-VPC verification job, where that address IS reachable and there is no
+    # gcloud in the image to look anything up with.
     _API_URL="${API_URL%/}"
   else
-    local from_tf
-    from_tf="$(tf_output api_url)"
-    if [[ -n "${from_tf}" ]]; then
-      _API_URL="${from_tf%/}"
+    local front_door
+    front_door="$(front_door_host)"
+    if [[ -n "${front_door}" ]]; then
+      _API_URL="https://${front_door}"
+    elif [[ -n "${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]]; then
+      # Inside Cloud Run with no API_URL and no gcloud. Nothing below can run
+      # here, and guessing an address is worse than saying so.
+      die "no API URL: API_URL is unset and this is running inside Cloud Run, where there is no gcloud to look one up with. terraform/infra/verify.tf sets API_URL on the verification job; a job that reaches this line is missing that env var."
     else
       # stderr captured, not discarded. An expired session, a missing
       # run.services.get, a disabled Cloud Run Admin API, a wrong REGION and a
@@ -766,26 +891,109 @@ api_url() {
       # below used to blame the last one on the list -- sending an operator to
       # redeploy a healthy control plane in the middle of the incident they were
       # trying to diagnose.
-      local describe_err=""
-      if ! _API_URL="$(gcloud run services describe "${API_SERVICE}" \
+      # THE INGRESS IS READ IN THE SAME CALL AS THE URL, and it is not a nicety:
+      # a Cloud Run URL whose service refuses external traffic is an address
+      # that answers 404 to everything, and 404 is the one status an operator
+      # reads as "wrong path" rather than "wrong host".
+      local describe_err="" describe_out=""
+      if ! describe_out="$(gcloud run services describe "${API_SERVICE}" \
            --project "${PROJECT_ID}" --region "${REGION}" \
-           --format='value(status.url)' 2>"${TMPDIR:-/tmp}/swarm-apiurl.$$")"; then
+           --format='value[separator="|"](status.url,metadata.annotations."run.googleapis.com/ingress")' \
+           2>"${TMPDIR:-/tmp}/swarm-apiurl.$$")"; then
         describe_err="$(cat "${TMPDIR:-/tmp}/swarm-apiurl.$$" 2>/dev/null || true)"
-        _API_URL=""
+        describe_out=""
       fi
       rm -f "${TMPDIR:-/tmp}/swarm-apiurl.$$"
       # Exits here if the session is dead, so nothing below misreports it.
       [[ -z "${describe_err}" ]] || die_if_auth_failure "${describe_err}"
-      if [[ -z "${_API_URL}" && -n "${describe_err}" ]]; then
+      if [[ -z "${describe_out}" && -n "${describe_err}" ]]; then
         err "cannot resolve the API URL, and this is why:"
         printf '%s\n' "${describe_err}" | redact | head -n 3 | sed 's/^/     /' >&2
         die "that is a failure to LOOK UP ${API_SERVICE}, not proof it is absent. Check the account, the region (${REGION}) and the project (${PROJECT_ID}) before redeploying anything."
       fi
+      local ingress=""
+      case "${describe_out}" in
+        *"|"*) ingress="${describe_out##*|}"; _API_URL="${describe_out%%|*}" ;;
+        *)     _API_URL="${describe_out}" ;;
+      esac
       _API_URL="${_API_URL%/}"
+      # `all` is the only ingress that serves the run.app hostname publicly.
+      # Anything else (internal, internal-and-cloud-load-balancing) admits only
+      # VPC and load-balancer traffic, and a caller out here is neither.
+      if [[ -n "${_API_URL}" && -n "${ingress}" && "${ingress}" != "all" ]]; then
+        err "${API_SERVICE} resolves to ${_API_URL}, and that address cannot serve you."
+        err "Its ingress is '${ingress}', so Google's frontend refuses external requests"
+        err "before they reach the container -- and renders the refusal as HTTP 404, which"
+        err "reads exactly like a missing route on a broken deployment. The service is fine."
+        err "Reach it through the load balancer instead. Set the hostname:"
+        err "    API_HOST=<the frontend_hostname in terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars>"
+        die "or set API_URL explicitly if you are inside the VPC, where the run.app address does work."
+      fi
     fi
   fi
-  [[ -n "${_API_URL}" ]] || die "no API URL: API_URL is unset, terraform has no api_url output, and ${API_SERVICE} was not found in ${REGION}. If the lookup itself failed you would have seen why above; this is the case where it genuinely returned nothing."
+  [[ -n "${_API_URL}" ]] || die "no API URL: API_URL and API_HOST are unset, terraform has no frontend_url output, no frontend_hostname is set for environment '${ENVIRONMENT}', and ${API_SERVICE} was not found in ${REGION}. If the lookup itself failed you would have seen why above; this is the case where it genuinely returned nothing."
   printf '%s' "${_API_URL}"
+}
+
+# The bearer THIS address expects. Two doors, two credentials.
+#
+# CLOUD RUN wants a Google ID token: the service verifies it itself and derives
+# the tenant from it. That is id_token(), and it is what every script here has
+# always sent.
+#
+# THE LOAD BALANCER WANTS AN OAUTH ACCESS TOKEN, and this is the opposite of
+# what the notes in this repository assumed. Measured against the live front
+# door on 2026-09-22:
+#
+#   gcloud user ID token                     -> 401 Invalid IAP credentials:
+#                                               Invalid bearer token.
+#                                               Invalid JWT audience.
+#   impersonated SA ID token, --audiences=
+#     <the client id in IAP's sign-in
+#      redirect>                             -> 401, the SAME message
+#   gcloud user ACCESS token                 -> 401, IAP error code 900
+#   impersonated SA ACCESS token             -> 403 "Access denied. For user
+#                                               swarm-verify@..."
+#
+# Only the last one got past authentication -- a 403 that NAMES the caller is
+# IAP saying "I know who you are and you are not on the list", which is an IAM
+# grant away from working. The ID-token route cannot be made to work here at
+# all: `gcloud compute backend-services list --format='value(iap.oauth2ClientId)'`
+# is EMPTY for swarm-ui-backend, so IAP is using a Google-managed OAuth client
+# and there is no client id to mint an audience for.
+#
+# Nothing is lost by sending an access token: IAP sends the backend NO
+# Authorization header of its own and swarm-api authenticates the caller from
+# `X-Goog-IAP-JWT-Assertion` instead (apps/swarm-api/swarm_api/deps.py:198).
+api_credential() {
+  if api_is_front_door; then
+    access_token
+  else
+    id_token
+  fi
+}
+
+# Turn IAP's refusal into the sentence that names the fix.
+#
+# These bodies are short, generic and arrive with a 401 or 403 that every caller
+# here already renders as "the API rejected you" -- which sends an operator to
+# check their tenant, their groups and their ALLOWED_DOMAINS when the request
+# never reached the application at all.
+_api_explain_iap() {
+  local status="$1" body="$2"
+  case "${body}" in
+    *"Invalid IAP credentials"*|*"iap/docs/faq#error_codes"*)
+      err "that ${status} came from IAP, not from swarm-api: the request never reached the application."
+      err "The front door takes an OAuth ACCESS token for a principal granted"
+      err "roles/iap.httpsResourceAccessor, not a Google ID token. Set SWARM_IMPERSONATE_SA"
+      err "to a service account that holds it."
+      ;;
+    *"Access denied. For user"*)
+      err "that ${status} came from IAP: the credential was accepted and the principal is not authorised."
+      err "It needs roles/iap.httpsResourceAccessor on the backend service -- which Track C"
+      err "sets through frontend_iap_members in terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars."
+      ;;
+  esac
 }
 
 # api_request METHOD PATH [BODY] -> body on stdout, HTTP status in API_STATUS
@@ -794,7 +1002,7 @@ api_request() {
   local method="$1" path="$2" body="${3:-}"
   local url token response
   url="$(api_url)${path}"
-  token="$(id_token)"
+  token="$(api_credential)"
 
   # -K - : the Authorization header arrives on stdin, never in argv. See
   # auth_config above for why that distinction matters for an ID token.
@@ -809,7 +1017,11 @@ api_request() {
   fi
 
   API_STATUS="${response##*$'\n'}"
-  printf '%s' "${response%$'\n'*}"
+  local payload="${response%$'\n'*}"
+  if [[ "${API_STATUS}" == "401" || "${API_STATUS}" == "403" ]]; then
+    _api_explain_iap "${API_STATUS}" "${payload}"
+  fi
+  printf '%s' "${payload}"
   [[ "${API_STATUS}" -ge 200 && "${API_STATUS}" -lt 300 ]]
 }
 
@@ -823,11 +1035,15 @@ api_reachable() {
 # 2026-09-16 -- /healthz returned 404 with no `server: Google Frontend` header
 # while /readyz on the same router returned 200 with one. /readyz is the better
 # gate regardless: it proves Firestore is reachable, not just that a process is up.
-  # The service requires an ID token: Cloud Run IAM answers an unauthenticated
-  # request 403, which is not a 2xx and so read as "unreachable" even when the
-  # API is perfectly healthy.
-  curl -sS -m 10 -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $(id_token)" \
+  # The service requires a credential: an unauthenticated request is answered
+  # 403 by Cloud Run IAM, or 302/401 by IAP, and none of those is a 2xx -- so
+  # a healthy API reads as unreachable without one. api_credential picks the
+  # kind THIS address accepts.
+  #
+  # The header goes in through `-K -`, not argv, for the reason auth_config
+  # explains: this line used to interpolate the token straight into curl's
+  # command line, where every process on the box can read it out of ps.
+  auth_config "$(api_credential)" | curl -sS -m 10 -K - -o /dev/null -w '%{http_code}' \
     "$(api_url)/readyz" 2>/dev/null | grep -q '^2'
 }
 
