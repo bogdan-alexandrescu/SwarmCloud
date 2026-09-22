@@ -59,6 +59,38 @@ import { WorkflowsScreen } from './Workflows'
  * list (its Recent tab) like any other row. The Trouble board consequently has
  * no route — see the note on `LEGACY`.
  *
+ * A TAB'S LABEL AND ITS SCREEN'S HEADING ARE ONE NAME, and there is a test.
+ * Seven of the sixteen routes here used to disagree: "Pools" opened a page
+ * headed "Capacity", "Timeline" opened "Activity", "Holders" opened "Capacity
+ * holders", "Pool limits" opened "Admin settings", both submit tabs opened
+ * pages with different verbs, and the utility button said "Reference" over a
+ * page headed "API surface". A reader cannot tell a rename from a redirect, so
+ * each of those is a question about whether the click went where it said. It
+ * also breaks every external reference — a runbook step "go to Pools" named
+ * nothing on the screen it landed you on.
+ *
+ * The fix went BOTH WAYS on purpose: where the heading was the better name it
+ * became the tab ("Capacity holders", "Submit a task"), where the tab was
+ * better the heading gave way ("Pools", "Timeline", "Pool limits"), and where
+ * neither was honest both were replaced (see REFERENCE_LABEL). Whichever side
+ * moved, the reason is written beside the value it changed.
+ *
+ * THREE OF THOSE TAB LABELS NOW DIVERGE FROM docs/web-ui/redesign.md, whose
+ * pane table (lines 69-74) still lists "New agent", "New workflow", "Holders"
+ * and "Reference", and from docs/web-ui/ui-audit-and-build-prompt.md, which
+ * proposed the opposite trade on two pairs -- shortening the heading to
+ * "Holders" rather than lengthening the tab, and heading this section's
+ * Timeline pane "History", which is the SECTION's name and so would have left
+ * the tab and the heading still disagreeing. Both files are Track D and are
+ * not edited from here; the divergence is deliberate and is reported rather
+ * than patched. If those recommendations are reinstated, change both sides of
+ * the pair -- the test below does not care which name wins, only that one does.
+ *
+ * tests/unit/control_plane/test_nav_headings_agree.py reads this array, the
+ * SectionBody switch and every screen's `Screen title=` / `<h1>`, and fails on
+ * any route where the two differ — including a route added later, which is the
+ * case a one-off audit does not cover.
+ *
  * Four finished screens that no route had ever pointed at — the runner-profile
  * catalogue, both submit forms and the attempt timeline — are reachable, and
  * so, for the first time, is the Overview screen itself. Every old hash still
@@ -118,8 +150,16 @@ const SECTIONS: SectionDef[] = [
     tabs: [
       { id: 'running', label: 'Agents' },
       { id: 'workflows', label: 'Workflows' },
-      { id: 'new', label: 'New agent' },
-      { id: 'new-workflow', label: 'New workflow' },
+      // "Submit a task", not "New agent", and the screen's own copy is why.
+      // Submit.tsx creates a TASK at READY or PARKED and then says, in the
+      // panel it renders on success, "That is not a running agent" -- because
+      // invariant 1 is that neither state holds capacity. A tab promising an
+      // agent and a page explaining you have not got one is the contradiction,
+      // and the tab is the side that was wrong. `task` is also the noun the
+      // API uses (`POST /v1/tasks`, `TaskCreate`), the same test that named
+      // the Runtimes section after `/v1/runtimes`.
+      { id: 'new', label: 'Submit a task' },
+      { id: 'new-workflow', label: 'Submit a workflow' },
     ],
   },
   {
@@ -157,7 +197,12 @@ const SECTIONS: SectionDef[] = [
     tabs: [
       { id: 'pools', label: 'Pools' },
       { id: 'profiles', label: 'Runner profiles' },
-      { id: 'holders', label: 'Holders' },
+      // "Capacity holders" rather than "Holders": the screen answers "what is
+      // holding capacity, and do the two records of that agree", and "Holders"
+      // alone does not say holders of WHAT -- which, sitting one tab away from
+      // "Accounts", is the reading that makes someone open it looking for
+      // people. The longer heading was the better name and it won.
+      { id: 'holders', label: 'Capacity holders' },
       // Accounts moved out of Settings deliberately. The subscription pool's
       // five-hour and seven-day windows are the only used-against-available
       // reading this platform has that is not a pool counter, and a
@@ -198,6 +243,24 @@ const SECTIONS: SectionDef[] = [
  * is the mistake the old eleven-item nav made eleven times over.
  */
 const REFERENCE = 'reference'
+
+/**
+ * The utility button's label AND the heading of the screen it opens. One
+ * constant, used in both places, because they are two renderings of one name.
+ *
+ * NEITHER OLD NAME SURVIVED, and the screen's own lead is the argument. The
+ * button said "Reference" and the page said "API surface"; the first paragraph
+ * of that page says, in bold, that it is NOT a list of the endpoints
+ * SwarmCloud offers -- it is every route this browser tab has called since it
+ * loaded. So "Reference" promised documentation the screen does not hold and
+ * "API surface" promised completeness the screen disclaims in its own first
+ * sentence. Copying either one onto the other would have made the app agree
+ * with itself about something untrue.
+ *
+ * The hash stays `reference`: it is an address people have saved, and
+ * SECTION_ALIASES exists precisely because renaming one breaks a saved link.
+ */
+const REFERENCE_LABEL = 'API reads'
 
 /**
  * Every hash the eleven-item nav produced, still resolving.
@@ -425,7 +488,7 @@ function Nav({ at, go }: { at: Route; go: (to: string) => void }) {
           aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
           onClick={() => go(REFERENCE)}
         >
-          Reference
+          {REFERENCE_LABEL}
         </button>
       </div>
     </nav>
@@ -590,7 +653,7 @@ function AgentDrawer({
 }
 
 /**
- * The API surface — the one page the brief reserved for it.
+ * The reads this tab has made — the one page the brief reserved for the API.
  *
  * IT DOES NOT CLAIM TO BE THE API. It renders the probe registry: the routes
  * this UI has called since the page loaded, with what happened to each. That
@@ -617,7 +680,7 @@ function ReferenceScreen() {
   return (
     <>
       <div className="head">
-        <h1>API surface</h1>
+        <h1>{REFERENCE_LABEL}</h1>
         
       </div>
       <p className="sub">What this UI reads, and how those reads are going.</p>
