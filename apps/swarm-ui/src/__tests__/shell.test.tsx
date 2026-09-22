@@ -631,3 +631,33 @@ describe('B20: a measured zero and an unrendered track are different marks', () 
     vi.doUnmock('../api')
   })
 })
+
+// -- the capacity row's name column ---------------------------------------
+//
+// The compact density pass clipped it on the DEPLOYED console: "claude-code ·
+// 2…", "codex · 10 can …", "mock · 20 can s…", "team · 0 assign…". The name
+// track was `minmax(0, 1fr)` while the bar held a 90px floor, so under
+// pressure -- a 200px rail plus three columns on Overview -- the label
+// collapsed first.
+//
+// A bar that loses 40px still shows its proportion. A name that loses 40px
+// stops saying which pool the row is about, and the pool name is the only part
+// of that row you cannot infer from the others.
+//
+// This reads the SHIPPED stylesheet, the same way every other assertion in
+// this file does, rather than a hand-written copy of the rule.
+describe('the capacity row protects the name, not the bar', () => {
+  it('floors the name track and lets the bar give way', () => {
+    const block = STYLES.split('.ctl-util {')[1]
+    expect(block, 'styles.css must declare a .ctl-util rule').toBeDefined()
+    const rule = (block ?? '').split('}')[0] ?? ''
+    const tracks = /grid-template-columns:\s*([^;]+);/.exec(rule)
+    expect(tracks, '.ctl-util must declare its tracks').not.toBeNull()
+    const first = (tracks?.[1] ?? '').trim()
+    expect(
+      first.startsWith('minmax(0'),
+      'the NAME is the first track and must not be able to reach zero width',
+    ).toBe(false)
+    expect(first).toMatch(/minmax\(\s*\d+(ch|px)/)
+  })
+})

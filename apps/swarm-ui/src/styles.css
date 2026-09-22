@@ -1825,7 +1825,16 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      a current reading has an age and the age is part of the figure. 128px is
      what 19 monospace characters at 11px need; at 92px it ellipsed the age
      away, which is the one part that was just added. */
-  grid-template-columns: minmax(0, 1fr) minmax(90px, 160px) 78px 128px;
+  /* THE NAME HOLDS A FLOOR AND THE BAR GIVES WAY, not the other way round.
+     It was `minmax(0, 1fr)` for the name against `minmax(90px, 160px)` for the
+     bar, so under pressure -- a 200px rail plus three columns on Overview --
+     the label collapsed first and rendered "claude-code · 2…", "mock · 20 can
+     s…", "team · 0 assign…". A bar that loses 40px still shows its proportion;
+     a name that loses 40px stops saying which pool it is, and the pool name is
+     the only part of the row you cannot infer from the others.
+     18ch fits "claude-code · 20 c" at 12.5px mono, which is the longest
+     profile name this catalogue has. */
+  grid-template-columns: minmax(18ch, 1fr) minmax(48px, 160px) 78px 128px;
   align-items: center;
   gap: var(--ctl-s3);
   padding: 5px 0;
