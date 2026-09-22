@@ -430,6 +430,23 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
     stale = True
     if observed_at is not None:
         stale = (now - observed_at) > DEFAULT_STALE_AFTER
+
+    # THE VERDICT AND THE RECORD ARE TWO FIELDS, and the verdict is the one a
+    # reader can act on. `is_unreadable_for` is asked rather than re-derived
+    # from a timestamp this function would have to publish, so the set below is
+    # by construction the set `choose()` will skip -- the two cannot drift
+    # apart the way a copy of the rule would.
+    #
+    # An object without the predicate reports every recorded tenant as
+    # currently unreadable. That over-reports a problem rather than hiding one,
+    # which is the only direction this field may fail in.
+    unreadable_by = sorted(getattr(account, "unreadable_by", {}) or {})
+    predicate = getattr(account, "is_unreadable_for", None)
+    unreadable_now = (
+        [t for t in unreadable_by if predicate(t, now)]
+        if callable(predicate)
+        else list(unreadable_by)
+    )
     return {
         "account_id": account.account_id,
         "owner_tenant": account.owner_tenant,
@@ -449,7 +466,23 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         #: an account nobody wants, and until this was surfaced the two looked
         #: identical on the listing: full headroom, zero agents, and every task
         #: for that tenant quietly failing.
-        "unreadable_by": sorted(getattr(account, "unreadable_by", {}) or {}),
+        "unreadable_by": unreadable_by,
+        #: The tenants `choose()` will REFUSE to hand this account to RIGHT NOW.
+        #:
+        #: Computed here rather than left to the reader, for the same reason
+        #: `stale` and each window's `reset` are: the rule is time-limited --
+        #: `Account.is_unreadable_for` forgets a report after
+        #: DEFAULT_STALE_AFTER, deliberately, so a five-minute onboarding
+        #: window does not become an account that never comes back -- and the
+        #: server owns the clock. `unreadable_by` above carries no ages at all,
+        #: so a reader given only that cannot tell a report five minutes old
+        #: from one three days stale, and both render the same.
+        #:
+        #: Without this the listing was back where `unreadable_by` was added to
+        #: stop it being: an account the pool will not hand out drawn as a
+        #: healthy one with full headroom and zero agents, and every task for
+        #: that tenant quietly failing.
+        "unreadable_now": unreadable_now,
         #: Null means NEVER assigned, which is the shape of "this account is
         #: registered and no worker can reach the broker at all".
         "last_assigned_at": (
@@ -1299,15 +1332,37 @@ def create_app(
         caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
         store = _accounts(request)
         scope = tenant_id if is_platform else caller_tenant
+        # `list_reporting` rather than `list`/`for_tenant`, because a listing is
+        # READ BY A PERSON and a document the store could not parse is part of
+        # the answer: without it the page shows four accounts where there are
+        # five, says "4 accounts registered", and computes the pool's headroom
+        # over four -- all silently. See `AccountStore.list_reporting`.
+        listing = store.list_reporting()
         if scope:
-            # `for_tenant` returns owned AND lent-to accounts, which is the set
-            # a tenant may actually run on -- not the set it owns.
-            accounts = store.for_tenant(scope)
+            # `may_serve` is what `for_tenant` applies: owned AND lent-to, which
+            # is the set a tenant may actually run on, not the set it owns.
+            accounts = [a for a in listing.accounts if a.may_serve(scope)]
         else:
-            accounts = store.list()
+            accounts = listing.accounts
         return {
             "accounts": [account_to_api(a) for a in accounts],
             "tenant_id": scope,
+            #: WHICH documents could not be read, narrowed to the ones this
+            #: caller is entitled to see. A document id is
+            #: `<owner_tenant>:<label>` by construction, so handing the whole
+            #: list to a borrower would name another tenant's accounts --
+            #: invariant 9 is about exactly that. A document whose id does not
+            #: carry a tenant is shown to nobody but the platform.
+            "unreadable_documents": (
+                listing.unreadable
+                if not scope
+                else [d for d in listing.unreadable if d.split(":", 1)[0] == scope]
+            ),
+            #: The TOTAL, unfiltered, for every caller. A borrower may not learn
+            #: whose account is broken; it must still learn that the list it is
+            #: reading is incomplete, because otherwise it reads a short list as
+            #: the whole pool.
+            "unreadable_document_count": len(listing.unreadable),
         }
 
     def _provision_and_register(

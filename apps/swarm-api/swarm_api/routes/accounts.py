@@ -164,12 +164,32 @@ def list_accounts(
 
     `tenant_id` is echoed from the RESOLVED tenant rather than from the broker's
     answer, so the page can never be told it is looking at a tenant it is not.
+
+    THIS FUNCTION REBUILDS THE PAYLOAD, so every field the browser needs has to
+    be named here. The broker reports which account documents it could not read
+    and how many there were in total -- the count that stops a short list being
+    read as the whole pool -- and a rebuild that lists only `accounts` drops
+    both on the floor, which puts the page back to showing four accounts where
+    there are five with nothing to say so.
     """
     tenant_id = _tenant_id(ctx, auth)
     payload = pool.list_accounts(tenant_id)
     return {
         "accounts": list(payload.get("accounts") or []),
         "tenant_id": tenant_id,
+        # Forwarded as served. The broker has already narrowed the ids to what
+        # this tenant may see -- it is the only component that knows both the
+        # document ids and who asked -- so re-deriving the rule here would be a
+        # second copy of an isolation boundary.
+        "unreadable_documents": list(payload.get("unreadable_documents") or []),
+        # Defaulted to the number of ids rather than to 0: an older broker that
+        # does not serve the count still serves the ids, and a 0 beside a
+        # non-empty list would be the one shape that reads as "nothing wrong".
+        "unreadable_document_count": int(
+            payload.get("unreadable_document_count")
+            if isinstance(payload.get("unreadable_document_count"), int)
+            else len(payload.get("unreadable_documents") or [])
+        ),
     }
 
 
