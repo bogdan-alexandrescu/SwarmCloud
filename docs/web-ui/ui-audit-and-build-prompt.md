@@ -2265,16 +2265,40 @@ pointer-without-target), screenshot. 15/15 captured.
 ErrorBoundary.tsx:38) did not fire on any of the 15. Every defect below is a
 layout or truth defect in a page that rendered successfully.
 
-## V1 — The workflow DAG is jammed against the right edge (severity: high)
+## V1 — The workflow graph is narrow, and it is not a graph (severity: high)
 
-`agents/workflows`. The three step nodes render in a narrow column at roughly
-x=930..1070 of a 1554px content area. Everything from x=445 to x=930 is blank.
-The single most important diagram in the product uses about a third of the width
-available to it and is visually off-centre, which reads as a rendering fault
-rather than a layout choice.
+**CORRECTED 2026-09-22, after running a six-step workflow.** The first version
+of this finding said the DAG was "jammed against the right edge". That was
+wrong: I measured the blank space to the LEFT of the nodes and did not measure
+the right. It is centred, with roughly equal margins either side. The claim of
+misalignment is withdrawn.
 
-This is the screen the redesign is FOR. It has to be the widest, most deliberate
-thing in the app, not the narrowest.
+What is actually wrong is worse, and only became visible with a workflow wide
+enough to show it. Rendering `wf_5e5ad3b6f7da4299a839` — five independent steps
+and one step joining all five — the screen draws:
+
+```
+[cold-start] [fencing] [allornothing] [checkpoints] [absentzero]
+                    ———— THEN ————
+                     [synthesis]
+```
+
+One `THEN` bar. The same `THEN` bar a purely linear three-step workflow draws
+between `research` and `draft`. **So the view cannot express the difference
+between "these five ran in parallel and the sixth joined them" and "these ran
+one after another."** There are no edges: siblings are laid out in a row and
+dependency is implied by vertical order plus one separator. That is a list with
+a decoration, not a directed graph, and the one question this screen exists to
+answer — what depends on what — is the question it cannot answer.
+
+The truncated dependency line under `synthesis` makes it concrete: it reads
+`← cold-start, fencing, allorn…` and ellipses away two of the five parents. The
+only complete statement of the graph on the page is cut off mid-word.
+
+Secondary, and the part the original finding got right: the nodes occupy about
+700px of a 1070px content area and the page is centred in ~1100px of a 1600px
+viewport, so the most important diagram in the product uses well under half the
+glass. It should be the widest, most deliberate thing in the app.
 
 ## V2 — The header contradicts the steps, on one screen, at one glance (high)
 
@@ -2382,9 +2406,11 @@ chrome, not per-page defects, and should be fixed once in the nav.
 
 Append to the B-series, in dependency order:
 
-* **B14 — Workflow canvas owns the full width.** The DAG is the centrepiece.
-  Full content width, nodes laid out left-to-right or top-to-bottom with the
-  graph centred in its own box, never floated to one edge. Blocks V1.
+* **B14 — Draw the actual graph, at full width.** Real edges from each parent
+  to each child, so a fan-in of five is visibly different from a chain of five.
+  A single shared `THEN` bar cannot encode that and must go. Full content width;
+  never ellipse the dependency list — it is the only complete statement of the
+  graph on the page. Blocks V1.
 * **B15 — One state, derived, in the header.** Delete every render of the stored
   `state` field on a workflow. The header shows the rollup from `rollup.py` and
   the step chips agree with it by construction. Blocks V2.
@@ -2417,3 +2443,132 @@ Append to the B-series, in dependency order:
   as a pass`, so its assertions did not run; that failure is unexplained here.
 * `e2e-test.sh` reported `swarm-api .../readyz answered HTTP 404`, which is a
   platform finding, not a UI one, and is unresolved.
+
+---
+
+# HALF FOUR — a six-agent workflow, watched (2026-09-22)
+
+Submitted `wf_5e5ad3b6f7da4299a839`: five independent `claude-code` steps and a
+sixth joining all five via `input_from`. Walked every route at 1600x1000 while
+it ran. **No route crashed** — `ErrorBoundary` did not fire on any of the 19
+surfaces visited, including task detail and the attempts pane, which half three
+listed as unaudited.
+
+## W1 — The New Workflow form cannot submit a workflow that runs (BLOCKER)
+
+`SubmitWorkflow.tsx:186-189` builds each step as:
+
+```js
+steps: steps.map((s) => ({
+  step_id: s.stepId.trim(),
+  runner_profile: s.profile,
+  depends_on: s.dependsOn.filter((d) => ids.includes(d)),
+})),
+```
+
+There is **no `input`** and **no `input_from`**. `WorkflowStepCreate.input` is
+`Field(default_factory=dict)` (schemas.py:74), so every step arrives with
+`input == {}`. And `cliagent.py:263-265`:
+
+```python
+prompt = payload.get("prompt")
+if not isinstance(prompt, str) or not prompt.strip():
+    raise RunnerFailure(f"{spec.name} requires a non-empty string input.prompt")
+```
+
+So **every workflow submitted from this screen fails at every agent step, by
+construction.** Not intermittently — the failure is total and deterministic for
+any profile backed by the CLI agent runner. The screen renders, validates step
+ids, offers dependency checkboxes, explains three merge strategies at length,
+and produces a workflow that cannot execute.
+
+The single-agent form does not have this bug: `Submit.tsx:220` renders a
+`<textarea>` for `input`. So the platform's own UI is inconsistent with itself,
+and the working half is the one that was built first.
+
+`input_from` being absent is the second half: it is the mechanism by which one
+step's artifact reaches the next, it is the reason `SWARM_ARTIFACTS_DIR` was
+fixed, and there is no way to express it from the UI at all. A workflow built
+here cannot pass work between steps even if the prompts were supplied.
+
+**This outranks every layout finding in this document.** A console whose
+"create" screen cannot create a working thing is not a formatting problem.
+
+## W2 — The graph cannot distinguish a fan-in from a chain (high)
+
+See the corrected V1. With five parallel steps joining into one, the page draws
+the five in a row, then a single `THEN` bar, then the join — the same `THEN` bar
+a strictly linear workflow draws between two sequential steps. There are no
+edges. The dependency line that would disambiguate is ellipsed:
+`← cold-start, fencing, allorn…`, hiding two of the five parents.
+
+## W3 — The PARKED reason banner is vertically clipped (high)
+
+Task detail for the join step, `DEPENDENCY_INCOMPLETE`. The banner renders with
+its text sliced horizontally through the middle — the top half of the letters is
+visible and the bottom half is cut off by the container. The probe reports it as
+`clipped-y`. This is the one banner that explains why the task is not running,
+on the one screen a user opens to ask exactly that.
+
+## W4 — The task drawer overlays the list with no scrim (medium)
+
+Opening a task slides a drawer over the right side of the Agents table. There is
+no dimming layer and no shadow, so the drawer's left edge cuts the underlying
+rows and slices the telemetry cards mid-card. It reads as a broken layout rather
+than a panel above a page.
+
+## W5 — `admin/tenants` overflow is worse on a wider screen (medium)
+
+`past-viewport` was ×2 at 1554px content width and ×4 at 1600px. The IDENTITY
+column holds service-account emails — the thing an operator copies — and they
+are clipped at both widths.
+
+## W6 — The workflow read did not report `state_source` (medium)
+
+`routes/workflows.py`'s module docstring says "EVERY READ DERIVES" and that the
+response reports whether the derived state agrees with the stored copy. A live
+`GET /v1/workflows/wf_5e5ad3b6f7da4299a839` returned `state: "QUEUED"` while
+five of its six steps were `dispatched`, and carried no `state_source` field in
+the payload this probe could see. Either the field is nested where the probe did
+not look, or the derive path is not running on this route. Worth confirming
+before B15 is built on top of it.
+
+## What still holds, and should survive the redesign
+
+The absent-value discipline on task detail is the best writing in the product
+and got better, not worse, under load:
+
+* `PEAK MEMORY — not recorded. Written when an attempt ends. A running attempt
+  has none.`
+* `TOKEN COST — not reported. No attempt reported a cost. This is an absent
+  measurement, not $0.00.`
+* `CHECKPOINTS — 0` rendered as a DIGIT, with "No attempt document lists one."
+* `ELAPSED — queued 36s. Parked — wall time, not work. Nothing is executing and
+  no capacity is held.`
+* `Nothing has been admitted yet ... a task that is PARKED genuinely has none.
+  This is a real zero, not a failed read.`
+
+## Build-prompt additions
+
+* **B22 — The New Workflow form collects per-step input.** A prompt field per
+  step, and an `input_from` control naming an upstream step and the artifact
+  filename to stage. Until this exists the screen should refuse to submit rather
+  than create work that cannot run. **Blocks W1 and outranks B14-B21.**
+* **B23 — The parked reason must be legible.** Fix the clipped banner and give
+  every blocked/parked reason a container that grows with its text. Blocks W3.
+* **B24 — The drawer is a layer.** Scrim, shadow, and a hard left edge; the page
+  beneath must read as covered, not as cut. Blocks W4.
+* **B25 — Tables own their overflow.** No identifier column may clip at any
+  width; service-account emails and tenant ids wrap or scroll within the table.
+  Blocks W5.
+
+## What was not verified
+
+* The workflow was still running when these were written; no step had reached
+  `succeeded`, so the artifact-staging path (`input_from` at runtime) is
+  unproven in this pass.
+* W1 is proven by reading the source and the two contracts it violates, not by
+  submitting a workflow from the form and watching it fail. That experiment was
+  not run, because it would create work that is guaranteed to fail and spend
+  agent time to prove something the code already states.
+* W6 may be a probe artefact rather than a defect; it is written as a question.
