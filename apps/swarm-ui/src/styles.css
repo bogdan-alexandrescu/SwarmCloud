@@ -847,14 +847,19 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   font: 12px var(--mono);
   color: var(--text-dim);
 }
-/* A count computed over a partial join is struck through rather than hidden:
-   hiding it invites the reader to compute their own from the nodes, which has
-   exactly the same defect. */
-.rollup.untrusted {
+/* NOT STRUCK THROUGH. Strikethrough means retracted or superseded, and it was
+   applied to a line that read "3 steps - not counted" -- the only place the SIZE
+   of the workflow appeared, over a card that had just drawn three nodes from
+   that number. A reader cannot recover "this census is unconfirmed" from a mark
+   that universally means "disregard this".
+   Amber and an explicit word carry it instead, which is what every other
+   unconfirmed reading on this platform already does. The count itself is never
+   given this class; see `.wf-size` and `censusLine` in Workflows.tsx. */
+.rollup.untrusted,
+.rollup .unconfirmed {
   color: var(--warn);
-  text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--warn) 60%, transparent);
 }
+.rollup .unconfirmed { border-bottom: 1px dotted color-mix(in srgb, var(--warn) 55%, transparent); }
 
 /* An unread state is NOT a muted state. Dashed, amber, and it says so in the
    node -- the one thing it must never be mistaken for is "idle". */
@@ -1167,6 +1172,10 @@ dl.kv {
 dl.kv dt { color: var(--text-faint); font-size: 12px; }
 dl.kv dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 .mono { font-family: var(--mono); font-size: 12px; }
+
+/* ------------------------------------------------------------------------ */
+/* IDENTIFIERS ARE NEVER RESTYLED.                                           */
+/* ------------------------------------------------------------------------ */
 .uri { color: var(--text-dim); overflow-wrap: anywhere; }
 .muted { color: var(--text-dim); font-size: 12.5px; line-height: 1.55; margin: 0; }
 .muted.small { font-size: 12px; margin-top: 10px; }

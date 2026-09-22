@@ -2285,6 +2285,30 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
             integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],
           },
         }),
+        // THE FAN-IN, reproduced from the live workflow that proved the graph
+        // could not express one: `wf_5e5ad3b6f7da4299a839`, five independent
+        // steps and a sixth depending on ALL five. Rendered by the old view it
+        // was indistinguishable from a chain of five, so a fixture that only
+        // ever held the two-fork shape would have let that ship again.
+        //
+        // The step ids are the real ones, `allornothing` included, because the
+        // join's dependency line is the string that used to be ellipsed and its
+        // length is the reason.
+        ...(['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'].map(
+          (stepId, i) =>
+            mk(`task_fan_${i}`, i === 3 ? 'FAILED' : 'SUCCEEDED', 'claude-code', 40 - i, {
+              workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: stepId, depends_on: [],
+              dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+            }),
+        )),
+        mk('task_fan_join', 'CANCELLED', 'claude-code', 35, {
+          workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: 'synthesis',
+          depends_on: ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+          dispatch: {
+            strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
+            integrates: ['task_fan_0', 'task_fan_1', 'task_fan_2', 'task_fan_3', 'task_fan_4'],
+          },
+        }),
       ],
       next_page_token: null,
       tenant_id: 'u-bogdan',
@@ -2388,71 +2412,93 @@ function fixtureWorkflowRows(): Workflow[] {
         step('publish', ['report'], null),
       ],
     },
-    {
-      // THE SHAPE THE GRAPH EXISTS TO DISTINGUISH, as it was actually run:
+      // THE SHAPE THE GRAPH EXISTS TO DISTINGUISH, reproduced from the live
+      // workflow that proved the view could not express one:
       // `wf_5e5ad3b6f7da4299a839` on 2026-09-22, five independent steps and a
-      // sixth joining all five through `input_from`. The old view drew this as
-      // five boxes, one `THEN` bar and one box -- the identical marks a chain
-      // of five draws -- and the dependency line that would have disambiguated
-      // it was ellipsed at `allorn...`.
+      // sixth depending on ALL five. Rendered by the old view it was
+      // indistinguishable from a chain of five -- one `THEN` bar between the
+      // five and the sixth, the identical mark a linear workflow draws -- and
+      // the dependency line that would have disambiguated it was ellipsed at
+      // `allorn...`. Five edges now arrive at `synthesis` and four would arrive
+      // at the last step of a chain, so the two no longer render alike.
       //
-      // It is in the fixture because a development set whose only workflow is a
-      // two-way join never shows the case that was got wrong. No step carries a
-      // task id: this is a workflow the scheduler has not reached, which is a
-      // real state, and it keeps the fixture honest -- inventing six task
-      // documents to colour it in would be a fixture agreeing with itself.
-      workflow_id: 'wf_fanin_05',
-      tenant_id: 'u-bogdan',
-      state: 'QUEUED',
-      stored_state: 'QUEUED',
-      state_source: 'derived',
-      rollup: {
-        state: 'QUEUED',
-        complete: true,
-        reason: 'no_step_has_started',
-        counts: { unstarted: 6 },
-        unreadable_steps: [],
-        unstarted_steps: [
-          'cold-start',
-          'fencing',
-          'allornothing',
-          'checkpoints',
-          'absentzero',
-          'synthesis',
+      // JOINED to the six `task_fan_*` documents in the task fixture, so this
+      // row exercises the derived rollup and the census as well as the shape. A
+      // fixture whose only workflow is a two-way join never shows the case that
+      // was got wrong, and one with no tasks never shows the heading deriving.
+      //
+      // The step ids are the real ones, `allornothing` included, because the
+      // join's dependency line is the string that used to be ellipsed and its
+      // length is the reason.
+      {
+        workflow_id: 'wf_5e5ad3b6f7da4299a839',
+        tenant_id: 'u-bogdan',
+        state: 'FAILED',
+        stored_state: 'FAILED',
+        state_source: 'derived',
+        rollup: {
+          state: 'FAILED',
+          complete: true,
+          reason: 'terminal_worst_first',
+          counts: { SUCCEEDED: 4, FAILED: 1, CANCELLED: 1 },
+          unreadable_steps: [],
+          unstarted_steps: [],
+          steps_read: 6,
+        },
+        created_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
+        updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        submitted_by: 'bogdan@saga.xyz',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [
+          step('cold-start', [], 'task_fan_0'),
+          step('fencing', [], 'task_fan_1'),
+          step('allornothing', [], 'task_fan_2'),
+          step('checkpoints', [], 'task_fan_3'),
+          step('absentzero', [], 'task_fan_4'),
+          // `input_from` MIRRORS `depends_on` here, and it is a MAP -- upstream
+          // step_id to artifact filename -- because that is what the API serves
+          // and what `WorkflowStep.input_from` is typed as. This row was first
+          // written with a bare string, which is the shape nothing ever sends.
+          step(
+            'synthesis',
+            ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+            'task_fan_join',
+            {
+              'cold-start': 'cold-start.md',
+              fencing: 'fencing.md',
+              allornothing: 'allornothing.md',
+              checkpoints: 'checkpoints.md',
+              absentzero: 'absentzero.md',
+            },
+          ),
         ],
-        steps_read: 6,
       },
-      created_at: new Date(Date.now() - 3 * 60_000).toISOString(),
-      updated_at: new Date(Date.now() - 3 * 60_000).toISOString(),
-      submitted_by: 'bogdan@saga.xyz',
-      priority: 0,
-      on_step_failure: 'FAIL_WORKFLOW',
-      cancel_requested: false,
-      steps: [
-        step('cold-start', [], null),
-        step('fencing', [], null),
-        step('allornothing', [], null),
-        step('checkpoints', [], null),
-        step('absentzero', [], null),
-        // `input_from` MIRRORS `depends_on` here, as a map rather than the bare
-        // string this row was first written with: the API serves upstream
-        // step_id -> artifact filename, and a synthesis step that joins five
-        // parents reads all five. One entry would have made the fixture say
-        // "depends on five, reads one", which is a shape nothing sends.
-        step(
-          'synthesis',
-          ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
-          null,
-          {
-            'cold-start': 'cold-start.md',
-            fencing: 'fencing.md',
-            allornothing: 'allornothing.md',
-            checkpoints: 'checkpoints.md',
-            absentzero: 'absentzero.md',
-          },
-        ),
-      ],
-    },
+      {
+        // AN API OLDER THAN `rollup.py`, which is what production was still
+        // running on 2026-09-22: `state` straight off the Firestore document,
+        // no `state_source: 'derived'`, no `rollup`, no `drift`. This payload
+        // is the one that printed "QUEUED" over steps reading succeeded, failed
+        // and cancelled, so it has to be renderable in development or the fix
+        // for it cannot be looked at. The heading must claim NO state here.
+        workflow_id: 'wf_bcdc9180e4fb4a209f31',
+        tenant_id: 'u-bogdan',
+        state: 'QUEUED',
+        stored_state: 'QUEUED',
+        state_source: 'stored',
+        created_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
+        updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        submitted_by: 'bogdan@saga.xyz',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [
+          step('research', [], 'task_a3881bec'),
+          step('draft', ['research'], 'task_8e33a3de'),
+          step('review', ['draft'], 'task_1beb89a5'),
+        ],
+      },
   ]
 }
 

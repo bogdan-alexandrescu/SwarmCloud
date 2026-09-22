@@ -41,6 +41,7 @@ import {
   stateGlyph,
   stateTone,
   stepState,
+  workflowHeaderState,
   type StepState,
   type Task,
   type TaskDispatch,
@@ -351,8 +352,13 @@ function StatesUnavailable({ detail }: { detail: string }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// The card
+// ---------------------------------------------------------------------------
+
 /**
- * The rollup line, read off what the SERVER computed.
+ * The step CENSUS, read off what the SERVER computed. Not the workflow's state
+ * and not its size -- both of those are printed separately and plainly.
  *
  * This used to census the joined tasks here. It no longer does, and the reason
  * is the whole point of the change behind it: the API now derives a workflow's
@@ -360,22 +366,26 @@ function StatesUnavailable({ detail }: { detail: string }) {
  * a restatement of the server's rule with nothing checking the two still agree
  * -- `check-contract-parity.sh` does not cover TypeScript.
  *
- * Counts are still SUPPRESSED when any step state is unknown, because that
+ * Counts are marked UNCONFIRMED when any step state is unknown, because that
  * property belongs to the numbers rather than to where they were computed:
  * "3 succeeded" over a partial read is a wrong number wearing the clothes of a
  * right one. The server reports `complete: false` for exactly that case.
+ *
+ * The step COUNT is deliberately not in here. It used to be, as
+ * "3 steps · not counted" struck through in amber -- so the only statement of
+ * how big the workflow is looked retracted, while three nodes were drawn from
+ * that very number a few pixels below. The count is known whenever the steps
+ * are; "not counted" is a fact about the census and stays with the census.
  */
-function rollupLine(workflow: Workflow): { text: string; trustworthy: boolean } {
+export function censusLine(workflow: Workflow): { text: string; confirmed: boolean } {
   const roll = workflow.rollup
   const total = workflow.steps.length
   if (!roll) {
-    // `state_source: 'stored'` -- no read route produces this, but a payload
-    // without a rollup must say it has no census rather than invent a zero one.
-    return { text: `${total} step${total === 1 ? '' : 's'} · not counted`, trustworthy: false }
+    return { text: 'no census: this read did not derive one', confirmed: false }
   }
   if (!roll.complete) {
     const n = roll.unreadable_steps.length
-    return { text: `${n} of ${total} steps: state unread`, trustworthy: false }
+    return { text: `${n} of ${total} steps: state unread`, confirmed: false }
   }
   const done = roll.counts.SUCCEEDED ?? 0
   const failed = roll.counts.FAILED ?? 0
@@ -383,7 +393,7 @@ function rollupLine(workflow: Workflow): { text: string; trustworthy: boolean } 
   const parts = [`${done}/${total} done`]
   if (failed > 0) parts.push(`${failed} failed`)
   if (unstarted > 0) parts.push(`${unstarted} not started`)
-  return { text: parts.join(' · '), trustworthy: true }
+  return { text: parts.join(' · '), confirmed: true }
 }
 
 /**
@@ -395,6 +405,10 @@ function rollupLine(workflow: Workflow): { text: string; trustworthy: boolean } 
  * already repaired it, on purpose -- a repair that leaves no trace is a silent
  * resolution, and the thing worth seeing is that the stored copy was wrong at
  * all, not the instant in which it was wrong.
+ *
+ * This is the ONE place the stored value appears, and it appears named as the
+ * stored value inside a sentence about the two records disagreeing. The heading
+ * never prints it; see `workflowHeaderState`.
  *
  * `agrees === null` is rendered as "not checked", never as a disagreement: the
  * derivation was incomplete, so the two records were not compared.
@@ -415,6 +429,23 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
       Stored state was <code>{drift.stored}</code>; the steps say{' '}
       <code>{drift.derived}</code>
       {drift.repaired ? ' — the stored copy has been corrected' : ''}.
+    </p>
+  )
+}
+
+/**
+ * Said out loud when the API did not derive: the heading has no state to print,
+ * and the reader needs to know that is a property of the server rather than of
+ * this workflow.
+ */
+function StateNotDerived({ workflow }: { workflow: Workflow }) {
+  return (
+    <p className="rollup untrusted">
+      This API did not derive the state from the steps on this read, so the
+      heading claims none. The stored copy reads{' '}
+      <code>{workflow.stored_state ?? workflow.state}</code>, which nothing has
+      confirmed — before <code>rollup.py</code> a workflow kept the value it was
+      created with for its whole life. The step chips below are live; read those.
     </p>
   )
 }
@@ -440,7 +471,13 @@ function WorkflowCard({
   onMode: (m: Mode) => void
 }) {
   const shape = dagShape(workflow.steps)
-  const roll = rollupLine(workflow)
+  // THE HEADING'S STATE IS DERIVED OR IT IS NOT PRINTED. `workflow.state` looks
+  // like the answer and is not: on an API older than `rollup.py` it is the
+  // Firestore cache, which reads QUEUED for the workflow's whole life. See
+  // `workflowHeaderState` in types.ts.
+  const header = workflowHeaderState(workflow)
+  const census = censusLine(workflow)
+  const total = workflow.steps.length
   // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
   // server-side -- the frozen `Workflow` has no metadata field, so there is
   // nowhere else it could live. Null when the task join produced nothing to
@@ -451,23 +488,37 @@ function WorkflowCard({
   const dispatch = workflowDispatchOf(tasks)
 
   return (
-    <section className="section">
-      <h2>
+    <section className="section wf-card">
+      <h2 className="wf-head">
         {/* B17. `.section > h2` uppercases, and this id is lowercase
             everywhere it actually lives -- Firestore, the API, the logs and
             the `#agents/task/<id>` address. Printed as WF_BCDC9180… it cannot
             be pasted anywhere, which is the only thing an id is for. */}
-        <Id>{workflow.workflow_id}</Id> · {workflow.state.toLowerCase()} · updated{' '}
-        {timeAgo(workflow.updated_at)}
+        <Id>{workflow.workflow_id}</Id>
+        {/* NOT the workflow's own state field, lower-cased. That field is the
+            derived rollup on a current API and the stale Firestore cache on an
+            older one, and the two are indistinguishable from here -- which is
+            how a heading came to read QUEUED over steps reading succeeded,
+            failed and cancelled. `workflowHeaderState` prints a state only when
+            THIS read derived one, and says so plainly when it did not. */}
+        <span className={`wf-state ${header.tone}`} title={header.title}>
+          <span aria-hidden>{header.glyph}</span> {header.word}
+        </span>
+        <span className="wf-when">updated {timeAgo(workflow.updated_at)}</span>
       </h2>
-      <p className={`rollup${roll.trustworthy ? '' : ' untrusted'}`}>
-        {roll.text}
+      <p className="rollup wf-size">
+        {/* Plain. Always. This is the only place the size of the workflow
+            appears and it is a number the page has already drawn nodes from. */}
+        {total} step{total === 1 ? '' : 's'}
+        {' · '}
+        <span className={census.confirmed ? undefined : 'unconfirmed'}>{census.text}</span>
         {/* Still a separate annotation, not folded into the state above.
             `cancel_requested` is a REQUEST: a step holding a lease keeps it
             until the worker or the reconciler releases it, so between the
             request and the release the workflow really is still running. */}
         {workflow.cancel_requested && ' · cancel requested'}
       </p>
+      {!header.derived && <StateNotDerived workflow={workflow} />}
       <StateDrift drift={workflow.drift} />
       <WorkflowDispatch
         dispatch={dispatch?.dispatch ?? null}
@@ -1033,7 +1084,7 @@ function StepNode({
   const body = (
     <>
       <div className="node-id">
-        {step.step_id}
+        <span className="ident">{step.step_id}</span>
         {role === 'integrator' && (
           <span className="tag ok" title="This step merges the other steps' branches and opens the workflow's single pull request.">
             opens the PR

@@ -1,6 +1,6 @@
 import { loadRuntimeTopology, type ResourceClasses, type RuntimeTopology } from './api'
 import { isPaused } from './fetch'
-import { Screen } from './Shell'
+import { Id, Screen } from './Shell'
 import {
   humaniseUntil,
   overCeiling,
@@ -406,9 +406,13 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
       <h2>
         {/* `.section > h2` uppercases, and this is an identifier: the string
             here is the exact `runner_profile` a caller sends, so an uppercased
-            one would be a name nobody can copy. Overridden locally rather than
-            in styles.css, which every other screen shares. */}
-        <span className="mono" style={{ textTransform: 'none' }}>{runtime.name}</span>
+            one would be a name nobody can copy. This used to be an inline
+            override here, on the grounds that styles.css is shared -- which was
+            the wrong conclusion from the right observation. The rule belongs to
+            every id on every screen, so it goes through `<Id>`; the workflow
+            heading had the identical defect and was NOT fixed by an override
+            that only one file knew about. */}
+        <Id>{runtime.name}</Id>
         <span className="count-chip">{runtime.resolved_backend}</span>
       </h2>
 

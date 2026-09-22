@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { loadTaskWindow, loadTenants } from './api'
-import { Screen, timeAgo } from './Shell'
+import { Id, Screen, timeAgo } from './Shell'
 import {
   TERMINAL_STATES,
   bucketStart,
@@ -466,8 +466,12 @@ export function TenantsScreen() {
                     <td>
                       {t.credentials.length > 0 ? (
                         t.credentials.map((c) => (
+                          // These are Secret Manager NAMES and `.tag`
+                          // uppercases. An uppercased secret name is one
+                          // nobody can look up, so the value is wrapped:
+                          // `.id` beats the ancestor by inheritance.
                           <span className="tag" key={c}>
-                            {c}
+                            <Id>{c}</Id>
                           </span>
                         ))
                       ) : (

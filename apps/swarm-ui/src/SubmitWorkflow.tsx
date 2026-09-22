@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
 import { errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
-import { Screen, timeAgo } from './Shell'
+import { Id, Screen, timeAgo } from './Shell'
 import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
@@ -430,7 +430,7 @@ function StepRow({ step, profiles, others, removable, required, onChange, onRemo
             <input type="checkbox" checked={step.dependsOn.includes(id)}
               onChange={(e) => onChange({ ...step, dependsOn: e.target.checked
                 ? [...step.dependsOn, id] : step.dependsOn.filter((d) => d !== id) })} />
-            <span className="mono">{id}</span>
+            <Id>{id}</Id>
           </label>
         ))}
       </div>
