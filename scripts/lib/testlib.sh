@@ -37,6 +37,34 @@ t_fail() {
 
 t_info() { printf '       %s\n' "$*" >&2; }
 
+# A failure that must STOP the suite, because every assertion after it would be
+# measuring something other than what it claims to measure.
+#
+# `t_fail` is advisory: it records the failure and the script carries on. That
+# is right for an assertion about the platform -- one broken property should not
+# hide the other nine. It is wrong for a SETUP step, and race-test.sh is where
+# the difference bites. Narrowing a pool to one slot is what creates the
+# contention the whole suite exists to observe; when it does not happen, the
+# remaining cases still run, still sample, and still report
+#
+#     PASS  peak concurrent leases on runner:mock: 0 <= 1
+#
+# over a pool whose ceiling is untouched at 20 and which nothing was ever
+# racing for. A red summary line does not undo a green assertion: the assertion
+# is what a person quotes, and it says the platform was proven not to
+# oversubscribe when nothing was measured at all.
+#
+# So a setup step that fails ends the run here, with the summary printed so the
+# cases that did run are still reported. The EXIT trap still fires, which is how
+# anything this suite changed gets put back.
+t_fatal() {
+  t_fail "$*"
+  t_info "this is a SETUP failure, not a platform result: every case after it"
+  t_info "would measure something other than what it claims to. Stopping here."
+  t_summary || true
+  exit 1
+}
+
 assert_eq() {
   local want="$1" got="$2" what="$3"
   if [[ "${want}" == "${got}" ]]; then
