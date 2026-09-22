@@ -2089,7 +2089,7 @@ const OVERVIEW_CSS = `
   white-space: nowrap;
 }
 .ov-link:hover { border-bottom-color: currentColor; }
-.ov-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
+.ov-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 
 /* The whole tile is the doorway. The answer to every figure on the strip is on
    another screen, and making the figure itself the link removes a step. */
@@ -2197,7 +2197,7 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ov-more > summary::-webkit-details-marker { display: none; }
 .ov-more > summary::before { content: '▸ '; }
 .ov-more[open] > summary::before { content: '▾ '; }
-.ov-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
+.ov-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .ov-more > .ov-list { margin-top: var(--ctl-s2); }
 
 .ov-broken { color: var(--bad); }

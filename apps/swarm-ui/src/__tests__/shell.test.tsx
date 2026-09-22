@@ -296,7 +296,14 @@ describe('B4.3: the six moves', () => {
     // other side of it reads as content that failed to load.
     expect(getComputedStyle(first!).borderTopWidth).not.toBe('1px')
     expect(getComputedStyle(second!).borderTopWidth).toBe('1px')
-    expect(getComputedStyle(second!).borderTopColor).toBe('var(--ctl-hairline)')
+    // `--line-soft`, not `--ctl-hairline`. The sheet now carries two divider
+    // weights (see the token block in `styles.css`): `--line` for a component
+    // boundary, which SC 1.4.11 holds at 3:1, and `--line-soft` for the rule
+    // between two repeats of one thing, which this is. The old single token
+    // measured 1.18-1.40:1 against the surfaces while the comment above this
+    // very rule claimed it was "now at 3:1"; `spacing.test.tsx` measures both
+    // weights on rendered elements so that claim cannot go stale again.
+    expect(getComputedStyle(second!).borderTopColor).toBe('var(--line-soft)')
     style.remove()
   })
 
@@ -381,6 +388,44 @@ describe('B4.3: the six moves', () => {
       '12px',
       '28px',
     ])
+    style.remove()
+  })
+})
+
+describe('one control, one appearance', () => {
+  it('draws `.retry` the same inside a state panel and outside one', () => {
+    // `.retry` is the product's "try that again" button and it is rendered in
+    // five files -- ErrorBoundary, Shell twice, Overview and PlatformCounts.
+    // It was styled as `.state .retry`, scoped to the panel it happened to be
+    // written for first, and PlatformCounts' "Run the count" is not inside a
+    // `.state` at all: the same control had two appearances, one of which was
+    // whatever the browser draws by default. The spacing probe found it by
+    // failing to resolve `buttonface` to a colour.
+    //
+    // This is the claim the probe CANNOT make -- it measures geometry and
+    // contrast, not "these two are the same button" -- so it is made here, on
+    // the shipped sheet, against two elements the cascade actually reached.
+    const style = withStyles()
+    const { container } = render(
+      <div className="app">
+        <div className="state">
+          <button className="retry">Try again</button>
+        </div>
+        <button className="retry">Run the count</button>
+      </div>,
+    )
+    const both = [...container.querySelectorAll<HTMLElement>('.retry')]
+    expect(both.length).toBe(2)
+    const [inside, outside] = [both[0]!, both[1]!]
+    const read = (el: HTMLElement) => {
+      const s = getComputedStyle(el)
+      return [s.background, s.borderTopColor, s.borderTopWidth, s.borderRadius, s.padding, s.font].join(' | ')
+    }
+    expect(read(outside)).toBe(read(inside))
+    // And what they agree on is the PRODUCT's surface, not the user agent's.
+    // An unstyled `<button>` computes `background: none` and a `buttonface`
+    // border here; reaching `--surface-2` means this sheet's rule got to it.
+    expect(read(outside)).toContain('var(--surface-2)')
     style.remove()
   })
 })

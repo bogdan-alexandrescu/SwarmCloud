@@ -5,7 +5,66 @@
   --bg: #0b0d10;
   --surface: #14181d;
   --surface-2: #1b2027;
-  --line: #262d36;
+
+  /* TWO LINE WEIGHTS, AND THE MARK IS WHERE THEY COME FROM.
+     ------------------------------------------------------------------
+     `SwarmMark` (Brand.tsx) is not drawn with one stroke. It has three
+     weights and they mean different things: the hex RING at opacity .30 is
+     the structure the swarm is arranged on, the SPOKES at .55 are what the
+     centre actually reaches, and the seven DISCS are solid because they are
+     the things themselves. The mark also drops the two stroke weights
+     entirely below 22px, because at that size they stop separating anything
+     and turn the glyph into grey noise.
+
+     A product whose mark says "structure is lighter than connection, and
+     both are lighter than data" should not draw every rule in its console at
+     one weight, which is what this sheet did: 100 uses of a single value --
+     90 of `var(--line)` and 10 of `var(--ctl-hairline)`, which was an alias
+     for it -- for a panel edge, an input outline, the rail's boundary and the
+     twenty-third row rule of a table alike. So there are two now, and which
+     one a rule gets is decided by what it is FOR rather than by how it looks.
+
+     THE VALUES ARE MEASURED, NOT COPIED FROM THE MARK'S OPACITIES. 30% and
+     55% of --text over --surface land at #54585d and #898d92, which is right
+     for two hairlines inside a 28px glyph and much too loud for a rule drawn
+     the width of a table. The mark supplies the SYSTEM; WCAG supplies the
+     numbers.
+
+     --line        A COMPONENT BOUNDARY: the edge of a panel, a card, an
+                   input, a button, the rail, the head, the dock. WCAG 2.1
+                   SC 1.4.11 asks 3:1 of "visual information required to
+                   identify user interface components", and these are that.
+                   Was #262d36, which measured 1.40:1 against --bg, 1.28:1
+                   against --surface and 1.18:1 against --surface-2 -- under
+                   the floor everywhere, including on the text inputs and
+                   buttons where 1.4.11 is not a matter of taste. The comment
+                   above `.section + .section` asserted "--line now at 3:1
+                   against the surface"; it had never been measured and it was
+                   wrong by a factor of two and a half.
+                   #5f7087 measures 3.85 / 3.53 / 3.24 against the three
+                   surfaces, so the worst case has margin rather than sitting
+                   on the floor.
+     --line-soft   A REPEATED INTERIOR SEPARATOR: the rule between two rows of
+                   one table, two stacked utilisation lines, two sections of
+                   one page. Nothing is identified by the twenty-third of
+                   those that the rows do not already identify, so 1.4.11 does
+                   not reach it -- and drawing all of them at 3:1 turns a
+                   table of numbers into a spreadsheet grid, which is the
+                   register this console is trying not to be in.
+                   Held instead to 1.5:1, which is the floor
+                   tests/unit/control_plane/test_state_colour_discriminability.py
+                   already uses for "these two tones are not the same tone".
+                   #37414e measures 1.88 / 1.72 / 1.58. The old single value
+                   failed even this.
+
+     `src/__tests__/spacing.test.tsx` measures both, on rendered elements,
+     against the ground each one is actually drawn on -- and decides which
+     floor applies STRUCTURALLY (a border on one side of an element that has a
+     twin beside it is a separator), so a new rule cannot be quietly graded
+     down by whoever writes it. */
+  --line: #5f7087;
+  --line-soft: #37414e;
+
   --text: #e8ecf1;
   --text-dim: #93a0b0;
   /* Raised from #64707e, which measured 3.24:1 against --surface-2 and 3.53:1
@@ -83,7 +142,22 @@
     --bg: #f6f8fa;
     --surface: #ffffff;
     --surface-2: #f0f3f6;
-    --line: #d8dee4;
+    /* The same two weights, measured against every ground a border is actually
+       drawn on in this theme -- which is not the same list as the three
+       surface tokens. The probe reported failures at #e5e7ea and #e3e4e6,
+       tints this sheet mixes for striped rows and raised cells, and those are
+       the worst case rather than --surface-2.
+
+       --line was #d8dee4: 1.36 against white, 1.22 against --surface-2 and
+       1.07 against the tints. The light theme failed the 3:1
+       component-boundary floor exactly as the dark one did, on the inputs and
+       buttons where SC 1.4.11 is not a matter of taste, and failed the 1.5:1
+       separator floor as well.
+
+       #698198  4.04 / 3.80 / 3.63 / 3.26 / 3.18  (white … tint)
+       #a9b7c4  2.05 / 1.92 / 1.84 / 1.65 / 1.61 */
+    --line: #698198;
+    --line-soft: #a9b7c4;
     --text: #1f2328;
     --text-dim: #59636e;
     /* Darkened from #818b98, which measured 3.10:1 at worst against the light
@@ -150,6 +224,77 @@ body {
   -webkit-font-smoothing: antialiased;
   /* iPhone: keep content clear of the notch and the home indicator. */
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* ---------------------------------------------------------------------------
+   NOTHING SHIPS WEARING THE BROWSER'S OWN CHROME
+   ---------------------------------------------------------------------------
+   The spacing probe found nine controls in this app rendering with the user
+   agent's defaults: `<input className="mono">` and `<textarea className="mono">`
+   in Submit.tsx and SubmitWorkflow.tsx, the `<select>` in Agents.tsx,
+   Dispatch.tsx and Activity.tsx, several bare `<button>`s, and `.retry`
+   wherever it appears outside a `.state` panel. It found them because it
+   could not resolve `buttonface` and `initial` to a colour, and it refuses to
+   skip a value it cannot measure.
+
+   That is not a cosmetic gap. A default `<input>` in a dark console is a white
+   box with a 2px inset border and black text -- the one surface on the screen
+   that is not part of the product, at the moment someone is typing a pool
+   ceiling into it. The owner asked for surfaces that feel engineered rather
+   than defaulted; a control the browser drew is the literal opposite.
+
+   `:where()` IS WHY THIS IS SAFE TO ADD LATE. It contributes ZERO specificity,
+   so every existing rule in this 3,200-line sheet still wins -- including the
+   many buttons deliberately drawn as plain text (`.ctl-nav-link`,
+   `.ctl-dock-line`, `.art-open`, `.ctl-rail-tabs button`), which set
+   `background: none` and `border: none` and keep doing so. This is a floor
+   under the unstyled ones, not a restyling of the styled ones.
+
+   THE NUMBERS. 5px/9px of padding around 12.5px type puts the ink about 8px
+   from the top border and 9px from the side, over the 4px floor
+   `src/__tests__/spacing.test.tsx` holds; 28px of minimum height is the
+   control target against the 30px data row (`--row-h`). */
+:where(.app button) {
+  min-height: 28px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text-dim);
+  font: 500 12.5px var(--font);
+  cursor: pointer;
+}
+:where(.app button:not(:disabled):hover) { color: var(--text); border-color: var(--text-faint); }
+:where(.app button:disabled) { opacity: .45; cursor: not-allowed; }
+
+/* Checkboxes and radios are excluded, and get `accent-color` instead: the
+   platform draws those as MARKS rather than as boxes, and a border and a
+   padding on one produces a control that is the right size and the wrong
+   shape. `accent-color` is the one property that tints a native control
+   without taking over its drawing, so the tick stays the tick every reader
+   already knows and stops being the one blue on the screen nobody chose. */
+:where(.app input[type='checkbox'], .app input[type='radio']) { accent-color: var(--info); }
+
+:where(.app input:not([type='checkbox']):not([type='radio']), .app select, .app textarea) {
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: 12.5px var(--font);
+}
+:where(.app textarea) { padding: 8px 10px; line-height: 1.5; resize: vertical; }
+/* The class these controls already carry in the markup, honoured rather than
+   ignored: an id, a step name and a workflow input are all identifiers. */
+:where(.app input.mono, .app select.mono, .app textarea.mono) { font-family: var(--mono); }
+:where(.app input:focus-visible, .app select:focus-visible, .app textarea:focus-visible) {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+}
+:where(.app input:disabled, .app select:disabled, .app textarea:disabled) {
+  opacity: .5;
+  cursor: not-allowed;
 }
 
 /* B19 -- THE LAYOUT MUST NOT WASTE THE SCREEN.
@@ -347,14 +492,14 @@ body {
 .brand-env.is-prod {
   border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--line));
   border-left: 3px solid var(--bad);
-  border-radius: 4px;
+  border-radius: var(--ctl-radius-sm);
   background: color-mix(in srgb, var(--bad) 18%, transparent);
   color: var(--bad-ink);
 }
 .brand-env.is-unknown {
   border: 1px solid var(--line);
   border-left: 3px solid var(--text-dim);
-  border-radius: 4px;
+  border-radius: var(--ctl-radius-sm);
   background: var(--ctl-hatch);
   color: var(--text-dim);
 }
@@ -407,8 +552,14 @@ body {
    `04-runtimes-catalogue.png`: a paragraph sitting 19px above the BACKENDS
    heading read as its lead-in while belonging to the section above it, because
    the only thing separating two regions was a gap slightly larger than the gap
-   inside one. With `--line` now at 3:1 against the surface (§B4.2) a single
-   rule does that work at 12px instead of 28px, and does it unambiguously.
+   inside one. A single rule does that work at 12px instead of 28px, and does
+   it unambiguously.
+
+   IT IS `--line-soft`, NOT `--line`. This is the rule between two repeats of
+   one thing, which is the separator weight (see the token block). The comment
+   here used to claim `--line` was "now at 3:1 against the surface"; it
+   measured 1.18:1, and the claim survived because nothing measured it. It is
+   measured now, in `src/__tests__/spacing.test.tsx`, on this element.
 
    `+` rather than a rule on every section: a trailing hairline under the last
    region on a page is a line with nothing on the other side of it, which reads
@@ -423,7 +574,7 @@ body {
 .section + .section {
   border-top-width: 1px;
   border-top-style: solid;
-  border-top-color: var(--ctl-hairline);
+  border-top-color: var(--line-soft);
   padding-top: var(--ctl-s3);
 }
 /* 13px, not 12px. D2 settled the DATA at 12-13px and ~30px rows; the chrome
@@ -477,7 +628,7 @@ body {
 .tag {
   font: 500 10px/1.7 var(--mono);
   text-transform: uppercase; letter-spacing: 0.04em;
-  padding: 0 6px; border-radius: 4px;
+  padding: 0 6px; border-radius: var(--ctl-radius-sm);
   border: 1px solid currentColor;
 }
 .tag.paused { color: var(--paused); }
@@ -500,14 +651,20 @@ body {
   background: var(--surface-2); border-radius: 6px;
   font: 12px/1.5 var(--mono); color: var(--text-dim);
 }
-.state .retry {
+/* NOT `.state .retry`. It was scoped to the panel it was first written for,
+   and `grep -rn 'className="retry"'` finds it in five files -- ErrorBoundary,
+   Shell (twice), Overview and PlatformCounts -- of which PlatformCounts'
+   "Run the count" is not inside a `.state` at all. That one shipped as a
+   native grey button on a dark screen, and the spacing probe found it by
+   failing to resolve `buttonface` to a colour. */
+.retry {
   margin-top: 14px; background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   padding: 6px 14px; font: 500 13px var(--font); cursor: pointer;
 }
-.state .retry:hover { border-color: var(--text-faint); }
+.retry:hover { border-color: var(--text-faint); }
 
-.skeleton { background: var(--surface-2); border-radius: 4px; animation: pulse 1.4s ease-in-out infinite; }
+.skeleton { background: var(--surface-2); border-radius: var(--track-radius); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
 
 /* ---- phone ---- */
@@ -574,7 +731,7 @@ body {
     minmax(96px, auto) minmax(0, 1.4fr) 84px 110px 86px 52px 96px minmax(0, auto);
   align-items: center; gap: 10px;
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: 8px; padding: 4px 12px;
+  border-radius: var(--ctl-radius-sm); padding: 4px 12px;
 }
 .row.holding { border-color: color-mix(in srgb, var(--info) 35%, var(--line)); }
 .row .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-faint); }
@@ -612,7 +769,7 @@ body {
 .node {
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-  border-radius: 8px; padding: 8px 12px; min-width: 132px;
+  border-radius: var(--ctl-radius-sm); padding: 8px 12px; min-width: 132px;
 }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
@@ -786,7 +943,7 @@ table.pools { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.pools th, table.pools td {
   padding: 7px 10px;
   text-align: left;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
   white-space: nowrap;
 }
 table.pools thead th {
@@ -828,7 +985,7 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
 .legend code {
   font: 11.5px var(--mono);
   padding: 1px 4px;
-  border-radius: 4px;
+  border-radius: var(--ctl-radius-sm);
   background: var(--surface-2);
 }
 
@@ -856,7 +1013,7 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
   flex: 0 0 auto;
   padding: 8px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--ctl-radius-sm);
   background: var(--surface);
   color: var(--text-dim);
   font-size: 13px;
@@ -956,7 +1113,7 @@ table.pools .was { margin-left: 5px; font-size: 11px; color: var(--text-faint); 
 .drawer-close {
   position: sticky; top: 0; float: right;
   width: 32px; height: 32px;
-  border: 1px solid var(--line); border-radius: 8px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text-dim);
   cursor: pointer; font-size: 13px; line-height: 1;
 }
@@ -992,7 +1149,7 @@ dl.kv dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere;
 pre.json, pre.err, pre.ev-detail {
   margin: 8px 0 0;
   padding: 9px 11px;
-  border-radius: 8px;
+  border-radius: var(--ctl-radius-sm);
   background: var(--surface-2);
   font: 11.5px/1.5 var(--mono);
   color: var(--text-dim);
@@ -1038,7 +1195,7 @@ ol.timeline li::before {
   padding: 7px 10px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-  border-radius: 8px;
+  border-radius: var(--ctl-radius-sm);
   background: var(--surface);
 }
 .source.ok   { border-left-color: var(--ok); }
@@ -1059,7 +1216,7 @@ ol.timeline li::before {
 .reauth {
   display: block; width: 100%;
   margin-bottom: 8px; padding: 9px 12px;
-  border: 1px solid var(--bad); border-radius: 8px;
+  border: 1px solid var(--bad); border-radius: var(--ctl-radius-sm);
   background: color-mix(in srgb, var(--bad) 12%, var(--surface));
   color: var(--bad-ink); font-size: 13px; font-weight: 600; cursor: pointer;
 }
@@ -1128,7 +1285,7 @@ dl.kv dt.needs-human { color: var(--warn); font-weight: 600; }
 
 .q-row {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  padding: 7px 0; border-bottom: 1px solid var(--line);
+  padding: 7px 0; border-bottom: 1px solid var(--line-soft);
   font-size: 12.5px;
 }
 .q-reason { font: 600 12px var(--mono); color: var(--text); }
@@ -1162,7 +1319,7 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
 }
 button.copy {
   margin-left: 8px; padding: 1px 7px;
-  border: 1px solid var(--line); border-radius: 5px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface-2); color: var(--text-dim);
   font: 10.5px var(--mono); cursor: pointer;
 }
@@ -1400,7 +1557,7 @@ table.pools.accounts td.n { white-space: nowrap; }
   color: var(--text); font: 500 13px var(--font); cursor: pointer;
 }
 .acct-open:hover { color: var(--info); }
-.acct-open:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 4px; }
+.acct-open:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: var(--ctl-radius-sm); }
 .acct-caret { color: var(--text-faint); font-size: 11px; width: 10px; }
 
 .acct-pct { font-variant-numeric: tabular-nums; }
@@ -1504,7 +1661,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .acct-action input:disabled { opacity: .5; cursor: not-allowed; }
 .acct-action textarea, #acct-cred {
   width: 100%; max-width: 620px; padding: 9px 11px; resize: vertical;
-  border: 1px solid var(--line); border-radius: 8px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--bg); color: var(--text);
   font: 12px/1.5 var(--mono);
 }
@@ -1536,7 +1693,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .acct-instructions li { margin-bottom: 6px; }
 .acct-instructions strong { color: var(--text); }
 .acct-instructions code {
-  font: 11.5px var(--mono); padding: 1px 4px; border-radius: 4px;
+  font: 11.5px var(--mono); padding: 1px 4px; border-radius: var(--ctl-radius-sm);
   background: var(--surface-2); overflow-wrap: anywhere;
 }
 
@@ -1839,7 +1996,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   gap: var(--ctl-s3);
   padding: 5px 0;
 }
-.ctl-util + .ctl-util { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+/* The separator weight, plain. It used to be `--line` at 60% over whatever
+   was behind it, which measured 1.02:1 -- a rule mixed down from a base that
+   was already invisible. A token that means "separator" makes the 60% both
+   unnecessary and unmeasurable. */
+.ctl-util + .ctl-util { border-top: 1px solid var(--line-soft); }
 
 .ctl-util-name {
   font: 12.5px/1.35 var(--mono);
@@ -2115,7 +2276,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-table td {
   padding: 4px 10px;
   text-align: left;
-  border-bottom: 1px solid var(--line);
+  /* The separator weight: twenty of these down one table identify nothing the
+     rows do not already identify, and at the boundary weight they would read
+     as a spreadsheet grid. */
+  border-bottom: 1px solid var(--line-soft);
   white-space: nowrap;
 }
 .ctl-table tbody tr:last-child th,
@@ -2291,7 +2455,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   gap: 4px;
   margin-left: 6px;
   padding: 0 6px;
-  border-radius: 4px;
+  border-radius: var(--ctl-radius-sm);
   background: var(--ctl-hatch);
   font: 500 10px/1.7 var(--mono);
   text-transform: uppercase;
@@ -2837,7 +3001,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .dsp-option-head b { font-size: 13.5px; font-weight: 600; }
 .dsp-code { font: 11.5px var(--mono); color: var(--text-faint); }
 .dsp-default {
-  font: 10px var(--mono); letter-spacing: .05em; text-transform: uppercase;
+  font: 10px/1.7 var(--mono); letter-spacing: .05em; text-transform: uppercase;
   color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
 }
 
@@ -2936,7 +3100,7 @@ table.pools tbody tr.unmeasured {
 .blocker-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .blocker-row {
   padding: 7px 10px;
-  border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: var(--ctl-radius-sm);
   background: var(--surface);
   font-size: 12.5px; line-height: 1.5;
 }
@@ -2975,7 +3139,7 @@ table.pools tbody tr.unmeasured {
 
 .admission-details {
   margin-top: 10px; padding: 8px 10px;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); background: var(--surface);
 }
 .admission-details > summary {
   cursor: pointer; font-size: 12.5px; color: var(--text-dim);
@@ -3009,7 +3173,7 @@ table.pools tbody tr.unmeasured {
   color: var(--bad);
   border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
 }
-.stop-btn.inline { padding: 2px 6px; font-size: 10px; }
+.stop-btn.inline { padding: 3px 6px; font-size: 10px; }
 
 .run-stop { margin-left: auto; }
 .node-stop { margin-top: 6px; }
@@ -3209,7 +3373,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ctl-chart-absent { opacity: .6; }
 
 .ctl-chart-axisline,
-.ctl-chart-tick line { stroke: var(--ctl-hairline); }
+.ctl-chart-tick line { stroke: var(--line-soft); }
 .ctl-chart-tick text {
   fill: var(--text-faint);
   font-family: var(--mono);
