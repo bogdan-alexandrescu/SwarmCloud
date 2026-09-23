@@ -1105,7 +1105,11 @@ body {
     [state] 112px
     [name] minmax(0, 1.5fr)
     [owner] minmax(0, 84px)
-    [step] minmax(0, 104px)
+    /* 120px, not 104. F12 of the 2026-09-23 overflow inventory: `scan-terraform`
+       needs 118px and got 104, so the one step id in the fixtures rendered
+       `scan-terraf…` at EVERY width, 1440 included. A track sized under its own
+       longest known value is a truncation with no width band to blame. */
+    [step] minmax(0, 120px)
     [age] minmax(0, 76px)
     [try] 44px
     [class] minmax(0, 116px)
@@ -1136,9 +1140,33 @@ body {
   grid-template-columns:
     [state] 112px
     [name] minmax(0, 1fr)
-    [step] minmax(0, 104px)
+    [step] minmax(0, 120px)
     [age] minmax(0, 76px);
   row-gap: var(--ctl-s1);
+}
+/* F3 OF THE 2026-09-23 OVERFLOW INVENTORY: A SECOND STAGE, BECAUSE FOUR TRACKS
+   IS STILL TOO MANY IN A 20px BAND.
+   ---------------------------------------------------------------------------
+   The drawer is a grid COLUMN down to 1100px, so between 1101 and 1115 the
+   list keeps the four-track template above in about 350px of content: 112 +
+   120 + 76 plus three gaps is 344 of it, `[name]` resolves to a handful of
+   pixels, and the measured result was the profile column GONE and six task ids
+   cut mid-character — `460409c`, `92eb480`, `19d91b8`. A truncated id is not
+   an unreadable id, it is a different and equally plausible id, which is the
+   one kind of truncation this console may not ship.
+
+   So the step goes at 1200, by the same rule the stage above uses (§6.8:
+   columns are dropped, never squeezed together into illegibility) and for the
+   same reason — the step id is on the panel that is open two inches to the
+   right. State, identity and age are what a row is matched on. */
+@media (max-width: 1200px) {
+  .app.has-inspector .row {
+    grid-template-columns:
+      [state] 100px
+      [name] minmax(0, 1fr)
+      [age] minmax(0, 68px);
+  }
+  .app.has-inspector .row .wf { display: none; }
 }
 /* THE DISPATCH FLAG MOVES TO ITS OWN LINE RATHER THAN BEING CLIPPED, which is
    the same call the 390px block makes and for the same reason:
@@ -2060,7 +2088,25 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto;
 }
 .row .agent .model { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-.row .agent .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); flex: none; }
+/* `flex: 0 1 auto`, NOT `flex: none`, AND AN ELLIPSIS UNDER IT — the second
+   half of F3. With `flex: none` the id refused to shrink, so it pushed past
+   `.row .agent`'s own `overflow: hidden` and was cut by the CONTAINER, which
+   carries `text-overflow: clip` and therefore removed the one glyph that says
+   a string was shortened. `460409cd` became `460409c`: not an unreadable id, a
+   different and equally plausible one.
+
+   It ellipses now, and it is the first of the two identity fields to give way
+   because the profile is the field a reader scans a column of rows against,
+   while a shortened id is still recoverable from the row's own detail panel.
+   `min-width: 3ch` keeps enough of it for the ellipsis to read as loss rather
+   than as an empty cell. */
+.row .agent .id {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+  flex: 0 1 auto;
+  min-width: 3ch;
+  overflow: hidden; text-overflow: ellipsis;
+}
 .row .owner, .row .class { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .class .units { color: var(--text-faint); }
 .row .try { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; text-align: right; }
@@ -2202,24 +2248,113 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   margin: 0;
 }
 
-/* THE UTILISATION ROW OVERFLOWED ITS FIGURE COLUMN IN THE DRAWER, SIX TIMES.
-   `.ctl-util` sizes its figures at a flat `78px`, which is right on Overview
-   and Capacity where the row has a whole page to sit in. In a 560px drawer the
-   same row carries `7.20 GiB / 8.00 GiB` in that 78px and the text ran into
-   `.ctl-util-by` beside it -- measured, six overlapping pairs on one run, at
-   1440px, none of them visible to `spacing.test.tsx`.
+/* THE ATTEMPT'S BACKEND, LOWERCASED — the one casing inconsistency left on
+   these screens after §B5.2 banned `uppercase`.
+   ---------------------------------------------------------------------------
+   §B5.2 removed twenty-two declarations that SHOUTED strings we wrote. It
+   could not reach a string the API shouts, and `a.backend` is one:
+   `CLOUD_RUN_JOB` printed verbatim on the attempt card's title row, about two
+   inches from a `.ctl-chip` that lowercases the API's `RUNNING` to `running`.
+   Two machine tokens of the same kind, on the same line, in two different
+   cases — which is the owner's question ("some helper text is all CAPS and
+   others are regular caps?? WHY?") surviving in the one place a stylesheet
+   rule had no way to answer it.
 
-   THE FIX IS SCOPED HERE RATHER THAN APPLIED TO THE PRIMITIVE, and that is a
-   track decision, not a preference: `.ctl-util`'s track list is read verbatim
-   by `shell.test.tsx:696` and the rule is shared with three screens this lane
-   does not own. `max-content` on the figure is what the primitive should
-   probably take -- it is strictly safer than a fixed 78px for every caller --
-   and it is filed as a request in §11.6 rather than made here. */
-.drawer .ctl-util {
-  grid-template-columns: minmax(12ch, 1fr) minmax(48px, 120px) max-content minmax(0, auto);
-  gap: var(--ctl-s2);
+   This is the LEGAL direction and the legal reason (§13.2): `text-transform`
+   exists to bring a string the API chose into this console's register, never
+   to emphasise one we wrote. Scoped to the backend note so no other
+   `.ctl-card-note` — a tenant id, a coverage fraction — is touched. */
+.att-backend { text-transform: lowercase; }
+
+/* §B6.2 — THE RUN PANEL IS ONE SUBJECT, SO IT DRAWS NO REGION RULES.
+   ---------------------------------------------------------------------------
+   Measured on the open drawer before this rule: 66 bordered elements, and the
+   single largest group was 15 of them drawing `.section + .section`'s top
+   hairline — a full-width rule between every pair of blocks down a 5,155px
+   scroller, at four different nesting depths.
+
+   THIS IS NOT A RE-DECISION OF §13.3, IT IS AN ANSWER TO THE QUESTION §13.3
+   LEAVES OPEN. §13.3 decides what separates two REGIONS: `--ctl-s5` of space
+   plus one `--line-soft` hairline, because "a region is a change of subject".
+   The drawer's eleven blocks are not eleven subjects — they are one run,
+   described from its state down to its event log. Every one of them is already
+   introduced by its own `--t-title` heading, which is a stronger and cheaper
+   boundary than a 1px line, and §5.1's standing rule is "grouping is a surface
+   step, separation is a hairline, PREFER THE STEP".
+
+   So the space stays (`.section`'s `--ctl-s5` margin is untouched), the
+   heading stays, and the fifteen rules go. The panels that are genuinely
+   objects in here — the attempt cards — still draw their one box each, which
+   is exactly §13.3's division: panel yes, region no.
+
+   Scoped to `.run-stack`, which `AgentDetail.tsx`'s `Run` renders, so no other
+   screen's regions move. */
+.run-stack .section + .section {
+  border-top-width: 0;
+  padding-top: 0;
 }
-.drawer .ctl-util-figure { white-space: nowrap; }
+
+/* THE UTILISATION ROW IN THE DRAWER, AND WHY IT IS A DIFFERENT SHAPE HERE.
+   ---------------------------------------------------------------------------
+   THE ORIGINAL REASON THIS OVERRIDE EXISTS, KEPT: `.ctl-util` sizes its
+   figures at a flat `78px`, which is right on Overview and Capacity where the
+   row has a whole page to sit in. In a 560px drawer the same row carries
+   `7.20 GiB / 8.00 GiB` in that 78px and the text ran into `.ctl-util-by`
+   beside it -- six overlapping pairs on one run at 1440px, none of them
+   visible to `spacing.test.tsx`. The figure takes `max-content` here and the
+   primitive is left alone, because its track list is read verbatim by
+   `shell.test.tsx` and it is shared with three screens this lane does not own.
+   `max-content` on the figure is what the primitive should probably take --
+   it is strictly safer than a fixed 78px for every caller -- and it is filed
+   as a request in §11.6 rather than made here.
+
+   THE BAR GIVES WAY AND THE WORDS DO NOT — F2 OF THE 2026-09-23 OVERFLOW
+   INVENTORY, FIXED HERE.
+   ---------------------------------------------------------------------------
+   The previous template gave the track `minmax(48px, 120px)` and the two text
+   cells `1fr` / `auto`, which is the wrong way round for this row and was
+   measured as such: in a 413px row `cpu not sampled` rendered `cpu not sam…`,
+   `never measured` rendered `never mea…` (22% lost) and `latest heartbeat 3m
+   ago` lost 77%. Those strings are the row's whole point — the bar beside them
+   is HATCHED, which says "nobody reported this", and the words are the only
+   thing that says WHY. An absence whose explanation is ellipsed is an absence
+   drawn as a measurement, one glyph from reading as a value.
+
+   FOUR COLUMNS DO NOT FIT IN 413px AND NO ALLOCATION OF THEM DOES. Measured
+   on the attempt card, which is the narrowest caller: the name needs 126px,
+   the figure `1.72 GiB / 8.00 GiB` needs 140, the provenance `latest heartbeat
+   3m ago` needs 165 and the bar needs a bar — 431px before the three gaps.
+   Re-weighting the tracks only chooses which of the four gets cut.
+
+   SO THE ROW IS TWO LINES HERE: the name and the figure on the first, the bar
+   and the provenance on the second. That is the shape Railway, Vercel and
+   Northflank all draw a usage meter in — label and value on one line, the bar
+   under them, spanning — and it is the only arrangement in which both the
+   hatch and the words survive at this width. It costs about 17px per row on
+   six rows, in a panel that scrolls.
+
+   `.ctl-util`'s own comment states the rule this restores: "the name holds a
+   floor and the bar gives way". Here the bar gives way by moving rather than
+   by shrinking, so it keeps enough width to show hatch-versus-fill, which is
+   the one thing it carries that the figures do not. */
+.drawer .ctl-util {
+  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-areas:
+    'name figure'
+    'track by';
+  align-items: center;
+  column-gap: var(--ctl-s2);
+  row-gap: 3px;
+}
+.drawer .ctl-util-name { grid-area: name; }
+.drawer .ctl-util-figure { grid-area: figure; white-space: nowrap; }
+.drawer .ctl-util-track { grid-area: track; }
+.drawer .ctl-util-by { grid-area: by; text-align: right; }
+/* The ellipsis stays on both text cells as the BACKSTOP rather than as the
+   normal case. With the row on two lines it is what happens when somebody
+   drags the inspector genuinely narrow; before, it was what happened at the
+   drawer's own default width. */
+.drawer .ctl-util-name,
 .drawer .ctl-util-by {
   min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -4319,59 +4454,72 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 
 /* -------------------------------------------------------------------------- */
-/* 1. Metric tile                                                              */
+/* 1. The fact strip (was: the metric tile)                                    */
 /* -------------------------------------------------------------------------- */
 /* One fact, its units, and what it does not include. The third line is not
    decoration: "6 units held" and "6 agents running" are different numbers and
-   the tile that omits which one it is gets read as both. */
+   the fact that omits which one it is gets read as both. */
 
+/* §B6.1 — A STRIP OF FACTS, NOT A ROW OF TILES, AND THIS IS A LEVEL CHANGE
+   RATHER THAN A VALUE ONE.
+   ---------------------------------------------------------------------------
+   §B4.4 took the border, the radius and the shadow off a tile and left the
+   GEOMETRY of a tile behind: a 196px-minimum auto-fit grid, 16px of padding
+   inside every cell and a --surface fill under it. Five of those in a row is
+   still five panels with the lines rubbed out, which is why the Overview read
+   as "five metric tiles in a row" after a pass that removed every line on
+   them. The owner's verdict on that pass was that the design "didn't really
+   change much", and this is one of the two places the count proves he was
+   right.
+
+   So the strip stops being a grid of cells and becomes a RUN OF FACTS: each
+   one is as wide as what it says, they sit on one baseline, and what separates
+   them is --ctl-s5 of air. That is how Vercel's observability header, Railway's
+   project header and Northflank's service header all carry four to six
+   figures — a label above a number, nothing drawn around either, the run
+   ending where the facts end rather than where the grid does.
+
+   THE FILL GOES WITH THE PADDING. A --surface patch behind a fact, on a
+   --surface panel or a --bg page, is either invisible (1.03:1 in light) or a
+   box with a soft edge. Neither is a separation; the air is.
+
+   `align-items: baseline` rather than `start`: a fact whose value is a
+   two-word phrase ("not reported") is taller than one whose value is a digit,
+   and aligning the boxes leaves the LABELS on two different lines. The label
+   row is the one a reader scans. */
 .ctl-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
-  /* The tiles have no edge (see below), so the gap IS the separation and 8px
-     of it was not enough: five unboxed tiles 8px apart read as one banded
-     strip. `--ctl-s3` is the step §3.1 names for the distance between
-     regions, which is what two tiles now are to each other. */
-  gap: var(--ctl-s3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  /* The column gap is the page's own large break and the row gap is one step
+     down, so a strip that wraps reads as two lines of one thing rather than as
+     a second strip. */
+  column-gap: var(--ctl-s5);
+  row-gap: var(--ctl-s3);
   margin-bottom: var(--ctl-s5);
 }
 
-/* THE TILE LOSES ITS BOX, AND A BOX ON A TILE NOW MEANS SOMETHING IS WRONG
-   WITH THE NUMBER.
-   ---------------------------------------------------------------------------
-   Measured, the shipped strip was five 226x113px boxes, each carrying its own
-   1px --line border, its own 10px radius and its own drop shadow, to deliver
-   five facts -- about 570px of width and 113px of height for what Northflank's
-   equivalent panel buys in fifteen. Five borders and five shadows for five
-   numbers is the "everything is a bordered rounded box" half of the owner's
-   verdict, stated as a count.
+/* THE BORDER IS DECLARED ON ONE EDGE AND PAINTED ON NONE.
+   §13.5 of design-system.md is explicit that this primitive keeps a declared
+   transparent border, and the reason survives the level change unaltered: the
+   absence states below carry their meaning IN the border, and a border that
+   appears only when a read failed would move every neighbour by a pixel at the
+   moment the strip most needs to hold still.
 
-   So the default tile draws nothing: a surface step on the page and eight
-   pixels of air between tiles, which is exactly how Northflank separates the
-   rows inside a panel (no row rules at all) and how Railway separates its
-   project cards (a fill step, one hairline, no shadow).
-
-   THE BORDER IS DECLARED AND TRANSPARENT rather than absent. Two reasons, and
-   both are load-bearing:
-
-     1. The absence states below -- `.is-absent`, `.is-unread` -- carry their
-        meaning IN the border (dashed, and dashed-warn). sec 14 of this sheet
-        says a thing that is absent occupies the space it would have occupied;
-        a border that appears only when the read failed would move every tile
-        beside it by a pixel at the moment the operator most needs the strip
-        to hold still.
-     2. It makes the rule legible as a rule: a tile with a visible edge is a
-        tile with something wrong in it. Nothing healthy is boxed.
-
-   `--ctl-radius-sm` rather than `--radius`: 10px is what this sheet gives a
-   CARD (sec 4), and a tile is no longer pretending to be one. */
+   What changed is WHICH EDGE can ever be painted. A box around a fact says
+   "this is an object"; a rule under it says "there is something to say about
+   this reading". The four-sided box was the last thing on the strip drawing an
+   object per number, so three of the four widths are zero and the bottom one
+   is reserved. Nothing healthy is ruled. */
 .ctl-metric {
   position: relative;
-  padding: var(--ctl-s3) var(--ctl-s3) calc(var(--ctl-s3) - 1px);
-  border: 1px solid transparent;
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
+  flex: 0 1 auto;
   min-width: 0;
+  padding-bottom: 3px;
+  border-style: solid;
+  border-color: transparent;
+  border-width: 0 0 1px;
+  background: none;
 }
 .ctl-metric-label {
   display: block;
@@ -4380,12 +4528,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 .ctl-metric-value {
   display: block;
-  margin: 3px 0 4px;
+  margin: 2px 0 0;
   font-size: var(--t-figure);
   font-weight: 600;
   line-height: var(--lh-figure);
   letter-spacing: -0.02em;
-  /* Tabular, so a column of tiles does not jitter as figures tick. */
+  /* Tabular, so a strip of figures does not jitter as they tick. */
   font-variant-numeric: tabular-nums;
 }
 .ctl-metric-unit {
@@ -4401,33 +4549,34 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   line-height: var(--lh-micro);
   color: var(--text-dim);
 }
-/* THE RULE ABOVE THE FOOT IS GONE, and sec 5.2 of design-system.md already
-   said why: a rule with no twin is graded as a boundary, and the right answer
-   to a boundary inside a panel is almost never to draw it heavier -- it is to
-   draw nothing and separate with space. It was `--line`, the component
-   boundary weight, repeated five times across the strip; that is the inverted
-   ratio the audit found (78 paints of --line against 18 of --line-soft on one
-   screen). The provenance line is already mono, micro and --text-faint, which
-   is three channels saying "this is chrome" before a rule says it a fourth
-   time. */
+/* THE RULE ABOVE THE FOOT IS GONE, and §5.2 of design-system.md already said
+   why: a rule with no twin is graded as a boundary, and the right answer to a
+   boundary inside a panel is almost never to draw it heavier — it is to draw
+   nothing and separate with space. The provenance line is already mono, micro
+   and --text-faint, which is three channels saying "this is chrome" before a
+   rule says it a fourth time. */
 .ctl-metric-foot {
   display: block;
-  margin-top: var(--ctl-s2);
+  margin-top: 2px;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
 
-/* NOT MEASURED. A dashed border plus a value that is a SENTENCE, never a
+/* NOT MEASURED. A dashed rule plus a value that is a SENTENCE, never a
    figure — because the sentence cannot be misread as a quantity and "0" can.
    The step drops deliberately, from --t-figure to --t-body: a short phrase at
    the figure step reads as a headline number, which is the exact confusion
-   this state exists to prevent. --t-figure is "the one number a metric tile
-   exists for"; when there is no number, nothing in the tile may have it. */
-/* The border the default tile declares and does not paint is painted here.
-   Dashed, in the absence tone -- the same mark `.ctl-mark.is-absent` and
-   `.ctl-track.is-unknown` use, so the product says "nobody reported this" one
-   way wherever it says it. */
-.ctl-metric.is-absent { border-style: dashed; border-color: var(--ctl-absent); }
+   this state exists to prevent. --t-figure is "the one number a fact exists
+   for"; when there is no number, nothing in the fact may have it.
+
+   THE ENCODING MOVED FROM A DASHED BOX TO A DASHED RULE AND THE CHANNELS DID
+   NOT. §13.5: an absence must stay perceivable with an accessible route to the
+   words. It has three channels here and had three before — the `.ctl-mark`
+   beside it carries the fill (hatched) and the WORDS ("not measured"), the
+   value carries the type step, and the dashed rule in the absence tone carries
+   the line style. What was removed is the fourth edge of a box, which repeated
+   the dash three more times and drew a container nothing needed. */
+.ctl-metric.is-absent { border-bottom-style: dashed; border-bottom-color: var(--ctl-absent); }
 .ctl-metric.is-absent .ctl-metric-value {
   font-size: var(--t-body);
   font-weight: 500;
@@ -4439,8 +4588,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    number, we did not get it. Same dashed treatment, warning-coloured, so the
    two absences are never told apart by reading the caption alone. */
 .ctl-metric.is-unread {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-bottom-style: dashed;
+  border-bottom-color: color-mix(in srgb, var(--warn) 45%, var(--line));
 }
 .ctl-metric.is-unread .ctl-metric-value {
   /* --t-body for the same reason `.is-absent` takes it: what sits here is a
@@ -4452,37 +4601,37 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 
 /* GOOD AND ALERT, and they used to differ by ONE THING: the colour of the
-   figure. --ok and --bad measured 1.054:1 apart in the light theme, so a tile
-   saying "0 over ceiling" and a tile saying "4 over ceiling" printed the same
-   in greyscale and read the same to a colour-blind operator. Both now carry a
-   mark in the top-right corner, in the same shape vocabulary the chips use
-   below — disc for ok, diamond for bad — so the tone is the second signal
-   rather than the only one.
+   figure. --ok and --bad measured 1.054:1 apart in the light theme, so a fact
+   saying "0 over ceiling" and a fact saying "4 over ceiling" printed the same
+   in greyscale and read the same to a colour-blind operator. Both carry a mark
+   in the same shape vocabulary the chips use below — disc for ok, diamond for
+   bad — so the tone is the second signal rather than the only one.
 
-   The mark is a pseudo-element: it is decoration that repeats the figure's own
-   caption, and putting it in the markup would make every screen reader read a
-   state twice. The label gets padding on these tiles only, so a long LABEL
-   never runs under it. */
-.ctl-metric.is-alert::after,
-.ctl-metric.is-good::after {
+   THE MARK MOVED FROM THE BOX'S CORNER TO THE LABEL'S BASELINE, because there
+   is no box to have a corner. It is still a pseudo-element: it is decoration
+   that repeats the figure's own caption, and putting it in the markup would
+   make every screen reader read a state twice. */
+.ctl-metric.is-alert .ctl-metric-label::after,
+.ctl-metric.is-good .ctl-metric-label::after {
   content: '';
-  position: absolute;          /* `.ctl-metric` is already `position: relative` */
-  top: var(--ctl-s3);
-  right: var(--ctl-s3);
-  width: 8px; height: 8px;
+  display: inline-block;
+  margin-left: 6px;
+  width: 7px; height: 7px;
+  vertical-align: baseline;
 }
-.ctl-metric.is-alert .ctl-metric-label,
-.ctl-metric.is-good .ctl-metric-label { padding-right: 16px; }
 
-.ctl-metric.is-alert { border-color: var(--bad); }
-.ctl-metric.is-alert::after {
+/* THE ALERT KEEPS A PAINTED RULE and the healthy state does not. A rule under
+   a fact means "there is something to say about this reading", and "this
+   number is over its ceiling" is the loudest thing this strip can say. */
+.ctl-metric.is-alert { border-bottom-color: var(--bad); }
+.ctl-metric.is-alert .ctl-metric-label::after {
   background: var(--bad);
   border-radius: 1px;
   transform: rotate(45deg);
 }
 .ctl-metric.is-alert .ctl-metric-value { color: var(--bad); }
 
-.ctl-metric.is-good::after {
+.ctl-metric.is-good .ctl-metric-label::after {
   background: var(--ok);
   border-radius: 999px;
 }
@@ -5738,11 +5887,14 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* Phone                                                                       */
 /* -------------------------------------------------------------------------- */
 @media (max-width: 560px) {
-  /* Two metric tiles per row stays readable at 390pt; one wastes the screen
-     and three truncate the sub-line, which is the part that says what the
-     number excludes. */
-  .ctl-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ctl-s1); }
-  .ctl-metric { padding: 10px; }
+  /* §B6.1: THE GRID IS GONE, SO THERE IS NOTHING TO SET TO TWO COLUMNS.
+     The strip is a wrapping run of facts (see §B6.1), which needs no
+     breakpoint: at 390pt it wraps to two or three lines by itself, each fact
+     staying exactly as wide as what it says. What this block still owns is the
+     GUTTER — --ctl-s5 of column air is a third of a phone's content width, so
+     it drops one step while the row gap holds, which is what keeps two wrapped
+     lines reading as one strip. */
+  .ctl-metrics { column-gap: var(--ctl-s3); row-gap: var(--ctl-s3); }
   /* §B4.1: `.ctl-metric-value { font-size: 20px }` IS GONE. There is no step
      between --t-title and --t-figure, and a metric tile's figure is
      --t-figure by definition -- that is what the token means. At 390pt a tile
