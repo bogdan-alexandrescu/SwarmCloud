@@ -2599,21 +2599,20 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    broken. */
 
 .drawer {
-  /* THE HEADER'S TWO MEASUREMENTS, AS TOKENS RATHER THAN AS THREE NUMBERS THAT
-     HAVE TO AGREE. `.drawer::before` below is a sticky band that must be
-     exactly the top padding plus the close button tall, and must give both back
-     as negative margin so that it occupies no space in flow. Written as literal
-     18 / 32 / 50 / -18 / -32 those are five numbers, four of which silently
-     become wrong the day somebody changes the padding. Derived from these two,
-     the sum is zero by construction. */
-  --drawer-pad-t: 18px;
-  --drawer-close-h: 32px;
   position: fixed;
   top: 0; right: 0; bottom: 0;
   width: min(560px, 100vw);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: var(--drawer-pad-t) var(--gutter) 40px;
+  /* THE 18px AND THE `--gutter` HERE ARE LOAD-BEARING FOR `.drawer::before`,
+     which is sized and bled against both. They are checked against each other
+     in `shell.test.tsx` rather than shared through a custom property: the
+     spacing probe builds its variable table from `:root` alone and resolves
+     every `var()` in the sheet, so a token declared on a component throws
+     `is used and never declared`, and `calc(var(--x) * -1)` lands in its
+     unresolved list, which the suite asserts is empty. A checked relationship
+     between two literals is the form this file's own tooling can read. */
+  padding: 18px var(--gutter) 40px;
   background: var(--bg);
   border-left: 1px solid var(--line);
   box-shadow: -16px 0 40px rgb(0 0 0 / .35);
@@ -2659,7 +2658,28 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    drawer behind it at rest — a strip of a second fill across the top of the
    panel would read as a toolbar that is not one. The button keeps `--surface`
    because the button IS a control and the one-step lift is how every other
-   control in this sheet says so. */
+   control in this sheet says so.
+
+   FIVE LITERALS THAT HAVE TO AGREE, AND A TEST THAT MAKES THEM AGREE. 50 is the
+   drawer's 18px of top padding plus the button's 32px; -18 cancels that
+   padding; -16 is `--gutter`; -32 is what is left of the height once the -18 is
+   spent, which is what makes the flow contribution exactly zero. Every one of
+   them goes wrong the day somebody changes the drawer's padding, so
+   `shell.test.tsx` reads all five out of the PARSED sheet and checks the three
+   relationships rather than the numbers: the band less the drawer's padding is
+   the button's height, the top margin cancels that padding, and height plus top
+   plus bottom sums to nothing.
+
+   NOT CUSTOM PROPERTIES, and that was tried first. The spacing probe builds its
+   variable table from `:root` alone and resolves every `var()` in this sheet, so
+   a token declared on a component throws `is used and never declared`, and
+   `calc(var(--x) * -1)` lands in the unresolved list `spacing.test.tsx` asserts
+   is empty. Two literals a test compares are legible to this repository's own
+   tooling; a derivation is not.
+
+   LONGHAND MARGINS, for the reason `.section + .section` gives above: jsdom does
+   not reliably expand a shorthand into its longhands, and a test reads this rule
+   back through `CSSStyleRule.style`. */
 .drawer::before {
   content: '';
   position: sticky;
@@ -2667,11 +2687,11 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   /* Above the scrolling content, below the button that sits on it. */
   z-index: 1;
   display: block;
-  height: calc(var(--drawer-pad-t) + var(--drawer-close-h));
-  margin:
-    calc(var(--drawer-pad-t) * -1)
-    calc(var(--gutter) * -1)
-    calc(var(--drawer-close-h) * -1);
+  height: 50px;
+  margin-top: -18px;
+  margin-right: -16px;
+  margin-bottom: -32px;
+  margin-left: -16px;
   background: var(--bg);
   box-shadow: inset 0 -1px 0 var(--ctl-hairline);
 }
@@ -2682,7 +2702,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   display: block; margin-left: auto;
   /* ON the band, not merely above the parent's other children. */
   z-index: 2;
-  width: 32px; height: var(--drawer-close-h);
+  width: 32px; height: 32px;
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text-dim);
   /* --lh-flush: the box is the square above. A glyph centred in a fixed square

@@ -620,7 +620,7 @@ named in each row, because this machine authors code and does not run it.
 | F1 | fixed before this lane | `styles.css` §B6.2: `.ctl-util` is `display: flex; flex-wrap: wrap` and `.ctl-util-name` carries no `text-overflow`. The row takes a second line rather than fewer characters. |
 | F2 | **fixed by this lane** | The two-line `.drawer .ctl-util` template was already written — and was **inert**, because it declared `grid-template-areas` on a rule whose `display` came from `.ctl-util` and was `flex`. `display: grid` added. |
 | F3 | fixed before this lane, backstop added here | `.app.has-inspector .row` drops three columns, and a second stage at `max-width: 1200px` drops the step; `.row .agent .id` ellipses with a `3ch` floor. Added here: `text-overflow: ellipsis` on `.row .agent` itself, which is the property this finding named. |
-| F4 | **fixed by this lane** | `.drawer::before` is a sticky, full-width, zero-space band of `--bg` as tall as the drawer's top padding plus its close button; `.drawer-close` stops floating, takes a line of its own and sits on the band at `z-index: 2`. Content scrolls under a header instead of under a floating square. The band's four lengths are derived from two tokens on `.drawer`, because as literals they are four numbers that have to agree. |
+| F4 | **fixed by this lane** | `.drawer::before` is a sticky, full-width, zero-space band of `--bg` as tall as the drawer's top padding plus its close button; `.drawer-close` stops floating, takes a line of its own and sits on the band at `z-index: 2`. Content scrolls under a header instead of under a floating square. The band is five literals that have to agree — a height, three margins and the drawer's own top padding — and `shell.test.tsx` checks the three relationships between them rather than the numbers, because `spacing.test.tsx` rejects both a custom property declared off `:root` and a `calc(var(…) * -1)`. |
 | F5 | **fixed by this lane** | `.source-cells`' track minimum is 260px, derived from the longest route this registry holds, and `.s-path` spans both columns so the `auto` status track stops eating the widening. `.s-path-t` wraps instead of ellipsing. |
 | F6 | fixed in seven screens before this lane, four more added here | §B6.3 stacks a table below 900px, opt-in via `.is-stacked` + `data-label`. Added here: `Profiles.tsx`, both tables in `Activity.tsx`, three tables in `AgentDetail.tsx` (including the checkpoint table §2 measures at 57%), and `App.tsx`'s `#reference` table. |
 | F7 | fixed before this lane | The narrow rail hides every unopened section's tabs (`.ctl-rail-group:not(.is-on) .ctl-rail-tabs`) and carries a 24px mask fade at its right edge in place of the scrollbar this platform does not paint. |
@@ -644,12 +644,16 @@ the source", not "the pixels were checked".
 if the fix is reverted** — F2, F3's backstop, F4, F5 and F10 — and each one
 names, in its own comment, the mutation it catches. Two are worth singling out:
 
-* **F2's is a computed-style assertion, not a source grep, and that is the
-  finding.** The rule's comment now contains the words `display: grid` several
-  times because it explains why the declaration has to be there, so a regex over
-  the source would match the comment and pass with the declaration deleted.
-  `getComputedStyle` answers from the cascade instead, which also catches a
-  later rule putting `display: flex` back.
+* **F2's reads the parsed CSSOM, not the source and not `getComputedStyle`.**
+  A source regex passes with the declaration deleted, because the rule's comment
+  now contains the words `display: grid` several times — it explains why the
+  declaration has to be there. And `getComputedStyle` cannot answer it either:
+  jsdom applies matching rules in source order without weighing specificity, and
+  `.ctl-util` is declared ~2,300 lines after `.drawer .ctl-util`, so it reports
+  `flex` for an element a browser computes `grid` for. This was measured, not
+  reasoned about — the first version of the assertion used `getComputedStyle`
+  and CI returned `expected 'flex' to be 'grid'` against a correct stylesheet.
+  `CSSStyleRule.style` has no comments in it and no cascade.
 * **F10's has a DOM half as well as a stylesheet half.** Taking the ellipsis off
   `.ctl-dock-facts` is inert if `Dock.tsx` renders the facts as one bare text
   run, so the test renders the dock and counts `.ctl-dock-fact` boxes.

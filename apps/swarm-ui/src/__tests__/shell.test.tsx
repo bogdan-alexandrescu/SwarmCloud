@@ -850,43 +850,53 @@ describe('the capacity row protects the name, not the bar', () => {
    * flex line with `.ctl-util-by` pinned at a 128px basis, so `latest heartbeat
    * 3m ago` was still cut, under a comment saying it had been fixed.
    *
-   * WHY THIS IS A COMPUTED ASSERTION AND NOT A SOURCE GREP. The rule's own
-   * comment now contains the words `display: grid` several times, because it
-   * explains why the declaration must be there -- so a regex over the source
-   * would match the comment and pass with the declaration deleted. That is the
-   * same failure shape as the `false &&` in this file's header, arriving
-   * through prose instead of through code. `getComputedStyle` answers from the
-   * cascade, so it also catches the OTHER mutation: a later rule of equal or
-   * higher specificity putting `display: flex` back.
+   * WHY THIS READS THE PARSED CSSOM AND NOT THE SOURCE, AND NOT
+   * `getComputedStyle` EITHER. Two traps, one on each side:
+   *
+   *   - A SOURCE REGEX passes with the declaration deleted. The rule's own
+   *     comment now contains the words `display: grid` several times, because
+   *     it explains why the declaration has to be there. That is the `false &&`
+   *     from this file's header arriving through prose instead of through code.
+   *   - `getComputedStyle` CANNOT BE TRUSTED FOR THIS ONE. jsdom applies
+   *     matching rules in SOURCE ORDER and does not weigh specificity -- the
+   *     test two above, "beats a case-shifting ANCESTOR by inheritance, not by
+   *     specificity", is named after that limitation. `.ctl-util` is declared
+   *     ~2,300 lines AFTER `.drawer .ctl-util`, so jsdom would answer `flex`
+   *     for an element a browser computes `grid` for, and the assertion would
+   *     be red on a correct stylesheet.
+   *
+   * `CSSStyleRule.style` is the PARSED declaration block: comments are gone by
+   * the time it exists, and no cascade is involved. It answers exactly the
+   * question this needs answered -- does this rule declare a display at all.
    *
    * THE MUTATION THIS CATCHES: delete `display: grid;` from
-   * `.drawer .ctl-util`. The computed display becomes `flex` (inherited from
-   * `.ctl-util`, which this rule beats on specificity only for the properties
-   * it declares) and this fails. Nothing else in the suite does.
+   * `.drawer .ctl-util` and leave the four grid properties. Every one of them
+   * goes inert, the drawer row silently becomes the primitive's flex line, and
+   * `latest heartbeat 3m ago` starts being cut again. Nothing else in the suite
+   * notices -- the test above it passes, because the template it greps for is
+   * still written down.
    */
   it('makes the drawer row an actual grid, not a grid template on a flex box', () => {
     const style = withStyles()
-    const { container } = render(
-      <div className="drawer">
-        <div className="ctl-util">
-          <span className="ctl-util-name" />
-          <span className="ctl-util-figure" />
-          <span className="ctl-util-track" />
-          <span className="ctl-util-by" />
-        </div>
-      </div>,
-    )
-    const row = getComputedStyle(container.querySelector('.ctl-util')!)
+    const rules = allRules(style.sheet!)
+
+    const drawerRow = rules.filter((r) => r.selectorText === '.drawer .ctl-util')
+    expect(drawerRow.length, 'styles.css must declare exactly one .drawer .ctl-util').toBe(1)
     expect(
-      row.display,
+      drawerRow[0]!.style.getPropertyValue('display'),
       'the drawer row declares grid areas, so it must BE a grid or every one of them is inert',
     ).toBe('grid')
+    // The precondition, so this cannot pass against a sheet that failed to
+    // load: the grid properties it is protecting are really in that rule.
+    expect(drawerRow[0]!.style.getPropertyValue('grid-template-areas')).not.toBe('')
 
     // The primitive it overrides is still the wrapping flex line, which is the
     // right answer on Overview's 348px card and the wrong one here. Asserted so
     // that "make them the same" is a change somebody has to argue for.
-    const bare = render(<div className="ctl-util" />)
-    expect(getComputedStyle(bare.container.querySelector('.ctl-util')!).display).toBe('flex')
+    const primitive = rules.filter((r) => r.selectorText === '.ctl-util')
+    expect(primitive.length, 'styles.css must declare exactly one top-level .ctl-util').toBe(1)
+    expect(primitive[0]!.style.getPropertyValue('display')).toBe('flex')
+    expect(primitive[0]!.style.getPropertyValue('flex-wrap')).toBe('wrap')
     style.remove()
   })
 })
@@ -968,16 +978,9 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
    * covers the pane tabs as well.
    */
   it('gives the drawer a header band for its close button to sit on', () => {
-    // The two measurements the band is derived from live on `.drawer` itself,
-    // and its padding has to be one of them or the band is measuring nothing.
-    const drawer = ruleFor('.drawer')
-    expect(/--drawer-pad-t:\s*\d+px/.test(drawer)).toBe(true)
-    expect(/--drawer-close-h:\s*\d+px/.test(drawer)).toBe(true)
-    expect(
-      /padding:\s*var\(--drawer-pad-t\)/.test(drawer),
-      'the band lifts itself by the drawer\u2019s top padding, so it has to BE that padding',
-    ).toBe(true)
-
+    // Injected for `token('--gutter')` alone: the band's horizontal bleed has
+    // to equal the drawer's own side padding, and that one IS a token.
+    const style = withStyles()
     const band = ruleFor('.drawer::before')
     expect(/content:\s*''/.test(band), 'the band has to be generated to exist at all').toBe(true)
     expect(
@@ -986,18 +989,49 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     ).toBe(true)
     // Its own background, or content shows straight through it.
     expect(/background:\s*var\(--bg\)/.test(band)).toBe(true)
-    // EXACTLY ONE ROW OF CHROME TALL: the top padding plus the button.
-    expect(
-      /height:\s*calc\(var\(--drawer-pad-t\)\s*\+\s*var\(--drawer-close-h\)\)/.test(band),
-      'a taller band eats the pane tabs; a shorter one leaves the button hanging off it',
-    ).toBe(true)
-    // ZERO SPACE IN FLOW, by construction rather than by arithmetic: the top
-    // margin gives back the padding it was lifted onto and the bottom margin
-    // gives back the button's height, so the following content does not move.
-    const margin = (/margin:\s*([^;]+);/.exec(band)?.[1] ?? '').replace(/\s+/g, ' ').trim()
-    expect(margin, 'the band is lifted onto the padding and gives its height back').toBe(
-      'calc(var(--drawer-pad-t) * -1) calc(var(--gutter) * -1) calc(var(--drawer-close-h) * -1)',
+
+    // THE THREE RELATIONSHIPS, NOT THE FIVE NUMBERS.
+    //
+    // The band is five literals -- a height, three margins and the drawer's own
+    // top padding -- because a custom property cannot be used here: the spacing
+    // probe resolves every `var()` in this sheet against a table built from
+    // `:root` alone, so a token on a component throws `is used and never
+    // declared`, and `calc(var(--x) * -1)` lands in the unresolved list
+    // `spacing.test.tsx` asserts is empty. Literals are what that tooling can
+    // read; this is what stops them drifting apart.
+    const len = (rule: string, prop: string): number => {
+      const raw = new RegExp(`(?:^|[;{\\s])${prop}:\\s*(-?[\\d.]+)px\\s*;`, 'm').exec(rule)?.[1]
+      expect(raw, `the rule must declare ${prop} as a px length`).toBeDefined()
+      return Number(raw)
+    }
+    // `.drawer`'s padding is a shorthand whose second value is `var(--gutter)`,
+    // so it is read as written and the first token taken.
+    const padTop = Number(
+      /padding:\s*(-?[\d.]+)px\s/.exec(ruleFor('.drawer'))?.[1] ?? Number.NaN,
     )
+    expect(Number.isFinite(padTop), '.drawer must open its padding with a px length').toBe(true)
+    const gutter = Number(/^(-?[\d.]+)px$/.exec(token('--gutter'))?.[1] ?? Number.NaN)
+    expect(Number.isFinite(gutter), '--gutter must be a px length').toBe(true)
+
+    const height = len(band, 'height')
+    const top = len(band, 'margin-top')
+    const bottom = len(band, 'margin-bottom')
+    const closeH = len(ruleFor('.drawer-close'), 'height')
+
+    expect(
+      height - padTop,
+      'the band is one row of chrome: taller and it eats the pane tabs, shorter and the ✕ hangs off it',
+    ).toBe(closeH)
+    expect(top, 'the top margin lifts the band onto the padding it was measured against').toBe(
+      -padTop,
+    )
+    expect(
+      height + top + bottom,
+      'the band must contribute NOTHING to flow, or every panel in the drawer shifts down',
+    ).toBe(0)
+    // Bled to the drawer's own edges, or content shows through beside it.
+    expect(len(band, 'margin-left')).toBe(-gutter)
+    expect(len(band, 'margin-right')).toBe(-gutter)
 
     const close = ruleFor('.drawer-close')
     const z = /z-index:\s*(\d+)/.exec(close)?.[1]
@@ -1006,10 +1040,7 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
       /float:\s*right/.test(close),
       'floated, the ✕ shares its line with the pane tabs and the band covers both',
     ).toBe(false)
-    expect(
-      /height:\s*var\(--drawer-close-h\)/.test(close),
-      'the band is sized from this token, so the button has to be the one wearing it',
-    ).toBe(true)
+    style.remove()
   })
 
   /**
