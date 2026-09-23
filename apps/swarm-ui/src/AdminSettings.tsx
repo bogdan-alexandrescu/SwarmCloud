@@ -181,7 +181,11 @@ function ProfileCard({
             reader sees three numbers and the marked one is the smallest, so
             "the minimum across them" is a thing they read off the card
             rather than a rule they were asked to remember. */}
-        <ul className="ctl-facts">
+        {/* §B6.4: a key COLUMN. Eight pool names and eight ceilings in a
+            wrapping strip read as one run-on line of alternating word and
+            digit; the smallest of them is the whole point of the card and it
+            was the hardest thing on it to find. */}
+        <ul className="ctl-facts is-rows adm-operands">
           {operands.map((o) => (
             <li
               key={o.pool}
@@ -218,20 +222,20 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
             as the two-word qualifier below; the sentence is behind the ?. */}
         <HelpCard topic="ceiling-change-evicts-nothing" />
       </span>
-      <div className="ctl-table">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Pool</th>
-              <th scope="col" className="is-num">In use</th>
+      <div className="ctl-table is-stacked">
+        <table role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader" scope="col">Pool</th>
+              <th role="columnheader" scope="col" className="is-num">In use</th>
               {/* The unit rides on the column name (§8.4.3) rather than in a
                   footnote under the table. */}
-              <th scope="col" className="is-num">Ceiling (units)</th>
-              <th scope="col">Set by</th>
-              <th scope="col">Change</th>
+              <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
+              <th role="columnheader" scope="col">Set by</th>
+              <th role="columnheader" scope="col">Change</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {[...pools]
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((p) => (
@@ -274,17 +278,17 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
   }
 
   return (
-    <tr className={isPaused(pool) ? 'is-paused' : undefined}>
-      <th scope="row" className="pool-name">
+    <tr role="row" className={isPaused(pool) ? 'is-paused' : undefined}>
+      <th role="rowheader" scope="row" className="pool-name">
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
             prettified label is not. */}
         <span className="ctl-sub">{pool.name}</span>
       </th>
-      <td className="is-num">{pool.active}</td>
-      <td className="is-num">{pool.effective_limit}</td>
-      <td title={by.detail}>{by.term}</td>
-      <td>
+      <td role="cell" data-label="In use" className="is-num">{pool.active}</td>
+      <td role="cell" data-label="Ceiling (units)" className="is-num">{pool.effective_limit}</td>
+      <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
+      <td role="cell" data-label="Change">
         <span className="limit-edit">
           <input
             type="number"

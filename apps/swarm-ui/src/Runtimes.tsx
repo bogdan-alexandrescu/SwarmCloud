@@ -198,8 +198,18 @@ function Backends({
   const capped = backendPools(pools)
 
   return (
-    <section className="ctl-card rt-backends">
-      <div className="ctl-card-head">
+    /* §B6.1: THE PANEL IS THE TABLE, AND THE TITLE IS ON THE PAGE.
+       This was `.ctl-card > .ctl-card-head + .ctl-card-body.is-flush >
+       .ctl-table`, which drew two concentric boxes around one table and put
+       the heading inside the outer one — so a panel title on this screen sat
+       at a different level from the panel title on `pools/quota` and
+       `admin/limits`, which already put theirs on the page. Three of the five
+       reference consoles put a table's heading on the page and draw exactly
+       one box, around the data. That construction is now the only one these
+       seven screens use. The provenance line that was a `.ctl-card-foot` is a
+       `<caption>`, which is the same slot inside the one box that is left. */
+    <section className="section rt-backends">
+      <div className="ctl-toolbar">
         <h2 className="ctl-card-title">
           Backends
           <HelpCard topic="declared-vs-resolved-backend" />
@@ -210,7 +220,7 @@ function Backends({
             reads no tenant document, and a backend pool has no tenant in its
             name. Nothing on this row is "yours"; per-tenant headroom is the
             Runner profiles pane under Pools. */}
-        <span className="ctl-card-note">
+        <span className="ctl-card-note is-end">
           {groups.length} target{groups.length === 1 ? '' : 's'} · platform-wide
         </span>
       </div>
@@ -230,26 +240,25 @@ function Backends({
         </div>
       )}
 
-      <div className="ctl-card-body is-flush">
-        <div className="ctl-table">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Backend</th>
-                <th scope="col" className="is-num">Runtimes</th>
+      <div className="ctl-table is-stacked">
+        <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Backend</th>
+                <th role="columnheader" scope="col" className="is-num">Runtimes</th>
                 {/* "units", never "agents". Admission increments each pool by the
                     resource class's weight, so 8 in use may be four agents of a
                     class that weighs 2. */}
-                <th scope="col" className="is-num">
+                <th role="columnheader" scope="col" className="is-num">
                   In use (units)
                   <HelpCard topic="units-not-agents" />
                 </th>
-                <th scope="col" className="is-num">Ceiling</th>
-                <th scope="col" className="is-num">Headroom</th>
-                <th scope="col">Status</th>
+                <th role="columnheader" scope="col" className="is-num">Ceiling</th>
+                <th role="columnheader" scope="col" className="is-num">Headroom</th>
+                <th role="columnheader" scope="col">Status</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {groups.map(([backend, members]) => (
                 <BackendRow
                   key={backend}
@@ -263,11 +272,9 @@ function Backends({
                 />
               ))}
             </tbody>
-          </table>
-        </div>
+          <caption>by resolved backend · full pool board under Pools</caption>
+        </table>
       </div>
-
-      <div className="ctl-card-foot">by resolved backend · full pool board under Pools</div>
     </section>
   )
 }
@@ -307,19 +314,22 @@ function BackendRow({
   )
 
   return (
-    <tr className={over ? 'is-bad over' : paused ? 'is-paused paused' : full || shut ? 'is-warn full' : undefined}>
-      <th scope="row">
+    <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : full || shut ? 'is-warn full' : undefined}>
+      <th role="rowheader" scope="row">
         {/* The identifier the API sent, verbatim. A prettified display name
             would be a two-entry table keyed on a frozen enum, and a backend
             this UI has never heard of would render as a blank instead of
             naming itself. */}
         <span className="mono">{backend}</span>
       </th>
-      <td className="is-num">{members.length}</td>
-      <td className="is-num">{pool === null ? dash : pool.active}</td>
-      <td className="is-num">{pool === null ? dash : pool.effective_limit}</td>
-      <td className="is-num">{pool === null ? dash : pool.available}</td>
-      <td>
+      {/* `data-label` is the column name, repeated nowhere else and rendered
+          only by §B6.3's `::before` below 900px. It adds no DOM and no text
+          node, so the prose budgets measure the same screen they always did. */}
+      <td role="cell" data-label="Runtimes" className="is-num">{members.length}</td>
+      <td role="cell" data-label="In use (units)" className="is-num">{pool === null ? dash : pool.active}</td>
+      <td role="cell" data-label="Ceiling" className="is-num">{pool === null ? dash : pool.effective_limit}</td>
+      <td role="cell" data-label="Headroom" className="is-num">{pool === null ? dash : pool.available}</td>
+      <td role="cell" data-label="Status">
         <span className="rt-marks">
           {unread && <span className="ctl-mark is-unread">not read</span>}
           {!unread && pool === null && (
@@ -507,7 +517,12 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
       </div>
 
       <div className="ctl-card-body">
-        <ul className="ctl-facts">
+        {/* §B6.4: `is-rows`. Thirteen pairs in a wrapping flex strip rendered
+            as a justified blob -- `max run 5m size demo-small cpu 3 vCPU` on
+            one line -- with every key starting wherever the previous value
+            ended. The pairs are unchanged; what they gain is a key COLUMN, so
+            finding `mem` is a glance down an edge rather than reading a line. */}
+        <ul className="ctl-facts is-rows">
           <li className="ctl-fact">
             <b>runs on</b>
             <span className="mono">{runtime.resolved_backend}</span>
@@ -586,7 +601,7 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
                made. */
             <span className="ctl-mark is-zero">real zero</span>
           ) : (
-            <ul className="ctl-facts rt-apart-facts">
+            <ul className="ctl-facts is-rows rt-apart-facts">
               {facts.map((f) => (
                 <li className="ctl-fact" key={f.key}>
                   <b>{f.key}</b>
@@ -719,8 +734,9 @@ function Sizing({
   const rows = specs.slice().sort((a, b) => a.units - b.units || a.name.localeCompare(b.name))
 
   return (
-    <section className="ctl-card rt-sizing">
-      <div className="ctl-card-head">
+    /* §B6.1, as Backends above: title on the page, one box around the data. */
+    <section className="section rt-sizing">
+      <div className="ctl-toolbar">
         <h2 className="ctl-card-title">
           Sizing
           <HelpCard topic="catalogue-from-route" />
@@ -728,54 +744,49 @@ function Sizing({
         {/* A PARTIAL LIST IS NOT A LIST. The catalogue read failed, so a class
             no runtime resolves to cannot appear here at all -- the note is the
             coverage qualifier and the mark is the kind of absence. */}
-        <span className="ctl-card-note">
+        {!fromRoute && <span className="ctl-mark is-partial">partial</span>}
+        <span className="ctl-card-note is-end">
           {rows.length} class{rows.length === 1 ? '' : 'es'}
           {!fromRoute && ' · from runtimes'}
         </span>
-        {!fromRoute && (
-          <>
-            <span className="ctl-mark is-partial">partial</span>
-          </>
-        )}
       </div>
 
-      <div className="ctl-card-body is-flush">
-        <div className="ctl-table">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Class</th>
+      <div className="ctl-table is-stacked">
+        <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Class</th>
                 {/* Both the request and the limit: requests == limits
                     platform-wide, so there is no burst headroom above these. */}
-                <th scope="col" className="is-num">vCPU</th>
-                <th scope="col" className="is-num">Memory</th>
+                <th role="columnheader" scope="col" className="is-num">vCPU</th>
+                <th role="columnheader" scope="col" className="is-num">Memory</th>
                 {/* §8.4(3). "Carved out of the memory beside it, not added to
                     it" was a tooltip on every cell; `(of memory)` is the same
                     claim, visible, once, attached to the column. */}
-                <th scope="col" className="is-num">
+                <th role="columnheader" scope="col" className="is-num">
                   Workspace (of memory)
                   <HelpCard topic="workspace-memory" />
                 </th>
-                <th scope="col" className="is-num">
+                <th role="columnheader" scope="col" className="is-num">
                   Weight
                   <HelpCard topic="units-not-agents" />
                 </th>
-                <th scope="col">Resolves from</th>
+                <th role="columnheader" scope="col">Resolves from</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {rows.map((spec) => {
                 const users = usedBy.get(spec.name) ?? []
                 return (
-                  <tr key={spec.name}>
-                    <th scope="row">
+                  <tr role="row" key={spec.name}>
+                    <th role="rowheader" scope="row">
                       <span className="mono">{spec.name}</span>
                     </th>
-                    <td className="is-num">{spec.cpu}</td>
-                    <td className="is-num">{spec.memory_gib} GiB</td>
-                    <td className="is-num">{spec.disk_gib} GiB</td>
-                    <td className="is-num">{spec.units}u</td>
-                    <td>
+                    <td role="cell" data-label="vCPU" className="is-num">{spec.cpu}</td>
+                    <td role="cell" data-label="Memory" className="is-num">{spec.memory_gib} GiB</td>
+                    <td role="cell" data-label="Workspace (of memory)" className="is-num">{spec.disk_gib} GiB</td>
+                    <td role="cell" data-label="Weight" className="is-num">{spec.units}u</td>
+                    <td role="cell" data-label="Resolves from">
                       {users.length === 0 ? (
                         /* CONFIGURED AND UNREACHABLE is a fact, not a fault:
                            no runtime resolves to this class, so no caller can
@@ -796,15 +807,11 @@ function Sizing({
                 )
               })}
             </tbody>
-          </table>
-        </div>
+          {!fromRoute && (
+            <caption>{classesDetail ?? 'the resource-class read did not complete'}</caption>
+          )}
+        </table>
       </div>
-
-      {!fromRoute && (
-        <div className="ctl-card-foot">
-          {classesDetail ?? 'the resource-class read did not complete'}
-        </div>
-      )}
     </section>
   )
 }

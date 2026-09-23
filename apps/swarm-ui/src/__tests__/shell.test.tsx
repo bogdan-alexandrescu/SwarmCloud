@@ -727,6 +727,19 @@ describe('B20: a measured zero and an unrendered track are different marks', () 
 //
 // This reads the SHIPPED stylesheet, the same way every other assertion in
 // this file does, rather than a hand-written copy of the rule.
+// §B6.2 RE-POINT. THE CLAIM IS UNCHANGED AND IS NOW STRONGER; ONLY THE
+// ENCODING MOVED, from a grid track list to a flex basis.
+//
+// What moved and why: a floored track stops the name being SQUEEZED, and that
+// is all it does. It cannot stop the name being TRUNCATED, because a grid has
+// no way to say "and if you still do not fit, take another line" -- so the
+// row's four columns summed to ~441px of minimum inside a 348px card, the
+// floor was overrun anyway, and `.ctl-util-name` shipped at 79.33px rendering
+// `mock · 1…` where the value was 15 (inventory F1). `.ctl-util` is a wrapping
+// flex line now, so this reads the name's BASIS instead of the first track,
+// and it asserts the thing the old encoding could not: that the name has no
+// ellipsis to fall back on, because there is no longer a case where it needs
+// one.
 describe('the capacity row protects the name, not the bar', () => {
   /**
    * RE-POINTED, AND WHAT MOVED IS THE SUBJECT RATHER THAN THE CLAIM.
@@ -752,15 +765,34 @@ describe('the capacity row protects the name, not the bar', () => {
     return STYLES.slice(at!.index).split('}')[0] ?? ''
   }
 
-  it('floors the name track and lets the bar give way', () => {
-    const tracks = /grid-template-columns:\s*([^;]+);/.exec(ruleFor('.ctl-util'))
-    expect(tracks, '.ctl-util must declare its tracks').not.toBeNull()
-    const first = (tracks?.[1] ?? '').trim()
+  it('floors the name and lets the row wrap rather than truncating it', () => {
+    // THE ROW WRAPS; IT IS NOT A GRID OF FIXED TRACKS. Two lanes rebuilt this
+    // rule in the same merge and it briefly carried both `display: grid` and
+    // `display: flex` -- flex won at runtime, so the assertion has to be made
+    // against flex or it grades a layout nothing renders.
+    const rule = ruleFor('.ctl-util')
     expect(
-      first.startsWith('minmax(0'),
-      'the NAME is the first track and must not be able to reach zero width',
+      /flex-wrap:\s*wrap/.test(rule),
+      'the row must be able to take a second line instead of squeezing a column to nothing',
+    ).toBe(true)
+
+    const nameBasis = /\.ctl-util > \.ctl-util-name \{([^}]*)\}/.exec(STYLES)
+    expect(nameBasis, '.ctl-util must size its name column').not.toBeNull()
+    const basis = /flex:\s*([^;]+);/.exec(nameBasis?.[1] ?? '')?.[1]?.trim() ?? ''
+    expect(
+      basis.endsWith(' 0'),
+      'the NAME must not be able to reach zero width',
     ).toBe(false)
-    expect(first).toMatch(/minmax\(\s*\d+(ch|px)/)
+    expect(basis).toMatch(/\d+(ch|px)\s*$/)
+
+    // And the fallback the floor used to need is gone: nothing may ellipse a
+    // string whose content is a measurement.
+    const name = /\n\.ctl-util-name \{([^}]*)\}/.exec(STYLES)
+    expect(name, 'styles.css must declare a .ctl-util-name rule').not.toBeNull()
+    expect(
+      /text-overflow:\s*ellipsis/.test(name?.[1] ?? ''),
+      'the name carries a measurement and must never be cut',
+    ).toBe(false)
   })
 
   /**

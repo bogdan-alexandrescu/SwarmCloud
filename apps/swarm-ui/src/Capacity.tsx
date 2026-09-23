@@ -180,8 +180,12 @@ function Headroom({ capacity }: { capacity: Capacity }) {
   const unmeasured = rows.filter((r) => r.h.agents === null).length
 
   return (
-    <section className="ctl-card cap-headroom">
-      <div className="ctl-card-head">
+    /* §B6.1: one box, and it is the table's. Headroom was the only panel on
+       this screen inside a card -- the six family tables below it are bare
+       `.ctl-table`s with their heading on the page -- so the same kind of
+       content was drawn two ways on one screen. */
+    <section className="section cap-headroom">
+      <div className="ctl-toolbar">
         <h2 className="ctl-card-title">
           Headroom
           <HelpCard topic="tenant-scope" />
@@ -189,72 +193,78 @@ function Headroom({ capacity }: { capacity: Capacity }) {
         {/* TRAP D, AS AN ATTRIBUTE OF THE CARD. Every figure in this card is
             this tenant's; the note is what stops an admin reading them as the
             platform's. It is one line, mono and muted -- chrome, not copy. */}
-        <span className="ctl-card-note">
+        <span className="ctl-card-note is-end">
           {tenant ? `tenant ${tenant}` : 'your tenant'}
         </span>
       </div>
 
-      <div className="ctl-card-body is-flush">
-        <div className="ctl-table">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Runner profile</th>
+      <div className="ctl-table is-stacked">
+        <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Runner profile</th>
                 {/* THE CONJUNCTION LIVES HERE NOW. A task must clear every
                     pool in its list at the same moment, so the figure is the
                     minimum across them and never a sum -- and saying that in
                     the column name attaches it to the number it governs. */}
-                <th scope="col" className="is-num">
+                <th role="columnheader" scope="col" className="is-num">
                   Could start (min across pools)
                   <HelpCard topic="pools-all-at-once" />
                 </th>
-                <th scope="col" className="is-num">Weight</th>
+                <th role="columnheader" scope="col" className="is-num">Weight</th>
                 {/* Plural on purpose. A task must clear EVERY pool at once, so
                     more than one can refuse at the same moment -- and while this
                     column named a single one, an operator would raise it and
                     nothing would move. */}
-                <th scope="col">Held back by</th>
-                <th scope="col">Backend</th>
+                <th role="columnheader" scope="col">Held back by</th>
+                <th role="columnheader" scope="col">Backend</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {rows.map(({ name, profile, h }) => {
                 const figure = headroomFigure(h)
                 return (
                   <tr
+                    role="row"
                     key={name}
                     className={
                       h.agents === 0 ? 'over' : h.agents === null ? 'unmeasured' : undefined
                     }
                   >
-                    <th scope="row">{name}</th>
+                    <th role="rowheader" scope="row">{name}</th>
                     {/* THE CELL IS THE FIGURE AND NOTHING ELSE, so an absent
                         one is an em dash with no digit anywhere in it. WHICH
                         KIND of absence it is is drawn in `Held back by`, where
                         there is room for a mark; the sentence is the cell's
                         accessible name, which a `title=` was not. */}
-                    <td className="is-num" aria-label={figure.title}>
+                    <td
+                      role="cell"
+                      data-label="Could start"
+                      className="is-num"
+                      aria-label={figure.title}
+                    >
                       {figure.text === '—' ? <span className="ctl-em">—</span> : figure.text}
                     </td>
-                    <td className="is-num">{profile.units}u</td>
-                    <td>
+                    <td role="cell" data-label="Weight" className="is-num">{profile.units}u</td>
+                    <td role="cell" data-label="Held back by">
                       <HeldBackBy h={h} />
                     </td>
-                    <td>{profile.backend}</td>
+                    <td role="cell" data-label="Backend">{profile.backend}</td>
                   </tr>
                 )
               })}
             </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE CARD. How many of these
-          figures are measurements is a property of the read, not of each row,
-          so it is said here rather than repeated per cell. */}
-      <div className="ctl-card-foot">
-        {rows.length - unmeasured} of {rows.length} measured
-        {unmeasured > 0 && ` · ${unmeasured} not counted`}
+          {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PANEL. How many of these
+              figures are measurements is a property of the read, not of each
+              row, so it is said here rather than repeated per cell. It is a
+              `<caption>` rather than a `.ctl-card-foot` now (§B6.1): the card
+              it was the foot of is gone, and a caption is the slot the one
+              box that is left already has for exactly this. */}
+          <caption>
+            {rows.length - unmeasured} of {rows.length} measured
+            {unmeasured > 0 && ` · ${unmeasured} not counted`}
+          </caption>
+        </table>
       </div>
     </section>
   )
@@ -369,27 +379,27 @@ function Family({
 
 function PoolTable({ pools }: { pools: Pool[] }) {
   return (
-    <div className="ctl-table">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Pool</th>
+    <div className="ctl-table is-stacked">
+      <table role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Pool</th>
             {/* "units", never "agents". Trap A: admission increments by the
                 resource class's units (1, 2 or 4), so active: 8 may be two
                 large agents or eight standard ones. §8.4(3) again: the caveat
                 is in the column name, where it cannot be scrolled away from
                 the figures it governs. */}
-            <th scope="col" className="is-num">
+            <th role="columnheader" scope="col" className="is-num">
               In use (units)
               <HelpCard topic="units-not-agents" />
             </th>
-            <th scope="col" className="is-num">Ceiling</th>
-            <th scope="col" className="is-num">Headroom</th>
-            <th scope="col">Set by</th>
-            <th scope="col">Status</th>
+            <th role="columnheader" scope="col" className="is-num">Ceiling</th>
+            <th role="columnheader" scope="col" className="is-num">Headroom</th>
+            <th role="columnheader" scope="col">Set by</th>
+            <th role="columnheader" scope="col">Status</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {pools.map((p) => (
             <PoolRow key={p.name} pool={p} />
           ))}
@@ -406,13 +416,13 @@ function PoolRow({ pool }: { pool: Pool }) {
   const by = setBy(pool)
 
   return (
-    <tr className={over ? 'is-bad over' : paused ? 'is-paused paused' : full ? 'is-warn full' : undefined}>
-      <th scope="row" title={pool.name}>
+    <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : full ? 'is-warn full' : undefined}>
+      <th role="rowheader" scope="row" title={pool.name}>
         {poolLabel(pool.name)}
         <span className="ctl-sub">{pool.name}</span>
       </th>
-      <td className="is-num">{pool.active}</td>
-      <td className="is-num">
+      <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
+      <td role="cell" data-label="Ceiling" className="is-num">
         {pool.effective_limit}
         {pool.effective_limit < pool.hard_limit && (
           <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
@@ -420,9 +430,9 @@ function PoolRow({ pool }: { pool: Pool }) {
           </span>
         )}
       </td>
-      <td className="is-num">{pool.available}</td>
-      <td title={by.detail}>{by.term}</td>
-      <td>
+      <td role="cell" data-label="Headroom" className="is-num">{pool.available}</td>
+      <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
+      <td role="cell" data-label="Status">
         <span className="cap-marks">
           {paused && (
             <span className="ctl-chip is-paused" title="An operator paused this pool. It admits nothing until resumed.">

@@ -474,23 +474,26 @@ function Pool({
           {accounts.length} account{accounts.length === 1 ? '' : 's'}
         </span>
       </h2>
-      <div className="table-wrap">
-        <table className="pools accounts">
-          <thead>
-            <tr>
+      {/* §B6.3: `is-stacked`, because `the pool` is the widest table in the
+          app -- 909px of columns inside a 358px phone, 61% of it behind a
+          scrollbar this platform does not paint. */}
+      <div className="table-wrap is-stacked">
+        <table role="table" className="pools accounts">
+          <thead role="rowgroup">
+            <tr role="row">
               {/* §13.2: sentence case, in the SOURCE. `table.pools thead th`
                   used to uppercase these and no longer does, so a literal
                   written in capitals is now the only thing on the screen still
                   shouting -- and it shouts in one table rather than all of
                   them, which is the exact inconsistency the rule removes. */}
-              <th scope="col">Account</th>
-              <th scope="col" className="n">5h</th>
-              <th scope="col" className="n">7d</th>
-              <th scope="col" className="n">Clears</th>
-              <th scope="col">State</th>
+              <th role="columnheader" scope="col">Account</th>
+              <th role="columnheader" scope="col" className="n">5h</th>
+              <th role="columnheader" scope="col" className="n">7d</th>
+              <th role="columnheader" scope="col" className="n">Clears</th>
+              <th role="columnheader" scope="col">State</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {accounts.map((a) => (
               <PoolRows
                 key={a.account_id}
@@ -569,11 +572,12 @@ function PoolRows({
   return (
     <>
       <tr
+        role="row"
         className={
           tone === 'bad' || unusable ? 'over' : tone === 'paused' ? 'paused' : undefined
         }
       >
-        <th scope="row" className="pool-name">
+        <th role="rowheader" scope="row" className="pool-name">
           <button type="button" className="acct-open" aria-expanded={open} onClick={onToggle}>
             <span className="acct-caret" aria-hidden>
               {open ? '▾' : '▸'}
@@ -584,10 +588,10 @@ function PoolRows({
           </button>
           <span className="raw">{account.account_id}</span>
         </th>
-        <WindowCell reading={five} window="five-hour" />
-        <WindowCell reading={seven} window="seven-day" />
+        <WindowCell reading={five} window="five-hour" label="5h" />
+        <WindowCell reading={seven} window="seven-day" label="7d" />
         <ClearsCell account={account} now={now} readAt={readAt} />
-        <td className="acct-statecell">
+        <td role="cell" data-label="State" className="acct-statecell">
           {/* B4.6: THE STATE IS A MARK AND A WORD, NOT A BADGE (§6.6).
               This was `.tag.acct-state` -- a 1px border in the state hue, a
               6px radius, 13px mono 500 UPPERCASE tracked, and the WORD itself
@@ -633,8 +637,8 @@ function PoolRows({
         </td>
       </tr>
       {open && (
-        <tr className="acct-detail-row">
-          <td colSpan={5}>
+        <tr role="row" className="acct-detail-row">
+          <td role="cell" colSpan={5}>
             <Detail
               account={account}
               board={board}
@@ -683,12 +687,22 @@ function readingTitle(r: AccountReading, window: string): string {
   }
 }
 
-function WindowCell({ reading, window }: { reading: AccountReading; window: string }) {
+function WindowCell({
+  reading,
+  window,
+  // The column name, passed rather than derived: below 900px §B6.3 prints it
+  // beside the value, and `five-hour` is not what the column is called.
+  label,
+}: {
+  reading: AccountReading
+  window: string
+  label: string
+}) {
   const title = readingTitle(reading, window)
 
   if (reading.kind === 'never' || reading.kind === 'absent') {
     return (
-      <td className="n acct-window acct-unmeasured" title={title}>
+      <td role="cell" data-label={label} className="n acct-window acct-unmeasured" title={title}>
         {/* AN EM DASH AND NO BAR. Drawing an empty five-cell bar here would be
             pixel-for-pixel identical to a measured 0%, which is the one
             confusion this column must never allow. `ctl-em` is the shared
@@ -703,7 +717,12 @@ function WindowCell({ reading, window }: { reading: AccountReading; window: stri
 
   const projected = isProjected(reading)
   return (
-    <td className={`n acct-window${projected ? ' acct-projected' : ''}`} title={title}>
+    <td
+      role="cell"
+      data-label={label}
+      className={`n acct-window${projected ? ' acct-projected' : ''}`}
+      title={title}
+    >
       <span className="acct-pct">
         {projected && <span className="acct-tilde">~</span>}
         {Math.round(reading.pct)}%
@@ -762,6 +781,8 @@ function ClearsCell({
   if (binding === null) {
     return (
       <td
+        role="cell"
+        data-label="Clears"
         className="n acct-unmeasured ctl-em"
         title="No window reading, so there is no reset instant to count down to. This is an absence of information, not a window that never clears."
       >
@@ -779,6 +800,8 @@ function ClearsCell({
   if (binding.window.reset) {
     return (
       <td
+        role="cell"
+        data-label="Clears"
         className="n acct-projected"
         title={`The ${windowName} window, the binding one, passed its reset ${timeAgo(binding.window.resets_at)}. It has cleared; no reading taken since has arrived, so the figures on this row still describe the window before it.`}
       >
@@ -808,6 +831,8 @@ function ClearsCell({
   if (Number.isFinite(resetsAt) && resetsAt <= now) {
     return (
       <td
+        role="cell"
+        data-label="Clears"
         className="n acct-projected"
         title={`The ${windowName} window is the binding one, and the reset instant the platform gave for it is already in the past. The board this row came from was read ${timeAgo(readAt)} and had not marked the window reset. This page does not compare its clock with the platform's, so it cannot tell you whether the window has cleared since that read -- reload, and the platform answers.`}
       >
@@ -823,6 +848,8 @@ function ClearsCell({
   const uncertain = isProjected(reading)
   return (
     <td
+      role="cell"
+      data-label="Clears"
       className={`n${uncertain ? ' acct-projected' : ''}`}
       title={
         uncertain

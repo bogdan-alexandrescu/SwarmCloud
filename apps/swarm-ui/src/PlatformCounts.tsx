@@ -100,7 +100,7 @@ export function PlatformCountsScreen() {
       )}
 
       {data && (
-        <div className="ctl-cards">
+        <div className="ctl-cards counts-scopes">
           <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} />
           {data.platform_tasks_by_state !== undefined ? (
             <Scope
