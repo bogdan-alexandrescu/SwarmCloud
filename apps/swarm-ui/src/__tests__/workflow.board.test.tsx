@@ -375,6 +375,21 @@ function nodeNamed(root: ParentNode, name: string): HTMLElement {
   return found!
 }
 
+/**
+ * The positioned box a node is laid out in.
+ *
+ * WHAT MOVED: `.node` used to BE the positioned element and carried the
+ * layout's inline `left`/`top`. The node is the link now, so `.node` is an
+ * `<a>`, and a `<button>` may not live inside an `<a>` -- the stop control had
+ * to become its sibling. `.node-slot` is the parent that holds both and is
+ * what `layoutOf` now positions. The coordinates are the same coordinates.
+ */
+function slotOf(root: ParentNode, name: string): HTMLElement {
+  const slot = nodeNamed(root, name).closest<HTMLElement>('.node-slot')
+  expect(slot, `the node named ${name} is not inside a .node-slot`).toBeTruthy()
+  return slot!
+}
+
 describe('how long a step has taken', () => {
   pinTheClock()
 
@@ -484,27 +499,63 @@ describe('the expanded canvas', () => {
     for (const e of edges) expect(e.getAttribute('marker-end')).toContain('url(#arrow-')
   })
 
+  /**
+   * RE-POINTED, NOT WEAKENED. The claim is unchanged -- a step with a task
+   * opens at the address the rest of the console uses for that task, and a
+   * step without one is not a dead link. What moved is WHICH ELEMENT carries
+   * the href: there were three anchors inside the node (the step id, `input &
+   * output →` and `attempts →`) and all three resolved to the same drawer, so
+   * the node itself is the single anchor now and there is nothing linked
+   * inside it. The assertion therefore reads the node rather than an `<a>`
+   * descendant of it, and it additionally pins that there is NO anchor inside
+   * -- the defect this change removes would otherwise come back silently.
+   */
   it('opens each step at the address the rest of the console uses for it', () => {
     const w = fanOut()
     const steps = w.steps.map((s, i) => (i === 1 ? { ...s, task_id: 'task_scan_a' } : s))
     const tasks = new Map([['task_scan_a', task('task_scan_a', 'RUNNING')]])
     const { container } = card({ ...w, steps }, tasks, true)
-    const link = nodeNamed(container, 'scan-a').querySelector('a')!
-    expect(link.getAttribute('href')).toBe('#agents/task/task_scan_a')
+    const node = nodeNamed(container, 'scan-a')
+    expect(node.tagName).toBe('A')
+    expect(node.getAttribute('href')).toBe('#agents/task/task_scan_a')
+    // The node is the ONLY target. Three anchors pointing at one page is the
+    // shape this replaced; a fourth appearing inside would be the same defect.
+    expect(node.querySelector('a')).toBeNull()
     // A step with no task has nothing to open, so it is not a dead link.
-    expect(nodeNamed(container, 'report').querySelector('a')).toBeNull()
+    const unreached = nodeNamed(container, 'report')
+    expect(unreached.tagName).toBe('DIV')
+    expect(unreached.hasAttribute('href')).toBe(false)
+    expect(unreached.querySelector('a')).toBeNull()
   })
 
-  it('lays the columns out in dependency order, left to right', () => {
+  /**
+   * RE-POINTED ONTO THE OTHER AXIS. It was `lays the columns out in dependency
+   * order, left to right` and it asserted exactly the arrangement the owner
+   * asked to be rid of: "all nodes at the same stage displayed horizontally
+   * not vertically ... the natural flow of the workflow should be top to
+   * bottom rendered rather than left to right."
+   *
+   * The PROPERTY is identical and both halves survive, transposed: dependency
+   * order is monotonic along the flow axis, and the members of one level share
+   * a coordinate on that axis while differing on the other. Only which axis is
+   * which has changed -- level now drives `top`, position within a level drives
+   * `left`. Coordinates are read off `.node-slot`, which is what the layout
+   * positions now that the node is an anchor with a sibling stop control.
+   */
+  it('lays the levels out in dependency order, top to bottom', () => {
     const { container } = card(fanOut(), new Map(), true)
-    const left = (name: string) =>
-      Number.parseFloat(nodeNamed(container, name).style.left)
-    expect(left('plan')).toBeLessThan(left('scan-a'))
-    expect(left('scan-a')).toBeLessThan(left('report'))
-    // The five parallel steps share a column and differ only in row.
+    const top = (name: string) => Number.parseFloat(slotOf(container, name).style.top)
+    const left = (name: string) => Number.parseFloat(slotOf(container, name).style.left)
+    expect(top('plan')).toBeLessThan(top('scan-a'))
+    expect(top('scan-a')).toBeLessThan(top('report'))
+    // The five parallel steps share a BAND and differ only in their position
+    // across it -- which is the owner's "displayed horizontally not vertically".
     const scans = ['scan-a', 'scan-b', 'scan-c', 'scan-d', 'scan-e']
-    expect(new Set(scans.map(left)).size).toBe(1)
-    expect(new Set(scans.map((s) => nodeNamed(container, s).style.top)).size).toBe(5)
+    expect(new Set(scans.map(top)).size).toBe(1)
+    expect(new Set(scans.map(left)).size).toBe(5)
+    // And they are in reading order across the band, not merely distinct.
+    const lefts = scans.map(left)
+    expect([...lefts].sort((a, b) => a - b)).toEqual(lefts)
   })
 })
 

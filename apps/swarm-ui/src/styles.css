@@ -1406,49 +1406,112 @@ body {
      joins a `.wf-bar` whose own corners are --ctl-radius-sm. */
   border-radius: 0 0 var(--ctl-radius-sm) var(--ctl-radius-sm);
   padding: 12px;
-  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  background: var(--wf-body-bg);
 }
-/* It SCROLLS rather than shrinking. A twenty-step workflow across six levels
-   is genuinely wider than a phone, and scaling it to fit turns the step names
-   into texture -- which is the one thing a node must not become. */
+/* THE CANVAS FILL, NAMED ONCE, because three things now have to paint exactly
+   it: the expanded body itself, the sticky level rail that the cards slide
+   behind, and `.wf-edge-halo`, which is how an edge crossing a card carries
+   its own clearance now that the cards have no shadows. Three literal
+   `color-mix`es is the shape every drift in this sheet has started as.
+
+   ON `:root` RATHER THAN ON `.wf-body`, and that is not a style preference:
+   `spaceprobe.ts` builds its token table from `:root` blocks only, so a custom
+   property declared on a component is, to the probe, a name used and never
+   declared -- it throws, which is exactly what it did when this was written
+   the other way. It resolves per theme for free, because the mix is expressed
+   in `--surface` and `--bg` and those are the tokens the theme swaps. */
+:root { --wf-body-bg: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+/* It SCROLLS rather than shrinking, and WHICH GRAPHS SCROLL HAS INVERTED WITH
+   THE AXIS. Left to right, depth made a graph wide, so a chain -- the commonest
+   shape in this product -- was the one that always scrolled. Top to bottom, a
+   chain is one node wide at any depth and only a FAN is wider than the card.
+   Scaling either to fit would turn the step names into texture, which is the
+   one thing a node must not become. */
 .wf-canvas-wrap { overflow-x: auto; padding-bottom: var(--ctl-s2); }
-/* THE COLUMN CAPTIONS ARE EYEBROWS (§6.13), so they are the same treatment as
-   every other section label in this console and a reader can skip the whole
-   layer at will. The rule below therefore declares only what `.ctl-eyebrow`
-   cannot know: that these are absolutely positioned against coordinates
-   `layoutOf` computed. The font, the tracking, the case and the tone come
-   from the primitive -- three restated declarations went. */
-.wf-legend { position: relative; height: 19px; margin: 0 0 var(--ctl-s2); padding: 0; list-style: none; }
-.wf-legend li {
-  position: absolute; top: 0; margin: 0;
+/* The rail and the canvas side by side. `align-items: start` so the rail is
+   exactly as tall as the graph rather than stretching past its last level. */
+.wf-graph { display: flex; align-items: start; gap: var(--ctl-s3); }
+/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS ACROSS THE TOP.
+   Levels run down now, so their captions run down beside them.
+
+   STICKY AT THE LEFT EDGE, which is the whole reason this is a rail rather
+   than a caption printed above each band: the case this axis creates is a
+   fan-out scrolled sideways, and a label that scrolls out of the viewport with
+   it answers "which level am I in" exactly until you need it. It paints
+   `--wf-body-bg` and sits above the canvas so the cards pass behind it.
+
+   THE CAPTIONS ARE EYEBROWS (§6.13), the same treatment as every other section
+   label in this console, so a reader can skip the whole layer at will. This
+   rule declares only what `.ctl-eyebrow` cannot know: that each one is
+   positioned against a `top` the layout computed. Font, case and tone come
+   from the primitive. */
+.wf-levels {
+  position: sticky; left: 0; z-index: 2; flex: none;
+  width: 72px; margin: 0; padding: 0; list-style: none;
+  background: var(--wf-body-bg);
+}
+.wf-levels li {
+  position: absolute; left: 0; margin: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.wf-canvas { position: relative; }
+.wf-canvas { position: relative; flex: none; }
 .wf-edges { position: absolute; left: 0; top: 0; pointer-events: none; }
 .wf-edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+/* THE EDGE CARRIES ITS OWN CLEARANCE, AND IT IS WHY THE NODES LOST THEIR
+   SHADOWS. `.node` used to carry `--ctl-shadow` -- fourteen drop shadows on
+   this one screen, against a reference band of one or two -- and the job it
+   was doing was real: an edge spanning more than one level crosses the band
+   between, and without separation it reads as running INTO a card rather than
+   past it. Putting that separation on the fourteen boxes was paying per box
+   for a property of the two or three lines that actually cross. It is on the
+   line now: a wider stroke in the canvas's own fill, drawn under the line, so
+   the crossing is what carries the gap. 5px against the line's 1.5 leaves
+   1.75px of clear fill on each side -- enough to read as a break, small enough
+   that two edges converging on one join still touch. */
+.wf-edge-halo { fill: none; stroke: var(--wf-body-bg); stroke-width: 5; }
 .wf-arrowhead { fill: var(--line); }
 
+/* THE SLOT THE LAYOUT PLACES, and the reason it exists is valid HTML.
+   The card is an `<a>` now -- the whole node is the link -- and a `<button>`
+   may not live inside an `<a>`. So the slot is what `layoutOf` positions, and
+   the card and the stop control are its two children: siblings, neither nested
+   in the other, both addressed from one set of coordinates. */
+.node-slot { position: absolute; }
+
 /* THE NODE CARD. `--radius`, not `--ctl-radius-sm`: a DAG node is a card on a
-   canvas, and 10px is what this sheet gives a card (§4). `--ctl-shadow` lifts
-   it off the canvas so the edges read as passing UNDER the boxes rather than
-   between them, which is the single change that makes a six-node graph parse
-   at a glance.
+   canvas, and 10px is what this sheet gives a card (§4).
+
+   THE SHADOW IS GONE, AND THE JOB IT DID MOVED TO `.wf-edge-halo`. It read
+   "`--ctl-shadow` lifts it off the canvas so the edges read as passing UNDER
+   the boxes rather than between them", which was true and cost fourteen drop
+   shadows on one screen against a reference band of one or two. What crosses a
+   card is an EDGE, and there are two or three of those; the clearance is drawn
+   on them now. The card keeps its one border (§13.3: a panel is the one box).
 
    PADDING AND GAP ARE ON THE SCALE. They were 8px/12px and a 3px gap -- 3 is
    not a step, and `--ctl-s1` is. The vertical padding goes UP to 10px while
    the content gets tighter, which is D2: compact data inside generous chrome.
+
+   THE 42px AT THE FOOT IS NOT ON THE SCALE AND MAY NOT BE ROUNDED TO ONE. It
+   is the strip `.node-stop` is absolutely positioned into, and it is a
+   MEASUREMENT of that control: 28px of rendered button, 10px of inset, 4px of
+   separator floor, less the 1px border the inset is measured through. The
+   previous figure was reasoned rather than measured (25px, from "4 pad +
+   .stop-btn.inline (13+6+2)") and it was three pixels short, which put the
+   stop button on the card's bottom border and, once the card was rebuilt, 4.2px
+   on top of the dependency list. `NODE_H` carries the same number; a spacing
+   step substituted here would reintroduce the overlap.
 
    EVERY VALUE HERE IS LOAD-BEARING ON `dag.ts`. `layoutOf` positions nodes
    absolutely and gives each one an explicit height, so a row this rule makes
    taller overflows a box nothing else knows changed. `NODE_H` carries the
    arithmetic; keep the two in step. */
 .node {
-  position: absolute;
+  position: absolute; inset: 0;
   display: flex; flex-direction: column; gap: var(--ctl-s1);
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-  border-radius: var(--radius); padding: 10px 12px; min-width: 132px;
-  box-shadow: var(--ctl-shadow);
+  border-radius: var(--radius); padding: 10px 12px 42px;
   box-sizing: border-box;
 }
 /* State and duration on ONE line. They were two stacked 12px rows reading
@@ -1458,12 +1521,6 @@ body {
 .node-line > .ctl-dot { align-self: center; }
 .node-line > .node-state { flex: none; }
 .node-line > .node-dur { margin-left: auto; text-align: right; }
-/* A node with no run yet is not wrapped -- there is nothing to link to -- so it
-   is its own flex child and needs the sizing the wrapper would have given it. */
-.node.is-unreachable { flex: 1 1 0; min-width: 168px; max-width: 268px; }
-/* The stop control and the two deep links sit under the anchor, inside the
-   wrapper's border-free column, so neither is inside the clickable box. */
-.node-wrap > .node-stop, .node-wrap > .node-links { margin-top: 4px; }
 a.node { text-decoration: none; color: inherit; }
 a.node:hover, a.node:focus-visible { border-color: var(--info); }
 a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
@@ -1471,8 +1528,11 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
 .node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
-.node-id a { color: var(--text); text-decoration: none; }
-.node-id a:hover { text-decoration: underline; }
+/* `.node-id a` WAS THE LINK AND THERE IS NO LONGER AN ANCHOR IN HERE: the card
+   around it is the anchor. `.node-name` is what that anchor's text used to be,
+   and it is deliberately NOT underlined on hover -- one affordance per target,
+   and the target is the card, which brightens its own border. */
+.node-name { color: var(--text); }
 .node-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 /* FIVE KINDS OF TIME, FIVE TREATMENTS -- and the first one has no number at
    all. A step that has not started HAS NO DURATION; `0s` would be a claim that
@@ -1510,12 +1570,18 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    treat. Already on the scale; carried across unchanged. */
 /* THE FOUR FIGURES. The margin went: the node is a flex column with a
    `--ctl-s1` gap, and a margin on top of that is two spacing mechanisms
-   arguing. Separation above them is `--ctl-s2` of padding plus one hairline --
-   this one IS a legitimate repeated separator's neighbour in spirit, but it
-   has no twin, so it is drawn at `--line` rather than `--line-soft` (§5.2). */
+   arguing.
+
+   AND THE HAIRLINE WENT, under §13.3. It read "separation above them is
+   `--ctl-s2` of padding PLUS one hairline" -- the padding was already doing
+   the work, and the rule was a border inside a panel that was already a box,
+   drawn once per node: FOURTEEN of them on this screen, the single largest
+   contributor to its count. §13.3's row rule is that anything repeated inside
+   a panel is separated by nothing. The `--ctl-s2` of padding stays and is now
+   the whole separation. */
 .node-nums {
   display: flex; flex-direction: column; gap: 2px; margin: 0;
-  padding-top: var(--ctl-s2); border-top: 1px solid var(--line);
+  padding-top: var(--ctl-s2);
 }
 /* A grid per row rather than `display: contents` on the row: the row carries
    the `title` that explains an absence, and an element with no box has nothing
@@ -1531,15 +1597,30 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node-num dt {
   font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); align-self: baseline;
 }
+/* THE DASHED RULE IS DECLARED HERE AND ONLY RECOLOURED BELOW, which is §13.5's
+   named pattern ("`.ctl-metric` keeps its transparent declared border ... a
+   border that appears only when a read failed would move every neighbour by a
+   pixel at the moment the strip most needs to hold still") applied to the one
+   place on this screen that still had the defect it describes.
+
+   MEASURED, NOT ARGUED. The rule was declared only on `.is-absent`, so a cell
+   gained 1px the moment its figure turned out not to have been measured -- up
+   to 4px per node, arriving when the attempt read lands, on a card whose
+   height `layoutOf` has already committed to. On the fixture that was 2px on
+   `scan-terraform`, which is why the clearance under its dependency list
+   measured 3.8px where the identical node beside it measured 5.8. Declared on
+   every cell, the node's height no longer depends on how the read went, and
+   `NODE_H`'s `.node-nums` term is a constant 4 x (21 + 1) again. */
 .node-num dd {
   margin: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text);
   font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-bottom: 1px dashed transparent;
 }
 .node-num.is-absent dd {
   color: var(--ctl-absent);
   font-variant-numeric: normal;
-  border-bottom: 1px dashed color-mix(in srgb, var(--ctl-absent) 55%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--ctl-absent) 55%, transparent);
   width: max-content; max-width: 100%;
 }
 /* A read still in flight is NOT an absence: it has made no claim about the
@@ -1560,15 +1641,18 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    where a digit would be, on a dashed rule, and `measure.ts` guarantees no two
    absences that can share that slot share a word. What the paragraph carried
    was the CAUSE, which is now the cell's `title` and the node's `?`. */
-/* NO MARGIN: the column gap is the only spacing mechanism on this card.
-   NO WRAP EITHER, and `NODE_W` is what makes that safe -- 236px gives these
-   two labels 212px of content box against the ~199px they need at --t-micro
-   mono. At the 212px this node used to be they needed 11px more than they
-   had and quietly overflowed the right edge. */
-.node-links { display: flex; align-items: center; gap: var(--ctl-s3); margin-top: 0; }
-.node-links a { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--info); text-decoration: none; }
-.node-links a:hover { text-decoration: underline; }
-.node-links a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
+/* `.node-links` IS GONE, AND SO IS THE REASON THE NODE WAS 236px WIDE.
+   It held `input & output →` and `attempts →`, and this rule's own comment
+   recorded that they needed 199px of non-wrapping row -- which is why NODE_W
+   had been widened from 212 to 236 to fit them. Both pointed at the same page
+   the step id already pointed at: `#agents/task/<id>` and the same drawer's
+   `attempts` TAB. Three anchors, one destination. The card is the link now
+   (see `StepNode`) and the row is deleted.
+   NODE_W IS 248 AND CHROME NO LONGER SETS IT. It is set by the widest string a
+   figure cell may not truncate -- `21.4k in · 3.2k out`, measured at 160px --
+   which is a fact about what this screen owes the reader rather than about
+   what a row of links happens to need. `dag.ts`'s `NODE_W` carries the
+   arithmetic and the browser sweep that produced it. */
 
 @media (max-width: 560px) {
   /* A SECOND PHONE BLOCK FOR `.row` LIVED HERE AND WAS SILENTLY WINNING HALF
@@ -5809,7 +5893,17 @@ table.pools tbody tr.unmeasured {
     .stop-btn.inline { padding: 3px 6px; }
 
 .run-stop { margin-left: auto; }
-.node-stop { margin-top: auto; padding-top: 4px; }
+/* NOT A FLEX CHILD OF THE CARD ANY MORE, because the card is an `<a>` and a
+   `<button>` may not live inside one. It is an absolutely positioned SIBLING
+   inside `.node-slot`, sitting in the strip `.node`'s own padding-bottom
+   reserves for it -- 42px, which is this control's MEASURED 28px plus this
+   10px inset plus the 4px floor, less the border. `NODE_H` restates that sum;
+   changing either number without the other puts the button back on top of the
+   dependency list, which is where it was found.
+   15px rather than 12: the card's left edge is a 3px state accent plus 12px of
+   padding, so 15 is where the text column starts. The control lines up with
+   the words above it rather than with the border. */
+.node-stop { position: absolute; left: 15px; bottom: 10px; }
 
 /* "stop requested" is not a button and must not look like one: the request is
    already in, and something that invited a second press would imply the first
