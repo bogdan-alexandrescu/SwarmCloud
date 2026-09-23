@@ -64,7 +64,13 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  assert.equal(p.href, '#agents/workflows')
+  // `#work/workflows`, NOT `#agents/workflows`. The section was renamed and
+  // `checks.ts:632` writes the new spelling -- it has to, because
+  // `nav.links.test.tsx` fails the build if any internal href uses a key of
+  // `SECTION_ALIASES`. This expectation is the old one and has been red since
+  // the rename landed; it was invisible until the route suite ahead of it went
+  // green, because the runner stops at the first TAP group that fails.
+  assert.equal(p.href, '#work/workflows')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.
   assert.match(p.detail, /wf_5e5ad3b6f7da4299a839/)
