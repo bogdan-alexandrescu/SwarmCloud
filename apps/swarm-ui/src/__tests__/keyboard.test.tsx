@@ -108,35 +108,42 @@ const POINTERS = pointerSelectors(STYLES)
 /**
  * THE FLOOR, AND WHY IT IS THIS NUMBER.
  *
- * THE SHELL ALONE IS 375, AND THAT IS THE NUMBER THIS FLOOR IS ABOUT. The rail
- * draws six section buttons, fourteen tab buttons (Overview's single pane
+ * MEASURED: 576, on the run that established this file. The per-route numbers
+ * are in the log of every run and range from 24 (`admin/tenants`) to 62
+ * (`capacity/accounts`).
+ *
+ * THE SHELL ALONE IS 375, AND THAT IS WHY THE FLOOR IS NOT A PERCENTAGE. The
+ * rail draws six section buttons, fourteen tab buttons (Overview's single pane
  * draws no second level) and two utility buttons on EVERY route: 22 tab stops
  * that are there whatever the screen behind them does. The header's home link,
  * the dock's line and the head's `?` add three more. 25 x 15 routes = 375
- * before a single screen has rendered anything at all.
+ * before a single screen has rendered anything at all, so `spacing.test.tsx`'s
+ * habit of setting the floor at about 60% of the measurement would put this
+ * one BELOW the number a completely blank app still reports.
  *
- * So 420 asserts "the shell, plus at least 45 controls that came from actual
- * screens". It is deliberately far under what a working sweep reports, because
- * a floor's job is to fail when the sweep reaches NOTHING -- the shape this
- * repository keeps producing: a loop that did not word-split, a probe that
- * returned `[]`, a route list that went stale and examined 500 fewer shapes
- * with nothing red. What it does NOT do is notice one screen going blank;
- * that is what the per-route table printed on every run is for.
+ * 480 is the shell plus half of the 201 controls that came from real screens.
+ * It fails when the sweep reaches nothing -- the shape this repository keeps
+ * producing: a loop that did not word-split, a probe that returned `[]`, a
+ * route list that went stale and examined 500 fewer shapes with nothing red --
+ * and it also fails if roughly three screens stop rendering their contents.
+ * Which screens is a question for the per-route table, not for this number.
  */
-const STOP_FLOOR = 420
+const STOP_FLOOR = 480
 
 /**
- * 25 `?` triggers opened, dismissed and checked for focus return.
+ * `?` triggers opened, dismissed, and checked for focus return. MEASURED: 84.
  *
  * Fifteen of those are certain: `SectionQuestion` puts one in the head of
- * every route. The rest are `<HelpCard>`s on screens whose fixtures resolve --
- * and some screens in this app read `/v1/admin/*`, answer 403 and render an
- * admin panel instead of their content, so the count is a property of the
- * fixtures rather than of the source. 25 is chosen to be true even when
- * several screens render their failure state, for the same reason the stop
- * floor is: it exists to catch a sweep that opened nothing.
+ * every route. The other 69 are `<HelpCard>`s on screens whose fixtures
+ * resolve -- and some screens here read `/v1/admin/*`, answer 403 and render
+ * an admin panel instead of their content, so the count is a property of the
+ * fixtures rather than of the source. The two biggest contributors are
+ * `runtimes/catalogue` (19) and `capacity/accounts` (16).
+ *
+ * 60 therefore survives either of those screens going to its failure state and
+ * still fails if the sweep stops opening cards, which is what it is for.
  */
-const HELP_FLOOR = 25
+const HELP_FLOOR = 60
 
 let sheet: HTMLStyleElement
 

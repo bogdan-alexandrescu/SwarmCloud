@@ -101,7 +101,7 @@ are written down rather than implied.
 | | `spacing.test.tsx` | `keyboard.test.tsx` |
 |---|---|---|
 | reads | the computed box of every shape with geometry | every tab stop, and the sheet's own cursor and focus rules |
-| floor | `> 800` shapes examined | `> 420` tab stops, `> 25` help cards opened, every route ≥ 20 |
+| floor | `> 800` shapes examined (1,295 measured) | `> 480` tab stops (576 measured), `> 60` help cards opened (84 measured), every route ≥ 20 |
 | cannot see | overlap — jsdom has no layout engine | a React handler, layout, or Tab actually moving focus |
 
 The keyboard sweep's blind spot needs the most care when reading a green run.

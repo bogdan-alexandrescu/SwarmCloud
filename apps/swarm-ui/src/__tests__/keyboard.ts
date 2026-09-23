@@ -144,6 +144,31 @@ function wrapsAControl(el: Element): boolean {
   return tabStops(el).length > 0
 }
 
+/**
+ * A control that is switched off, and therefore correctly out of the tab order.
+ *
+ * THIS IS THE ONE PLACE THE SELECTOR-MATCHING APPROACH NEEDS HELP, and the
+ * first run of this sweep is what showed it: ten findings, every one of them a
+ * `<button disabled>` -- the submit button before a runner is chosen, the save
+ * beside an unedited pool limit, the danger buttons on an account card.
+ *
+ * They matched `:where(.app button)`, which does declare `cursor: pointer`.
+ * What a selector match CANNOT see is the rule two lines below it,
+ * `:where(.app button:disabled) { cursor: not-allowed }`, which takes the hand
+ * cursor away again for exactly this case. The sheet is already saying "you
+ * cannot press this"; the probe was reading only the first half of the
+ * sentence.
+ *
+ * A disabled control is not a mouse-only control either way: the mouse cannot
+ * use it any more than the keyboard can, so it is not the defect this check is
+ * looking for. `aria-disabled` counts as well, because a control that is
+ * disabled in the accessibility tree and focusable in the DOM is a different
+ * finding from this one and would be reported here for the wrong reason.
+ */
+function isDisabled(el: Element): boolean {
+  return el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true'
+}
+
 export interface ProbeOptions {
   /**
    * The element React rendered into. Anything focusable in `<body>` but
@@ -205,6 +230,9 @@ export function probeKeyboard(doc: Document, opts: ProbeOptions): Report {
       // a button is reached by reaching the button. Only an element with no
       // control of its own, none inside it and none above it is stranded.
       if (el.tagName === 'LABEL') continue
+      // See `isDisabled`: the sheet's own `:disabled` rule takes this cursor
+      // back, and a selector match cannot see a later rule override it.
+      if (isDisabled(el)) continue
       if (isFocusable(el)) continue
       const parent = el.parentElement
       if (parent !== null && parent.closest('button, a[href], [tabindex]') !== null) continue
@@ -219,6 +247,8 @@ export function probeKeyboard(doc: Document, opts: ProbeOptions): Report {
 
   for (const el of doc.body.querySelectorAll('[role]')) {
     if (!promisesAControl(el)) continue
+    // A switched-off control is meant to be out of the tab order.
+    if (isDisabled(el)) continue
     if (isFocusable(el)) continue
     say({
       kind: 'role-without-focus',
