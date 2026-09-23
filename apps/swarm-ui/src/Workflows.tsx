@@ -40,6 +40,7 @@ import {
   USAGE_NOT_SAMPLED,
 } from './measure'
 import { workflowDispatchOf } from './Dispatch'
+import { HelpCard } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
 import { StopRun } from './StopRun'
 import {
@@ -82,6 +83,17 @@ import {
  * steps with no state field at all; it only exists on the task a step created.
  * See `stepState` in types.ts for the three ways that join can come up empty
  * and why they must not render alike.
+ *
+ * WHERE THE SENTENCES WENT (design-system.md §8). This screen carried three
+ * paragraphs of standing explanation -- a 44-word partial-read banner, a
+ * 26-word sample note, and one absence note per node -- and every one of them
+ * stated a fact the reader could already SEE if the fact had been drawn. They
+ * are now drawn: `.ctl-mark` names which kind of nothing this is in two words,
+ * the untrusted progress track is hatched with no fill rather than described
+ * in amber prose, and the sentence itself is the mark's `aria-label` plus a
+ * `?` card over an existing `help.ts` topic. The invariant is unchanged and is
+ * STRONGER for it: a paragraph can sit beside a figure it does not describe,
+ * and an attribute on the figure cannot.
  */
 export function WorkflowsScreen() {
   // Same reason as AgentDetail's: `Screen` keeps its retry nonce to itself, so
@@ -116,9 +128,13 @@ export function WorkflowsScreen() {
       title="Workflows"
       load={loadWorkflowBoard}
       summary={(d) => `${d.workflows.length} workflow${d.workflows.length === 1 ? '' : 's'}`}
+      // ONE SENTENCE (design-system.md §6.9: mark, heading, one sentence, a
+      // link out). The second sentence -- that the read succeeded and returned
+      // nothing -- is what `.ctl-empty`'s default variant already means; it
+      // said in words what the variant says by being the variant.
       empty={{
         heading: 'No workflows',
-        body: 'The read succeeded and returned nothing. Tasks submitted individually do not belong to a workflow and appear only under Agents.',
+        body: 'Individually submitted tasks appear under Agents.',
       }}
     >
       {(d) => (
@@ -207,9 +223,24 @@ function Board({
 
   return (
     <>
-      {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
-      {usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
-      <ModeControl mode={mode} onChoose={chooseMode} />
+      {/* ONE STRIP OF CHROME ABOVE THE BOARD, and the count of sentences in it
+          is zero (design-system.md §6.11). The control sits left; everything
+          the board could not read sits right, as marks. Both banners this
+          replaces were full-width panels that pushed the first row of actual
+          data below the fold on a laptop. */}
+      <div className="ctl-toolbar wf-chrome">
+        <ModeControl mode={mode} onChoose={chooseMode} />
+        <span className="is-end wf-caveats">
+          {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
+          {usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
+          {/* ONE `?` FOR THE WHOLE BOARD. `absent-vs-zero` is the rule every
+              absent figure on this screen obeys -- a word where a digit would
+              be, on a dashed rule -- and it is a property of the screen rather
+              than of any one node. Drawn per node it would have been eight
+              question marks on an eight-step graph. */}
+          <HelpCard topic="absent-vs-zero" />
+        </span>
+      </div>
       <div className="wf-board">
         {board.workflows.map((w) => (
           <WorkflowCard
@@ -230,23 +261,29 @@ function Board({
 type BoardMode = 'collapsed' | 'full'
 
 /**
- * The board-wide default. Two states, named for what they show rather than for
- * what they do: "Collapsed" is a list of one-line bars, "Full DAG" opens every
- * canvas at once.
+ * The board-wide default, as `.ctl-seg` rather than two standalone pills.
+ *
+ * ONE BORDERED GROUP, AND THE SELECTION IS HUELESS (design-system.md §6.11 and
+ * §1.3). `.wf-mode.is-on` filled itself with 12% `--info` -- the same accent a
+ * LIVE step is drawn in three rows below -- which is how a reader learns to
+ * stop trusting colour as a state channel. The active segment is now a surface
+ * step plus weight, and it costs no hue at all.
+ *
+ * The labels are one word each. "Collapsed"/"Full DAG" named the mechanism;
+ * `Rows`/`Graph` name what you get, which is the thing being chosen.
  */
 function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardMode) => void }) {
   return (
-    <div className="wf-modebar" role="group" aria-label="How much of each workflow to show">
+    <div className="ctl-seg" role="group" aria-label="How much of each workflow to show">
       {(
         [
-          ['collapsed', 'Collapsed'],
-          ['full', 'Full DAG'],
+          ['collapsed', 'Rows'],
+          ['full', 'Graph'],
         ] as const
       ).map(([value, label]) => (
         <button
           key={value}
           type="button"
-          className={`wf-mode${mode === value ? ' is-on' : ''}`}
           aria-pressed={mode === value}
           onClick={() => onChoose(value)}
         >
@@ -258,25 +295,33 @@ function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardM
 }
 
 /**
- * The partial state. The workflows read succeeded and the task read did not, so
- * the shape of every graph below is trustworthy and none of the step states
- * are. Saying so is the whole job of this banner -- without it the nodes read
- * as a workflow full of idle steps.
+ * The partial state: the workflows read succeeded and the task read did not.
+ *
+ * WHAT IT WAS. A full-width amber panel carrying 44 words across a heading and
+ * two paragraphs, whose entire content was that the shapes below are
+ * trustworthy and the states are not.
+ *
+ * WHAT CARRIES IT NOW, and why this is not a weakening. The states themselves
+ * were ALREADY drawn as unread: `present()` returns the word `state unread`
+ * for that arm, `.node.unknown` is dashed and amber, and `.wf-state.unknown`
+ * is the neutral tone rather than a state colour. The banner never carried the
+ * fact -- it explained a fact that was already on screen, once, at the top,
+ * where it could sit above a workflow it did not describe. What is here now is
+ * a two-word mark in the board's own chrome, the sentence as its accessible
+ * name, and the `?` over `read-failed`, which is the topic that already holds
+ * the argument in full.
  */
 function StatesUnavailable({ detail }: { detail: string }) {
   return (
-    <div className="state partial" role="status">
-      <h3>Step states could not be read</h3>
-      <p>
-        The workflows themselves loaded, so the steps, their order and their
-        dependencies below are correct. Their <em>states</em> are not shown,
-        because the task read failed: {detail}
-      </p>
-      <p style={{ marginTop: 8 }}>
-        Nothing below should be taken as evidence that a step is or is not
-        running.
-      </p>
-    </div>
+    <span className="wf-caveat" role="status">
+      <span
+        className="ctl-mark is-unread"
+        aria-label={`Step states could not be read: ${detail}. The steps below, their order and their dependencies are correct; their states are not shown. Nothing below is evidence that a step is or is not running.`}
+      >
+        states unread
+      </span>
+      <HelpCard topic="read-failed" />
+    </span>
   )
 }
 
@@ -294,12 +339,21 @@ function StatesUnavailable({ detail }: { detail: string }) {
  * "3 succeeded" over a partial read is a wrong number wearing the clothes of a
  * right one. The server reports `complete: false` for exactly that case.
  */
-function rollupLine(workflow: Workflow): {
+interface Rollup {
   text: string
   trustworthy: boolean
   done: number
   total: number
-} {
+  /**
+   * The sentence the amber paragraph used to be, as the progress control's
+   * accessible name. It is not optional and it is not decoration: it is the
+   * keyboard-and-screen-reader half of the encoding, and the visual half is
+   * the hatched track (design-system.md §8.3).
+   */
+  why: string
+}
+
+function rollupLine(workflow: Workflow): Rollup {
   const roll = workflow.rollup
   const total = workflow.steps.length
   if (!roll) {
@@ -311,15 +365,28 @@ function rollupLine(workflow: Workflow): {
       // told the reader the console could not count to six. The count is
       // the length of an array that was read and is always knowable. What
       // is missing here is the per-step census, so that is what says so.
-      text: `${total} step${total === 1 ? '' : 's'} · progress not derived`,
+      // THE COUNT ALONE. "progress not derived" went with the amber prose: the
+      // hatched track beside this text is the statement that there is no scale
+      // to start, and it makes it at 390px where three ellipsed words could
+      // not. The sentence is the track's accessible name.
+      text: `${total} step${total === 1 ? '' : 's'}`,
       trustworthy: false,
       done: 0,
       total,
+      why: `${total} steps. No per-step census was derived for this workflow, so no progress is shown. The step count itself was read and is exact.`,
     }
   }
   if (!roll.complete) {
     const n = roll.unreadable_steps.length
-    return { text: `${n} of ${total} steps: state unread`, trustworthy: false, done: 0, total }
+    // `steps unread`, not `steps: state unread`. The colon-and-restatement was
+    // the only part a reader could not have got from the hatch.
+    return {
+      text: `${n} of ${total} steps unread`,
+      trustworthy: false,
+      done: 0,
+      total,
+      why: `${n} of ${total} steps could not be read (${roll.reason}), so there is no progress figure. This is an unread census, not a stalled workflow.`,
+    }
   }
   const done = roll.counts.SUCCEEDED ?? 0
   const failed = roll.counts.FAILED ?? 0
@@ -327,7 +394,13 @@ function rollupLine(workflow: Workflow): {
   const parts = [`${done}/${total} done`]
   if (failed > 0) parts.push(`${failed} failed`)
   if (unstarted > 0) parts.push(`${unstarted} not started`)
-  return { text: parts.join(' · '), trustworthy: true, done, total }
+  return {
+    text: parts.join(' · '),
+    trustworthy: true,
+    done,
+    total,
+    why: `${done} of ${total} steps done.`,
+  }
 }
 
 /**
@@ -342,24 +415,61 @@ function rollupLine(workflow: Workflow): {
  *
  * `agrees === null` is rendered as "not checked", never as a disagreement: the
  * derivation was incomplete, so the two records were not compared.
+ *
+ * TWO RECORDS SIDE BY SIDE BEAT A SENTENCE ABOUT TWO RECORDS. This was two
+ * prose paragraphs that spelled out, in 27 words, a comparison the reader
+ * makes instantly when the two values are set next to each other with their
+ * keys on (design-system.md §6.13). `.ctl-facts` is that shape, and the
+ * unchecked arm keeps its slot and its key rather than vanishing -- a fact
+ * that disappears is indistinguishable from one that was never going to be
+ * there.
  */
 function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
   if (!drift || drift.agrees === true) return null
   if (drift.agrees === null) {
     return (
-      <p className="rollup untrusted">
-        State could not be checked: {drift.unreadable_steps.length} step
-        {drift.unreadable_steps.length === 1 ? '' : 's'} unread ({drift.reason}). The
-        stored value is <code>{drift.stored}</code> and nothing has confirmed it.
-      </p>
+      <ul
+        className="ctl-facts wf-drift"
+        aria-label={`State could not be checked: ${drift.unreadable_steps.length} step${
+          drift.unreadable_steps.length === 1 ? '' : 's'
+        } unread (${drift.reason}). The stored value is ${drift.stored} and nothing has confirmed it.`}
+      >
+        <li className="ctl-fact">
+          <b>stored</b>
+          <code>{drift.stored}</code>
+        </li>
+        <li className="ctl-fact is-absent">
+          <b>steps</b>
+          <span className="ctl-mark is-unread">not checked</span>
+        </li>
+      </ul>
     )
   }
   return (
-    <p className="rollup untrusted">
-      Stored state was <code>{drift.stored}</code>; the steps say{' '}
-      <code>{drift.derived}</code>
-      {drift.repaired ? ' — the stored copy has been corrected' : ''}.
-    </p>
+    <ul
+      className="ctl-facts wf-drift"
+      aria-label={`Stored state was ${drift.stored}; the steps say ${drift.derived}${
+        drift.repaired ? ', and the stored copy has been corrected' : ''
+      }.`}
+    >
+      <li className="ctl-fact">
+        <b>stored</b>
+        <code>{drift.stored}</code>
+      </li>
+      <li className="ctl-fact">
+        <b>steps</b>
+        <code>{drift.derived}</code>
+      </li>
+      {/* A plain value, NOT a `.ctl-mark`: the mark vocabulary names kinds of
+          absence, and a repair is a thing that happened. Borrowing an absence
+          mark for it would put a measured event in the vocabulary a reader has
+          learned to read as "nothing here". */}
+      {drift.repaired && (
+        <li className="ctl-fact">
+          <b>stored</b>repaired
+        </li>
+      )}
+    </ul>
   )
 }
 
@@ -401,9 +511,15 @@ export function WorkflowCard({
           aria-controls={bodyId}
           onClick={() => onToggle(workflow.workflow_id, expanded)}
         >
-          <span className="wf-caret" aria-hidden>
-            {expanded ? '▾' : '▸'}
-          </span>
+          {/* THE MARK, AT `[state]`, AND IT NEVER DROPS (design-system.md
+              §6.8). 8px of shape at the left edge is what makes a list of ten
+              workflows scannable without reading a word of it, and it is the
+              one column that survives to 390px along with the name and the
+              caret. `dotClass` is where the two absences finally stop drawing
+              alike: `state not derived` is a ring with a bar through it and
+              `state unread` is a hollow ring, where the old row gave both the
+              same grey `?`. */}
+          <i className={dotClass(header)} aria-hidden />
           {/* B17. This id is lowercase everywhere it actually lives --
               Firestore, the API, the logs and the `#agents/task/<id>` address.
               Printed as WF_BCDC9180… it cannot be pasted anywhere, which is
@@ -418,8 +534,11 @@ export function WorkflowCard({
               under it read succeeded and failed -- one card, one typeface, and
               nothing saying which to believe. An underived read claims no state
               at all and names the stored copy as a stored copy. */}
+          {/* THE WORD STAYS, and the glyph went with the dot that replaced it.
+              A chip carrying a mark AND a glyph AND a word said the same thing
+              three times in 104px. */}
           <span className={`wf-state ${header.tone}`} title={header.title}>
-            <span aria-hidden>{header.glyph}</span> {header.word}
+            {header.word}
           </span>
           <Progress roll={roll} />
           <Shape shape={shape} />
@@ -439,6 +558,14 @@ export function WorkflowCard({
                 request and the release the workflow really is still running. */}
             {workflow.cancel_requested && <span className="tag wait">cancel requested</span>}
           </span>
+          {/* `[actions]`, AT THE RIGHT EDGE, 20px, AND IT NEVER DROPS EITHER.
+              It was the first column: a caret on the left pushes the id -- the
+              thing a reader scans down -- off the row's own left edge, so ten
+              rows have ten ragged starts. Railway, Northflank and Vercel all
+              put the disclosure last for that reason. */}
+          <span className="wf-caret" aria-hidden>
+            {expanded ? '▾' : '▸'}
+          </span>
         </button>
       </h2>
 
@@ -454,28 +581,72 @@ export function WorkflowCard({
 }
 
 /**
- * PROGRESS, and the reason it is not always a bar.
+ * Which silhouette the row's state mark takes.
  *
- * A meter is a claim that the numbers behind it are a census. When the server
- * reports `complete: false` the census failed, and drawing "2 of 6" as a
- * two-thirds-empty bar would turn a failed read into a measurement -- the
- * exact substitution this console exists to refuse. In that case the words
- * survive, struck through, and no bar is drawn at all.
+ * FIVE TONES, SIX MARKS, because `unknown` is two different facts and the old
+ * row drew them as one grey `?`:
+ *
+ *  - `derived: false` -- this API did not derive a state at all. The state
+ *    EXISTS; nobody computed it. `.ctl-dot.is-underived`, a ring with a bar
+ *    through it (design-system.md §6.6).
+ *  - `derived: true` with an incomplete rollup -- the derivation was attempted
+ *    and some steps could not be read. An absence of information, drawn as the
+ *    default hollow ring.
+ *
+ * Neither is a filled mark, so neither can be read as a state the platform
+ * holds -- which is the whole of the invariant, restated as a shape.
  */
-function Progress({ roll }: { roll: { text: string; trustworthy: boolean; done: number; total: number } }) {
+function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
+  if (header.tone === 'unknown') {
+    return header.derived ? 'ctl-dot' : 'ctl-dot is-underived'
+  }
+  switch (header.tone) {
+    case 'ok':
+      return 'ctl-dot is-ok'
+    case 'bad':
+      return 'ctl-dot is-bad'
+    case 'live':
+      return 'ctl-dot is-live'
+    // QUEUED, PARKED, READY. `--info` is this sheet's "a fact, not a verdict"
+    // (§1.2), which is exactly what a waiting workflow is: it is not a
+    // failure, it is not healthy, and it is certainly not an absence.
+    case 'wait':
+      return 'ctl-dot is-info'
+  }
+}
+
+/**
+ * PROGRESS, and the reason the bar is sometimes hatched rather than absent.
+ *
+ * A FILLED METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the
+ * server reports `complete: false` the census failed, and drawing "2 of 6" as
+ * a two-thirds-empty bar would turn a failed read into a measurement -- the
+ * exact substitution this console exists to refuse. That has not changed: no
+ * `.wf-meter-fill` is rendered on that path, and there is no width to read.
+ *
+ * WHAT CHANGED IS THE OTHER HALF. The untrusted case used to draw NO track at
+ * all and lean entirely on amber words -- and `.wf-progress-text` is one of
+ * the columns that drops at 560px, so at 390px an unreadable census showed as
+ * an empty cell, which is the strongest possible way of saying "nothing is
+ * wrong here". It now draws `.wf-meter.is-unknown`: hatched, no fill, and no
+ * axis, because there is no scale to start (design-system.md §6.4). That mark
+ * survives every breakpoint, survives greyscale, and cannot be mistaken for a
+ * 0% bar because a 0% bar has an axis tick and this has none.
+ */
+function Progress({ roll }: { roll: Rollup }) {
   if (!roll.trustworthy) {
-    return <span className="wf-progress untrusted">{roll.text}</span>
+    return (
+      <span className="wf-progress untrusted">
+        <span className="ctl-track wf-meter is-unknown" role="img" aria-label={roll.why} />
+        <span className="wf-progress-text">{roll.text}</span>
+      </span>
+    )
   }
   const pct = roll.total === 0 ? 0 : Math.round((roll.done / roll.total) * 100)
   return (
     <span className="wf-progress">
-      <span
-        className="wf-meter"
-        role="img"
-        aria-label={`${roll.done} of ${roll.total} steps done`}
-        title={roll.text}
-      >
-        <span className="wf-meter-fill" style={{ width: `${pct}%` }} />
+      <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
+        <span className="ctl-util-fill wf-meter-fill" style={{ width: `${pct}%` }} />
       </span>
       <span className="wf-progress-text">{roll.text}</span>
     </span>
@@ -556,27 +727,26 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
  */
 function Spend({ spend }: { spend: WorkflowSpend }) {
   if (spend.usd === null) {
+    // `title` AND `aria-label`. The title was already here and was never the
+    // only route -- the word `not reported` is on the surface, in the absent
+    // treatment, which is what the acceptance test asks for -- but a hover is
+    // not a keyboard, and the sentence is the half that says what it is NOT.
+    const why =
+      spend.joined === 0
+        ? 'No task was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
+        : `None of the ${spend.joined} joined step${spend.joined === 1 ? '' : 's'} reported a cost. This is an absent measurement, not $0.00.`
     return (
-      <span
-        className="wf-spend absent"
-        title={
-          spend.joined === 0
-            ? 'No task was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
-            : `None of the ${spend.joined} joined step${spend.joined === 1 ? '' : 's'} reported a cost. This is an absent measurement, not $0.00.`
-        }
-      >
+      <span className="wf-spend absent" title={why} aria-label={why}>
         not reported
       </span>
     )
   }
   const partial = spend.covered < spend.steps
+  const note = `${spend.covered} of ${spend.steps} steps reported a cost.${
+    partial ? ' The rest have not reported one, so this is a floor rather than the total.' : ''
+  }`
   return (
-    <span
-      className="wf-spend"
-      title={`${spend.covered} of ${spend.steps} steps reported a cost.${
-        partial ? ' The rest have not reported one, so this is a floor rather than the total.' : ''
-      }`}
-    >
+    <span className="wf-spend" title={note} aria-label={note}>
       {money(spend.usd)}
       {partial && (
         <span className="wf-spend-cov">
@@ -649,23 +819,62 @@ function WorkflowDispatch({
   steps: number
   joined: boolean
 }) {
+  // BOTH ABSENCES KEEP THEIR SLOT AND THEIR KEY (design-system.md §6.13). The
+  // two 29- and 15-word paragraphs this replaces are one `.ctl-mark` each --
+  // `not reported` and `no task joined` still tell the two apart, because they
+  // are different words for different facts -- plus the `?` over
+  // `dispatch-absent-is-old-api`, which is where that argument was already
+  // written out in full before this screen restated it.
   if (dispatch === null) {
     return (
-      <p className="muted small">
-        {joined
-          ? 'None of this workflow’s tasks reported a dispatch, so what it publishes is not shown. That is an API older than the field, not a workflow that publishes nothing.'
-          : 'No task was joined for this workflow, so what it publishes cannot be read here.'}
-      </p>
+      <div className="wf-dispatch">
+        <ul className="ctl-facts">
+          <li className="ctl-fact is-absent">
+            <b>opens</b>
+            <span
+              className="ctl-mark is-absent"
+              aria-label={
+                joined
+                  ? 'None of this workflow’s tasks reported a dispatch, so what it publishes is not shown. That is an API older than the field, not a workflow that publishes nothing.'
+                  : 'No task was joined for this workflow, so what it publishes cannot be read here.'
+              }
+            >
+              {joined ? 'not reported' : 'no task joined'}
+            </span>
+          </li>
+        </ul>
+        <HelpCard topic="dispatch-absent-is-old-api" />
+      </div>
     )
   }
   const c = consequenceOf(dispatch.strategy, steps)
+  // The `is-none` modifier is on THIS screen's wrapper, not on `.ctl-facts`.
+  // A screen may modify a primitive it shares; it may not teach the shared
+  // primitive a meaning only this screen has.
   return (
-    <p className={`rollup dsp-rollup${c.pushes ? '' : ' is-none'}`}>
-      <code>{dispatch.strategy}</code> · {c.headline}
-      {dispatch.strategy === 'integrate' && integratorTaskId !== null && (
-        <span className="muted small"> · integrator {integratorTaskId.slice(-8)}</span>
-      )}
-    </p>
+    <div className={`wf-dispatch${c.pushes ? '' : ' is-none'}`}>
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>dispatch</b>
+          <code>{dispatch.strategy}</code>
+        </li>
+        {/* `c.headline` is one short statement of what comes OUT of the run --
+            "Up to 3 pull requests — one per step." It is the answer to the
+            only question this panel exists for, so it is a fact in a fact
+            slot rather than a paragraph under one. */}
+        <li className="ctl-fact">
+          <b>opens</b>
+          {c.headline}
+        </li>
+        {dispatch.strategy === 'integrate' && integratorTaskId !== null && (
+          <li className="ctl-fact">
+            <b>via</b>
+            <code>{integratorTaskId.slice(-8)}</code>
+          </li>
+        )}
+      </ul>
+      <HelpCard topic="dispatch-strategies" />
+    </div>
   )
 }
 
@@ -716,7 +925,7 @@ function WorkflowGraph({
   const levels = levelsOf(workflow.steps)
 
   if (layout.nodes.length === 0) {
-    return <p className="muted small">This workflow has no steps.</p>
+    return <span className="ctl-mark">no steps</span>
   }
 
   return (
@@ -724,12 +933,23 @@ function WorkflowGraph({
       {/* The column captions, positioned from the SAME constants the canvas
           lays out with rather than from a number repeated in the stylesheet.
           A caption that drifts one column off the nodes it names is worse
-          than no caption. */}
+          than no caption.
+
+          TWO WORDS, NOT FOUR. `then 5 in parallel` spelled out what the column
+          under it is already a picture of: five boxes stacked in one column
+          with five edges into them. `×5` is the count, which is the part the
+          picture does not state exactly, and it is now in the eyebrow
+          treatment every other section label in this console uses -- so it
+          reads as chrome and can be skipped (design-system.md §6.13). */}
       <ol className="wf-legend" aria-label="Dependency levels" style={{ width: layout.width }}>
         {levels.map((level, i) => (
-          <li key={i} style={{ left: PAD + i * (NODE_W + COL_GAP), width: NODE_W }}>
+          <li
+            key={i}
+            className="ctl-eyebrow"
+            style={{ left: PAD + i * (NODE_W + COL_GAP), width: NODE_W }}
+          >
             {i === 0 ? 'starts' : 'then'}
-            {level.length > 1 ? ` ${level.length} in parallel` : ''}
+            {level.length > 1 ? ` ×${level.length}` : ''}
           </li>
         ))}
       </ol>
@@ -784,8 +1004,20 @@ function WorkflowGraph({
 }
 
 /** How each of the three step-state kinds presents. Kept together so the
- *  difference between "not started" and "not read" stays deliberate. */
-function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; word: string; title: string } {
+ *  difference between "not started" and "not read" stays deliberate.
+ *
+ *  `derived` is what `dotClass` reads to pick between the hollow ring and the
+ *  ring-with-a-bar. At STEP level it is always true: a step whose task was not
+ *  in the read is an absence of information, not a state nobody computed --
+ *  the distinction that needs the second mark exists one level up, on the
+ *  workflow header, where an API without `rollup.py` derives nothing at all. */
+function present(state: StepState): {
+  tone: Tone | 'unknown'
+  glyph: string
+  word: string
+  title: string
+  derived: boolean
+} {
   switch (state.kind) {
     case 'unstarted':
       return {
@@ -793,6 +1025,7 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
         glyph: '◌',
         word: 'not started',
         title: 'This step has no task yet. The workflow has not reached it.',
+        derived: true,
       }
     case 'unknown':
       return {
@@ -800,6 +1033,7 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
         glyph: '?',
         word: 'state unread',
         title: `Task ${state.taskId} exists but was not in the task read. Its state is unknown -- this does not mean it is idle.`,
+        derived: true,
       }
     case 'state':
       return {
@@ -807,6 +1041,7 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
         glyph: stateGlyph(state.state),
         word: state.state.toLowerCase(),
         title: `Task ${state.task.id}, attempt ${state.task.attempt_count} of ${state.task.max_attempts}`,
+        derived: true,
       }
   }
 }
@@ -877,35 +1112,64 @@ function StepNode({
           </span>
         )}
       </div>
-      <div className="node-state">
-        <span aria-hidden>{p.glyph}</span> {p.word}
+      {/* STATE AND DURATION ON ONE LINE. They were two stacked 12px rows
+           saying `running` and then `running 1m 32s`, which is the same word
+           twice and two rows of height on every node in the graph. The mark
+           carries the tone, the word carries the state, the figure carries the
+           time. Both keep their own element, because they are two different
+           facts and each is asserted separately. */}
+      <div className="node-line">
+        <i className={dotClass({ tone: p.tone, derived: p.derived })} aria-hidden />
+        <span className="node-state">{p.word}</span>
+        <StepTime dur={dur} />
       </div>
       {/* The llm used. The owner's "the way it's done today", kept verbatim. */}
       <div className="node-meta">{step.runner_profile}</div>
-      <StepTime dur={dur} />
 
       {/* The run, as four figures. A placeholder while the attempt read is in
           flight -- a request that has not landed has made no claim, and
-          "not reported" is a claim about the platform. */}
+          "not reported" is a claim about the platform.
+
+          WHERE THE `node-why` PARAGRAPH WENT. Every node whose figures were
+          not measured carried a full sentence of explanation underneath them
+          -- 12 to 24 words from `measure.ts`, once per node, so an eight-step
+          graph on a board whose attempt read failed rendered the same
+          paragraph eight times. It was also the one element on the node that
+          `layoutOf` does not measure, so it overflowed the box it was drawn
+          in.
+
+          The FACT was never in that paragraph. It is in the cell: a word where
+          a digit would be, on a dashed rule, in the absent tone -- and each of
+          the six absences uses a DIFFERENT word, so `not sampled` and `not
+          read` and `no attempt yet` were already told apart without reading a
+          sentence. What the sentence added was the cause, and the cause is now
+          the cell's accessible name (`NodeNum`) plus the `?` in this card's
+          own foot. */}
       <dl className="node-nums">
         <NodeNum label="ran" cell={f.ran} pending={false} />
         <NodeNum label="cost" cell={f.cost} pending={pending} />
         <NodeNum label="tokens" cell={f.tokens} pending={pending} />
         <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
       </dl>
-      {f.why !== null && <p className="node-why">{f.why}</p>}
 
       {/* The two things a reader wants from a node that are not "stop it":
           what this step read and wrote, and what it tried. Both are routes the
           console already resolves; a node without them is a dead end, which is
           what it was before the graph work. Only drawn when a task exists --
-          a step the workflow has not reached has nothing to open. */}
+          a step the workflow has not reached has nothing to open.
+
+          NO `?` HERE. It was drawn per node for one draft of this pass, and a
+          graph of eight unmeasured steps then carried eight identical question
+          marks -- which is the paragraph problem again at one character each.
+          `absent-vs-zero` is a property of the SCREEN, not of a node, so there
+          is exactly one of them, in the board's chrome. */}
       {taskId !== null && (
         <div className="node-links">
           <a href={`#agents/task/${encodeURIComponent(taskId)}`}>input &amp; output →</a>
           <a href={`#agents/task/${encodeURIComponent(taskId)}/attempts`}>attempts →</a>
         </div>
       )}
+
 
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
@@ -977,7 +1241,15 @@ interface StepFigures {
   cost: Cell
   tokens: Cell
   checkpoints: Cell
-  /** The single sentence explaining the usage absences, or null if measured. */
+  /**
+   * The single sentence explaining the usage absences, or null if measured.
+   *
+   * NO LONGER RENDERED AS A PARAGRAPH. It is the flag the node reads to decide
+   * whether to draw its `?` at all -- null means every figure above was
+   * measured, so there is nothing to explain and no question mark appears.
+   * The sentence itself reaches the reader through `Cell.note` on each figure
+   * and through the help topic the `?` opens.
+   */
   why: string | null
 }
 
@@ -1148,6 +1420,14 @@ function tokensOf(u: StepUsage): Cell {
  * applied to ABSENCE only. A read still in flight gets `is-reading` and a
  * moving bar instead, because the two say different things: one is a statement
  * about the platform, the other is a statement about this request.
+ *
+ * THE CELL IS THE ENCODING AND THE CELL IS ENOUGH. `cell.text` is a word where
+ * a digit would be -- `not sampled`, `not read`, `no attempt yet` -- on a
+ * dashed rule in `--ctl-absent`, and `measure.ts` guarantees no two absences
+ * that can land in this slot share a word. A reader who has not hovered
+ * anything can see that there is no number here and which kind of nothing it
+ * is. `cell.note` is the CAUSE, which is a different question, and it is on
+ * the `title` and behind the node's `?`.
  */
 function NodeNum({ label, cell, pending }: { label: string; cell: Cell; pending: boolean }) {
   const cls = pending ? 'is-reading' : cell.kind === 'absent' ? 'is-absent' : ''
@@ -1160,27 +1440,43 @@ function NodeNum({ label, cell, pending }: { label: string; cell: Cell; pending:
 }
 
 /**
- * What the sample covered, said once at the top rather than implied per node.
+ * What the sample covered, said once in the board's chrome rather than implied
+ * per node.
  *
  * Silent when every task on the board was read: a line saying "12 of 12" on
  * every refresh is noise, and the per-node "not sampled" already carries the
  * case that matters.
+ *
+ * A COVERAGE FIGURE, NOT A PARAGRAPH ABOUT COVERAGE. This was 26 words in an
+ * amber block across the full width of the page; it is now `9/20 sampled` on
+ * a partial mark, which is the same fact in the shape the reader was going to
+ * reduce it to anyway (design-system.md §8.4, the qualifier slot). `is-partial`
+ * is dashed on one side only -- the side the missing part would have been on
+ * -- so a coverage that is not a total does not LOOK like a total.
+ *
+ * THE SENTENCE IS STILL HERE, as the mark's accessible name, and it still
+ * contains the words `not zero`: that clause is the entire reason this
+ * component exists and it does not get to become implicit just because it
+ * stopped being visible ink.
  */
 function SampleNote({ usage }: { usage: WorkflowUsage }) {
   const uncovered = usage.notSampled.size
   const failed = usage.failed.size
   if (uncovered === 0 && failed === 0) return null
+  const ceiling =
+    uncovered > 0
+      ? ` ${uncovered} ${uncovered === 1 ? 'is' : 'are'} outside the ${usage.sampleLimit}-task read ceiling, so their cost and tokens are unknown here, not zero.`
+      : ''
+  const unread = failed > 0 ? ` ${failed} attempt read${failed === 1 ? '' : 's'} failed.` : ''
   return (
-    <p className="rollup untrusted">
-      Step figures cover {usage.byTaskId.size} of {usage.tasksRequested} tasks on this board.
-      {uncovered > 0 && (
-        <>
-          {' '}
-          {uncovered} {uncovered === 1 ? 'is' : 'are'} outside the {usage.sampleLimit}-task
-          read ceiling — their cost and tokens are unknown here, not zero.
-        </>
-      )}
-      {failed > 0 && <> {failed} attempt read{failed === 1 ? '' : 's'} failed.</>}
-    </p>
+    <span className="wf-caveat" role="status">
+      <span
+        className="ctl-mark is-partial"
+        aria-label={`Step figures cover ${usage.byTaskId.size} of ${usage.tasksRequested} tasks on this board.${ceiling}${unread}`}
+      >
+        {usage.byTaskId.size}/{usage.tasksRequested} sampled
+      </span>
+      <HelpCard topic="partial-read" />
+    </span>
   )
 }

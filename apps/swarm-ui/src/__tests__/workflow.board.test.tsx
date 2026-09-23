@@ -233,11 +233,27 @@ describe('the collapsed row', () => {
     expect(container.querySelector('.wf-canvas')).toBeNull()
   })
 
-  it('draws NO meter over a rollup the server could not complete', () => {
-    // A meter is a claim that the numbers behind it are a census. When the
-    // census failed, the words survive struck through and the bar does not get
-    // drawn at all -- a two-thirds-full meter over a failed read is the exact
-    // substitution this console exists to refuse.
+  it('draws NO FILL over a rollup the server could not complete, and hatches the track', () => {
+    // RE-POINTED, and it pins a STRONGER claim than it used to.
+    //
+    // WHAT MOVED. This asserted `.wf-meter` was absent and that the amber
+    // words read `2 of 3 steps: state unread`. Drawing no track at all was a
+    // defect at 390px: `.wf-progress-text` is one of the columns that drops
+    // below 560px, so a workflow whose census could not be read rendered an
+    // EMPTY CELL on a phone -- the strongest available way of saying "nothing
+    // is wrong here". The track is now drawn and HATCHED, which is
+    // design-system.md §6.4's `.is-unknown`: no fill and no axis, because
+    // there is no scale to start.
+    //
+    // WHERE THE WORDS WENT. `state unread` is still on the surface, in
+    // `.wf-progress-text`, shortened to `steps unread` -- the colon and the
+    // restatement were the only part a reader could not get from the hatch.
+    // The sentence that explains WHY is the track's `aria-label`, and the
+    // argument is at `#help/read-failed`.
+    //
+    // WHAT IS PINNED, and it is the half that carries the invariant: the
+    // track exists, it is hatched, and NO FILL ELEMENT IS RENDERED. A fill
+    // would be a width, and a width is a measurement of a census that failed.
     const w = workflow('wf_partial', chain().steps, {
       rollup: {
         state: 'UNKNOWN',
@@ -250,10 +266,24 @@ describe('the collapsed row', () => {
       },
     })
     const { container } = card(w)
-    expect(container.querySelector('.wf-meter')).toBeNull()
+    const meter = container.querySelector('.wf-meter')!
+    expect(meter, 'no track is drawn at all, so a phone shows an empty cell').toBeTruthy()
+    expect(meter.className).toContain('is-unknown')
+    // The shared primitive draws it, so the hatch and the missing axis are one
+    // rule rather than a second hand-rolled bar (§6.4).
+    expect(meter.className).toContain('ctl-track')
+    expect(
+      meter.querySelector('.wf-meter-fill'),
+      'a fill was rendered over a census the server could not complete',
+    ).toBeNull()
     expect(container.querySelector('.wf-progress.untrusted')!.textContent).toBe(
-      '2 of 3 steps: state unread',
+      '2 of 3 steps unread',
     )
+    // No digit may reach the reader as a proportion: the only figures here are
+    // the counts, which were read off an array and are exact.
+    expect(meter.getAttribute('style')).toBeNull()
+    // And the sentence is reachable without a mouse.
+    expect(meter.getAttribute('aria-label')).toContain('not a stalled workflow')
   })
 
   it('opens on click and closes again', () => {

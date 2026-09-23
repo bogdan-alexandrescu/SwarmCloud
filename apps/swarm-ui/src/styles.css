@@ -914,19 +914,21 @@ body {
    for a reader and a screen reader, and a mini-map drawn from the same layout
    the expanded canvas uses for the eye. */
 
-.wf-modebar { display: flex; gap: 4px; margin-bottom: var(--ctl-s3); }
-.wf-mode {
-  font: 500 var(--t-micro)/var(--lh-flush) var(--mono);
-  text-transform: uppercase; letter-spacing: .06em;
-  color: var(--text-dim);
-  background: var(--surface); border: 1px solid var(--line);
-  padding: 8px 12px; border-radius: 6px; cursor: pointer;
-}
-.wf-mode.is-on {
-  color: var(--text);
-  border-color: color-mix(in srgb, var(--info) 55%, var(--line));
-  background: color-mix(in srgb, var(--info) 12%, var(--surface));
-}
+/* THE BOARD'S ONLY CHROME, AND IT CARRIES NO SENTENCES (§6.11). The mode
+   control sits left; everything the board could not read sits right as marks.
+   `.wf-modebar` and `.wf-mode` are gone: the control is `.ctl-seg`, which is
+   one bordered group rather than two standalone pills, and its selection is a
+   surface step rather than a 12% `--info` fill. That fill was the same accent
+   a LIVE workflow is drawn in two rows below (§1.3), which is how a reader
+   learns to stop trusting colour as a state channel.
+
+   The two full-width amber panels this strip replaces -- a 44-word partial
+   read banner and a 26-word sample note -- were stacked ABOVE the board, so on
+   a laptop a workflow board with both pushed its first actual row of data off
+   the bottom of the viewport. */
+.wf-chrome { min-height: 32px; }
+.wf-caveats { display: flex; align-items: center; gap: var(--ctl-s3); min-width: 0; }
+.wf-caveat { display: inline-flex; align-items: center; gap: var(--ctl-s1); }
 
 .wf-board { display: flex; flex-direction: column; gap: var(--ctl-s2); }
 /* The board is a LIST, so the hairline `.section + .section` draws between
@@ -939,42 +941,98 @@ body {
    inside it turns the uppercase back off for its own contents. B17's rule on
    `.id` is what keeps the id lowercase regardless. */
 .wf-h { margin: 0; }
+/* ONE `grid-template-columns` WITH NAMED LINES, AND THE BREAKPOINTS REDEFINE
+   ONLY THAT ONE DECLARATION (§6.8). Hetzner writes every list this way; the
+   value is that a column's job is readable in the template itself rather than
+   by counting commas against a comment, and that a breakpoint cannot silently
+   shift a field into the wrong column.
+
+   TWO COLUMNS NEVER DROP AT ANY WIDTH: `[state]` and `[actions]`. Identity,
+   state and one action is the irreducible row, and at 390px this row lands on
+   exactly that plus the progress mark.
+
+   THE MARK MOVED TO THE LEFT EDGE AND THE CARET TO THE RIGHT. The caret was
+   the first column, which pushed the id -- the thing an eye runs down a list
+   looking for -- 24px in from the row's own edge, so ten rows had ten ragged
+   starts. An 8px state mark is a far better use of that column: it is the one
+   field that is legible at a glance without being read. */
 .wf-bar {
   width: 100%;
   display: grid;
-  /* caret - id - state - progress - shape - runner mix - spend - age - flags */
   grid-template-columns:
-    12px minmax(0, 1.3fr) 104px minmax(0, 1.2fr) minmax(0, 0.9fr)
-    minmax(0, 1.1fr) 96px 62px minmax(0, auto);
-  align-items: center; gap: 12px;
+    [state] 10px
+    [name] minmax(0, 1.3fr)
+    [word] 92px
+    [progress] minmax(0, 1.2fr)
+    [shape] minmax(0, 0.9fr)
+    [mix] minmax(0, 1.1fr)
+    [spend] 96px
+    [age] 56px
+    [flags] minmax(0, auto)
+    [actions] 16px;
+  align-items: center; gap: var(--ctl-s3);
   text-align: left; text-transform: none; letter-spacing: normal;
   color: var(--text); font-family: var(--font); font-size: var(--t-meta);
   line-height: var(--lh-meta); font-weight: 400;
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm); padding: 9px 12px;
+  border-radius: var(--ctl-radius-sm); padding: var(--ctl-s2) var(--ctl-s3);
   cursor: pointer;
+  transition: border-color var(--ctl-dur) ease;
 }
-.wf-bar:hover { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+/* HUELESS ON HOVER (§1.3). The accent already carries the link colour, the
+   focus ring and a live state on this same row; spending it on "the cursor is
+   over this" as well is what made blue stop meaning anything. A boundary that
+   steps from --line to --text-faint is just as legible and costs no hue. */
+.wf-bar:hover { border-color: var(--text-faint); }
+.wf-bar:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-card.is-open .wf-bar { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.wf-caret { color: var(--text-faint); font-size: var(--t-micro); line-height: var(--lh-micro); }
+/* `[actions]`. Its own column at the right edge, right-aligned so the caret
+   sits on the row's edge rather than floating in a 16px box. */
+.wf-caret {
+  justify-self: end;
+  color: var(--text-faint);
+  font-size: var(--t-micro); line-height: var(--lh-micro);
+}
 .wf-bar .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wf-state { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+/* WEIGHT 500, NOT 600. The id beside it is the datum and outranks it; a state
+   word set heavier than the identity it qualifies inverts the hierarchy (§2).
+   The mark at `[state]` is what makes it scannable, not the weight. */
+.wf-state {
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
 .wf-state.ok { color: var(--ok-ink); }
 .wf-state.bad { color: var(--bad-ink); }
 .wf-state.live { color: var(--info-ink); }
 .wf-state.wait { color: var(--warn-ink); }
 .wf-state.unknown { color: var(--text-faint); }
 
-.wf-progress { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* A METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the server
-   reports an incomplete rollup there is no bar at all -- only the struck-out
-   words -- because a two-thirds-empty bar over a failed read is exactly the
-   substitution this console refuses. */
-.wf-meter {
-  flex: none; display: block; width: 54px; height: 6px;
-  border-radius: 999px; background: var(--line); overflow: hidden;
-}
-.wf-meter-fill { display: block; height: 100%; background: var(--ok); }
+.wf-progress { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+/* A FILLED METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the
+   server reports an incomplete rollup, `.wf-meter-fill` IS NOT RENDERED -- the
+   React branch does not draw it -- because a two-thirds-full bar over a failed
+   read is exactly the substitution this console refuses.
+   The track scale itself is `--track-radius` and `--track-h`'s vocabulary at
+   the size a one-line row allows. */
+/* IT IS `.ctl-track`, AND THIS RULE SETS ONLY ITS WIDTH. §6.4: every
+   proportion in the product is one primitive, the audit found eight, and this
+   was one of the eight -- a hand-rolled 6px bar on `--line` with a `--ok`
+   fill and a 999px radius that is not on the corner scale. The element now
+   carries `ctl-track wf-meter` and the fill carries `ctl-util-fill
+   wf-meter-fill`, so the drawing is the shared primitive's and the tests that
+   query `.wf-meter` still find it.
+
+   THREE THINGS CAME FREE WITH THAT, and each was a defect here:
+     * the axis -- a 3px rule down the left edge, always drawn, so a 0%-wide
+       fill reads as a measured zero rather than as a bar that failed to paint;
+     * `.is-unknown` -- hatched, no fill, NO AXIS, because there is no scale to
+       start. That is the untrusted-rollup case, which used to draw no track at
+       all and lean on amber words that vanish at 560px;
+     * the fill in `--info` rather than `--ok`. Nothing is coloured for being
+       healthy (§6.7): a board of green bars spends the eye's whole severity
+       budget on the workflows that are fine. */
+.wf-meter { flex: none; width: 54px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -983,27 +1041,20 @@ body {
    underived rollup means is "the census behind this figure was not taken",
    and the step count beside it was read from an array and is correct. The
    product shipped "3 steps - not counted" struck through in amber, which told
-   a reader the console could not count to six. Amber alone carries the doubt,
-   and the words say what is missing. */
-.wf-progress.untrusted {
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--warn);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+   a reader the console could not count to six.
 
-.wf-shape { display: flex; align-items: center; gap: 8px; min-width: 0; }
+   AND NO LONGER AMBER WORDS ALONE. `.wf-progress-text` is one of the columns
+   that drops at 560px, so an unreadable census used to render as an EMPTY
+   CELL on a phone -- the strongest available way of saying "nothing is wrong
+   here". The hatched track above does not drop, at any width, and it says the
+   same thing without a word in it. */
+.wf-progress.untrusted { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.wf-progress.untrusted .wf-progress-text { color: var(--warn); }
+
+.wf-shape { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
 .wf-shape-text { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
-.wf-mini { flex: none; overflow: visible; }
-.wf-mini-edge { stroke: var(--line); stroke-width: 1; }
-/* The dots carry state as well as shape, so the row says WHERE in the graph
-   the trouble is, not only that there is some. */
-.wf-mini-dot { fill: var(--text-faint); }
-.wf-mini-dot.ok { fill: var(--ok); }
-.wf-mini-dot.bad { fill: var(--bad); }
-.wf-mini-dot.live { fill: var(--info); }
-.wf-mini-dot.wait { fill: var(--text-faint); }
-.wf-mini-dot.unknown { fill: var(--warn); }
 
-.wf-mix { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+.wf-mix { display: flex; gap: var(--ctl-s1); min-width: 0; overflow: hidden; }
 .wf-chip {
   font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
@@ -1032,6 +1083,25 @@ body {
 .wf-when { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; text-align: right; }
 .wf-flags { display: flex; justify-content: flex-end; }
 
+/* THE TWO FACT STRIPS IN AN OPEN CARD, and between them they replaced four
+   paragraphs totalling 72 words (§6.13).
+
+   `.wf-drift` was two sentences spelling out a comparison -- "Stored state was
+   X; the steps say Y" -- that a reader makes instantly when the two values sit
+   side by side with their keys on. `.wf-dispatch` was a 29-word explanation of
+   why a missing dispatch block is an old API rather than a run that publishes
+   nothing, which is an argument, and arguments live in `help.ts`; the `?`
+   beside the strip opens the topic that already held it.
+
+   NO RULE BETWEEN THEM AND THE CANVAS. A single hairline here has no twin, so
+   `spaceprobe.ts` grades it as a 3:1 boundary and `--line-soft` fails it
+   (§5.2). The separation is `--ctl-s3` of space, which is airier anyway. */
+.wf-dispatch { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; }
+.wf-dispatch.is-none { color: var(--text-dim); }
+.wf-dispatch > .ctl-facts, .wf-drift { padding-top: 0; }
+.wf-drift + .wf-dispatch { margin-top: 0; }
+.wf-dispatch + .wf-canvas-wrap { margin-top: var(--ctl-s3); }
+
 .wf-body {
   border: 1px solid var(--line); border-top: 0;
   /* 6px, not 8px: 8 is not on the corner scale (0/2/6/10/14/999) and this
@@ -1043,13 +1113,16 @@ body {
 /* It SCROLLS rather than shrinking. A twenty-step workflow across six levels
    is genuinely wider than a phone, and scaling it to fit turns the step names
    into texture -- which is the one thing a node must not become. */
-.wf-canvas-wrap { overflow-x: auto; padding-bottom: 6px; }
-.wf-legend { position: relative; height: 14px; margin: 0 0 6px; padding: 0; list-style: none; }
+.wf-canvas-wrap { overflow-x: auto; padding-bottom: var(--ctl-s2); }
+/* THE COLUMN CAPTIONS ARE EYEBROWS (§6.13), so they are the same treatment as
+   every other section label in this console and a reader can skip the whole
+   layer at will. The rule below therefore declares only what `.ctl-eyebrow`
+   cannot know: that these are absolutely positioned against coordinates
+   `layoutOf` computed. The font, the tracking, the case and the tone come
+   from the primitive -- three restated declarations went. */
+.wf-legend { position: relative; height: 19px; margin: 0 0 var(--ctl-s2); padding: 0; list-style: none; }
 .wf-legend li {
-  position: absolute; top: 0;
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  text-transform: uppercase; letter-spacing: .06em;
-  color: var(--text-faint);
+  position: absolute; top: 0; margin: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wf-canvas { position: relative; }
@@ -1057,14 +1130,36 @@ body {
 .wf-edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
 .wf-arrowhead { fill: var(--line); }
 
+/* THE NODE CARD. `--radius`, not `--ctl-radius-sm`: a DAG node is a card on a
+   canvas, and 10px is what this sheet gives a card (§4). `--ctl-shadow` lifts
+   it off the canvas so the edges read as passing UNDER the boxes rather than
+   between them, which is the single change that makes a six-node graph parse
+   at a glance.
+
+   PADDING AND GAP ARE ON THE SCALE. They were 8px/12px and a 3px gap -- 3 is
+   not a step, and `--ctl-s1` is. The vertical padding goes UP to 10px while
+   the content gets tighter, which is D2: compact data inside generous chrome.
+
+   EVERY VALUE HERE IS LOAD-BEARING ON `dag.ts`. `layoutOf` positions nodes
+   absolutely and gives each one an explicit height, so a row this rule makes
+   taller overflows a box nothing else knows changed. `NODE_H` carries the
+   arithmetic; keep the two in step. */
 .node {
   position: absolute;
-  display: flex; flex-direction: column; gap: 3px;
+  display: flex; flex-direction: column; gap: var(--ctl-s1);
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-      border-radius: var(--ctl-radius-sm); padding: 8px 12px; min-width: 132px;
-      box-sizing: border-box;
+  border-radius: var(--radius); padding: 10px 12px; min-width: 132px;
+  box-shadow: var(--ctl-shadow);
+  box-sizing: border-box;
 }
+/* State and duration on ONE line. They were two stacked 12px rows reading
+   `running` and then `running 1m 32s` -- the same word twice and 18px of node
+   height on every step in every graph. */
+.node-line { display: flex; align-items: baseline; gap: var(--ctl-s2); min-width: 0; }
+.node-line > .ctl-dot { align-self: center; }
+.node-line > .node-state { flex: none; }
+.node-line > .node-dur { margin-left: auto; text-align: right; }
 /* A node with no run yet is not wrapped -- there is nothing to link to -- so it
    is its own flex child and needs the sizing the wrapper would have given it. */
 .node.is-unreachable { flex: 1 1 0; min-width: 168px; max-width: 268px; }
@@ -1115,14 +1210,26 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    while `.node-num.is-absent`, `.node-why`, `.node-links` and
    `.node-reading` survived -- so the treatments existed with nothing to
    treat. Already on the scale; carried across unchanged. */
+/* THE FOUR FIGURES. The margin went: the node is a flex column with a
+   `--ctl-s1` gap, and a margin on top of that is two spacing mechanisms
+   arguing. Separation above them is `--ctl-s2` of padding plus one hairline --
+   this one IS a legitimate repeated separator's neighbour in spirit, but it
+   has no twin, so it is drawn at `--line` rather than `--line-soft` (§5.2). */
 .node-nums {
-  display: flex; flex-direction: column; gap: 1px; margin: 5px 0 0;
-  padding-top: 5px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  display: flex; flex-direction: column; gap: 2px; margin: 0;
+  padding-top: var(--ctl-s2); border-top: 1px solid var(--line);
 }
 /* A grid per row rather than `display: contents` on the row: the row carries
    the `title` that explains an absence, and an element with no box has nothing
    to hover. */
-.node-num { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.node-num { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: var(--ctl-s2); align-items: baseline; }
+/* THE LEADING STAYS AT `--lh-body`, DELIBERATELY, AND THIS IS WHY.
+   Four rows at --lh-body cost 84px of the node and flush leading would have
+   bought 28 of them back. It is not available here: `.node-num.is-absent dd`
+   carries a dashed border-bottom, `spaceprobe.ts` measures INK to a border at
+   `inkGap = (lineBox - fontPx * CAP) / 2`, and at --lh-flush that is 1.96px
+   against a 4px floor. The absent treatment is the one thing on this node
+   that may not be traded for height, so the height is what gives. */
 .node-num dt {
   font: var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em; text-transform: uppercase;
   color: var(--text-faint); align-self: baseline;
@@ -1146,10 +1253,22 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   background: var(--surface-2);
   animation: pulse 1.4s ease-in-out infinite;
 }
-.node-why {
-  margin: 5px 0 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint);
-}
-.node-links { display: flex; gap: 10px; margin-top: 5px; }
+/* `.node-why` IS GONE, AND THAT IS THE POINT OF THIS PASS.
+   It rendered `measure.ts`'s absence NOTE -- 12 to 24 words -- under the four
+   figures of every node whose usage was not measured, so a board whose attempt
+   read failed drew the same paragraph once per step. It was also the one
+   element on the node that `layoutOf` does not measure, so it overflowed the
+   explicit height the layout had given the box.
+   The FACT it sat under never lived in it: each cell already renders a WORD
+   where a digit would be, on a dashed rule, and `measure.ts` guarantees no two
+   absences that can share that slot share a word. What the paragraph carried
+   was the CAUSE, which is now the cell's `title` and the node's `?`. */
+/* NO MARGIN: the column gap is the only spacing mechanism on this card.
+   NO WRAP EITHER, and `NODE_W` is what makes that safe -- 236px gives these
+   two labels 212px of content box against the ~199px they need at --t-micro
+   mono. At the 212px this node used to be they needed 11px more than they
+   had and quietly overflowed the right edge. */
+.node-links { display: flex; align-items: center; gap: var(--ctl-s3); margin-top: 0; }
 .node-links a { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--info); text-decoration: none; }
 .node-links a:hover { text-decoration: underline; }
 .node-links a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
@@ -1164,21 +1283,63 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   /* The `font-size: 13px` that was here is now what `.nav button` already is
      (--t-body), so the declaration restated its parent and went. */
   .nav button { padding: 8px 10px; }
-  /* The collapsed row drops the runner mix, the spend and the age before it
-     drops anything else: all three are on the open card, and none of them is
-     the thing a narrow viewport is worst at replacing. THE SHAPE STAYS AT
-     EVERY WIDTH -- a row that cannot tell a fan-out from a chain has lost the
-     only field that is not recoverable by squinting at the others. */
+  /* 390px. `[state] [name] [progress] [shape] [actions]` and nothing else --
+     ONE redefinition of the one template, which is the whole reason it is
+     written with named lines (§6.8). Columns are DROPPED, never relabelled
+     into "Label: value"; a stacked record is a different and worse thing than
+     a row, and it is what every other phone layout in this product had.
+
+     WHAT SURVIVES AND WHY, in the order they were fought over:
+       [state]    8px of shape. The mark never drops at any width -- it is the
+                  only field that is legible without being read, and it is
+                  where an underived state is told from an unread one.
+       [name]     what you came to find.
+       [progress] the TRACK only; `.wf-progress-text` drops. The hatched
+                  unknown track is what makes this safe: before this pass the
+                  untrusted case was text-only, so on a phone a workflow whose
+                  census failed drew an empty cell.
+       [shape]    `1 → 5 → 1`. A row that cannot tell a fan-out from a chain
+                  has lost the one field that is not recoverable by squinting
+                  at the others, and it costs 56px.
+       [actions]  one action, so a row is never a dead end.
+
+     THE STATE WORD DROPS, and that is survivable precisely because the mark
+     does not: `.ctl-dot`'s default is a hollow ring and `.is-underived` is a
+     ring with a bar through it, so the two absences stay apart at 390px with
+     no word at all. */
   .wf-bar {
-    grid-template-columns: 12px minmax(0, 1.4fr) 88px 56px minmax(0, auto);
-    gap: 8px;
+    grid-template-columns:
+      [state] 10px
+      [name] minmax(0, 1fr)
+      [progress] 54px
+      [shape] 56px
+      [actions] 16px;
+    gap: var(--ctl-s2);
+    /* 44px touch target (§7.2). The type does not grow with it -- a row that
+       is easier to hit is not a row that needs bigger text. */
+    min-height: 44px;
   }
-  .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text { display: none; }
+  .wf-state, .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text { display: none; }
+  /* The open body loses the chrome padding it does not have room for; the
+     canvas inside it keeps its own computed width and scrolls, and is NOT
+     scaled to fit. Scaling a twenty-step graph onto a 358px column turns
+     every step name into texture, which is the one thing a node must not
+     become (§7.2). */
+  .wf-body { padding: var(--ctl-s2); }
 }
 
 @media (min-width: 561px) and (max-width: 900px) {
+  /* Tablet. The mix and the spend go; the state word and the age come back,
+     because at this width `[name]` no longer needs every spare pixel. */
   .wf-bar {
-    grid-template-columns: 12px minmax(0, 1.4fr) 96px minmax(0, 1fr) minmax(0, 0.8fr) 60px;
+    grid-template-columns:
+      [state] 10px
+      [name] minmax(0, 1.4fr)
+      [word] 88px
+      [progress] minmax(0, 1fr)
+      [shape] minmax(0, 0.8fr)
+      [age] 56px
+      [actions] 16px;
   }
   .wf-mix, .wf-spend, .wf-flags { display: none; }
 }
@@ -1225,8 +1386,11 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   background: color-mix(in srgb, var(--warn) 6%, var(--surface));
 }
 .node.wait { border-left-color: var(--text-faint); }
+/* The margin went. `.node` is a flex column with a `--ctl-s1` gap, and a 3px
+   margin on top of a 4px gap is two spacing mechanisms arguing over one
+   boundary -- with 3 not being a step in the scale at all. It also put the
+   node 3px over the height `dag.ts` had computed for it. */
 .node-meta {
-  margin-top: 3px;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
@@ -2775,6 +2939,21 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    it. A ring with a bar through it — present, and struck out. Railway's legend
    already means "present, not drawn" with a hollow ring; this is that ring
    with the absence made explicit. */
+/* BROADCASTING. §6.6's table names `live` as "a disc with a halo" and the chip
+   half of it already shipped as `.ctl-chip.is-live > i`; the bare mark had no
+   way to say it, so a workflow board drew a RUNNING row and a QUEUED row as
+   two identical blue discs. Same halo, same 2s pulse, same token as the chip's
+   -- this is the chip's own declaration applied to the mark alone, not a
+   second treatment.
+   The halo is what survives `prefers-reduced-motion`, which stops the pulse
+   further down this file: live must not become pixel-identical to anything
+   when the motion is taken away. */
+.ctl-dot.is-live {
+  background: var(--info);
+  border-color: var(--info);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 35%, transparent);
+  animation: pulse 2s ease-in-out infinite;
+}
 .ctl-dot.is-underived {
   border-color: var(--text-faint);
   background: linear-gradient(
@@ -4330,8 +4509,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 .dsp-facts { margin: 0; }
-.dsp-rollup code { font-size: var(--t-body); }
-.dsp-rollup.is-none { color: var(--text-dim); }
+/* `.dsp-rollup` is gone with the paragraph it styled. Its only caller was the
+   workflow board's dispatch line, which is now a `.ctl-facts` strip. */
 .node-id .tag { margin-left: 6px; }
 
 /* -------------------------------------------------------------------------- */
