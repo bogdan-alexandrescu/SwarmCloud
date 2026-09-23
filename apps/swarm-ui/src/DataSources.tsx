@@ -5,11 +5,10 @@ import { timeAgo } from './Shell'
  * The data-source cells: the screen's own self-report.
  *
  * This is what an operator looks at when a number seems wrong. One cell per
- * route, each carrying the status of the most recent attempt, how long it
- * took, and -- the part that matters -- the age of the newest SUCCESSFUL
- * payload. A panel showing a figure from four minutes ago while its route has
- * been failing for three of them is indistinguishable from a healthy panel
- * unless something says so.
+ * route, each carrying the status of the most recent attempt and -- the part
+ * that matters -- the age of the newest SUCCESSFUL payload. A panel showing a
+ * figure from four minutes ago while its route has been failing for three of
+ * them is indistinguishable from a healthy panel unless something says so.
  *
  * A 403 here is information, not a failure. A non-admin genuinely cannot read
  * /v1/admin/*, and the cell saying so is what stops the page looking broken.
@@ -22,6 +21,16 @@ import { timeAgo } from './Shell'
  * is where §B2 puts provenance: "context for everything on screen, not a
  * destination". This component no longer subscribes or ticks; the dock owns
  * both, so the sixteen cells re-render once per tick instead of sixteen times.
+ *
+ * WHAT CHANGED IN THE OPERATOR PASS. The tone was carried by a left border
+ * colour and by the status text's colour -- two channels, both hue, so in the
+ * greyscale screenshot that gets pasted into an incident channel a 403 and a
+ * dead route were the same cell. Each cell now leads with a `.ctl-dot`, which
+ * is the product's shared state vocabulary as a SILHOUETTE: a disc for ok, a
+ * flat bar for a fact, a triangle for caution, a diamond for a failure. And a
+ * route that has never returned a payload gets `.ctl-em` in the age slot
+ * rather than the words "never loaded", because an em dash in the same column
+ * as every other age is read as "no age" without anyone having to parse it.
  */
 export function DataSourceCells({ probes }: { probes: readonly ProbeRecord[] }) {
   if (probes.length === 0) return null
@@ -38,10 +47,22 @@ function Cell({ probe }: { probe: ProbeRecord }) {
   const { tone, label } = describe(probe)
   return (
     <div className={`source ${tone}`} title={detailFor(probe)}>
-      <span className="s-path">{probe.path}</span>
+      <span className="s-path">
+        <i className={`ctl-dot is-${tone}`} />
+        <span className="s-path-t">{probe.path}</span>
+      </span>
       <span className="s-status">{label}</span>
       <span className="s-age">
-        {probe.lastSuccessAt === null ? 'never loaded' : timeAgo(probe.lastSuccessAt)}
+        {probe.lastSuccessAt === null ? (
+          <i
+            className="ctl-em"
+            aria-label={`${probe.path} has never returned a payload in this session, so it has no age. That is an absence, not a fresh read.`}
+          >
+            —
+          </i>
+        ) : (
+          timeAgo(probe.lastSuccessAt)
+        )}
       </span>
     </div>
   )

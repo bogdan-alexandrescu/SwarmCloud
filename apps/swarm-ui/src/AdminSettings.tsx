@@ -21,13 +21,23 @@ import { poolKind, poolLabel, setBy, type Capacity, type Pool } from './types'
  * values, applied -- and the running platform stayed at 20/10/5. The apply
  * moved a terraform output and nothing else.
  *
- * THE ARITHMETIC THIS SCREEN HAS TO MAKE OBVIOUS. A task takes EVERY pool in
- * its runner profile's list, so its capacity is the MINIMUM across them.
- * Raising one pool changes nothing if another still binds -- which is exactly
- * what happened when five pools went to 40 and
+ * THE ARITHMETIC THIS SCREEN HAS TO MAKE OBVIOUS, AND HOW IT NOW DOES IT.
+ * A task takes EVERY pool in its runner profile's list, so its capacity is the
+ * MINIMUM across them. Raising one pool changes nothing if another still binds
+ * -- which is exactly what happened when five pools went to 40 and
  * `provider:anthropic:tenant:u-bogdan` stayed at 5, holding the real ceiling
- * at five. So every profile's binding pool is named at the top, before any
- * input box.
+ * at five.
+ *
+ * That used to be a sentence: "a task must clear EVERY pool its profile lists,
+ * so its ceiling is the MINIMUM across them". A sentence asserting an
+ * arithmetic rule is the weakest way to show one, because the reader has to
+ * carry it to the figures and apply it themselves. SO THE OPERANDS ARE DRAWN
+ * INSTEAD: every profile card lists each of its pools with that pool's own
+ * agent ceiling, and the smallest is marked as the one that binds. `min()` is
+ * not explained; it is shown with its inputs beside its output, which is the
+ * form in which nobody has to be told what `min` means.
+ *
+ * The sentence itself lives at `#help/pools-all-at-once`.
  */
 export function AdminSettingsScreen() {
   const [nonce, setNonce] = useState(0)
@@ -38,15 +48,17 @@ export function AdminSettingsScreen() {
       // is the accurate one twice over: this screen edits concurrency ceilings
       // and nothing else, so "Admin settings" over-claimed a settings page
       // that does not exist, and it restated the section it already sits under
-      // ("Admin") instead of naming the thing on the screen. Someone arriving
-      // from Admin > Pool limits and reading "Admin settings" cannot tell
-      // whether the other admin tab is inside this page or beside it.
+      // ("Admin") instead of naming the thing on the screen.
       title="Pool limits"
       load={loadCapacity}
-      summary={(d) => `${d.pools.length} pools · changes take effect immediately`}
+      // A count, not a promise. "changes take effect immediately" was a
+      // rationale in the one slot on this screen a reader cannot skip.
+      summary={(d) =>
+        `${d.pools.length} pools · ${Object.keys(d.runner_profiles).length} profiles`
+      }
       empty={{
         heading: 'No pools exist',
-        body: 'The read succeeded and returned nothing. Pools are created at provisioning time, so an environment with none has not been fully applied.',
+        body: 'Pools are created at provisioning time.',
       }}
     >
       {(d) => <Body capacity={d} onChanged={() => setNonce((n) => n + 1)} />}
@@ -54,69 +66,67 @@ export function AdminSettingsScreen() {
   )
 }
 
+/**
+ * One profile's ceiling, with the numbers it was taken over.
+ *
+ * `agents` is the pool's own effective limit divided by the profile's weight,
+ * because a pool counts weighted units and this column counts agents. `null`
+ * means the pool the profile names is not in the response at all, which is an
+ * absence rather than a zero and is drawn as one.
+ */
+interface Operand {
+  pool: string
+  agents: number | null
+}
+
+function arithmetic(
+  pools: string[],
+  units: number,
+  byName: Map<string, Pool>,
+): { operands: Operand[]; ceiling: number | null; binding: string | null } {
+  const w = units > 0 ? units : 1
+  const operands: Operand[] = pools.map((pool) => {
+    const p = byName.get(pool)
+    return { pool, agents: p ? Math.floor(p.effective_limit / w) : null }
+  })
+
+  let ceiling: number | null = null
+  let binding: string | null = null
+  for (const o of operands) {
+    if (o.agents === null) continue
+    if (ceiling === null || o.agents < ceiling) {
+      ceiling = o.agents
+      binding = o.pool
+    }
+  }
+  return { operands, ceiling, binding }
+}
+
 function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => void }) {
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
-  const profiles = Object.entries(capacity.runner_profiles)
+  const profiles = Object.entries(capacity.runner_profiles).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )
 
   return (
     <>
-      <p className="conjunction">
-        A task must clear <strong>every</strong> pool its profile lists, so its
-        ceiling is the <strong>minimum</strong> across them.
-        <HelpCard topic="pools-all-at-once" />
-      </p>
-
       {profiles.length > 0 && (
-        <section className="section panel">
-          <h2>What actually binds, per profile</h2>
-          <div className="table-wrap">
-            <table className="pools">
-              <thead>
-                <tr>
-                  <th scope="col">Runner profile</th>
-                  <th scope="col" className="n">Ceiling</th>
-                  <th scope="col">Set by</th>
-                </tr>
-              </thead>
-              <tbody>
-                {profiles
-                  .sort(([a], [b]) => a.localeCompare(b))
-                  .map(([name, prof]) => {
-                    // The minimum across the profile's pools, in agent terms:
-                    // a pool's headroom is in weighted units, so it is divided
-                    // by the profile's weight.
-                    let ceiling = Infinity
-                    let binding = '—'
-                    for (const pn of prof.pools) {
-                      const pool = byName.get(pn)
-                      if (!pool) continue
-                      const units = prof.units > 0 ? prof.units : 1
-                      const agents = Math.floor(pool.effective_limit / units)
-                      if (agents < ceiling) {
-                        ceiling = agents
-                        binding = pn
-                      }
-                    }
-                    return (
-                      <tr key={name}>
-                        <th scope="row">{name}</th>
-                        <td className="n">{Number.isFinite(ceiling) ? ceiling : '—'}</td>
-                        <td title={binding}>{binding === '—' ? '—' : poolLabel(binding)}</td>
-                      </tr>
-                    )
-                  })}
-              </tbody>
-            </table>
+        <section className="section">
+          {/* One word where "What actually binds, per profile" used to be. */}
+          <span className="ctl-eyebrow has-q">
+            Binding
+            <HelpCard topic="pools-all-at-once" />
+          </span>
+          <div className="ctl-cards">
+            {profiles.map(([name, prof]) => (
+              <ProfileCard
+                key={name}
+                name={name}
+                units={prof.units}
+                {...arithmetic(prof.pools, prof.units, byName)}
+              />
+            ))}
           </div>
-          {/* THE UNIT OF THE COLUMN STAYS ON THE SURFACE -- agents, not units,
-              and the two are different numbers. The WEIGHTS that used to be
-              typed out here are platform figures nothing checked (§5); the
-              sizing table under Runtimes reads them from the catalogue. */}
-          <p className="muted small">
-            &ldquo;Ceiling&rdquo; is how many <strong>agents</strong> of that
-            profile could run at once, not units.
-            <HelpCard topic="units-not-agents" />
-          </p>
         </section>
       )}
 
@@ -125,17 +135,98 @@ function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => vo
   )
 }
 
+function ProfileCard({
+  name,
+  units,
+  operands,
+  ceiling,
+  binding,
+}: {
+  name: string
+  units: number
+  operands: Operand[]
+  ceiling: number | null
+  binding: string | null
+}) {
+  // The unit that used to be a footnote -- "'Ceiling' is how many AGENTS of
+  // that profile could run at once, not units" -- is now fused to the figure
+  // (`4 agents`) and to the weight in the card note (`1 unit each`), which is
+  // the other half of the same fact. §8.4.1: a well-chosen unit is the
+  // explanation.
+  const measured = ceiling !== null
+
+  return (
+    <section className="ctl-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">{name}</h2>
+        <span className="ctl-card-note">
+          {units} unit{units === 1 ? '' : 's'} each
+        </span>
+      </div>
+      <div className="ctl-card-body">
+        <b
+          className={`ctl-figure${measured ? '' : ' is-absent'}`}
+          aria-label={
+            measured
+              ? `${ceiling} agents of ${name} can run at once. That is the smallest ceiling across the ${operands.length} pools this profile takes, and ${binding === null ? 'none' : poolLabel(binding)} is the pool that binds it.`
+              : `No ceiling can be computed for ${name}: none of the pools it takes are in this response, so the figure is not measured rather than zero.`
+          }
+        >
+          {measured ? ceiling : <i className="ctl-em">—</i>}
+          {measured && <span className="ctl-figure-unit">agents</span>}
+        </b>
+
+        {/* THE OPERANDS. Each pool's own ceiling in agents, the smallest one
+            marked. This is the whole reason the paragraph could go: the
+            reader sees three numbers and the marked one is the smallest, so
+            "the minimum across them" is a thing they read off the card
+            rather than a rule they were asked to remember. */}
+        <ul className="ctl-facts">
+          {operands.map((o) => (
+            <li
+              key={o.pool}
+              className={`ctl-fact${o.agents === null ? ' is-absent' : ''}${
+                o.pool === binding ? ' is-binding' : ''
+              }`}
+              title={o.pool}
+            >
+              <b>{poolLabel(o.pool)}</b>
+              {o.agents === null ? <i className="ctl-em">—</i> : o.agents}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <p className="ctl-card-foot">
+        {binding === null ? (
+          <>no pool in this response</>
+        ) : (
+          <>binds on {poolLabel(binding)}</>
+        )}
+      </p>
+    </section>
+  )
+}
+
 function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void }) {
   return (
-    <section className="section panel">
-      <h2>Pool ceilings</h2>
-      <div className="table-wrap">
-        <table className="pools">
+    <section className="section">
+      <span className="ctl-eyebrow has-q">
+        Ceilings
+        {/* "Lowering a ceiling evicts nothing. Running work keeps its slots;
+            the pool admits nothing new until it drains." was eighteen words
+            under the control. The consequence still sits beside the control,
+            as the two-word qualifier below; the sentence is behind the ?. */}
+        <HelpCard topic="ceiling-change-evicts-nothing" />
+      </span>
+      <div className="ctl-table">
+        <table>
           <thead>
             <tr>
               <th scope="col">Pool</th>
-              <th scope="col" className="n">In use</th>
-              <th scope="col" className="n">Ceiling</th>
+              <th scope="col" className="is-num">In use</th>
+              {/* The unit rides on the column name (§8.4.3) rather than in a
+                  footnote under the table. */}
+              <th scope="col" className="is-num">Ceiling (units)</th>
               <th scope="col">Set by</th>
               <th scope="col">Change</th>
             </tr>
@@ -147,16 +238,9 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
                 <PoolRow key={p.name} pool={p} onChanged={onChanged} />
               ))}
           </tbody>
+          <caption>lowering a ceiling evicts nothing</caption>
         </table>
       </div>
-      {/* THE CONSEQUENCE OF THE CONTROL STAYS BESIDE THE CONTROL (§6): an
-          operator lowering a ceiling has to know, before pressing it, that
-          nothing is evicted. */}
-      <p className="muted small">
-        <strong>Lowering a ceiling evicts nothing.</strong> Running work keeps
-        its slots; the pool admits nothing new until it drains.
-        <HelpCard topic="ceiling-change-evicts-nothing" />
-      </p>
     </section>
   )
 }
@@ -171,6 +255,7 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
   const parsed = Number(value)
   const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
   const by = setBy(pool)
+  const editable = isEditable(pool)
 
   const save = () => {
     if (!valid || busy) return
@@ -189,15 +274,15 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
   }
 
   return (
-    <tr className={isPaused(pool) ? 'paused' : undefined}>
+    <tr className={isPaused(pool) ? 'is-paused' : undefined}>
       <th scope="row" className="pool-name">
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
             prettified label is not. */}
-        <span className="raw">{pool.name}</span>
+        <span className="ctl-sub">{pool.name}</span>
       </th>
-      <td className="n">{pool.active}</td>
-      <td className="n">{pool.effective_limit}</td>
+      <td className="is-num">{pool.active}</td>
+      <td className="is-num">{pool.effective_limit}</td>
       <td title={by.detail}>{by.term}</td>
       <td>
         <span className="limit-edit">
@@ -206,19 +291,24 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
             min={0}
             max={100000}
             value={value}
-            disabled={busy || !isEditable(pool)}
+            disabled={busy || !editable}
             onChange={(e) => {
               setValue(e.target.value)
               setDone(false)
             }}
-            aria-label={`Hard limit for ${pool.name}`}
+            // The sentence that used to sit beside a disabled input lives here,
+            // where a keyboard reader reaching the control gets it and a
+            // sighted reader gets the two-word marker instead.
+            aria-label={
+              editable
+                ? `Hard limit for ${pool.name}`
+                : `Hard limit for ${pool.name}. This pool kind has no write route, so the control is read-only.`
+            }
           />
-          <button onClick={save} disabled={!dirty || !valid || busy || !isEditable(pool)}>
+          <button onClick={save} disabled={!dirty || !valid || busy || !editable}>
             {busy ? 'saving…' : 'save'}
           </button>
-          {!isEditable(pool) && (
-            <span className="client-side">no route for this pool kind</span>
-          )}
+          {!editable && <span className="client-side">read-only</span>}
           {dirty && !valid && <span className="warn-text">0–100000</span>}
           {done && <span className="tag ok">saved</span>}
           {error && (
