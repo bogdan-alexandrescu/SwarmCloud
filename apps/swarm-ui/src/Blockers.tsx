@@ -13,7 +13,6 @@
 // making a second one. See the header of headroom.py for why that is served
 // rather than restated here.
 
-import { HelpCard } from './HelpCard'
 import { timeAgo } from './Shell'
 import {
   blockerGroup,
@@ -265,8 +264,15 @@ export function Counterfactuals({
         <time dateTime={generatedAt} title={generatedAt}>
           {timeAgo(generatedAt)}
         </time>
+        {/* NO `?` (B7.4). `blockers-at-an-instant` says these counts were read
+            one pool at a time and are therefore not a simultaneous snapshot --
+            and "one pool at a time" is already the last four words of the line
+            it was attached to, beside the timestamp of the read. A glyph here
+            opened a card to say the sentence it was standing next to. This
+            panel is drawn inside Overview and inside the agent detail, both of
+            which carry their own glyph; the topic is in the rail's Help
+            section. */}
         , one pool at a time.
-        <HelpCard topic="blockers-at-an-instant" />
       </p>
     </div>
   )

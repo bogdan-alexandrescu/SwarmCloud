@@ -575,7 +575,11 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
           aria-label="This API did not say which keys this runner refuses to start without, so nothing is checked here. That is not the same as a runner that requires nothing.">
           <i className="ctl-mark is-unread">not read</i>
           required keys
-          <HelpCard topic="input-is-opaque" />
+          {/* NO `?` (B7.4). This paragraph's own accessible name is longer than
+              `input-is-opaque`'s card and says the part that matters here --
+              that nothing is being checked, and that this is not the same as a
+              runner which requires nothing. A glyph beside it opened a shorter
+              version of the sentence it was standing in. */}
         </p>
       )}
       {fields.length === 0 && (
@@ -741,14 +745,23 @@ function Form({ capacity }: { capacity: Capacity }) {
             <FailedPanel error={outcome.error} onRetry={() => void submit()} />
             {/* A write is not a read: a failure after the request left the browser
                 does not prove nothing was created. */}
+            {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
+                left the browser does not prove nothing was created", and the
+                two sentences here ARE that, with the remedy first. */}
             <p className="warn-text">
               <strong>Check Agents before submitting again.</strong> This failed on
               a write, so the task may exist anyway.
-              <HelpCard topic="ambiguous-write" />
             </p>
           </>
         )}
 
+        {/* THIS SCREEN'S ONE `?` (B7.4). It was seven: two of them repeated a
+            sentence printed beside the glyph, one repeated `all at once` from
+            the line it sat on, one repeated a bold `That is not zero.`, and one
+            was a second copy of the topic on step 2. What stays is invariant
+            10, because it is the rule about what this form may NOT accept --
+            no image, no command, no resource spec, no backend parameter -- and
+            a form cannot state that by labelling the fields it does have. */}
         <Move n={1} title="Choose a runner" aside={<HelpCard topic="runner-profile-by-name" />}>
           {/* THE CATALOGUE, VISIBLE. Invariant 10 says a caller names one of
               these and supplies no image, command, resource spec or backend --
@@ -790,7 +803,9 @@ function Form({ capacity }: { capacity: Capacity }) {
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
         </Move>
 
-        <Move n={2} title="Say what it should do" aside={<HelpCard topic="input-is-opaque" />}>
+        {/* NO `aside` (B7.4): this was the second copy of `input-is-opaque` on
+            one screen, four hundred lines from the first. */}
+        <Move n={2} title="Say what it should do">
           {chosen === '' ? (
             <p className="sbf-none">Choose a runner first — what it reads is what this asks for.</p>
           ) : (
@@ -889,7 +904,9 @@ function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerP
       <p className="muted">
         Costs {profile.units} weighted unit{profile.units === 1 ? '' : 's'} in each of its{' '}
         {profile.pools.length} pools, all at once.
-        <HelpCard topic="pools-all-at-once" />
+        {/* NO `?` (B7.4). "all at once" is the last three words of the sentence
+            the glyph was attached to, and the sentence already names the count
+            and the weight. */}
       </p>
       <p className="muted">
         {room.agents === null ? (
@@ -904,7 +921,14 @@ function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerP
                   the clause that it is not zero stays beside it. */}
               Room could not be measured: {room.unread.length} of its pools could
               not be read. <strong>That is not zero.</strong>
-              <HelpCard topic="room-unknown-not-zero" />
+              {/* NO `?` (B7.4), AND THIS IS THE ONE DELETION THAT NEEDED THE
+                  MOST CARE, because `room-unknown-not-zero` is the rule the
+                  whole console is built around. It stays on the surface in
+                  bold, in four words, with the count of unread pools beside
+                  it -- which is stronger than a glyph, not weaker: a reader
+                  cannot fail to open it. The rule is only allowed to move
+                  behind a `?` where the surface cannot carry it, and here the
+                  surface carries it. */}
             </>
           )
         ) : (
@@ -947,12 +971,16 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
     <div className="state" role="status">
       <h3>Created at {task.state}</h3>
       {/* THE FOUR STATE NAMES ARE GONE FROM THE PROSE, not from the product:
-          `#help/capacity` lists them, read from `CONCURRENCY_STATES` at
-          render time. */}
+          `#help/capacity` lists them, read from `CONCURRENCY_STATES` at render
+          time. B7.4 ALSO TOOK THE `?`: the sentence here states the consequence
+          -- not running, costs nothing until admission -- which is the whole
+          reason a reader needs `capacity` at this moment, and the heading above
+          names the state the task is actually in. The glyph's own screen keeps
+          one, on step 1. The topic is still one click away on the Agents screen,
+          where an empty `live` tab is the case the sentence cannot cover. */}
       <p>
         That is not a running agent — it costs nothing until admission takes
         it.
-        <HelpCard topic="capacity" />
         {task.park_reason ? <> It is parked: <code>{String(task.park_reason)}</code>.</> : null}</p>
       {/* The id verbatim: not truncated, not transformed. This is what gets pasted. */}
       <p className="mono">{task.id}</p>

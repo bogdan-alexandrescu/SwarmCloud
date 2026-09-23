@@ -94,11 +94,14 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
         // everything has aged out of the page" -- was two guesses about a
         // cause this screen cannot see, and the link is where a reader finds
         // out which states a page holds.
-        body: (
-          <>
-            The read succeeded and returned nothing. <HelpCard topic="tenant-scope" />
-          </>
-        ),
+        // NO `?` HERE (B7.4). The heading beside this sentence already reads
+        // `No agents · real zero`, which is the whole of what `tenant-scope`
+        // was guarding against -- a reader taking an empty list for a failed
+        // read. Whose agents these are is the crumb and the provenance line
+        // above, and the topic is one click away in the rail's Help section.
+        // This screen keeps exactly one glyph, on the empty TAB below, where
+        // the claim being made is about capacity rather than about the read.
+        body: <>The read succeeded and returned nothing.</>,
       }}
     >
       {(d) => (
@@ -241,6 +244,13 @@ function AgentsBody({
                     : 'Nothing has finished in the loaded page.'
               }
             />{' '}
+            {/* THIS SCREEN'S ONE `?` (B7.4). An empty `live` tab is the one
+                place on this screen where the mark alone can still be read
+                wrongly: "nothing is running" and "nothing costs anything" are
+                not the same claim, and which states hold a pool slot is
+                invariant 1 rather than anything the row could show. That is
+                the test for a glyph -- a platform rule no label can carry --
+                and `prose.runs.test.tsx` pins it to this empty state. */}
             nothing in {tab}
             <HelpCard topic="capacity" />
           </h3>

@@ -112,11 +112,20 @@ function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => vo
     <>
       {profiles.length > 0 && (
         <section className="section">
-          {/* One word where "What actually binds, per profile" used to be. */}
-          <span className="ctl-eyebrow has-q">
-            Binding
-            <HelpCard topic="pools-all-at-once" />
-          </span>
+          {/* One word where "What actually binds, per profile" used to be, and
+              now two: `Binding pool` says WHICH of the several ceilings each
+              card names, which is what the `?` was opened for. The rule behind
+              it -- that a task clears every pool in its list at one moment, so
+              the binding one is the minimum and never a sum -- is stated where
+              the figure it governs is, on the Capacity board's `Could start
+              (min across pools)` column, and is in the rail's Help section.
+              This screen keeps one glyph, on Ceilings below. */}
+          {/* NO `has-q` EITHER. That class is `display: flex` with a baseline
+              gap, and it exists to sit a `?` beside an eyebrow's text; on an
+              eyebrow with no glyph it turns one text node into a flex item for
+              nothing. The `Ceilings` eyebrow below keeps both, because it keeps
+              the glyph. */}
+          <span className="ctl-eyebrow">Binding pool</span>
           <div className="ctl-cards">
             {profiles.map(([name, prof]) => (
               <ProfileCard
@@ -219,7 +228,13 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
         {/* "Lowering a ceiling evicts nothing. Running work keeps its slots;
             the pool admits nothing new until it drains." was eighteen words
             under the control. The consequence still sits beside the control,
-            as the two-word qualifier below; the sentence is behind the ?. */}
+            as the two-word qualifier below; the sentence is behind the ?.
+            THIS IS THE ONE GLYPH B7.4 LEFT ON THIS SCREEN, and it is the only
+            one on it that survives the test: what a control DOES NOT do when
+            you use it cannot be written into the control's own label without
+            the label arguing with the button. Everything on this screen is a
+            write, so it is the place a reader is most likely to act on a wrong
+            expectation. */}
         <HelpCard topic="ceiling-change-evicts-nothing" />
       </span>
       <div className="ctl-table is-stacked">

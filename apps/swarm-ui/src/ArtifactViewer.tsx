@@ -241,6 +241,11 @@ function Provenance({ data }: { data: ArtifactContent }) {
           ) : (
             <>0 of {data.redaction.rules} families</>
           )}
+          {/* THIS SCREEN'S ONE `?` (B7.4), and it is the only one it had. What
+              it holds is a property of the SERVING path rather than of this
+              artifact: masking happens on the way out, the object in the bucket
+              is unchanged, and no label on a count can say that. `0 of N
+              families` is the count; this is what the count does not mean. */}
           <HelpCard topic="credential-names-not-values" />
         </li>
       </ul>

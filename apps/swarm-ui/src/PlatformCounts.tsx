@@ -72,7 +72,9 @@ export function PlatformCountsScreen() {
           <b>per run</b>
           {queries} count()
         </span>
-        <HelpCard topic="api-reads" />
+        {/* NO `?` (B7.4). `per run · 12 count()` IS `api-reads`: the cost of
+            pressing the button, as a figure with its unit, beside the button.
+            The glyph opened a card to say what the two facts next to it say. */}
         {runs > 0 && (
           <span className="provenance is-end">
             {runs} run{runs === 1 ? '' : 's'}
@@ -92,10 +94,7 @@ export function PlatformCountsScreen() {
             not read
           </span>
           <h3>No counts came back</h3>
-          <p>
-            Treat this as a failed query.
-            <HelpCard topic="read-failed" />
-          </p>
+          <p>Treat this as a failed query.</p>
         </div>
       )}
 
@@ -153,7 +152,10 @@ function AdminGated() {
             <i className="ctl-em">—</i>
           </b>
           <span className="ctl-mark is-admin">admin only</span>
-          <HelpCard topic="admin-gate-not-failure" />
+          {/* NO `?` (B7.4). The figure's own accessible name beside it is
+              `admin-gate-not-failure` spelled out -- absent rather than zero,
+              nothing failed -- and the `is-admin` mark is the fourth mark this
+              console draws precisely so the case does not need a sentence. */}
         </p>
       </div>
     </section>
@@ -171,10 +173,7 @@ function Failed({ error }: { error: ApiError }) {
           admin only
         </span>
         <h3>Not an admin</h3>
-        <p>
-          Nothing failed.
-          <HelpCard topic="admin-gate-not-failure" />
-        </p>
+        <p>Nothing failed.</p>
       </div>
     )
   }
@@ -194,7 +193,6 @@ function Failed({ error }: { error: ApiError }) {
       <h3>{errorHeading(error)}</h3>
       <p>
         {error.code ?? 'error'} — {error.message}
-        <HelpCard topic="read-failed" />
       </p>
     </div>
   )
@@ -251,7 +249,11 @@ function Scope({
             {total !== null && <span className="ctl-figure-unit">tasks</span>}
           </b>
           {total === null && <span className="ctl-mark is-partial">partial</span>}
-          <HelpCard topic="withheld-total" />
+          {/* NO `?` (B7.4). The figure's accessible name above is longer and
+              more specific than `withheld-total`: it names HOW MANY of the
+              state counts did not come back and WHICH ones, for this response.
+              A glyph beside it opened the general version of a sentence the
+              figure already carries with the particulars filled in. */}
         </p>
 
         {real.map(({ state, n }) => (
@@ -287,6 +289,15 @@ function Scope({
           naming them here is what stops their absence from the histogram
           looking like an oversight. Derived from the contract sets, so the
           list cannot drift if a state is added. */}
+      {/* THIS SCREEN'S ONE `?` (B7.4). It was seven; six of them opened a card
+          restating an accessible name already attached to the figure beside
+          them, twice over in two cases. This one is different in kind: the line
+          under it is a bare list of three state names with no figure, no mark
+          and no context, and nothing on this screen says why a state the
+          contract defines is absent from a histogram of the contract's states.
+          A reader who does not open it is left with an unexplained list, which
+          is the only place on this screen where that is true.
+          `honesty.counts.test.tsx` pins it to this foot. */}
       <p className="ctl-card-foot">
         never written: {Array.from(NEVER_WRITTEN).join(' · ')}
         <HelpCard topic="states" />

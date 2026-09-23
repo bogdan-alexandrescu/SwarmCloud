@@ -367,6 +367,12 @@ function Form({ sources }: { sources: FormSources }) {
       <div className="sbf-build">
         <Outcome sub={sub} />
 
+        {/* THIS SCREEN'S ONE `?` (B7.4). Invariant 10 is the rule that shapes
+            every control below it -- a caller names a runtime and supplies no
+            image, no command, no resource spec and no backend -- and it is a
+            rule about what this form is NOT ALLOWED to ask for, which a form
+            cannot state by labelling what it does ask for. It sits on the first
+            step because that is where the reader meets the constraint. */}
         <Move n={1} title="Lay out the plan" aside={<HelpCard topic="runner-profile-by-name" />}>
           {/* STAGES, NOT A LIST. Everything in one band runs at the same time;
               the next band waits for it. That is the whole dependency model a
@@ -509,9 +515,11 @@ function StepCard({ step, steps, profiles, required, removable, onChange, onRemo
       {/* UNITS, never "agents": admission increments every pool this step needs
           by its resource class's weight, so one large step costs four. */}
       {chosen && (
+        {/* NO `?` (B7.4). The line reads `standard · 1 unit · cloudrun`: the
+            word `unit` is printed on the figure, which is the whole of what
+            `units-not-agents` was here to say about a step's cost. */}
         <p className="wfb-cost">
           {chosen[1].resource_class} · {chosen[1].units} unit{chosen[1].units === 1 ? '' : 's'} · {chosen[1].backend}
-          <HelpCard topic="units-not-agents" />
         </p>
       )}
 

@@ -54,9 +54,13 @@ import {
  *
  *   "a caller picks a runtime by NAME and supplies nothing else" -- this is
  *   invariant 10 and it is the reason the screen exists, so it did not get
- *   deleted. It is `#help/runner-profile-by-name`, linked from the `?` beside
- *   the catalogue's own heading. It is an argument, not a datum, and §8.4(5)
- *   is where arguments live.
+ *   deleted. It is `#help/runner-profile-by-name`, in the footer index below
+ *   and on the submit form's first step, where a caller meets the constraint.
+ *   It had the `?` beside the catalogue's own heading until B7.4, which gave
+ *   that glyph to `catalogue-from-route` instead: with one `?` to spend on
+ *   this screen, what the list IS beats what a caller may pass to it, because
+ *   the second is stated by the submit form at the moment it matters. It is an
+ *   argument, not a datum, and §8.4(5) is where arguments live.
  *
  *   "up to N GiB of that memory may go to the workspace, leaving M GiB" --
  *   the WORKSPACE COLUMN IS NAMED `Workspace (of memory)`. §8.4(3). The clause
@@ -122,12 +126,22 @@ function Topology({ data }: { data: RuntimeTopology }) {
       />
 
       <div className="ctl-toolbar">
-        {/* INVARIANT 10, WHERE IT BELONGS. A caller picks a runtime by name
-            and supplies nothing else -- that is the argument this whole screen
-            is downstream of, and §8.4(5) puts an argument behind the `?`. */}
+        {/* THIS SCREEN'S ONE ALWAYS-PRESENT `?` (B7.4).
+            It was ten: invariant 10 here, the resolved-backend rule on the
+            Backends heading, the unit on a column whose own header already
+            said `(units)`, the workspace basis on a column that already said
+            `(of memory)`, and five more. Every one of them is a standing
+            argument about the catalogue as a whole rather than about the thing
+            it was pinned to, so all ten are the footer index below and this is
+            the one that stays: what this list IS and where it comes from, which
+            is the question the other nine are downstream of.
+            It sits on the eyebrow because the eyebrow renders on every path
+            through this screen -- a rationed `?` is only learnable if it is in
+            the same place every time, and a glyph that appears only when a read
+            fails is one nobody has learned to look for. */}
         <span className="ctl-eyebrow rt-eyebrow">
           The catalogue
-          <HelpCard topic="runner-profile-by-name" />
+          <HelpCard topic="catalogue-from-route" />
         </span>
         <span className="ctl-card-note is-end">
           {runtimes.length} of {runtimes.length} · whole catalogue
@@ -210,10 +224,14 @@ function Backends({
        `<caption>`, which is the same slot inside the one box that is left. */
     <section className="section rt-backends">
       <div className="ctl-toolbar">
-        <h2 className="ctl-card-title">
-          Backends
-          <HelpCard topic="declared-vs-resolved-backend" />
-        </h2>
+        {/* THE BASIS MOVED INTO THE COLUMN NAME, and the `?` went with the
+            paragraph. `Backend (resolved)` is what the glyph here was holding:
+            these rows group on `resolved_backend` and never on the declared
+            one. In the heading it was a claim about the whole card; in the
+            column name it cannot be scrolled away from the rows it governs and
+            cannot be read as qualifying the next column along.
+            `#help/declared-vs-resolved-backend` is in the footer index. */}
+        <h2 className="ctl-card-title">Backends</h2>
         {/* Trap E: a number may only sit beside a number of the same scope, so
             the scope is declared rather than left to be inferred. Both numbers
             here are platform-wide and cannot be otherwise -- the catalogue route
@@ -244,15 +262,15 @@ function Backends({
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
-                <th role="columnheader" scope="col">Backend</th>
+                <th role="columnheader" scope="col">Backend (resolved)</th>
                 <th role="columnheader" scope="col" className="is-num">Runtimes</th>
                 {/* "units", never "agents". Admission increments each pool by the
                     resource class's weight, so 8 in use may be four agents of a
-                    class that weighs 2. */}
-                <th role="columnheader" scope="col" className="is-num">
-                  In use (units)
-                  <HelpCard topic="units-not-agents" />
-                </th>
+                    class that weighs 2. THE `?` THAT SAID SO IS GONE (B7.4):
+                    `(units)` is already the entire claim, in the only place it
+                    cannot be separated from the figures, and a glyph beside it
+                    could only repeat the word above it. */}
+                <th role="columnheader" scope="col" className="is-num">In use (units)</th>
                 <th role="columnheader" scope="col" className="is-num">Ceiling</th>
                 <th role="columnheader" scope="col" className="is-num">Headroom</th>
                 <th role="columnheader" scope="col">Status</th>
@@ -566,35 +584,37 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
                 added together, in two characters rather than a clause. */}
             <b>ws of mem</b>
             {spec.disk_gib} GiB
-            <HelpCard topic="workspace-memory" />
           </li>
           <li className="ctl-fact">
             <b>weight</b>
             {spec.units}u
           </li>
           <li className="ctl-fact rt-fact-wide">
-            {/* THE `?` SITS ON THE KEY, NOT AFTER THE VALUE, and the reason is
-                structural rather than aesthetic: `spaceprobe.ts:545`
+            {/* `cred` NAMES WHAT IT SHOWS, which is why the `?` here could go
+                (B7.4). `<Credential>` below renders secret NAMES and never a
+                value -- it cannot render a value, because the route does not
+                serve one -- so the topic was explaining a guarantee the reader
+                can see being kept. It is one line in the footer index now.
+                If a `?` is ever put back on a key like this one, it belongs
+                INSIDE the `<b>`, not after the value: `spaceprobe.ts:545`
                 short-circuits at the first element carrying direct text, so a
-                `?` placed after a text node in the same element is never
+                glyph placed after a text node in the same element is never
                 measured, while one placed as a bare sibling of element-only
-                children is. Every `<HelpCard>` in this codebase already
-                follows text inside its own element -- `<dt>Credential<?/></dt>`,
-                `<th>Weight<?/></th>` -- and that convention is load-bearing.
-                See the note at the foot of this file. */}
-            <b>
-              cred
-              <HelpCard topic="credential-names-not-values" />
-            </b>
+                children is. That convention is load-bearing; see the note at
+                the foot of this file. */}
+            <b>cred</b>
             <Credential runtime={runtime} />
           </li>
         </ul>
 
         <div className="rt-apart">
-          <span className="ctl-eyebrow">
-            Sets it apart
-            <HelpCard topic="what-sets-it-apart-is-arithmetic" />
-          </span>
+          {/* "Sets it apart FROM THE REST OF THE CATALOGUE" is what the `?`
+              here said -- that this block is arithmetic over the other rows and
+              not an editorial judgement about this runtime. The eyebrow sits
+              inside a card headed by that runtime's name, one scroll under a
+              list of every other one, so the comparison it is making is on the
+              screen; the topic is in the footer index. */}
+          <span className="ctl-eyebrow">Sets it apart</span>
           {facts.length === 0 ? (
             /* A MEASURED "nothing", not a blank. The comparison ran and found
                no difference; a blank here would read as a comparison nobody
@@ -737,10 +757,13 @@ function Sizing({
     /* §B6.1, as Backends above: title on the page, one box around the data. */
     <section className="section rt-sizing">
       <div className="ctl-toolbar">
-        <h2 className="ctl-card-title">
-          Sizing
-          <HelpCard topic="catalogue-from-route" />
-        </h2>
+        {/* NO `?`: the mark and the note beside this heading already say where
+            this table came from. `partial` plus `· from runtimes` IS
+            `catalogue-from-route` -- that the classes were derived from the
+            runtime list because the catalogue read did not land -- and it says
+            it as an encoding rather than as a sentence behind a glyph. The one
+            `?` this screen keeps is on the catalogue eyebrow above. */}
+        <h2 className="ctl-card-title">Sizing</h2>
         {/* A PARTIAL LIST IS NOT A LIST. The catalogue read failed, so a class
             no runtime resolves to cannot appear here at all -- the note is the
             coverage qualifier and the mark is the kind of absence. */}
@@ -763,14 +786,14 @@ function Sizing({
                 {/* §8.4(3). "Carved out of the memory beside it, not added to
                     it" was a tooltip on every cell; `(of memory)` is the same
                     claim, visible, once, attached to the column. */}
-                <th role="columnheader" scope="col" className="is-num">
-                  Workspace (of memory)
-                  <HelpCard topic="workspace-memory" />
-                </th>
-                <th role="columnheader" scope="col" className="is-num">
-                  Weight
-                  <HelpCard topic="units-not-agents" />
-                </th>
+                <th role="columnheader" scope="col" className="is-num">Workspace (of memory)</th>
+                {/* `(units)`, because a bare "Weight" is a number with no
+                    dimension and the `?` that supplied the dimension is gone
+                    (B7.4). The cells read `2u`, so the unit is on the figure
+                    too; what the header adds is that the unit is what the POOLS
+                    count -- four standard agents and one large one are the same
+                    4 units. `#help/units-not-agents` is in the footer index. */}
+                <th role="columnheader" scope="col" className="is-num">Weight (units)</th>
                 <th role="columnheader" scope="col">Resolves from</th>
               </tr>
             </thead>
@@ -785,7 +808,7 @@ function Sizing({
                     <td role="cell" data-label="vCPU" className="is-num">{spec.cpu}</td>
                     <td role="cell" data-label="Memory" className="is-num">{spec.memory_gib} GiB</td>
                     <td role="cell" data-label="Workspace (of memory)" className="is-num">{spec.disk_gib} GiB</td>
-                    <td role="cell" data-label="Weight" className="is-num">{spec.units}u</td>
+                    <td role="cell" data-label="Weight (units)" className="is-num">{spec.units}u</td>
                     <td role="cell" data-label="Resolves from">
                       {users.length === 0 ? (
                         /* CONFIGURED AND UNREACHABLE is a fact, not a fault:
@@ -819,6 +842,15 @@ function Sizing({
 /**
  * WHAT USED TO BE `Legend()` -- five `<dt>`/`<dd>` pairs, ~230 words, under
  * every load of this screen.
+ *
+ * AND, SINCE B7.4, WHERE THIS SCREEN'S OTHER NINE `?` WENT. It carried ten help
+ * glyphs, the most of any screen in the console, and nine of them named a
+ * standing argument about the catalogue rather than about the cell they were
+ * pinned to -- so a reader met the same nine arguments again on every visit,
+ * each one a hover away from a different figure. As links they are one row, in
+ * one place, in the reader's own reading order, and `#help/<id>` is the same
+ * destination the glyph opened. Three of the nine were pure repetition: the
+ * column head already said `(units)`, `(of memory)` and `ws of mem`.
  *
  * The five titles are still on the surface, because they were the index of
  * what this screen's marks mean and deleting the block would have taken the

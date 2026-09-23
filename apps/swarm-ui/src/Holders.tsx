@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
 import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
@@ -98,6 +99,35 @@ export function HoldersScreen() {
  * lease mentions has nothing to compare against, and showing it with a lease
  * side of 0 would manufacture a delta out of an absence.
  */
+/**
+ * THE DRIFT CARD'S HEAD, WRITTEN ONCE, AND THIS SCREEN'S ONLY `?` (B7.4).
+ *
+ * The two branches below -- counters unread, and counters compared -- each drew
+ * their own copy of this head, so the same heading and the same help glyph were
+ * authored twice and a change to one of them reached one branch. That is the
+ * two-implementations failure `SectionQuestion` already cost this app once, in
+ * miniature.
+ *
+ * WHY THIS ONE `?` SURVIVED THE DENSITY PASS AND THE OTHER THREE DID NOT. A
+ * delta between the lease documents and the pool counters is not a fault and is
+ * not a reconciliation error: they are two records of one fact, written at
+ * different moments, and a reader who does not know that reads any non-zero
+ * figure on this card as corruption. That is a platform behaviour, not a
+ * property of a column, so no heading or unit can carry it -- which is exactly
+ * the test for what may keep a glyph.
+ */
+function DriftHead({ note }: { note: ReactNode }) {
+  return (
+    <div className="ctl-card-head">
+      <h2 className="ctl-card-title">
+        Accounting drift
+        <HelpCard topic="lease-and-pool-are-two-records" />
+      </h2>
+      <span className="ctl-card-note">{note}</span>
+    </div>
+  )
+}
+
 function Drift({ board }: { board: HoldersBoard }) {
   const rowsRead = board.page.leases.length
 
@@ -108,13 +138,7 @@ function Drift({ board }: { board: HoldersBoard }) {
   if (board.pools === null) {
     return (
       <section className="ctl-card">
-        <div className="ctl-card-head">
-          <h2 className="ctl-card-title">
-            Accounting drift
-            <HelpCard topic="lease-and-pool-are-two-records" />
-          </h2>
-          <span className="ctl-card-note">not compared</span>
-        </div>
+        <DriftHead note="not compared" />
         <div className="ctl-card-body">
           <b
             className="ctl-figure is-absent"
@@ -154,18 +178,16 @@ function Drift({ board }: { board: HoldersBoard }) {
 
   return (
     <section className="ctl-card">
-      <div className="ctl-card-head">
-        <h2 className="ctl-card-title">
-          Accounting drift
-          <HelpCard topic="lease-and-pool-are-two-records" />
-        </h2>
-        {/* §8.4(2): the coverage qualifier, one line, mono, right-aligned.
-            This is the sentence "computed over the N rows returned" as an
-            attribute of the card rather than a paragraph under it. */}
-        <span className="ctl-card-note">
-          {compared} of {rows.length} pools
-        </span>
-      </div>
+      {/* §8.4(2): the coverage qualifier, one line, mono, right-aligned. This
+          is the sentence "computed over the N rows returned" as an attribute of
+          the card rather than a paragraph under it. */}
+      <DriftHead
+        note={
+          <>
+            {compared} of {rows.length} pools
+          </>
+        }
+      />
 
       {disagreeing.length === 0 ? (
         /* A MEASURED ZERO. The figure is a digit, because the comparison ran
@@ -260,10 +282,13 @@ function ClassMix({ rows }: { rows: LeaseRow[] }) {
   return (
     <section className="ctl-card">
       <div className="ctl-card-head">
-        <h2 className="ctl-card-title">
-          Class mix
-          <HelpCard topic="units-not-agents" />
-        </h2>
+        {/* NO `?` (B7.4). Every figure in this card is already labelled in
+            units -- the bars are units, the table column below says
+            `Units (weighted)` -- so `units-not-agents` here was an argument
+            for a convention the card follows in front of the reader. It is one
+            click away in the rail's Help section and is linked from the three
+            screens whose figures it actually disambiguates. */}
+        <h2 className="ctl-card-title">Class mix</h2>
         {/* A LEASE THAT NAMES NO CLASS IS COUNTED IN NO CLASS, and the note is
             where that is said -- not folded into `standard`, which would
             understate the rest. It was a two-clause sentence; it is now the
@@ -322,10 +347,7 @@ function HolderTable({ rows }: { rows: LeaseRow[] }) {
                     that a reader had to carry back up to the column it was
                     about. In the heading it cannot be missed and cannot be
                     applied to the wrong column. */}
-                <th role="columnheader" scope="col" className="is-num">
-                  Units (weighted)
-                  <HelpCard topic="units-not-agents" />
-                </th>
+                <th role="columnheader" scope="col" className="is-num">Units (weighted)</th>
                 <th role="columnheader" scope="col">Dispatch</th>
                 <th role="columnheader" scope="col" className="is-num">Gen</th>
               </tr>

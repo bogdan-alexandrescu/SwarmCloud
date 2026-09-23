@@ -186,10 +186,14 @@ function Headroom({ capacity }: { capacity: Capacity }) {
        content was drawn two ways on one screen. */
     <section className="section cap-headroom">
       <div className="ctl-toolbar">
-        <h2 className="ctl-card-title">
-          Headroom
-          <HelpCard topic="tenant-scope" />
-        </h2>
+        {/* NO `?` ON THE HEADING (B7.4). `tenant-scope` was here to say these
+            figures are the CALLING tenant's and not the platform's -- and the
+            card already declares that on its own right-hand note, in words, on
+            every render, which is the note the comment below this one is about.
+            A glyph that opens a card restating the line beside it is the
+            clutter the density pass was counting. The topic is in the footer
+            index. */}
+        <h2 className="ctl-card-title">Headroom</h2>
         {/* TRAP D, AS AN ATTRIBUTE OF THE CARD. Every figure in this card is
             this tenant's; the note is what stops an admin reading them as the
             platform's. It is one line, mono and muted -- chrome, not copy. */}
@@ -207,6 +211,15 @@ function Headroom({ capacity }: { capacity: Capacity }) {
                     pool in its list at the same moment, so the figure is the
                     minimum across them and never a sum -- and saying that in
                     the column name attaches it to the number it governs. */}
+                {/* THE ONE `?` THIS SCREEN KEEPS (B7.4), and the one the
+                    density pass could not fold into a label. `(min across
+                    pools)` says WHAT the arithmetic is; it does not say that
+                    the reservation is all-or-nothing in a single transaction,
+                    which is invariant 2 and the reason the answer is a minimum
+                    rather than a sum. That is a platform rule a column name
+                    cannot carry without becoming a sentence, so it stays behind
+                    the glyph, in the cell whose figure obeys it.
+                    `honesty.capacity.test.tsx` pins it to this cell. */}
                 <th role="columnheader" scope="col" className="is-num">
                   Could start (min across pools)
                   <HelpCard topic="pools-all-at-once" />
@@ -388,11 +401,10 @@ function PoolTable({ pools }: { pools: Pool[] }) {
                 resource class's units (1, 2 or 4), so active: 8 may be two
                 large agents or eight standard ones. §8.4(3) again: the caveat
                 is in the column name, where it cannot be scrolled away from
-                the figures it governs. */}
-            <th role="columnheader" scope="col" className="is-num">
-              In use (units)
-              <HelpCard topic="units-not-agents" />
-            </th>
+                the figures it governs. B7.4 deleted the `?` that repeated it --
+                the parenthetical IS the caveat, and it is already in the one
+                place a reader cannot scroll past it. */}
+            <th role="columnheader" scope="col" className="is-num">In use (units)</th>
             <th role="columnheader" scope="col" className="is-num">Ceiling</th>
             <th role="columnheader" scope="col" className="is-num">Headroom</th>
             <th role="columnheader" scope="col">Set by</th>

@@ -240,11 +240,17 @@ function Board({
         <span className="is-end wf-caveats">
           {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
           {usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
-          {/* ONE `?` FOR THE WHOLE BOARD. `absent-vs-zero` is the rule every
-              absent figure on this screen obeys -- a word where a digit would
-              be, on a dashed rule -- and it is a property of the screen rather
-              than of any one node. Drawn per node it would have been eight
-              question marks on an eight-step graph. */}
+          {/* ONE `?` FOR THE WHOLE BOARD, AND SINCE B7.4 FOR THE WHOLE SCREEN.
+              `absent-vs-zero` is the rule every absent figure here obeys -- a
+              word where a digit would be, on a dashed rule -- and it is a
+              property of the screen rather than of any one node. Drawn per node
+              it would have been eight question marks on an eight-step graph.
+              The screen's other four went the way the density pass sends them:
+              the two marks below (`states unread`, `n/m sampled`) each carry a
+              full sentence as their accessible name, longer and more specific
+              than the topic a glyph would have opened, and the two dispatch
+              topics are on the agent detail's card foot and in the rail's Help
+              section. */}
           <HelpCard topic="absent-vs-zero" />
         </span>
       </div>
@@ -314,9 +320,15 @@ function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardM
  * is the neutral tone rather than a state colour. The banner never carried the
  * fact -- it explained a fact that was already on screen, once, at the top,
  * where it could sit above a workflow it did not describe. What is here now is
- * a two-word mark in the board's own chrome, the sentence as its accessible
- * name, and the `?` over `read-failed`, which is the topic that already holds
- * the argument in full.
+ * a two-word mark in the board's own chrome, with the sentence as its
+ * accessible name.
+ *
+ * B7.4 TOOK THE `?` THAT SAT BESIDE IT. The accessible name above is longer and
+ * more specific than `#help/read-failed` -- it carries the server's own detail
+ * and it states, for this board, which of the things on screen are still true
+ * -- so the glyph opened a shorter, general version of the sentence it was
+ * standing next to. The board keeps one glyph, on `absent-vs-zero`, which is
+ * the rule every absent figure here obeys and which no mark can state.
  */
 function StatesUnavailable({ detail }: { detail: string }) {
   return (
@@ -327,7 +339,6 @@ function StatesUnavailable({ detail }: { detail: string }) {
       >
         states unread
       </span>
-      <HelpCard topic="read-failed" />
     </span>
   )
 }
@@ -853,7 +864,10 @@ function WorkflowDispatch({
             </span>
           </li>
         </ul>
-        <HelpCard topic="dispatch-absent-is-old-api" />
+        {/* NO `?` (B7.4). The mark's accessible name above already draws the
+            distinction the topic exists for -- an API older than the field,
+            not a workflow that publishes nothing -- and it draws it per case,
+            which a shared topic cannot. */}
       </div>
     )
   }
@@ -883,7 +897,10 @@ function WorkflowDispatch({
           </li>
         )}
       </ul>
-      <HelpCard topic="dispatch-strategies" />
+      {/* NO `?` (B7.4). `consequenceOf` prints what this strategy publishes, in
+          numbers, on the facts above -- one pull request over six steps, or
+          six -- which is the topic's claim computed for THIS workflow rather
+          than described in general. */}
     </div>
   )
 }
@@ -1555,7 +1572,6 @@ function SampleNote({ usage }: { usage: WorkflowUsage }) {
       >
         {usage.byTaskId.size}/{usage.tasksRequested} sampled
       </span>
-      <HelpCard topic="partial-read" />
     </span>
   )
 }

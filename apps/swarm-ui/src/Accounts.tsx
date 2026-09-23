@@ -381,7 +381,6 @@ function Broken({ accounts, scope }: { accounts: Account[]; scope: string | null
           <li className="ctl-fact">
             <b>
               yours
-              <HelpCard topic="reauth-required" />
             </b>
             <span className="acct-flags">
               <span className="mono">{mine.map((a) => a.account_id).join(', ')}</span>
@@ -393,7 +392,6 @@ function Broken({ accounts, scope }: { accounts: Account[]; scope: string | null
           <li className="ctl-fact">
             <b>
               not yours
-              <HelpCard topic="lent-account" />
             </b>
             <span className="acct-flags">
               <span className="mono">{lent.map((a) => a.account_id).join(', ')}</span>
@@ -446,6 +444,14 @@ function Pool({
         <div className="state" role="status">
           {/* A REAL ZERO, SAID AS ONE, on the surface. What the zero COSTS --
               that work waits rather than fails, quietly -- is the topic. */}
+          {/* ONE OF THIS SCREEN'S TWO `?` (B7.4), AND IT IS THE ONE THAT
+              RENDERS WHEN THE POOL IS EMPTY -- the other sits on the table
+              below, which this branch does not draw. What it holds is the only
+              thing an empty pool cannot show: the COST of the zero. Nothing on
+              this panel says that work submitted now parks and waits instead of
+              failing, and an operator who assumes the second will go looking
+              for an error that was never raised.
+              `honesty.prose.test.tsx` pins a `?` to this panel. */}
           <h3>
             No accounts registered
             <HelpCard topic="park-on-missing-credential" />
@@ -531,6 +537,16 @@ function Pool({
           </>
         )}{' '}
         &middot; ~ is projected, not measured
+        {/* THE OTHER OF THIS SCREEN'S TWO `?` (B7.4), and the reason it is one
+            of the two is the STALE MARK. This console draws three different
+            things -- a measured value, a value too old to trust, and one nobody
+            measured -- and the tilde is the middle one, the only mark of the
+            three that is a claim about TIME rather than about presence. "~12%"
+            is a real reading that has aged; what a reader must not do is treat
+            it as current, and what they must also not do is treat it as
+            missing. The line beside this says which mark the tilde is; the
+            topic is what may and may not be concluded from it. No label carries
+            that. */}
         <HelpCard topic="projected-not-measured" />
       </p>
     </section>
@@ -959,7 +975,6 @@ function PoolFindings({
         <li className="ctl-fact">
           <b>
             ever assigned
-            <HelpCard topic="never-assigned-pool" />
           </b>
           <span className="acct-flags">
             <span
@@ -1028,7 +1043,9 @@ function Detail({
           `Agents on it` is the clearest of the five. "advisory; the lease is
           the authoritative record of who holds what" is a statement about
           WHICH RECORD TO BELIEVE -- it is an argument, and §8.4(5) puts an
-          argument behind the `?`, which this row already carried. */}
+          argument at `#help/<topic>`. B7.4 took the `?` off this row: the
+          whole sentence is the figure's own accessible name, one element
+          below, and `advisory-vs-lease` is in this screen's footer index. */}
       <ul className="ctl-facts acct-facts">
         <li className="ctl-fact">
           <b>id</b>
@@ -1046,7 +1063,6 @@ function Detail({
         <li className="ctl-fact">
           <b>
             agents
-            <HelpCard topic="advisory-vs-lease" />
           </b>
           <span aria-label={`${account.assigned} agents, as the broker last recorded it. This count is advisory: the lease is the authoritative record of who holds what.`}>
             {account.assigned}
@@ -1087,7 +1103,6 @@ function Detail({
         <li className={`ctl-fact${neverAssigned(account) ? ' is-absent' : ''}`}>
           <b>
             last given out
-            <HelpCard topic="never-assigned-pool" />
           </b>
           {neverAssigned(account) ? (
             <span className="acct-flags">
@@ -1160,7 +1175,6 @@ function Borrowed({ account }: { account: Account }) {
     <div className="acct-action">
       <h4>
         Lent to you
-        <HelpCard topic="lent-account" />
       </h4>
       {/* THE ABSENCE OF CONTROLS IS THE FACT, and it needs a name beside it:
           a row with no buttons and no sentence reads as a row that failed to
@@ -1189,7 +1203,6 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
       <p className="muted small">
         No windows reported &mdash; 5H, 7D and CLEARS above are{' '}
         <strong>unmeasured, not zero</strong>.
-        <HelpCard topic="provider-defines-windows" />
       </p>
     )
   }
@@ -1198,7 +1211,6 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
     <div className="acct-extra-windows">
       <h4>
         Windows with no column
-        <HelpCard topic="provider-defines-windows" />
       </h4>
       {extra.map((k) => {
         const r = readingOf(account, k)
@@ -1505,7 +1517,6 @@ function RefreshControl({
     <div className="acct-action">
       <h4>
         Refresh now
-        <HelpCard topic="refresh-now-probe" />
       </h4>
       <button type="button" disabled={state.kind === 'sending'} onClick={() => void run()}>
         {state.kind === 'sending' ? 'exchanging…' : 'Refresh this account'}
@@ -1526,7 +1537,6 @@ function RefreshControl({
             <strong>Reload this screen before pressing refresh again.</strong>{' '}
             This failed on a write, so the credential may have been exchanged
             anyway.
-            <HelpCard topic="ambiguous-write" />
           </p>
         </>
       )}
@@ -1626,7 +1636,6 @@ function Lending({
     <div className="acct-action">
       <h4>
         Lending
-        <HelpCard topic="lending" />
       </h4>
       {/* WHO IT SERVES IS THE FACT, and it is the whole reason the panel is
           open. What lending MEANS is the topic beside the heading. B4.4: the
@@ -1681,7 +1690,6 @@ function Lending({
           <strong>No tenant picker:</strong> the tenant list could not be read.{' '}
           {board.tenantsDetail} Ids typed here are still checked by the
           platform.
-          <HelpCard topic="admin-gate-not-failure" />
         </p>
       )}
       {board.tenants !== null && (
@@ -1754,11 +1762,9 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
     <div className="acct-action">
       <h4>
         State
-        <HelpCard topic="account-states" />
       </h4>
       <span className="t-label">
         reason
-        <HelpCard topic="state-change-reason" />
       </span>
       <span className="limit-edit">
         <input
@@ -2053,7 +2059,6 @@ function ExchangeAdvice({
           <strong>Do not sign in again until you have looked.</strong> The
           platform said yes; what is missing from its answer is the
           account&rsquo;s name, not the account.
-          <HelpCard topic="signin-201-no-name" />
         </p>
         <p className="muted small">
           {mode === 'add' ? (
@@ -2072,7 +2077,6 @@ function ExchangeAdvice({
               </strong>
             </>
           )}
-          <HelpCard topic="signin-verify-by-reload" />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -2093,14 +2097,12 @@ function ExchangeAdvice({
           <strong>Nothing refused this &mdash; nothing answered it.</strong> The
           request did not complete, so this page never learned what the platform
           did with it, and <strong>nothing here measures which</strong>.
-          <HelpCard topic="ambiguous-write" />
         </p>
         <p className="muted small">
           Reload the pool and look{' '}
           {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
           first &mdash; that is measurable and this is not. The paste field
           above is still live.
-          <HelpCard topic="signin-verify-by-reload" />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -2124,7 +2126,6 @@ function ExchangeAdvice({
             it.
           </strong>{' '}
           <strong>Nothing was created and nothing was changed.</strong>
-          <HelpCard topic="signin-is-over" />
         </p>
         <p className="muted small">
           {mode === 'add'
@@ -2148,7 +2149,6 @@ function ExchangeAdvice({
           The platform is not holding a record for it, and this page cannot
           tell you whether it completed.{' '}
           <strong>So this is not &ldquo;nothing happened&rdquo;.</strong>
-          <HelpCard topic="signin-is-over" />
         </p>
         <p className="muted small">
           {mode === 'add' ? (
@@ -2165,7 +2165,6 @@ function ExchangeAdvice({
               </strong>
             </>
           )}
-          <HelpCard topic="signin-verify-by-reload" />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -2185,7 +2184,6 @@ function ExchangeAdvice({
         <strong>That code belongs to a different sign-in.</strong>{' '}
         <strong>This sign-in is untouched and still open</strong> &mdash; paste
         the code from the page <em>this</em> panel opened.
-        <HelpCard topic="signin-still-open" />
       </p>
     )
   }
@@ -2196,7 +2194,6 @@ function ExchangeAdvice({
         <strong>The code was refused, and this sign-in is still open.</strong>{' '}
         Paste again above, or press <em>Open the sign-in page again</em> for a
         fresh code.
-        <HelpCard topic="signin-still-open" />
       </p>
     )
   }
@@ -2210,13 +2207,11 @@ function ExchangeAdvice({
         </strong>{' '}
         This page does not recognise that refusal, so it does not know whether
         an account was written.
-        <HelpCard topic="ambiguous-write" />
       </p>
       <p className="muted small">
         Reload the pool and look{' '}
         {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
         first &mdash; that is measurable and this is not.
-        <HelpCard topic="signin-verify-by-reload" />
       </p>
       <p className="acct-buttons">
         <button type="button" onClick={reload}>
@@ -2266,7 +2261,6 @@ function SignInFailure({
       <div className="ctl-empty is-partial" role="status">
         <h3>
           This deployment&rsquo;s API does not serve the sign-in yet
-          <HelpCard topic="signin-route-missing" />
         </h3>
         {/* THE STATUS AND THE ROUTE STAY: they are what distinguishes "this
             deployment lacks the route" from "your request was refused". */}
@@ -2326,7 +2320,6 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
       <p className="muted small">
         <strong>No deadline was given</strong>, so there is no countdown here.
         Finish promptly: <strong>the code is single-use</strong>.
-        <HelpCard topic="signin-deadlines" />
       </p>
     )
   }
@@ -2336,7 +2329,6 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
       <p className="warn-text">
         The platform&rsquo;s {humaniseUntil(auth.expires_in_seconds * 1000)} hold
         has passed on this browser&rsquo;s clock. The field is still live.
-        <HelpCard topic="signin-deadlines" />
       </p>
     )
   }
@@ -2344,7 +2336,6 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
     <p className="muted small">
       Held for another <strong>{humaniseUntil(left)}</strong> · the code itself{' '}
       <strong>expires sooner</strong>.
-      <HelpCard topic="signin-deadlines" />
     </p>
   )
 }
@@ -2391,7 +2382,6 @@ function DifferentBrowserNote({ mode }: { mode: 'add' | 'reauth' }) {
             application instead.
           </>
         )}
-        <HelpCard topic="second-browser-application" />
       </div>
     </div>
   )
@@ -2466,7 +2456,6 @@ function SignInLink({ url }: { url: string }) {
         <p className="muted small">
           <strong>This browser refused the clipboard.</strong> Select the link
           below and copy it by hand.
-          <HelpCard topic="clipboard-secure-context" />
         </p>
       )}
       <p className="acct-fixed" style={{ wordBreak: 'break-all' }}>
@@ -2557,7 +2546,6 @@ function SignInSteps({
       <div className="acct-action">
         <h4>
           2 &middot; Sign in to Claude
-          <HelpCard topic="signin-is-anthropics-page" />
         </h4>
         <DifferentBrowserNote mode={mode} />
         {/* THE HOST IS THE CHECKABLE FACT -- it is what a reader compares
@@ -2624,7 +2612,6 @@ function SignInSteps({
       <form className="acct-action" onSubmit={(e) => void submit(e)}>
         <h4>
           3 &middot; Paste the code that page shows you
-          <HelpCard topic="signin-paste-the-code" />
         </h4>
         {/* THE IMPERATIVE STAYS (§6). "Paste all of it" is what stops a
             credential landing on the wrong account from a second tab; the
@@ -2778,7 +2765,6 @@ function AddAccount({
               render. */}
           <h3>
             Adding an account is unavailable until your tenant is named
-            <HelpCard topic="account-owned-by-one-tenant" />
           </h3>
           <p>
             This response named no tenant, so this form cannot tell you whose
@@ -2848,12 +2834,14 @@ function AddAccount({
           `Start the sign-in`, which is §8.5(3), a sentence that IS the
           control. A reader who is about to paste a token finds out from the
           button they are reaching for, not from a line above the form they
-          have already scrolled past. The argument is the `?`. */}
+          have already scrolled past. The argument is `#help/sign-in-not-paste`
+          in the rail's Help section; B7.4 took the `?` that sat on `owner`,
+          because a glyph on a field naming the tenant is not where anyone
+          looks for what the submit button already says. */}
       <ul className="ctl-facts">
         <li className="ctl-fact">
           <b>
             owner
-            <HelpCard topic="sign-in-not-paste" />
           </b>
           <span className="mono">{owner}</span>
         </li>
@@ -2875,7 +2863,6 @@ function AddAccount({
           <div className="acct-action">
             <h4>
               1 &middot; Named
-              <HelpCard topic="signin-holds-label-and-lending" />
             </h4>
             {/* THE EXACT ID AND THE LENDING LIST STAY. This is the last point
                 at which either can be changed, so both are printed in full. */}
@@ -2928,7 +2915,6 @@ function AddAccount({
               shown, named, and said to be fixed. */}
           <span className="t-label">
             provider
-            <HelpCard topic="subscription-only-no-api-key" />
           </span>
           {/* SHOWN, NAMED, AND SAID TO BE FIXED. A value the request carries
               and the form never mentions is a decision made for the operator
@@ -2946,7 +2932,6 @@ function AddAccount({
 
           <label className="t-label" htmlFor="acct-label">
             label
-            <HelpCard topic="account-label-rules" />
           </label>
           <input
             id="acct-label"
@@ -2979,13 +2964,11 @@ function AddAccount({
               under that label <strong>REPLACES its credential</strong> rather
               than adding a second account. For another subscription, give it a
               different name.
-              <HelpCard topic="signin-keeps-readings" />
             </p>
           )}
 
           <label className="t-label" htmlFor="acct-lend">
             lend to (optional)
-            <HelpCard topic="lending-narrows-isolation" />
           </label>
           <input
             id="acct-lend"
@@ -3031,7 +3014,6 @@ function AddAccount({
                   No <em>Try again</em>: the{' '}
                   <strong>label field above is empty</strong>. Type a name and
                   press <em>Start the sign-in</em>.
-                  <HelpCard topic="account-label-rules" />
                 </p>
               )}
             </>
@@ -3069,14 +3051,12 @@ function SignInDone({
           phrase are different shapes on purpose: "expires in 8h" and "no
           expiry was reported" are different facts and must not read alike. */}
       <p>
-        Two secrets were written.
-        <HelpCard topic="credential-split" />{' '}
+        Two secrets were written.{' '}
         {state.expiresAt ? (
           <>
             The mounted token expires in{' '}
             <strong>{clearsIn(state.expiresAt, Date.now())}</strong> &mdash; not
             a deadline for you.
-            <HelpCard topic="credential-refresh-sweep" />
           </>
         ) : (
           <>
@@ -3094,7 +3074,6 @@ function SignInDone({
           <p>
             Its state was put back to AVAILABLE as a second, separate call, and
             that call succeeded.
-            <HelpCard topic="reauth-does-not-unpause" />
           </p>
         ) : (
           <p>
@@ -3105,7 +3084,6 @@ function SignInDone({
             The credential is good; the second call failed:{' '}
             {restore.error?.message ?? 'the request did not complete.'} Use{' '}
             <em>move to AVAILABLE</em> in the row above.
-            <HelpCard topic="reauth-does-not-unpause" />
           </p>
         ))}
       {/* WHAT THE POOL WILL SHOW FOR IT, READ OFF THE ACCOUNT THE EXCHANGE
@@ -3120,13 +3098,11 @@ function SignInDone({
       {state.account.observed_at === null ? (
         <p className="checked-at">
           No reading yet &mdash; <em>unmeasured</em>, not idle.
-          <HelpCard topic="absent-vs-zero" />
         </p>
       ) : (
         <p className="checked-at">
           Readings kept: the last arrived {timeAgo(state.account.observed_at)}
           {state.account.stale ? ', so the table above marks its figures ~' : ''}.
-          <HelpCard topic="signin-keeps-readings" />
         </p>
       )}
       {/* NOT AVAILABLE, AND NOTHING PUT IT BACK. `restore === null` means there
@@ -3144,7 +3120,6 @@ function SignInDone({
           </strong>{' '}
           Its row has <em>move to AVAILABLE</em> for when it should take work
           again.
-          <HelpCard topic="reauth-does-not-unpause" />
         </p>
       )}
       <p className="acct-buttons">
@@ -3211,7 +3186,6 @@ function Reauth({
         <div className="ctl-empty is-partial" role="status">
           <h3>
             Provider mismatch
-            <HelpCard topic="subscription-only-no-api-key" />
           </h3>
           <ul className="ctl-facts">
             <li className="ctl-fact">
@@ -3283,13 +3257,11 @@ function Reauth({
           <>
             <strong>Only a person can replace this.</strong> The refresh token
             behind <code>{account.account_id}</code> is gone or unreadable.
-            <HelpCard topic="reauth-required" />
           </>
         ) : (
           <>
             Replaces the credential behind <code>{account.account_id}</code>.
             Nothing here needs doing on a healthy account.
-            <HelpCard topic="credential-refresh-sweep" />
           </>
         )}
       </p>
@@ -3373,7 +3345,6 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
     <div className="acct-action danger">
       <h4>
         Remove
-        <HelpCard topic="account-removal-is-reversible" />
       </h4>
       {/* THE COUNT OF AFFECTED AGENTS IS THE FACT (§6) and it is a digit on
           the surface: it is the difference between a reversible tidy-up and
@@ -3453,8 +3424,10 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  * NONE OF IT WAS ANNOTATING ANYTHING ON SCREEN. It was a help article that
  * happened to be rendered below a pool, which is exactly what the owner
  * directive means by prose that belongs in a dedicated Help section. Every
- * sentence of it is now a topic in `help.ts`, reachable from the `?` beside the
- * control it is about and from the links below.
+ * sentence of it is now a topic in `help.ts`, reachable from the links below,
+ * from `#help/<id>` and from the Help section in the rail. It was also
+ * reachable from a `?` beside the control it was about, on fifty-four of them;
+ * B7.4 cut that to two. See the note on ACCOUNT_TOPICS.
  *
  * THE MARKS THEMSELVES DID NOT MOVE, and that is the test. An unmeasured cell
  * still draws NO BAR and an em dash, a projected figure still carries its
@@ -3465,7 +3438,8 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  * screen with every card closed and asserts it.
  *
  * B4.4 narrowed the index below to the six topics that have no `?` anchor on
- * the surface. See the note inside it.
+ * the surface; B7.4 put three back, because they no longer have one either.
+ * See the note inside it.
  */
 const ACCOUNT_TOPICS: readonly TopicId[] = [
   // B4.4: SEVENTEEN ENTRIES BECAME SIX, AND NOTHING BECAME UNREACHABLE.
@@ -3489,4 +3463,31 @@ const ACCOUNT_TOPICS: readonly TopicId[] = [
   'unreadable-documents', // why a count is only a fact if every document was read
   'skipped-for-this-tenant', // healthy, and still serving nobody here
   'refresh-token-required', // a credential that cannot be exchanged is refused
+
+  // B7.4: AND THE THREE B4.4 REMOVED ON THE GROUNDS THAT A `?` COVERED THEM.
+  //
+  // That reasoning was sound and its premise is gone. This screen held FIFTY-
+  // FOUR help anchors -- more than a third of the console's total, on one
+  // route -- and fifty-one of them have been deleted: the sign-in flow alone
+  // carried thirty, and every panel they sat in was already a written
+  // paragraph, so the glyph opened a shorter version of the text under it.
+  // Two remain, both on the pool table, and these two are the row-level facts
+  // that lost theirs and have nowhere else on the surface to live.
+  //
+  // THEY ARE NOT THE OTHER FORTY-NINE. Those are procedural -- what to do
+  // next in a flow whose own panels say what to do next -- and listing them
+  // here would rebuild the help article this footer replaced, in the place it
+  // was removed from. These three are properties of a FIGURE in the table: a
+  // count that is advisory rather than authoritative, a row that has never
+  // been assigned anything. A reader comparing two rows needs both and can get
+  // neither from anything else on screen.
+  //
+  // `provider-defines-windows` was the third candidate and is deliberately NOT
+  // here: the panel that lost its `?` for it already prints "5H, 7D and CLEARS
+  // above are unmeasured, not zero" in words, which is the whole claim. It is
+  // also what keeps this row inside the screen's budget --
+  // `prose.budget.capacity.test.tsx` caps Accounts at 250 rendered words and
+  // measured 227, and the two titles below are ten of the twenty-three left.
+  'advisory-vs-lease', // the agent count is the broker's, not the lease's
+  'never-assigned-pool', // nothing has ever been assigned, which is not idle
 ]

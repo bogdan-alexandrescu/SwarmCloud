@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react'
-import { HelpCard } from './HelpCard'
 import {
   CARRIER_LABEL,
   CARRIER_NOTE,
@@ -91,10 +90,22 @@ export function DispatchChoice({
 
   return (
     <fieldset className="dsp">
-      <legend className="t-label">
-        how this work gets merged
-        <HelpCard topic="dispatch-strategies" />
-      </legend>
+      {/* NO `?` ON ANY CONTROL IN THIS FIELDSET (B7.4), AND THE REASON IS THAT
+          THIS COMPONENT IS NOT A SCREEN.
+          It is drawn inside Submit, inside Submit a workflow and inside the
+          agent detail, so its five glyphs arrived on three screens that each
+          keep exactly one of their own -- five of the console's eighty-two came
+          from this one file. Every one of them explained the control it sat on,
+          and every one of those controls already says what it does: the legends
+          are sentences (`how this work gets merged`, `what carries work between
+          steps`), each strategy prints its own consequence in numbers beside
+          it, the unavailable one says why it is unavailable, and the repository
+          field says in its own label whether the current choice requires it.
+          `CARRIER_NOTE` below is the one thing no label could carry -- that the
+          control records a preference nothing acts on yet -- and it is printed,
+          not hidden behind a glyph. The strategy and carrier topics are in the
+          rail's Help section and on the agent detail's card foot. */}
+      <legend className="t-label">how this work gets merged</legend>
 
       <div className="dsp-options" role="radiogroup" aria-label="dispatch strategy">
         {DISPATCH_STRATEGIES.map((s) => {
@@ -126,10 +137,7 @@ export function DispatchChoice({
                 {/* THE CONSEQUENCE, on the option, in numbers. */}
                 <span className={`dsp-count${c.pushes ? '' : ' is-none'}`}>{c.headline}</span>
                 {unavailable && (
-                  <span className="dsp-off-why">
-                    Not available for a single task
-                    <HelpCard topic="integrate-needs-final-step" />
-                  </span>
+                  <span className="dsp-off-why">Not available for a single task</span>
                 )}
               </span>
             </label>
@@ -147,7 +155,6 @@ export function DispatchChoice({
 
       <label className="t-label" htmlFor="dsp-carrier" style={{ marginTop: 14 }}>
         what carries work between steps
-        <HelpCard topic="dispatch-carrier" />
       </label>
       <select
         id="dsp-carrier"
@@ -171,7 +178,6 @@ export function DispatchChoice({
 
       <label className="t-label" htmlFor="dsp-repo" style={{ marginTop: 14 }}>
         repository url {repoRequired ? '(required by this choice)' : '(optional)'}
-        <HelpCard topic="repository-url" />
       </label>
       <input
         id="dsp-repo"
@@ -348,12 +354,12 @@ function DispatchUnreported() {
     <div className="ctl-empty is-partial" role="status">
       {/* THE HEADING IS THE MARKER. "Did not report" and "reported that it
           published nothing" are two different facts, and the panel exists so
-          they never render alike. Why an absence means an old deployment
-          rather than a caller's choice is the topic. */}
-      <h3>
-        This API did not report a dispatch
-        <HelpCard topic="dispatch-absent-is-old-api" />
-      </h3>
+          they never render alike. B7.4 took the `?`: the heading names the
+          subject of the absence (the API, not the run) and the sentence under
+          it names what may not be concluded, which between them are the topic.
+          `#help/dispatch-absent-is-old-api` is on the Workflows board's own
+          copy of this panel. */}
+      <h3>This API did not report a dispatch</h3>
       <p>Nothing here says what this run would have published.</p>
     </div>
   )
