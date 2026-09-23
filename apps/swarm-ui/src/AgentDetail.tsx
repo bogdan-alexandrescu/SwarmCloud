@@ -1623,16 +1623,23 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
           <HelpCard topic="checkpoints" />
         </p>
       ) : (
-        {/* `is-stacked` — §2 OF `docs/audits/2026-09-23/overflow-inventory.md`
-            names this table by name: with the drawer open it hid 57% of itself
-            behind an `overflow-x: auto` that paints no scrollbar here, and what
-            was hidden is `Size` and `Location`. A checkpoint list showing only
-            checkpoint ids is a list that cannot answer the question anybody
-            opens it with — whether the thing was actually written and where.
-            Below 900px each row becomes a stacked record (§B6.3 in
-            `styles.css`); `data-label` supplies the key, as an attribute so the
-            rendered-word budgets count the same screen, and the explicit
-            `role`s keep the ARIA table that changing `display` drops. */}
+        /* `is-stacked` — §2 OF `docs/audits/2026-09-23/overflow-inventory.md`
+           names this table by name: with the drawer open it hid 57% of itself
+           behind an `overflow-x: auto` that paints no scrollbar here, and what
+           was hidden is `Size` and `Location`. A checkpoint list showing only
+           checkpoint ids is a list that cannot answer the question anybody
+           opens it with — whether the thing was actually written and where.
+           Below 900px each row becomes a stacked record (§B6.3 in
+           `styles.css`); `data-label` supplies the key, as an attribute so the
+           rendered-word budgets count the same screen, and the explicit
+           `role`s keep the ARIA table that changing `display` drops.
+
+           A PLAIN BLOCK COMMENT, NOT A BRACED JSX ONE. This arm of the ternary
+           is an expression position, not JSX children, so a leading brace opens
+           an object literal and the file stops parsing — three of these in this
+           file, and `tsc` said `TS1005: ')' expected`. Caught by CI on the
+           first push of this change, which is the only place it could have
+           been caught. */
         <div className="ctl-table is-stacked">
           <table role="table">
             <thead role="rowgroup">
@@ -1890,12 +1897,13 @@ function Artifacts({
           none uploaded
         </p>
       ) : (
-        {/* `is-stacked` (F6), the same three-column shape as the checkpoint
-            table above and in the same drawer, so it hides the same two
-            columns at the same width. `Location` is the one that matters here:
-            it carries the uri and the `copy gsutil` control, and a row whose
-            visible part is a name and nothing else offers no way out of the
-            console at all. */}
+        /* `is-stacked` (F6), the same three-column shape as the checkpoint
+           table above and in the same drawer, so it hides the same two columns
+           at the same width. `Location` is the one that matters here: it
+           carries the uri and the `copy gsutil` control, and a row whose
+           visible part is a name and nothing else offers no way out of the
+           console at all. (Unbraced, for the reason the checkpoint table's
+           comment gives.) */
         <div className="ctl-table is-stacked">
           <table role="table">
             <thead role="rowgroup">
@@ -2323,12 +2331,13 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
       </ul>
 
       {commits.length > 0 && (
-        {/* `is-stacked` (F6), and this is the widest of the drawer's tables:
-            four columns in a panel that is 413px at its default and 390 at a
-            phone. The subject is the long one and it is the column a reader is
-            here for, so squeezing all four is the worst of the options —
-            stacked, the sha leads the record and the subject gets the full
-            width under it. */}
+        /* `is-stacked` (F6), and this is the widest of the drawer's tables:
+           four columns in a panel that is 413px at its default and 390 at a
+           phone. The subject is the long one and it is the column a reader is
+           here for, so squeezing all four is the worst of the options —
+           stacked, the sha leads the record and the subject gets the full width
+           under it. (Unbraced, for the reason the checkpoint table's comment
+           gives.) */
         <div className="ctl-table is-stacked" style={{ marginTop: 10 }}>
           <table role="table">
             <thead role="rowgroup">
