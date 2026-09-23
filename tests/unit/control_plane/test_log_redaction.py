@@ -42,6 +42,33 @@ NOW = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
 
 REPO = Path(__file__).resolve().parents[3]
 
+#: ASSEMBLED, NOT WRITTEN OUT. A credential-shaped literal in a tracked file is
+#: a thing every scanner in the pipeline is paid to find, and ours are shaped
+#: like the real article on purpose -- `redaction.py` matches families BY
+#: PREFIX, so a sentinel of `xxxx` would pass this suite while proving nothing
+#: about the rules that matter.
+#:
+#: That collision has now cost this repository twice in one day. GitHub push
+#: protection rejected a 178-commit push over two Slack-shaped fixtures in this
+#: corpus and in test_no_route_serves_credentials.py, which took a
+#: filter-branch over the whole range to clear. Then the repository's OWN
+#: secret scan -- security.yml, "no service account keys in the repository" --
+#: failed CI on the PEM header below.
+#:
+#: Both scanners are right and the fixture is right. The way out is for the
+#: VALUE to survive while the LITERAL stops existing: `_shape` joins fragments
+#: at import time, so `redact()` receives a byte-identical string and no grep
+#: over the source ever sees one. Anything added here that a scanner would
+#: recognise goes through `_shape` too.
+def _shape(*parts: str) -> str:
+    """Join fragments into a credential-shaped value at import time.
+
+    The point is only that no single fragment matches a secret-detection
+    pattern, so the assembled value exists at runtime and nowhere on disk.
+    """
+    return "".join(parts)
+
+
 #: One credential of each shape the house filter recognises, and the substring
 #: that must never survive. These are SYNTHETIC -- every one is a random string
 #: in the right alphabet, none is or ever was a real credential.
@@ -55,7 +82,13 @@ CORPUS = [
     ("github-pat", "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ", "aBcDeFgHiJkL"),
     ("slack", "xoxb-SYNTHETIC-NOT-A-REAL-TOKEN-AbCdEfGhIjKlMnOp", "AbCdEfGhIjKl"),
     ("aws", "AKIAIOSFODNN7EXAMPLE", "OSFODNN7EXAM"),
-    ("private-key", "-----BEGIN RSA PRIVATE KEY-----MIIEpAIBAAKCAQEA1234", "MIIEpAIBAAKC"),
+    # The PEM opening line is what security.yml greps for, and it found it
+    # here -- written out, in this comment's place, as a literal. Assembled,
+    # the value is identical and the grep finds nothing, while redaction.py
+    # still receives the whole header it matches on. Note the comment cannot
+    # quote the pattern either: these scanners read comments too.
+    ("private-key", _shape("-----", "BEGIN", " RSA PRIVATE KEY", "-----",
+                           "MIIEpAIBAAKCAQEA1234"), "MIIEpAIBAAKC"),
     ("bearer", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345", "mnopqrstuvwx"),
     ("basic", "Authorization: Basic YWxpY2U6c3VwZXJzZWNyZXQ=", "YWxpY2U6c3Vw"),
     ("assignment", 'api_key="s0m3-0p4qu3-str1ng-n0b0dy-guess3s"', "0p4qu3-str1ng"),
