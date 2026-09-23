@@ -44,10 +44,26 @@ test('the bare #help route reaches the Help section', () => {
 })
 
 test('a route round-trips through its canonical spelling', () => {
-  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'agents/running']) {
+  // `work/running` WAS `agents/running`, AND THE ENTRY WAS NOT A TYPO -- it was
+  // the round trip being asked of a spelling that is no longer canonical.
+  // `agents` became `work` and `pools` became `capacity`; SECTION_ALIASES keeps
+  // both old spellings resolving, and `canonical` exists precisely to rewrite
+  // them to the new one. So the old entry was asserting that the alias machine
+  // does NOT work, and it went red the moment the rename landed:
+  // `#agents/running is rewritten to something else + 'work/running'`.
+  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'work/running']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)
   }
+})
+
+test('an aliased route does NOT round-trip: it canonicalises', () => {
+  // The other half of the pair above, and the half that was missing. A saved
+  // `#agents/running` link must keep working AND must be rewritten in place to
+  // the spelling this build uses -- copying the address bar after following an
+  // old link has to yield the current name, or the old one spreads again.
+  at('#agents/running')
+  assert.equal(canonical(fromHash()), 'work/running', 'the old spelling was not rewritten')
 })
 
 test('an unknown topic is carried to the screen, not rewritten away', () => {

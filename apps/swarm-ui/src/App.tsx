@@ -1014,8 +1014,16 @@ function AgentDrawer({
   pane: TaskPane
   go: (to: string) => void
 }) {
-  const base = `agents/task/${encodeURIComponent(taskId)}`
-  const close = () => go('agents/running')
+  // `WORK`, NOT THE LITERAL `agents`. These two were the last places in the app
+  // still MINTING the old spelling: `openAgent` twenty lines up already builds
+  // `${WORK}/task/...`, and `nav.links.test.tsx` fails the build on an internal
+  // href that uses an alias -- but these are `go()` calls, so it could not see
+  // them. Every pane switch and every close wrote `#agents/...`, which resolved
+  // through SECTION_ALIASES and was then rewritten in place by the canonicalise
+  // effect, so nothing was visibly broken and nothing was going to make anyone
+  // update it either.
+  const base = `${WORK}/task/${encodeURIComponent(taskId)}`
+  const close = () => go(`${WORK}/running`)
   const [width, setWidth] = useState(() => readPane(INSPECTOR))
   const dragging = useRef(false)
   const panel = useRef<HTMLDivElement>(null)
