@@ -352,16 +352,30 @@ function Identity({ me }: { me: Result<Me> }) {
       return <IdentityFacts me={me.data} />
     case 'empty':
       // `/v1/tenants/me` answering with nothing is not a tenant with no name;
-      // it is a read that did not produce one, and it says so.
+      // it is a read that did not produce one.
+      //
+      // THE SENTENCE BECAME THE SLOT. It used to say, in 16 words, that the
+      // header cannot name your tenant -- in the header, beside the empty
+      // place where the tenant's name goes. The key stays, the value is an em
+      // dash in `--ctl-absent`, and the fact is now an attribute of the slot
+      // rather than a paragraph standing next to it: a paragraph can sit
+      // beside a field it does not describe, and this cannot. The long form is
+      // the accessible name.
       return (
-        <p className="brand-who is-unread" role="status">
-          The identity read returned nothing — this header cannot say whose
-          tenant you are looking at.
+        <p
+          className="brand-who is-unread"
+          role="status"
+          aria-label="The identity read returned nothing, so this header cannot say whose tenant you are looking at."
+        >
+          <span className="brand-k">tenant</span>
+          <i className="ctl-em">&mdash;</i>
+          <i className="ctl-mark is-absent">not read</i>
         </p>
       )
     case 'error':
       return (
         <p className="brand-who is-unread" role="status" title={me.error.message}>
+          <i className="ctl-mark is-unread">not read</i>
           {errorHeading(me.error)} — tenant and sign-in unread
         </p>
       )

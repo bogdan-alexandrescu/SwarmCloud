@@ -813,12 +813,16 @@ function SectionBody({
       // confusion this whole UI is built to avoid.
       return (
         <div className="ctl-empty">
+          {/* NO `.ctl-mark` HERE, deliberately. The mark's six words are the
+              six kinds of missing MEASUREMENT, and a mistyped address is not
+              one of them -- inventing a seventh is how the vocabulary stops
+              being a vocabulary. What this needs is the heading and the
+              address it was given, which is below. */}
           <h3>No such pane</h3>
-          <p>
-            This address names a pane of <strong>{sectionId}</strong> that does
-            not exist. Nothing was read and nothing failed — pick a pane above.
-          </p>
-          <span className="ctl-empty-foot">requested: {sectionId}/{tab || '(none)'}</span>
+          <p>Nothing was read and nothing failed.</p>
+          <span className="ctl-empty-foot">
+            requested: {sectionId}/{tab || '(none)'}
+          </span>
         </div>
       )
   }
@@ -956,32 +960,30 @@ function ReferenceScreen() {
 
   return (
     <>
-      <div className="head">
+      {/* THE LEAD PARAGRAPH IS THE COLUMN HEADING NOW. 48 words said one thing:
+          this is what THIS TAB called, not what the API offers. That caveat
+          belongs to the thing it qualifies -- the page's own title -- so it is
+          a `.ctl-card-note` beside it, in the slot §8.4.2 reserves for exactly
+          this, and the argument is one click away in `#help/api-reads`. */}
+      <div className="ctl-page-head">
         <h1>{REFERENCE_LABEL}</h1>
-        
+        <span className="ctl-card-note">this tab only · not the API surface</span>
+        <a className="is-end" href={`#${HELP}/api-reads`}>
+          What these mean &rarr;
+        </a>
       </div>
-      <p className="sub">What this UI reads, and how those reads are going.</p>
-
-      <p className="ctl-ref-lead">
-        This is <strong>not</strong> a list of the endpoints SwarmCloud offers.
-        It is every route this browser tab has called since it loaded, taken
-        from the same registry that fills the strip at the foot of every
-        screen. A route absent from it has not been called yet — which is not
-        the same as a route that does not exist.
-      </p>
 
       {probes.length === 0 ? (
+        // A REAL ZERO, and the one screen in the product where that is true by
+        // construction: this page issues no reads of its own. `.is-partial`
+        // and `.is-failed` would both be claims; the default variant is the
+        // one that means "we looked and there is nothing".
         <div className="ctl-empty">
-          <h3>Nothing has been read yet in this tab</h3>
-          <p>
-            This page issues no requests of its own, so it starts empty by
-            design. Open any section and come back — each read registers here
-            as it happens.
-          </p>
-          <p>
-            Nothing failed, and this says nothing about whether the API is
-            reachable.
-          </p>
+          <h3>
+            <i className="ctl-mark is-zero">real zero</i> Nothing has been read
+            yet in this tab
+          </h3>
+          <p>Nothing failed. Open any section and each read registers here.</p>
         </div>
       ) : (
         <section className="section">
@@ -992,7 +994,12 @@ function ReferenceScreen() {
                 <tr>
                   <th scope="col">Route</th>
                   <th scope="col">Last attempt</th>
-                  <th scope="col">Outcome</th>
+                  {/* THE PARENTHETICAL CARRIES THE CAVEAT (§8.4.3). The
+                      caption used to spend 24 words saying a 403 on an admin
+                      route is the expected answer for a non-admin; the column
+                      it is about says so instead, and `describeProbe` already
+                      draws that row in `--info` rather than in `--bad`. */}
+                  <th scope="col">Outcome (403 on /v1/admin is expected)</th>
                   <th scope="col" className="is-num">Took</th>
                   <th scope="col">Newest payload</th>
                 </tr>
@@ -1003,9 +1010,8 @@ function ReferenceScreen() {
                 ))}
               </tbody>
               <caption>
-                {probes.length} route{probes.length === 1 ? '' : 's'} called
-                since this tab loaded · a 403 on an <code>/v1/admin</code> route
-                is the expected answer for a non-admin, not a fault
+                {probes.length} route{probes.length === 1 ? '' : 's'} since this
+                tab loaded
               </caption>
             </table>
           </div>

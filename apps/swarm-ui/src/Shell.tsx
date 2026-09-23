@@ -178,23 +178,47 @@ function SubLine<T>({
  * toast: at 390pt a toast sits under the thumb and gets dismissed by accident,
  * and the one thing this must guarantee is that the failure is still on screen
  * when the operator looks.
+ *
+ * THE SENTENCE BECAME A FACTS STRIP. "The numbers below were read 4m ago and
+ * have not been refreshed since" was a sentence wrapped around two facts and a
+ * verb. The facts are the same two, keyed, in the strip below; the third fact
+ * -- that the rows underneath are dimmed -- is carried by `.stale-body`, which
+ * is an attribute of the rows themselves and therefore cannot drift away from
+ * them the way a paragraph above them can.
  */
 function StaleBanner({ error, fetchedAt }: { error: ApiError; fetchedAt: number }) {
   return (
     <div className="state stale-note" role="status">
       <h3>{errorHeading(error)} — showing older data</h3>
-      <p>
-        The numbers below were read {timeAgo(fetchedAt)} and have not been refreshed
-        since. {error.message}
-      </p>
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>read</b>
+          {timeAgo(fetchedAt)}
+        </li>
+        <li className="ctl-fact">
+          <b>since</b>
+          {error.message}
+        </li>
+      </ul>
     </div>
   )
 }
 
 /**
  * The panel that exists because this platform's defining bug was rendering a
- * failed read as an empty one. The second paragraph is not decoration: without
- * it a reader takes an error screen as evidence about the platform.
+ * failed read as an empty one.
+ *
+ * WHAT IS ALLOWED TO STAY, AND WHY IT IS EXACTLY TWO LINES. This panel is an
+ * empty state, so its shape is the fixed one: a mark, a heading, ONE sentence,
+ * and a way out. The mark is `.ctl-mark`, which names which kind of nothing
+ * this is in two words and in a border style that survives greyscale; the
+ * sentence is the server's own message, because it is the only part that says
+ * where to look.
+ *
+ * `errorReassurance` IS NOT DECORATION AND IS NOT PROSE TO BE MOVED. It is the
+ * invariant itself, in the one state where no encoding can carry it: a failed
+ * read renders no figure, and the absence of a figure is not a thing a reader
+ * can see. Everything else on this panel was cut; this stays.
  */
 export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
   const reload = error.kind === 'session_expired' || error.kind === 'unauthenticated'
@@ -204,14 +228,17 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
   // platform" under it -- tells someone their platform is broken when they
   // are simply not an admin. The Trouble board got this right panel-by-panel
   // and every screen using this component got it wrong.
+  //
+  // "You are not in an admin group, so this screen has nothing to show you" is
+  // gone: it restated the heading, and the blue solid `.ctl-mark.is-admin`
+  // now carries the same claim as a shape.
   if (error.kind === 'admin_required') {
     return (
       <div className="state admin-gate" role="status">
-        <h3>{errorHeading(error)}</h3>
-        <p>
-          You are not in an admin group, so this screen has nothing to show
-          you. Nothing is wrong with the platform, and nothing failed.
-        </p>
+        <h3>
+          <i className="ctl-mark is-admin">admin only</i> {errorHeading(error)}
+        </h3>
+        <p>Nothing is wrong with the platform, and nothing failed.</p>
         <p className="checked-at">{error.message}</p>
       </div>
     )
@@ -219,9 +246,11 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
 
   return (
     <div className="state failed">
-      <h3>{errorHeading(error)}</h3>
+      <h3>
+        <i className="ctl-mark is-unread">not read</i> {errorHeading(error)}
+      </h3>
       <p>{error.message}</p>
-      <p style={{ marginTop: 8 }}>{errorReassurance(error)}</p>
+      <p className="state-invariant">{errorReassurance(error)}</p>
       {error.httpStatus !== null && (
         <p className="checked-at">
           HTTP {error.httpStatus}
@@ -239,8 +268,7 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
         // wall they were told about, and the token bucket is 20 rps per
         // principal per instance -- every open tab counts against it.
         <p className="checked-at">
-          Retrying is disabled for {error.retryAfterSeconds ?? 'a few'} more
-          seconds, because the API asked us to wait that long.
+          paused {error.retryAfterSeconds ?? 'a few'}s — the API asked us to wait
         </p>
       ) : (
         <button className="retry" onClick={onRetry}>
@@ -251,11 +279,19 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
   )
 }
 
+/**
+ * THE GEOMETRY A VALUE WILL OCCUPY, while it is still being read.
+ *
+ * The three inline numbers here were the only off-scale corner left in the
+ * frame: `borderRadius: 8` is not one of 0/2/6/10/14/999, and a React inline
+ * style is the one place the sheet's corner scale cannot see. They are a class
+ * now, so `spaceprobe.ts` grades them like everything else.
+ */
 export function SkeletonRows({ rows = 6 }: { rows?: number }) {
   return (
     <div className="section" aria-hidden>
       {Array.from({ length: rows }, (_, i) => (
-        <div className="skeleton" key={i} style={{ height: 38, marginBottom: 6, borderRadius: 8 }} />
+        <div className="skeleton ctl-skeleton-row" key={i} />
       ))}
     </div>
   )
@@ -309,27 +345,16 @@ export function Id({
   )
 }
 
-export function Nav({ at, go }: { at: string; go: (to: string) => void }) {
-  const tabs = [
-    ['home', 'Home'],
-    ['trouble', 'Trouble'],
-    ['capacity', 'Capacity'],
-    ['holders', 'Holders'],
-    ['agents', 'Agents'],
-    ['workflows', 'Workflows'],
-    ['activity', 'Activity'],
-    ['quota', 'Quota'],
-    ['counts', 'Counts'],
-    ['tenants', 'Tenants'],
-    ['settings', 'Settings'],
-  ] as const
-  return (
-    <nav className="nav">
-      {tabs.map(([id, label]) => (
-        <button key={id} className={at === id ? 'on' : ''} onClick={() => go(id)}>
-          {label}
-        </button>
-      ))}
-    </nav>
-  )
-}
+/**
+ * THE ELEVEN-ITEM NAV IS DELETED, not left exported for nothing to import.
+ *
+ * `App.tsx`'s `Rail` replaced it: six sections named after objects, every tab
+ * always rendered, a position that means one thing. This component survived
+ * the redesign as an export nothing called -- eleven buttons including
+ * `Trouble`, a destination `App.tsx` deliberately removed and whose hash now
+ * resolves to Overview. A second, stale answer to "what are this product's
+ * sections", compiling and shipping in the bundle, is exactly the kind of
+ * thing somebody renders again by autocomplete.
+ *
+ * Nothing imported it: `grep -rn "Nav" src/*.tsx` found only the declaration.
+ */

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { loadTaskWindow, loadTenants } from './api'
+import { helpAnchor, type TopicId } from './help'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   TERMINAL_STATES,
@@ -12,6 +13,23 @@ import {
 
 const BUCKETS: Bucket[] = ['hour', 'day', 'week', 'month']
 const BUDGETS = [200, 500, 1000, 2000]
+
+/**
+ * Where the sentences that used to be on this screen now live.
+ *
+ * Typed as `TopicId` rather than spelled into an href, so a renamed topic is a
+ * compile error here instead of a `?` that lands on the top of the Help page
+ * and answers nothing -- the same rule `Dock.tsx` states for its own link.
+ */
+const WINDOW_HELP: TopicId = 'partial-read'
+const SPEND_HELP: TopicId = 'tokens-reported'
+const SCOPE_HELP: TopicId = 'tenant-scope'
+const ABSENCE_HELP: TopicId = 'absent-vs-zero'
+
+/** `#help/<topic>`, as an href. */
+function helpHref(topic: TopicId): string {
+  return `#${helpAnchor(topic)}`
+}
 
 /**
  * Screen A1 -- the Timeline pane of History.
@@ -44,9 +62,12 @@ export function ActivityScreen() {
       title="Timeline"
       load={load}
       summary={(w) => <WindowSummary window={w} />}
+      // ONE SENTENCE, and it is the one that distinguishes this from a failed
+      // read -- which is the distinction the whole product is built on. The
+      // second sentence restated it and is gone.
       empty={{
         heading: 'No tasks in this tenant',
-        body: 'The read succeeded and returned nothing. Nothing has ever been submitted under this tenant.',
+        body: 'The read succeeded and returned nothing.',
       }}
     >
       {(w) => (
@@ -141,10 +162,23 @@ function WindowBar({
           </select>
         </label>
       </div>
+      {/* A PARTIAL TOTAL IS NOT A TOTAL, and it is now drawn rather than
+          narrated. `.ctl-mark.is-partial` is dashed on one edge only -- the
+          side the missing part would have been on -- and the qualifier beside
+          it names the window everything below is computed over. The 20-word
+          sentence that said the same thing is `#help/partial-read`, and the
+          full claim is the mark's accessible name, so a screen reader gets it
+          at the mark instead of two lines away from it. */}
       {w.moreExist && (
-        <p className="client-side wb-more">
-          Older tasks exist beyond this window — everything below describes
-          these {w.tasks.length} rows and the span above, not all time.
+        <p
+          className="client-side wb-more"
+          aria-label={`Older tasks exist beyond this window. Everything below describes these ${w.tasks.length} rows and the span above, not all time.`}
+        >
+          <i className="ctl-mark is-partial">partial</i>
+          <span className="wb-more-note">
+            these {w.tasks.length} rows only · older tasks exist
+          </span>
+          <a href={helpHref(WINDOW_HELP)}>Why &rarr;</a>
         </p>
       )}
     </div>
@@ -211,12 +245,20 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
   return (
     <section className="section">
       <h2>Outcomes by {bucket}</h2>
+      {/* THE QUALIFIER, where 28 words of warning paragraph used to be. The
+          fact -- these rows carry no `completed_at` and are counted as open
+          rather than dropped -- is a fact about this chart, so it sits on the
+          chart's own header line and cannot drift away from it. WHY it is a
+          data bug (every writer that moves a task terminal sets the field) is
+          the mark's accessible name and one click away. */}
       {anomalies > 0 && (
-        <p className="warn-text">
-          {anomalies} terminal task{anomalies === 1 ? '' : 's'} carry no{' '}
-          <code>completed_at</code>. Every writer that moves a task terminal sets
-          it, so this is a data bug — they are counted as still open rather than
-          dropped.
+        <p
+          className="ctl-panel-note"
+          aria-label={`${anomalies} terminal tasks carry no completed_at. Every writer that moves a task terminal sets it, so this is a data bug; they are counted as still open rather than dropped.`}
+        >
+          <i className="ctl-mark is-unread">not read</i> {anomalies} with no{' '}
+          <code>completed_at</code>, counted as open
+          <a href={helpHref(ABSENCE_HELP)}>Why &rarr;</a>
         </p>
       )}
       <div className="chart" role="img" aria-label={`Task outcomes by ${bucket}`}>
@@ -235,12 +277,18 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
           )
         })}
       </div>
+      {/* THE LEGEND IS A LEGEND AGAIN. It carried a trailing clause explaining
+          that the stacks bucket on `completed_at` and that submission time is
+          a different question -- which is true, and is the axis's job to say.
+          It is the axis's job now: the panel title names the bucket and the
+          legend's own key says `by completed_at`, fused to the thing it
+          qualifies rather than trailing it as a sentence. */}
       <p className="chart-legend">
         <span className="k succeeded" /> succeeded <span className="k failed" /> failed
         <span className="k cancelled" /> cancelled <span className="k open" /> still open
-        {' · '}
-        stacks bucket on <code>completed_at</code>; a task&apos;s submission time is
-        a different question
+        <span className="cl-basis">
+          by <code>completed_at</code>
+        </span>
       </p>
     </section>
   )
@@ -272,11 +320,11 @@ function Tiles({ window: w }: { window: TaskWindow }) {
             : 'none completed in window'
         }
       />
-      <Tile
-        label="Attempts consumed"
-        value={String(attempts)}
-        sub="admissions, not runs — a lease reclaimed before dispatch counts here"
-      />
+      {/* A TILE'S `sub` IS A QUALIFIER, NEVER A DEFINITION (§6.2). "a lease
+          reclaimed before dispatch counts here" is the definition; "admissions,
+          not runs" is the qualifier, and it is the half that changes how the
+          figure is read. */}
+      <Tile label="Attempts consumed" value={String(attempts)} sub="admissions, not runs" />
       <SpendTile total={rows.length} withUsage={withUsage} />
     </div>
   )
@@ -306,30 +354,41 @@ function Tile({ label, value, sub }: { label: string; value: string; sub: string
  */
 function SpendTile({ total, withUsage }: { total: number; withUsage: number }) {
   if (withUsage === 0) {
+    // NEVER A NUMBER HERE. The words are still "not recorded" and the tile is
+    // still on screen -- both are the invariant and neither moves. What moved
+    // is the 39-word account of WHY (the capture read the wrong level of the
+    // runner's result, it is fixed in the worker and not yet in an image, the
+    // raw figures are in each transcript): that is a paragraph, it is the same
+    // paragraph on every visit, and it is `#help/tokens-reported`. The dashed
+    // border and the mark are what a reader sees instead, and they say the one
+    // thing the paragraph was there to prevent -- this is not zero.
     return (
-      <div className="tile blocked">
+      <div
+        className="tile blocked is-absent"
+        aria-label="Tokens and spend were not recorded. Every task stored an empty usage block, so this is an absent measurement and not a spend of zero."
+      >
         <span className="t-label">Tokens &amp; spend</span>
         <span className="t-value">not recorded</span>
         <span className="t-sub">
-          The capture read the wrong level of the runner&apos;s result, so every
-          task stored an empty usage block. Fixed in the worker, not yet shipped
-          in an image — and tasks that already ran will never have it. The raw
-          numbers are still in each attempt&apos;s transcript in GCS.
+          <i className="ctl-mark is-absent">not measured</i>
+          <a href={helpHref(SPEND_HELP)}>Why &rarr;</a>
         </span>
       </div>
     )
   }
   const pct = Math.round((withUsage / Math.max(1, total)) * 100)
   return (
-    <div className="tile">
+    <div
+      className="tile"
+      aria-label={`${withUsage} of ${total} rows carry usage. The rest predate the capture, so any total over this window would understate.`}
+    >
       <span className="t-label">Tokens &amp; spend</span>
       <span className="t-value">{withUsage} of {total}</span>
       <span className="t-sub">
         <span className="coverage">
           <i style={{ width: `${pct}%` }} />
         </span>
-        {pct}% of rows carry usage — the rest predate the capture, so any total
-        would understate.
+        {pct}% of rows carry usage
       </span>
     </div>
   )
@@ -411,11 +470,19 @@ function People({ window: w }: { window: TaskWindow }) {
           </tbody>
         </table>
       </div>
-      <p className="muted small">
-        Grouped client-side over the {w.tasks.length} rows in the window. There
-        is no server-side filter or index on <code>submitted_by</code>, so this
-        cannot be a per-engineer query — and an engineer whose work fell outside
-        the window is absent rather than shown as zero.
+      {/* THE PROVENANCE STRIP (§8.4.4): when, over what, from where. One line.
+          The 44-word version also explained that there is no server-side index
+          on `submitted_by` and that an engineer outside the window is absent
+          rather than zero -- the first is an argument and belongs in
+          `#help/tenant-scope`, the second is the invariant and is now the
+          mark, which is attached to the table instead of sitting under it. */}
+      <p
+        className="ctl-panel-note"
+        aria-label={`Grouped client-side over the ${w.tasks.length} rows in the window. There is no server-side filter or index on submitted_by, so an engineer whose work fell outside the window is absent here rather than shown as zero.`}
+      >
+        <i className="ctl-mark is-partial">partial</i>
+        client-side over {w.tasks.length} rows in the window
+        <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
       </p>
     </section>
   )
@@ -434,9 +501,11 @@ export function TenantsScreen() {
       title="Tenants"
       load={loadTenants}
       summary={(d) => `${d.tenants.length} tenants`}
+      // One sentence, and it is the one that separates a real zero from a
+      // failed read. The provisioning argument is `docs/`.
       empty={{
         heading: 'No tenants',
-        body: 'The read succeeded and returned nothing. Tenants are created at provisioning time, so an environment with none has not been fully applied.',
+        body: 'The read succeeded and returned nothing.',
       }}
     >
       {(d) => (
@@ -497,13 +566,20 @@ export function TenantsScreen() {
               </tbody>
             </table>
           </div>
-          <p className="muted small">
-            <code>monthly_budget_usd</code> is deliberately not shown. The field
-            exists on the model and is returned by the API, but{' '}
-            <code>PUT /v1/admin/tenants/&#123;id&#125;/limits</code> rejects it with a 422
-            — there is no cost attribution source — so it is <code>null</code> for
-            every tenant. Rendering it would be rendering a permanent blank that
-            reads as &ldquo;no budget set&rdquo;.
+          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE. A table with
+              a column quietly missing is a table a reader completes from
+              memory, so this cannot simply be deleted -- but the 56-word
+              account of the 422, the missing cost-attribution source and the
+              permanent null is an argument, and arguments live in `docs/`.
+              What stays is the fact: there is no budget column, and the reason
+              is one word long. */}
+          <p
+            className="ctl-panel-note"
+            aria-label="monthly_budget_usd is not shown. PUT /v1/admin/tenants/{id}/limits rejects it with a 422 because there is no cost attribution source, so it is null for every tenant; rendering it would render a permanent blank that reads as no budget set."
+          >
+            <i className="ctl-mark is-absent">not measured</i>
+            no <code>monthly_budget_usd</code> column · no cost attribution
+            source
           </p>
         </section>
       )}

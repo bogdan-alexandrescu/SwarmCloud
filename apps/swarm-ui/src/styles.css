@@ -814,6 +814,25 @@ body {
 .skeleton { background: var(--surface-2); border-radius: var(--track-radius); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
 
+/* THE PENDING ROW'S GEOMETRY, out of a React inline style and into the sheet.
+   `Shell.tsx` wrote `{ height: 38, marginBottom: 6, borderRadius: 8 }` inline,
+   and 8px is not one of 0/2/6/10/14/999 -- the one off-scale corner left in
+   the frame, in the one place `spaceprobe.ts` can only see once the value is a
+   rule. 38px is the row a table draws plus its rule, so the skeleton occupies
+   the geometry the data will. */
+.ctl-skeleton-row { height: 38px; margin-bottom: 6px; border-radius: var(--ctl-radius-sm); }
+
+/* THE INVARIANT LINE on a failure panel: what this failure is NOT evidence of.
+   It is the one sentence in the product that no visual encoding can replace,
+   because the thing it is about -- the figure that is not on screen -- has no
+   mark to attach to. Set apart from the server's message above it by a step of
+   air, never by a rule: there is no twin to make a rule a separator. */
+.state p.state-invariant { margin-top: var(--ctl-s2); }
+
+/* The absence mark in a panel heading sits on the baseline of the words it
+   qualifies rather than riding the cap line of a 20px title. */
+.state h3 > .ctl-mark { vertical-align: 2px; margin-right: 2px; }
+
 /* ---- phone ---- */
 /* Two cards per row is still readable at 390pt; one wastes the screen. The
    card is designed so its three lines survive the narrower column. */
@@ -1443,6 +1462,46 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 .page-note { margin-top: 10px; }
 
+/* THE PANEL QUALIFIER: one line under a panel, where a paragraph used to be.
+   Mark, then the fact, then a link to the argument -- in that order, because
+   the mark is what a reader sees without reading and the link is what they
+   reach for when the mark is not enough.
+
+   IT IS DELIBERATELY NOT A BOX. A bordered note is a second panel inside a
+   panel, and this sheet already learned that the way out of "text against a
+   rule" is usually to draw no rule (§5.2). Air separates it; nothing measures
+   it; it reads lighter than the paragraph it replaced. */
+.ctl-panel-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s2);
+  margin: var(--ctl-s2) 0 0;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+.ctl-panel-note code { font-size: var(--t-micro); color: var(--text-dim); }
+/* The server's own words about THIS read -- the only part of an unread
+   measurement that says where to look. It wraps, so it takes the whole line
+   rather than pushing the mark off the row. */
+.ctl-panel-note-detail { flex-basis: 100%; color: var(--text-dim); }
+/* A FIELD'S CONTRACT, FUSED TO ITS LABEL (§8.4.3). `input (JSON object) —
+   claude-code reads input.prompt` is a label; the same words under the
+   textarea were a paragraph. */
+.t-label-note {
+  margin-left: var(--ctl-s2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+}
+.t-label-note code { font-size: var(--t-micro); color: var(--text-dim); }
+.ctl-panel-note a {
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .row .agent { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .row .agent b { font-size: var(--t-body); font-weight: 600; }
 .row .agent .model { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
@@ -1761,7 +1820,21 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--bg); color: var(--text); font-size: var(--t-body);
 }
-.wb-more { flex-basis: 100%; margin: 4px 0 0; }
+/* A PARTIAL WINDOW, DRAWN. The mark is dashed on the edge the missing rows
+   would have been on; the note names the window every figure below is computed
+   over; the link is the argument. Twenty words of sentence became three
+   elements, one of which needs no reading at all. */
+.wb-more {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s2);
+  margin: var(--ctl-s2) 0 0;
+  font-style: normal;
+}
+.wb-more-note { color: var(--text-dim); }
+.wb-more a { color: var(--info); text-decoration: underline; text-underline-offset: 3px; }
 
 /* §B4.3 move 3: CAP THE BARS, AND LEFT-ALIGN THEM.
    `.chart .col { flex: 1 }` divided the full content width between the
@@ -1801,6 +1874,10 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .chart-legend .k.failed    { background: var(--bad); }
 .chart-legend .k.cancelled { background: var(--text-faint); }
 .chart-legend .k.open      { background: var(--surface-2); border: 1px solid var(--line); }
+/* THE BASIS, FUSED TO THE LEGEND rather than trailing it as a clause. "stacks
+   bucket on completed_at; a task's submission time is a different question"
+   was a sentence explaining an axis; this is the axis saying it. */
+.chart-legend .cl-basis { margin-left: var(--ctl-s3); }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; margin-bottom: 14px; }
 .tile {
@@ -1815,6 +1892,17 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    --t-body, not --t-figure: the figure step is reserved for a figure. */
 .tile.blocked { border-style: dashed; }
 .tile.blocked .t-value { font-size: var(--t-body); color: var(--text-faint); font-weight: 500; }
+/* The absence mark and its way out, on the tile's third line, where the
+   39-word account of the capture bug used to be. Scoped to `.blocked`: the
+   measured variant's third line is a track with a figure under it and must
+   stay a block, or the track collapses to its content width. */
+.tile.blocked .t-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s2);
+}
+.tile.blocked .t-sub a { color: var(--info); text-decoration: underline; text-underline-offset: 3px; }
 .coverage { margin-bottom: 5px; }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
@@ -4150,14 +4238,17 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   overflow-y: auto;
   padding: 0 var(--app-pad) var(--ctl-s3);
 }
-.ctl-dock-lead {
-  margin: 0 0 var(--ctl-s2);
-  font-size: var(--t-body);
-  line-height: var(--lh-body);
-  color: var(--text-dim);
-  max-width: var(--measure);
+/* THE DOCK'S ONE ROW OF CHROME, where a 36-word lead used to be. Eyebrow left,
+   the two destinations right -- Railway's Observability header exactly: a
+   control at each end and zero words of product copy between them. */
+.ctl-dock-tools { margin: var(--ctl-s2) 0; }
+.ctl-dock-tools .ctl-eyebrow { margin: 0; }
+.ctl-dock-tools a {
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
-.ctl-dock-lead a { color: var(--info); }
 .ctl-dock-foot {
   margin: var(--ctl-s2) 0 0;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
@@ -4229,18 +4320,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    page headed "the API" that lists only what happened to be fetched would be
    claiming completeness it does not have. */
 
-.ctl-ref-lead {
-  margin: 0 0 var(--ctl-s3);
-  padding: var(--ctl-s3);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--info);
-  border-radius: var(--radius);
-  background: var(--surface);
-  font-size: var(--t-lead);
-  line-height: var(--lh-lead);
-  color: var(--text-dim);
-}
-.ctl-ref-lead strong { color: var(--text); }
+/* `.ctl-ref-lead` IS GONE, not restyled. It was a bordered 48-word box at the
+   top of the page whose whole content was a caveat about the page's title --
+   "this is not the API surface, it is what this tab called". §8.4.2 gives a
+   caveat about a titled thing one slot, beside the title, and that is what the
+   screen uses now: `.ctl-page-head` with a `.ctl-card-note`. The argument the
+   box made at length lives in `#help/api-reads`. */
 .ctl-ref-path { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
 .ctl-ref-ms { font-variant-numeric: tabular-nums; color: var(--text-faint); }
 
@@ -4549,14 +4634,30 @@ table.pools tbody tr.unmeasured {
 .stop-confirm p { margin: 0 0 var(--ctl-s2); font-size: var(--t-body); line-height: var(--lh-body); }
 .stop-confirm code { font: var(--t-body)/var(--lh-body) var(--mono); }
 
-/* The sentence that makes the decision small gets the affirmative colour, not
-   the warning one: "the work is kept" is reassurance, and colouring it like a
-   hazard would undo what it is there to do. */
-.stop-keeps { color: var(--text-dim); }
-.stop-keeps strong { color: var(--ok); }
-.stop-when { color: var(--text-dim); }
-.stop-blast { border-top: 1px solid var(--line); padding-top: var(--ctl-s2); }
-.stop-blast strong { color: var(--warn); }
+/* `.stop-keeps` AND `.stop-when` ARE GONE, with the paragraphs they styled.
+   The dialog is four keyed facts now (§6.13): what it stops, which attempt,
+   what happens to the work, and when it takes effect. Every claim
+   `test_cancel_semantics.py` holds is one of those values, word for word; the
+   sentences that argued for them are the strip's accessible name.
+
+   ONE FACT PER LINE, not a wrapping strip. Elsewhere `.ctl-facts` wraps
+   because its facts are short and unordered; these four are read in order and
+   one of them is a decision, so they are rows. */
+.stop-facts {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ctl-s1);
+}
+.stop-facts > .ctl-fact { display: flex; flex-wrap: wrap; gap: var(--ctl-s1) var(--ctl-s2); }
+/* A key column, so the four values line up and the pair reads as a table
+   rather than as four sentences. It wraps at 390px rather than forcing a
+   scroll: the value is the part worth reading and it gets the whole line. */
+.stop-facts > .ctl-fact > b { min-width: 13ch; }
+.stop-blast {
+  margin-top: var(--ctl-s2);
+  border-top: 1px solid var(--line);
+  padding-top: var(--ctl-s2);
+}
 
 .stop-actions { display: flex; gap: var(--ctl-s2); margin-top: var(--ctl-s3); }
 .stop-actions button {

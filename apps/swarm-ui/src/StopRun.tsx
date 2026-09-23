@@ -144,18 +144,28 @@ export function StopRun({
   }
 
   if (outcome !== null) {
+    // STOPPED AND STOP-REQUESTED ARE DIFFERENT FACTS AND STAY DIFFERENT WORDS.
+    // `released_immediately` is the only thing that says which, and the two
+    // must not converge -- that is the whole point of reading the field rather
+    // than the status. What went is the second sentence of each: the long form
+    // is the accessible name.
     return (
-      <p className={variant === 'inline' ? 'stop-note small' : 'stop-note'}>
+      <p
+        className={variant === 'inline' ? 'stop-note small' : 'stop-note'}
+        aria-label={
+          outcome === 'released'
+            ? 'Stopped. It held no capacity, so it went straight to CANCELLED. No attempt had started, so there is nothing to harvest.'
+            : 'Stop requested. It is recorded on the task. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
+        }
+      >
         {outcome === 'released' ? (
           <>
-            <strong>Stopped.</strong> It held no capacity, so it went straight to
-            CANCELLED. No attempt had started, so there is nothing to harvest.
+            <strong>Stopped.</strong> It held no capacity, so nothing to harvest.
           </>
         ) : (
           <>
-            <strong>Stop requested.</strong> It is recorded on the task. The
-            agent is still running and still spending until its next heartbeat,
-            when the worker checkpoints, uploads and exits.
+            <strong>Stop requested.</strong> Still running until the next
+            heartbeat.
           </>
         )}
       </p>
@@ -174,93 +184,102 @@ export function StopRun({
     )
   }
 
+  // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
+  //
+  // This dialog's claims are pinned by `test_cancel_semantics.py` for a real
+  // reason -- the first draft of them was wrong twice, and only running the
+  // scheduler showed it. What that file holds is that the dialog does not
+  // OVERSTATE: not "this cancels the following steps" but "these are cancelled
+  // once this one has stopped"; not "it stops" but "the request is recorded".
+  // Those distinctions are in the values below, word for word.
+  //
+  // What went is the connective tissue: "because releasing the lease from here
+  // would free capacity a live container still occupies" is the REASON the
+  // stop is a request rather than an event, and it is the same reason on every
+  // task, every time. A keyed fact whose value is `at the worker's next
+  // heartbeat` makes the same promise in four words and cannot be skimmed past
+  // the way the fourth line of a paragraph can. The full sentences are the
+  // strip's accessible name, so nothing is lost to a screen reader either.
+  const stops =
+    step === null ? task.id : `${task.id} — step ${step.step_id}`
   return (
     <div className="stop-confirm" role="group" aria-label={`Stop ${what}`}>
       <h4>Stop {what}?</h4>
 
-      {/* WHAT IT WILL DO, named exactly, and in the tense it happens in. */}
-      <p className="stop-what">
-        This stops <code>{task.id}</code>
-        {step !== null && (
-          <>
-            {' '}&mdash; step <code>{step.step_id}</code>
-          </>
-        )}
-        . It is irreversible for this attempt: a stopped attempt is not
-        resumed, though the task&rsquo;s remaining retries are unaffected by
-        this button
+      <ul
+        className="ctl-facts stop-facts"
+        aria-label={
+          `Stopping ${stops} is irreversible for this attempt: a stopped attempt is not resumed, ` +
+          `though the task's remaining retries are unaffected by this button. ` +
+          (live
+            ? 'The work so far is kept: before it exits the worker takes a checkpoint and uploads ' +
+              "this attempt's artifacts and logs, so stopping costs the rest of this attempt and not " +
+              'what it has already done. It does not stop instantly — the API records the request and ' +
+              'the worker acts on it at its next heartbeat; until then the agent keeps running and the ' +
+              'slot stays held, because releasing the lease from here would free capacity a live ' +
+              'container still occupies.'
+            : 'Nothing is executing and no capacity is held, so this takes effect at once and there is ' +
+              'no attempt to harvest.')
+        }
+      >
+        <li className="ctl-fact">
+          <b>stops</b>
+          <code>{task.id}</code>
+          {step !== null && (
+            <>
+              {' '}
+              step <code>{step.step_id}</code>
+            </>
+          )}
+        </li>
         {task.attempt_count > 0 && (
-          <>
-            {' '}(attempt {task.attempt_count} of {task.max_attempts})
-          </>
+          <li className="ctl-fact">
+            <b>attempt</b>
+            {task.attempt_count} of {task.max_attempts}, not resumed
+          </li>
         )}
-        .
-      </p>
+        <li className="ctl-fact">
+          <b>work so far</b>
+          {live ? 'kept — checkpoint, artifacts and logs are uploaded first' : 'none to harvest'}
+        </li>
+        <li className="ctl-fact">
+          <b>takes effect</b>
+          {live ? "at the worker's next heartbeat, not now" : 'at once'}
+        </li>
+      </ul>
 
-      {/* THE FACT THAT MAKES IT A SMALL DECISION. */}
-      {live ? (
-        <p className="stop-keeps">
-          <strong>The work so far is kept.</strong> Before it exits the worker
-          takes a checkpoint and uploads this attempt&rsquo;s artifacts and
-          logs, so everything the agent has produced stays readable on this
-          screen and a later attempt can resume from the checkpoint. Stopping
-          costs the rest of this attempt, not what it has already done.
-        </p>
-      ) : (
-        <p className="stop-keeps">
-          Nothing is executing and no capacity is held, so this takes effect at
-          once and there is no attempt to harvest.
-        </p>
-      )}
-
-      {/* WHEN. The window between the button and the stop is real. */}
-      {live && (
-        <p className="stop-when">
-          It does not stop instantly. The API records the request and the worker
-          acts on it at its next heartbeat; until then the agent keeps running
-          and the slot stays held, because releasing the lease from here would
-          free capacity a live container still occupies.
-        </p>
-      )}
-
-      {/* WHAT ELSE GOES WITH IT. Named, never counted. */}
+      {/* WHAT ELSE GOES WITH IT. Named, never counted -- and the tense is the
+          part `test_cancel_semantics.py` holds: the scheduler cancels these
+          when the parent reaches CANCELLED, which is after the worker has
+          acted, not when the button is pressed. So the key is `once stopped`
+          and not `also cancels`. */}
       {workflow !== null && step !== null && (
-        <div className="stop-blast">
-          {doomed.length > 0 ? (
-            <p>
-              <strong>
-                {doomed.length} other step{doomed.length === 1 ? '' : 's'} will be
-                cancelled once this one has stopped
-              </strong>
-              , because {doomed.length === 1 ? 'it depends' : 'they depend'} on
-              it:{' '}
-              {doomed.map((s, i) => (
+        <ul className="ctl-facts stop-facts stop-blast">
+          <li className={doomed.length > 0 ? 'ctl-fact' : 'ctl-fact is-absent'}>
+            <b>once stopped, also cancels</b>
+            {doomed.length === 0 ? (
+              'nothing — no other step depends on this one'
+            ) : (
+              doomed.map((s, i) => (
                 <span key={s.step_id}>
                   {i > 0 && ', '}
                   <code>{s.step_id}</code>
                 </span>
-              ))}
-              . The scheduler does that when the parent reaches CANCELLED, not
-              when the request is made.
-            </p>
-          ) : (
-            <p>No other step depends on this one, so nothing else is cancelled.</p>
-          )}
+              ))
+            )}
+          </li>
           {survivors.length > 0 && (
-            <p className="muted small">
-              {survivors.length} step{survivors.length === 1 ? '' : 's'}{' '}
-              {survivors.length === 1 ? 'does' : 'do'} not depend on it and{' '}
-              {survivors.length === 1 ? 'keeps' : 'keep'} running:{' '}
+            <li className="ctl-fact">
+              <b>keeps running</b>
               {survivors.map((s, i) => (
                 <span key={s.step_id}>
                   {i > 0 && ', '}
                   <code>{s.step_id}</code>
                 </span>
               ))}
-              .
-            </p>
+            </li>
           )}
-        </div>
+        </ul>
       )}
 
       <div className="stop-actions">
@@ -272,6 +291,8 @@ export function StopRun({
         </button>
       </div>
 
+      {/* "Nothing was stopped" stays: an absent side effect has nothing to put
+          a mark on, and it is the fact that decides whether to press again. */}
       {error && (
         <p className="warn-text">
           {errorHeading(error)} &mdash; {error.message} Nothing was stopped.

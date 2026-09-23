@@ -225,9 +225,12 @@ function stagedArtifacts(step: StepDraft, dependsOn: string[]): Record<string, s
 
 export function SubmitWorkflowScreen() {
   return (
+    // ONE SENTENCE IN THE EMPTY STATE (§6.9). The second -- that a caller may
+    // only name a profile from the catalogue -- is invariant 10, it is the
+    // same sentence on every visit, and it is `#help/runner-profile-by-name`.
     <Screen title="Submit a workflow" load={loadSubmitForm}
       summary={(d) => `${d.profiles.length} runner profiles offered to this tenant`}
-      empty={{ heading: 'No runner profiles', body: 'The catalogue read succeeded and named no runner profile. A caller may only name a profile from it, so there is nothing to submit until one is registered.' }}>
+      empty={{ heading: 'No runner profiles', body: 'The catalogue read succeeded and named no runner profile.' }}>
       {(d) => <Form sources={d} />}
     </Screen>
   )
@@ -291,11 +294,15 @@ function Form({ sources }: { sources: FormSources }) {
             // The KEYS are named rather than the word "prompt": `required_keys`
             // is a list the API sends, and a message that hardcoded one of its
             // values would start lying the first time a runner demanded another.
-            `Not sent — ${s.profile} refuses an attempt whose input has no ` +
-            `${missing.map((k) => `"${k}"`).join(' and no ')}. Add ` +
-            `${missing.map((k) => `"${k}": "…"`).join(', ')} to this step's input. ` +
-            'The runner raises that refusal only once the step has been dispatched ' +
-            'and given a credential, so it costs a slot and a wait to discover.',
+            //
+            // WHAT TO TYPE, AND NOTHING ELSE. The two sentences that followed
+            // explained that the runner raises this only after the step has
+            // been dispatched and given a credential -- which is why the check
+            // is here rather than left to the API, and is therefore an
+            // argument about the design rather than an instruction to the
+            // person reading it. The panel says it once, above the list.
+            `Not sent — add ${missing.map((k) => `"${k}": "…"`).join(', ')}, ` +
+            `which ${s.profile} refuses an attempt without.`,
         })
         continue
       }
@@ -353,12 +360,24 @@ function Form({ sources }: { sources: FormSources }) {
           <button disabled={unnamed || sub.kind === 'sending'} onClick={send}>
             {sub.kind === 'sending' ? 'submitting…' : 'submit workflow'}
           </button>
-          {unnamed && <span className="warn-text">Every step needs an id: dependencies are declared by id, not by position.</span>}
+          {unnamed && <span className="warn-text">Every step needs an id.</span>}
         </div>
+        {/* AN UNREAD LIMIT IS NOT AN ABSENT LIMIT, and it is now drawn as one:
+            the step counter beside the heading says `N` with no `of M`, and
+            this line carries the mark for why. The 30-word paragraph -- that
+            nothing caps the form, that no number is guessed, that the API
+            enforces its own and names it -- is the standing rule for an absent
+            measurement and is `#help/absent-vs-zero`. `limitsDetail` stays: it
+            is the server's own words about THIS read and is the only part that
+            says where to look. */}
         {maxSteps === null && (
-          <p className="warn-text">
-            The step limit could not be read, so nothing caps this form and no number
-            is guessed. {sources.limitsDetail} The API enforces its own and names it.
+          <p
+            className="ctl-panel-note"
+            aria-label={`The step limit could not be read, so nothing caps this form and no number is guessed. ${sources.limitsDetail} The API enforces its own limit and names it.`}
+          >
+            <i className="ctl-mark is-unread">not read</i>
+            step limit · nothing caps this form
+            <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
           </p>
         )}
       </section>
@@ -448,30 +467,53 @@ function StepRow({ step, profiles, others, removable, required, onChange, onRemo
           Same control and same error handling as the single-agent form
           (`Submit.tsx`), deliberately: two idioms for one field is how the two
           halves drifted far enough apart for one of them to lose it entirely. */}
-      <label className="t-label" htmlFor={inputId}>input (JSON object)</label>
+      {/* THE FIELD'S LABEL CARRIES ITS CONTRACT (§8.4.3 / §8.5.3). A field's
+          own label is one of the five kinds of word a view may show, and the
+          requirement is part of the label rather than a paragraph under it:
+          `input (JSON object) — claude-code reads input.prompt`. The 40-word
+          note that also explained opacity and validation is
+          `#help/input-is-opaque`. The absent case keeps its own mark, because
+          "this API did not say" and "this profile requires nothing" are two
+          different facts and a blank label would collapse them. */}
+      <label className="t-label" htmlFor={inputId}>
+        input (JSON object)
+        {required !== null && required.length > 0 && (
+          <span className="t-label-note">
+            {step.profile} reads{' '}
+            <code>{required.map((k) => `input.${k}`).join(', ')}</code>
+          </span>
+        )}
+        {required === null && (
+          <span
+            className="t-label-note"
+            aria-label="This API did not say which keys this profile requires, so nothing is checked here."
+          >
+            <i className="ctl-mark is-unread">not read</i> required keys
+          </span>
+        )}
+      </label>
       <textarea id={inputId} className="mono" rows={4} style={{ width: '100%' }} value={step.input}
         spellCheck={false} onChange={(e) => onChange({ ...step, input: e.target.value })} />
-      <p className="muted small">
-        Opaque to the platform: handed to this step's agent, validated only for size.
-        {required !== null && required.length > 0 && (
-          <> <span className="mono">{step.profile}</span> reads{' '}
-            <code>{required.map((k) => `input.${k}`).join(', ')}</code> and refuses the
-            attempt without it.</>
-        )}
-        {required === null && ' This API did not say which keys this profile requires, so nothing is checked here.'}
-      </p>
       {!parsed.ok && <p className="warn-text" role="alert">Not sent — {parsed.message}.</p>}
+      {/* THE KEYS, NAMED. What stays is the part that says what to type; what
+          went is the second sentence explaining that a missing key costs a
+          dispatch and a credential -- true, unchanged, and the reason the
+          check exists rather than something to re-read on every keystroke. */}
       {missing.length > 0 && (
-        <p className="warn-text" role="alert">
-          {step.profile} requires <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a
-          non-empty string. Submitting without it produces a step that is dispatched, given a
-          credential, and then fails — so this form will not send it.
+        <p
+          className="warn-text"
+          role="alert"
+          aria-label={`${step.profile} requires ${missing.map((k) => `input.${k}`).join(', ')} as a non-empty string. Submitting without it produces a step that is dispatched, given a credential, and then fails, so this form will not send it.`}
+        >
+          Not sent — {step.profile} requires{' '}
+          <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a
+          non-empty string.
         </p>
       )}
       <div className="filters">
         <span className="muted small">stage an artifact from</span>
         {stageable.length === 0
-          ? <span className="muted small">— depend on a step first; an artifact cannot be staged from one that may not have run</span>
+          ? <span className="muted small">— depend on a step first</span>
           : stageable.map((id) => (
             <label key={id}>
               <span className="mono">{id}</span>
@@ -499,11 +541,17 @@ function StepRow({ step, profiles, others, removable, required, onChange, onRemo
  */
 function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number }) {
   if (echo === null) {
+    // AN ABSENT ECHO IS NOT A CHOSEN DEFAULT, and the mark is what says so.
+    // The 28-word account of why -- an API older than the field, open the
+    // workflow to read it off its tasks -- is
+    // `#help/dispatch-absent-is-old-api`.
     return (
-      <p className="warn-text">
-        The 201 carried no dispatch block, so this screen cannot say what strategy
-        was stored — an API older than the field. Open the workflow to read it off
-        its tasks.
+      <p
+        className="ctl-panel-note"
+        aria-label="The 201 carried no dispatch block, so this screen cannot say what strategy was stored. That is an API older than the field. Open the workflow to read it off its tasks."
+      >
+        <i className="ctl-mark is-absent">not measured</i>
+        strategy not echoed by the API
       </p>
     )
   }
@@ -515,18 +563,32 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
       ? echo.strategy
       : null
   return (
-    <p className="muted" style={{ marginTop: 8 }}>
-      Accepted as <code>{echo.strategy}</code> / <code>{echo.carrier}</code>.{' '}
-      {known === null
-        ? 'This bundle does not recognise that strategy, so no outcome is claimed for it.'
-        : consequenceOf(known, steps).headline}
+    <ul className="ctl-facts">
+      <li className="ctl-fact">
+        <b>accepted as</b>
+        <code>{echo.strategy}</code> / <code>{echo.carrier}</code>
+      </li>
+      <li className={known === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+        <b>outcome</b>
+        {known === null ? (
+          // A STRATEGY THIS BUNDLE DOES NOT KNOW IS NOT A STRATEGY WITH NO
+          // OUTCOME. Same rule as every other absence on these screens: an em
+          // dash and a mark, never a claim.
+          <>
+            <i className="ctl-em">&mdash;</i>
+            <i className="ctl-mark is-absent">not measured</i>
+          </>
+        ) : (
+          consequenceOf(known, steps).headline
+        )}
+      </li>
       {echo.integrator_step_id !== null && (
-        <>
-          {' '}
-          Step <code>{echo.integrator_step_id}</code> opens it.
-        </>
+        <li className="ctl-fact">
+          <b>opened by</b>
+          <code>{echo.integrator_step_id}</code>
+        </li>
       )}
-    </p>
+    </ul>
   )
 }
 
@@ -536,13 +598,35 @@ function Outcome({ sub }: { sub: Submission }) {
   // writes that collection again, so a chip would read "queued" forever.
   if (sub.kind === 'created') {
     return (
+      // THE FACTS STRIP (§6.13), where a sentence with three facts and a
+      // clause used to be. The clause -- that no progress is shown because a
+      // workflow's own state is written once at submission and never updated
+      // -- is the reason there is no state chip here, and a missing chip is
+      // not a thing anyone can see; so it is the `progress` fact's own value,
+      // keyed and dashed, rather than a sentence about the panel.
       <div className="state" role="status">
         <h3>Workflow submitted</h3>
-        <p>
-          <span className="mono">{sub.workflow.workflow_id}</span> · {sub.workflow.steps.length} steps ·
-          created {timeAgo(sub.workflow.created_at)}. No progress is shown here: a workflow's
-          own state is written once at submission and never updated.
-        </p>
+        <ul className="ctl-facts">
+          <li className="ctl-fact">
+            <b>id</b>
+            <span className="mono">{sub.workflow.workflow_id}</span>
+          </li>
+          <li className="ctl-fact">
+            <b>steps</b>
+            {sub.workflow.steps.length}
+          </li>
+          <li className="ctl-fact">
+            <b>created</b>
+            {timeAgo(sub.workflow.created_at)}
+          </li>
+          <li
+            className="ctl-fact is-absent"
+            aria-label="No progress is shown here: a workflow's own state is written once at submission and never updated."
+          >
+            <b>progress</b>
+            <i className="ctl-em">&mdash;</i>
+          </li>
+        </ul>
         <Accepted echo={sub.dispatch} steps={sub.workflow.steps.length} />
       </div>
     )
@@ -553,11 +637,13 @@ function Outcome({ sub }: { sub: Submission }) {
     return (
       <div className="state failed" role="status">
         <h3>Not submitted: {sub.problems.length === 1 ? 'a step' : `${sub.problems.length} steps`} would have failed</h3>
-        <p>
-          Nothing was sent, so nothing was created. Each step below was refused here rather
-          than submitted, because the API would have accepted it and the agent would then
-          have refused it — after the step was dispatched and a credential was mounted.
-        </p>
+        {/* THE ONE SENTENCE IS THE INVARIANT. "Nothing was sent, so nothing
+            was created" is what stops someone opening the Workflows board to
+            look for a workflow that is not there, and no encoding carries it
+            -- an absence of a side effect has nothing to attach a mark to.
+            The 30 words after it argued for the check's existence and are
+            `#help/input-is-opaque`. */}
+        <p>Nothing was sent, so nothing was created.</p>
         <ul>
           {sub.problems.map((p, i) => (
             <li key={`${p.stepId}-${i}`}>
@@ -575,7 +661,21 @@ function Outcome({ sub }: { sub: Submission }) {
   // the gate treatment rather than the red one, exactly as FailedPanel does.
   return (
     <div className={uncertain ? 'state partial' : error.kind === 'admin_required' ? 'state admin-gate' : 'state failed'} role="status">
-      <h3>{uncertain ? 'We cannot say whether that workflow was created' : errorHeading(error)}</h3>
+      <h3>
+        {uncertain ? (
+          // THE MARK IS THE CLAIM. `partial` is dashed on one edge -- the
+          // shape of a hole -- and this outcome is exactly a hole: the request
+          // left and the answer did not come back, so the workflow may or may
+          // not exist. A reader who sees only the shape still knows not to
+          // resubmit.
+          <>
+            <i className="ctl-mark is-partial">partial</i> We cannot say whether
+            that workflow was created
+          </>
+        ) : (
+          errorHeading(error)
+        )}
+      </h3>
       {/* VERBATIM: the cycle the server named is the only part that says where to
           look, and "invalid DAG" would throw it away. */}
       <p>{error.message}</p>
@@ -583,8 +683,14 @@ function Outcome({ sub }: { sub: Submission }) {
           per-field list for a schema failure (whose message is only ever the generic
           "request body failed validation"). Raw, so no pattern is restated here. */}
       {error.detail !== undefined && <pre>{JSON.stringify(error.detail, null, 1)}</pre>}
+      {/* ONE SENTENCE EACH, AND BOTH ARE THE INVARIANT RATHER THAN AN
+          EXPLANATION OF IT: whether anything was created. Neither can be an
+          encoding, because what they are about is a side effect that did or
+          did not happen somewhere else. The uncertain one keeps the
+          instruction that prevents the damage -- look before you resubmit --
+          and loses the clause explaining why running twice is bad. */}
       <p>{uncertain
-        ? 'The request left this browser without a usable answer, so the workflow may exist. Open the Workflows board and look before submitting again — resubmitting blind is how a workflow runs twice.'
+        ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
         : 'Nothing was created. Correct the steps below and submit again.'}</p>
       {error.httpStatus !== null && <p className="checked-at">HTTP {error.httpStatus}{error.code ? ` · ${error.code}` : ''}</p>}
     </div>
