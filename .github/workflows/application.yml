@@ -385,49 +385,13 @@ jobs:
         # operator does, and additionally fails on any placeholder that survives.
         run: ./scripts/lib/validate-manifests.sh
 
-      - name: security posture assertions
-        # These are platform promises, not style preferences: a workload that
-        # can run as root, escalate privileges or restart is a workload the
-        # no-preemption / no-restart guarantee does not actually cover.
-        #
-        # Scoped to kubernetes/worker-templates, and matching the real Spot LABEL
-        # rather than the word. The previous version matched `*policies*`, which
-        # also matches `network-policies/`, so a NetworkPolicy object was
-        # required to declare `runAsNonRoot`; it required the same of
-        # policies/pod-security.yaml, a ValidatingAdmissionPolicy that contains
-        # neither string; and `grep -qi spot` matched the prose in both worker
-        # templates and the eleven mentions in pod-security.yaml that exist in
-        # order to REJECT Spot. Four guaranteed errors on an untouched tree, so
-        # the gate enforced nothing. security.yml:172 already had this right.
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          fail=0
-          found=0
-          for f in kubernetes/worker-templates/*.yaml; do
-            found=$((found + 1))
-            grep -q 'runAsNonRoot: true' "$f" || { echo "::error file=$f::missing runAsNonRoot"; fail=1; }
-            grep -q 'allowPrivilegeEscalation: false' "$f" || { echo "::error file=$f::missing allowPrivilegeEscalation:false"; fail=1; }
-            grep -q 'readOnlyRootFilesystem: true' "$f" || { echo "::error file=$f::missing readOnlyRootFilesystem"; fail=1; }
-            if grep -q 'restartPolicy' "$f"; then
-              grep -q 'restartPolicy: Never' "$f" || { echo "::error file=$f::restartPolicy must be Never"; fail=1; }
-            fi
-            # The Spot node label, not the word: the admission policies name the
-            # same label in order to reject it, and both templates mention Spot
-            # in a comment explaining why it is disabled.
-            if grep -qE 'cloud\.google\.com/gke-spot' "$f"; then
-              echo "::error file=$f::a worker template requests Spot capacity (Spot Pods cannot use Autopilot extended run time)"
-              fail=1
-            fi
-          done
-          # A check that silently matches no files is a check that passes for the
-          # wrong reason; this is how the whole job came to enforce nothing.
-          if [ "$found" -eq 0 ]; then
-            echo "::error::no worker templates found under kubernetes/worker-templates"
-            fail=1
-          fi
-          echo "checked ${found} worker template(s)"
-          exit "$fail"
+      # The posture assertions used to be written out here, inline, and NOWHERE
+      # ELSE -- so `make lint` passed on a tree that failed this job, and the
+      # only way to find out was to push. That is the shape CLAUDE.md names:
+      # "every rule that got restated in a second place here has since
+      # drifted." The rule now lives once, in the script the step above already
+      # runs, which is also what `make lint` runs. There is nothing left to
+      # restate here, so this step is gone rather than reduced to a call.
 
   build:
     name: build images

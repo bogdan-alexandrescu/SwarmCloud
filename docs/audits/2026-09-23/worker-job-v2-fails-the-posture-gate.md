@@ -78,6 +78,50 @@ template changes. This is the stricter answer and costs whatever v2 needed root
 and a writable root filesystem for — that reason is not recorded in the file
 beyond "the point of v2", so it must be established before choosing this.
 
+## Resolved, 2026-09-23
+
+**A was chosen.** The gate now holds each template to the posture that matches
+the isolation it declares, in `scripts/lib/validate-manifests.sh`:
+
+- no `runtimeClassName: gvisor` → `runAsNonRoot: true` and
+  `readOnlyRootFilesystem: true`, exactly as before;
+- with it → `runAsUser` must be stated explicitly, because an implicit uid on
+  a deliberately-root pod is indistinguishable from an oversight and that is
+  the thing review has to be able to see;
+- **both classes** → `allowPrivilegeEscalation: false`, `drop: ["ALL"]`, and
+  `restartPolicy: Never` where a restartPolicy is set at all. The last two of
+  those are new: the old gate asserted neither for any template.
+
+It is not an opt-out. A gvisor template is checked against a different and
+equally specific list, and one that names gvisor while granting capabilities or
+leaving its uid implicit fails.
+
+**Mutation-proven, not asserted.** Each branch was broken in turn and the gate
+went red each time:
+
+| mutation | result |
+|---|---|
+| remove `runAsNonRoot: true` from `worker-job.yaml` | RED — missing runAsNonRoot (no gvisor sandbox) |
+| remove `runAsUser: 0` from `worker-job-v2.yaml` | RED — gvisor template must state runAsUser explicitly |
+| remove `drop: ["ALL"]` from `worker-job-v2.yaml` | RED — does not drop ALL capabilities |
+
+A first attempt at this table produced three false greens, because the mutation
+removed only the *first* occurrence of a string that appears two or three times
+per file. That is worth recording twice over: it nearly shipped a gate believed
+to be proven, and it exposes the residual limitation below.
+
+### Known residual: the check is whole-file, not per-container
+
+Both the old gate and this one `grep` the file rather than parsing it, so a
+field set on **one** container satisfies the check for **all** of them. Today
+the templates happen to be internally consistent — `worker-job-v2.yaml` sets
+`allowPrivilegeEscalation: false` and `drop: ["ALL"]` on both its init and main
+containers — so nothing is currently hidden by this. It would not stay true by
+itself. Parsing the rendered YAML and asserting per container is the stronger
+form; `validate-manifests.sh` already requires `python3` and the job already
+installs PyYAML, so the cost is small and it is not done here only because it
+is a separate piece of work from the class distinction.
+
 ## Ownership
 
 `kubernetes/` is **Track C**. `.github/` is **Track D**. Whichever answer is
