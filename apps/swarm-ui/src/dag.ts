@@ -179,21 +179,68 @@ export function shapeOf(steps: readonly WorkflowStep[]): DagShape {
 // for its four facts -- name, status, runner profile, duration -- with room
 // for the stop control underneath.
 
-export const NODE_W = 212
+/**
+ * The width of a node card.
+ *
+ * WIDENED FROM 212, and the 24px is not decoration. `.node-links` holds
+ * `input & output →` and `attempts →` on one non-wrapping row: at --t-micro
+ * mono that is about 199px of advance plus a `--ctl-s3` gap, against the
+ * 212 - 24 = 188px of content box the old width gave it. Those two links have
+ * therefore been overflowing the right edge of every node that has a task,
+ * silently, since they were added. 236 - 24 = 212px of content clears them
+ * with room, and the extra width also keeps the absence WORDS in the figure
+ * cells off `text-overflow: ellipsis` -- `not sampled` truncated to `not
+ * sam...` would damage the one encoding this screen may not lose.
+ */
+export const NODE_W = 236
+
 /**
  * The height of a node with NO dependency line.
  *
- * Raised from 136 when the four run figures and the two deep links came back
- * onto the node. It is a real measurement of the fixed rows -- id, state,
- * runner profile, duration, four `node-num` rows, links -- and NOT a guess
- * with slack in it, because `heightOf` below adds the variable part exactly.
+ * THE SUM OF THE DECLARED ROWS, and it is written out because the last value
+ * here was not: 244 was short of what `.node` actually rendered, so the stop
+ * control at the foot of a node sat below the box `layoutOf` had drawn. The
+ * arithmetic, against the `.node` rules in styles.css §B17:
+ *
+ *   padding 10px top + 10px bottom .................. 20
+ *   border 1px top + 1px bottom ......................  2
+ *   .node-id      --t-body / --lh-body (14 x 1.5) .... 21
+ *   .node-line    --t-micro / --lh-micro (12 x 1.45) . 17.4
+ *   .node-meta    --t-micro / --lh-micro ............. 17.4
+ *   .node-nums    8 pad + 1 rule + 4 x 21 + 3 x 2 .... 99
+ *   .node-links   --t-micro / --lh-micro ............. 17.4
+ *   .node-stop    4 pad + .stop-btn.inline (13+6+2) .. 25
+ *   5 x --ctl-s1 gap between the six children ........ 20
+ *                                                    -----
+ *                                                     239.2
+ *
+ * 240 is that, rounded up by the one pixel the fractional line boxes need.
+ * `.node-stop` carries `margin-top: auto`, so any slack lands above the stop
+ * control rather than under it.
+ *
+ * IT IS SHORTER THAN 244 DESPITE BEING HONEST about the rows, because state
+ * and duration merged onto one `.node-line` -- they were two stacked rows
+ * reading `running` and then `running 1m 32s` -- and `.node-why` went.
  */
-export const NODE_H = 244
+export const NODE_H = 240
 
-/** One wrapped line of the `← depends on` list, at --t-micro/--lh-micro. */
-const DEP_LINE_H = 16
-/** Characters of the dependency list that fit on one line inside NODE_W. */
-const DEP_CHARS_PER_LINE = 34
+/** One wrapped line of the `← depends on` list, at --t-micro/--lh-micro:
+ *  12 x 1.45 = 17.4, rounded up. It was 16, which under-counted every
+ *  wrapped line by 1.4px. */
+const DEP_LINE_H = 18
+/**
+ * Characters of the dependency list that fit on one line inside NODE_W.
+ *
+ * (NODE_W - 24px of padding) / 7.2px, which is a 12px monospace advance at
+ * the usual 0.6em. It was 34 against a 188px box, which is 26 -- so a
+ * five-parent join was measured at one line and wrapped onto two, and the
+ * node below it in the column was overlapped by the difference. This is the
+ * defect `heightOf` exists to prevent, in `heightOf`'s own constant.
+ */
+const DEP_CHARS_PER_LINE = 29
+
+/** `--ctl-s1`, the gap between a node card's flex children. */
+const GAP = 4
 
 /**
  * How tall THIS node will actually render.
@@ -209,7 +256,11 @@ export function heightOf(step: WorkflowStep): number {
   if (step.depends_on.length === 0) return NODE_H
   const chars = step.depends_on.join(', ').length
   const lines = Math.max(1, Math.ceil(chars / DEP_CHARS_PER_LINE))
-  return NODE_H + lines * DEP_LINE_H
+  // `+ GAP`: the dependency list is a SEVENTH flex child, so it costs one more
+  // `--ctl-s1` between itself and the row above as well as its own lines. The
+  // gap was missing, which is 4px of overlap on every node that has parents --
+  // and every node in a graph except the roots has parents.
+  return NODE_H + GAP + lines * DEP_LINE_H
 }
 export const COL_GAP = 68
 export const ROW_GAP = 20
