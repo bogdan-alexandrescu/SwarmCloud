@@ -25,7 +25,6 @@ import {
   overCeiling,
   poolLabel,
   readingOf,
-  stateGlyph,
   stateTone,
   unreadableFor,
   type AccountReading,
@@ -961,7 +960,7 @@ function CardHead({
       </h2>
       {note !== undefined && <span className="ctl-card-note">{note}</span>}
       {href !== undefined && cta !== undefined && (
-        <a className="ov-link" href={href}>
+        <a className="ctl-link ov-link" href={href}>
           {cta} &rarr;
         </a>
       )}
@@ -1438,7 +1437,7 @@ function RunningRow({ task }: { task: Task }) {
   return (
     <tr>
       <th scope="row">
-        <a className="ov-link" href={`#agents/task/${encodeURIComponent(task.id)}`}>
+        <a className="ctl-link ov-link" href={`#agents/task/${encodeURIComponent(task.id)}`}>
           {task.runner_profile}
         </a>
         <span className="ctl-sub">{task.id}</span>
@@ -1446,10 +1445,21 @@ function RunningRow({ task }: { task: Task }) {
       <td>
         {/* The word is mandatory; the dot is the shape that repeats it.
             Roughly 8% of male viewers cannot separate this card's amber from
-            its red. */}
+            its red.
+
+            THE SECOND GLYPH IS GONE. This row used to render
+            `{stateGlyph(task.state)} {task.state}` INSIDE the chip, next to the
+            `<i>` that already draws the same state as a shape -- two dots for
+            one fact, and unlike Agents.tsx:350 and AgentDetail.tsx:481 this one
+            was not `aria-hidden`, so a screen reader announced a bare "●"
+            before the word. design-system.md sec 6.6 records it as the last
+            piece of the owner's "decorative double dot" and the first job of
+            this phase. The pill was hiding it; with the pill gone it was
+            plainly two dots. The `<i>` keeps the shape vocabulary, so nothing
+            that carried information was removed. */}
         <span className={`ctl-chip ${chipTone(task.state)}`}>
           <i aria-hidden />
-          {stateGlyph(task.state)} {task.state}
+          {task.state}
         </span>
       </td>
       <td className="is-num">
@@ -1692,9 +1702,31 @@ function TokenMix({ s }: { s: SpendRollup }) {
         // empty track is a claim that the scale starts somewhere.
         <div className="ov-mix is-unknown" role="img" aria-label="No attempt in this sample reported a token count, so there is no proportion to draw." />
       )}
+      {/* THE SWATCH IS ON THE WORD. The bar above is four hues and the legend
+          under it named them in plain grey, so the only way to learn which
+          segment was `c-rd` was to guess from the order -- the owner's "the
+          spend bar is a rainbow ... with no legend near it".
+          design-system.md sec 1.6 is explicit that the five series sit in a band
+          1.36:1 from end to end and are therefore NOT separable in greyscale,
+          so a multi-series chart carries a legend naming every series and never
+          relies on the segment's colour to say which segment it is. This is
+          that legend, and it is the option sec 11.3 left open that keeps the
+          proportion rather than throwing it away for one hue.
+
+          A SERIES THAT REPORTED NOTHING GETS A HOLLOW SWATCH, not a solid one.
+          It has no segment on the bar, and a solid swatch beside an em dash
+          would be a key to a colour that is not there -- an absence drawn as a
+          measurement, which is the one thing this console may not do. The
+          swatch still occupies its space, so the column does not reflow when a
+          count arrives. It is aria-hidden throughout: the bar's own aria-label
+          already names every series and its value. */}
       <ul className="ctl-facts ov-mix-facts">
         {parts.map((p) => (
           <li className={`ctl-fact${p.v === null ? ' is-absent' : ''}`} key={p.key}>
+            <i
+              className={p.v === null ? 'ov-swatch is-absent' : `ov-swatch ov-s${p.series}`}
+              aria-hidden
+            />
             <b>{p.key}</b>
             {p.v === null ? <i className="ctl-em">&mdash;</i> : <span className="ov-num">{tokens(p.v)}</span>}
           </li>
@@ -2327,7 +2359,7 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
     <li className="ov-problem" aria-label={`${p.headline}. ${p.detail}`}>
       <i className={`ctl-dot ${p.severity === 'bad' ? 'is-bad' : 'is-warn'}`} aria-hidden />
       <b>{p.headline}</b>
-      <a className="ov-link" href={p.href}>
+      <a className="ctl-link ov-link" href={p.href}>
         {p.linkLabel ?? 'open'} &rarr;
       </a>
     </li>
@@ -2505,16 +2537,29 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
 /* ---- cards -------------------------------------------------------------- */
 
+/* EIGHTEEN ACCENT PAINTS ON ONE SCREEN, AND NOW NONE.
+   Measured on this view before the change: --info was painted 23 times inside
+   main.work -- 18 of them these links ("open ->", "agents ->", "history ->",
+   "pools ->"), one the "6 more" disclosure, and four the live chips' dots.
+   design-system.md sec 1.3 budgets the accent at once or twice per screen, and
+   sec 11.3 named .ov-link as one of the five screen-private link treatments
+   that .ctl-link exists for them to collapse into. This is that collapse: the
+   three call sites now carry "ctl-link ov-link", the primitive paints it (ink
+   plus a --line-soft underline, accent on hover and focus), and what is left
+   here is the LAYOUT ONLY.
+
+   The colour, the text-decoration, the transparent bottom border and the focus
+   rule all had to go rather than be overridden to match: this block is injected
+   as a <style> AFTER styles.css, so at equal specificity every one of them
+   would have out-ranked the primitive and quietly reinstated the blue.
+
+   The four --info paints that remain are .ctl-chip.is-live > i, which is the
+   state channel and not an affordance. */
 .ov-link {
   flex: none;
-  color: var(--info);
   font: var(--t-micro)/var(--lh-micro) var(--mono);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
   white-space: nowrap;
 }
-.ov-link:hover { border-bottom-color: currentColor; }
-.ov-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 
 /* An empty state INSIDE a card rather than as the page. The card already draws
    the box and the title, so a second bordered surface inside it is one box too
@@ -2603,6 +2648,31 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ov-s4 { background: var(--series-4); }
 .ov-mix-facts { padding: 0; }
 
+/* THE KEY TO THE FOUR HUES, NEXT TO THE WORD THEY BELONG TO.
+   8px square, --track-radius so it is the same corner the bar it keys is drawn
+   with, and it takes its fill from the SAME .ov-sN class the segment does --
+   one declaration per series, so a segment and its key cannot drift apart.
+   A square rather than a disc on purpose: .ctl-dot's vocabulary is STATE, and a
+   series is an identity, not a verdict (sec 1.6). */
+.ov-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--track-radius);
+  /* No margin: .ctl-fact is an inline-flex with a 5px gap and adding to it
+     would make this one gap in the row wider than the other two. align-self
+     because the strip aligns on the BASELINE and an empty <i> has none, which
+     would drop the square to the bottom of the line box. */
+  align-self: center;
+}
+/* NOTHING REPORTED, SO NO KEY TO ANYTHING. Hollow, in the absence tone, at the
+   same size: the row keeps its rhythm and the swatch stops claiming a segment
+   that was never drawn. The em dash beside it carries the fact. */
+.ov-swatch.is-absent {
+  background: none;
+  border: 1px solid var(--ctl-absent);
+}
+
 /* ---- capacity and accounts --------------------------------------------- */
 
 /* The utilisation primitive is sized for a full-width screen; in a card that
@@ -2656,9 +2726,16 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   /* --t-meta, not --t-micro: this is a CONTROL, and the micro step is for
      things you read, not things you click. */
   font: var(--t-meta)/var(--lh-meta) var(--mono);
-  color: var(--info);
+  /* NOT THE ACCENT. This is the nineteenth --info paint the audit counted, and
+     it is the one control on the card that does not navigate -- it opens the
+     rest of a list that is already on this screen. The disclosure triangle
+     below is the affordance, and it is a SHAPE, which is what sec 1.3 asks a
+     control to lead with; it also rotates on open, so the state is carried
+     without colour at all. */
+  color: var(--text-dim);
   list-style: none;
 }
+.ov-more > summary:hover { color: var(--text); }
 .ov-more > summary::-webkit-details-marker { display: none; }
 .ov-more > summary::before { content: '\\25B8  '; }
 .ov-more[open] > summary::before { content: '\\25BE  '; }

@@ -1216,6 +1216,7 @@ and will mislead you.
 
 ---
 
+<<<<<<< HEAD
 ## 12. The frame — the dock stops being an overlay
 
 §11.3 left one item open and named its fix: *"the complete fix is for the dock
@@ -1329,3 +1330,117 @@ the notch and the home indicator, where a viewport unit would ignore both.
   browser that has no URL bar. `100dvh` is the candidate fix and it interacts
   with the safe-area padding above; neither was measured on a device.
 * Everything else in §11.3 that is not the dock bullet still stands.
+=======
+## 12. The Overview screen pass
+
+§11 was the token layer and said so: *"No screen was restyled."* This section
+is the first screen to follow it, and it is deliberately **only** the Overview —
+the screen the owner reacted to. It changes `Overview.tsx` and nothing else. No
+token moved, no primitive changed, and `styles.css` was not touched at all.
+
+**It closes four of the six items §11.3 left open on this screen.** Those
+bullets are superseded by name below rather than edited in place, because
+several lanes are amending this document at once and an append conflicts where
+an interleaved edit collides.
+
+### 12.1 What moved, and what it was measured against
+
+All counts are `main.work` at 1440×900 on the live dev server, at `scrollY = 0`,
+before → after.
+
+| | Before | After |
+|---|---|---|
+| `--info` painted on the screen | **23** (19 text, 4 background) | **4** (0 text) |
+| …of which are affordances | 19 | **0** |
+| state glyphs per Running row | 2 | 1 |
+| token-series hues keyed to a name | 0 of 4 | **4 of 4** |
+| document height | 1112px | 1108px |
+
+**1. `.ov-link` collapsed into `.ctl-link`** — *supersedes §11.3's "18
+accent-coloured links remain on the Overview".* The three call sites now carry
+`ctl-link ov-link`; `.ov-link` keeps the layout (flex, mono `--t-micro`,
+`nowrap`) and the primitive paints it. The colour, the `text-decoration: none`,
+the transparent bottom border and the focus rule all had to be **deleted**
+rather than overridden: `OVERVIEW_CSS` is injected as a `<style>` *after*
+`styles.css`, so at equal specificity every one of them out-ranks the primitive
+and would have quietly reinstated the blue. Anyone folding the remaining four
+screen-private link treatments in (`.wb-more a`, `.tile.blocked .t-sub a`,
+`.node-links a`, `.art-md a`) hits the same trap.
+
+A side effect worth recording because it is the reason the page got shorter: the
+1px transparent bottom border `.ov-link` carried existed so that hovering did
+not move text (`spaceprobe.ts:994` documents it). `.ctl-link` hovers with
+`text-decoration-color`, which does not affect layout, so the 1px was dead
+space. Removing it took **4px** off the attention list.
+
+**2. The `6 more` disclosure stopped being the nineteenth accent paint.** It is
+`--text-dim`, `--text` on hover. It is the one control on the card that does not
+navigate, and its affordance is the disclosure triangle — a shape, which
+rotates on open, so its state is carried without colour at all.
+
+**3. The token legend is keyed** — *supersedes §11.3's "Overview's spend bar is
+still four saturated hues … with the legend on the line below carrying no
+swatch".* §11.3 left two answers open; this is the one that keeps the
+proportion. Each `.ctl-fact` now leads with an 8px `.ov-swatch` taking its fill
+from **the same `.ov-sN` class the segment carries**, so a segment and its key
+cannot drift apart. §1.6 is the reason this is not cosmetic: the five series sit
+in a band 1.36:1 end to end and are **not separable in greyscale**, so the hue
+never identifies the segment on its own.
+
+**A series nobody reported draws a hollow swatch, not a solid one.** It has no
+segment on the bar, so a solid key beside its em dash would index a colour that
+is not there — an absence drawn as a measurement. A **measured zero** keeps its
+solid key, because it is a reading. The swatch still occupies its space either
+way, so the strip does not reflow when a count arrives (§14). All four are
+`aria-hidden`: the bar's own `aria-label` already names every series and its
+value, and a second reading of the same four facts is noise.
+
+The legend wraps to two lines in a third-width card. That is accepted: §1.6 asks
+for a legend that names every series, and two lines of named series is the cost
+of not making the reader index the bar by position.
+
+**4. The second state glyph is gone** — *supersedes §11.3's and §6.6's
+"`Overview.tsx:1452` renders a second state glyph inside the chip"*. The row
+rendered `{stateGlyph(task.state)} {task.state}` next to the `<i>` that already
+draws the same state as a shape, and unlike `Agents.tsx:350` and
+`AgentDetail.tsx:481` it was **not** `aria-hidden`, so a screen reader announced
+a bare `●` before the word. The `<i>` keeps the shape vocabulary, so nothing
+that carried information was removed. `stateGlyph` is no longer imported by this
+screen; the other two callers are untouched and still need their own pass.
+
+### 12.2 What this pass did NOT fix
+
+* **The dock still overlays resting content, and this pass moved which rows sit
+  under it.** Measured at `scrollY = 0`, before → after: **390px 3 → 3**
+  (identical elements), **1440px 1 → 4**. The 1440 number is the 4px above
+  arriving: the page got shorter, so the Subscription pool's last row crossed
+  the band. It is not a new class of defect — §3.4 already records that an
+  opaque `position: fixed` bar has content behind it at *some* offsets and that
+  the only complete answer is for the dock to be a row of the frame's grid.
+  Any layout change on any screen moves this number in one direction or the
+  other. **It is still `Shell.tsx` and it is still not fixed.**
+* **The `?` glyphs are still pills** — 5 on this screen, and 6 of the 13 pill
+  radii `main.work` reports. They come from `HelpCard.tsx` / `HelpSection.tsx`
+  React inline styles, which this pass did not own.
+* **The bordered count did not move: 41 before, 41 after.** Broken down, it is
+  5 `.ctl-card` boxes, 14 `.ctl-util` row rules, 12 table row rules, 6 `?`
+  glyphs, the `.is-alert` tile, the refresh button and the head. Everything
+  except the five cards and the alert tile is either a genuine repeated
+  separator (§5.2) or another file's. **There is no box left on this screen for
+  a screen-level change to remove**; getting below Hetzner's 17 means changing
+  what `.ctl-util` and `.ctl-table` draw, which is the primitive's decision.
+* **Accounts and Pools are still unreached**, as §11.3 said.
+
+### 12.3 One thing the gates still cannot see
+
+Both facts this section claims about occlusion were measured in a real browser
+with `getBoundingClientRect()` against the dock's own rect at `scrollY = 0`, for
+the reason §11.5 gives: `spacing.test.tsx` has no layout engine. The legend's
+line wrap was read off a screenshot, not asserted.
+
+What **is** pinned by a test is the honesty half, in
+`honesty.prose.test.tsx`: the swatch-per-series encoding and the hollow swatch
+for an unreported series. It was verified by mutation rather than by going
+green — making the absent swatch solid, and deleting the swatch entirely, each
+turn it red with a named message.
+>>>>>>> 6392bf2fa521
