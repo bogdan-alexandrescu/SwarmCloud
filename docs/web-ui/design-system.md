@@ -23,6 +23,14 @@ hold them (`test_ui_contrast.py`, `test_state_colour_discriminability.py`,
 different set of numbers and the same screens. Everything below either restates
 a decision that is already load-bearing or fills a hole the audit named.
 
+**AMENDED BY §13, THE LAYOUT PASS, WHICH IS STRUCTURAL RATHER THAN
+COSMETIC.** §13 decides the page gutter, the casing rule and the box rule, and
+it amends §2, §3.1, §3.3, §5.1, §5.2, §6.1, §6.7, §6.8, §6.13 and §6.14 in
+place — each of those carries its own note. Read §13 before planning a screen:
+the previous pass corrected attributes and its own report recorded the result
+(bordered elements 41 → 41), which is why this one changed levels instead of
+values.
+
 **AMENDED BY §11 (tokens) AND §12 (the first screens).** §11 moved the token
 layer and restyled no screen; §12 is the first section that restyles any, and
 it covers the four number-dense ones — Pools, Runtimes, Capacity holders,
@@ -229,7 +237,7 @@ below them are the owner's and are unchanged.**
 | Token | Size / leading | What it is |
 |---|---|---|
 | `--t-micro` | 12 / 1.45 | ages, raw ids, provenance, card feet. The hard floor. |
-| `--t-meta` | 13 / 1.45 | column heads, eyebrows, uppercase labels — **a treatment as much as a size**: 600, uppercase, tracked. *No longer the chip: see §6.6.* |
+| `--t-meta` | 13 / 1.45 | column heads, eyebrows, labels — **a treatment as much as a size**: 600, mono, `--text-faint`. *No longer uppercase and no longer tracked: see §13.2. No longer the chip: see §6.6.* |
 | `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, state words, `body` itself |
 | `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed** |
 | `--t-title` | **18** / 1.30 | the screen `<h1>`, at weight **600** |
@@ -296,7 +304,7 @@ renaming it would silently change the meaning of every existing use.
 | `--ctl-s1` 4px | inside a row: a chip's icon gap, a stacked pair |
 | `--ctl-s2` 8px | inside a panel: between a label and its value, between tiles |
 | `--ctl-s3` 12px | between regions: card grid gutter, toolbar to content |
-| `--ctl-s5` 28px | the one large break: between top-level sections |
+| `--ctl-s5` 28px | the one large break: between top-level sections, between two cards in a grid, and around a region (§13.3) |
 
 ### 3.2 Chrome padding is not a rhythm step
 
@@ -317,7 +325,8 @@ card's interior.
 | Token | Value | |
 |---|---|---|
 | `--app-max` | 1880px | about the widest row that stays scannable at 14px; reached only above ~2000px |
-| `--app-pad` | 16 → 24 (≥1280) → 32 (≥1600) | the gutter grows with the viewport; the content is not centred in a lane |
+| `--ctl-gutter` | 16 → 32 (≥1280) → 40 (≥1600) | **the only distance between two top-level regions** (§13.1): the page's side padding AND the rail-to-content gap |
+| `--app-pad` | `var(--ctl-gutter)` | kept as a name because Brand.tsx lines its wordmark up through it; no longer a second ladder |
 | `--rail-w` | 200px → 152px (≤1279) | |
 | `--measure` | 74ch | **applied to running text only**, never to a table, a grid or a chart |
 
@@ -396,6 +405,12 @@ in this pass: `.wf-body` (8px → `--ctl-radius-sm`) and `.logwin-body` (8px →
 ### 5.1 What carries separation, and what carries grouping
 
 **Grouping is a surface step. Separation is a hairline. Prefer the step.**
+
+**§13.3 turned that preference into a rule with three levels and named which
+one may draw a border at all: a REGION separates with space plus one hairline,
+a PANEL is the one box, and a ROW draws nothing.** The rail was the boundary
+where this section's own advice was least applied, and it is now space (§13.1).
+
 
 Northflank's dense tables have no row borders at all: a 40px bar on the surface
 below, a 6px gutter, and a fill step measuring 1.06:1 that still reads perfectly
@@ -753,14 +768,16 @@ without the pill it is plainly two dots. Deleting that one expression is the
 screen phase's first job and is the last piece of the owner's *"decorative
 double dot"*.
 
-### 6.7 Data table — `.ctl-table` *(exists; unchanged)*
+### 6.7 Data table — `.ctl-table` *(row rules removed by §13.3)*
 
 Scrolls sideways rather than reflowing into cards: these are numbers that only
 mean anything beside each other in a row.
 
-Rows `--row-h` (30px), cells `4px 10px`, row rule `--line-soft` (a genuine
-repeated separator), header sticky on `--surface-2` in the label treatment, last
-row's rule removed. `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
+Rows `--row-h` (30px), cells `4px 10px`, **no row rule at all** (§13.3 — the
+old comment beside it already argued that "twenty of these down one table
+identify nothing the rows do not already identify", and then drew them anyway),
+header sticky on `--surface-2` in the label treatment with the one `--line-soft`
+hairline a panel's interior is allowed, under `thead`. `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
 is the raw id under the readable name at `--t-micro`/`--lh-flush` so the row
 keeps the height it was signed off at.
 
@@ -775,7 +792,7 @@ being healthy; a healthy platform is a quiet grey screen, which is what an
 operations console should look like at 3am. This also shrinks the
 state-separability problem to the cases where it matters.
 
-### 6.8 One-line expandable row — `.ctl-line` *(new)*
+### 6.8 One-line expandable row — `.ctl-line` *(lost its box in §13.3)*
 
 Generalised from `.wf-bar`, which the audit names as the best row in the
 product: id · state · progress · shape · runner mix · spend · age · flags on one
@@ -844,10 +861,12 @@ was a rule saying it is *the* destination.
 
 ### 6.13 Eyebrow — `.ctl-eyebrow` and facts strip — `.ctl-facts`
 
-`.ctl-eyebrow` is one uppercase mono word where a section intro used to be:
-`CAPACITY`, `HOLDERS`, `BLOCKERS`, `THIS ATTEMPT`. No rule, no box, no
-background — the device Northflank and Railway both use as their only in-panel
-section heading.
+`.ctl-eyebrow` is one mono word where a section intro used to be: `Capacity`,
+`Holders`, `Blockers`, `This attempt`. No rule, no box, no background — the
+device Northflank and Railway both use as their only in-panel section heading.
+**It is not uppercase and not tracked (§13.2);** the label rank is mono plus
+`--text-faint`, which is two channels on one distinction, and uppercase was a
+third.
 
 `.ctl-facts` replaces a definition list: a wrapping strip of unlabelled facts,
 each a two-or-three-character mono key plus a full-strength sans value.
@@ -863,7 +882,7 @@ each a two-or-three-character mono key plus a full-strength sans value.
 **A fact whose value was not read keeps its slot and its key.** A missing row is
 indistinguishable from a row that was never going to be there.
 
-### 6.14 Nav rail — `.ctl-rail` *(exists; unchanged)*
+### 6.14 Nav rail — `.ctl-rail` *(lost its right border in §13.1)*
 
 200px fixed, six sections, every tab always rendered, never reorders. Its value
 is that **a position means one thing**; a list that grows under the cursor has a
@@ -871,7 +890,12 @@ geometry you re-read every visit. Below 1280px it narrows to 152px rather than
 becoming a 56px icon column — this product has no icon set, and a letter is not
 an icon when two sections start with the same one.
 
-Selection: `--surface-2` plus a 2px left rule in `--text`. Hueless, §1.3.
+Selection: `--surface-2` plus a 2px left rule in `--text`. Hueless, §1.3 — and
+with the rail's own edge gone, that fill is what anchors the column.
+
+**No `border-right`, no negative margin, no reclaimed grid gap.** Those three
+lines together measured a ZERO gutter between the rail and the content on every
+route; what separates the two regions now is `--ctl-gutter`, undivided. §13.1.
 
 ### 6.15 Mobile nav
 
@@ -1228,9 +1252,6 @@ and will mislead you.
 
 ---
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 ## 12. The frame — the dock stops being an overlay
 
 §11.3 left one item open and named its fix: *"the complete fix is for the dock
@@ -1344,7 +1365,6 @@ the notch and the home indicator, where a viewport unit would ignore both.
   browser that has no URL bar. `100dvh` is the candidate fix and it interacts
   with the safe-area padding above; neither was measured on a device.
 * Everything else in §11.3 that is not the dock bullet still stands.
-=======
 ## 12. The Overview screen pass
 
 §11 was the token layer and said so: *"No screen was restyled."* This section
@@ -1457,8 +1477,6 @@ What **is** pinned by a test is the honesty half, in
 for an unreported series. It was verified by mutation rather than by going
 green — making the absent swatch solid, and deleting the swatch entirely, each
 turn it red with a named message.
->>>>>>> 6392bf2fa521
-=======
 ## 12. The run group — the screen phase's first lane
 
 **Scope: `Agents.tsx`, `AgentDetail.tsx`, `AttemptTimeline.tsx`,
@@ -1646,8 +1664,6 @@ selector pair keeping each other alive.
 Track D; §10 already records the same flag for this file. This section is
 appended rather than woven into §1–§11 so that two lanes amending the document
 in the same pass conflict on nothing.
->>>>>>> cddc74f54290
-=======
 ## 12. The capacity group — the first screen pass
 
 **§11 was the token layer and said so: "No screen was restyled."** This is the
@@ -1845,4 +1861,262 @@ toggling between them sees one boundary appear and disappear. Both are
 defensible and the toggle is an owner-facing control, so which one is right is
 a product judgement rather than a system one. Recorded, not decided — the same
 way §6.4 records `.wf-meter`'s blue.
->>>>>>> b5930c3fa2bc
+
+---
+
+## 13. The layout system — the pass that changed levels instead of values
+
+**Why this section exists, stated so nobody repeats the mistake.** The restraint
+pass (§11) was briefed as a correction of *attributes* — figure size, shadow
+count, hue count, chip construction. It did all of it, correctly, and the
+owner's verdict on the result was that the design *"didn't really change
+much"*. The proof is in that pass's own report: **bordered elements on the
+Overview went 41 → 41.** Values moved; structure did not. Same grid of boxes,
+same information architecture, same layout.
+
+So this section decides three things a colour pass cannot touch: **where the
+page's air is, what case a label is written in, and which level of the hierarchy
+is allowed to draw a border.** All three ship as tokens and primitives in
+`styles.css`; no screen was restyled here, which is the build lanes' job.
+
+**One thing deliberately NOT retuned: the six type steps.** The brief allowed it
+and re-deriving them is exactly the trap above — a different set of numbers and
+the same screens. `typescale.test.ts`'s `SCALE` is untouched.
+
+### 13.1 The gutter — `--ctl-gutter`
+
+**The defect, measured on the live dev server: the gutter was ZERO.** The rail's
+right edge sat at x=252 and the first card's left edge sat at x=252, on every
+route at every width. Content flush against the divider it stands beside.
+
+The cause was three individually reasonable lines whose sum was not:
+
+```css
+.app       { gap: 0 var(--ctl-s5) }             /* 28px between the columns */
+.ctl-rail  { margin-right: calc(var(--ctl-s5) * -1);   /* …take all 28 back */
+             padding-right: var(--ctl-s5);             /* …spend it here    */
+             border-right: 1px solid var(--ctl-hairline) }
+```
+
+The rail reclaimed the entire column gap with a negative margin, spent it as its
+own right padding, and parked the hairline on the far side of it. Every pixel of
+separation went to the left of the line and none to the right. The comment above
+it — *"the gutter belongs to the rail, not to the grid gap"* — describes the
+intent exactly, which is why nobody looked again: it reads as a decision about
+where the line sits and is actually a decision to give the content no gutter.
+
+**Two things changed, and the second is the structural one.**
+
+**1. The page has one gutter token, not two ladders.** `--app-pad` ran
+16 → 24 → 32 while the rail-to-content gap was a flat `--ctl-s5` (28px): two
+unrelated numbers for one idea, so at 1280px the page's edge gutter (24) and its
+interior gutter (28) disagreed. `--ctl-gutter` is now the **only** distance
+between two top-level regions — the page's side padding *and* the rail-to-work
+gap — and `--app-pad` is a constant alias kept by name because `Brand.tsx` lines
+its wordmark up through it. There is nothing left for a screen to reinvent.
+
+| | ≤1279 | ≥1280 | ≥1600 |
+|---|---|---|---|
+| `--ctl-gutter` | 16px | 32px | 40px |
+
+It is a token named for its **job**, not a fifth step of the rhythm scale — the
+same standing `--ctl-pad-chrome` has, and for the same reasons: it is the only
+kind of value allowed to grow with the viewport, and nothing in a data region
+may use it. §3.1's four steps are still four.
+
+**2. The rail's hairline is deleted, and the gutter is the separation.** §5.1
+already says *"grouping is a surface step, separation is a hairline, prefer the
+step"*, and the rail was the one boundary on the page where that was not
+applied — and the boundary with the most room to apply it. Railway, Vercel and
+Northflank all separate nav from content with space alone; Koyeb uses a fill
+step. A 32–40px void reads as two regions more clearly than a 1px line did, and
+the rail's own selected-row fill (`--surface-2` plus a 2px `--text` rule) is what
+anchors the column.
+
+**Measured after, at 1440×900:** `railRight=232  mainLeft=264  gap=32`.
+
+### 13.2 Casing — the rule is that nothing shouts
+
+**The owner's question was "some helper text is all CAPS and others are regular
+caps?? WHY?" and the honest answer was that there was no rule.** Twenty-two
+separate declarations in `styles.css` forced `text-transform: uppercase` —
+`.ctl-eyebrow`, `.ctl-metric-label`, `.ctl-table thead th`, `.ctl-fact > b`,
+`.ctl-mark`, `.ctl-q-title`, `.ctl-dock-label`, `.ctl-subnav-admin`, `.brand-k`,
+`.tag`, `.t-label`, `.dsp-default`, `.art-turn-role`, two `h3`s, two `h4`s and
+more — each decided by whichever component was written that week. Labels of the
+**same rank** shouted on one screen and whispered on the next. Runtimes alone
+rendered 93 uppercase elements.
+
+**THE RULE, and it is a ban rather than a budget:**
+
+> `text-transform: uppercase` does not appear in this sheet. `text-transform`
+> exists only to bring a string **the API chose** into this console's register,
+> never to emphasise one we wrote.
+
+So three values stay legal, and they share one property — each makes the string
+quieter or leaves it alone:
+
+| Value | Where | Why it is a normalisation |
+|---|---|---|
+| `lowercase` | `.ctl-chip` | the API shouts `RUNNING`; the console does not |
+| `capitalize` | `.filters button` | a machine token (`queued`) read as a word |
+| `none` | `.id`, `code`, `kbd`, `samp` | refuse an ancestor's casing on a string we did not author |
+
+`uppercase` is the only value that can *only* ever be emphasis, so it is the
+only one banned. `typescale.test.ts` holds the count at zero.
+
+**Why the label layer survives without it.** The claim this document used to
+make was that *"uppercase mono grey means this is a label, not data"* — and two
+thirds of that sentence does the work. The label rank is **mono plus
+`--text-faint`**, against a sans face at full strength for the datum (§2). That
+is already two channels on one distinction. Uppercase was a third on the same
+distinction, and a third channel buys volume rather than clarity. It also costs:
+capitals are the least legible case at 12–13px; they force the 0.04–0.08em
+tracking that went with them and that nothing else in this sheet uses; and they
+make a label ~15% wider on a product whose complaint is density. Measured on
+Runtimes at 390px, `IN USE (UNITS)` was clipped where `In use (units)` fits.
+
+**The reference set settles it.** Of the five consoles this product is aimed at,
+**four paint no uppercase at all**: Northflank's project dashboard is sentence
+case end to end (`Services`, `Configuration values`, `Job succeeded`), Railway's
+is too, Vercel's Geist declares none, and `grep -c uppercase` over Koyeb's
+shipped design system returns **0**. Hetzner is the one that uses it, for exactly
+**one** rank — the rail's section headers — and nothing else. Nobody spends it on
+twenty-two things.
+
+**The tracking went with it, everywhere.** Letter-spacing on a label exists to
+open capitals up; on lowercase mono at `--t-meta` it reads as a loose word.
+Thirty-two positive `letter-spacing` declarations were removed in the same edit
+and a second assertion holds them gone. **Negative tracking stays and is a
+different thing** — `--t-title` and `.ctl-figure` both tighten, which is what
+large type needs.
+
+### 13.3 The box — three levels, three separators, and the default is not a box
+
+A count that will not move under a colour pass moves only when you decide **which
+level of the hierarchy may draw a border at all.** Decided here, once:
+
+| Level | What it is | Separated by |
+|---|---|---|
+| **Region** | a top-level block of a page (`.section`) | `--ctl-s5` of space, plus **one** `--line-soft` hairline between two of them. Never a box — a region is not an object, it is a change of subject. |
+| **Panel** | `.ctl-card`, `.ctl-table`, screen equivalents | **the one box.** One `--line` hairline, `--radius`, `--surface`. The only border in the console. |
+| **Row** | anything repeated inside a panel — a list row, a `.ctl-util`, a table row, a tile | **nothing.** No border, no rule, no per-row fill. `--row-h`, the mono/sans split and the fill step do all of it. |
+
+**The one exception, named so it stays one:** `.ctl-table thead th` keeps a
+`--line-soft` bottom rule. A column head is a different *kind* of row rather than
+the next one, and it says where the data starts exactly once.
+
+**What this pass deleted under that rule** — all primitives or frame, no screens:
+
+* the rail's `border-right` (§13.1);
+* `.ctl-head`'s bottom rule — it sat between the product header's own border and
+  the page `<h1>`, three horizontal lines within 70px of the top of every screen,
+  and a rule with no twin is a boundary with no reason (§5.2);
+* `.ctl-q-glyph`'s circle — **six per screen**, one beside every panel title, the
+  largest single non-panel contributor to the count. It is now a `--surface-2`
+  disc, which is the same line→step substitution as everywhere else;
+* `.ctl-line`'s per-row border — a stack of eight rows was eight boxes, in the
+  *boundary* weight, inside a panel that was already a box. This is the
+  construction none of the five references use;
+* `.ctl-line-body`'s border, whose surface step was already doing the work;
+* `.ctl-util + .ctl-util`'s separator. This one is the sheet's own example turned
+  around: §5.2 cites it as the canonical case where `--line-soft` is *legal*, and
+  that is still true. Legal is not wanted. A rule allowed to be faint enough to
+  pass a separator floor is, by construction, a rule nobody needed;
+* `.ctl-table`'s twenty row rules. The old comment beside them already argued the
+  case — *"twenty of these down one table identify nothing the rows do not
+  already identify"* — and drew them anyway.
+
+**A card keeps its edge, and this pass deliberately did not take it.** In a dark
+theme a fill step alone is enough — Railway's panel and page differ by 1.00:1 and
+it still reads. But light is the theme this product is designed in (§1.1),
+`--surface` on `--bg` is 1.03:1, and a panel with neither edge nor shadow on a
+light page is a panel nobody can find. **One box per panel is the target the
+references actually hit; zero is a different product.**
+
+**Two rhythms moved with it**, because removing boxes without giving back the
+space they were standing in just makes a flat page:
+
+* `.ctl-cards` gutter `--ctl-s3` → `--ctl-s5`. Two panels 12px apart while the
+  page's own gutter is 32–40px is a rhythm **inversion** — the gap inside the
+  content read tighter than the gap around it, so a row of cards read as one
+  striped object. Northflank's panel gutter measures 28–30px at 1440.
+* `.section` and `.section + .section` padding `--ctl-s3` → `--ctl-s5`. A change
+  of subject was separated by 24px while a card grid *inside* one region was
+  separated by 12px: a 2:1 ratio is not enough to tell "next panel" from "next
+  topic" at a glance.
+* `.ctl-metrics` gutter `--ctl-s2` → `--ctl-s3`. The tiles have no edge, so the
+  gap **is** the separation, and 8px of it read as one banded strip.
+
+### 13.4 Two tests re-pointed, and what moved in each
+
+Neither was deleted or weakened; both assert the same property against the new
+encoding, and each says so in its own docstring.
+
+* **`spacing.test.tsx` → `CENTRED_SIDEWAYS` is now `[]`.** It held
+  `button.ctl-q-glyph [left]`/`[right]`: a 20px circle whose sideways inset is
+  unmeasurable without a font, so the probe named it rather than exempting it
+  silently. With `border: 0` there is no inset to fail to measure. It stays a
+  named, typed constant rather than an inline `[]` so the next centred box still
+  has to be argued for.
+* **`brand.test.tsx` → the breakpoints widen `--ctl-gutter`, not `--app-pad`.**
+  The claim is unchanged — *some* wide breakpoint grows the page gutter, and
+  `.brand-row` and `.app` resolve the **same** token or the wordmark drifts away
+  from the rail. A new assertion was added that `--app-pad` still derives from
+  `--ctl-gutter`, so re-splitting the two ladders fails here.
+
+**And one test added**, because the casing rule is the kind of claim a source
+scan can make and the DOM cannot: `typescale.test.ts` asserts zero
+`text-transform: uppercase` and zero positive `letter-spacing` in the sheet. A
+rule on a screen this suite never mounts is exactly where the twenty-third would
+have survived.
+
+### 13.5 The honesty invariant, and what it cost
+
+**Nothing in the absence vocabulary was softened.** Every kind of nothing still
+has its own encoding — dashed for a failed read, hatched for never measured,
+solid for a real zero (§8.6) — and every one of them was *already* carrying
+shape, fill and words as its channels rather than case. What changed is that
+`.ctl-mark` now reads `real zero` instead of `REAL ZERO` on the same hatched
+pill. The distinction stays perceivable and the words stay reachable; the eleven
+honesty suites pass untouched.
+
+`.ctl-metric` keeps its **transparent declared border**, which is the pattern to
+copy for any absence state: a border that appears only when a read failed would
+move every neighbour by a pixel at the moment the strip most needs to hold still.
+
+### 13.6 What this pass did NOT fix
+
+* **`.ctl-util`'s name column ellipses inside a 340px card.** On Overview's
+  three-up grid the four-column util row needs ~441px and gets ~348px, so
+  `browser · 20 concurrent` renders as `browser …` — the exact failure the
+  primitive's own comment says must not happen ("the name holds a floor and the
+  bar gives way"). **This predates this pass**; the gutter change costs it a
+  further ~11px per card. It is the capacity lane's to fix, and the fix is a
+  column template, not a gutter.
+* **A CSS rule cannot reach a shouted string literal, and three of them existed.**
+  `Accounts.tsx` wrote `<th>ACCOUNT</th>`, `CLEARS` and `STATE` in capitals in
+  the source, so removing `table.pools thead th`'s `text-transform` left one
+  table on one screen still shouting — the exact inconsistency §13.2 removes.
+  Those three (and `5H`/`7D`) were changed **in the source**, which is the only
+  place they could be changed. It is the one edit this pass made outside the
+  token and primitive layer, and it is five string literals with no styling
+  attached.
+* **`Brand.tsx`'s environment badge still shouts, deliberately not fixed here.**
+  `label: 'ENVIRONMENT UNKNOWN'` and `label: env.name.toUpperCase()` render
+  `LOCAL` and `PRODUCTION` in capitals from the source. Under §13.2 that is
+  emphasis on a string we author and should go — but the prod badge is a
+  **safety** signal with its own full-width bar, `brand.test.tsx` asserts the
+  exact string `'ENVIRONMENT UNKNOWN'` twice, and whether the production banner
+  is allowed to shout is a product judgement rather than a typographic one.
+  Recorded for the owner, not decided here.
+* **Screen-private boxes are untouched.** `.tile` (`border: 1px solid var(--line)`),
+  `.wf-bar`'s row border and the other 38 screen namespaces still draw their own.
+  §13.3 is the rule they collapse into; applying it is the build lanes' job, and
+  the Overview count will not reach the 10–20 band until they do.
+* **`.brand-word b` is still `font-weight: 700`**, against §2's "there is no 700
+  in this console". It is a logotype and arguably the one legitimate display
+  weight, but it is an exception nothing has written down. Two label-rank `h3`s
+  that were also 700 were brought to 600 in this pass; the wordmark was left.
+* **The dock still overlays resting content at 390px**, exactly as §11.3 and
+  §12.4 say. Nothing here touches `Shell.tsx`.

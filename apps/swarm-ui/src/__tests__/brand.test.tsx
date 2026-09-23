@@ -457,6 +457,22 @@ describe('B19: the console uses the glass it is given', () => {
     style.remove()
   })
 
+  /**
+   * WHAT MOVED: the breakpoints now widen `--ctl-gutter`, not `--app-pad`.
+   *
+   * §B5.1 of `styles.css` collapsed two ladders into one. The page's edge
+   * padding ran 16 → 24 → 32 as `--app-pad`, while the distance between the
+   * rail and the content was a flat `--ctl-s5`, and at 1280px those two
+   * expressions of the same idea disagreed by 4px. `--ctl-gutter` is now THE
+   * distance between two top-level regions — the page's side padding and the
+   * rail-to-work gap — and `--app-pad` is a constant alias of it, kept by name
+   * because the product header lines its wordmark up with `.app` through it.
+   *
+   * So the thing that grows with the viewport is `--ctl-gutter`, and that is
+   * what this reads. The second half of the test is unchanged and is still the
+   * claim that matters: `.brand-row` and `.app` must resolve the SAME token,
+   * or the wordmark drifts away from the rail at the first breakpoint.
+   */
   it('grows its gutter at wide breakpoints, and the header follows it', () => {
     const style = withStyles()
     const sheet = style.sheet!
@@ -467,10 +483,16 @@ describe('B19: the console uses the glass it is given', () => {
     const widened = [...sheet.cssRules]
       .filter((r): r is CSSMediaRule => r.constructor.name === 'CSSMediaRule')
       .filter((r) => /min-width/.test(r.conditionText))
-      .filter((r) => [...r.cssRules].some((inner) => inner.cssText.includes('--app-pad')))
+      .filter((r) => [...r.cssRules].some((inner) => inner.cssText.includes('--ctl-gutter')))
       .map((r) => r.conditionText)
 
     expect(widened.length, 'no wide breakpoint changes the page gutter').toBeGreaterThanOrEqual(2)
+
+    // AND `--app-pad` IS STILL THE PAGE GUTTER rather than a second number
+    // that happens to look like it. If somebody re-splits the two ladders,
+    // this is what catches it.
+    const pad = getComputedStyle(document.documentElement).getPropertyValue('--app-pad').trim()
+    expect(pad, '--app-pad no longer derives from --ctl-gutter').toBe('var(--ctl-gutter)')
 
     // The header sits OUTSIDE `.app` so its environment bar can reach both
     // viewport edges; this is what keeps its wordmark lined up with the

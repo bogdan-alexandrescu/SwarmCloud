@@ -451,9 +451,60 @@ body {
    is a token because the product header (Brand.tsx) sits OUTSIDE `.app` -- its
    environment bar has to reach both viewport edges -- and has to line its
    wordmark up with this column at every breakpoint. */
-:root { --app-max: 1880px; --app-pad: var(--gutter); }
-@media (min-width: 1280px) { :root { --app-pad: 24px; } }
-@media (min-width: 1600px) { :root { --app-pad: 32px; } }
+/* ==========================================================================
+   §B5.1 — THE GUTTER. ONE DISTANCE BETWEEN TWO TOP-LEVEL REGIONS.
+   ==========================================================================
+   MEASURED ON THE LIVE DEV SERVER, AND IT WAS ZERO. The rail's right edge sat
+   at x=252 and the first card's left edge sat at x=252: content flush against
+   the divider it stands beside, on every route at every width. The cause is
+   three lines that were each individually reasonable —
+
+       .app       { gap: 0 var(--ctl-s5) }        28px between the columns
+       .ctl-rail  { margin-right: calc(var(--ctl-s5) * -1);
+                    padding-right: var(--ctl-s5);
+                    border-right: 1px solid var(--ctl-hairline) }
+
+   — and whose sum is that the rail reclaims the ENTIRE gap with a negative
+   margin, spends it as its own right padding, and parks the hairline on the
+   far side of it. Every pixel of separation went to the left of the line and
+   none to the right. The old comment ("the gutter belongs to the rail, not to
+   the grid gap") describes the intent exactly and is the reason nobody looked
+   again: it sounds like a decision about where the line sits, and it is
+   actually a decision to give the content no gutter at all.
+
+   TWO THINGS ARE FIXED, AND THE SECOND IS THE STRUCTURAL ONE.
+
+   1. THE PAGE HAS ONE GUTTER TOKEN, NOT TWO LADDERS. `--app-pad` ran
+      16 → 24 → 32 and the rail-to-content gap was a flat `--ctl-s5` (28px):
+      two unrelated numbers for the same idea, so at 1280px the page's edge
+      gutter (24) and its interior gutter (28) disagreed. `--ctl-gutter` is now
+      the ONLY distance between two top-level regions — the page's own side
+      padding AND the rail-to-work gap — and `--app-pad` derives from it. A
+      screen cannot reinvent it, because there is nothing left to reinvent.
+
+   2. THE RAIL'S HAIRLINE IS DELETED, AND THE GUTTER IS THE SEPARATION.
+      §5.1 of the design system already states the rule — "grouping is a
+      surface step, separation is a hairline, PREFER THE STEP" — and the rail
+      was the one boundary on the page where it was not applied. It is also
+      the boundary with the most room: Railway, Vercel and Northflank all
+      separate their nav from their content with space alone, and Koyeb uses a
+      fill step. A 32–40px void reads as two regions more clearly than a 1px
+      line ever did, and the rail's own selected-row fill (`--surface-2` plus a
+      2px `--text` rule) is what anchors the column.
+
+   This is a token, not a step of the rhythm scale (§B4.3 move 6 holds that at
+   four), for the same reason `--ctl-pad-chrome` is not: it is named for the
+   JOB it does, it is the only value in the sheet allowed to grow with the
+   viewport, and nothing inside a data region may use it.
+
+   `--app-pad` KEEPS ITS NAME because the product header (Brand.tsx) sits
+   OUTSIDE `.app` — its environment bar has to reach both viewport edges — and
+   lines its wordmark up with this column at every breakpoint.
+   `src/__tests__/brand.test.tsx` fails if that alignment goes. */
+:root { --ctl-gutter: var(--gutter); }
+@media (min-width: 1280px) { :root { --ctl-gutter: 32px; } }
+@media (min-width: 1600px) { :root { --ctl-gutter: 40px; } }
+:root { --app-max: 1880px; --app-pad: var(--ctl-gutter); }
 /* THE FRAME, AND THE END OF THE DOCK RESERVATION (§3.4, §11.3).
    ---------------------------------------------------------------------------
    TWO PASSES TRIED TO RESERVE SPACE FOR AN OVERLAY. Neither could work, and
@@ -582,8 +633,11 @@ body {
    and a literal that has been case-shifted is no longer the literal. */
 .id, code, kbd, samp {
   text-transform: none;
-  /* An id is a string of characters that must be told apart one by one, and
-     letter-spacing inherited from an uppercase label is the opposite of that. */
+  /* An id is a string of characters that must be told apart one by one, so it
+     refuses inherited tracking as well as inherited casing. §B5.2 left no
+     tracked label for it to inherit FROM, and this stays anyway: it is the
+     same defence as `text-transform: none` beside it, which also guards
+     against a rule nobody has written yet. */
   letter-spacing: 0;
 }
 .id {
@@ -653,7 +707,6 @@ body {
   /* --lh-flush: the box is `.brand-row`'s 44px min-height. The wordmark is
      centred in it and must not add leading that grows the product header. */
   font: 400 var(--t-body)/var(--lh-flush) var(--font);
-  letter-spacing: .01em;
   white-space: nowrap;
 }
 /* Two weights, one word: the swarm is the noun and the cloud is where it runs.
@@ -664,8 +717,6 @@ body {
 /* A KEY, not a label: the small word that says what the value beside it is. */
 .brand-k {
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
-  text-transform: uppercase;
-  letter-spacing: .06em;
   color: var(--text-faint);
 }
 
@@ -675,10 +726,8 @@ body {
   gap: 6px;
   padding: 2px 9px;
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .06em;
   flex: 0 0 auto;
 }
-.brand-env .brand-env-name { text-transform: uppercase; }
 .brand-env .id { font-size: var(--t-micro); color: var(--text-dim); }
 
 /* FOUR TREATMENTS, AND THE CHANNEL IS NEVER COLOUR ALONE.
@@ -743,8 +792,6 @@ body {
   background: color-mix(in srgb, var(--info) 22%, transparent);
   color: var(--info-ink);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  text-transform: uppercase;
-  letter-spacing: .05em;
 }
 
 /* On a phone the identity gets its own line rather than squeezing the
@@ -773,7 +820,13 @@ body {
    `+` rather than a rule on every section: a trailing hairline under the last
    region on a page is a line with nothing on the other side of it, which reads
    as content that failed to load. */
-.section { margin-bottom: var(--ctl-s3); }
+/* §B5.3: a REGION is separated by the scale's one large break plus a single
+   hairline. It was `--ctl-s3` on both sides of the rule, so a change of
+   subject was separated by 24px while a card grid inside one region was
+   separated by 12px — a 2:1 ratio that is not enough to tell "next panel"
+   from "next topic" at a glance. `--ctl-s5` is what §3.1 names the one large
+   break FOR. */
+.section { margin-bottom: var(--ctl-s5); }
 /* LONGHANDS, not `border-top: 1px solid var(--ctl-hairline)`. A shorthand
    carrying a custom property is not expanded into its longhands by every CSS
    parser -- jsdom is one that does not -- so the guard in
@@ -784,7 +837,7 @@ body {
   border-top-width: 1px;
   border-top-style: solid;
   border-top-color: var(--line-soft);
-  padding-top: var(--ctl-s3);
+  padding-top: var(--ctl-s5);
 }
 /* §B4.1 — THE INVERSION, FIXED.
    This was 13px, 600, uppercase, .07em, in `--text-faint`: a panel's TITLE
@@ -848,7 +901,6 @@ body {
 .tags { display: flex; gap: 6px; flex-wrap: wrap; min-height: 17px; }
 .tag {
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
-  text-transform: uppercase; letter-spacing: 0.04em;
   padding: 0 6px; border-radius: var(--ctl-radius-sm);
   border: 1px solid currentColor;
 }
@@ -1477,8 +1529,7 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    against a 4px floor. The absent treatment is the one thing on this node
    that may not be traded for height, so the height is what gives. */
 .node-num dt {
-  font: var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em; text-transform: uppercase;
-  color: var(--text-faint); align-self: baseline;
+  font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); align-self: baseline;
 }
 .node-num dd {
   margin: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text);
@@ -1735,7 +1786,6 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   padding: 2px 8px;
   border-radius: 999px;
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .03em;
   vertical-align: middle;
 }
 .scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info-ink); }
@@ -1751,8 +1801,6 @@ table.pools th, table.pools td {
 }
 table.pools thead th {
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .05em;
-  text-transform: uppercase;
   color: var(--text-faint);
   border-bottom-color: var(--text-faint);
 }
@@ -2152,8 +2200,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 .att-restore > b {
   font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  letter-spacing: .04em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 /* The card foot as a link row. `.ctl-card-foot` supplies the surface step, the
@@ -2402,7 +2448,7 @@ ol.timeline li::before {
 .banner.neutral { background: var(--surface); color: var(--text-dim); }
 /* Never collapsed, never truncated: an admin reading their own tenant's four
    running tasks as the platform total is a truth bug, not a layout choice. */
-.scope-word { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .06em; color: var(--text); }
+.scope-word { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .count-chip {
   display: inline-block;
   margin-right: 10px;
@@ -2449,7 +2495,7 @@ dl.kv dt.needs-human { color: var(--warn); font-weight: 600; }
 .q-pool { color: var(--text-faint); font-family: var(--mono); font-size: var(--t-micro); }
 .q-chip {
   padding: 1px 8px; border-radius: 999px;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em;
+  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
 }
 .q-chip.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad-ink); }
 /* Never an ABSENT chip: absence reads as "not drained". */
@@ -2565,7 +2611,7 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   padding: 11px 13px; border: 1px solid var(--line);
   border-radius: var(--radius); background: var(--surface);
 }
-.t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); }
 .t-value { display: block; margin: 4px 0 5px; font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
 .t-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 /* "not recorded" is a sentence, not a number. A zero here would read as
@@ -2617,7 +2663,7 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .liveness.silent > i { background: var(--bad); }
 .liveness.finished > i { background: var(--text-faint); }
 .liveness.not-started > i { background: transparent; border: 1.5px solid var(--text-faint); }
-.lv-word { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em; }
+.lv-word { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); }
 .liveness.live .lv-word { color: var(--ok); }
 .liveness.quiet .lv-word { color: var(--warn); }
 .liveness.silent .lv-word { color: var(--bad); }
@@ -2737,7 +2783,6 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
 .settings-tabs { margin-bottom: 18px; }
 
 /* ---- the pool table ---- */
-table.pools.accounts thead th { letter-spacing: .06em; }
 table.pools.accounts td.acct-window,
 table.pools.accounts td.n { white-space: nowrap; }
 
@@ -2832,8 +2877,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 
 .acct-extra-windows h4, .acct-action h4 {
   margin: 0 0 6px;
-  font-size: var(--t-meta); font-weight: 600; text-transform: uppercase;
-  letter-spacing: .07em; color: var(--text-faint);
+  font-size: var(--t-meta); font-weight: 600; color: var(--text-faint);
 }
 .acct-extra-windows .split-row { grid-template-columns: minmax(0, 1fr) 72px 86px; }
 
@@ -3234,6 +3278,58 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    PADDING IS `--ctl-pad-chrome`, NOT A RHYTHM STEP. D2 is compact data inside
    generous chrome; a card is chrome. */
 
+/* ==========================================================================
+   §B5.3 — THREE LEVELS, THREE SEPARATORS, AND THE DEFAULT IS NOT A BOX
+   ==========================================================================
+   THE COUNT DID NOT MOVE LAST TIME AND THAT IS THE WHOLE POINT. The restraint
+   pass corrected attributes — figure size, shadow count, hue count — and its
+   own report recorded the result: bordered elements on the Overview went
+   41 → 41. Values moved, STRUCTURE did not, and the owner's verdict was that
+   the design "didn't really change much". The references run 10–20 bordered
+   elements per screen. A count that will not move under a colour pass moves
+   only when you decide WHICH LEVEL OF THE HIERARCHY IS ALLOWED TO DRAW ONE.
+
+   So it is decided here, once, for every screen:
+
+     REGION   a top-level block of a page (`.section`)
+              → `--ctl-s5` of space, plus ONE `--line-soft` hairline at the
+                boundary between two of them. Never a box. A region is not an
+                object; it is a change of subject.
+
+     PANEL    `.ctl-card`, `.ctl-table`, and the screen-private equivalents
+              → **THE ONE BOX.** One `--line` hairline, `--radius`,
+                `--surface`. This is the only border in the console and the
+                only place `--line` is spent on an edge. It is what Northflank
+                and Koyeb both draw, and they draw nothing else.
+
+     ROW      anything repeated inside a panel — a list row, a utilisation
+              line, a table row, a tile in a strip
+              → **NOTHING.** No border, no rule, no per-row fill. The rhythm
+                (`--row-h`), the mono/sans split (§2) and the fill step do all
+                of it. Northflank draws no row rule of any kind inside a panel;
+                that is how their tables are dense without being loud.
+
+   THE ONE EXCEPTION, NAMED SO IT STAYS ONE: `.ctl-table thead th` keeps a
+   `--line-soft` bottom rule, because a column head is a different KIND of row
+   rather than the next one, and it says where the data starts exactly once.
+
+   WHAT THIS PASS DELETED UNDER THAT RULE, all of them primitives rather than
+   screens: the rail's right border (§B5.1), `.ctl-head`'s bottom rule,
+   `.ctl-q-glyph`'s circle (six per screen), `.ctl-line`'s per-row border,
+   `.ctl-line-body`'s border, `.ctl-util + .ctl-util`'s separator, and
+   `.ctl-table`'s twenty row rules. `.ctl-metric` had already lost its box in
+   the restraint pass and keeps a TRANSPARENT declared border, which is the
+   pattern to copy: a border that appears only when a read failed would move
+   every neighbour by a pixel at the moment the strip most needs to hold still.
+
+   A CARD KEEPS ITS EDGE and this pass deliberately did not take it. In a dark
+   theme a fill step alone is enough — Railway's panel and page differ by
+   1.00:1 and it still reads — but light is the theme this product is designed
+   in (§1.1), `--surface` on `--bg` is 1.03:1, and a panel with neither edge
+   nor shadow on a light page is a panel nobody can find. One box per panel is
+   the target the references actually hit; zero is a different product.
+   -------------------------------------------------------------------------- */
+
 .ctl-cards {
   display: grid;
   /* `min(100%, 340px)` rather than a bare 340px: the `min()` is what stops a
@@ -3242,7 +3338,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      identical construction at 380px and gets 4-up at 1858px and 1-up at 390px
      with nothing written. */
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
-  gap: var(--ctl-s3);
+  /* `--ctl-s5`, not `--ctl-s3`. Two panels 12px apart while the page's own
+     gutter is 32–40px is a rhythm inversion: the gap INSIDE the content read
+     tighter than the gap around it, so a row of cards read as one striped
+     object rather than as three panels. Northflank's panel gutter measures
+     28–30px at 1440 against a 24px page gutter; ours is now the scale's one
+     large break, which is what §3.1 says a break between regions is for. */
+  gap: var(--ctl-s5);
 }
 
 /* SEPARATION IS A SURFACE STEP PLUS ONE HAIRLINE, AND NOTHING ELSE.
@@ -3346,22 +3448,69 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* -------------------------------------------------------------------------- */
 /* 9. Eyebrow                                                                  */
 /* -------------------------------------------------------------------------- */
-/* ONE WORD WHERE A SENTENCE USED TO BE. Uppercase mono, tracked, muted — the
-   device Northflank and Railway both use as their only in-panel section
-   heading, with no rule, no box and no background under it. `CAPACITY`,
-   `HOLDERS`, `BLOCKERS`, `THIS ATTEMPT`.
+/* ==========================================================================
+   §B5.2 — THE LABEL RANK, AND THE CASING RULE THAT DEFINES IT
+   ==========================================================================
+   THE OWNER'S QUESTION WAS "some helper text is all CAPS and others are
+   regular caps?? WHY?" and the honest answer was that there was no rule.
+   TWENTY-TWO separate declarations in this sheet forced
+   `text-transform: uppercase` — `.ctl-eyebrow`, `.ctl-metric-label`,
+   `.ctl-table thead th`, `.ctl-fact > b`, `.ctl-mark`, `.ctl-q-title`,
+   `.ctl-dock-label`, `.ctl-subnav-admin`, `.brand-k`, `.tag`, `.t-label`,
+   `.dsp-default`, `.art-turn-role`, two `h3`s, two `h4`s and more — each one
+   decided by whichever component was written that week. Labels of the SAME
+   RANK shouted on one screen and whispered on the next. Runtimes alone
+   rendered 93 uppercase elements.
+
+   THE RULE, AND IT IS A BAN RATHER THAN A BUDGET:
+
+     `text-transform: uppercase` DOES NOT APPEAR IN THIS SHEET.
+     `text-transform` exists ONLY to bring a string the API chose into the
+     console's own register, never to emphasise one we wrote. So `lowercase`
+     (`.ctl-chip` — the API shouts RUNNING, the console does not), `capitalize`
+     (`.filters button`) and `none` (`.id`, which refuses an ancestor's casing
+     on a string we did not author) are the three legal values, and they share
+     one property: each makes the string QUIETER or leaves it alone. Uppercase
+     is the only value that can only ever be emphasis, so it is the only one
+     banned outright. `src/__tests__/typescale.test.ts` holds the count at
+     zero.
+
+   WHY THE LABEL LAYER SURVIVES WITHOUT IT. The claim this sheet used to make
+   was that "uppercase mono grey means this is a label, not data" — and two
+   thirds of that sentence is doing the work. The label rank is MONO plus
+   `--text-faint`, against a sans face at full strength for the datum (§2).
+   That is already two channels on one distinction; uppercase was a third on
+   the same distinction, and a third channel buys nothing but volume. It also
+   costs: capitals are the least legible case at 12–13px, they force the
+   0.04–0.08em tracking that went with them and that nothing else in this
+   sheet uses, and they make a two-word label 15% wider on a screen whose
+   whole complaint is density.
+
+   THE REFERENCE SET SETTLES IT. Of the five consoles this product is aimed at,
+   FOUR PAINT NO UPPERCASE AT ALL — Northflank's project dashboard is sentence
+   case end to end ("Services", "Configuration values", "Job succeeded"),
+   Railway's is too, Vercel's Geist declares none, and `grep -c uppercase` over
+   Koyeb's shipped design system returns 0. Hetzner is the one that uses it,
+   for exactly ONE rank (the rail's section headers) and nothing else. Nobody
+   spends it on twenty-two things.
+
+   TRACKING GOES WITH IT, EVERYWHERE. Letter-spacing on a label exists to open
+   capitals up; on lowercase mono at --t-meta it just reads loose. Every
+   declaration removed above lost its `letter-spacing` in the same edit.
+   -------------------------------------------------------------------------- */
+/* ONE WORD WHERE A SENTENCE USED TO BE — the device Northflank and Railway
+   both use as their only in-panel section heading, with no rule, no box and no
+   background under it: `Capacity`, `Holders`, `Blockers`, `This attempt`.
 
    It is deliberately the same treatment as `.ctl-metric-label` and
    `.ctl-table thead th`, and that is the point: the reader learns ONE thing —
-   uppercase mono grey means "this is a label, not data" — and can then read
-   or skip that whole layer at will. That learned split is what buys a screen
-   the right to have no paragraphs on it. */
+   mono grey means "this is a label, not data" — and can then read or skip that
+   whole layer at will. That learned split is what buys a screen the right to
+   have no paragraphs on it. */
 .ctl-eyebrow {
   display: block;
   margin: 0 0 var(--ctl-s2);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .08em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 
@@ -3509,8 +3658,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-fact > b {
   flex: none;
   font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  letter-spacing: .04em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 /* A fact whose value was not read keeps its slot and its key. It does not
@@ -3560,8 +3707,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border: 1px solid currentColor;
   border-radius: var(--ctl-radius-sm);
   font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
-  letter-spacing: .04em;
-  text-transform: uppercase;
   white-space: nowrap;
   vertical-align: middle;
   /* No background: an accent on a tint of itself is the one pairing this sheet
@@ -4018,20 +4163,35 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    and the list scannable. The one exception is a cell the sheet is already
    forbidden from ellipsing — a DAG node's dependency list — and it is not in
    a row. */
-.ctl-lines { display: flex; flex-direction: column; gap: var(--ctl-s1); }
+/* §B5.3 — A ROW IS NOT A BOX, AND THIS IS WHERE THAT WAS WORST.
+   `.ctl-line` drew `border: 1px solid var(--line)` on EVERY row, with 4px of
+   gap between them: a stack of eight rows was eight boxes, in the boundary
+   weight, inside a panel that was already a box. That is the construction the
+   owner's verdict names and the one none of the five references use —
+   Northflank's dense panels have NO row rule of any kind, Railway separates
+   its list rows with a fill step alone.
+
+   So the row keeps its radius (it has a hover and an open state that need a
+   shape) and loses its edge and its default fill. The gap goes to zero,
+   because rows that no longer draw their own outline are a LIST, and 4px of
+   nothing between two invisible boxes is just a ragged rhythm. `--row-h` and
+   the mono/sans split carry the scanning. */
+.ctl-lines { display: flex; flex-direction: column; }
 .ctl-line {
   display: grid;
   align-items: center;
   gap: var(--ctl-s3);
   min-height: var(--row-h);
   padding: 4px var(--ctl-s3);
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
+  background: transparent;
   text-align: left;
-  transition: border-color var(--ctl-dur) ease;
+  transition: background-color var(--ctl-dur) ease;
 }
-.ctl-line:hover { border-color: var(--text-faint); }
+/* The hover that the border used to carry. A fill step is also the only
+   affordance that still reads when eight of these sit directly on each other. */
+.ctl-line:hover { background: var(--surface-2); }
 .ctl-line:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .ctl-line > * {
   min-width: 0;
@@ -4043,15 +4203,23 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    its own radius at the bottom. The surface steps DOWN rather than up: the
    detail is inside the row, not on top of it. */
 .ctl-line-body {
-  border: 1px solid var(--line);
-  border-top: 0;
+  /* The surface step was always doing the work here; the border beside it was
+     a second statement of the same fact (§B5.3). What says "this detail
+     belongs to the row above" is that both are filled and the pair has one
+     shared corner, not that a line goes round them. */
+  border: 0;
   border-radius: 0 0 var(--ctl-radius-sm) var(--ctl-radius-sm);
   padding: var(--ctl-pad-chrome);
   background: var(--surface-2);
 }
 /* A row whose detail is open keeps its own bottom corners square so the two
    read as one object. */
-.ctl-line.is-open { border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0; }
+/* An open row takes the fill its body has, so the two read as one object, and
+   squares the corners they share. */
+.ctl-line.is-open {
+  background: var(--surface-2);
+  border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Em dash: the absent measurement                                             */
@@ -4076,8 +4244,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
-  gap: var(--ctl-s2);
-  margin-bottom: var(--ctl-s3);
+  /* The tiles have no edge (see below), so the gap IS the separation and 8px
+     of it was not enough: five unboxed tiles 8px apart read as one banded
+     strip. `--ctl-s3` is the step §3.1 names for the distance between
+     regions, which is what two tiles now are to each other. */
+  gap: var(--ctl-s3);
+  margin-bottom: var(--ctl-s5);
 }
 
 /* THE TILE LOSES ITS BOX, AND A BOX ON A TILE NOW MEANS SOMETHING IS WRONG
@@ -4120,8 +4292,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-metric-label {
   display: block;
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .05em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 .ctl-metric-value {
@@ -4271,11 +4441,18 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   gap: var(--ctl-s3);
   padding: 5px 0;
 }
-/* The separator weight, plain. It used to be `--line` at 60% over whatever
-   was behind it, which measured 1.02:1 -- a rule mixed down from a base that
-   was already invisible. A token that means "separator" makes the 60% both
-   unnecessary and unmeasurable. */
-.ctl-util + .ctl-util { border-top: 1px solid var(--line-soft); }
+/* NO RULE BETWEEN TWO OF THESE (§B5.3), and this one is the sheet's own
+   example turned around. §5.2 of the design system cites `.ctl-util +
+   .ctl-util` as the canonical case where `--line-soft` is LEGAL — it is a
+   repeated separator with a twin, so the probe grades it at 1.5:1 rather than
+   3:1 — and that is still true. Legal is not the same as wanted. Five of these
+   on the Overview drew five rules inside a panel that is already a box, which
+   is the count the owner's verdict is about; and a rule that is allowed to be
+   faint enough to pass a separator floor is, by construction, a rule nobody
+   needed. The rows are 8px apart, they alternate mono label and tabular
+   figure, and the track between them is the strongest horizontal in the row.
+   Space is enough. */
+.ctl-util + .ctl-util { margin-top: var(--ctl-s2); }
 
 .ctl-util-name {
   font: var(--t-body)/var(--lh-body) var(--mono);
@@ -4674,22 +4851,26 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-table td {
   padding: 4px 10px;
   text-align: left;
-  /* The separator weight: twenty of these down one table identify nothing the
-     rows do not already identify, and at the boundary weight they would read
-     as a spreadsheet grid. */
-  border-bottom: 1px solid var(--line-soft);
+  /* NO ROW RULE (§B5.3). The old comment here already argued half of this —
+     "twenty of these down one table identify nothing the rows do not already
+     identify" — and then drew them anyway at the separator weight. Twenty
+     faint rules identify nothing twenty absent rules would not. Northflank's
+     dense tables have no row border at all and stay perfectly scannable on a
+     40px rhythm; ours is 30px with tabular figures, which is tighter and
+     therefore easier, not harder. What separates two rows is `--row-h`. */
   white-space: nowrap;
 }
-.ctl-table tbody tr:last-child th,
-.ctl-table tbody tr:last-child td { border-bottom: none; }
+/* THE ONE HAIRLINE PERMITTED INSIDE A PANEL, and it is here because a column
+   head is a different KIND of row rather than the next one: it says once, at
+   the top, where the data starts. `--line-soft` and not `--line`, because it
+   still sits inside a box that has already drawn its boundary. */
 .ctl-table thead th {
   position: sticky;
   top: 0;
   z-index: 1;
   background: var(--surface-2);
+  border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .05em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 .ctl-table .is-num {
@@ -4861,8 +5042,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border-radius: var(--ctl-radius-sm);
   background: var(--ctl-hatch);
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
-  text-transform: uppercase;
-  letter-spacing: .04em;
   color: var(--text-dim);
   vertical-align: middle;
 }
@@ -4893,7 +5072,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   display: grid;
   grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr);
   align-items: start;
-  gap: 0 var(--ctl-s5);
+  /* §B5.1: the gutter, and the whole of it is between the two regions. */
+  gap: 0 var(--ctl-gutter);
 }
 :root { --rail-w: 200px; }
 /* Below 1280px the rail narrows rather than becoming a 56px icon column: this
@@ -4916,11 +5096,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   padding: var(--ctl-s3) 0;
   max-height: calc(100vh - var(--dock-h, 28px));
   overflow-y: auto;
-  border-right: 1px solid var(--ctl-hairline);
-  /* The gutter belongs to the rail, not to the grid gap, so the hairline sits
-     between the two regions rather than floating inside the left one. */
-  margin-right: calc(var(--ctl-s5) * -1);
-  padding-right: var(--ctl-s5);
+  /* NO BORDER, NO NEGATIVE MARGIN, NO RECLAIMED GAP — see §B5.1 above. These
+     three lines together were the measured zero gutter: the rail took the
+     whole of `.app`'s column gap back with `margin-right: -28px`, spent it as
+     its own padding, and left the hairline sitting exactly on the work
+     column's first pixel. What separates the rail from the content now is
+     `--ctl-gutter`, undivided, which is the separation every reference in this
+     product's target set uses for this particular boundary. */
 }
 .ctl-rail-sections { display: flex; flex-direction: column; gap: 2px; }
 .ctl-rail-group { display: flex; flex-direction: column; }
@@ -5001,8 +5183,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-subnav-admin {
   margin-left: 5px;
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .04em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 
@@ -5037,13 +5217,17 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* ---- the head ---- */
 /* 44px, inside the work column. It names the PAGE; the rail names the product,
    and the bar above them both names the environment. */
+/* NO RULE UNDER IT (§B5.3). The breadcrumb strip sat between the product
+   header's own bottom border and the page `<h1>` beneath it, which put three
+   horizontal lines within 70px of the top of every screen. A rule with nothing
+   on the other side of it is a boundary with no twin (§5.2), and the answer to
+   a boundary inside a region is to draw nothing and separate with space. */
 .ctl-head {
   display: flex;
   align-items: center;
   gap: var(--ctl-s3);
   min-height: 44px;
   margin-bottom: var(--ctl-s3);
-  border-bottom: 1px solid var(--ctl-hairline);
 }
 .ctl-crumb {
   display: flex;
@@ -5091,10 +5275,18 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   width: 20px;
   height: 20px;
   padding: 0;
-  border: 1px solid var(--line);
+  /* A SURFACE STEP, NOT A RULE (§B5.3). Six of these shipped on the Overview
+     — one beside every panel title — and six 20px circles each drawing a
+     `--line` boundary was the largest single non-panel contributor to the box
+     count. The affordance survives as a filled disc, which is the same
+     substitution §5.1 prescribes everywhere else: the step groups, the line
+     separates, and this was never separating anything. The tone comes up from
+     `--text-faint` to `--text-dim` because a glyph on `--surface-2` has lost
+     the edge that was carrying half its presence. */
+  border: 0;
   border-radius: 999px;
-  background: transparent;
-  color: var(--text-faint);
+  background: var(--surface-2);
+  color: var(--text-dim);
   /* --lh-flush: the box is the 18px circle above. --t-micro rather than
      --t-meta: at --t-meta the glyph's own ink came within 3.68px of the
      circle's 1px border, under the 4px floor the spacing suite enforces, and
@@ -5105,7 +5297,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   font: 600 var(--t-micro)/var(--lh-flush) var(--mono);
   cursor: help;
 }
-.ctl-q-glyph:hover { color: var(--text-dim); border-color: var(--text-faint); }
+/* Hover steps the fill and the ink together, because with the border gone the
+   fill is the only thing left to move. */
+.ctl-q-glyph:hover { color: var(--text); background: var(--line-soft); }
 .ctl-q-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ctl-q-card {
   position: absolute;
@@ -5126,8 +5320,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   display: block;
   margin: 0 0 4px;
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .04em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 .ctl-q-body {
@@ -5226,8 +5418,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dock-label {
   flex: none;
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: .06em;
-  text-transform: uppercase;
   color: var(--text-faint);
 }
 .ctl-dock-facts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -5432,8 +5622,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .dsp-option-head b { font-size: var(--t-body); font-weight: 600; }
 .dsp-code { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 .dsp-default {
-      font: var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .05em; text-transform: uppercase;
-  color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+      font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
 }
 
 .dsp-count { font-size: var(--t-body); font-weight: 600; color: var(--info); }
@@ -5524,8 +5713,7 @@ table.pools tbody tr.unmeasured {
 .blocker-group > h3 {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
   margin: 0 0 6px;
-  font-size: var(--t-meta); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--text-dim);
+  font-size: var(--t-meta); font-weight: 600; color: var(--text-dim);
 }
 /* The heading carries the remedy, not just the category: "somebody has to act"
    is the whole reason the two groups are separated. */
@@ -5546,7 +5734,7 @@ table.pools tbody tr.unmeasured {
 .blocker-row.is-full   { border-left-color: var(--bad); }
 .blocker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .blocker-pool { font-size: var(--t-body); background: transparent; color: var(--text); }
-.blocker-reason { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em; color: var(--text-dim); }
+.blocker-reason { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
 /* The numbers that made it fail, on the entry that failed -- never rolled up
    into a single figure at the top of the panel. */
 .blocker-at { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
@@ -5558,8 +5746,7 @@ table.pools tbody tr.unmeasured {
 .counterfactual { margin-top: 14px; }
 .counterfactual > h3 {
   margin: 0 0 6px;
-  font-size: var(--t-meta); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--text-dim);
+  font-size: var(--t-meta); font-weight: 600; color: var(--text-dim);
 }
 .cf-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
 .cf-row {
@@ -5604,7 +5791,7 @@ table.pools tbody tr.unmeasured {
   /* --lh-flush: the box is the `--row-h` row this control sits in on every
      non-terminal agent. It was 10.5px, under the floor; --t-meta plus flush
      leading is the largest it can be without making the row taller. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono); letter-spacing: .04em;
+  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
   padding: 4px 8px; border-radius: var(--ctl-radius-sm);
   border: 1px solid var(--line); background: transparent; color: var(--text-dim);
   cursor: pointer;
@@ -5630,7 +5817,7 @@ table.pools tbody tr.unmeasured {
 .stop-pending {
   /* --lh-flush: same box as `.stop-btn`, which this replaces in place -- the
      row must not jump when a stop is requested. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono); letter-spacing: .04em;
+  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
   color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));
   border-radius: var(--ctl-radius-sm); padding: 3px 7px; white-space: nowrap;
 }
@@ -5770,8 +5957,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .art-turn-role {
   /* --lh-flush: the box is `.art-turn-head`, a baseline row this label shares
      with the turn's own metadata. */
-  font: 600 var(--t-meta)/var(--lh-flush) var(--mono); letter-spacing: .06em; text-transform: uppercase;
-  color: var(--text-dim); flex: 1 1 auto;
+  font: 600 var(--t-meta)/var(--lh-flush) var(--mono); color: var(--text-dim); flex: 1 1 auto;
 }
 .art-turn-body {
   margin-top: var(--ctl-s2); font-size: var(--t-body); line-height: var(--lh-body);
@@ -5810,7 +5996,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ctl-chart-title {
   margin: 0 0 var(--ctl-s2);
   font: 600 var(--t-meta)/var(--lh-meta) var(--font);
-  letter-spacing: .02em;
   color: var(--text-dim);
 }
 
@@ -5993,10 +6178,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    AN `is-`/`has-` MODIFIER, NOT A REDEFINITION. `.ctl-eyebrow` is a §B4.4
    primitive and `display: block` is its own decision; a screen that needs the
    help trigger on the label's baseline asks for that on itself rather than
-   changing the primitive under every future caller. The trigger is a control,
-   not a word, so it also opts out of the label treatment's tracking. */
+   changing the primitive under every future caller.
+
+   THE TRACKING OPT-OUT IS GONE, not moved: it read
+   `.ctl-eyebrow.has-q button { letter-spacing: 0 }` and existed only to undo
+   the 0.08em the label treatment used to carry for its capitals. §B5.2 took
+   the capitals and the tracking together, so the override now cancels
+   nothing, and a rule that cancels nothing is how the next reader concludes
+   the tracking is still there. */
 .ctl-eyebrow.has-q { display: flex; align-items: baseline; gap: var(--ctl-s2); }
-.ctl-eyebrow.has-q button { letter-spacing: 0; }
 
 /* -- 6. 390px ---------------------------------------------------------------
    The one breakpoint these screens need, and it is the phone survivor from

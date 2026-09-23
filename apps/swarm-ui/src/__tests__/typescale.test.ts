@@ -195,6 +195,61 @@ describe('B4.1: the scale is the only way to say how big type is', () => {
   })
 })
 
+describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
+  /**
+   * THE OWNER'S QUESTION WAS "some helper text is all CAPS and others are
+   * regular caps?? WHY?" and the answer was that there was no rule: TWENTY-TWO
+   * declarations in `styles.css` forced `text-transform: uppercase`, each one
+   * decided by whichever component was written that week, so labels of the
+   * same RANK shouted on one screen and whispered on the next. Runtimes alone
+   * rendered 93 uppercase elements.
+   *
+   * THE RULE (`styles.css` §B5.2): `text-transform` exists only to bring a
+   * string the API chose into this console's register, never to emphasise one
+   * we wrote. `lowercase`, `capitalize` and `none` all make a string quieter
+   * or leave it alone; `uppercase` can only ever be emphasis, so it is the one
+   * value banned outright.
+   *
+   * This is a source scan for the same reason the scan above it is: "no rule
+   * in this sheet shouts" is a property of the TEXT, and `getComputedStyle`
+   * can only be asked about elements that happen to be rendered — a rule on a
+   * screen this suite never mounts is exactly where the twenty-third would
+   * survive. The DOM half of the claim is in `brand.test.tsx`, which asserts
+   * the three legal values are still reaching real elements.
+   */
+  it('writes no text-transform: uppercase anywhere in the sheet', () => {
+    const clean = stripComments(STYLES, false)
+    const shouting: string[] = []
+    for (const m of clean.matchAll(/text-transform\s*:\s*uppercase/g)) {
+      shouting.push(`src/styles.css:${clean.slice(0, m.index).split('\n').length}`)
+    }
+    expect(
+      shouting,
+      `uppercase is back. The label rank is MONO plus --text-faint (§2) --\n` +
+        `two channels on one distinction. Uppercase was a third, and twenty-two\n` +
+        `components never agreed on which labels qualified:\n${shouting.join('\n')}`,
+    ).toEqual([])
+  })
+
+  /**
+   * The tracking went with the capitals in the same edit, and this is what
+   * stops it coming back alone. Letter-spacing on a label exists to open
+   * CAPITALS up; on lowercase mono at --t-meta it reads as a loose word.
+   *
+   * NEGATIVE tracking is a different thing and is allowed: `--t-title` and
+   * `.ctl-figure` both tighten, which is what large type needs. So the bound
+   * is on positive values only, and `letter-spacing: 0` / `normal` (the two
+   * spellings of "cancel an ancestor's") stay legal.
+   */
+  it('leaves no positive letter-spacing behind, which is the capitals' + "'" + ' tell', () => {
+    const clean = stripComments(STYLES, false)
+    const loose = [...clean.matchAll(/letter-spacing\s*:\s*(0?\.\d+em|[1-9][\d.]*(?:em|px))/g)].map(
+      (m) => `src/styles.css:${clean.slice(0, m.index).split('\n').length}  ${m[0]}`,
+    )
+    expect(loose, `tracking without capitals to open up:\n${loose.join('\n')}`).toEqual([])
+  })
+})
+
 describe('B4.1: the line-height travels with the size', () => {
   // A `font:` shorthand that names a size and NOT a line-height resets
   // line-height to `normal` -- roughly 1.2, and the browser's number rather

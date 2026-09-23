@@ -478,11 +478,16 @@ function Pool({
         <table className="pools accounts">
           <thead>
             <tr>
-              <th scope="col">ACCOUNT</th>
-              <th scope="col" className="n">5H</th>
-              <th scope="col" className="n">7D</th>
-              <th scope="col" className="n">CLEARS</th>
-              <th scope="col">STATE</th>
+              {/* §13.2: sentence case, in the SOURCE. `table.pools thead th`
+                  used to uppercase these and no longer does, so a literal
+                  written in capitals is now the only thing on the screen still
+                  shouting -- and it shouts in one table rather than all of
+                  them, which is the exact inconsistency the rule removes. */}
+              <th scope="col">Account</th>
+              <th scope="col" className="n">5h</th>
+              <th scope="col" className="n">7d</th>
+              <th scope="col" className="n">Clears</th>
+              <th scope="col">State</th>
             </tr>
           </thead>
           <tbody>

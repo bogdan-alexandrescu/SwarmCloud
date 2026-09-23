@@ -215,15 +215,25 @@ function lines(r: Report): string[] {
  * and the reason has to be that the geometry is right, not that the finding
  * was inconvenient.
  */
-const CENTRED_SIDEWAYS = [
-  // An 18px circle around one 11px character. Sideways the inset is
-  // (18 − 2 − advance) / 2, and a `?` in this mono advances about 6.6px, so
-  // it is around 4.7px -- but the advance is the part nothing here can
-  // measure without a font, and this file does not invent one. Vertically it
-  // IS measured, and passes: (18 − 2 − 11) / 2 of slack plus the line box's
-  // own leading.
-  'button.ctl-q-glyph [left] width 20px, centred',
-  'button.ctl-q-glyph [right] width 20px, centred',
+const CENTRED_SIDEWAYS: string[] = [
+  // EMPTY, AND WHAT MOVED IS THE ENCODING RATHER THAN THE GEOMETRY.
+  //
+  // This list held `button.ctl-q-glyph [left]` and `[right]`: a 20px circle
+  // around one 12px `?`, whose sideways inset is (20 − 2 − advance) / 2 and
+  // therefore unmeasurable without a font, so the probe named it instead of
+  // exempting it silently.
+  //
+  // §B5.3 of `styles.css` took the circle's BORDER away — six of these shipped
+  // on the Overview, one beside every panel title, and they were the largest
+  // single non-panel contributor to the box count the owner's verdict is
+  // about. The glyph is now a `--surface-2` disc with `border: 0`, and this
+  // probe measures ink-to-BORDER: with no border drawn there is no inset to
+  // fail to measure, so the two entries are gone rather than moved.
+  //
+  // It stays as a named, typed constant rather than being inlined as `[]`,
+  // because the assertion it feeds is an equality: the next box that centres
+  // its content inside a fixed width lands here and has to be argued for, the
+  // way these two were.
 ]
 
 describe('spacing', () => {
