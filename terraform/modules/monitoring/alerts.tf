@@ -375,3 +375,89 @@ resource "google_monitoring_alert_policy" "tasks_dead_lettered" {
 
   user_labels = var.labels
 }
+
+# ---------------------------------------------------------------------------
+# A BACKEND THAT CANNOT DISPATCH AT ALL
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. On 2026-09-23 a thirty-step workflow failed and the split was
+# exactly along backend lines: 22 Cloud Run steps succeeded, all 6 GKE steps
+# failed. Every `browser` task the platform had ever accepted -- seven, over two
+# days -- had failed the same way, and nothing said so. `make smoke` was green
+# throughout because it only ever submitted a `mock` task, which is Cloud Run.
+#
+# The counters to catch it already existed. `swarm_scheduler_dispatch_failures_total`
+# is labelled by backend and was incrementing the whole time; nothing watched
+# it. A metric nobody alerts on is a metric nobody has.
+#
+# THRESHOLD IS ZERO, DELIBERATELY. A dispatch failure is not a task failure: the
+# lease is returned and the work is retried, so a handful are survivable and
+# invisible to a user. What is not survivable is a backend that refuses EVERY
+# dispatch, and the only honest threshold between those two is "more than none,
+# sustained". 900s of continuous failure on one backend is not a blip.
+#
+# GROUPED BY BACKEND, which is the whole point: an aggregate across backends
+# stays comfortably low while one of them is totally dead, because the healthy
+# one dominates the sum. That aggregation is precisely how this hid.
+resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-dispatch-failing-on-a-backend"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "A dispatch backend is refusing work"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"prometheus_target\"",
+        "metric.type = \"prometheus.googleapis.com/swarm_scheduler_dispatch_failures_total/counter\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "900s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        # The label that makes a dead backend visible instead of averaged away.
+        group_by_fields = ["metric.labels.backend"]
+      }
+    }
+  }
+
+  notification_channels = local.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      One dispatch backend is failing every attempt while the others may be fine.
+
+      Check which: the alert groups by `backend`, so the firing series names it.
+
+      * `GKE_AUTOPILOT` — the `browser` profile is the only profile that uses
+        it. Confirm the tenant namespace exists (`swarm-tenant-<id>`, and note
+        the scheduler and `kubernetes/render.py` must agree on that spelling),
+        that `kubernetes/rbac/dispatcher-rbac.yaml` is applied in it, and that
+        the scheduler holds `container.jobs.create`. Kubernetes authorises
+        before it resolves, so a MISSING NAMESPACE reports as
+        `jobs.batch is forbidden` — a 403 about permissions, never a 404. Do
+        not spend the investigation on IAM before checking the namespace exists.
+      * `CLOUD_RUN_JOB` — check `run.jobs.create` on the scheduler and the
+        Artifact Registry image tag the profile resolves to.
+
+      `dispatch ok` and `dispatch failed` are both logged per attempt with the
+      backend on the line.${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = var.labels
+}

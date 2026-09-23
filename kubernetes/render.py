@@ -86,7 +86,25 @@ from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
 
-NAMESPACE_PREFIX = "swarm-"
+#: THE TENANT NAMESPACE PREFIX, and it must equal the scheduler's.
+#:
+#: This read `"swarm-"` and the scheduler reads `"swarm-tenant-{tenant}"`
+#: (apps/scheduler/scheduler/dispatch.py:646), so the provisioner created
+#: `swarm-eng` while the dispatcher wrote into `swarm-tenant-eng`. Kubernetes
+#: authorises before it resolves, so a Job created into a namespace that does
+#: not exist comes back as `jobs.batch is forbidden` -- a 403 about permissions,
+#: never a 404 about the namespace. Every `browser` task this platform ever
+#: accepted (seven, over two days) failed that way, and the message sent three
+#: separate investigations at IAM.
+#:
+#: `swarm-tenant-` is the spelling the rest of the platform already agreed on:
+#: swarm_common.models.Tenant.secret_name (the FROZEN contract),
+#: terraform/modules/tenancy/variables.tf's namespace_prefix default, and the
+#: secret ids in terraform/modules/secret_manager. This file was the outlier.
+#:
+#: scripts/lib/check-contract-parity.sh is the thing that would have caught a
+#: second spelling of a contract value; it did not cover this one.
+NAMESPACE_PREFIX = "swarm-tenant-"
 
 
 class RenderError(SystemExit):
@@ -108,6 +126,14 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "NAMESPACE": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     "KSA_NAME": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     "GSA_EMAIL": re.compile(r"^[A-Za-z0-9._%+-]{1,128}@[A-Za-z0-9.-]{1,128}$"),
+    # The control-plane identities, bound as RBAC subjects in every tenant
+    # namespace. Pinned to the exact account_id rather than accepting any
+    # address: these two names decide who may create and who may delete a Job
+    # in someone's namespace, and a typo that still looked like an email would
+    # bind a subject that does not exist and fail open-looking -- the RoleBinding
+    # applies cleanly and nothing can use it.
+    "SCHEDULER_GSA": re.compile(r"^swarm-scheduler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
+    "RECONCILER_GSA": re.compile(r"^swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
     "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
     "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
     "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
@@ -181,6 +207,9 @@ TENANT_FILES = (
     "namespaces/tenant-namespace.yaml",
     "service-accounts/worker-serviceaccount.yaml",
     "rbac/worker-rbac.yaml",
+    # The control plane's own access, without which the GKE backend cannot
+    # dispatch at all -- see the file's header for the failure it fixes.
+    "rbac/dispatcher-rbac.yaml",
     "network-policies/default-deny.yaml",
     "network-policies/allow-egress.yaml",
 )
@@ -262,6 +291,11 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "KSA_NAME": args.ksa or sanitize_name("swarm", tenant),
         "GSA_EMAIL": args.gsa
         or f"swarm-agent-worker-{tenant}@{args.project}.iam.gserviceaccount.com",
+        # The control-plane identities, as RBAC subjects. Derived rather than
+        # passed: they are fixed per project, and a flag for them would be a
+        # way to bind the wrong identity into a tenant's namespace.
+        "SCHEDULER_GSA": f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
+        "RECONCILER_GSA": f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
         "PROJECT_ID": args.project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,

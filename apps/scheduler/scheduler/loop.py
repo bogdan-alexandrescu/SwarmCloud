@@ -431,6 +431,28 @@ class Scheduler:
         self._store.mark_dispatched(task, lease, execution, backend.value)
         report.dispatched += 1
         self._metrics.dispatched.labels(backend=backend.value).inc()
+        # A SUCCESS LINE, because the absence of one is what hid a total outage.
+        #
+        # Only `dispatch failed` was ever logged. That reads as reasonable --
+        # why log the happy path -- until you try to answer "has GKE_AUTOPILOT
+        # ever dispatched?" and find the query returns nothing whether the
+        # backend is healthy or has never worked once. On 2026-09-23 it had
+        # never worked once: seven browser tasks, seven failures, over two days,
+        # and the only way to establish that was to read task documents.
+        #
+        # `swarm_scheduler_dispatched_total{backend}` already counts this, and a
+        # counter that stays at zero is exactly as invisible as a log line that
+        # is never written unless something is watching it -- which nothing was.
+        # The log line is the cheap half of the fix; the alert on the metric is
+        # in terraform/modules/monitoring/alerts.tf.
+        log.info(
+            "dispatch ok task=%s attempt=%s backend=%s profile=%s execution=%s",
+            task.id,
+            lease.attempt_id,
+            backend.value,
+            profile.name,
+            execution,
+        )
         return True
 
     def _rollback_admission(self, task: Task, lease: Lease, cause: BaseException) -> None:

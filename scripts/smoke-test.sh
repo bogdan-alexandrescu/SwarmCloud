@@ -232,6 +232,72 @@ t_info "tasks holding capacity: ${BASE_HOLDING}, active leases: ${BASE_LEASES}"
 t_pass "baseline captured"
 
 # ---------------------------------------------------------------------------
+# EVERY BACKEND, NOT EVERY PROFILE.
+#
+# This suite ran one `mock` task and called the platform proven. `mock`
+# resolves to CLOUD_RUN_JOB, and so do claude-code, codex and generic --
+# `browser` is the ONLY profile whose resolved backend is GKE_AUTOPILOT, a
+# different API, a different permission and a different authorisation model.
+# So a green smoke test said nothing whatsoever about half the dispatch paths.
+#
+# It said nothing for two days while GKE was totally broken: seven browser
+# tasks, seven failures, 403 on every one. `make smoke` passed throughout.
+#
+# The profiles below are therefore chosen to cover the BACKENDS, and the list
+# is derived from the frozen catalogue rather than typed out, so a profile that
+# moves to a new backend is covered the day it moves instead of the day someone
+# remembers this file exists.
+backends_to_cover() {
+  "${PYTHON_BIN:-python3}" - <<'PY'
+import sys
+sys.path.insert(0, "apps/common")
+from swarm_common.profiles import RUNNER_PROFILES
+seen = {}
+for name, p in RUNNER_PROFILES.items():
+    if not getattr(p, "available", True):
+        continue
+    seen.setdefault(getattr(p.backend, "value", str(p.backend)), name)
+print(" ".join(f"{b}:{n}" for b, n in sorted(seen.items())))
+PY
+}
+
+COVER="$(backends_to_cover 2>/dev/null || true)"
+if [[ -z "${COVER}" ]]; then
+  t_fail "could not read the runner-profile catalogue; this suite cannot know which backends exist"
+  t_info "without it a green run proves only that SOME backend works, which is what let GKE fail unseen"
+else
+  t_info "backends to cover: ${COVER}"
+fi
+
+for pair in ${COVER}; do
+  BACKEND="${pair%%:*}"
+  BPROFILE="${pair##*:}"
+  t_case "Backend ${BACKEND}: submit a ${BPROFILE} task and run it to completion"
+  B_RUN_ID="$(test_run_id)"
+  if ! B_TASK_ID="$(submit_task "${BPROFILE}" \
+      "$(jq -nc --arg r "${B_RUN_ID}" '{message:"smoke", run_id:$r}')" \
+      '{"priority":10,"metadata":{"source":"smoke-test-backend"}}')"; then
+    t_fail "${BACKEND}: submission failed for profile ${BPROFILE}"
+    continue
+  fi
+  t_info "${BACKEND}: task ${B_TASK_ID}"
+  if b_final="$(wait_for_state "${B_TASK_ID}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${TIMEOUT}")"; then
+    assert_eq "SUCCEEDED" "${b_final}" "${BACKEND}: terminal state"
+    if [[ "${b_final}" != "SUCCEEDED" ]]; then
+      # The dispatch error is the whole diagnosis for a backend that cannot
+      # start work at all, and it is one field away. Printing it here is the
+      # difference between "browser failed" and "403 on jobs.batch in
+      # swarm-tenant-eng", which is what took two days to find by hand.
+      t_info "${BACKEND}: last_error: $(task_field "${B_TASK_ID}" '.last_error // "none"')"
+      t_info "${BACKEND}: attempts:   $(task_field "${B_TASK_ID}" '.attempt_count // 0 | tostring')"
+    fi
+  else
+    t_fail "${BACKEND}: no terminal state within ${TIMEOUT}s (stuck at ${b_final})"
+    t_info "${BACKEND}: last_error: $(task_field "${B_TASK_ID}" '.last_error // "none"')"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 t_case "Submit a ${PROFILE} task and run it to completion"
 RUN_ID="$(test_run_id)"
 TASK_ID="$(submit_task "${PROFILE}" \

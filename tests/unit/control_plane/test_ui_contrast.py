@@ -324,6 +324,23 @@ def test_the_scan_found_the_rules_it_is_meant_to_guard() -> None:
     """
     assert len(CASES) >= 60, f"only {len(CASES)} colour pairs found across both themes"
     selectors = {sel for _t, sel, _f, _b, _d in CASES}
-    for expected in (".roll.failed", ".roll.succeeded", ".q-chip.bad", ".scope.tenant"):
+    # RE-POINTED, and the reason is worth keeping because it is a real change
+    # in how this product draws state.
+    #
+    # `.roll.failed` and `.roll.succeeded` were the workflow rollup's state
+    # chips: a foreground ON a background, which is a contrast PAIR and is what
+    # this scan measures. The 2026-09-23 redesign replaced them with
+    # `.wf-state.bad` / `.wf-state.ok`, which set `color` and no background at
+    # all -- a coloured word on the panel, not a chip. There is no pair there
+    # to measure, so naming them here would guard nothing while looking
+    # thorough.
+    #
+    # The names below are the state indicators that still draw a filled
+    # surface, so they are the ones this scan can actually hold. If the product
+    # goes further and removes these too, this assertion fails and that is
+    # correct: it means the scan has stopped covering state colour, and the
+    # right response is to decide where state colour lives now, not to shorten
+    # the list.
+    for expected in (".banner.bad", ".banner.warn", ".q-chip.bad", ".scope.tenant"):
         assert expected in selectors, f"{expected} is no longer being measured"
     assert set(THEMES) == {"dark", "light"}, "a theme stopped being parsed out of styles.css"
