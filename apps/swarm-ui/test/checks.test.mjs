@@ -64,7 +64,13 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  assert.equal(p.href, '#agents/workflows')
+  // `#work/workflows`, NOT `#agents/workflows`. The section id was renamed and
+  // `checks.ts` moved with it; this expectation did not, and it is the only
+  // place in this file that names a route. `nav.links.test.tsx` requires every
+  // internal href to use the CANONICAL id rather than an alias, so the value
+  // the check now emits is the one it is required to emit -- this assertion was
+  // holding it to the spelling that rule forbids.
+  assert.equal(p.href, '#work/workflows')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.
   assert.match(p.detail, /wf_5e5ad3b6f7da4299a839/)
