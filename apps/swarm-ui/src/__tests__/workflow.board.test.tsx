@@ -197,21 +197,21 @@ describe('the collapsed row', () => {
     expect(fanBar.textContent).toContain('1 → 5 → 1')
     expect(chainBar.textContent).not.toContain('1 → 5 → 1')
 
-    // AND THE PART THE EYE GETS, which is the one that actually does the work
-    // on a board of ten rows. The mini-map is drawn from the same layout the
-    // expanded canvas uses, so its geometry IS the topology: a chain puts
-    // every step on one row, a fan-out does not.
-    const rowsOf = (root: Element) =>
-      new Set([...root.querySelectorAll('.wf-mini-dot')].map((c) => c.getAttribute('cy')))
+    // NO DRAWING ON THIS ROW ANY MORE. The mini-map was a ~60px thumbnail of
+    // the DAG, and at that size a six-node graph is a smudge -- it took the
+    // width a legible fact could have used and gave back a picture nobody can
+    // read. The graph is what EXPANDING is for, and the expanded canvas is
+    // pinned by 'draws a real edge for every real dependency' below.
+    expect(chainBar.querySelector('.wf-mini')).toBeNull()
+    expect(fanBar.querySelector('.wf-mini')).toBeNull()
 
-    expect(chainBar.querySelectorAll('.wf-mini-dot')).toHaveLength(3)
-    expect(chainBar.querySelectorAll('.wf-mini-edge')).toHaveLength(2)
-    expect(rowsOf(chainBar).size, 'a chain drew more than one row of steps').toBe(1)
-
-    expect(fanBar.querySelectorAll('.wf-mini-dot')).toHaveLength(7)
-    // plan -> five scans, and five scans -> report.
-    expect(fanBar.querySelectorAll('.wf-mini-edge')).toHaveLength(10)
-    expect(rowsOf(fanBar).size, 'a fan-out collapsed onto one row').toBe(5)
+    // So the shape text above is the whole of the collapsed row's claim about
+    // topology, and it has to carry the distinction on its own. It does: the
+    // widths differ, and the hover sentence names the kind.
+    const shapeTitle = (bar: Element) =>
+      bar.querySelector('.wf-shape')!.getAttribute('title') ?? ''
+    expect(shapeTitle(chainBar)).toMatch(/chain/i)
+    expect(shapeTitle(fanBar)).toMatch(/fan-out|join/i)
   })
 
   it('names the shape in words a reader can hover', () => {

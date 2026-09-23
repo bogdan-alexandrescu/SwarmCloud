@@ -253,8 +253,14 @@
    asserting that the only sizes in the sheet are these six.                  */
 :root {
   /* Ages, raw ids, provenance lines, table captions, the second line under a
-     value. The floor: nothing in this product is smaller than this. */
-  --t-micro: 11px;
+     value. The floor: nothing in this product is smaller than this.
+
+     RAISED 11 -> 12 (and every step above it by one) on the owner's read of
+     the shipped console: the whole scale was set by a terminal habit rather
+     than by anyone reading it on a large display at arm's length. The ratios
+     and the treatments are unchanged -- this moves the whole ladder up a rung,
+     it does not re-tune the intervals. */
+  --t-micro: 12px;
   --lh-micro: 1.45;
 
   /* Column headers, chip and tag text, state words, uppercase labels. This
@@ -262,32 +268,32 @@
      and it is the hierarchy channel that replaces the size steps that went:
      weight, case and tracking on the label, full size on the value. A plain
      lowercase value does not belong here however small it used to be. */
-  --t-meta: 12px;
+  --t-meta: 13px;
   --lh-meta: 1.45;
 
   /* The workhorse. Table cells, inspector key/values, panel prose, code and
      log blocks, form controls and buttons, `body` itself. If an element has no
      argument for being anything else, it is this. */
-  --t-body: 13px;
+  --t-body: 14px;
   --lh-body: 1.50;
 
   /* The ONE prose paragraph a screen is allowed: the sentence under the
      heading that says what the screen is for, and the sentence an empty or
      failed state answers with. A second one on the same screen means one of
      them is not a lead. */
-  --t-lead: 15px;
+  --t-lead: 16px;
   --lh-lead: 1.55;
 
   /* Panel title and screen h1. Nothing between this and --t-body, which is
      deliberate: a sub-heading is carried by weight, not by a size step. */
-  --t-title: 18px;
+  --t-title: 20px;
   --lh-title: 1.30;
 
   /* The one number a metric tile exists for. A tile has exactly one of these;
      if a second figure wants this step, the tile is two tiles. Never used for
      a phrase -- `.ctl-metric.is-absent` drops to --t-body precisely so that
      "not recorded" cannot be read as a quantity. */
-  --t-figure: 28px;
+  --t-figure: 30px;
   --lh-figure: 1.10;
 
   /* NOT A SEVENTH STEP. A line set flush in a box whose height was already
@@ -3099,8 +3105,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  /* 20px, not 18: the circle grows with the scale. At --t-micro's new 12px the
+     glyph's ink came within 3.68px of the border again, under the 4px floor --
+     the same finding as when it was --t-meta in an 18px circle. The box is
+     what moves this time, because the type step below --t-micro is the floor
+     and there is nothing under it to drop to. */
+  width: 20px;
+  height: 20px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 999px;

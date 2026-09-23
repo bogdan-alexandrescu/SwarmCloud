@@ -48,16 +48,16 @@ import { describe, expect, it } from 'vitest'
 
 /** The six steps, with the line-height that is part of each one. */
 const SCALE: ReadonlyArray<readonly [string, string, string]> = [
-  ['micro', '11px', '1.45'],
-  ['meta', '12px', '1.45'],
-  ['body', '13px', '1.50'],
-  ['lead', '15px', '1.55'],
-  ['title', '18px', '1.30'],
-  ['figure', '28px', '1.10'],
+  ['micro', '12px', '1.45'],
+  ['meta', '13px', '1.45'],
+  ['body', '14px', '1.50'],
+  ['lead', '16px', '1.55'],
+  ['title', '20px', '1.30'],
+  ['figure', '30px', '1.10'],
 ]
 
 /** The hard floor. Everything at 9.5, 10 and 10.5px moved UP to this. */
-const FLOOR_PX = 11
+const FLOOR_PX = 12
 
 /**
  * Every file that is allowed to say how big type is.

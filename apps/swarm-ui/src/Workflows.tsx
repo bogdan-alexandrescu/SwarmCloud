@@ -15,11 +15,9 @@ import {
   shapeOf,
   stepDuration,
   workflowSpend,
-  NODE_H,
   NODE_W,
   PAD,
   COL_GAP,
-  ROW_GAP,
   type DagShape,
   type StepDuration,
   type WorkflowSpend,
@@ -424,7 +422,7 @@ export function WorkflowCard({
             <span aria-hidden>{header.glyph}</span> {header.word}
           </span>
           <Progress roll={roll} />
-          <Shape shape={shape} workflow={workflow} taskById={taskById} />
+          <Shape shape={shape} />
           <Mix steps={workflow.steps} />
           <Spend spend={spend} />
           <span className="wf-when" title={`Last state change: ${workflow.updated_at}`}>
@@ -494,18 +492,16 @@ function Progress({ roll }: { roll: { text: string; trustworthy: boolean; done: 
  * gets in 90 pixels. Neither is decoration: without them a fan-out and a chain
  * are the same row.
  */
-function Shape({
-  shape,
-  workflow,
-  taskById,
-}: {
-  shape: DagShape
-  workflow: Workflow
-  taskById: ReadonlyMap<string, Task> | null
-}) {
+function Shape({ shape }: { shape: DagShape }) {
+  // NO MINI-MAP. The collapsed row draws no graph at all: a 60px thumbnail of
+  // a six-node DAG resolves into a smudge at the size a one-line row allows,
+  // and a picture too small to read is worse than no picture -- it occupies
+  // the space a legible fact would have had. The graph is what expanding is
+  // FOR. What the row keeps is the shape as text, `1 -> 5 -> 1`, which tells a
+  // fan-out from a chain at a glance, survives a screen reader, and costs one
+  // column.
   return (
     <span className="wf-shape" title={shape.label}>
-      <MiniMap workflow={workflow} taskById={taskById} />
       <span className="wf-shape-text" data-kind={shape.kind}>
         {shape.text}
       </span>
@@ -513,53 +509,7 @@ function Shape({
   )
 }
 
-const MINI_COL = 15
-const MINI_ROW = 10
-const MINI_R = 3
 
-function MiniMap({
-  workflow,
-  taskById,
-}: {
-  workflow: Workflow
-  taskById: ReadonlyMap<string, Task> | null
-}) {
-  const layout = layoutOf(workflow.steps)
-  if (layout.nodes.length === 0) return null
-
-  const sx = MINI_COL / (NODE_W + COL_GAP)
-  const sy = MINI_ROW / (NODE_H + ROW_GAP)
-  const mx = (x: number) => (x + NODE_W / 2 - PAD) * sx + MINI_R + 1
-  const my = (y: number) => (y + NODE_H / 2 - PAD) * sy + MINI_R + 1
-
-  const pts = layout.nodes.map((n) => ({ step: n.step, cx: mx(n.x), cy: my(n.y) }))
-  const w = Math.max(...pts.map((p) => p.cx)) + MINI_R + 1
-  const h = Math.max(...pts.map((p) => p.cy)) + MINI_R + 1
-
-  return (
-    <svg className="wf-mini" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden focusable="false">
-      {layout.edges.map((e) => (
-        <line
-          key={`${e.from}->${e.to}`}
-          className="wf-mini-edge"
-          x1={mx(e.x1 - NODE_W)}
-          y1={my(e.y1 - NODE_H / 2)}
-          x2={mx(e.x2)}
-          y2={my(e.y2 - NODE_H / 2)}
-        />
-      ))}
-      {pts.map((p) => (
-        <circle
-          key={p.step.step_id}
-          className={`wf-mini-dot ${toneOfStep(stepState(p.step, taskById))}`}
-          cx={p.cx}
-          cy={p.cy}
-          r={MINI_R}
-        />
-      ))}
-    </svg>
-  )
-}
 
 /**
  * THE RUNNER MIX. Which models this workflow is spending the subscription on,
@@ -861,9 +811,6 @@ function present(state: StepState): { tone: Tone | 'unknown'; glyph: string; wor
   }
 }
 
-function toneOfStep(state: StepState): Tone | 'unknown' {
-  return present(state).tone
-}
 
 
 

@@ -222,8 +222,8 @@ const CENTRED_SIDEWAYS = [
   // measure without a font, and this file does not invent one. Vertically it
   // IS measured, and passes: (18 − 2 − 11) / 2 of slack plus the line box's
   // own leading.
-  'button.ctl-q-glyph [left] width 18px, centred',
-  'button.ctl-q-glyph [right] width 18px, centred',
+  'button.ctl-q-glyph [left] width 20px, centred',
+  'button.ctl-q-glyph [right] width 20px, centred',
 ]
 
 describe('spacing', () => {
