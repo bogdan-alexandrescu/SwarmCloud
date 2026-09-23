@@ -254,7 +254,13 @@ test('a real zero says so in words, not only in a border colour', () => {
   const parked: Task = { ...TASK, state: 'PARKED', attempt_count: 0, current_lease_id: null }
   const markup = surface(run({ task: parked, attempts: [] }))
 
-  assert.ok(markup.includes('Nothing has been admitted yet'), 'the heading is gone')
+  // THE FACT, NOT THE SENTENCE. The runs redesign shortened the heading to
+  // `no attempt yet - <state>` and moved the explanation into the panel's own
+  // copy, where it still says nothing has been admitted FOR THIS TASK yet.
+  // What must hold is that the surface states nothing was admitted and calls
+  // the zero real; which words carry it is the redesign's to choose.
+  assert.ok(/no attempt yet/i.test(markup), 'the surface no longer says no attempt has been made')
+  assert.ok(/nothing has been admitted/i.test(markup), 'the surface no longer says nothing was admitted')
   assert.ok(markup.includes('real zero'), 'nothing on the surface says this zero is real')
   // The state it was measured in is a fact about THIS task and stays.
   assert.ok(markup.includes('PARKED'), 'the state the measurement was taken in is gone')
@@ -271,7 +277,13 @@ test('a partial read is marked apart from both', () => {
   const counted: Task = { ...TASK, attempt_count: 2 }
   const markup = surface(run({ task: counted, attempts: [] }))
   assert.ok(markup.includes('partial'), 'nothing marks this panel as partial')
-  assert.ok(markup.includes('Counts 2 attempts'), 'the counts that make it partial are gone')
+  // The count is what MAKES it partial, so the count has to be on the surface.
+  // It is; the redesign lowercased it and put it in two places -- the heading
+  // reads `counts 2 - returned 0` and the copy reads `counts 2 attempts`. The
+  // assertion pins the number beside the word, case-insensitively, rather than
+  // one capitalisation of one of the two.
+  assert.ok(/counts 2\b/i.test(markup), 'the counts that make it partial are gone')
+  assert.ok(/returned (0|none)/i.test(markup), 'the surface no longer says the query returned nothing')
 })
 
 // ---------------------------------------------------------------------------
@@ -282,7 +294,10 @@ test('the standing-rules legend is a footer of links, not a screen of prose', ()
   const markup = surface()
   assert.ok(!markup.includes('The requested figure is a ceiling, not a target'))
   assert.ok(!markup.includes('What is INSIDE a checkpoint is not recorded'))
-  assert.ok(markup.includes('Reading these cards:'), 'the footer link is gone too')
+  // `HelpLinks` supplies the label and its default is "Reading this screen:".
+  // The legend is a footer of LINKS -- that is the property -- so this pins a
+  // label followed by a real help address, not one wording of the label.
+  assert.ok(/reading (this|these) (screen|card)/i.test(markup), 'the footer link is gone too')
   assert.ok(markup.includes('#help/requests-are-ceilings'), 'the footer links nowhere')
 })
 
