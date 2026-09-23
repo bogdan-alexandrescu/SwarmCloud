@@ -661,11 +661,30 @@ def test_a_level_never_wraps_into_a_second_row():
 
     STRONGER THAN IT WAS. The old layout was flex and needed `flex-wrap:
     nowrap` to hold this. The rebuilt canvas positions every node absolutely at
-    an (x, y) computed in `layoutOf` from its level index, so there is no flow
-    to wrap and no stylesheet value that could reintroduce one.
+    an (x, y) computed in `layoutOf` from its indices, so there is no flow to
+    wrap and no stylesheet value that could reintroduce one.
 
-    MUTATION: give a node `position: static`, or compute `x` from anything but
-    the level index. Both put the guarantee back in the hands of CSS.
+    RE-POINTED ONTO THE OTHER AXIS, AND WHAT MOVED IS WHICH INDEX DRIVES WHICH
+    COORDINATE. The graph ran left to right: the dependency LEVEL drove x, a
+    step's position within its level drove y, and this test read
+    `NODE_W + COL_GAP` out of `layoutOf` to pin the first of those. The owner's
+    words were "all nodes at the same stage displayed horizontally not
+    vertically ... the natural flow of the workflow should be top to bottom
+    rendered rather than left to right", so LEVEL drives y and POSITION drives
+    x, and `COL_GAP`/`ROW_GAP` are `LEVEL_GAP`/`SIB_GAP` -- named for what they
+    separate rather than for the axis they used to run along.
+
+    The claim is not weakened by the move; it is the more direct reading of it.
+    The wrapping this test forbids is a LEVEL flowing onto a second line, and a
+    level is now laid out across x -- so the constant that pins it is the
+    sibling pitch, applied to the position index, which is exactly the thing
+    that would have to stop being arithmetic for a wrap to become possible.
+    Both axes are pinned rather than one, because a transpose that only half
+    landed would leave the other coordinate constant and every node stacked.
+
+    MUTATION: give a node `position: static`; or compute `x` from anything but
+    the position index and the sibling pitch; or leave `y` off the level index,
+    which collapses every level onto one band.
     """
     css = _src("styles.css")
     node = _rules_for(css, ".node")
@@ -676,8 +695,17 @@ def test_a_level_never_wraps_into_a_second_row():
 
     dag = _src("dag.ts")
     fn = _decl(dag, "export function layoutOf(")
-    assert "NODE_W + COL_GAP" in fn, (
-        "a node's x is no longer derived from its level index and the column pitch"
+    assert "pos * (NODE_W + SIB_GAP)" in fn, (
+        "a node's x is no longer derived from its position within its level and the "
+        "sibling pitch, so a level is no longer laid out across the page by arithmetic"
+    )
+    assert "y: levelTop[lvl]" in fn, (
+        "a node's y is no longer its dependency level's band top, so the flow does "
+        "not descend and every level shares one band"
+    )
+    assert "+ LEVEL_GAP" in fn, (
+        "the band tops no longer accumulate a per-level gap, so two levels can be "
+        "laid out touching and read as one"
     )
 
 

@@ -16,8 +16,6 @@ import {
   stepDuration,
   workflowSpend,
   NODE_W,
-  PAD,
-  COL_GAP,
   type DagShape,
   type StepDuration,
   type WorkflowSpend,
@@ -68,14 +66,23 @@ import {
  * row per run: identity, derived state, progress, SHAPE, runner mix, spend and
  * when it last moved. The point of the line is to let somebody pick which of
  * ten workflows to open WITHOUT OPENING ANY, and the field that earns its place
- * hardest is the shape -- `1 → 5 → 1` next to a mini-map of the real edges.
- * Five steps in parallel and five steps in a chain have the same count, the
- * same fraction done and the same cost; they are completely different runs, and
- * a list that renders them identically is the defect the graph work exists to
- * fix. It must survive being collapsed or it has not been fixed.
+ * hardest is the shape, `1 → 5 → 1`, as text. Five steps in parallel and five
+ * steps in a chain have the same count, the same fraction done and the same
+ * cost; they are completely different runs, and a list that renders them
+ * identically is the defect the graph work exists to fix. It must survive being
+ * collapsed or it has not been fixed. (This paragraph said "next to a mini-map
+ * of the real edges" and there is no mini-map -- see `Shape`.)
  *
- * EXPANDED is a canvas: real edges drawn between generous node cards, flowing
- * left to right along dependency depth. Every node keeps the three facts it has
+ * EXPANDED is a canvas: real edges drawn between generous node cards, FLOWING
+ * TOP TO BOTTOM along dependency depth, with the steps of one level side by
+ * side across it. It flowed left to right, which put the steps of a level in a
+ * vertical stack -- the owner's "all nodes at the same stage displayed
+ * horizontally not vertically ... top to bottom rather than left to right".
+ * `dag.ts`'s layout section holds the transpose and what it costs.
+ *
+ * THE NODE IS THE LINK. One target, no anchors inside it: the step id and both
+ * deep links resolved to the same task drawer, so the card is the anchor and
+ * the stop control is its sibling. Every node keeps the three facts it has
  * always carried -- the step NAME, its STATUS and its RUNNER PROFILE -- and
  * adds the one that was missing, how long it has taken.
  *
@@ -654,14 +661,17 @@ function Progress({ roll }: { roll: Rollup }) {
 }
 
 /**
- * THE TOPOLOGY, COLLAPSED. Two renderings of one layout: the widths as text
- * (`1 → 5 → 1`) and a mini-map drawn from the SAME `layoutOf` the expanded
- * canvas uses, scaled down, with the real edges and one dot per step coloured
- * by that step's state.
+ * THE TOPOLOGY, COLLAPSED -- as text, and ONLY as text.
  *
- * The text is what a screen reader and a test can read; the map is what the eye
- * gets in 90 pixels. Neither is decoration: without them a fan-out and a chain
- * are the same row.
+ * This docstring used to describe two renderings, "the widths as text
+ * (`1 → 5 → 1`) and a mini-map drawn from the SAME `layoutOf` the expanded
+ * canvas uses". The mini-map was removed and the body's own comment records
+ * why; the docstring above it was not, so the file has been promising a
+ * drawing it does not make. Corrected here rather than left for the next lane
+ * to implement back.
+ *
+ * The text is what a screen reader and a test can read, and it is not
+ * decoration: without it a fan-out and a chain are the same row.
  */
 function Shape({ shape }: { shape: DagShape }) {
   // NO MINI-MAP. The collapsed row draws no graph at all: a 60px thumbnail of
@@ -897,7 +907,7 @@ function useNow(): number {
 }
 
 /**
- * THE CANVAS. Real edges between real node cards, flowing left to right.
+ * THE CANVAS. Real edges between real node cards, FLOWING TOP TO BOTTOM.
  *
  * The positions come from `layoutOf`, which is pure and tested, so the edges
  * and the cards cannot disagree: both read the same numbers. The SVG holds only
@@ -905,9 +915,13 @@ function useNow(): number {
  * anchor, a `title` and a stop button, and those are not things to re-implement
  * inside an `<svg>`.
  *
- * It scrolls horizontally rather than shrinking. A twenty-step workflow across
- * six levels is genuinely wider than a phone, and scaling it down to fit turns
- * the step names into texture.
+ * It still scrolls horizontally rather than shrinking, but the case has
+ * inverted with the axis. It used to scroll because a graph was DEEP -- six
+ * levels left to right was wider than a phone, so the commonest shape in this
+ * product, a chain, was also the one that always scrolled. Now it scrolls only
+ * because a graph is WIDE: a fan of five at NODE_W each. A chain is one node
+ * wide at any depth and fits a 390px screen, which is where someone checking
+ * why their agent has not moved actually is.
  */
 function WorkflowGraph({
   workflow,
@@ -928,76 +942,95 @@ function WorkflowGraph({
     return <span className="ctl-mark">no steps</span>
   }
 
+  // The top of each level's band, read back off the nodes the layout placed
+  // rather than recomputed from the constants. It was recomputed, and a caption
+  // that drifts one band off the level it names is worse than no caption; this
+  // way the two cannot disagree even in principle.
+  const levelTop = levels.map((_, i) => layout.nodes.find((n) => n.level === i)?.y ?? 0)
+
   return (
     <div className="wf-canvas-wrap">
-      {/* The column captions, positioned from the SAME constants the canvas
-          lays out with rather than from a number repeated in the stylesheet.
-          A caption that drifts one column off the nodes it names is worse
-          than no caption.
+      <div className="wf-graph">
+        {/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS. When levels ran
+            left to right these sat across the top, one over each column. Levels
+            run DOWN now, so the captions run down beside them -- and they are
+            STICKY at the left edge, so a fan-out of five scrolled sideways
+            keeps saying which level you are looking at. That is the case this
+            axis creates and the old one did not have.
 
-          TWO WORDS, NOT FOUR. `then 5 in parallel` spelled out what the column
-          under it is already a picture of: five boxes stacked in one column
-          with five edges into them. `×5` is the count, which is the part the
-          picture does not state exactly, and it is now in the eyebrow
-          treatment every other section label in this console uses -- so it
-          reads as chrome and can be skipped (design-system.md §6.13). */}
-      <ol className="wf-legend" aria-label="Dependency levels" style={{ width: layout.width }}>
-        {levels.map((level, i) => (
-          <li
-            key={i}
-            className="ctl-eyebrow"
-            style={{ left: PAD + i * (NODE_W + COL_GAP), width: NODE_W }}
+            TWO WORDS, NOT FOUR. `then 5 in parallel` spelled out what the band
+            beside it is already a picture of: five boxes side by side with five
+            edges into them. `×5` is the count, which is the part the picture
+            does not state exactly, and it is in the eyebrow treatment every
+            other section label in this console uses -- so it reads as chrome
+            and can be skipped (design-system.md §6.13). */}
+        <ol className="wf-levels" aria-label="Dependency levels" style={{ height: layout.height }}>
+          {levels.map((level, i) => (
+            <li key={i} className="ctl-eyebrow" style={{ top: levelTop[i] }}>
+              {i === 0 ? 'starts' : 'then'}
+              {level.length > 1 ? ` ×${level.length}` : ''}
+            </li>
+          ))}
+        </ol>
+        <div className="wf-canvas" style={{ width: layout.width, height: layout.height }}>
+          <svg
+            className="wf-edges"
+            width={layout.width}
+            height={layout.height}
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            aria-hidden
+            focusable="false"
           >
-            {i === 0 ? 'starts' : 'then'}
-            {level.length > 1 ? ` ×${level.length}` : ''}
-          </li>
-        ))}
-      </ol>
-      <div className="wf-canvas" style={{ width: layout.width, height: layout.height }}>
-        <svg
-          className="wf-edges"
-          width={layout.width}
-          height={layout.height}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          aria-hidden
-          focusable="false"
-        >
-          <defs>
-            <marker
-              id={`arrow-${workflow.workflow_id}`}
-              viewBox="0 0 8 8"
-              refX="7"
-              refY="4"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
-            >
-              <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
-            </marker>
-          </defs>
-          {layout.edges.map((e) => (
-            <path
-              key={`${e.from}->${e.to}`}
-              className="wf-edge"
-              d={edgePath(e)}
-              markerEnd={`url(#arrow-${workflow.workflow_id})`}
+            <defs>
+              <marker
+                id={`arrow-${workflow.workflow_id}`}
+                viewBox="0 0 8 8"
+                refX="7"
+                refY="4"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
+              </marker>
+            </defs>
+            {layout.edges.map((e) => (
+              // TWO PATHS, ONE EDGE, AND THE FIRST ONE IS WHY THE NODES LOST
+              // THEIR SHADOWS. Fourteen drop shadows on one screen bought one
+              // thing: an edge crossing a card read as passing under it rather
+              // than into it. A node is always at least one level below every
+              // parent, but it can be MORE than one, so a long edge does cross
+              // the band between -- the separation is real and had to go
+              // somewhere. It is now on the EDGE, which is the thing doing the
+              // crossing: a wider stroke in the canvas's own colour, drawn
+              // first, so the line carries its own clearance. One `<g>` per
+              // (parent, child) pair keyed by that pair, so the guarantee that
+              // one dependency draws one mark is unchanged.
+              <g key={`${e.from}->${e.to}`}>
+                <path className="wf-edge-halo" d={edgePath(e)} />
+                <path
+                  className="wf-edge"
+                  d={edgePath(e)}
+                  markerEnd={`url(#arrow-${workflow.workflow_id})`}
+                />
+              </g>
+            ))}
+          </svg>
+          {layout.nodes.map((n) => (
+            <StepNode
+              key={n.step.step_id}
+              step={n.step}
+              state={stepState(n.step, taskById)}
+              workflow={workflow}
+              now={now}
+              usage={usage}
+              x={n.x}
+              y={n.y}
+              h={n.h}
+              reload={reload}
             />
           ))}
-        </svg>
-        {layout.nodes.map((n) => (
-          <StepNode
-            key={n.step.step_id}
-            step={n.step}
-            state={stepState(n.step, taskById)}
-            workflow={workflow}
-            now={now}
-            usage={usage}
-            x={n.x}
-            y={n.y}
-            h={n.h}
-            reload={reload}
-          />
-        ))}
+        </div>
       </div>
     </div>
   )
@@ -1090,22 +1123,38 @@ function StepNode({
   const role = state.kind === 'state' ? (dispatchOf(state.task)?.role ?? null) : null
   const taskId = state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
 
-  return (
-    <div
-      className={`node ${p.tone}`}
-      title={p.title}
-      style={{ left: x, top: y, width: NODE_W, height: h }}
-    >
+  // THE WHOLE CARD IS THE LINK, AND THERE IS NOTHING LINKED INSIDE IT.
+  //
+  // The owner's words: "The agent task node should be clicable not have links
+  // inisde it if all of them point to the same page or section." There were
+  // THREE anchors on this node and all three landed on the same page: the step
+  // id and `input & output →` both went to `#agents/task/<id>`, and
+  // `attempts →` went to `#agents/task/<id>/attempts`, which `App.tsx` resolves
+  // to the SAME drawer with its second tab selected -- one click away once you
+  // are there, and reachable from the drawer's own tab strip. So all three
+  // collapse into one target and `.node-links` is gone entirely.
+  //
+  // HOW THE STOP CONTROL SURVIVES THAT, which is the constraint the old shape
+  // was built around: a `<button>` inside an `<a>` is invalid HTML, so the node
+  // used to be a plain `<div>` with the anchor on the id alone. The card is the
+  // anchor now, and the stop control is its SIBLING inside `.node-slot` --
+  // absolutely positioned into a strip the card reserves with padding. Nothing
+  // is nested in anything it may not be, the button is still a real button, and
+  // every `title` on this card still belongs to a real ancestor of the element
+  // it explains rather than sitting under a transparent overlay. That last
+  // point is load-bearing: `.node-num`'s `title` is the CAUSE of an absence,
+  // and a stretched-link overlay would have swallowed every one of them.
+  // The card's contents, written once and mounted into either an `<a>` or a
+  // `<div>` below. Not a component: it closes over everything already computed
+  // here, and a second component would be a second place to forget a fact.
+  const body = (
+    <>
       <div className="node-id">
-        {/* The step NAME, and where its run actually lives. An id you cannot
-            reach is a label; `#agents/task/<id>` is the address every other
-            screen uses for the same task. Only when a task exists: a step the
-            workflow has not reached has nothing to open. */}
-        {taskId ? (
-          <a href={`#agents/task/${encodeURIComponent(taskId)}`}>{step.step_id}</a>
-        ) : (
-          step.step_id
-        )}
+        {/* The step NAME. It is no longer its own anchor -- the card around it
+            is -- but a step the workflow has not reached still has nothing to
+            open, so that card is a plain `<div>` and the name is not a dead
+            link. */}
+        {taskId ? <span className="node-name">{step.step_id}</span> : step.step_id}
         {role === 'integrator' && (
           <span className="tag ok" title="This step merges the other steps' branches and opens the workflow's single pull request.">
             opens the PR
@@ -1123,7 +1172,15 @@ function StepNode({
         <span className="node-state">{p.word}</span>
         <StepTime dur={dur} />
       </div>
-      {/* The llm used. The owner's "the way it's done today", kept verbatim. */}
+      {/* The llm used. The owner's "the way it's done today", kept verbatim.
+
+          MEASURED AND NOT MERGED INTO THE ID ROW, which is the obvious way to
+          save a row and does not fit: `scan-terraform` is 118px at the id's
+          600-weight 14px mono and `claude-code` is 79px at --t-micro, which
+          needs 205px against the 188px of content box NODE_W gives. Letting it
+          wrap would make the node's height something `layoutOf` cannot know,
+          and a node taller than the box the layout drew is the overlap defect
+          `heightOf` exists to prevent. */}
       <div className="node-meta">{step.runner_profile}</div>
 
       {/* The run, as four figures. A placeholder while the attempt read is in
@@ -1144,7 +1201,14 @@ function StepNode({
           read` and `no attempt yet` were already told apart without reading a
           sentence. What the sentence added was the cause, and the cause is now
           the cell's accessible name (`NodeNum`) plus the `?` in this card's
-          own foot. */}
+          own foot.
+
+          STILL A VERTICAL STACK, and that was measured rather than assumed.
+          Four cells across a node would give each one about 40px of value
+          column; `no attempt yet` measures 118px. A figure strip that ellipsed
+          an absence WORD would turn the one encoding this screen may not lose
+          into `not att...`, so the stack stays and the height is what it
+          costs. */}
       <dl className="node-nums">
         <NodeNum label="ran" cell={f.ran} pending={false} />
         <NodeNum label="cost" cell={f.cost} pending={pending} />
@@ -1152,35 +1216,50 @@ function StepNode({
         <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
       </dl>
 
-      {/* The two things a reader wants from a node that are not "stop it":
-          what this step read and wrote, and what it tried. Both are routes the
-          console already resolves; a node without them is a dead end, which is
-          what it was before the graph work. Only drawn when a task exists --
-          a step the workflow has not reached has nothing to open.
+      {/* THE DEPENDENCY LIST, AND ITS ARROW NOW POINTS THE WAY THE GRAPH RUNS.
+          It read `← plan` when parents were to the left; parents are ABOVE, so
+          it reads `↑ plan`. A glyph left pointing at the old axis is worse than
+          no glyph: it is a second, wrong statement about the topology beside a
+          correct one.
 
-          NO `?` HERE. It was drawn per node for one draft of this pass, and a
-          graph of eight unmeasured steps then carried eight identical question
-          marks -- which is the paragraph problem again at one character each.
-          `absent-vs-zero` is a property of the SCREEN, not of a node, so there
-          is exactly one of them, in the board's chrome. */}
-      {taskId !== null && (
-        <div className="node-links">
-          <a href={`#agents/task/${encodeURIComponent(taskId)}`}>input &amp; output →</a>
-          <a href={`#agents/task/${encodeURIComponent(taskId)}/attempts`}>attempts →</a>
-        </div>
-      )}
-
-
+          IT STAYS VISIBLE AND IT STAYS UNTRUNCATED even though the drawn edges
+          now say the same thing more directly. It is the only complete
+          statement of the graph in text and the screen-reader route to it, and
+          it names parents this workflow does not contain -- which is exactly
+          the case that draws no edge at all. */}
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
-          ← {step.depends_on.join(', ')}
+          ↑ {step.depends_on.join(', ')}
+        </div>
+      )}
+    </>
+  )
+
+  return (
+    <div className="node-slot" style={{ left: x, top: y, width: NODE_W, height: h }}>
+      {taskId ? (
+        <a
+          className={`node ${p.tone}`}
+          title={p.title}
+          href={`#agents/task/${encodeURIComponent(taskId)}`}
+        >
+          {body}
+        </a>
+      ) : (
+        <div className={`node ${p.tone}`} title={p.title}>
+          {body}
         </div>
       )}
       {/* B28, on the node. Only when the step's TASK was actually joined: a
           step whose state is `unknown` was not in the task read, and offering
           to stop something this screen could not read would be acting on a
           guess. `StopRun` then decides for itself whether the state is one the
-          cancel route accepts, so a terminal node draws nothing at all. */}
+          cancel route accepts, so a terminal node draws nothing at all.
+
+          A SIBLING OF THE CARD, NOT A CHILD OF IT. The card is an `<a>` now and
+          a `<button>` may not live inside one. It sits in the strip `.node`
+          reserves at its foot, so it overlaps nothing -- `NODE_H` counts that
+          strip. */}
       {state.kind === 'state' && (
         <div className="node-stop">
           <StopRun

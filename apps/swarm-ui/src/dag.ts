@@ -169,30 +169,77 @@ export function shapeOf(steps: readonly WorkflowStep[]): DagShape {
 // Layout -- a real canvas with real edges
 // ---------------------------------------------------------------------------
 //
-// Flow is LEFT TO RIGHT: one column per dependency level, one row per step
-// inside it. That is the direction the owner's reference reads in, and it is
-// also the one that survives a wide level -- five parallel steps stack
-// vertically inside a single column instead of pushing the page sideways.
+// FLOW IS TOP TO BOTTOM, AND THIS IS THE AXIS TRANSPOSE. It was left to
+// right: the dependency LEVEL drove x and a step's position within its level
+// drove y, so five parallel steps stacked into one tall column. The owner's
+// reading of that was the reason this pass exists --
+//
+//   "workflows when expanded should have all nodes at the same stage displayed
+//    horizontally not vertically has it is now and the natural flow of the
+//    workflow should be top to bottom rendered rather than left to right."
+//
+// So: LEVEL DRIVES Y, POSITION WITHIN A LEVEL DRIVES X. Siblings sit side by
+// side on one band; the graph descends. Two consequences are deliberate rather
+// than accidental, because they are the trade this axis makes:
+//
+//   * A WIDE FAN-OUT NOW PUSHES THE CANVAS SIDEWAYS. Five parallel steps at
+//     NODE_W each is wider than any card on this page, and `.wf-canvas-wrap`
+//     scrolls for exactly that (and is pinned to, by
+//     test_the_dag_fills_the_width_it_is_given). Scaling a fan down to fit
+//     turns the step names into texture, which is the one thing a node may not
+//     become. Width is the axis that gives.
+//   * A CHAIN NOW FITS A PHONE. The commonest shape in this product is a chain,
+//     and left-to-right made the commonest shape the one that always scrolled:
+//     at 390px a four-step chain was four horizontal scrolls. Descending, it is
+//     a list, which is what a reader on a phone already knows how to read.
 //
 // The numbers are computed here rather than measured in the browser so the
 // layout is testable and so the first paint is not a reflow. A node is sized
 // for its four facts -- name, status, runner profile, duration -- with room
-// for the stop control underneath.
+// for the stop control.
 
 /**
  * The width of a node card.
  *
- * WIDENED FROM 212, and the 24px is not decoration. `.node-links` holds
- * `input & output →` and `attempts →` on one non-wrapping row: at --t-micro
- * mono that is about 199px of advance plus a `--ctl-s3` gap, against the
- * 212 - 24 = 188px of content box the old width gave it. Those two links have
- * therefore been overflowing the right edge of every node that has a task,
- * silently, since they were added. 236 - 24 = 212px of content clears them
- * with room, and the extra width also keeps the absence WORDS in the figure
- * cells off `text-overflow: ellipsis` -- `not sampled` truncated to `not
- * sam...` would damage the one encoding this screen may not lose.
+ * THE REASON IT WAS 236 IS DELETED AND THE REASON IT IS 248 WAS MEASURED.
+ * 236 came from `.node-links` -- `input & output →` and `attempts →` on one
+ * non-wrapping row, about 199px of advance. Both anchors pointed into the same
+ * task drawer the node itself now opens, so that row is gone (see `StepNode`).
+ *
+ * The width is now set by THE WIDEST STRING A FIGURE CELL MUST NOT TRUNCATE,
+ * and the first attempt at this pass got it wrong in a way worth recording.
+ * The obvious candidate is the longest absence word, `no attempt yet`, which
+ * measures 118.0px at the rendered `.node-num dd` font (14px ui-monospace,
+ * `measureText`, not an assumed 0.6em advance). Sized to that, NODE_W came out
+ * at 212 -- and a browser sweep of the rendered cells then found TEN of
+ * fifty-six clipped, every one of them the `tokens` cell:
+ *
+ *   `21.4k in · 3.2k out` ... needs 160px, had 130
+ *   `8.2k in · 1.1k out`  ... needs 152px, had 130
+ *
+ * That cell is a COMPOUND of two measured figures and it is the long one, not
+ * the absences. `3.2…` standing where `3.2k out` was is a prefix of a number
+ * in the place the number was -- the worst class in the overflow inventory
+ * (F1), and one no gate in this repository can see. So:
+ *
+ *   248 - 24px of `.node` padding ............ 224 of content
+ *   - 46px `.node-num` label column ..........
+ *   - 8px  `--ctl-s2` column gap .............
+ *                                             ---
+ *                                             170 for the value, vs 160 needed
+ *
+ * That also clears `99.9k in · 99.9k out` (169px). Beyond that -- a single
+ * step reporting a hundred million tokens on one side -- it would ellipse
+ * again, and there is no width at which that is not true of an unbounded
+ * figure. `.node-id` is the other claimant and is not close: the widest step
+ * id in any fixture is `scan-terraform` at 118px, and the widest that also
+ * carries the `opens the PR` tag is `synthesis` at 76 + 6 + ~90 = 172px.
+ *
+ * TWELVE PIXELS WIDER THAN THE 236 IT REPLACES, which is paid for: at 236 the
+ * value column was 154px and `21.4k in · 3.2k out` was already clipping. This
+ * fixes a defect that predates the transpose rather than trading one away.
  */
-export const NODE_W = 236
+export const NODE_W = 248
 
 /**
  * The height of a node with NO dependency line.
@@ -202,76 +249,187 @@ export const NODE_W = 236
  * control at the foot of a node sat below the box `layoutOf` had drawn. The
  * arithmetic, against the `.node` rules in styles.css §B17:
  *
- *   padding 10px top + 10px bottom .................. 20
+ *   padding 10px top + 42px bottom .................. 52
  *   border 1px top + 1px bottom ......................  2
  *   .node-id      --t-body / --lh-body (14 x 1.5) .... 21
  *   .node-line    --t-micro / --lh-micro (12 x 1.45) . 17.4
  *   .node-meta    --t-micro / --lh-micro ............. 17.4
- *   .node-nums    8 pad + 1 rule + 4 x 21 + 3 x 2 .... 99
- *   .node-links   --t-micro / --lh-micro ............. 17.4
- *   .node-stop    4 pad + .stop-btn.inline (13+6+2) .. 25
- *   5 x --ctl-s1 gap between the six children ........ 20
+ *   .node-nums    8 pad + 4 x (21 + 1) + 3 x 2 ...... 102
+ *   3 x --ctl-s1 gap between the four children ....... 12
  *                                                    -----
- *                                                     239.2
+ *                                                     223.8
  *
- * 240 is that, rounded up by the one pixel the fractional line boxes need.
- * `.node-stop` carries `margin-top: auto`, so any slack lands above the stop
- * control rather than under it.
+ * 224 is that, rounded up by the one pixel the fractional line boxes need.
  *
- * IT IS SHORTER THAN 244 DESPITE BEING HONEST about the rows, because state
- * and duration merged onto one `.node-line` -- they were two stacked rows
- * reading `running` and then `running 1m 32s` -- and `.node-why` went.
+ * THE `+ 1` IN THE FIGURES TERM IS THE ABSENCE RULE, AND IT IS IN EVERY ROW
+ * NOW. `.node-num dd` declares a TRANSPARENT dashed bottom border and
+ * `.is-absent` only recolours it -- §13.5's pattern, applied here because the
+ * rule used to be declared only on the absent cells. A cell therefore grew by
+ * a pixel at the moment its figure turned out not to have been measured, which
+ * is after `layoutOf` has committed to the card's height and while the attempt
+ * read is landing. Up to 4px a node, and it was measured as 2px of lost
+ * clearance under one node's dependency list.
+ *
+ * TWENTY PIXELS CAME OFF 240, AND BOTH REASONS ARE STRUCTURAL RATHER THAN
+ * TUNED. `.node-links` was a whole row (17.4 + its 4px gap) and it is gone:
+ * the node itself is the link now. `.node-nums`'s 1px top rule is gone under
+ * design-system.md §13.3 -- a repeated block inside a panel is separated by
+ * nothing, and the `--ctl-s2` of padding above it was already doing the work.
+ *
+ * THE STOP STRIP IS RESERVED, NOT LAID OUT, AND ITS SIZE WAS MEASURED BECAUSE
+ * THE LAST FIGURE WAS NOT. `.node-stop` is no longer a flex child of the card;
+ * it is an absolutely positioned SIBLING (a `<button>` may not live inside an
+ * `<a>`, and the card is the anchor now), so the card reserves the strip with
+ * `padding-bottom`. The old arithmetic called that strip 25px -- "4 pad +
+ * .stop-btn.inline (13+6+2)". `getBoundingClientRect` on the shipped control
+ * says **28**, so the node had been three pixels taller than the box the
+ * layout drew for it, and the stop button sat on the card's bottom border. In
+ * the rebuilt card the same error showed up as a 4.2px OVERLAP between the
+ * stop control and the dependency list above it -- measured, on two nodes, in
+ * the browser, because no gate in this repository has a layout engine.
+ *
+ *   28 (the control) + 10 (its inset from the card's edge, matching the card's
+ *   own 10px vertical padding) + 4 (the sheet's separator floor) = 42, less
+ *   the 1px border the offset is measured through.
+ *
+ * THE STRIP IS RESERVED UNCONDITIONALLY, on nodes that have nothing to stop
+ * too. A card that grew by 39px the moment its step started running would
+ * shove every level beneath it down the page mid-poll; the node is a fixed box
+ * and this is part of what makes it one.
  */
-export const NODE_H = 240
+export const NODE_H = 224
 
-/** One wrapped line of the `← depends on` list, at --t-micro/--lh-micro:
+/** One wrapped line of the `↑ depends on` list, at --t-micro/--lh-micro:
  *  12 x 1.45 = 17.4, rounded up. It was 16, which under-counted every
  *  wrapped line by 1.4px. */
 const DEP_LINE_H = 18
 /**
  * Characters of the dependency list that fit on one line inside NODE_W.
  *
- * (NODE_W - 24px of padding) / 7.2px, which is a 12px monospace advance at
- * the usual 0.6em. It was 34 against a 188px box, which is 26 -- so a
- * five-parent join was measured at one line and wrapped onto two, and the
- * node below it in the column was overlapped by the difference. This is the
- * defect `heightOf` exists to prevent, in `heightOf`'s own constant.
+ * (NODE_W - 24px of padding) / 7.22px. The advance is MEASURED, not assumed:
+ * `measureText('no attempt yet')` against the rendered `.node-num dd` font is
+ * 118.0px at 14px, which is 8.43px per character, so 7.22px at --t-micro's
+ * 12px. (248 - 24) / 7.22 = 31.0.
+ *
+ * IT MOVES WITH NODE_W AND IT HAS TO. It was 29 against a 236px node. A list
+ * measured against a stale figure is reported short, and the node under it is
+ * overlapped by the difference -- the exact defect `heightOf` exists to
+ * prevent, in `heightOf`'s own constant. It happened once already, when 34
+ * survived a narrowing to 188px of box.
  */
-const DEP_CHARS_PER_LINE = 29
+const DEP_CHARS_PER_LINE = 31
 
 /** `--ctl-s1`, the gap between a node card's flex children. */
 const GAP = 4
+
+/**
+ * How many lines the `↑ a, b, c` list will actually occupy.
+ *
+ * IT WORD-WRAPS, AND DIVIDING CHARACTERS BY COLUMNS DOES NOT MODEL THAT. The
+ * old figure was `ceil(join(', ').length / DEP_CHARS_PER_LINE)`, which assumes
+ * the text repacks across the line break. It does not: the browser breaks at
+ * the spaces after the commas and abandons whatever is left at the end of each
+ * line. Measured on the fixture, `cold-start, fencing, allornothing,
+ * checkpoints, absentzero` is 56 characters -- 1.8 lines of 31, so two by
+ * division -- and renders as THREE:
+ *
+ *   ↑ cold-start, fencing,          22 of 31 used, 9 abandoned
+ *   allornothing, checkpoints,      26 of 31 used, 5 abandoned
+ *   absentzero
+ *
+ * That is 18px the card had not reserved, and it was spent in the strip the
+ * stop control sits in: `synthesis` overflowed its own content box by 16px,
+ * measured in the browser. The defect predates the transpose -- the same list
+ * against the old 29-column node divides to two lines as well -- and it was
+ * invisible while every node in a workflow took the tallest node's height,
+ * because some other node's slack absorbed it. Per-level heights took the
+ * slack away, which is how it surfaced.
+ *
+ * So the wrap is simulated rather than approximated: tokens are packed
+ * greedily, a space between them, the `↑ ` prefix costing two columns of the
+ * first line. A single token longer than the line is the one case the browser
+ * DOES break mid-word (`.node-dep` sets `overflow-wrap: anywhere`), so it is
+ * counted by division.
+ */
+function depLines(deps: readonly string[]): number {
+  const tokens = deps.map((d, i) => (i === deps.length - 1 ? d : `${d},`))
+  let lines = 1
+  let used = 2 // the "↑ " prefix
+  let firstOnLine = true
+  for (const tok of tokens) {
+    if (tok.length > DEP_CHARS_PER_LINE) {
+      // Breaks mid-word onto lines of its own, then leaves a remainder behind.
+      if (!firstOnLine) lines += 1
+      lines += Math.ceil(tok.length / DEP_CHARS_PER_LINE) - 1
+      used = tok.length % DEP_CHARS_PER_LINE || DEP_CHARS_PER_LINE
+      firstOnLine = false
+      continue
+    }
+    const need = (firstOnLine ? 0 : 1) + tok.length
+    if (used + need <= DEP_CHARS_PER_LINE) {
+      used += need
+    } else {
+      lines += 1
+      used = tok.length
+    }
+    firstOnLine = false
+  }
+  return lines
+}
 
 /**
  * How tall THIS node will actually render.
  *
  * The layout positions nodes absolutely, so a node that renders taller than
  * the figure the layout used overlaps the node beneath it and every edge
- * endpoint on that column points at the wrong place. `minHeight` on the
+ * endpoint on that band points at the wrong place. `minHeight` on the
  * element hid that: the node grew and nothing else moved. So the variable part
  * -- the dependency list, which wraps and is never truncated -- is measured
  * here, and the element is given this exact height rather than a floor.
  */
 export function heightOf(step: WorkflowStep): number {
   if (step.depends_on.length === 0) return NODE_H
-  const chars = step.depends_on.join(', ').length
-  const lines = Math.max(1, Math.ceil(chars / DEP_CHARS_PER_LINE))
-  // `+ GAP`: the dependency list is a SEVENTH flex child, so it costs one more
+  // `+ GAP`: the dependency list is a FIFTH flex child, so it costs one more
   // `--ctl-s1` between itself and the row above as well as its own lines. The
   // gap was missing, which is 4px of overlap on every node that has parents --
   // and every node in a graph except the roots has parents.
-  return NODE_H + GAP + lines * DEP_LINE_H
+  return NODE_H + GAP + depLines(step.depends_on) * DEP_LINE_H
 }
-export const COL_GAP = 68
-export const ROW_GAP = 20
+
+/**
+ * The gap BETWEEN TWO LEVELS -- down the flow, because the flow runs down.
+ *
+ * This is where the graph's air is, and it is the only distance on the canvas
+ * a reader parses as "and then". 56 is two `--ctl-s5`, the scale's one large
+ * break, taken twice because a level boundary is the biggest change of subject
+ * this canvas has. It also has to hold the edge: `edgePath` bends with
+ * `k = max(24, (y2 - y1) / 2)`, so 56 gives a 28px control offset and a curve
+ * that reads as a curve rather than a kink, plus room for the 7px arrowhead.
+ *
+ * IT WAS `COL_GAP = 68`, AND IT WAS HORIZONTAL. 68 was tuned for a left-to-
+ * right run, where the gap also had to separate two 236px columns of text.
+ */
+export const LEVEL_GAP = 56
+
+/**
+ * The gap BETWEEN TWO SIBLINGS -- across a level, because siblings sit across.
+ *
+ * `--ctl-s5`. It was `ROW_GAP = 20` when siblings stacked vertically, and 20
+ * does not survive the transpose: two NODE_W-wide cards 20px apart read as one
+ * striped band, which is design-system.md §13.3's rhythm inversion in its most
+ * literal form. 28 is what this sheet puts between two objects.
+ */
+export const SIB_GAP = 28
 export const PAD = 10
 
 export interface DagNode {
   /** This node's rendered height, from `heightOf`. */
   readonly h: number
   readonly step: WorkflowStep
-  readonly col: number
-  readonly row: number
+  /** Dependency level, counting from the roots. It drives Y. */
+  readonly level: number
+  /** Position within the level, left to right. It drives X. */
+  readonly pos: number
   readonly x: number
   readonly y: number
 }
@@ -299,33 +457,56 @@ export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
     return { nodes: [], edges: [], width: PAD * 2, height: PAD * 2, levels }
   }
 
-  // ONE HEIGHT FOR EVERY NODE, taken from the tallest content in this
-  // workflow. Sizing each node to its own content is what the element used to
-  // do with `minHeight`, and it is wrong twice: the layout positioned nodes as
-  // if they were all NODE_H tall, so a taller one overlapped its neighbour and
-  // dragged its edge endpoints off the box -- and sizing each one exactly puts
-  // the steps of a CHAIN at different tops, because a step with parents is
-  // taller than the step with none in front of it. A chain must read as one
-  // row. So the variable part is measured, the maximum is taken once, and
-  // every node gets it.
-  const nodeH = Math.max(NODE_H, ...steps.map(heightOf))
-  const colHeight = (n: number) => n * nodeH + Math.max(0, n - 1) * ROW_GAP
-  const tallest = Math.max(...levels.map((l) => colHeight(l.length)))
+  // ONE HEIGHT PER LEVEL, AND THIS IS WHAT THE TRANSPOSE CHANGED.
+  //
+  // It was one height for the whole workflow: `max(NODE_H, ...every step)`.
+  // That was right on the old axis and is over-constrained on this one. The
+  // reason given for it was "a chain must read as one row" -- and left to
+  // right, a chain WAS one row, so its steps had to share a top, so they had
+  // to share a height. Top to bottom a chain is a column, and two nodes at
+  // different levels sharing a height buys nothing: what has to line up is the
+  // nodes WITHIN a band, which is what a level is.
+  //
+  // Measured on the fixture: one step joining five parents wraps its
+  // dependency list onto three lines and made all fourteen nodes on the screen
+  // that tall, so a root with no dependency line at all carried ~40px of empty
+  // card, once per level, all the way down. Per level, only the level that has
+  // a long join pays for it.
+  //
+  // Sizing each node INDIVIDUALLY is still wrong and still for the original
+  // reason: the layout positions nodes absolutely, so a node taller than the
+  // figure the layout used overlaps its neighbour, and two cards side by side
+  // on one band with different heights read as two different kinds of thing.
+  const levelH = levels.map((l) => Math.max(NODE_H, ...l.map(heightOf)))
+  // The top of each band: every band above it, plus a gap per boundary.
+  const levelTop: number[] = []
+  for (let i = 0, y = PAD; i < levels.length; i++) {
+    levelTop.push(y)
+    y += levelH[i]! + LEVEL_GAP
+  }
+
+  // The width a level occupies: its steps side by side. Every node is NODE_W,
+  // so this is arithmetic rather than a measurement.
+  const levelWidth = (n: number) => n * NODE_W + Math.max(0, n - 1) * SIB_GAP
+  const widest = Math.max(...levels.map((l) => levelWidth(l.length)))
 
   const nodes: DagNode[] = []
-  levels.forEach((level, col) => {
-    // Each column is centred against the tallest one, so a single joining step
-    // sits opposite the middle of the fan it joins rather than at the top of
-    // an empty column -- which reads as "this belongs to the first branch".
-    const top = PAD + (tallest - colHeight(level.length)) / 2
-    level.forEach((step, row) => {
+  levels.forEach((level, lvl) => {
+    // Each LEVEL is centred against the widest one, so a single joining step
+    // sits under the middle of the fan it joins rather than at the left edge of
+    // an empty band -- which reads as "this belongs to the first branch". It is
+    // the same guarantee the old layout made vertically, on the other axis.
+    const left = PAD + (widest - levelWidth(level.length)) / 2
+    level.forEach((step, pos) => {
       nodes.push({
         step,
-        col,
-        row,
-        h: nodeH,
-        x: PAD + col * (NODE_W + COL_GAP),
-        y: top + row * (nodeH + ROW_GAP),
+        level: lvl,
+        pos,
+        h: levelH[lvl]!,
+        // POSITION drives X: siblings side by side, one band per level.
+        x: left + pos * (NODE_W + SIB_GAP),
+        // LEVEL drives Y: the flow descends.
+        y: levelTop[lvl]!,
       })
     })
   })
@@ -337,15 +518,19 @@ export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
       const parent = byId.get(parentId)
       // A dependency naming a step that is not in this workflow is not drawn.
       // Inventing an edge to nowhere would be a claim about a graph we cannot
-      // see; the node keeps the name in its own `← depends on` line.
+      // see; the node keeps the name in its own `↑ depends on` line.
       if (!parent) continue
       edges.push({
         from: parentId,
         to: child.step.step_id,
-        x1: parent.x + NODE_W,
-        y1: parent.y + parent.h / 2,
-        x2: child.x,
-        y2: child.y + child.h / 2,
+        // AN EDGE LEAVES A PARENT'S BOTTOM EDGE AND ENTERS A CHILD'S TOP EDGE,
+        // both at the card's horizontal centre. It was right edge to left edge
+        // at the vertical centre; on this axis that would run every line
+        // through the cards rather than through the gap between two levels.
+        x1: parent.x + NODE_W / 2,
+        y1: parent.y + parent.h,
+        x2: child.x + NODE_W / 2,
+        y2: child.y,
       })
     }
   }
@@ -353,17 +538,34 @@ export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
   return {
     nodes,
     edges,
-    width: PAD * 2 + levels.length * NODE_W + (levels.length - 1) * COL_GAP,
-    height: PAD * 2 + tallest,
+    // WIDTH IS THE WIDEST LEVEL, not the level count: a fan-out is what makes
+    // this canvas wide now, and a chain is exactly one node wide at any depth.
+    width: PAD * 2 + widest,
+    // HEIGHT IS THE SUM OF THE BANDS, not the count times a shared height --
+    // the bands are no longer all the same height, so multiplying would either
+    // clip the last one or leave a void under it.
+    height:
+      PAD * 2 + levelH.reduce((t, n) => t + n, 0) + (levels.length - 1) * LEVEL_GAP,
     levels,
   }
 }
 
-/** The cubic the edge is drawn as. Horizontal control points, so every edge
- *  leaves its parent and enters its child travelling left-to-right. */
+/**
+ * The cubic the edge is drawn as.
+ *
+ * VERTICAL CONTROL POINTS, so every edge leaves its parent travelling DOWN and
+ * enters its child travelling DOWN. They were horizontal, offset in x, which
+ * on this axis would draw a line that sets off sideways out of the bottom of a
+ * card -- and an arrowhead, which takes its angle from the path's own tangent,
+ * would then point sideways at the moment it meets the child.
+ *
+ * `k` is half the vertical span, floored at 24 so a sibling-to-sibling edge
+ * across one LEVEL_GAP still bows instead of running straight through whatever
+ * is between the two cards.
+ */
 export function edgePath(e: DagEdge): string {
-  const k = Math.max(24, (e.x2 - e.x1) / 2)
-  return `M ${e.x1} ${e.y1} C ${e.x1 + k} ${e.y1}, ${e.x2 - k} ${e.y2}, ${e.x2} ${e.y2}`
+  const k = Math.max(24, (e.y2 - e.y1) / 2)
+  return `M ${e.x1} ${e.y1} C ${e.x1} ${e.y1 + k}, ${e.x2} ${e.y2 - k}, ${e.x2} ${e.y2}`
 }
 
 // ---------------------------------------------------------------------------
