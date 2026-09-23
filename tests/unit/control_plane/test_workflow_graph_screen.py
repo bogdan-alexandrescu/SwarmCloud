@@ -162,13 +162,29 @@ def test_one_edge_is_produced_for_every_parent_child_pair():
     with five parents contributes one edge instead of five. That is the defect
     this screen was rebuilt to remove -- a fan-in of five drew one mark,
     identical to the mark a chain of five draws.
+
+    AND A SECOND MUTATION THE FIRST VERSION OF THIS TEST COULD NOT HAVE
+    CAUGHT, because it asserted the loop's SPELLING and not its subject. It
+    required `for (const child of nodes) {` -- which was true, and stopped
+    being the right thing the moment stage collapsing landed. A stage drawn as
+    a band has NO NODES, so iterating `nodes` silently drops every dependency
+    into or out of it: all ten on a 1 -> 5 -> 1 workflow. The loop runs over
+    the STEPS now and both endpoints resolve through a step-keyed `attach` map,
+    so the assertion below is the inverse of what it used to be -- iterating
+    `nodes` is the defect, not the requirement.
     """
     dag = _src("dag.ts")
     fn = _decl(dag, "export function layoutOf(")
-    inner = _block(fn, "for (const parentId of child.step.depends_on) {")
+    inner = _block(fn, "for (const parentId of child.depends_on) {")
 
-    assert "for (const child of nodes) {" in fn, (
-        "layoutOf no longer iterates the nodes; it cannot be producing an edge per pair"
+    assert "for (const child of nodes) {" not in fn, (
+        "layoutOf is building edges by iterating NODES again. A collapsed stage has "
+        "no nodes, so every edge into or out of one is silently dropped -- ten of ten "
+        "on a 1 -> 5 -> 1 workflow, with nothing on screen saying anything is missing."
+    )
+    assert "for (const child of level) {" in fn, (
+        "layoutOf no longer iterates the steps of each level; it cannot be producing "
+        "an edge per pair for a stage that is drawn as a band"
     )
     assert "edges.push({" in inner, (
         "the edge is not pushed inside the loop over `depends_on`. One push per STEP "
@@ -183,7 +199,12 @@ def test_one_edge_is_produced_for_every_parent_child_pair():
     # an edge to nowhere would be a claim about a graph that was never read.
     # The name is not lost: it stays in the node's own `depends on` line, which
     # test_the_dependency_list_is_never_truncated pins as unellipsable.
-    assert "if (!parent) continue" in inner, (
+    #
+    # `!from` rather than `!parent`: the parent is looked up in `attach`, which
+    # holds a box for every step -- its own node, or the band its stage was
+    # collapsed into -- so a miss means the step is not in this workflow at all,
+    # which is the same condition it always was.
+    assert "if (!from) continue" in inner, (
         "a dependency on a step outside this workflow is being drawn as an edge"
     )
 

@@ -207,14 +207,27 @@ def test_the_fan_in_topology_survives_the_read(db, client):
 def test_the_graph_emits_one_edge_per_dependency():
     """One edge per `depends_on` entry, not one bar per level.
 
-    `dag.ts` still owns the shape: the canvas and the collapsed mini-map read
-    the same edge list, so there is one place it can be wrong. The builder is
+    `dag.ts` still owns the shape: the canvas and the collapsed row read the
+    same edge list, so there is one place it can be wrong. The builder is
     `layoutOf` now rather than `edgesOf` -- boxes and edges are computed
     together so the two cannot disagree about where a line ends.
+
+    THE OUTER LOOP RUNS OVER STEPS, NOT NODES, and that is the assertion this
+    test exists for now. It used to require `for (const child of nodes) {`,
+    which pinned a spelling rather than the rule: once a stage too wide to draw
+    became a BAND, that stage had no nodes, and iterating `nodes` dropped every
+    dependency into or out of it -- ten of ten on a 1 -> 5 -> 1 workflow --
+    while still satisfying the old assertion word for word. Both endpoints
+    resolve through a step-keyed map, and a step inside a band resolves to the
+    band's box.
     """
     body = _src("dag.ts")
-    assert "for (const child of nodes) {" in body
-    assert "for (const parentId of child.step.depends_on) {" in body
+    assert "for (const child of nodes) {" not in body, (
+        "edges are being built from NODES again; a collapsed stage has none, so its "
+        "dependencies are silently not drawn"
+    )
+    assert "for (const child of level) {" in body
+    assert "for (const parentId of child.depends_on) {" in body
     assert "edges.push({" in body, (
         "the edge list is no longer built by pushing one edge per parent"
     )
@@ -395,7 +408,17 @@ def test_every_identifier_rendered_under_an_uppercasing_rule_carries_it():
     about.
     """
     workflows = _src("Workflows.tsx")
-    assert "<Id>{workflow.workflow_id}</Id>" in workflows
+    # MATCHED AS A PATTERN, NOT A LITERAL, and the reason is the defect this
+    # very assertion produced. It required `<Id>{workflow.workflow_id}</Id>`
+    # exactly, so adding a `title` carrying the COMPLETE id -- inventory F11:
+    # `[name]` ellipses at 390px and an ellipsed id cannot be pasted anywhere,
+    # which is the only thing an id is for -- failed a test whose subject is
+    # that the id goes through `Id` at all. The rule is the wrapper; any
+    # attribute on it is not this test's business.
+    assert re.search(r"<Id\b[^>]*>\{workflow\.workflow_id\}</Id>", workflows), (
+        "the workflow id is no longer rendered through <Id>, so `.section > h2` is "
+        "free to uppercase it again"
+    )
     assert "{step.step_id}" in workflows
 
     # `.tag` uppercases too, and both of these hold identifiers. The value is

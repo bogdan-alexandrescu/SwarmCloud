@@ -44,9 +44,30 @@ test('the bare #help route reaches the Help section', () => {
 })
 
 test('a route round-trips through its canonical spelling', () => {
-  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'agents/running']) {
+  // `agents/running` WAS IN THIS LIST AND IS NOT A CANONICAL SPELLING ANY MORE.
+  // The nav rename made `agents` an alias of `work` (SECTION_ALIASES in
+  // App.tsx), so `#agents/running` canonicalises to `work/running` -- which is
+  // the rename working exactly as designed, and this assertion had simply been
+  // left pointing at the old name. An alias belongs in the alias test below,
+  // never in a round-trip list: the whole point of a round trip is that what
+  // goes in is already the one spelling this app writes.
+  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'work/running']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)
+  }
+})
+
+test('a saved link to a renamed section is rewritten to the new spelling', () => {
+  // THE PROPERTY THE RENAME ACTUALLY OWES, and nothing asserted it -- the test
+  // above asserted the opposite and went red instead. An alias exists so that a
+  // hash somebody saved in a runbook or an incident note still LANDS; the
+  // address bar is then rewritten in place (App.tsx `replaceState`), so copying
+  // the link afterwards yields the current spelling and the old one can
+  // eventually be retired. If it round-tripped unchanged, the alias would be a
+  // second permanent name rather than a bridge.
+  for (const [saved, now] of [['agents/running', 'work/running']] as const) {
+    at(`#${saved}`)
+    assert.equal(canonical(fromHash()), now, `#${saved} no longer lands on ${now}`)
   }
 })
 
