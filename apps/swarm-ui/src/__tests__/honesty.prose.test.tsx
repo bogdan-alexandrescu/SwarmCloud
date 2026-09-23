@@ -436,6 +436,81 @@ describe('Overview, with every help card closed', () => {
     expect(textOf(card)).not.toContain('unmeasured')
   })
 
+  /**
+   * THE LEGEND IS NEW AND IT CARRIES AN ABSENCE, so it gets pinned like one.
+   *
+   * design-system.md sec 1.6: the five series sit in a band 1.36:1 from end to
+   * end and are NOT separable in greyscale, so a multi-series chart names every
+   * series beside its value and never relies on the segment's colour to say
+   * which segment it is. sec 11.3 listed Overview's spend bar -- "four
+   * saturated hues in one 8px rule with the legend on the line below carrying
+   * no swatch" -- as unfixed, with two allowed answers; this is the one that
+   * keeps the proportion.
+   *
+   * What makes it an HONESTY assertion rather than a decoration one: a series
+   * that reported nothing draws no segment on the bar, so a solid key beside it
+   * would index a colour that is not there -- an absence drawn as a
+   * measurement. The hollow swatch is the encoding for that, and this test
+   * pins BOTH halves, because a rule only one half of which is checked is the
+   * mutation that survives.
+   */
+  it('keys each token series to its own swatch, and draws no solid key for a series nobody reported', async () => {
+    renderOverview({
+      spend: {
+        attempts: 4,
+        attemptsWithTokens: 3,
+        inputTokens: 900,
+        outputTokens: 100,
+        // Never reported by any attempt in the sample. No segment on the bar.
+        cacheReadTokens: null,
+        // A MEASURED zero. It is a reading, so it keeps its identity key.
+        cacheCreationTokens: 0,
+      },
+    })
+    await waitFor(() => expect(document.querySelector('.ov-mix')).not.toBeNull(), WAIT)
+    expectAllCardsClosed()
+
+    const facts = [...document.querySelectorAll('.ov-mix-facts .ctl-fact')]
+    expect(facts.length, 'the legend lost a series').toBe(4)
+
+    // EVERY series is keyed, so the strip cannot reflow when a count arrives
+    // and no row is left indexing the bar by position alone.
+    for (const f of facts) {
+      expect(f.querySelector('.ov-swatch'), `no swatch beside ${textOf(f)}`).not.toBeNull()
+    }
+
+    const swatchFor = (key: string) =>
+      facts.find((f) => textOf(f.querySelector('b')) === key)!.querySelector('.ov-swatch')!
+
+    // A drawn segment gets the SAME .ov-sN class its segment carries, so the
+    // key and the bar cannot drift apart.
+    expect(swatchFor('in').className).toBe('ov-swatch ov-s1')
+    expect(swatchFor('out').className).toBe('ov-swatch ov-s2')
+    // A measured zero is a reading: solid key, and a digit beside it.
+    expect(swatchFor('c-wr').className).toBe('ov-swatch ov-s4')
+
+    // THE ABSENCE. No hue, and the em dash rather than a digit -- the same
+    // pairing this file pins on the cost figure, at the legend's scale.
+    const absent = swatchFor('c-rd')
+    expect(absent.className, 'an unreported series was keyed to a colour').toBe(
+      'ov-swatch is-absent',
+    )
+    const crd = facts.find((f) => textOf(f.querySelector('b')) === 'c-rd')!
+    expect(crd.className).toContain('is-absent')
+    expect(crd.querySelector('.ctl-em'), 'an unreported series drew no em dash').not.toBeNull()
+    expect(textOf(crd), 'an unreported series rendered a digit').not.toMatch(/\d/)
+
+    // THE SWATCHES SAY NOTHING A SCREEN READER NEEDS. The bar's own label
+    // already names every series and its value, so a second reading of the
+    // same four facts is noise, and an <i> with no text has nothing to say.
+    for (const f of facts) {
+      expect(f.querySelector('.ov-swatch')!.getAttribute('aria-hidden')).toBe('true')
+    }
+    expect(
+      document.querySelector('.ov-mix')!.getAttribute('aria-label'),
+    ).toContain('c-rd not measured')
+  })
+
   it('keeps the count of failed attempt reads on the surface, not behind the ?', async () => {
     renderOverview({
       spend: { failedReads: 2, tasksSampled: 5, failedDetail: 'HTTP 503', costUsd: 1.5 },
