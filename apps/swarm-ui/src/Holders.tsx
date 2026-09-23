@@ -28,6 +28,28 @@ import { poolLabel, type LeaseRow } from './types'
  * of holders look identical. A delta computed from a truncated page is not
  * evidence. Both numbers are shown, neither is called correct, and the lease
  * side says what it was computed over.
+ *
+ * ---------------------------------------------------------------------------
+ * B4.4: WHAT THE WORDS BECAME.
+ *
+ * Every claim above is still made on this screen. None of it is made in a
+ * sentence any more, because the encodings say it more precisely than the
+ * sentences did:
+ *
+ *   "computed over a truncated page"  -> `.ctl-card-foot`, which names the row
+ *       count the comparison ran over. Provenance belongs to the card, once,
+ *       not to each figure.
+ *   "every pool agrees"               -> `.ctl-figure` 0 beside
+ *       `.ctl-mark.is-zero`. A measured zero, drawn as one. The paragraph that
+ *       said this could sit beside a figure it did not describe; the mark
+ *       cannot.
+ *   "the counters could not be read"  -> `.ctl-mark.is-unread` and NO figure.
+ *       A dash, never a 0.
+ *   "units are weighted, not agents"  -> the column is named `UNITS (WEIGHTED)`.
+ *       §8.4(3): the caveat attaches to the column, not to a footnote.
+ *
+ * The arguments themselves are at `#help/lease-and-pool-are-two-records` and
+ * `#help/units-not-agents`, where they were already written.
  */
 export function HoldersScreen() {
   return (
@@ -44,15 +66,24 @@ export function HoldersScreen() {
           {b.page.tenant_id === null ? ' · every tenant' : ` · ${b.page.tenant_id} only`}
         </>
       )}
+      /* A REAL ZERO, DRAWN AS ONE. The read succeeded and no lease holds
+         capacity. The mark is what says which kind of nothing this is, and it
+         says it in two words instead of two sentences. */
       empty={{
         heading: 'No unreleased leases',
-        body: 'The read succeeded and returned nothing — no lease is holding capacity. This is a real zero, not a failed query.',
+        body: (
+          <>
+            <span className="ctl-mark is-zero">real zero</span> no lease holds capacity
+          </>
+        ),
       }}
     >
       {(board) => (
         <>
-          <Drift board={board} />
-          <ClassMix rows={board.page.leases} />
+          <div className="ctl-cards hold-top">
+            <Drift board={board} />
+            <ClassMix rows={board.page.leases} />
+          </div>
           <HolderTable rows={board.page.leases} />
         </>
       )}
@@ -68,16 +99,36 @@ export function HoldersScreen() {
  * side of 0 would manufacture a delta out of an absence.
  */
 function Drift({ board }: { board: HoldersBoard }) {
+  const rowsRead = board.page.leases.length
+
+  /* THE COUNTERS ARE GONE, SO THERE IS NO FIGURE AT ALL.
+     Not a zero, not an empty table: `.ctl-mark.is-unread` plus a dash in the
+     figure slot. The detail the server gave is the card's note, which is one
+     line and does not wrap -- the long form is the help topic. */
   if (board.pools === null) {
     return (
-      <section className="section panel">
-        <h2>Accounting drift</h2>
-        <div className="state partial" role="status">
-          <h3>Pool counters could not be read</h3>
-          <p>
-            The leases loaded, so the table below is trustworthy. The
-            comparison is not available: {board.poolsDetail}
-          </p>
+      <section className="ctl-card">
+        <div className="ctl-card-head">
+          <h2 className="ctl-card-title">
+            Accounting drift
+            <HelpCard topic="lease-and-pool-are-two-records" />
+          </h2>
+          <span className="ctl-card-note">not compared</span>
+        </div>
+        <div className="ctl-card-body">
+          <b
+            className="ctl-figure is-absent"
+            role="img"
+            aria-label="The pool counters could not be read, so no comparison was made. This is not a delta of zero."
+          >
+            <span className="ctl-em">—</span>
+          </b>
+          <div className="hold-mark">
+            <span className="ctl-mark is-unread">not read</span>
+          </div>
+        </div>
+        <div className="ctl-card-foot">
+          leases read · counters unread · {board.poolsDetail ?? 'the pool read did not complete'}
         </div>
       </section>
     )
@@ -99,59 +150,74 @@ function Drift({ board }: { board: HoldersBoard }) {
     .sort((a, b) => b.held - a.held)
 
   const disagreeing = rows.filter((r) => r.active !== null && r.active !== r.held)
+  const compared = rows.filter((r) => r.active !== null).length
 
   return (
-    <section className="section panel">
-      <h2>
-        Accounting drift
-        {disagreeing.length > 0 && <span className="count-chip">{disagreeing.length}</span>}
-      </h2>
+    <section className="ctl-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">
+          Accounting drift
+          <HelpCard topic="lease-and-pool-are-two-records" />
+        </h2>
+        {/* §8.4(2): the coverage qualifier, one line, mono, right-aligned.
+            This is the sentence "computed over the N rows returned" as an
+            attribute of the card rather than a paragraph under it. */}
+        <span className="ctl-card-note">
+          {compared} of {rows.length} pools
+        </span>
+      </div>
 
       {disagreeing.length === 0 ? (
-        <p className="muted">
-          Every pool a loaded lease names holds exactly the units those leases
-          account for.
-        </p>
+        /* A MEASURED ZERO. The figure is a digit, because the comparison ran
+           and its answer is nought -- and the mark beside it is what keeps
+           that apart from the unread case above, which has no digit at all. */
+        <div className="ctl-card-body">
+          <b className="ctl-figure">0</b>
+          <div className="hold-mark">
+            <span className="ctl-mark is-zero">real zero</span>
+          </div>
+        </div>
       ) : (
-        <div className="table-wrap">
-          <table className="pools">
-            <thead>
-              <tr>
-                <th scope="col">Pool</th>
-                <th scope="col" className="n">From leases</th>
-                <th scope="col" className="n">Pool counter</th>
-                <th scope="col" className="n">Delta</th>
-              </tr>
-            </thead>
-            <tbody>
-              {disagreeing.map((r) => (
-                <tr key={r.name} className="over">
-                  <th scope="row" className="pool-name">
-                    {poolLabel(r.name)}
-                    <span className="raw">{r.name}</span>
-                  </th>
-                  <td className="n">{r.held}</td>
-                  <td className="n">{r.active}</td>
-                  <td className="n">
-                    {r.active !== null ? (r.active > r.held ? '+' : '') : ''}
-                    {r.active !== null ? r.active - r.held : '—'}
-                  </td>
+        <div className="ctl-card-body is-flush">
+          <div className="ctl-table">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Pool</th>
+                  <th scope="col" className="is-num">From leases</th>
+                  <th scope="col" className="is-num">Counter</th>
+                  <th scope="col" className="is-num">Delta</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {disagreeing.map((r) => (
+                  <tr key={r.name} className="is-warn">
+                    <th scope="row">
+                      {poolLabel(r.name)}
+                      <span className="ctl-sub">{r.name}</span>
+                    </th>
+                    <td className="is-num">{r.held}</td>
+                    <td className="is-num">{r.active}</td>
+                    <td className="is-num">
+                      {r.active !== null ? (r.active > r.held ? '+' : '') : ''}
+                      {r.active !== null ? r.active - r.held : <span className="ctl-em">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {/* THE SAMPLE SIZE IS THE MARKER, and the tool that settles a
-          disagreement is an ACTION, so both stay. A comparison computed over
-          a truncated page is not the same claim as one computed over the
-          fleet, and the row count is what says which this is. */}
-      <p className="muted small">
-        Computed over the {board.page.leases.length} rows returned.
-        <HelpCard topic="lease-and-pool-are-two-records" /> To resolve a
-        disagreement, run <code>make pool-check</code>.
-      </p>
+          disagreement is an ACTION, so both stay -- as provenance and as a
+          command, not as two sentences. A comparison computed over a truncated
+          page is not the same claim as one computed over the fleet, and the
+          row count is what says which this is. */}
+      <div className="ctl-card-foot">
+        over {rowsRead} row{rowsRead === 1 ? '' : 's'} · <code>make pool-check</code>
+      </div>
     </section>
   )
 }
@@ -192,32 +258,42 @@ function ClassMix({ rows }: { rows: LeaseRow[] }) {
   const max = Math.max(1, ...entries.map(([, e]) => e.units))
 
   return (
-    <section className="section panel">
-      <h2>Class mix</h2>
-      {entries.length === 0 ? (
-        <p className="muted">No loaded lease names a resource class.</p>
-      ) : (
-        entries.map(([cls, e]) => (
-          <div className="split-row" key={cls}>
-            <span className="sr-name">{cls}</span>
-            <span className="sr-bar">
-              <i style={{ width: `${(e.units / max) * 100}%` }} />
-            </span>
-            <span className="sr-n">{e.units}u</span>
-            <span className="sr-by">
-              {e.leases} lease{e.leases === 1 ? '' : 's'}
-            </span>
+    <section className="ctl-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">
+          Class mix
+          <HelpCard topic="units-not-agents" />
+        </h2>
+        {/* A LEASE THAT NAMES NO CLASS IS COUNTED IN NO CLASS, and the note is
+            where that is said -- not folded into `standard`, which would
+            understate the rest. It was a two-clause sentence; it is now the
+            qualifier on the card whose total it qualifies. */}
+        {unclassified > 0 && (
+          <span className="ctl-card-note">{unclassified} unclassified</span>
+        )}
+      </div>
+      <div className="ctl-card-body">
+        {entries.length === 0 ? (
+          <div className="hold-mark">
+            <span className="ctl-mark is-zero">real zero</span>
           </div>
-        ))
-      )}
-      {unclassified > 0 && (
-        <p className="warn-text">
-          {unclassified} lease{unclassified === 1 ? '' : 's'} name no resource
-          pool and {unclassified === 1 ? 'is' : 'are'} counted in no class —
-          not folded into <code>standard</code>, which would understate the
-          rest.
-        </p>
-      )}
+        ) : (
+          entries.map(([cls, e]) => (
+            <div className="ctl-util" key={cls}>
+              <span className="ctl-util-name">
+                <b>{cls}</b>
+              </span>
+              <span className="ctl-util-track">
+                <i className="ctl-util-fill" style={{ width: `${(e.units / max) * 100}%` }} />
+              </span>
+              <span className="ctl-util-figure">{e.units}u</span>
+              <span className="ctl-util-by">
+                {e.leases} lease{e.leases === 1 ? '' : 's'}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
     </section>
   )
 }
@@ -225,38 +301,58 @@ function ClassMix({ rows }: { rows: LeaseRow[] }) {
 function HolderTable({ rows }: { rows: LeaseRow[] }) {
   const sorted = [...rows].sort((a, b) => b.units - a.units)
   return (
-    <section className="section panel">
-      <h2>Every holder</h2>
-      <div className="table-wrap">
-        <table className="pools">
-          <thead>
-            <tr>
-              <th scope="col">Task</th>
-              <th scope="col">Tenant</th>
-              <th scope="col" className="n">Units</th>
-              <th scope="col">Dispatch</th>
-              <th scope="col" className="n">Gen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((l) => (
-              <tr key={l.lease_id}>
-                <th scope="row" className="pool-name">
-                  {l.task_id.slice(-10)}
-                  <span className="raw">{l.lease_id.slice(-10)}</span>
-                </th>
-                <td>{l.tenant_id}</td>
-                <td className="n">{l.units}</td>
-                <td>{l.dispatch_state === 'LEASED' ? 'awaiting dispatch' : 'dispatched'}</td>
-                <td className="n">{l.generation}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <section className="ctl-card hold-all">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">Every holder</h2>
+        <span className="ctl-card-note">
+          {rows.length} row{rows.length === 1 ? '' : 's'}
+        </span>
       </div>
-      <p className="provenance">
-        {rows.length} rows returned · units are weighted, not agent counts
-      </p>
+      <div className="ctl-card-body is-flush">
+        <div className="ctl-table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Task</th>
+                <th scope="col">Tenant</th>
+                {/* §8.4(3): THE CAVEAT ATTACHES TO THE COLUMN. "units are
+                    weighted, not agent counts" was a footnote under the table
+                    that a reader had to carry back up to the column it was
+                    about. In the heading it cannot be missed and cannot be
+                    applied to the wrong column. */}
+                <th scope="col" className="is-num">
+                  Units (weighted)
+                  <HelpCard topic="units-not-agents" />
+                </th>
+                <th scope="col">Dispatch</th>
+                <th scope="col" className="is-num">Gen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((l) => (
+                <tr key={l.lease_id}>
+                  <th scope="row">
+                    {l.task_id.slice(-10)}
+                    <span className="ctl-sub">{l.lease_id.slice(-10)}</span>
+                  </th>
+                  <td>{l.tenant_id}</td>
+                  <td className="is-num">{l.units}</td>
+                  <td>
+                    {/* The state, as a word AND as a shape -- `.ctl-dot`
+                        carries the silhouette so the column survives
+                        greyscale and a colour-blind reader. */}
+                    <span className={`ctl-chip ${l.dispatch_state === 'LEASED' ? 'is-warn' : 'is-ok'}`}>
+                      <i aria-hidden="true" />
+                      {l.dispatch_state === 'LEASED' ? 'awaiting' : 'dispatched'}
+                    </span>
+                  </td>
+                  <td className="is-num">{l.generation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
   )
 }
