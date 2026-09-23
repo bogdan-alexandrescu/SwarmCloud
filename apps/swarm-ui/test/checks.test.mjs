@@ -64,7 +64,21 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  assert.equal(p.href, '#agents/workflows')
+  // THE SECTION, THEN THE PANE -- not one spelling of the section.
+  //
+  // This read `#agents/workflows` and has been failing on this branch since the
+  // nav rename moved that section to `work`: `SECTION_ALIASES` keeps the old
+  // href WORKING, which is why nothing in the app looked broken, and this is
+  // the assertion that noticed. Pinning the literal is what made a rename
+  // rewrite a test instead of the test proving the rename was complete.
+  //
+  // What matters about this href is that it opens the workflow list rather than
+  // the agent list, and that it is an INTERNAL link, which `nav.links.test.tsx`
+  // requires to use the canonical section id rather than an alias. So: the
+  // pane is named exactly, the section is required to be canonical, and the
+  // alias is required NOT to be used.
+  assert.match(p.href, /^#[a-z-]+\/workflows$/, `the stall does not link to the workflow list: ${p.href}`)
+  assert.ok(!p.href.startsWith('#agents/'), 'an internal link still uses the retired section id')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.
   assert.match(p.detail, /wf_5e5ad3b6f7da4299a839/)
