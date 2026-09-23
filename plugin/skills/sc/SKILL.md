@@ -5,6 +5,7 @@ allowed-tools:
   - Bash(uv run sc:*)
   - Bash(sc:*)
   - Bash(uv run swarm doctor:*)
+  - Bash(uv run swarm profiles:*)
 ---
 
 # sc — SwarmCloud cluster state
@@ -22,9 +23,17 @@ cancels anything, so it is always safe to run.
 | what is the real ceiling? | `uv run sc capacity` |
 | what did this agent produce? | `uv run sc task <id>` |
 | is anything broken? | `uv run sc trouble` |
+| what may I actually run? | `uv run swarm profiles` |
 
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
 for a terminal without the bar glyphs.
+
+`swarm profiles` is the odd one out and is listed here because it is read-only
+and because it is the question people ask next. It reads the frozen catalogue
+rather than the cluster, so it makes **no network call** and still answers when
+nothing else does — which is exactly when someone is guessing at a profile name
+because the API is unreachable. It shows no image and no command, deliberately:
+a caller names a profile and the execution details follow from the name.
 
 ## Reading the marks — this is the part that matters
 

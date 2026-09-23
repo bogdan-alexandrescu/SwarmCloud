@@ -349,14 +349,23 @@ def test_a_failing_tool_call_is_isError_and_not_a_transport_error(monkeypatch):
 
 def test_dispatch_returns_the_command_that_follows_it_live(monkeypatch):
     """An MCP tool cannot stream. Rather than pretend, the dispatch reply
-    hands back the terminal command that can."""
+    hands back both ways to watch: the tool a model can call, and the terminal
+    command a human can put in a background shell.
+
+    THE SPELLING IS THE ASSERTION. This used to expect `swarm tail task_1`, and
+    `swarm` is on nobody's PATH -- it is a console script of this package,
+    installed into the uv environment. A model handed that string runs it and
+    gets `command not found` at the exact moment it is trying to report
+    progress on work it just started.
+    """
     monkeypatch.setattr(server, "SwarmClient", lambda *a, **k: FakeClient())
     replies = _speak(
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
          "params": {"name": "swarm_dispatch", "arguments": {"prompt": "fix the gate"}}}
     )
     body = json.loads(replies[0]["result"]["content"][0]["text"])
-    assert body["follow_live_with"] == "swarm tail task_1"
+    assert body["follow_with"] == "swarm_follow"
+    assert body["follow_live_with"] == "uv run swarm tail task_1"
 
 
 def test_a_wait_that_times_out_names_what_is_still_running(monkeypatch):

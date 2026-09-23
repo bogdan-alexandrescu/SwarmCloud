@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import SwarmClient, SwarmError, task_id_of
+from .profiles import backend_of
 
 _GCS = "https://storage.googleapis.com/storage/v1/b"
 
@@ -122,11 +123,29 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
     """What one task produced, in the shape every read tool hands back.
 
     IT LIVES HERE, not in `server.py`, because it is the composition of the two
-    functions above and because it now has three callers: `swarm_result`,
-    `swarm_wait`, and the per-step rollup a workflow read produces. It was
-    private to the MCP server while there was one consumer; a second copy for
-    the workflow tools is exactly how a task's result and a workflow step's
-    result would start disagreeing about what "no patch" means.
+    functions above and because it now has four callers: `swarm_result`,
+    `swarm_wait`, `swarm_follow`'s per-task outcome, and the per-step rollup a
+    workflow read produces. It was private to the MCP server while there was one
+    consumer; a second copy for the workflow tools is exactly how a task's
+    result and a workflow step's result would start disagreeing about what "no
+    patch" means. (There WAS a second copy -- `server._describe`, byte-for-byte
+    identical, left behind by the move and still being called by `swarm_follow`
+    until 2026-09-24.)
+
+    THE PROFILE AND THE BACKEND ARE HERE FOR THE FAILURE CASE. A result that
+    says only `state: FAILED` and an error string sends the reader to the logs
+    to find out what kind of thing failed. Which profile ran and which backend
+    it landed on are the two facts that separate "this agent's prompt was wrong"
+    from "GKE Autopilot could not place a browser pod" -- and they are the two
+    the reader cannot derive, because the profile-to-backend mapping lives in
+    the frozen catalogue rather than on the task. Both are cheap: the task
+    document already carries the profile name, and the backend follows from it.
+
+    `backend` is None when the catalogue does not hold the task's profile -- an
+    old task naming a profile since renamed. NOT a default and not a guess: the
+    three-marks rule this plugin is held to says an unknown is reported as
+    unknown, and a reader who saw CLOUD_RUN_JOB there would go and read the
+    wrong service's logs.
     """
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
@@ -136,6 +155,8 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         # "it has not started yet".
         "task_id": task_id_of(task),
         "state": task.get("state"),
+        "runner_profile": task.get("runner_profile"),
+        "backend": backend_of(task.get("runner_profile")),
         "commits": git.get("commit_count", 0),
         "insertions": git.get("insertions", 0),
         "deletions": git.get("deletions", 0),

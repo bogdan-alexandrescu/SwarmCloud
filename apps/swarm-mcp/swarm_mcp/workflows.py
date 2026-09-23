@@ -46,7 +46,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from . import profiles as catalogue
 from .client import SwarmClient, SwarmError
+from .follow import follow_command
 
 #: What `codec.workflow_to_api` sets on a read that actually looked at the step
 #: tasks. Any other value -- including the absence of the field -- means the
@@ -137,9 +139,19 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                 "admitted and dispatched. Give every step its instructions."
             )
 
+        # THE PROFILE NAME IS CHECKED BEFORE THE WHOLE WORKFLOW IS SUBMITTED,
+        # and the reason is on the record. On 2026-09-23 a twenty-step run
+        # dispatched four `codex` steps and all four failed at the provider,
+        # each having been admitted, leased and dispatched first. A workflow is
+        # all-or-nothing on admission (invariant 2) but not on validity: the
+        # sixteen good steps still ran, so the bad four cost real capacity to
+        # learn something the catalogue already knew. Refusing here refuses the
+        # SUBMISSION, before any of it is scheduled.
         step: dict[str, Any] = {
             "step_id": step_id,
-            "runner_profile": str(raw.get("runner_profile") or DEFAULT_PROFILE),
+            "runner_profile": catalogue.check(
+                str(raw.get("runner_profile") or DEFAULT_PROFILE), where=where
+            ),
             "input": {"prompt": prompt},
         }
 
@@ -161,7 +173,14 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
         step["input_from"] = dict(input_from)
 
         if raw.get("resource_class"):
-            step["resource_class"] = str(raw["resource_class"])
+            # THE NAME ONLY. That it is a class the catalogue holds is checkable
+            # here from the frozen contract; that it is no LARGER than the
+            # profile's own is `swarm_api.validation`'s rule and is deliberately
+            # not restated -- a second opinion about the ceiling is how the two
+            # would start disagreeing about which submissions are legal.
+            step["resource_class"] = catalogue.check_resource_class(
+                str(raw["resource_class"]), where=where
+            )
         if raw.get("timeout_seconds") is not None:
             step["timeout_seconds"] = int(raw["timeout_seconds"])
         steps.append(step)
@@ -389,5 +408,9 @@ def report(
         # tool returns once and cannot stream, so the honest thing to hand back
         # is the command that can. `tail` takes several ids precisely so one
         # background shell follows a whole fan-out.
-        out["follow_live_with"] = "swarm tail " + " ".join(followable)
+        #
+        # Spelled by `follow.follow_command`, not here. This file used to build
+        # the string itself and got `swarm tail`, which is not a command anyone
+        # has on their PATH.
+        out["follow_live_with"] = follow_command(followable)
     return out
