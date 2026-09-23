@@ -423,11 +423,26 @@ body {
 :root { --app-max: 1880px; --app-pad: var(--gutter); }
 @media (min-width: 1280px) { :root { --app-pad: 24px; } }
 @media (min-width: 1600px) { :root { --app-pad: 32px; } }
-/* The bottom gutter reserves the dock's COLLAPSED bar and nothing more: the
-   dock is fixed to the viewport, and an expanded one overlays the foot of the
-   page deliberately rather than reflowing it -- a panel that pushed 240px of
-   content up every time it opened would move the row you were reading. */
-.app { max-width: var(--app-max); margin: 0 auto; padding: 0 var(--app-pad) calc(28px + 48px); }
+/* THE BOTTOM GUTTER READS THE DOCK'S ACTUAL HEIGHT, and until now it did not.
+   `Dock.tsx:80` publishes `--dock-h` on `documentElement` and TWO rules consume
+   it -- `.ctl-rail`'s max-height and the inspector's -- while `.app` reserved
+   the literal `28px + 48px`, the collapsed bar and nothing else. The dock is
+   resizable from 120px to 70vh AND remembers its height in localStorage across
+   sessions, so an operator who once dragged it tall has every screen's last
+   rows permanently hidden under it from then on, on every visit, with no
+   indication that anything is there.
+
+   The comment that stood here called the overlay deliberate. It is deliberate
+   at 28px and it is a bug at 70vh: reserving the collapsed bar is a decision
+   about a panel that opens and closes, not about one that opens and STAYS. The
+   fallback keeps the old behaviour before any read, which is what `--dock-h`'s
+   two existing readers already assume.
+
+   `src/__tests__/spacing.test.tsx` cannot see this -- it renders into jsdom,
+   which has no layout engine, so it measures declared CSS and never a box
+   intersection. The one-line fix is invisible to every gate in this repository
+   and the defect was too. */
+.app { max-width: var(--app-max); margin: 0 auto; padding: 0 var(--app-pad) calc(var(--dock-h, 28px) + 48px); }
 
 /* --measure: the width a SENTENCE is allowed, now that the page is not one.
    Removing the cap above makes tables, charts and graphs full-bleed, which is
@@ -1019,7 +1034,9 @@ body {
 
 .wf-body {
   border: 1px solid var(--line); border-top: 0;
-  border-radius: 0 0 8px 8px;
+  /* 6px, not 8px: 8 is not on the corner scale (0/2/6/10/14/999) and this
+     joins a `.wf-bar` whose own corners are --ctl-radius-sm. */
+  border-radius: 0 0 var(--ctl-radius-sm) var(--ctl-radius-sm);
   padding: 12px;
   background: color-mix(in srgb, var(--surface) 55%, var(--bg));
 }
@@ -2211,6 +2228,849 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     --ctl-shadow: 0 1px 2px rgb(31 35 40 / .08);
   }
 }
+
+/* ==========================================================================
+   §B4.4 — THE FOUNDATION. The vocabulary the screen pass is built from.
+   ==========================================================================
+   docs/web-ui/design-system.md is the specification; this is its implementation
+   of the parts that belong in the sheet. Read that first — it carries the
+   argument, the measured ratios and the prose rule. This block carries only
+   what a screen has to be able to name.
+
+   WHAT THIS IS FOR. The audit counted 719 top-level class selectors, 172 of
+   them `ctl-` and the other 547 in 38 screen-private namespaces, and found the
+   same idea drawn eight different ways: eight proportion bars, six metric
+   tiles, five empty states, four status chips, three tab bars. It also found
+   the reason, written as a comment in AgentDetail.tsx: "the `ctl-` block has no
+   card primitive, so the box is inline." A screen invents a primitive when the
+   system does not have one. So the gap is closed here, BEFORE the screens are
+   rewritten, rather than being closed five more times in five more files.
+
+   NOTHING ABOVE THIS LINE CHANGES VALUE. This is the fourth `:root` in the
+   file and it follows the rule the third one set: names are added, values are
+   not edited. The palette, the two line weights, the six type steps, the four
+   spacing steps and the corner scale are already measured and already held by
+   tests (test_ui_contrast.py, test_state_colour_discriminability.py,
+   typescale.test.ts, spaceprobe.ts). A design pass that re-derives them buys a
+   different set of numbers and the same screens.
+
+   THREE RULES THE GATES IMPOSE ON ANYTHING WRITTEN HERE, stated once so the
+   next phase does not learn them by going red:
+
+   1. A TINT IS WRITTEN OUT, NEVER HIDDEN BEHIND A TOKEN.
+      `test_ui_contrast.py` resolves `color-mix(in srgb, var(--X) N%, transparent)`
+      literally and measures the text on it. A token `--tint-ok` holding that
+      same mix resolves to nothing, so the rule lands in the unresolvable pile
+      and fails as undeclared. Write the mix at the point of use, and pair it
+      with the accent's `-ink` variant — never the accent itself. Measured, at
+      the strengths this sheet already uses:
+
+          --ok-ink     on 18% --ok       4.84 dark / 5.01 light
+          --warn-ink   on 10% --warn     5.14 / 5.03
+          --bad-ink    on 18% --bad      5.02 / 4.69
+          --info-ink   on 22% --info     5.01 / 5.05
+          --paused-ink on 20% --paused   4.73 / 4.87
+
+      and the same tints with the ACCENT rather than the ink: 3.93, 6.13, 3.45,
+      3.60, 4.23 — four of the five under the floor. The ink is not optional.
+
+   2. A SURFACE NO RATIO CAN BE COMPUTED FROM CARRIES NO `color` IN THE SAME
+      RULE. A gradient, a hatch or a shimmer has no luminance the gate can
+      measure. `var(--ctl-hatch)` is declared in that test's allowlist and may
+      carry text; a `linear-gradient` is not and may not. So `.ctl-pending` and
+      `.ctl-ghost` below set a background and nothing else, and the text that
+      goes with them lives in a sibling.
+
+   3. A MARK IS NOT A SURFACE. `spaceprobe.ts` exempts anything declared 12px
+      or smaller on both axes from the corner scale, because a 1px corner on a
+      6px diamond is part of the shape. Everything bigger is a surface and its
+      corner is 0, 2, 6, 10, 14 or 999.
+
+   AND ONE RULE THE GATE IMPOSES THAT IS EASY TO GET WRONG, so it is written
+   here rather than learned from a red run:
+
+   4. `--line-soft` IS LEGAL ONLY WHERE THE RULE REPEATS BETWEEN TWINS.
+      `spaceprobe.ts` decides separator-versus-boundary STRUCTURALLY, and its
+      test is narrow: exactly one border drawn, and an adjacent sibling with the
+      same signature (or a `<td>`/`<th>` bottom rule). `.ctl-util + .ctl-util`
+      qualifies; a table row rule qualifies. A card's header rule does NOT — it
+      has no twin — so it is graded as a component boundary at 3:1, and
+      `--line-soft` measures 1.58-2.05 and fails.
+
+      The right answer is almost never to promote it to `--line`. It is to draw
+      NO RULE: group with a surface step and separate with space. Northflank's
+      dense tables have no row borders at all — a 40px bar on the surface below,
+      6px of gutter, and a fill step measuring 1.06:1 that still reads perfectly
+      because it is area rather than line. A card head that separates by 16px of
+      padding and a card foot that separates by `--surface-2` both give the
+      probe nothing to measure and read airier than the rule would have. Hence
+      `.ctl-card-head` and `.ctl-card-foot` below draw no border, and the
+      `.is-ruled` variant exists for the one case that needs an edge — a chart
+      whose plot has to start somewhere — at `--line`.                        */
+
+:root {
+  /* A FOURTH :root. Same reason as the third: add names, change nothing. */
+
+  /* THE PILL, AS A NAME. 22 rules write `999px` and two write it as a pair of
+     corners. It is a shape rather than a radius — it means "this box is as
+     round as it is tall" — and naming it is what stops the next person
+     reaching for 16px and getting a box with soft corners instead. */
+  --ctl-radius-pill: 999px;
+
+  /* TWO ELEVATIONS, AND NO THIRD.
+     `--ctl-shadow` is what a RAISED SURFACE gets: a tile, a card, a panel that
+     sits on the page. `--ctl-shadow-pop` is what a surface that is OVER the
+     page gets: the help card, a menu, the inspector's edge. Everything else
+     separates with a hairline.
+
+     The value is not new — `.ctl-q-card` already draws exactly this — it is
+     named, so the next popover does not invent a third blur. A product with
+     five shadows has no elevation system, it has five shadows. */
+  --ctl-shadow-pop: 0 8px 24px rgb(0 0 0 / .28);
+
+  /* ONE DURATION, for every state change in the frame. Hetzner's console runs
+     1,758 classes on a single 0.15s and it is the cheapest coherence in their
+     system: nothing in the product moves at a speed nobody chose. The two
+     existing exceptions keep their own timings and are the only ones — the
+     track fill at .3s, because a proportion that snaps reads as a redraw
+     rather than a change, and the live pulse at 2s. */
+  --ctl-dur: .15s;
+
+  /* STILL READING ≠ NOTHING REPORTED, AND THEY MUST NOT BE THE SAME PICTURE.
+     This is the one gap in the absence kit the audit found: `--ctl-hatch` says
+     "nobody reported this" and there was no mark at all for "we are still
+     asking". A screen that draws the hatch while a read is in flight has told
+     the operator a falsehood that it will silently correct a second later,
+     which is the same class of bug as drawing an absence as a zero.
+
+     So: the pending surface is LIGHTER than the hatch and it MOVES; the hatch
+     is darker and static. Both survive greyscale, and they cannot be confused
+     at a glance, which is the whole requirement.
+
+     It carries no text — see rule 2 at the top of this block. */
+  --ctl-pending: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    color-mix(in srgb, var(--text-faint) 14%, var(--surface-2)) 50%,
+    var(--surface-2) 100%
+  );
+
+  /* THE SERIES PALETTE, AND WHY IT IS NOT THE STATE PALETTE.
+     A chart line drawn in `--ok` is read as a verdict. Koyeb keeps a separate
+     pastel set for exactly this reason and Railway spends one of five series
+     slots on a neutral grey to stop a chart looking like a fruit salad. Five
+     identities, and a metric keeps its colour across every chart in the
+     product: CPU is always one, spend is always another.
+
+     ONE VALUE PER SERIES, IN BOTH THEMES. Every one sits in the luminance band
+     that clears 3:1 against `--bg`, `--surface` and `--surface-2` in BOTH
+     themes at once (worst case in brackets), so a series never needs a second
+     definition and the two themes have one less way to disagree:
+
+       1 blue    #3f86d8  [3.36]      4 amber   #9c7620  [3.75]
+       2 teal    #1f948a  [3.33]      5 neutral #788492  [3.42]
+       3 violet  #8a6ad6  [3.69]
+
+     WHAT THIS DOES NOT BUY, stated rather than hoped: that band is 1.36:1 from
+     end to end, so these five are NOT separable in greyscale. Hue alone does
+     not identify a series to a colour-blind reader. A multi-series chart
+     therefore carries a tabular legend naming every series — the swatch is the
+     index, the name is the identity — and never relies on the line's colour to
+     say which line it is. A single-series chart uses series 1 and needs no
+     legend, because the panel title already said what it is.
+
+     STROKE AND FILL ONLY. These are never a text colour and never a surface
+     under text: they are not in test_ui_contrast.py's ACCENTS list because
+     nothing is allowed to make them need to be. */
+  --series-1: #3f86d8;
+  --series-2: #1f948a;
+  --series-3: #8a6ad6;
+  --series-4: #9c7620;
+  --series-5: #788492;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    /* The same correction `--ctl-shadow` needs, for the same reason: a
+       28%-black drop that reads as lift on #0b0d10 reads as grime on #f6f8fa.
+       The spread stays; only the opacity comes down. */
+    --ctl-shadow-pop: 0 8px 24px rgb(31 35 40 / .12);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 8. Card                                                                     */
+/* -------------------------------------------------------------------------- */
+/* THE PRIMITIVE THAT WAS MISSING, and whose absence is on the record:
+   AgentDetail.tsx:380 draws its panels with an inline style object and says
+   why — "the `ctl-` block has no card primitive, so the box is inline". Six
+   more files reached the same conclusion independently, which is how one
+   product came to have five different boxes with a border and a title.
+
+   THE HEADER IS THE ANSWER TO THE PROSE PROBLEM, so it has two slots and they
+   have different jobs:
+
+     .ctl-card-title  what this card is. Two or three words. Never a sentence.
+     .ctl-card-note   the QUALIFIER, right-aligned and muted — the fact that
+                      would otherwise have been a paragraph under the figure.
+                      `4 of 7 pools`, `ceiling 8 vCPU`, `read 2m ago`,
+                      `excludes parked`. Railway puts `Max 8 vCPU` here and
+                      writes nothing under the chart; Northflank puts the
+                      coverage here; we put the honesty qualifier here.
+
+   The rule under the header is INSET to the padding box rather than bled to
+   the card's edges, so the header reads as part of the card rather than as a
+   second stacked surface. The FOOT is the opposite — full-bleed, on the
+   surface step below — because provenance belongs to the card as a whole and
+   not to the last row of it.
+
+   PADDING IS `--ctl-pad-chrome`, NOT A RHYTHM STEP. D2 is compact data inside
+   generous chrome; a card is chrome. */
+
+.ctl-cards {
+  display: grid;
+  /* `min(100%, 340px)` rather than a bare 340px: the `min()` is what stops a
+     340px track overflowing a 358px content column at 390px viewport, and it
+     is why this grid needs no media query at any width. Northflank runs the
+     identical construction at 380px and gets 4-up at 1858px and 1-up at 390px
+     with nothing written. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: var(--ctl-s3);
+}
+
+.ctl-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow);
+}
+.ctl-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ctl-s3);
+  padding: var(--ctl-pad-chrome) var(--ctl-pad-chrome) var(--ctl-s2);
+}
+/* THE EDGE, FOR THE ONE CASE THAT NEEDS ONE. A chart's plot has to start
+   somewhere, and 16px of air above a gridline is not a start. Inset to the
+   content box rather than bled to the card's edges, so the header reads as
+   part of the card rather than as a second stacked surface — and at `--line`,
+   because a rule with no twin is a boundary (rule 4 above). */
+.ctl-card-head.is-ruled {
+  margin: 0 var(--ctl-pad-chrome);
+  padding-left: 0;
+  padding-right: 0;
+  border-bottom: 1px solid var(--line);
+}
+.ctl-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+/* THE QUALIFIER SLOT. Muted, right-aligned, mono, and it does not wrap: it is
+   a fact about the card, so it reads as chrome and never competes with the
+   title. `flex: none` is what keeps it on the title's line — a qualifier that
+   wraps under the title has become a subtitle, which is a paragraph with
+   better manners. */
+.ctl-card-note {
+  flex: none;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+  white-space: nowrap;
+  text-align: right;
+}
+.ctl-card-body { padding: var(--ctl-pad-chrome); }
+/* A body that holds a table or a chart takes no padding of its own: the table
+   draws its own edges and a chart has to reach them. */
+.ctl-card-body.is-flush { padding: 0; }
+
+/* PROVENANCE, FULL-BLEED, ON THE STEP BELOW. Koyeb's card footer carries
+   "Latest deployment · HEALTHY · #a3f2c1 · 4m ago" and it is exactly the slot
+   this product needs for "read 14:32 · 4 of 7 sources · 2 did not answer".
+   Every card that shows a figure has one; a card whose figures came from one
+   read says so once here instead of once per figure.
+
+   IT SEPARATES BY A SURFACE STEP, NOT BY A RULE (rule 4 above). The step also
+   carries the meaning the rule would not have: the foot is a different KIND of
+   information from the card's body — it is about the reading, not the reading
+   itself — and a fill says that where a hairline just says "stop". */
+.ctl-card-foot {
+  margin-top: auto;
+  padding: var(--ctl-s2) var(--ctl-pad-chrome);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--surface-2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  /* 4.86:1 dark / 4.93:1 light on --surface-2. Measured, not assumed. */
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 9. Eyebrow                                                                  */
+/* -------------------------------------------------------------------------- */
+/* ONE WORD WHERE A SENTENCE USED TO BE. Uppercase mono, tracked, muted — the
+   device Northflank and Railway both use as their only in-panel section
+   heading, with no rule, no box and no background under it. `CAPACITY`,
+   `HOLDERS`, `BLOCKERS`, `THIS ATTEMPT`.
+
+   It is deliberately the same treatment as `.ctl-metric-label` and
+   `.ctl-table thead th`, and that is the point: the reader learns ONE thing —
+   uppercase mono grey means "this is a label, not data" — and can then read
+   or skip that whole layer at will. That learned split is what buys a screen
+   the right to have no paragraphs on it. */
+.ctl-eyebrow {
+  display: block;
+  margin: 0 0 var(--ctl-s2);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 10. Figure                                                                  */
+/* -------------------------------------------------------------------------- */
+/* THE FIGURE TIER THE PANELS NEVER HAD. `--t-figure` exists and is used on
+   exactly two selectors, both in the metric strip. Underneath that strip, the
+   panels holding the actual operational data have no figure level at all: the
+   audit found a capacity row reading `3 / 8` at 14px directly below a 30px
+   "Running now 4" that is the same fact. One figure tier for the summary and
+   none for the data is most of the "there is no hierarchy" complaint.
+
+   So the figure is a primitive rather than a property of the tile, and any
+   card may have one. THE TILE'S RULE STILL HOLDS: one per card. If a second
+   figure wants this step, it is a second card.
+
+   `tabular-nums` is not optional anywhere a number can change. */
+.ctl-figure {
+  display: block;
+  font-size: var(--t-figure);
+  line-height: var(--lh-figure);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* The unit is demoted INSIDE the figure rather than hoisted into a header:
+   "256" at the figure step and "MB" in the label treatment, on one line. That
+   deletes a column heading per card. */
+.ctl-figure-unit {
+  margin-left: 4px;
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-faint);
+}
+/* NO NUMBER MEANS NO FIGURE STEP — the same rule `.ctl-metric.is-absent`
+   already enforces, applied to the primitive so every card inherits it. What
+   sits here is `—` or a two-word mark, and at 30px either one reads as a
+   headline quantity. */
+.ctl-figure.is-absent {
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ctl-absent);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 11. Facts strip                                                             */
+/* -------------------------------------------------------------------------- */
+/* THE PATTERN THAT REPLACES A DEFINITION LIST. Northflank puts a 38px strip of
+   seven unlabelled facts under every entity title and it is the single
+   highest-value prose-removal device in any of the five references: state,
+   commit, repository, branch, age, duration, all as icon+value with the field
+   name living in `title`/`aria-label` alone.
+
+   We have no icon set, so the key is a two-or-three-character mono word in the
+   label treatment — `env`, `age`, `gen`, `pool` — which is the same device
+   Brand.tsx already ships as `.brand-k` and the reason this reads as chrome
+   rather than as a sentence. The VALUE is the sans face at full strength. Once
+   a reader has learned that split, the grey mono layer can be read or skipped.
+
+   It is a strip, not a grid: facts wrap, and the ones that matter least are
+   written last so they wrap off the first line first.
+
+   NO RULES ABOVE AND BELOW IT, unlike Northflank's, for the reason rule 4 at
+   the top of this block gives: a two-sided rule is a boundary at 3:1 and the
+   pair would be the loudest thing on the screen. The mono/sans split is what
+   makes the strip legible as a strip; the separation is space. `.is-ruled`
+   exists for a strip that sits directly under a title with nothing between. */
+.ctl-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s2) var(--ctl-s3);
+  margin: 0;
+  padding: var(--ctl-s2) 0;
+  list-style: none;
+}
+.ctl-facts.is-ruled { border-top: 1px solid var(--line); }
+.ctl-fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text);
+}
+.ctl-fact > b {
+  flex: none;
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+/* A fact whose value was not read keeps its slot and its key. It does not
+   disappear, because a missing row is indistinguishable from a row that was
+   never going to be there. */
+.ctl-fact.is-absent { color: var(--ctl-absent); }
+
+/* -------------------------------------------------------------------------- */
+/* 12. The absent mark                                                         */
+/* -------------------------------------------------------------------------- */
+/* THE BEST IDEA IN THE CODEBASE, PROMOTED OUT OF ONE SCREEN.
+   `ABSENT_MARK` (AgentDetail.tsx:349) draws a two-syllable word in the corner
+   of every empty panel — `real zero` / `read failed` / `partial` / `admin
+   only` — always rendered, greyscale-safe, and it names WHICH KIND of nothing
+   this is. Overview's equivalent (`Nothing`, Overview.tsx:931) has colour and
+   no mark, which is why the same four facts are told apart by reading a
+   paragraph there and by reading two words here.
+
+   This is the encoding the whole redesign turns on, so it is a primitive and
+   every screen gets the same six words. THE WORDS ARE FIXED and they are the
+   six `measure.ts` already names; a screen does not get to invent a seventh
+   phrasing of "we do not know".
+
+     .is-zero      a real zero    the read succeeded and the answer is 0
+     .is-absent    not measured   nothing ever recorded this
+     .is-unread    not read       the read failed; the platform may know
+     .is-partial   partial        some of it arrived; the rest is not zero
+     .is-admin     admin only     you are not entitled to it; nothing failed
+     .is-pending   reading        in flight right now
+
+   SIX MARKS, SIX SILHOUETTES, AND THE TONE IS ALWAYS THE SECOND SIGNAL.
+   The border style carries the kind — solid for a measurement, dashed for a
+   failure, hatched for an absence — so the six stay apart in greyscale and in
+   the screenshot that gets pasted into an incident channel, which is where
+   these screens are actually read.
+
+   WHERE THE SENTENCE WENT. The mark is the visible, focusable anchor; the
+   sentence is its accessible name and its help topic. That is the difference
+   between this and the attempt that turned the suite red: a `title=` has no
+   visible anchor and no keyboard route, and a paragraph can sit next to a
+   figure it does not describe, while a mark on the figure cannot. */
+.ctl-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--ctl-radius-sm);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+  /* No background: an accent on a tint of itself is the one pairing this sheet
+     has already had to fix twice, and a bordered word needs no tint to read.
+     `.ctl-chip` made the same choice for the same reason. */
+  color: var(--text-faint);
+}
+/* A MEASURED ZERO IS A MEASUREMENT. Solid border, the text tone rather than
+   the faint one, and the baseline tick from the track vocabulary down its left
+   edge — the same mark, meaning the same thing, in a second place: "this scale
+   starts here and the value is at the start of it". */
+.ctl-mark.is-zero {
+  color: var(--text-dim);
+  border-left-width: var(--track-axis);
+  padding-left: 5px;
+}
+/* NOTHING WAS EVER RECORDED. Hatched — this sheet's one surface for "not a
+   measurement". Declared in test_ui_contrast.py's allowlist, which is why this
+   is the only variant here allowed a background at all. */
+.ctl-mark.is-absent {
+  color: var(--text-dim);
+  background: var(--ctl-hatch);
+}
+/* THE READ FAILED, which is not the same as there being nothing. Dashed, and
+   warning-toned: something is wrong and it is ours, not the platform's. */
+.ctl-mark.is-unread {
+  color: var(--warn);
+  border-style: dashed;
+}
+/* SOME OF IT ARRIVED. Dashed on one side only — the side the missing part
+   would have been on. A partial total is not a total, and the mark is the
+   shape of the hole. */
+.ctl-mark.is-partial {
+  color: var(--warn);
+  border-right-style: dashed;
+  border-right-width: 2px;
+}
+/* NOT ENTITLED IS NOT BROKEN. Blue, solid, no dashes: a non-admin genuinely
+   cannot read /v1/admin/*, and painting that as a failure tells someone their
+   platform is down when it is not. */
+.ctl-mark.is-admin { color: var(--info); }
+/* STILL ASKING. Dotted, so it is neither the dashed failure nor the solid
+   measurement, and it is the only one of the six that is temporary. */
+.ctl-mark.is-pending {
+  color: var(--text-dim);
+  border-style: dotted;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 13. The bare state dot                                                      */
+/* -------------------------------------------------------------------------- */
+/* THE CHIP'S SHAPE VOCABULARY, WITHOUT THE CHIP. `.ctl-chip` is a mark plus a
+   word in a bordered pill; a table cell, a DAG node and a dense row want the
+   mark alone, and the audit found four different state chips because there was
+   no way to get one without the other. Same seven silhouettes, same seven
+   tones, same meanings — a reader learns the vocabulary once and it holds
+   wherever a state is drawn.
+
+   THE DEFAULT IS UNKNOWN, AND THAT IS THE WHOLE POINT. Northflank's status dot
+   defaults to a neutral grey and green is an opt-in modifier, so a state nobody
+   derived renders as a fully-formed dot in a tone that is deliberately outside
+   the ok/warn/bad triad. It is present, legible, the same size as a healthy
+   one, and it cannot be mistaken for either a healthy state or a missing
+   element. A dot that is not drawn is a dot nobody can ask about. */
+.ctl-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--ctl-radius-pill);
+  vertical-align: middle;
+  /* UNKNOWN by default: a hollow ring in the neutral tone. */
+  background: transparent;
+  border: 1.5px solid var(--text-faint);
+}
+.ctl-dot.is-ok     { background: var(--ok); border-color: var(--ok); }
+.ctl-dot.is-info   { background: var(--info); border-color: var(--info); }
+.ctl-dot.is-paused { background: var(--paused); border-color: var(--paused); }
+/* Caution keeps the chip's triangle; failure keeps its diamond. */
+.ctl-dot.is-warn {
+  width: 10px; height: 9px;
+  border: 0;
+  border-radius: 0;
+  background: var(--warn);
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+.ctl-dot.is-bad {
+  width: 7px; height: 7px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--bad);
+  transform: rotate(45deg);
+}
+/* NOT DERIVED, which is a third thing again: the state exists, nobody computed
+   it. A ring with a bar through it — present, and struck out. Railway's legend
+   already means "present, not drawn" with a hollow ring; this is that ring
+   with the absence made explicit. */
+.ctl-dot.is-underived {
+  border-color: var(--text-faint);
+  background: linear-gradient(
+    90deg,
+    transparent 0 34%,
+    var(--text-faint) 34% 66%,
+    transparent 66% 100%
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* 14. Absence occupies the space it would have occupied                       */
+/* -------------------------------------------------------------------------- */
+/* THE LAYOUT-LEVEL STATEMENT OF THE INVARIANT, and it is worth writing as a
+   rule rather than leaving to each screen: A THING THAT IS ABSENT OCCUPIES THE
+   SPACE IT WOULD HAVE OCCUPIED. Vercel's table gives its last row
+   `border-bottom: 1px solid transparent` so that hiding a rule moves nothing,
+   and draws an empty table as its own row rules with nothing on them. If the
+   screen shrinks when the data does not arrive, the operator cannot see that
+   something should have been there — which is the same failure as printing a
+   zero, one layer down.
+
+   `.ctl-hold` keeps a box at the height its content would have had.
+   `.ctl-ghost` draws the rules of a table that has no rows.
+   `.ctl-pending` is the moving surface for a read that has not landed.
+
+   NONE OF THE THREE CARRIES TEXT — see rule 2 at the top of this block. A
+   caption belongs in a sibling, which is also where a screen reader wants it. */
+.ctl-hold { min-height: var(--hold-h, 180px); }
+.ctl-ghost {
+  height: calc(var(--rows, 4) * var(--row-h));
+  border-radius: var(--ctl-radius-sm);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--row-h) - 1px),
+    var(--line-soft) calc(var(--row-h) - 1px),
+    var(--line-soft) var(--row-h)
+  );
+}
+.ctl-pending {
+  border-radius: var(--ctl-radius-sm);
+  background-color: var(--surface-2);
+  background-image: var(--ctl-pending);
+  background-size: 220% 100%;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+@keyframes ctl-sweep {
+  from { background-position: 120% 0; }
+  to   { background-position: -120% 0; }
+}
+/* The pulse is already stopped further up this file for the same reason; a
+   sweep is a larger movement and a console is read by people who are tired. */
+@media (prefers-reduced-motion: reduce) {
+  .ctl-pending { animation: none; }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 15. The dial                                                                */
+/* -------------------------------------------------------------------------- */
+/* A PROPORTION THAT IS ONE FIGURE RATHER THAN ONE ROW. `.ctl-track` is the
+   answer when the proportion sits in a list beside its name; the dial is the
+   answer when the proportion IS the card — headroom, quota, coverage.
+
+   THE TOTAL IS ALWAYS DRAWN. Hetzner's every meter paints the whole and fills
+   the measured part: `--color-pie-chart--empty` for the unfilled arc,
+   `.progress__background` always painted under the bar. A partial total then
+   LOOKS partial, because the unmeasured remainder is visibly present and
+   visibly not filled — the invariant rendered rather than narrated.
+
+   FOUR STATES, and they are four different pictures:
+
+     default      `--pct` of the ring is filled, the rest is the track
+     .is-unknown  the whole ring is hatched and NOTHING is filled. There is no
+                  scale to fill: an empty ring reads as 0%, which is a claim.
+     .is-partial  the measured part is filled, the part nobody reported is
+                  HATCHED rather than left as track — so "we measured 40% of
+                  4 of 7 pools" is not drawn as "40%".
+     .is-zero     a measured zero: the ring is empty and the AXIS is drawn, a
+                  tick at twelve o'clock in the text tone. Same mark, same
+                  meaning as the track's baseline tick.
+
+   Hand-rolled with `conic-gradient` and a mask — no dependency, both themes
+   from one declaration, and no `color` on any of it. The figure goes in a
+   child, centred by the grid rather than by absolute positioning, so the box
+   is measurable. */
+.ctl-dial {
+  --pct: 0;
+  --measured: var(--pct);
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--dial-size, 112px);
+  height: var(--dial-size, 112px);
+  border-radius: var(--ctl-radius-pill);
+}
+.ctl-dial::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--ctl-radius-pill);
+  background: conic-gradient(
+    var(--info) 0 calc(var(--pct) * 1%),
+    var(--surface-2) calc(var(--pct) * 1%) 100%
+  );
+  /* The ring, not the disc: a 10px band cut out of the middle. Two masks
+     composited, which is the only way to do this without a second element. */
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 11px), #000 calc(100% - 10px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 11px), #000 calc(100% - 10px));
+}
+/* NOTHING REPORTED: the whole ring hatched, no fill, no axis. */
+.ctl-dial.is-unknown::before {
+  background: var(--ctl-hatch);
+}
+/* PARTIAL: measured up to `--measured`, hatched from there to `--pct`, track
+   beyond. The hole in the total is drawn as a hole. */
+.ctl-dial.is-partial::before {
+  background:
+    conic-gradient(
+      var(--info) 0 calc(var(--measured) * 1%),
+      transparent calc(var(--measured) * 1%) 100%
+    ),
+    var(--ctl-hatch);
+}
+/* A MEASURED ZERO. The ring is empty and a tick is drawn at the origin, so an
+   empty dial and a dial that failed to paint are different pictures. */
+.ctl-dial.is-zero::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: calc(50% - 1px);
+  width: var(--track-axis);
+  height: 10px;
+  background: var(--text-dim);
+}
+.ctl-dial-figure {
+  position: relative;
+  text-align: center;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 16. Toolbar and segmented control                                           */
+/* -------------------------------------------------------------------------- */
+/* THE ONLY CHROME A DATA SCREEN GETS ABOVE ITS CONTENT. Railway's Observability
+   dashboard carries exactly two things above the panels — a time-range select
+   at the far left and an Edit button at the far right — and zero words of
+   product copy. The count of sentences above a table in this product is now
+   also zero: the toolbar holds controls, and the controls are labelled by what
+   they do.
+
+   `justify-content` is not set here. A toolbar's first child sits left, an
+   `.is-end` child sits right, and a screen that wants three groups uses three
+   children — so no screen has to re-derive the alignment. */
+.ctl-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  margin-bottom: var(--ctl-s3);
+  min-height: 32px;
+}
+.ctl-toolbar > .is-end { margin-left: auto; }
+
+/* ONE BORDERED GROUP, NOT N PILLS. The active segment is marked by ACCENT TEXT
+   plus a surface step — not by a filled pill. Very low ink, legible at a
+   glance, and it survives both themes without a fill that has to be re-tuned
+   for each one. Railway's time range and view switch are both this control and
+   it is why their toolbar reads as two things rather than six.
+
+   THE SELECTION IS HUELESS, for the reason `.ctl-nav-link.is-on` gives: `--info`
+   already carries seven jobs in this file, and a selected segment drawn in the
+   same blue as a live agent teaches the reader to stop trusting colour as a
+   state channel. */
+.ctl-seg {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  overflow: hidden;
+}
+.ctl-seg > button {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text-dim);
+  font: 500 var(--t-body)/var(--lh-body) var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--ctl-dur) ease, background-color var(--ctl-dur) ease;
+}
+.ctl-seg > button + button { border-left: 1px solid var(--line); }
+.ctl-seg > button:hover { color: var(--text); }
+.ctl-seg > button[aria-pressed='true'],
+.ctl-seg > button[aria-selected='true'] {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.ctl-seg > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* -------------------------------------------------------------------------- */
+/* 17. Page header                                                             */
+/* -------------------------------------------------------------------------- */
+/* TITLE LEFT, ACTIONS RIGHT, AND NOTHING ELSE. No subtitle, no description, no
+   breadcrumb duplication — the breadcrumb is in `.ctl-head` one region up and
+   is never repeated. `flex-wrap` is the whole mobile strategy, the way Koyeb's
+   page title works: the actions wrap under the title at 390px instead of
+   needing a second, phone-only header.
+
+   THE ONE SENTENCE A SCREEN IS ALLOWED lives in `.ctl-page-q` — behind the `?`,
+   which this product already ships as `.ctl-q` with 82 help topics and a
+   pinnable card. The destination for the prose exists and is mature; what was
+   missing was a rule saying that it is the destination. */
+.ctl-page-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2) var(--ctl-s3);
+  margin: 0 0 var(--ctl-s3);
+}
+.ctl-page-head > h1 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--t-title);
+  line-height: var(--lh-title);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.ctl-page-head > .is-end { margin-left: auto; }
+
+/* -------------------------------------------------------------------------- */
+/* 18. The one-line expandable row                                             */
+/* -------------------------------------------------------------------------- */
+/* GENERALISED FROM `.wf-bar`, WHICH THE AUDIT NAMES AS THE BEST ROW IN THE
+   PRODUCT: id, state, progress, shape, runner mix, spend, age, flags, on one
+   grid line, expanding into the DAG. Every list in this console wants that and
+   four of them built a worse version of it.
+
+   THE COLUMN TEMPLATE IS THE SCREEN'S, AND IT IS WRITTEN WITH NAMED LINES.
+   Hetzner declares every list as one `grid-template-columns` with named lines,
+   applies the IDENTICAL declaration to the header row and the data row so the
+   two cannot drift, and redefines only that one line per breakpoint — dropping
+   the lowest-priority column each time and giving its space to the name. Two
+   columns never drop at any width:
+
+     [state] 8px      the state, as a mark, so it is scannable at any density
+     [actions] 28px   one action, so a row is never a dead end
+
+   At 390px every list therefore lands on `[state] 8px [name] 1fr [actions]
+   28px` with no horizontal scroll, no wrapping and no per-screen phone markup.
+   Columns are DROPPED, never relabelled into "Label: value" — a stacked record
+   is a different, worse thing than a row.
+
+   CELLS DO NOT WRAP. `white-space: nowrap` plus `text-overflow: ellipsis` is
+   what makes the row height a constant, which is what makes the drops clean
+   and the list scannable. The one exception is a cell the sheet is already
+   forbidden from ellipsing — a DAG node's dependency list — and it is not in
+   a row. */
+.ctl-lines { display: flex; flex-direction: column; gap: var(--ctl-s1); }
+.ctl-line {
+  display: grid;
+  align-items: center;
+  gap: var(--ctl-s3);
+  min-height: var(--row-h);
+  padding: 4px var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  text-align: left;
+  transition: border-color var(--ctl-dur) ease;
+}
+.ctl-line:hover { border-color: var(--text-faint); }
+.ctl-line:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ctl-line > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The expanded half. Square at the top, because it joins the row above it;
+   its own radius at the bottom. The surface steps DOWN rather than up: the
+   detail is inside the row, not on top of it. */
+.ctl-line-body {
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--ctl-radius-sm) var(--ctl-radius-sm);
+  padding: var(--ctl-pad-chrome);
+  background: var(--surface-2);
+}
+/* A row whose detail is open keeps its own bottom corners square so the two
+   read as one object. */
+.ctl-line.is-open { border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0; }
 
 /* -------------------------------------------------------------------------- */
 /* Em dash: the absent measurement                                             */
@@ -3918,7 +4778,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin: 0 0 6px;
   padding: 8px 10px;
   max-height: 320px; overflow: auto;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  /* 6px, not 8px: 8 is not on the corner scale, and a well nested inside a
+     10px card takes the step below it. */
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text);
   /* Log lines are wrapped by the writer, not by us: re-wrapping a column of
      timestamps makes a continuation line indistinguishable from a new entry. */
