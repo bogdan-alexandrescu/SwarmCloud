@@ -17,6 +17,7 @@ import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
+import { isOverlay, nudgePane, trapTab } from './focus'
 import { useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { HelpScreen } from './HelpSection'
@@ -1017,6 +1018,9 @@ function AgentDrawer({
   const close = () => go('agents/running')
   const [width, setWidth] = useState(() => readPane(INSPECTOR))
   const dragging = useRef(false)
+  const panel = useRef<HTMLDivElement>(null)
+  /** The element that was focused when this opened. Where Escape puts you back. */
+  const opener = useRef<Element | null>(null)
 
   useEffect(() => {
     const root = document.documentElement
@@ -1025,6 +1029,55 @@ function AgentDrawer({
       root.style.removeProperty('--inspector-w')
     }
   }, [width])
+
+  /*
+   * FOCUS, ON THE WAY IN AND ON THE WAY OUT.
+   *
+   * WHAT WAS WRONG. This panel carried `role="dialog"` and no focus handling of
+   * any kind. Opening it from the keyboard left focus on the row behind it, so
+   * the next Tab walked the list the panel was covering; clicking the ✕
+   * unmounted the element that held focus, which puts `document.activeElement`
+   * back on `<body>` -- a reader who had tabbed forty rows down was returned to
+   * the top of the document with nothing said. That is the single worst
+   * keyboard defect on these screens, because the agent list is the screen
+   * people arrive on and the drawer is how they read one.
+   *
+   * THE ROW IS STILL THERE TO GO BACK TO, which is what makes the restore
+   * honest rather than a guess. The drawer is a SIBLING of `<main>` (see the
+   * shell above) and the route that opens it keeps `tab: 'running'`, so the
+   * list is never unmounted and the row node that was clicked is the same node
+   * after the drawer closes. Nothing has to be found again by id.
+   *
+   * WHY THE OPENER IS CAPTURED HERE AND NOT PASSED IN. The drawer is a ROUTE --
+   * a deep link, the breadcrumb, a workflow node and a row click all open it --
+   * so there is no single caller who could hand over "the thing you came from".
+   * `document.activeElement` at mount is the only answer that is right for all
+   * of them, and when it is `<body>` (a pasted link, a page load) the restore
+   * correctly does nothing.
+   *
+   * StrictMode double-invokes this in development: mount, cleanup, mount. The
+   * cleanup restores focus to the row, so the second mount captures the row
+   * again and the net effect is the same as a single pass.
+   */
+  useEffect(() => {
+    const el = panel.current
+    const came = document.activeElement
+    opener.current = came
+    // FOCUS MOVES IN ONLY WHEN THE PANEL COVERS THE LIST. Above 1100px this is
+    // a grid column beside the rows, and pulling focus off the row into a panel
+    // that did not obscure anything would be the mirror of the bug above.
+    if (el !== null && isOverlay(el)) el.focus()
+    return () => {
+      const back = opener.current
+      opener.current = null
+      if (back instanceof HTMLElement && back.isConnected && back !== document.body) {
+        back.focus()
+      }
+    }
+    // Once per open. `taskId` changing swaps the CONTENTS of an open drawer and
+    // must not re-capture an opener that is now inside the drawer itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!dragging.current) return
@@ -1039,12 +1092,59 @@ function AgentDrawer({
   }
 
   return (
-    <div className="drawer ctl-drawer" role="dialog" aria-label={`Agent ${taskId}`}>
+    <div
+      className="drawer ctl-drawer"
+      role="dialog"
+      aria-label={`Agent ${taskId}`}
+      ref={panel}
+      // -1, so the panel is a legal destination for `.focus()` when it opens
+      // over the list and is NOT a stop Tab lands on afterwards.
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          // An open help card inside the drawer stops Escape before it reaches
+          // here (see `HelpCard.tsx`), so the innermost open thing closes.
+          e.stopPropagation()
+          close()
+          return
+        }
+        // Only while it is an overlay. `trapTab` reads the computed position
+        // rather than a breakpoint repeated here; see `isOverlay`.
+        if (e.key === 'Tab' && panel.current !== null && isOverlay(panel.current)) {
+          trapTab(e, panel.current)
+        }
+      }}
+    >
       <div
         className="ctl-inspector-grip"
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize the inspector"
+        /*
+         * A CONTROL THE MOUSE COULD REACH AND THE KEYBOARD COULD NOT. This was
+         * four pointer handlers on a `<div>`: no `tabindex`, no key handling,
+         * so the inspector's width was adjustable only by dragging. The
+         * WAI-ARIA window-splitter pattern is a focusable separator that moves
+         * on the arrow keys and reports its position, which is what these
+         * three `aria-value*` attributes are for -- a separator that is a tab
+         * stop and does NOT report its value announces as an unlabelled
+         * landmark.
+         *
+         * LEFT WIDENS, because the inspector is anchored to the right edge:
+         * the handle moving left is the panel getting bigger, which is what
+         * the pointer drag already does.
+         */
+        tabIndex={0}
+        aria-valuenow={width}
+        aria-valuemin={INSPECTOR.min}
+        aria-valuemax={INSPECTOR.max}
+        onKeyDown={(e) => {
+          const next = nudgePane(width, e.key, INSPECTOR, 'ArrowLeft')
+          if (next === null) return
+          e.preventDefault()
+          setWidth(next)
+          writePane(INSPECTOR, next)
+        }}
         onPointerDown={(e) => {
           dragging.current = true
           e.currentTarget.setPointerCapture(e.pointerId)

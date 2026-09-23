@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useReducer, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { tabStops } from './focus'
 import { HELP, type TopicId } from './help'
 
 /**
@@ -468,8 +469,133 @@ export function HelpCardView({
   const values = t.values?.() ?? []
   const [anchorRef, placement] = useEdgeSafePlacement(state.open)
 
+  /*
+   * THE TAB BRIDGE, AND THE DEFECT THAT MADE IT NECESSARY.
+   *
+   * The card is PORTALLED to `document.body` so it can escape a stacking
+   * context -- that fixed nine cards which opened where nobody could read
+   * them. It also took the card OUT OF DOM ORDER, and DOM order IS tab order.
+   * The card carries one tab stop, the "Full explanation" link, and after the
+   * portal that link sits after every other control on the page: Tab from the
+   * `?` walked the whole rest of the screen before reaching the explanation
+   * belonging to the label the reader was standing on. Unpinned it was worse
+   * than out of order -- it was gone, because tabbing off the trigger blurs
+   * it, `blur` derives `open` as `pinned || hovered`, and the card the reader
+   * was tabbing towards closed underneath them.
+   *
+   * Nothing in CSS can fix that; tab order is the document's, not the box's.
+   * So the trigger bridges it: while the card is open, Tab moves focus to the
+   * card's first stop and PINS the card on the way, so the blur that follows
+   * cannot close it. Leaving the card in either direction returns focus to the
+   * `?` and dismisses -- which is one keystroke more than an inline card would
+   * cost going forwards, and is the price of the portal.
+   *
+   * `data-focus-return` on the card is not decoration. It names the trigger
+   * this card hands focus back to, and `src/__tests__/keyboard.test.tsx`
+   * asserts that EVERY tab stop living outside the app root sits inside an
+   * element carrying one, and that the id resolves to a real element. A future
+   * widget portalled to `<body>` without a bridge therefore fails the sweep by
+   * name rather than stranding its controls at the end of the document.
+   */
+  const triggerId = `${cardId}-t`
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const cardRef = useRef<HTMLSpanElement>(null)
+  /** Focus is inside the card, so a dismissal has somewhere to return it from. */
+  const inside = useRef(false)
+  /**
+   * Suppress exactly one `focus` on the trigger.
+   *
+   * WITHOUT THIS THE WIDGET IS THE TRAP IT WAS BUILT TO REMOVE. Returning
+   * focus to the `?` fires its `onFocus`, which dispatches `focus`, which
+   * reopens the card -- and the next Tab bridges straight back into it. The
+   * flag is cleared immediately after `.focus()` because `HTMLElement.focus()`
+   * dispatches synchronously in every engine and in jsdom, so it can never
+   * survive to swallow a genuine focus later.
+   */
+  const returning = useRef(false)
+  const wasOpen = useRef(false)
+
+  const focusTriggerSilently = () => {
+    const el = triggerRef.current
+    if (!el || el.ownerDocument.activeElement === el) return
+    returning.current = true
+    el.focus()
+    returning.current = false
+  }
+
+  const dismissToTrigger = () => {
+    inside.current = false
+    // The same event the trigger's own Escape sends, so there is one dismissal
+    // path rather than two that can disagree about `pinned`.
+    trigger.onKeyDown({ key: 'Escape' })
+    focusTriggerSilently()
+  }
+
+  /*
+   * A DISMISSAL THE CARD DID NOT INITIATE still has to bring focus back.
+   *
+   * Escape is caught by a listener on `document` while the card is pinned, and
+   * an outside click by a capturing `pointerdown` -- neither goes through the
+   * card. Both unmount a node that currently holds focus, and removing the
+   * focused node leaves `document.activeElement` on `<body>`: the reader is
+   * silently teleported to the top of the document. `inside` is still true at
+   * that point, because nothing fires `blur` for a node that was removed.
+   */
+  useEffect(() => {
+    if (wasOpen.current && !state.open && inside.current) {
+      inside.current = false
+      focusTriggerSilently()
+    }
+    wasOpen.current = state.open
+    // `focusTriggerSilently` closes over refs only, so it needs no dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.open])
+
+  const leaveCard = (e: {
+    key: string
+    shiftKey: boolean
+    currentTarget: EventTarget | null
+    preventDefault: () => void
+    stopPropagation: () => void
+  }) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      // ESCAPE CLOSES THE INNERMOST THING. These cards are rendered inside the
+      // agent drawer, which also closes on Escape -- one keystroke taking both
+      // away is a reader who dismissed a tooltip and lost the agent they were
+      // reading. Stopping here also stops the `document` listener
+      // `useHelpDisclosure` registers while pinned, which is correct: the
+      // dismissal below has already been sent.
+      e.stopPropagation()
+      dismissToTrigger()
+      return
+    }
+    if (e.key !== 'Tab' || cardRef.current === null) return
+    const stops = tabStops(cardRef.current)
+    const atFirst = stops[0] === e.currentTarget
+    const atLast = stops[stops.length - 1] === e.currentTarget
+    // With one stop in the card both are true, so both directions come back to
+    // the `?`. A card that grows a second control keeps natural Tab between
+    // them and only bridges at the edges.
+    if ((e.shiftKey && atFirst) || (!e.shiftKey && atLast)) {
+      e.preventDefault()
+      // The widget handled this key, so nothing above it should also act on
+      // it. These cards render inside the agent drawer, whose own Tab handler
+      // wraps focus at the drawer's edges -- and the `?` the card is about to
+      // hand focus back to may well BE one of those edges.
+      e.stopPropagation()
+      dismissToTrigger()
+    }
+  }
+
   const cardNode = (
-        <span id={cardId} role={helpRole(state)} style={{ ...CARD, ...placement }}>
+        <span
+          id={cardId}
+          role={helpRole(state)}
+          data-focus-return={triggerId}
+          style={{ ...CARD, ...placement }}
+          ref={cardRef}
+        >
           <strong style={CARD_TITLE}>{t.title}</strong>
           <span style={CARD_BODY}>{t.short}</span>
           {values.length > 0 && (
@@ -481,7 +607,17 @@ export function HelpCardView({
               ))}
             </ul>
           )}
-          <a href={`#${t.anchor}`} style={CARD_LINK}>
+          <a
+            href={`#${t.anchor}`}
+            style={CARD_LINK}
+            onFocus={() => {
+              inside.current = true
+            }}
+            onBlur={() => {
+              inside.current = false
+            }}
+            onKeyDown={leaveCard}
+          >
             Full explanation &rarr;
           </a>
         </span>
@@ -491,11 +627,40 @@ export function HelpCardView({
     <span style={WRAP} {...hover} ref={anchorRef}>
       <button
         type="button"
+        id={triggerId}
+        ref={triggerRef}
         style={GLYPH}
         aria-label={`What ${t.title.charAt(0).toLowerCase()}${t.title.slice(1)} means`}
         aria-expanded={state.open}
         aria-controls={state.open ? cardId : undefined}
         {...trigger}
+        onFocus={() => {
+          if (returning.current) return
+          trigger.onFocus()
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Tab' && !e.shiftKey && state.open && cardRef.current !== null) {
+            const first = tabStops(cardRef.current)[0]
+            if (first !== undefined) {
+              e.preventDefault()
+              // Handled here; see `leaveCard` for why nothing above may also
+              // act on this key.
+              e.stopPropagation()
+              // PIN BEFORE MOVING. The blur that `first.focus()` causes derives
+              // `open` as `pinned || hovered`, and a card opened by focus alone
+              // is neither -- so without this the card closes in the same tick
+              // as focus arrives inside it.
+              if (!state.pinned) trigger.onClick()
+              inside.current = true
+              first.focus()
+              return
+            }
+          }
+          // See `leaveCard`: Escape belongs to the innermost open thing, and
+          // these cards sit inside a drawer that also closes on Escape.
+          if (e.key === 'Escape' && state.open) e.stopPropagation()
+          trigger.onKeyDown(e)
+        }}
       >
         ?
       </button>

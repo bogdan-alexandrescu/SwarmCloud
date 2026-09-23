@@ -87,3 +87,28 @@ correctly produces identical pixels.
 | `honesty.screen.test.tsx` | `Screen` across loading / ok / empty / stale / error / admin_required |
 | `honesty.capacity.test.tsx` | The em-dash rule, the full blocker list, partial reads, counterfactual wording |
 | `honesty.counts.test.tsx` | No total over a partial response, both directions |
+| `keyboard.ts` | The keyboard probe: what a tab stop is, which sheet rules promise a control, which draw a focus ring |
+| `keyboard.test.tsx` | The keyboard sweep — every route's tab stops pressed, every `?` opened and dismissed, the drawer's trap and the help card's tab bridge |
+
+## The two sweeps, and why neither can replace the other
+
+`spacing.test.tsx` and `keyboard.test.tsx` both render all fifteen routes and
+both hold a floor on what they examined, for the same reason: this repository
+keeps producing checks that run over nothing and report zero problems. They
+measure different things and have different blind spots, and both blind spots
+are written down rather than implied.
+
+| | `spacing.test.tsx` | `keyboard.test.tsx` |
+|---|---|---|
+| reads | the computed box of every shape with geometry | every tab stop, and the sheet's own cursor and focus rules |
+| floor | `> 800` shapes examined | `> 420` tab stops, `> 25` help cards opened, every route ≥ 20 |
+| cannot see | overlap — jsdom has no layout engine | a React handler, layout, or Tab actually moving focus |
+
+The keyboard sweep's blind spot needs the most care when reading a green run.
+jsdom implements no sequential focus navigation, so a Tab keydown moves
+nothing. What the sweep measures instead is whether a handler **swallowed**
+that keydown — in this app the only way to change where Tab goes — and it holds
+the set of elements that do to a named list. "Tab order follows VISUAL order"
+is therefore NOT asserted anywhere; what is asserted is the two ways this app
+can break it, a positive `tabindex` and a portal. Overlap, reading order within
+a row, and `order` on a flex child need a real browser.
