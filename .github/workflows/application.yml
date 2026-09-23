@@ -203,7 +203,8 @@ jobs:
       - name: unit tests
         # No emulator, no credentials. The admission logic is pure so the
         # concurrency invariant can be tested exhaustively and fast.
-        run: uv run pytest tests/unit -q
+        # -n auto, for the reason the integration step below gives at length.
+        run: uv run pytest tests/unit -q -n auto
 
       - name: destroy-guard self-test
         # The guard is the only thing between `make destroy` and another team's
@@ -333,7 +334,21 @@ jobs:
           # pytest fails this step by itself in each of the three ways that
           # matter: exit 4 if the path does not exist, exit 5 if it collects
           # nothing, exit 1 if a test fails.
-          uv run pytest tests/integration -q
+          # PARALLEL, then the timing-sensitive few on their own.
+          #
+          # These cases drive the real shell scripts against a fake `curl` that
+          # is a Python script, so each of the ~600 requests a suite run makes
+          # pays ~42ms of interpreter startup -- ~31s per run, and this suite
+          # was 700 of `make test`'s 790 seconds before it was parallelised.
+          # The cases are independent and each works in its own tmp_path.
+          #
+          # The `serial` mark is not a flaky-test quarantine. It is two files
+          # whose assertions are ABOUT elapsed time -- one injects a 400ms delay
+          # and requires the gate to notice it, the other requires a process to
+          # still be running when it is looked at. Under -n they measure the
+          # runner's load instead of the thing they were written to measure.
+          uv run pytest tests/integration -q -n auto -m "not serial"
+          uv run pytest tests/integration -q -m serial
 
   manifests:
     name: kubernetes manifests
