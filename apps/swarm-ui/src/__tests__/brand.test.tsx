@@ -378,29 +378,42 @@ describe('B17: an identifier is never restyled', () => {
     // reason. The type scale fixed the inversion -- a panel title was drawn
     // smaller and fainter than its own rows -- so the heading is now
     // --t-title in --text and no longer uppercases anything. The precondition
-    // therefore moved to a rule that still DOES uppercase, in the next test;
-    // it did not get deleted, because a B17 assertion with nothing
+    // therefore moved to a rule that still DOES case-shift, in the next test
+    // (`.ctl-chip`, which the restraint pass moved from uppercase to
+    // lowercase); it did not get deleted, because a B17 assertion with nothing
     // transforming above it passes on an empty stylesheet.
     expect(getComputedStyle(heading!).textTransform).not.toBe('uppercase')
     style.remove()
   })
 
-  it('beats an uppercase ANCESTOR by inheritance, not by specificity', () => {
+  it('beats a case-shifting ANCESTOR by inheritance, not by specificity', () => {
     const style = withStyles()
-    // `.ctl-chip` is one of the rules that KEPT the uppercase treatment when
-    // §B4.1 dropped it from `.section > h2` -- chip text is exactly what
-    // --t-meta's 600/uppercase/tracking is for. So this is the live version of
-    // the case B17 was written for: an id inside something that case-shifts.
+    // WHAT MOVED, AND WHY THIS IS THE SAME TEST.
+    //
+    // `.ctl-chip` is still the live case-shifting ancestor B17 was written
+    // for; the restraint pass changed the DIRECTION of the shift, not its
+    // existence. The chip used to be UPPERCASE -- 600/13px/mono/tracked, the
+    // badge treatment -- and design-system.md §6.6 replaced that with Vercel's
+    // measured status idiom: a 10px dot and the state word at --t-body in
+    // --text, `text-transform: lowercase` so that the API's shouted
+    // `RUNNING` / `REAUTH_REQUIRED` render the way `.wf-state` already renders
+    // them on Workflows.
+    //
+    // So the precondition is re-pointed at `lowercase` rather than deleted,
+    // and the assertion it protects is UNCHANGED and now harder to satisfy:
+    // lowercase is the more dangerous direction for an identifier. An
+    // uppercased id still looks like an id someone shouted; a LOWERCASED one
+    // silently becomes a different string to anyone who retypes what they see.
     const { container } = render(
       <span className="ctl-chip">
-        running <span className="id">wf_audit_01</span>
+        RUNNING <span className="id">WF_AUDIT_01</span>
       </span>,
     )
     const chip = container.querySelector('.ctl-chip')!
     const id = container.querySelector('.id')!
-    // The ancestor really does uppercase, so the assertion below is not
+    // The ancestor really does case-shift, so the assertion below is not
     // passing on a stylesheet that failed to load.
-    expect(getComputedStyle(chip).textTransform).toBe('uppercase')
+    expect(getComputedStyle(chip).textTransform).toBe('lowercase')
     expect(getComputedStyle(id).textTransform).toBe('none')
     style.remove()
   })
@@ -412,8 +425,10 @@ describe('B17: an identifier is never restyled', () => {
         route <code>/v1/tasks</code>
       </span>,
     )
+    // `lowercase`, not `uppercase` -- see the note in the test above. The
+    // ancestor still transforms; a route literal still must not.
     expect(getComputedStyle(container.querySelector('.ctl-chip')!).textTransform).toBe(
-      'uppercase',
+      'lowercase',
     )
     expect(getComputedStyle(container.querySelector('code')!).textTransform).toBe('none')
     style.remove()

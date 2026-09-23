@@ -46,14 +46,38 @@ import HELP_SECTION from '../HelpSection.tsx?raw'
 import OVERVIEW from '../Overview.tsx?raw'
 import { describe, expect, it } from 'vitest'
 
-/** The six steps, with the line-height that is part of each one. */
+/**
+ * The six steps, with the line-height that is part of each one.
+ *
+ * WHAT MOVED IN THE RESTRAINT PASS, and why this array is the record of it.
+ * The owner's verdict on the shipped console was "the design looks almost
+ * cartoonish", and the measurement found the top of this ladder to be the
+ * largest single cause: `--t-figure` was 30px against a 14px body -- 2.14:1 --
+ * and the Overview painted EIGHT figures at that step above the fold.
+ *
+ * Measured against the five consoles the owner named as the target, that ratio
+ * has no precedent. Koyeb's shipped design system tops out at 24px on 14px
+ * body (1.71:1) and their Overview does not spend it on a number at all.
+ * Vercel -- the one reference that does put a figure on a tile -- draws it at
+ * roughly 1.1-1.25x its own label. Railway's project dashboard has no figure
+ * on it whatsoever. So:
+ *
+ *   --t-figure  30 -> 22   1.57:1 against body, inside the reference band
+ *   --t-title   20 -> 18   moved so the ladder keeps SIX DISTINCT steps: with
+ *                          figure at 20 this would have read 12/13/14/16/20/20,
+ *                          which is five steps wearing six names
+ *
+ * The floor, the count and the integer rule are unchanged, and the three tests
+ * below that enforce them were not touched -- only these two values moved.
+ * `--t-micro` through `--t-lead` are exactly as the owner set them.
+ */
 const SCALE: ReadonlyArray<readonly [string, string, string]> = [
   ['micro', '12px', '1.45'],
   ['meta', '13px', '1.45'],
   ['body', '14px', '1.50'],
   ['lead', '16px', '1.55'],
-  ['title', '20px', '1.30'],
-  ['figure', '30px', '1.10'],
+  ['title', '18px', '1.30'],
+  ['figure', '22px', '1.10'],
 ]
 
 /** The hard floor. Everything at 9.5, 10 and 10.5px moved UP to this. */

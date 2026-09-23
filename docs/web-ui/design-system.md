@@ -16,13 +16,20 @@ states, four status chips, three tab bars.** `AgentDetail.tsx:380` states the
 mechanism in its own comment — *"the `ctl-` block has no card primitive, so the
 box is inline"*. A screen invents a primitive when the system does not have one.
 
-**What it does not change.** The palette values, the two line weights, the six
-type steps, the four spacing steps and the corner scale were all measured
-against gates that still hold them (`test_ui_contrast.py`,
-`test_state_colour_discriminability.py`, `typescale.test.ts`, `spaceprobe.ts`).
-A design pass that re-derives them buys a different set of numbers and the same
-screens. Everything below either restates a decision that is already load-bearing
-or fills a hole the audit named.
+**What it does not change.** The palette values, the two line weights, the four
+spacing steps and the corner scale were all measured against gates that still
+hold them (`test_ui_contrast.py`, `test_state_colour_discriminability.py`,
+`typescale.test.ts`, `spaceprobe.ts`). A design pass that re-derives them buys a
+different set of numbers and the same screens. Everything below either restates
+a decision that is already load-bearing or fills a hole the audit named.
+
+**AMENDED BY §11, THE RESTRAINT PASS.** The owner's read of the shipped console
+was *"the design looks almost cartoonish"*, and the measurement found specific,
+countable causes rather than a general one. §11 is the record of what moved and
+why, and it amends §1.3, §2, §3.4, §5.3, §6.2, §6.4, §6.5 and §6.6 in place —
+each of those sections carries its own note. **Two of the six type steps moved**
+(the top two); the rest of the scale is still the owner's. Read §11.3 before
+planning the screen phase: it is the list of what this pass did *not* fix.
 
 ---
 
@@ -114,6 +121,30 @@ tones, two line weights, two elevations, one motion duration, four corner
 values.** Hetzner runs a 1,758-class console on one accent; that is what makes a
 dense screen still parse.
 
+**§11 added a count to the budget: the accent is spent once or twice per screen,
+not twenty-three times.** Counted on the live Overview, `--info` was painted 44
+times — 23 as text, 16 as chip borders, 5 as backgrounds — plus the whole of
+both dial rings. Against the reference set that is the single busiest thing
+about the screen: **Railway's docs page paints zero saturated text colours**
+(193 text elements in one muted grey, 18 in ink, and exactly one saturated
+background on the page — the primary button). **Geist's own site paints zero
+saturated text** and declares three text tones and no fourth. Northflank spends
+two hues on a whole page. Every one of the five spends its accent once or twice,
+on the primary action.
+
+**So a link is ink plus an underline, and the accent is what happens when you
+point at it** — `.ctl-link`. This is a *stronger* affordance than the blue was,
+not a weaker one: WCAG 1.4.1 says colour may not be the only channel, and a
+colour that is also the focus ring, the live-agent dot and a chart fill was
+already too overloaded to read as "clickable" on its own.
+
+`.ctl-link` ships as the primitive; **it is not yet universal and this document
+does not claim it is.** `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`,
+`.node-links a` and `.art-md a` are five screen-private link treatments that each
+paint `--info`, and folding them in means editing five screens — the screen
+phase's job. What §11 shipped is the primitive they collapse into, so the screen
+lanes cannot each invent a sixth answer.
+
 ### 1.4 The ink rule, and the trap under it
 
 Text on a tint of its own accent spends the margin the accent had against the
@@ -185,16 +216,38 @@ verdict.
 
 ## 2. Type
 
-**Unchanged. Six steps, set by the owner, not this document's to move.**
+**Six steps. The top two were retuned by the restraint pass (§11); the four
+below them are the owner's and are unchanged.**
 
 | Token | Size / leading | What it is |
 |---|---|---|
 | `--t-micro` | 12 / 1.45 | ages, raw ids, provenance, card feet. The hard floor. |
-| `--t-meta` | 13 / 1.45 | column heads, chips, eyebrows, state words — **a treatment as much as a size**: 600, uppercase, tracked |
-| `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, `body` itself |
+| `--t-meta` | 13 / 1.45 | column heads, eyebrows, uppercase labels — **a treatment as much as a size**: 600, uppercase, tracked. *No longer the chip: see §6.6.* |
+| `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, state words, `body` itself |
 | `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed** |
-| `--t-title` | 20 / 1.30 | the screen `<h1>` |
-| `--t-figure` | 30 / 1.10 | the one number a card exists for |
+| `--t-title` | **18** / 1.30 | the screen `<h1>`, at weight **600** |
+| `--t-figure` | **22** / 1.10 | the one number a card exists for |
+
+**Why the top two moved, and the count cap that matters more than either.**
+`--t-figure` was 30px — 2.14× body — and the Overview painted **eight** of them
+above the fold. Measured against the five consoles this document takes as its
+reference, that ratio has no precedent: Koyeb's entire shipped design system
+tops out at 24/14 = 1.71:1 and their Overview does not spend it on a number at
+all; Vercel — the only one of the five that puts a figure on a tile — draws it
+at roughly 1.1–1.25× its own label; Railway's project dashboard has no figure
+on it. 22/14 = 1.57:1 sits inside that band.
+
+`--t-title` moved 20 → 18 for a structural reason rather than a visual one: six
+steps have to stay six **distinct** steps, and 12/13/14/16/20/20 is five steps
+wearing six names. The h1 also drops from weight 650 to 600, because this
+section already said the ladder stops at 600 and the h1 was the one rule in the
+sheet that ignored it.
+
+**The cap is the real rule: one `--t-figure` per card, and one card per screen
+carries the screen's figure.** A smaller step used eight times still reads as a
+KPI wall. No reference screen shows its largest size more than once.
+`apps/swarm-ui/src/__tests__/typescale.test.ts` states the six values and was
+re-pointed, not worked around.
 
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use
@@ -278,8 +331,25 @@ permanently hidden from then on, on every visit, with nothing to indicate it.
 
 The old comment called the overlay deliberate. It is deliberate at 28px and a
 bug at 70vh: reserving the collapsed bar is a decision about a panel that opens
-and closes, not one that opens and stays. **This is the only screen-visible
-change in this pass**, and no gate could see it (§0.3).
+and closes, not one that opens and stays. No gate could see it (§0.3).
+
+**AMENDED BY §11, AND THE AMENDMENT IS THAT THIS IS STILL NOT FIXED.** The
+bottom padding reserves the dock's real height at the **end of the document**,
+which works: scrolled to the foot at 390×844 there is clearance and nothing sits
+under the bar. It does nothing at any **other** scroll position, because the
+dock is an opaque `--surface` bar at `z-index: 45` and therefore paints over
+whatever happens to rest at the viewport's bottom edge. Measured at
+`scrollY = 0`, the Overview had 2 occluded elements at 390px, 18 at 1024px and
+24 at 1280px.
+
+§11 added `scroll-padding-bottom: calc(var(--dock-h, 28px) + var(--ctl-s3))` on
+`html`, which is the part CSS can fix: an anchor jump, a `scrollIntoView` and
+keyboard tabbing now stop with the dock's height still clear instead of parking
+the element they just focused underneath it. **That is not the whole fix and
+this document does not pretend it is.** A fixed bar over a scrolling document
+always has content behind it at some offsets; the only complete answer is for
+the dock to be a row of the frame's grid rather than an overlay, which is a
+change to `Shell.tsx`.
 
 ---
 
@@ -342,12 +412,30 @@ separates by `--surface-2`. Both give the probe nothing to measure and read
 airier than the rule would have. `.is-ruled` variants exist for the one case
 that needs an edge — a chart whose plot has to start somewhere — at `--line`.
 
-### 5.3 Two elevations and no third
+### 5.3 Two elevations, and almost nothing takes the first one
+
+**Amended by the restraint pass (§11). `--ctl-shadow` came off `.ctl-card` and
+off `.ctl-metric`.**
 
 | Token | Value (light / dark) | What gets it |
 |---|---|---|
-| `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | a **raised surface**: a card, a tile, a panel on the page |
+| `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | **the DAG node, and nothing else by default.** A node has to read as sitting *on* a canvas the edges pass *under* — a genuine z-relationship. A card on a page does not. |
 | `--ctl-shadow-pop` | `0 8px 24px rgb(31 35 40 / .12)` / `0 8px 24px rgb(0 0 0 / .28)` | a surface **over** the page: the help card, a menu, a drawer edge |
+
+The count is the argument. The shipped Overview carried **16 shadowed elements
+on one screen**. Railway's docs page: 1. Northflank's: 1. Hetzner's: 2. Koyeb
+declares exactly one shadow in their whole design system — Tailwind's smallest,
+on `.card` only, and their toast sets `box-shadow: none` explicitly. Vercel's 7
+is a component gallery whose content *is* boxes, so it is the set's upper bound
+rather than its norm. Railway's console cards and Northflank's panels carry no
+shadow at all: **a step in the fill plus one 1px hairline is their whole
+separation mechanism, and it is now ours.**
+
+**A card inside a card draws no second box.** `.ctl-card .ctl-card` drops its
+border, its radius and its background. The audit counted cards nested two and
+three deep on Overview; none of the five references nests a bordered, rounded
+surface inside another one. Written on the primitive, because every screen that
+met this problem before solved it by inventing a fourth card.
 
 Everything else separates with a hairline or a step. Focus and selection are a
 ring, not a blur: `outline: 2px solid var(--info)` with an offset, which is the
@@ -401,16 +489,39 @@ are *when this was read, from how many sources, and how many did not answer*. A
 card whose figures all came from one read says so once here, instead of once per
 figure.
 
-### 6.2 Metric tile — `.ctl-metric` *(exists; unchanged)*
+### 6.2 Metric tile — `.ctl-metric` *(amended by §11: the tile lost its box)*
 
 One fact, its unit, and what it does not include. Label (`--t-meta`, mono,
 uppercase, `--text-faint`) → value (`--t-figure`) → `sub` → `foot`. **One
 `--t-figure` per tile; a second figure is a second tile.**
 
-States: `.is-absent` (dashed border, value drops to `--t-body` and becomes a
-phrase — nothing but a measured number gets the figure step), `.is-unread`
-(dashed + `--warn`), `.is-good` / `.is-alert` (a corner mark in the shape
-vocabulary, so tone is the second signal and not the only one).
+**A BOX ON A TILE NOW MEANS SOMETHING IS WRONG WITH THE NUMBER.** The default
+tile draws no border, no shadow and no radius of its own: a surface step on the
+page and `--ctl-s2` of air between tiles, which is how Northflank separates the
+rows inside a panel (no row rules at all) and how Railway separates its project
+cards. Measured, the shipped strip was five 226×113px boxes each carrying their
+own border, radius and drop shadow, to deliver five facts — about 570px of
+width and 113px of height for what Northflank's equivalent panel buys in
+fifteen.
+
+The border is **declared and transparent** rather than absent, for two
+load-bearing reasons: the absence states below carry their meaning *in* the
+border, and §14 of the sheet says a thing that is absent occupies the space it
+would have occupied — a border that appeared only on failure would move every
+tile beside it at the moment the strip most needs to hold still. The rule also
+becomes legible as a rule: **nothing healthy is boxed.**
+
+The `foot`'s `border-top` is gone too. It was `--line` — the *component
+boundary* weight — repeated five times across one strip, which is the inverted
+ratio the audit found (78 paints of `--line` against 18 of `--line-soft` on one
+screen). §5.2 already gave the answer: a rule with no twin is not promoted, it
+is not drawn.
+
+States: `.is-absent` (dashed border in `--ctl-absent`, value drops to `--t-body`
+and becomes a phrase — nothing but a measured number gets the figure step),
+`.is-unread` (dashed + `--warn`), `.is-good` / `.is-alert` (a corner mark in the
+shape vocabulary, so tone is the second signal and not the only one;
+`.is-alert` additionally paints the declared border solid in `--bad`).
 
 **The `sub` and `foot` lines are where Overview's 100 words of tile prose come
 from and the next phase deletes most of them.** A tile's `sub` may be a
@@ -435,12 +546,38 @@ The unit is demoted **inside** the figure rather than hoisted into a header,
 which deletes a column heading per card. `.ctl-figure.is-absent` drops to
 `--t-body` and `--ctl-absent`: at 30px, `not reported` reads as a quantity.
 
-### 6.4 Proportion — `.ctl-track` / `.ctl-util` *(exists; unchanged)*
+### 6.4 Proportion — `.ctl-track` / `.ctl-util` *(geometry unchanged; fill amended by §11)*
 
 One height (`--track-h` 8px), one radius (`--track-radius` 2px), one colour
-rule, one axis. **Every proportion in the product is this**; the audit found
-eight and this is the consolidation that already happened once and must not grow
-back.
+rule, one axis. **Every proportion in the product is this** — including
+`.ctl-dial`, as of §11; the audit found eight and this is the consolidation that
+already happened once and must not grow back.
+
+**THE GEOMETRY IS DELIBERATELY NOT TOUCHED.** 8px stays 8px. `.ctl-track.wf-meter`
+on Workflows is the same 8px track, and Workflows is the screen the owner named
+as already right; shrinking the token to 2px would have "fixed" the one screen
+that did not need fixing.
+
+**A UTILISATION BAR THAT IS FINE IS GREY. A HUE ON ONE IS A VERDICT.** The
+capacity rows shipped as a solid saturated block across 85 of 88px — the owner's
+*"chunky solid blocks, closer to a game health bar than to a utilisation
+meter"*. The height was only half of it: the other half was that a bar with
+nothing to report was painted in the accent, which §1.3 reserves for "a fact or
+a link, never a verdict". When every bar is coloured, none of them is saying
+anything by being coloured. So `.ctl-util-fill` defaults to `--text-dim`, and
+`.is-warn` / `.is-bad` / `.is-paused` keep their hue **and** their texture
+untouched — they are the one place on a proportion where colour earns its keep,
+and `test_state_colour_discriminability.py` holds the textures apart in
+greyscale.
+
+> **An open question for the owner, held open on purpose.** `.wf-meter`'s fill
+> carries `ctl-util-fill wf-meter-fill`, so the monochrome default reached
+> straight into the frozen screen and turned its 54px meter grey. It is exempted
+> back to `--info` by one line, because Workflows was explicitly frozen. That
+> leaves the product with **one blue proportion and every other proportion
+> grey**. Resolving the inconsistency means changing a screen the owner said not
+> to change, so it is recorded here rather than decided.
+
 
 Four track states, and they must not converge:
 
@@ -455,10 +592,26 @@ Fills carry a **texture** as well as a hue, because an 8px bar has no room for a
 glyph: flat (under), 45° stripes (`--warn`, approaching), vertical ticks
 (`--bad`, at it), wide back-diagonals (`--paused`, held).
 
-### 6.5 Dial — `.ctl-dial`
+### 6.5 The card's own proportion — `.ctl-dial` *(no longer a dial; §11)*
 
 The proportion that *is* the card, rather than one row of a list: headroom,
 quota, coverage.
+
+**IT IS NOT A RING ANY MORE, AND THE MEASUREMENT IS UNAMBIGUOUS.** Not one of
+Railway, Northflank, Koyeb, Vercel or Hetzner draws a ring anywhere. Across
+every console screenshot read for this pass there are exactly three encodings
+for a proportion: a line or area chart, a track behind or beside the number, or
+no graphic at all. What shipped was a 96px conic-gradient ring with a hard-coded
+10–11px band in saturated `--info`, two of them above the fold on the landing
+page. The owner's verdict named it: *"the dials are infographic"*.
+
+**It also could not hold its own label, and that was a defect rather than a
+taste question.** `37 % left` ran 78px inside a 74px inner circle — measured
+identically at 390, 414, 768, 1024, 1280, 1440 and 1920, so it was never a
+responsive bug. Three numbers had to agree and none referenced the other two:
+`--dial-size` set inline by a screen, an 11px ring literal in `styles.css`, and
+`--t-figure` in the token block. `spacing.test.tsx` could not see it — jsdom has
+no layout engine — which is why it shipped.
 
 ```html
 <div class="ctl-dial is-partial" style="--pct:57; --measured:40"
@@ -467,25 +620,89 @@ quota, coverage.
 </div>
 ```
 
-`conic-gradient` plus a radial mask. No dependency, both themes from one
-declaration, `--dial-size` for the size.
+**What replaces it is the product's own proportion**, at the geometry
+`.ctl-track` already uses everywhere else: the figure, and a `--track-h` track
+beneath it. Same height, same radius, same axis, same hatch, same four states.
+One proportion primitive in the product instead of two — the consolidation §6.4
+already asked for, to which the dial was the last exception.
 
-**The total is always drawn.** Hetzner paints the unfilled arc at full opacity
-in every meter they ship; a partial total then *looks* partial, because the
-unmeasured remainder is visibly present and visibly not filled. That is the
-invariant rendered rather than narrated.
+**The overflow fix is structural, not a tuned number.** The box is `max-content`
+around its label with `nowrap` on the figure, floored at `--dial-size`: the
+label defines the box instead of the box clipping the label, so the failure
+cannot recur at a width nobody measured.
+
+**The total is always drawn**, and the four states are unchanged in meaning —
+only their geometry is linear instead of angular:
 
 | State | Drawing |
 |---|---|
-| default | `--pct` filled in `--info`, the rest in `--surface-2` |
-| `.is-partial` | measured to `--measured` in `--info`, **hatched** from there — the hole in the total is drawn as a hole |
-| `.is-unknown` | the whole ring hatched, nothing filled. An empty ring reads as 0%, which is a claim |
-| `.is-zero` | empty, plus a tick at twelve o'clock in `--text-dim` — the same axis mark, meaning the same thing |
+| default | `--pct` filled in `--text-dim`, the rest `--surface-2`, the axis drawn at the origin |
+| `.is-partial` | filled to `--measured`, **hatched** from there — the hole in the total drawn as a hole |
+| `.is-unknown` | hatched, **no fill and no axis**. An empty track reads as 0%, which is a claim nobody made |
+| `.is-zero` | empty, axis drawn, plus the inset hairline `.ctl-util-track.is-zero` uses — the same mark, meaning the same thing |
 
-### 6.6 Status chip — `.ctl-chip` *(exists)* and the bare dot — `.ctl-dot` *(new)*
+The `aria-label` route to the sentence is the caller's and is unchanged.
 
-**The word is mandatory in a chip; the mark repeats it as a shape.** Seven
-silhouettes, and it is the same vocabulary wherever a state is drawn:
+**The name stays `.ctl-dial` in this pass**, and that is a scoping decision, not
+an oversight: renaming it means editing every screen that calls it, and §11 was
+the token layer only. **The screen phase renames it** — `.ctl-gauge` is the
+obvious candidate — in the same change that stops the screens calling it a dial.
+
+### 6.6 Status chip — `.ctl-chip` *(rebuilt by §11)* and the bare dot — `.ctl-dot`
+
+**A MARK AND A WORD. IT IS NOT A BADGE.**
+
+Measured, what shipped was 102×23px to say "running": a 1px border in
+`currentColor`, a 999px radius, 600-weight 13px mono, `.04em` tracking,
+UPPERCASE, and a dot. Four of them stacked in one card is 408px of chrome spent
+saying one word four times, and twelve pill radii on the Overview is as much of
+the owner's *"almost cartoonish"* as the numerals are.
+
+**Vercel is the precise answer, and it was measured in a browser rather than
+guessed at**, because Geist ships `StatusDot` as a documented component: a
+**10×10px solid circle, `border-width: 0`**, no ring and no tint, and beside it
+the state word in sentence case at **14px/400 in primary ink** — even "Error" is
+drawn in `#171717`. The hue never touches the word. Northflank agrees (a small
+glyph, then `Job succeeded` in plain sentence case, no border, no fill). So does
+Koyeb, whose one pill-shaped element is *metadata* in a grey hairline outline —
+which is how they keep a pill from meaning "status". So does Railway (a 6px
+legend dot and the row's own ink).
+
+So the chip is now:
+
+| | Shipped before | Now |
+|---|---|---|
+| border | 1px `currentColor` | none |
+| radius | 999px | none |
+| face | mono, 600, 13px | **sans, 500, `--t-body`** |
+| case | UPPERCASE + `.04em` | `lowercase`, no tracking |
+| the word | in the state hue | **`--text`, full ink** |
+| the mark | 7px disc in `currentColor` | **10px, hued by `--chip-tone`** |
+
+`lowercase` rather than sentence case because the states arrive from the API
+already shouting (`RUNNING`, `REAUTH_REQUIRED`), and lowercase is what
+`.wf-state` already renders on Workflows — the one screen the owner named as
+already correct. Matching it is the point. The face is sans because §2 says mono
+means *"an identifier or chrome"* and sans at full strength means *"this is the
+datum"*: a state word is a **name** (§8.5, kind 1), not an id.
+
+**This strengthens the honesty invariant rather than spending it**, and that is
+worth stating plainly because the change looks like a removal. Before: colour on
+the word, colour on the border, a shape on the dot. After: **the word at full
+ink**, legible and no longer competing with the datum beside it, and the shape
+vocabulary untouched. Nothing that carried information was removed — what went
+was a duplicate of the tone channel (the border) and three typographic
+amplifiers (case, weight, tracking).
+
+**The tone moved off `color` and onto `--chip-tone`**, which is what lets the
+word be `--text` while the mark stays hued. Every read of it carries a fallback,
+for the reason `.ctl-dial` gives at length: `spaceprobe.ts` resolves the sheet
+against `:root` alone and throws on a `var()` it cannot find there.
+
+**The word is mandatory; the mark repeats it as a shape.** Seven silhouettes,
+and it is the same vocabulary wherever a state is drawn —
+`test_every_chip_state_has_its_own_silhouette` holds them apart and was not
+touched:
 
 | State | Mark | Meaning |
 |---|---|---|
@@ -498,7 +715,7 @@ silhouettes, and it is the same vocabulary wherever a state is drawn:
 | underived | ring with a bar through it | the state exists; nobody computed it |
 | live | disc with a halo | a dot that is broadcasting |
 
-`.ctl-dot` is that mark **without** the pill, for a table cell, a DAG node or a
+`.ctl-dot` is that mark **without** the chip, for a table cell, a DAG node or a
 dense row — which is why there were four state chips: there was no way to get
 the mark alone.
 
@@ -511,6 +728,15 @@ nobody can ask about.
 
 `.ctl-chip.is-live` is the only motion on a data screen, and it carries a halo
 so that `prefers-reduced-motion` cannot make it identical to `is-ok`.
+
+**One duplicate survives this pass and it is a screen's, not the primitive's.**
+`Overview.tsx:1452` renders `{stateGlyph(task.state)} {task.state}` *inside* the
+chip, next to the `<i>` — a second shape encoding of the same fact, and unlike
+`Agents.tsx:350` and `AgentDetail.tsx:481` it is **not** `aria-hidden`, so a
+screen reader announces a bare `●` before the word. The pill was hiding it;
+without the pill it is plainly two dots. Deleting that one expression is the
+screen phase's first job and is the last piece of the owner's *"decorative
+double dot"*.
 
 ### 6.7 Data table — `.ctl-table` *(exists; unchanged)*
 
@@ -872,3 +1098,114 @@ otherwise. The deployed console therefore shows the loudest possible badge on
 every visit. The fix is one flag on the build — `VITE_SWARM_ENV=dev npm run
 build` — and the build lives in `scripts/` and `.github/`, which is Track D.
 Reported, not made.
+
+---
+
+## 11. The restraint pass — what changed, and why
+
+**The owner's verdict, verbatim:** *"the design looks almost cartoonish...
+please run a whole design workflow and completely revamp the current UI
+design"*.
+
+They named the reference set themselves: **Railway, Northflank, Koyeb, Vercel,
+Hetzner.** Every one of those is restrained and dense — near-monochrome, small
+type, hairline separation, colour reserved for status, numerals modest. This
+section records what the measurement found, what moved in response, and — at
+the end, because it is the part that gets skipped — what did **not** get fixed.
+
+**This pass is the token layer only.** No screen was restyled. That is
+deliberate: the previous eight attempts at this each invented their own card,
+their own bar and their own answer to the same question, and the fix for that is
+that the whole app moves when the tokens move. Everything below is in
+`apps/swarm-ui/src/styles.css` and in this document.
+
+### 11.1 What the measurement found
+
+Both audits are quoted by count rather than by adjective, because "cartoonish"
+is not actionable and 16 shadows on one screen is.
+
+| | Ours, shipped | The reference band |
+|---|---|---|
+| figure : body | **2.14:1**, painted **8×** above the fold | Koyeb's system maximum 1.71:1, never on a tile; Vercel's tile ~1.2:1; Railway's dashboard has none |
+| bordered elements, one screen | **54** | Railway 10 · Hetzner 17 · Northflank 20 · Geist 46 (a component gallery) |
+| shadowed elements | **16** | Railway 1 · Northflank 1 · Hetzner 2 · Koyeb 1 |
+| pill radii | **19** | Koyeb: pills are *metadata*, never status |
+| a status, drawn | **102×23px** pill: border, 999px radius, 13px mono 600 UPPERCASE tracked, + a dot, + a second dot | Vercel: a 10×10px solid dot and the word at 14px/400 in **primary ink** |
+| a proportion that is a card | a **96px conic ring**, 10–11px band, saturated `--info`, ×2 | **none of the five draws a ring anywhere** |
+| `--info` paints | **44** (23 text, 16 border, 5 background) | Railway 0 saturated text · Geist 0 · Northflank 2 hues total |
+
+### 11.2 What moved
+
+1. **`--t-figure` 30 → 22, `--t-title` 20 → 18, h1 weight 650 → 600.** Six
+   integer steps, the 12px floor respected, `typescale.test.ts` re-pointed.
+   §2.
+2. **The dial stopped being a ring** and became the product's own track. This
+   also fixes the `37 % left` overflow *at its cause* rather than by tuning a
+   number — the box is now `max-content` around the label. §6.5.
+3. **The chip became a dot and a word**, at Vercel's measured geometry, with the
+   word at full ink and the seven silhouettes intact. §6.6.
+4. **The metric tile lost its box.** A visible border on a tile now *means*
+   something: nothing healthy is boxed. §6.2.
+5. **`--ctl-shadow` came off the card and the tile**, and a card inside a card
+   draws no second box. §5.3.
+6. **A proportion that is fine is grey**; a hue on a bar is a verdict. §6.4.
+7. **A link is ink plus an underline** (`.ctl-link`); the accent is the hover
+   and the focus ring. §1.3.
+8. **`scroll-padding-bottom`** on the scroller, so a programmatic scroll does
+   not park the thing it just focused under the dock. §3.4.
+
+Measured on the Overview at 1440×900, before → after: **bordered 54 → 41,
+shadowed 16 → 6, pill radii 19 → 13, 10px radii 10 → 5, largest type 30px → 22px,
+document height 1127 → 1112px.**
+
+### 11.3 What this pass did NOT fix
+
+Stated here rather than discovered at 3am.
+
+* **The dock still overlays resting content.** `scroll-padding-bottom` fixes
+  programmatic scrolls; it does nothing for an element that simply *sits* at the
+  viewport's bottom edge, because the dock is an opaque `position: fixed` bar at
+  `z-index: 45`. Occlusion at `scrollY = 0`, measured before → after: 390px
+  2 → 2, 1024px 18 → 9, 1280px 24 → 10, 1440px 3 → 2. The specific collision the
+  owner screenshotted is gone only because the 96px ring that was sitting there
+  is gone. **The complete fix is for the dock to be a row of the frame's grid
+  rather than an overlay**, which is `Shell.tsx` and belongs to the frame.
+* **Overview's spend bar is still four saturated hues in one 8px rule** with the
+  legend on the line below carrying no swatch. `.ov-mix` and `.ov-s1..4` live in
+  `Overview.tsx`'s injected sheet. Screen phase: either one hue with the four
+  numbers beneath, or keep the four and put the swatch *on* the word — the rule
+  all five references hold is that **a hue on a chart is a named series labelled
+  next to it**.
+* **18 accent-coloured links remain on the Overview** (`.ov-link`). `.ctl-link`
+  exists for them to collapse into; the collapse is five screen edits.
+* **The `?` glyphs are pills** — 15 of them on Accounts, 5 on Overview — and they
+  come from `HelpCard.tsx` / `HelpSection.tsx` React inline styles, not from this
+  sheet.
+* **`Overview.tsx:1452`'s second state glyph**, which the pill was hiding. §6.6.
+* **Accounts and Pools were not reached.** They are worse than Overview on the
+  box axis (Accounts: 87 full boxes, 128 bordered; Pools: 186 bordered, 47 pill
+  radii) and the owner only screenshotted Accounts. Their state pills are
+  screen-private classes, so the chip rebuild did not reach them.
+
+### 11.4 What must not be "improved"
+
+**`#agents/workflows` is the internal reference and stays untouched.** Measured,
+it is already the target — 13 boxes, 1 shadow, 11 colours, zero type at or above
+24px, state as a plain lowercase word beside an 8px dot, a 37px row carrying ten
+facts. The DAG, the collapsed one-line row and the absence of a mini-map on that
+row are settled owner decisions. The one line in `styles.css` that exempts
+`.wf-meter-fill` from the monochrome default exists to keep that promise, and
+§6.4 records the inconsistency it leaves rather than hiding it.
+
+### 11.5 What no gate can see, and how each claim here was proved
+
+`spacing.test.tsx` renders into jsdom with a hand-written CSS resolver
+(`spaceprobe.ts:12`) and **has no layout engine**. It cannot see overlap,
+overflow or wrapping — which is exactly why the dock overlap and the dial-label
+overflow were both green while both were shipping.
+
+So every claim in §11.2 and §11.3 about overlap, overflow or visual weight was
+proved with a **viewport-relative DOM measurement and a screenshot that was
+read**, at 1440×900 and 390×844, before and after. A full-page capture is not
+evidence for a `position: fixed` dock: it paints the bar at its scroll position
+and will mislead you.
