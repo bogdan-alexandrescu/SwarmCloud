@@ -43,8 +43,28 @@ test('the bare #help route reaches the Help section', () => {
   assert.equal(r.tab, '')
 })
 
+/**
+ * `work/running`, NOT `agents/running`, AND THE CHANGE IS THE POINT OF THE
+ * RENAME RATHER THAN A CONCESSION TO IT.
+ *
+ * This list is of CANONICAL spellings -- hashes the address bar is left showing
+ * unchanged. `agents` stopped being one when the section became `work`: it is a
+ * key of `SECTION_ALIASES` now, so `#agents/running` resolves (a link saved in a
+ * runbook still lands) and is then rewritten to `#work/running`, which is
+ * exactly what an alias is for. Asserting that it round-trips UNCHANGED asserts
+ * that the alias is a second permanent name, which is the defect
+ * `INTERNAL_LINKS_MAY_NOT_USE_ALIASES` exists to prevent.
+ *
+ * The alias's own behaviour is not lost by this edit -- `adding Help did not
+ * capture anything that was not Help` below still drives `#agents/running`
+ * through `fromHash` and checks where it lands.
+ *
+ * This assertion has been red since the rename landed, on every branch cut from
+ * it. Fixed here by the overflow lane because it was red in front of that
+ * lane's own gate; it is the nav rename's debt, not that lane's work.
+ */
 test('a route round-trips through its canonical spelling', () => {
-  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'agents/running']) {
+  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'work/running']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)
   }
