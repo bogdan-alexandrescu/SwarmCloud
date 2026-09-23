@@ -190,6 +190,50 @@ def test_the_dispatch_reply_points_at_the_tool_before_the_terminal():
     )
 
 
+#: `swarm` subcommands that change something -- the control plane, or the
+#: operator's own files. Named rather than derived because "does this write" is
+#: not a property argparse knows, and a guess in either direction here is worse
+#: than a list somebody has to update: too narrow and the read-only skill gains
+#: a write, too broad and a harmless view gets refused.
+_WRITING_SUBCOMMANDS = frozenset(
+    {
+        "dispatch",        # spends the shared pool
+        "apply",           # writes into the operator's working tree
+        "integrate",       # moves the operator's branch
+        "cancel",          # stops running work
+        "workflow",        # spends the shared pool, N steps at a time
+        "workflow-cancel",
+        "init",            # writes .env
+    }
+)
+
+
+def test_the_read_only_skill_never_gains_a_command_that_writes():
+    """`sc`'s own text promises it "never writes, never refreshes a credential
+    and never cancels anything, so it is always safe to run".
+
+    `test_plugin_skills` already checks that promise for MCP tools. It cannot
+    see the Bash rules, and the `sc` skill carries three of them -- so the
+    cheapest way to break the promise is to add a fourth. A permission is the
+    right place to enforce a safety claim, so both halves are checked.
+
+    THE MUTATION THIS CATCHES: add `Bash(uv run swarm dispatch:*)` to
+    `plugin/skills/sc/SKILL.md` and this goes red, while every other test in the
+    suite stays green.
+    """
+    text = (_PLUGIN / "skills" / "sc" / "SKILL.md").read_text()
+    granted = _commands_named(text)
+    writes = sorted(
+        " ".join(words)
+        for words in granted
+        if words and words[0] in _PARSERS and len(words) > 1
+        and words[1] in _WRITING_SUBCOMMANDS
+    )
+    assert not writes, (
+        f"the read-only skill is allowed to run commands that write: {writes}"
+    )
+
+
 def test_the_plugin_is_installable_at_all():
     """WITHOUT THIS FILE NONE OF THE REST OF THE PLUGIN IS REACHABLE.
 
