@@ -262,5 +262,11 @@ def test_every_route_is_covered() -> None:
     assert len({r[0] for r in ROUTES}) == len(ROUTES), "a route is listed twice"
     # The panes the redesign note names, so a section silently losing its tabs
     # is a failure here and not a shorter table nobody looks at.
-    for expected in ("overview/now", "pools/pools", "history/timeline", "admin/limits"):
+    # ONE ROUTE FROM EACH OF FOUR SECTIONS, as a floor under the parse: a regex
+    # that silently matched nothing would make every assertion in this file
+    # vacuous, and this repository has shipped exactly that more than once.
+    # `pools/pools` was here and is now `capacity/pools` -- the section was
+    # renamed because it was named after its own first tab and the rail drew
+    # `Pools > Pools`.
+    for expected in ("overview/now", "capacity/pools", "history/timeline", "admin/limits"):
         assert expected in {r[0] for r in ROUTES}, f"{expected} is not in the route table"

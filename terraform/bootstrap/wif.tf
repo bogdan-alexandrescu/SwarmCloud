@@ -76,6 +76,7 @@ resource "google_iam_workload_identity_pool" "github" {
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
+  # checkov:skip=CKV_GCP_125:The pin this check looks for IS present -- `local.sub_condition` below composes `assertion.sub == "repo:<owner>/<name>:ref:<ref>"` for every allowed ref -- but checkov reads `attribute_condition` as written text and does not resolve a `join()` over a `for` comprehension, so it sees `${local.sub_condition}` and reports the pin as absent. The property is gated instead in tests/terraform/bootstrap.tftest.hcl, against the RENDERED condition, where terraform has evaluated the local: it asserts the sub clause is present for the allowed ref AND that the condition never contains `refs/pull/`. That is strictly more than this check tests, and it is run by `make test` and by the terraform workflow.
   count = local.wif_enabled
 
   project                            = var.project_id
