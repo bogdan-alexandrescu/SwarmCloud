@@ -22,8 +22,11 @@
 import {
   TERMINAL_STATES,
   formatDuration,
+  stateTone,
+  stepState,
   type StepState,
   type Task,
+  type Tone,
   type WorkflowStep,
   usageOf,
 } from './types'
@@ -422,6 +425,144 @@ export const LEVEL_GAP = 56
 export const SIB_GAP = 28
 export const PAD = 10
 
+// ---------------------------------------------------------------------------
+// Stage collapsing -- the transpose's unpaid bill
+// ---------------------------------------------------------------------------
+//
+// THE TRANSPOSE IS CORRECT AND IT DID NOT FIX THIS. Levels run down and the
+// steps of one level run across, which is what the owner asked for and what the
+// comments above argue for at length. The cost that argument names -- "a wide
+// fan-out now pushes the canvas sideways ... width is the axis that gives" --
+// was accepted on the assumption that a fan is a handful of steps. Measured on
+// a live 30-step run (`wf_7e2ee6c3075d43228e5a`, widest stage 13 steps):
+//
+//   canvas                            1776 x 4134 px
+//   visible wrapper                   1138 px
+//   nodes clipped                     17 of 30
+//   nodes fully off-screen            4
+//   vertical scroll for one workflow  4.6 screen-heights
+//
+// Thirteen nodes at NODE_W is 3,560px of band. There is no monitor that fits
+// it and no amount of scrolling that makes a graph you cannot see at once into
+// a graph. Scaling is still refused for the reason the header gives -- a node
+// scaled to fit is texture, not a node -- so the thing that has to give is
+// HOW MANY NODES ARE DRAWN AT ALL.
+//
+// So a stage wider than the column is drawn as ONE BAND that says what is in
+// it by state, and expands to the full row on click. The graph then keeps the
+// SHAPE of the workflow (1 -> 13 -> 1 reads as a fan and a join at a glance)
+// instead of the shape of its widest moment.
+
+/**
+ * How much horizontal room the canvas element actually gets, in CSS pixels.
+ *
+ * MEASURED, NOT CHOSEN. 1138px is the width of `.wf-canvas-wrap`'s client box
+ * at the 1440x900 viewport the overflow inventory was taken at
+ * (docs/audits/2026-09-23/overflow-inventory.md). Out of that the graph pays:
+ *
+ *   .wf-canvas-wrap client width ............. 1138
+ *   - .wf-levels, the sticky level rail ......   72
+ *   - .wf-graph's `gap: var(--ctl-s3)` .......   12
+ *                                             ----
+ *   .wf-canvas ................................ 1054
+ *
+ * IT IS A REFERENCE, NOT A MAXIMUM. The wrapper is fluid -- `main.work` has no
+ * max-width, which is the whole point of B19 -- so a 1920 monitor gives the
+ * canvas more and a phone gives it far less. A threshold has to be one number,
+ * and the honest one is the width of the laptop the product is actually used
+ * on and the audit was actually measured at. Above it nothing is lost: the
+ * bands are still there and still expand. Below it the canvas scrolls, exactly
+ * as it does today.
+ *
+ * THE 72 AND THE 12 ARE IN styles.css AND MUST STAY IN STEP. `.wf-levels`
+ * declares `width: 72px` and `.wf-graph` declares `gap: var(--ctl-s3)`; widen
+ * either and this figure is wrong in the direction that clips.
+ */
+export const CANVAS_COLUMN = 1054
+
+/**
+ * The widest stage that is drawn as real nodes, in steps.
+ *
+ * DERIVED FROM THE NODE AND THE COLUMN, so it cannot go stale the way
+ * DEP_CHARS_PER_LINE did when NODE_W moved: a stage of `n` occupies
+ * `n * NODE_W + (n - 1) * SIB_GAP`, the canvas spends `PAD` on each side, and
+ * this is the largest `n` that still fits `CANVAS_COLUMN`. At NODE_W 248 and
+ * SIB_GAP 28 that is
+ *
+ *   floor((1054 - 20 + 28) / (248 + 28)) = floor(1062 / 276) = 3
+ *
+ * -- and the fourth node of a stage is 66px past the right edge of the
+ * wrapper, which is why the audit found 17 of 30 nodes clipped rather than
+ * only the 13-wide stage's. FOUR IS ALREADY TOO WIDE; that is a measurement,
+ * not a preference, and it is the reason this number is computed here instead
+ * of being written down as a taste.
+ *
+ * Floored at 1: a threshold of 0 would collapse a chain, whose whole property
+ * is that it fits anything.
+ */
+export const STAGE_FITS = Math.max(
+  1,
+  Math.floor((CANVAS_COLUMN - PAD * 2 + SIB_GAP) / (NODE_W + SIB_GAP)),
+)
+
+/** Whether this stage is wide enough to be drawn as a band. */
+export function stageIsWide(stepCount: number): boolean {
+  return stepCount > STAGE_FITS
+}
+
+/**
+ * The band's height, summed from the rows it declares rather than guessed --
+ * the same discipline NODE_H had to be rewritten to, after 244 turned out to
+ * be three pixels short of what `.node` rendered.
+ *
+ * Against the `.wf-band` rule in styles.css:
+ *
+ *   padding var(--ctl-s3) top + bottom ......... 24
+ *   border 1px top + 1px bottom ................  2
+ *   one line at --t-meta / --lh-meta (13 x 1.45) 18.85
+ *                                              -----
+ *                                               44.85
+ *
+ * 45 is that, rounded up by the pixel the fractional line box needs. It also
+ * clears the 44px touch target design-system.md §7.2 asks of a control, which
+ * is not a coincidence -- `--ctl-s3` was chosen over `--ctl-s2` for exactly
+ * that, and a smaller step here would put a tappable summary under the floor.
+ *
+ * THE COUNTS DO NOT WRAP, so this height does not depend on how many states a
+ * stage happens to be in. `.wf-band-counts` is `nowrap` with `overflow:
+ * hidden`, and `stageCensus` orders failures first so the count that may not
+ * be lost is never the one clipped. The complete census is the band's
+ * accessible name either way.
+ */
+export const BAND_H = 45
+
+/**
+ * The gap between a band and the nodes it heads, when the stage is expanded.
+ *
+ * `--ctl-s3`, NOT `LEVEL_GAP`. A band and the stage under it are ONE subject --
+ * the band is that stage's heading -- and LEVEL_GAP is reserved for the one
+ * distance on this canvas a reader parses as "and then". Spending the level
+ * break here would make an expanded stage read as two levels.
+ */
+export const BAND_GAP = 12
+
+/**
+ * The narrowest a band is drawn, and why the canvas width stops depending on
+ * which stages happen to be collapsed.
+ *
+ * It is `levelWidth(STAGE_FITS)` -- the widest a stage can be while still
+ * being drawn as nodes. Take it and two properties fall out for free:
+ *
+ *  * a collapsed stage never makes the canvas wider than an uncollapsed one
+ *    already could, so the canvas with every wide stage collapsed is exactly
+ *    `PAD * 2 + levelWidth(STAGE_FITS)` = 820px, inside CANVAS_COLUMN with
+ *    234px to spare;
+ *  * the band spans the full width of the canvas rather than floating at some
+ *    fraction of it, so it reads as a band across the flow instead of as an
+ *    unusually wide node.
+ */
+export const BAND_MIN_W = NODE_W * STAGE_FITS + SIB_GAP * (STAGE_FITS - 1)
+
 export interface DagNode {
   /** This node's rendered height, from `heightOf`. */
   readonly h: number
@@ -443,18 +584,82 @@ export interface DagEdge {
   readonly y2: number
 }
 
+/**
+ * A stage drawn as one band instead of as its steps.
+ *
+ * It carries its STEPS, not a count, because the band's census is computed from
+ * the same step objects the nodes would have been drawn from -- one source, so
+ * "13 steps · 8 running" and the thirteen nodes behind it cannot come apart.
+ */
+export interface DagBand {
+  readonly level: number
+  readonly steps: readonly WorkflowStep[]
+  /** True when the reader has opened this stage, so its nodes are drawn too. */
+  readonly expanded: boolean
+  readonly x: number
+  readonly y: number
+  readonly w: number
+  readonly h: number
+}
+
 export interface DagLayout {
   readonly nodes: readonly DagNode[]
   readonly edges: readonly DagEdge[]
+  /**
+   * One per WIDE stage, collapsed or not. A wide stage keeps its band when it
+   * is expanded: the band is the only control that collapses it again, and on
+   * a 13-wide stage the census is the only thing on screen that says what the
+   * part you have scrolled away from is doing.
+   */
+  readonly bands: readonly DagBand[]
+  /**
+   * The top of each level's band, in canvas coordinates.
+   *
+   * IT IS PUBLISHED RATHER THAN RE-DERIVED. `Workflows.tsx` used to recover it
+   * with `layout.nodes.find((n) => n.level === i)?.y`, which was already a
+   * workaround for the recomputation that drifted before it -- and it returns
+   * the wrong answer twice over now: a collapsed level has no nodes at all, and
+   * an expanded wide level's nodes sit BAND_H + BAND_GAP below the level's own
+   * top. A caption one band off the level it names is worse than no caption.
+   */
+  readonly levelTop: readonly number[]
   readonly width: number
   readonly height: number
   readonly levels: readonly (readonly WorkflowStep[])[]
 }
 
-export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
+/** No stage opened. Hoisted so the default argument is not a fresh allocation
+ *  on every render of every graph. */
+const NO_STAGES_OPEN: ReadonlySet<number> = new Set<number>()
+
+/**
+ * Where every node, band and edge goes.
+ *
+ * `expandedStages` holds the LEVEL INDEXES the reader has opened. It is a
+ * parameter rather than state in here for the same reason `now` is: this file
+ * is pure, and the expansion has to survive a re-render anyway, so it is owned
+ * by `WorkflowsScreen` above the `key` that the stop-and-reload bumps. A stage
+ * that re-collapsed under the reader every poll would be worse than no
+ * collapsing at all.
+ *
+ * Passing nothing draws what this function drew before stage collapsing
+ * existed for every workflow whose stages all fit, which is most of them.
+ */
+export function layoutOf(
+  steps: readonly WorkflowStep[],
+  expandedStages: ReadonlySet<number> = NO_STAGES_OPEN,
+): DagLayout {
   const levels = levelsOf(steps)
   if (levels.length === 0) {
-    return { nodes: [], edges: [], width: PAD * 2, height: PAD * 2, levels }
+    return {
+      nodes: [],
+      edges: [],
+      bands: [],
+      levelTop: [],
+      width: PAD * 2,
+      height: PAD * 2,
+      levels,
+    }
   }
 
   // ONE HEIGHT PER LEVEL, AND THIS IS WHAT THE TRANSPOSE CHANGED.
@@ -477,21 +682,44 @@ export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
   // reason: the layout positions nodes absolutely, so a node taller than the
   // figure the layout used overlaps its neighbour, and two cards side by side
   // on one band with different heights read as two different kinds of thing.
-  const levelH = levels.map((l) => Math.max(NODE_H, ...l.map(heightOf)))
+  //
+  // A WIDE STAGE PAYS FOR ITS BAND ON TOP OF ITS NODES, not instead of them.
+  // Collapsed it is BAND_H and nothing else. Expanded it is the band, the
+  // BAND_GAP under it and then the nodes, because the band is the stage's
+  // heading and the only control that closes it again.
+  const wide = levels.map((l) => stageIsWide(l.length))
+  const open = (lvl: number) => wide[lvl] === true && expandedStages.has(lvl)
+  const nodesH = (l: readonly WorkflowStep[]) => Math.max(NODE_H, ...l.map(heightOf))
+  const levelH = levels.map((l, i) => {
+    if (!wide[i]) return nodesH(l)
+    return open(i) ? BAND_H + BAND_GAP + nodesH(l) : BAND_H
+  })
   // The top of each band: every band above it, plus a gap per boundary.
   const levelTop: number[] = []
   for (let i = 0, y = PAD; i < levels.length; i++) {
     levelTop.push(y)
     y += levelH[i]! + LEVEL_GAP
   }
+  /** Where a level's NODES start, which is below its band when it has one. */
+  const nodesTop = (lvl: number) => levelTop[lvl]! + (wide[lvl] ? BAND_H + BAND_GAP : 0)
 
   // The width a level occupies: its steps side by side. Every node is NODE_W,
   // so this is arithmetic rather than a measurement.
   const levelWidth = (n: number) => n * NODE_W + Math.max(0, n - 1) * SIB_GAP
-  const widest = Math.max(...levels.map((l) => levelWidth(l.length)))
+  // A COLLAPSED STAGE CONTRIBUTES BAND_MIN_W, NOT ITS STEP COUNT. That is the
+  // whole mechanism: the widest level of a 1 -> 13 -> 1 workflow stops being
+  // 3,560px and becomes 800px, which fits CANVAS_COLUMN with room to spare.
+  // An OPEN stage contributes its real width again and the canvas scrolls,
+  // which is the behaviour that shipped and which opening a band asks for.
+  const widest = Math.max(
+    ...levels.map((l, i) => (wide[i] && !open(i) ? BAND_MIN_W : levelWidth(l.length))),
+  )
 
   const nodes: DagNode[] = []
   levels.forEach((level, lvl) => {
+    // A collapsed stage draws no nodes at all. This is the one line that makes
+    // the canvas smaller; everything else above is arithmetic about it.
+    if (wide[lvl] && !open(lvl)) return
     // Each LEVEL is centred against the widest one, so a single joining step
     // sits under the middle of the fan it joins rather than at the left edge of
     // an empty band -- which reads as "this belongs to the first branch". It is
@@ -502,42 +730,85 @@ export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
         step,
         level: lvl,
         pos,
-        h: levelH[lvl]!,
+        // The NODES' height, not the level's: an open wide level's height also
+        // contains its band and the gap under it, and a card given that figure
+        // would paint BAND_H + BAND_GAP past its own bottom edge.
+        h: nodesH(level),
         // POSITION drives X: siblings side by side, one band per level.
         x: left + pos * (NODE_W + SIB_GAP),
         // LEVEL drives Y: the flow descends.
-        y: levelTop[lvl]!,
+        y: nodesTop(lvl),
       })
     })
   })
 
-  const byId = new Map(nodes.map((n) => [n.step.step_id, n]))
+  const bands: DagBand[] = []
+  levels.forEach((level, lvl) => {
+    if (!wide[lvl]) return
+    bands.push({
+      level: lvl,
+      steps: level,
+      expanded: open(lvl),
+      // FULL WIDTH, LEFT-ALIGNED WITH THE CANVAS. A band is a statement about
+      // a whole stage, so it spans the stage; centring it like a node would
+      // make a collapsed 13-wide stage look like one very wide step.
+      x: PAD,
+      y: levelTop[lvl]!,
+      w: widest,
+      h: BAND_H,
+    })
+  })
+
+  // WHERE AN EDGE ATTACHES, for a step that may not have a node.
+  //
+  // It was a map of nodes, and iterating nodes was how edges were found. That
+  // silently drops every dependency into or out of a collapsed stage -- which
+  // is 10 of the 10 edges on a 1 -> 5 -> 1 workflow. So the map is keyed by
+  // STEP and a collapsed step resolves to its band's box: the band is where
+  // that step is on the canvas, so it is where the line belongs.
+  const attach = new Map<string, { cx: number; top: number; bottom: number }>()
+  for (const n of nodes) {
+    attach.set(n.step.step_id, { cx: n.x + NODE_W / 2, top: n.y, bottom: n.y + n.h })
+  }
+  for (const b of bands) {
+    if (b.expanded) continue
+    for (const step of b.steps) {
+      attach.set(step.step_id, { cx: b.x + b.w / 2, top: b.y, bottom: b.y + b.h })
+    }
+  }
+
   const edges: DagEdge[] = []
-  for (const child of nodes) {
-    for (const parentId of child.step.depends_on) {
-      const parent = byId.get(parentId)
-      // A dependency naming a step that is not in this workflow is not drawn.
-      // Inventing an edge to nowhere would be a claim about a graph we cannot
-      // see; the node keeps the name in its own `↑ depends on` line.
-      if (!parent) continue
-      edges.push({
-        from: parentId,
-        to: child.step.step_id,
-        // AN EDGE LEAVES A PARENT'S BOTTOM EDGE AND ENTERS A CHILD'S TOP EDGE,
-        // both at the card's horizontal centre. It was right edge to left edge
-        // at the vertical centre; on this axis that would run every line
-        // through the cards rather than through the gap between two levels.
-        x1: parent.x + NODE_W / 2,
-        y1: parent.y + parent.h,
-        x2: child.x + NODE_W / 2,
-        y2: child.y,
-      })
+  for (const level of levels) {
+    for (const child of level) {
+      const to = attach.get(child.step_id)
+      if (!to) continue
+      for (const parentId of child.depends_on) {
+        const from = attach.get(parentId)
+        // A dependency naming a step that is not in this workflow is not drawn.
+        // Inventing an edge to nowhere would be a claim about a graph we cannot
+        // see; the node keeps the name in its own `↑ depends on` line.
+        if (!from) continue
+        edges.push({
+          from: parentId,
+          to: child.step_id,
+          // AN EDGE LEAVES A PARENT'S BOTTOM EDGE AND ENTERS A CHILD'S TOP EDGE,
+          // both at the box's horizontal centre. It was right edge to left edge
+          // at the vertical centre; on this axis that would run every line
+          // through the cards rather than through the gap between two levels.
+          x1: from.cx,
+          y1: from.bottom,
+          x2: to.cx,
+          y2: to.top,
+        })
+      }
     }
   }
 
   return {
     nodes,
     edges,
+    bands,
+    levelTop,
     // WIDTH IS THE WIDEST LEVEL, not the level count: a fan-out is what makes
     // this canvas wide now, and a chain is exactly one node wide at any depth.
     width: PAD * 2 + widest,
@@ -547,6 +818,153 @@ export function layoutOf(steps: readonly WorkflowStep[]): DagLayout {
     height:
       PAD * 2 + levelH.reduce((t, n) => t + n, 0) + (levels.length - 1) * LEVEL_GAP,
     levels,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What is in a collapsed stage
+// ---------------------------------------------------------------------------
+
+/** One bucket of a stage's census: how many steps are in this state, and the
+ *  tone that state is drawn in on a node, so the band and the node agree. */
+export interface StageCount {
+  /**
+   * `running`, `succeeded`, `not started`, `not read`.
+   *
+   * THE NODE'S WORDS WHEREVER THEY SURVIVE A COUNT IN FRONT OF THEM, because a
+   * reader should not have to learn a second vocabulary for the collapsed form
+   * of the same thing. One does not: `present()` says `state unread` for one
+   * step and "13 state unread" is not English. `not read` keeps the distinction
+   * from `not started` -- which is the distinction that matters, and the one
+   * this console exists to hold -- and reads correctly after a number.
+   */
+  readonly word: string
+  readonly n: number
+  readonly tone: Tone | 'unknown'
+}
+
+export interface StageCensus {
+  readonly steps: number
+  /** Ordered for the band: failures first, then by size. */
+  readonly counts: readonly StageCount[]
+  /** FAILED plus DEAD_LETTERED. Separate from `counts` because the band has to
+   *  be able to answer "did anything break here" without scanning a list. */
+  readonly failed: number
+  readonly cancelled: number
+  /** Steps whose task was not in the read. THE CENSUS IS INCOMPLETE BY EXACTLY
+   *  THIS MANY, and no claim about failures may be made over them. */
+  readonly unread: number
+  /** The whole census as one sentence, for the band's accessible name. Nothing
+   *  is dropped from it -- it is the route to any bucket the band's own line
+   *  had to clip. */
+  readonly sentence: string
+}
+
+/**
+ * WHAT A BAND IS ALLOWED TO HIDE, AND WHAT IT IS NOT.
+ *
+ * A collapsed stage hides thirteen cards. It may not hide that one of them
+ * FAILED: somebody scanning a workflow for what broke must not have to open
+ * four bands to find it. So:
+ *
+ *  * `counts` is ordered with FAILED, DEAD_LETTERED and CANCELLED first, which
+ *    is what makes `.wf-band-counts`'s clip safe -- the bucket that may not be
+ *    lost is never the one at the end of the line;
+ *  * `failed` and `cancelled` are their own fields, so the band can carry a
+ *    modifier and be distinguishable at a glance without being read;
+ *  * `sentence` is the complete census and is the band's `aria-label`.
+ *
+ * AND THE HONESTY RULE THE OTHER TWO WOULD OTHERWISE BREAK. A stage whose task
+ * states could not be read cannot claim "nothing failed here" -- it does not
+ * know. `unread` is counted separately and the sentence says so in those words,
+ * because "no step failed" and "we could not tell whether a step failed" are
+ * the two things this console exists to keep apart.
+ */
+export function stageCensus(
+  steps: readonly WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null,
+): StageCensus {
+  // Insertion order is not the display order -- `rank` below is -- but a Map
+  // keeps the iteration deterministic, which matters because the sort is stable
+  // and two buckets of equal size must not swap between polls.
+  const buckets = new Map<string, { n: number; tone: Tone | 'unknown'; rank: number }>()
+  let failed = 0
+  let cancelled = 0
+  let unread = 0
+
+  for (const step of steps) {
+    const state = stepState(step, taskById)
+    let word: string
+    let tone: Tone | 'unknown'
+    let rank: number
+    if (state.kind === 'unstarted') {
+      // The node says `not started` for this, so the band says `not started`.
+      word = 'not started'
+      tone = 'wait'
+      rank = 3
+    } else if (state.kind === 'unknown') {
+      word = 'not read'
+      tone = 'unknown'
+      rank = 2
+      unread += 1
+    } else {
+      word = state.state.toLowerCase()
+      tone = stateTone(state.state)
+      if (state.state === 'FAILED' || state.state === 'DEAD_LETTERED') failed += 1
+      if (state.state === 'CANCELLED') cancelled += 1
+      // FOUR RANKS, AND THE ORDER OF THE FIRST TWO IS A JUDGEMENT. A failure
+      // outranks a cancellation because a cancellation is something somebody
+      // asked for and a failure is not: if only one of them fits on the band's
+      // line, the one that needs a human is the one that stays.
+      //
+      // DEAD_LETTERED is ranked with the failures although `types.ts` records
+      // that `finish()` never writes it: the scheduler still lists it in
+      // _FAILED_PARENT_STATES, so if one ever reaches a task document it is a
+      // failure and must not sort below `succeeded`.
+      rank =
+        state.state === 'FAILED' || state.state === 'DEAD_LETTERED'
+          ? 0
+          : state.state === 'CANCELLED'
+            ? 1
+            : 3
+    }
+    const seen = buckets.get(word)
+    if (seen) seen.n += 1
+    else buckets.set(word, { n: 1, tone, rank })
+  }
+
+  const counts: StageCount[] = [...buckets.entries()]
+    .map(([word, b]) => ({ word, n: b.n, tone: b.tone, rank: b.rank }))
+    // Failures, then cancellations, then the unread part of the census, then
+    // everything else biggest first. The word breaks the tie so the order
+    // cannot change under a poll that happens to visit the steps in a
+    // different order.
+    .sort((a, b) => a.rank - b.rank || b.n - a.n || a.word.localeCompare(b.word))
+    .map(({ word, n, tone }) => ({ word, n, tone }))
+
+  const census = counts.map((c) => `${c.n} ${c.word}`).join(', ')
+  // THE CLAUSE THAT MAY NOT BE DROPPED. With nothing failed and nothing unread
+  // the band is genuinely clean and says so. With anything unread it says the
+  // opposite of clean -- that it cannot tell -- and it says it in the same
+  // breath as the count, because a reader who stops after the first clause must
+  // not come away with "nothing failed".
+  const verdict =
+    unread > 0
+      ? ` ${unread} step state${unread === 1 ? '' : 's'} could not be read, so this stage cannot be said to be free of failures.`
+      : failed + cancelled > 0
+        ? ` ${failed} failed and ${cancelled} cancelled.`
+        : ' No step in this stage has failed or been cancelled.'
+
+  return {
+    steps: steps.length,
+    counts,
+    failed,
+    cancelled,
+    unread,
+    // NO "click to expand" IN HERE. What the control does is the control's
+    // business and it differs by state; this sentence is the CENSUS, and
+    // `StageBand` appends the action to it.
+    sentence: `${steps.length} step${steps.length === 1 ? '' : 's'} in this stage: ${census}.${verdict}`,
   }
 }
 
