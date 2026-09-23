@@ -878,7 +878,14 @@ describe('the capacity row protects the name, not the bar', () => {
    */
   it('makes the drawer row an actual grid, not a grid template on a flex box', () => {
     const style = withStyles()
-    const rules = allRules(style.sheet!)
+    // TOP-LEVEL RULES ONLY, and that is not tidiness. `allRules` flattens the
+    // media blocks in deliberately, and `@media (max-width: 899px)` carries a
+    // second `.ctl-util { gap: … }` -- so an unfiltered lookup finds two rules
+    // with this selector and the "exactly one" guard below fails on a correct
+    // sheet. The rule under test is the unconditional one.
+    const rules = [...style.sheet!.cssRules].filter(
+      (r): r is CSSStyleRule => r.constructor.name === 'CSSStyleRule',
+    )
 
     const drawerRow = rules.filter((r) => r.selectorText === '.drawer .ctl-util')
     expect(drawerRow.length, 'styles.css must declare exactly one .drawer .ctl-util').toBe(1)

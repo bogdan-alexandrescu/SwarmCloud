@@ -1137,9 +1137,9 @@ function ReferenceScreen() {
               did not measure it; it is the same five-column table in the same
               `overflow-x: auto` that paints no scrollbar here, and its widest
               column is a heading with a parenthetical in it. Stacked below
-              900px on the same terms as the seven screens §B6.3 lists, rather
-              than left as the one table that still scrolls sideways because
-              nobody photographed it. */}
+              900px on the same terms as the screens §B6.3 already covers,
+              rather than left as the one table that still scrolls sideways
+              because nobody photographed it. */}
           <div className="ctl-table is-stacked">
             <table role="table">
               <thead role="rowgroup">

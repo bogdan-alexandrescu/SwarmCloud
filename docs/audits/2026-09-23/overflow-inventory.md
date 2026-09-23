@@ -622,7 +622,7 @@ named in each row, because this machine authors code and does not run it.
 | F3 | fixed before this lane, backstop added here | `.app.has-inspector .row` drops three columns, and a second stage at `max-width: 1200px` drops the step; `.row .agent .id` ellipses with a `3ch` floor. Added here: `text-overflow: ellipsis` on `.row .agent` itself, which is the property this finding named. |
 | F4 | **fixed by this lane** | `.drawer::before` is a sticky, full-width, zero-space band of `--bg` as tall as the drawer's top padding plus its close button; `.drawer-close` stops floating, takes a line of its own and sits on the band at `z-index: 2`. Content scrolls under a header instead of under a floating square. The band is five literals that have to agree — a height, three margins and the drawer's own top padding — and `shell.test.tsx` checks the three relationships between them rather than the numbers, because `spacing.test.tsx` rejects both a custom property declared off `:root` and a `calc(var(…) * -1)`. |
 | F5 | **fixed by this lane** | `.source-cells`' track minimum is 260px, derived from the longest route this registry holds, and `.s-path` spans both columns so the `auto` status track stops eating the widening. `.s-path-t` wraps instead of ellipsing. |
-| F6 | fixed in seven screens before this lane, four more added here | §B6.3 stacks a table below 900px, opt-in via `.is-stacked` + `data-label`. Added here: `Profiles.tsx`, both tables in `Activity.tsx`, three tables in `AgentDetail.tsx` (including the checkpoint table §2 measures at 57%), and `App.tsx`'s `#reference` table. |
+| F6 | fixed on six screens before this lane; seven more tables opted in here | §B6.3 stacks a table below 900px, opt-in via `.is-stacked` + `data-label`. Added here, seven tables across four files: one in `Profiles.tsx` (the pool-clearing table, rendered once per profile), both in `Activity.tsx`, three in `AgentDetail.tsx` (checkpoints — the table §2 measures at 57% — artifacts and commits), and `App.tsx`'s `#reference` table. `AgentDetail.tsx`'s two-column Key/Value metadata table is deliberately left alone: stacked, it would grow a key column whose every entry reads "Value". |
 | F7 | fixed before this lane | The narrow rail hides every unopened section's tabs (`.ctl-rail-group:not(.is-on) .ctl-rail-tabs`) and carries a 24px mask fade at its right edge in place of the scrollbar this platform does not paint. |
 | F8 | fixed before this lane | See the FIXED paragraph in §F8. |
 | F9 | **Lane 1** | Not this lane's. Untouched. |
@@ -659,7 +659,7 @@ names, in its own comment, the mutation it catches. Two are worth singling out:
   run, so the test renders the dock and counts `.ctl-dock-fact` boxes.
 
 **F6 is the one with a gap.** Its stacking is asserted by the existing §B6.3
-tests for the screens that already had it; the five tables added here — in
+tests for the screens that already had it; the seven tables added here — in
 `Profiles.tsx`, `Activity.tsx`, `AgentDetail.tsx` and `App.tsx` — are covered by
 that same CSS and are not separately asserted, so a future edit could take
 `is-stacked` off one of them without a test noticing. F1, F7, F8 and F12 were
