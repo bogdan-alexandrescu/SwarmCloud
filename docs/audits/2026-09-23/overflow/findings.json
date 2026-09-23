@@ -1,0 +1,2588 @@
+[
+{
+"route": "admin-limits",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 464,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:822",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-limits",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(2) > div.ctl-table",
+"text": "PoolIn useCeiling (units)Set byChangeCLOUD_RUN_JOBbackend:CLOUD_RUN_JOB520configuredsaveGK",
+"hiddenPx": 302,
+"hiddenPct": 46,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:658",
+"rect": [
+16,
+1637.9,
+358,
+1512.2
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-limits",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-limits",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 464,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:822",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-limits",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(2) > div.ctl-table",
+"text": "PoolIn useCeiling (units)Set byChangeCLOUD_RUN_JOBbackend:CLOUD_RUN_JOB520configuredsaveGK",
+"hiddenPx": 302,
+"hiddenPct": 46,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:658",
+"rect": [
+16,
+1637.9,
+358,
+1512.2
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-limits",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-tenants",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 464,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:822",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-tenants",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 150ms \u00b7 0 failed \u00b7 1 admin-only \u00b7 newest just now",
+"cut": 182,
+"lostPct": 39,
+"client": 280,
+"scroll": 462,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-tenants",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 464,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:822",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "admin-tenants",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 150ms \u00b7 0 failed \u00b7 1 admin-only \u00b7 newest just now",
+"cut": 182,
+"lostPct": 39,
+"client": 280,
+"scroll": 462,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new-workflow",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new-workflow",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new-workflow",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new-workflow",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-new",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-running",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div:nth(3) > div.rows:nth(2) > div.row.clickable:nth(6) > span.wf:nth(4) > span.wf-step",
+"text": "scan-terraform",
+"cut": 14,
+"lostPct": 12,
+"client": 104,
+"scroll": 118,
+"css": "width:104px max-width:none flex:0 1 auto",
+"rect": [
+826.9,
+385,
+104,
+22
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-running",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div:nth(3) > div.rows:nth(2) > div.row.clickable:nth(6) > span.wf:nth(4) > span.wf-step",
+"text": "scan-terraform",
+"cut": 14,
+"lostPct": 12,
+"client": 104,
+"scroll": 118,
+"css": "width:104px max-width:none flex:0 1 auto",
+"rect": [
+826.9,
+385,
+104,
+22
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-running",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-running",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 350ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-running",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-running",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 350ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "section.section.wf-card:nth(1) > h2.wf-h > button.wf-bar > span.wf-progress:nth(3) > span.wf-progress-text:nth(2)",
+"text": "1/5 done \u00b7 1 not started",
+"cut": 38,
+"lostPct": 22,
+"client": 135,
+"scroll": 173,
+"css": "width:135.344px max-width:none flex:0 1 auto",
+"rect": [
+690.8,
+237.4,
+135.3,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "section.section.wf-card:nth(2) > h2.wf-h > button.wf-bar > span.wf-progress:nth(3) > span.wf-progress-text:nth(2)",
+"text": "4/6 done \u00b7 1 failed",
+"cut": 2,
+"lostPct": 1,
+"client": 135,
+"scroll": 137,
+"css": "width:135.344px max-width:none flex:0 1 auto",
+"rect": [
+690.8,
+292.8,
+135.3,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.wf-board:nth(2) > section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.wf-state.unknown:nth(2)",
+"text": "state not derived",
+"cut": 31,
+"lostPct": 25,
+"client": 92,
+"scroll": 123,
+"css": "width:92px max-width:none flex:0 1 auto",
+"rect": [
+524.8,
+348.2,
+92,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "section.section.wf-card:nth(1) > h2.wf-h > button.wf-bar > span.wf-progress:nth(3) > span.wf-progress-text:nth(2)",
+"text": "1/5 done \u00b7 1 not started",
+"cut": 38,
+"lostPct": 22,
+"client": 135,
+"scroll": 173,
+"css": "width:135.344px max-width:none flex:0 1 auto",
+"rect": [
+690.8,
+237.4,
+135.3,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "section.section.wf-card:nth(2) > h2.wf-h > button.wf-bar > span.wf-progress:nth(3) > span.wf-progress-text:nth(2)",
+"text": "4/6 done \u00b7 1 failed",
+"cut": 2,
+"lostPct": 1,
+"client": 135,
+"scroll": 137,
+"css": "width:135.344px max-width:none flex:0 1 auto",
+"rect": [
+690.8,
+292.8,
+135.3,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.wf-board:nth(2) > section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.wf-state.unknown:nth(2)",
+"text": "state not derived",
+"cut": 31,
+"lostPct": 25,
+"client": 92,
+"scroll": 123,
+"css": "width:92px max-width:none flex:0 1 auto",
+"rect": [
+524.8,
+348.2,
+92,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "dark",
+"kind": "escape-x",
+"el": "section.section.wf-card:nth(1) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4) > span.wf-shape-text",
+"text": "1 \u2192 2 \u2192 1 \u2192 1",
+"parent": "div.wf-board:nth(2) > section.section.wf-card:nth(1) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4)",
+"by": 37.9,
+"css": "parent overflow-x:visible child width:93.9 parent inner:56",
+"rect": [
+281,
+359.4,
+93.9,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "dark",
+"kind": "escape-x",
+"el": "section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4) > span.wf-shape-text",
+"text": "1 \u2192 1 \u2192 1",
+"parent": "div.wf-board:nth(2) > section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4)",
+"by": 9,
+"css": "parent overflow-x:visible child width:65 parent inner:56",
+"rect": [
+281,
+483.4,
+65,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.wf-board:nth(2) > section.section.wf-card:nth(2) > h2.wf-h > button.wf-bar > span.id:nth(1)",
+"text": "wf_5e5ad3b6f7da4299a839",
+"cut": 16,
+"lostPct": 9,
+"client": 164,
+"scroll": 180,
+"css": "width:164px max-width:none flex:0 1 auto",
+"rect": [
+47,
+420.7,
+164,
+18.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.wf-board:nth(2) > section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.id:nth(1)",
+"text": "wf_bcdc9180e4fb4a209f31",
+"cut": 16,
+"lostPct": 9,
+"client": 164,
+"scroll": 180,
+"css": "width:164px max-width:none flex:0 1 auto",
+"rect": [
+47,
+482.7,
+164,
+18.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "5 routes \u00b7 p95 350ms \u00b7 0 failed \u00b7 1 admin-only \u00b7 newest just now",
+"cut": 182,
+"lostPct": 39,
+"client": 280,
+"scroll": 462,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "light",
+"kind": "escape-x",
+"el": "section.section.wf-card:nth(1) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4) > span.wf-shape-text",
+"text": "1 \u2192 2 \u2192 1 \u2192 1",
+"parent": "div.wf-board:nth(2) > section.section.wf-card:nth(1) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4)",
+"by": 37.9,
+"css": "parent overflow-x:visible child width:93.9 parent inner:56",
+"rect": [
+281,
+359.4,
+93.9,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "light",
+"kind": "escape-x",
+"el": "section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4) > span.wf-shape-text",
+"text": "1 \u2192 1 \u2192 1",
+"parent": "div.wf-board:nth(2) > section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.wf-shape:nth(4)",
+"by": 9,
+"css": "parent overflow-x:visible child width:65 parent inner:56",
+"rect": [
+281,
+483.4,
+65,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 625,
+"hiddenPct": 64,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:983",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.wf-board:nth(2) > section.section.wf-card:nth(2) > h2.wf-h > button.wf-bar > span.id:nth(1)",
+"text": "wf_5e5ad3b6f7da4299a839",
+"cut": 16,
+"lostPct": 9,
+"client": 164,
+"scroll": 180,
+"css": "width:164px max-width:none flex:0 1 auto",
+"rect": [
+47,
+420.7,
+164,
+18.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.wf-board:nth(2) > section.section.wf-card:nth(3) > h2.wf-h > button.wf-bar > span.id:nth(1)",
+"text": "wf_bcdc9180e4fb4a209f31",
+"cut": 16,
+"lostPct": 9,
+"client": 164,
+"scroll": 180,
+"css": "width:164px max-width:none flex:0 1 auto",
+"rect": [
+47,
+482.7,
+164,
+18.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "agents-workflows",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "5 routes \u00b7 p95 350ms \u00b7 0 failed \u00b7 1 admin-only \u00b7 newest just now",
+"cut": 182,
+"lostPct": 39,
+"client": 280,
+"scroll": 462,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-counts",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 461,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:819",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-counts",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "1 route \u00b7 p95 150ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 67,
+"lostPct": 19,
+"client": 280,
+"scroll": 347,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-counts",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 461,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:819",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-counts",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "1 route \u00b7 p95 150ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 67,
+"lostPct": 19,
+"client": 280,
+"scroll": 347,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-timeline",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 461,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:819",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-timeline",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(3) > div.table-wrap",
+"text": "EngineerTasksSucceededFailedAttemptsLast seenbogdan@saga.xyz2613230just now",
+"hiddenPx": 154,
+"hiddenPct": 30,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:512",
+"rect": [
+16,
+1217.4,
+358,
+65.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-timeline",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 350ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-timeline",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 461,
+"hiddenPct": 56,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:819",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-timeline",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(3) > div.table-wrap",
+"text": "EngineerTasksSucceededFailedAttemptsLast seenbogdan@saga.xyz2613230just now",
+"hiddenPx": 154,
+"hiddenPct": 30,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:512",
+"rect": [
+16,
+1217.4,
+358,
+65.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "history-timeline",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 350ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(1) > span.ctl-util-name:nth(1)",
+"text": "browser \u00b7 0 can start",
+"cut": 98,
+"lostPct": 55,
+"client": 79,
+"scroll": 177,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+618.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(2) > span.ctl-util-name:nth(1)",
+"text": "claude-code \u00b7 0 can start",
+"cut": 132,
+"lostPct": 63,
+"client": 79,
+"scroll": 211,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+655.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(3) > span.ctl-util-name:nth(1)",
+"text": "codex \u00b7 10 can start",
+"cut": 90,
+"lostPct": 53,
+"client": 79,
+"scroll": 169,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+692.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(4) > span.ctl-util-name:nth(1)",
+"text": "generic \u00b7 10 can start",
+"cut": 106,
+"lostPct": 57,
+"client": 79,
+"scroll": 185,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+729.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(5) > span.ctl-util-name:nth(1)",
+"text": "mock \u00b7 15 can start",
+"cut": 81,
+"lostPct": 51,
+"client": 79,
+"scroll": 160,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+766.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(1) > span.ctl-util-name:nth(1)",
+"text": "browser \u00b7 0 can start",
+"cut": 98,
+"lostPct": 55,
+"client": 79,
+"scroll": 177,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+618.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(2) > span.ctl-util-name:nth(1)",
+"text": "claude-code \u00b7 0 can start",
+"cut": 132,
+"lostPct": 63,
+"client": 79,
+"scroll": 211,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+655.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(3) > span.ctl-util-name:nth(1)",
+"text": "codex \u00b7 10 can start",
+"cut": 90,
+"lostPct": 53,
+"client": 79,
+"scroll": 169,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+692.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(4) > span.ctl-util-name:nth(1)",
+"text": "generic \u00b7 10 can start",
+"cut": 106,
+"lostPct": 57,
+"client": 79,
+"scroll": 185,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+729.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "1440x900",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div.ctl-cards.ov-cols.has-alarm:nth(4) > section.ctl-card:nth(2) > div.ctl-card-body:nth(2) > div.ctl-util:nth(5) > span.ctl-util-name:nth(1)",
+"text": "mock \u00b7 15 can start",
+"cut": 81,
+"lostPct": 51,
+"client": 79,
+"scroll": 160,
+"css": "width:79.3281px max-width:none flex:0 1 auto",
+"rect": [
+281,
+766.9,
+79.3,
+21
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 207,
+"hiddenPct": 37,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:565",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "9 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 207,
+"hiddenPct": 37,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:565",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "overview-now",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "9 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "escape-x",
+"el": "td > div.acct-detail > div.acct-action:nth(2) > p.muted.small > span",
+"text": "?Some routes answer only to administrators, and someone who is not one genuinely cannot re",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(2) > p.muted.small",
+"by": 336,
+"css": "parent overflow-x:visible child width:19 parent inner:559.3",
+"rect": [
+1157.3,
+197.4,
+19,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "escape-x",
+"el": "div.acct-detail > div.acct-action:nth(2) > p.muted.small > span > button",
+"text": "?",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(2) > p.muted.small",
+"by": 336,
+"css": "parent overflow-x:visible child width:14 parent inner:559.3",
+"rect": [
+1162.3,
+197.4,
+14,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "escape-x",
+"el": "td > div.acct-detail > div.acct-action:nth(4) > p.muted.small > span",
+"text": "?It means the exchangeable half is gone or unreadable. The broker stops trying on purpose:",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(4) > p.muted.small",
+"by": 88.9,
+"css": "parent overflow-x:visible child width:19 parent inner:559.3",
+"rect": [
+910.2,
+458.9,
+19,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "dark",
+"kind": "escape-x",
+"el": "div.acct-detail > div.acct-action:nth(4) > p.muted.small > span > button",
+"text": "?",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(4) > p.muted.small",
+"by": 88.9,
+"css": "parent overflow-x:visible child width:14 parent inner:559.3",
+"rect": [
+915.2,
+458.9,
+14,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "light",
+"kind": "escape-x",
+"el": "td > div.acct-detail > div.acct-action:nth(2) > p.muted.small > span",
+"text": "?Some routes answer only to administrators, and someone who is not one genuinely cannot re",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(2) > p.muted.small",
+"by": 336,
+"css": "parent overflow-x:visible child width:19 parent inner:559.3",
+"rect": [
+1157.3,
+197.4,
+19,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "light",
+"kind": "escape-x",
+"el": "div.acct-detail > div.acct-action:nth(2) > p.muted.small > span > button",
+"text": "?",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(2) > p.muted.small",
+"by": 336,
+"css": "parent overflow-x:visible child width:14 parent inner:559.3",
+"rect": [
+1162.3,
+197.4,
+14,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "light",
+"kind": "escape-x",
+"el": "td > div.acct-detail > div.acct-action:nth(4) > p.muted.small > span",
+"text": "?It means the exchangeable half is gone or unreadable. The broker stops trying on purpose:",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(4) > p.muted.small",
+"by": 88.9,
+"css": "parent overflow-x:visible child width:19 parent inner:559.3",
+"rect": [
+910.2,
+458.9,
+19,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "1440x900",
+"theme": "light",
+"kind": "escape-x",
+"el": "div.acct-detail > div.acct-action:nth(4) > p.muted.small > span > button",
+"text": "?",
+"parent": "tr.acct-detail-row:nth(6) > td > div.acct-detail > div.acct-action:nth(4) > p.muted.small",
+"by": 88.9,
+"css": "parent overflow-x:visible child width:14 parent inner:559.3",
+"rect": [
+915.2,
+458.9,
+14,
+28
+],
+"seenAtScrollY": 791
+},
+{
+"route": "pools-accounts",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-accounts",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(1) > div.table-wrap",
+"text": "Account5h7dClearsState\u25b8sharedeng:shared56%\u2014not measured1h 11mAVAILABLEskipped here\u25b8never-p",
+"hiddenPx": 551,
+"hiddenPct": 61,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:909",
+"rect": [
+16,
+507.3,
+358,
+1274.6
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-accounts",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 210ms \u00b7 0 failed \u00b7 1 admin-only \u00b7 newest just now",
+"cut": 182,
+"lostPct": 39,
+"client": 280,
+"scroll": 462,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-accounts",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-accounts",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(1) > div.table-wrap",
+"text": "Account5h7dClearsState\u25b8sharedeng:shared56%\u2014not measured1h 11mAVAILABLEskipped here\u25b8never-p",
+"hiddenPx": 551,
+"hiddenPct": 61,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:909",
+"rect": [
+16,
+507.3,
+358,
+1274.6
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-accounts",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 210ms \u00b7 0 failed \u00b7 1 admin-only \u00b7 newest just now",
+"cut": 182,
+"lostPct": 39,
+"client": 280,
+"scroll": 462,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-holders",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-holders",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.hold-all > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "TaskTenantUnits (weighted)?Each size has a weight, and admission adds that weight to every",
+"hiddenPx": 99,
+"hiddenPct": 22,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:453",
+"rect": [
+17,
+738.3,
+356,
+223
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-holders",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-holders",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-holders",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.hold-all > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "TaskTenantUnits (weighted)?Each size has a weight, and admission adds that weight to every",
+"hiddenPx": 99,
+"hiddenPct": 22,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:453",
+"rect": [
+17,
+738.3,
+356,
+223
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-holders",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.cap-headroom > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "Runner profileCould start (min across pools)?A task clears every pool in its list at the s",
+"hiddenPx": 433,
+"hiddenPct": 55,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:787",
+"rect": [
+17,
+352.1,
+356,
+211
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(1) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 146,
+"hiddenPct": 29,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:502",
+"rect": [
+16,
+705.3,
+358,
+88
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(2) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 251,
+"hiddenPct": 41,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:607",
+"rect": [
+16,
+870.1,
+358,
+178
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(3) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 226,
+"hiddenPct": 39,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:582",
+"rect": [
+16,
+1124.9,
+358,
+178
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(4) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 233,
+"hiddenPct": 40,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:589",
+"rect": [
+16,
+1379.7,
+358,
+268
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(5) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 254,
+"hiddenPct": 42,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:610",
+"rect": [
+16,
+1724.5,
+358,
+133
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(6) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 348,
+"hiddenPct": 49,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:704",
+"rect": [
+16,
+1934.3,
+358,
+268
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.cap-headroom > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "Runner profileCould start (min across pools)?A task clears every pool in its list at the s",
+"hiddenPx": 433,
+"hiddenPct": 55,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:787",
+"rect": [
+17,
+352.1,
+356,
+211
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(1) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 146,
+"hiddenPct": 29,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:502",
+"rect": [
+16,
+705.3,
+358,
+88
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(2) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 251,
+"hiddenPct": 41,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:607",
+"rect": [
+16,
+870.1,
+358,
+178
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(3) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 226,
+"hiddenPct": 39,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:582",
+"rect": [
+16,
+1124.9,
+358,
+178
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(4) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 233,
+"hiddenPct": 40,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:589",
+"rect": [
+16,
+1379.7,
+358,
+268
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(5) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 254,
+"hiddenPct": 42,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:610",
+"rect": [
+16,
+1724.5,
+358,
+133
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div:nth(3) > div.cap-families:nth(2) > section.ctl-card:nth(6) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "PoolIn use (units)?Each size has a weight, and admission adds that weight to every pool th",
+"hiddenPx": 348,
+"hiddenPct": 49,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:704",
+"rect": [
+16,
+1934.3,
+358,
+268
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-pools",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(1) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide157u-bogdantenant:u-bo",
+"hiddenPx": 252,
+"hiddenPct": 41,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:610",
+"rect": [
+16,
+644.5,
+358,
+391.6
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(2) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515u-bogdantenant:u-b",
+"hiddenPx": 252,
+"hiddenPct": 41,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:610",
+"rect": [
+16,
+2061.3,
+358,
+391.6
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(3) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515u-bogdantenant:u-b",
+"hiddenPx": 180,
+"hiddenPct": 33,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:538",
+"rect": [
+16,
+3457.1,
+358,
+340.2
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(4) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515u-bogdantenant:u-b",
+"hiddenPx": 180,
+"hiddenPct": 33,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:538",
+"rect": [
+16,
+4548.8,
+358,
+288.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(5) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515bindingu-bogdanten",
+"hiddenPx": 180,
+"hiddenPct": 33,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:538",
+"rect": [
+16,
+5472.1,
+358,
+288.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(1) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide157u-bogdantenant:u-bo",
+"hiddenPx": 252,
+"hiddenPct": 41,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:610",
+"rect": [
+16,
+644.5,
+358,
+391.6
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(2) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515u-bogdantenant:u-b",
+"hiddenPx": 252,
+"hiddenPct": 41,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:610",
+"rect": [
+16,
+2061.3,
+358,
+391.6
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(3) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515u-bogdantenant:u-b",
+"hiddenPx": 180,
+"hiddenPct": 33,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:538",
+"rect": [
+16,
+3457.1,
+358,
+340.2
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(4) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515u-bogdantenant:u-b",
+"hiddenPx": 180,
+"hiddenPct": 33,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:538",
+"rect": [
+16,
+4548.8,
+358,
+288.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section.panel:nth(5) > div.table-wrap:nth(1)",
+"text": "Pool it must clearScopeUnits freeFitsStatusglobalglobalplatform-wide1515bindingu-bogdanten",
+"hiddenPx": 180,
+"hiddenPct": 33,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:538",
+"rect": [
+16,
+5472.1,
+358,
+288.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-profiles",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(1) > div.ctl-table:nth(2)",
+"text": "TenantStateLimitRequests left429sLast 429ReportedengAVAILABLE5042100\u20141m agou-bogdanTHROTTL",
+"hiddenPx": 194,
+"hiddenPct": 35,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:550",
+"rect": [
+16,
+367.9,
+358,
+100.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(2) > div.ctl-table:nth(2)",
+"text": "TenantStateLimitRequests left429sLast 429ReportedengEXHAUSTED0\u201441\u20141m agou-bogdanUNKNOWN0\u20140",
+"hiddenPx": 201,
+"hiddenPct": 36,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:557",
+"rect": [
+16,
+569.7,
+358,
+101.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 170ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 770,
+"hiddenPct": 68,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:1128",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(1) > div.ctl-table:nth(2)",
+"text": "TenantStateLimitRequests left429sLast 429ReportedengAVAILABLE5042100\u20141m agou-bogdanTHROTTL",
+"hiddenPx": 194,
+"hiddenPct": 35,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:550",
+"rect": [
+16,
+367.9,
+358,
+100.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div.app > main.work > div:nth(3) > section.section:nth(2) > div.ctl-table:nth(2)",
+"text": "TenantStateLimitRequests left429sLast 429ReportedengEXHAUSTED0\u201441\u20141m agou-bogdanUNKNOWN0\u20140",
+"hiddenPx": 201,
+"hiddenPct": 36,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:356 scroll:557",
+"rect": [
+16,
+569.7,
+358,
+101.8
+],
+"seenAtScrollY": 0
+},
+{
+"route": "pools-quota",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "2 routes \u00b7 p95 170ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 207,
+"hiddenPct": 37,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:565",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.rt-backends:nth(1) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "BackendRuntimesIn use (units)?Each size has a weight, and admission adds that weight to ev",
+"hiddenPx": 207,
+"hiddenPct": 37,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:561",
+"rect": [
+17,
+352.1,
+356,
+111
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "dark",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.rt-sizing:nth(2) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "ClassvCPUMemoryWorkspace (of memory)?The workspace is a memory-backed filesystem, not capa",
+"hiddenPx": 360,
+"hiddenPct": 50,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:714",
+"rect": [
+17,
+579.9,
+356,
+182
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "dark",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "div#root > div.ctl-frame > div.ctl-scroll:nth(1) > div.app > nav.ctl-rail",
+"text": "OverviewAgentsAgentsWorkflowsSubmit a taskSubmit a workflowRuntimesPoolsPoolsRunner profil",
+"hiddenPx": 207,
+"hiddenPct": 37,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:358 scroll:565",
+"rect": [
+16,
+108.7,
+358,
+55
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.rt-backends:nth(1) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "BackendRuntimesIn use (units)?Each size has a weight, and admission adds that weight to ev",
+"hiddenPx": 207,
+"hiddenPct": 37,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:561",
+"rect": [
+17,
+352.1,
+356,
+111
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "light",
+"kind": "no-affordance-x",
+"el": "main.work > div:nth(3) > section.ctl-card.rt-sizing:nth(2) > div.ctl-card-body.is-flush:nth(2) > div.ctl-table",
+"text": "ClassvCPUMemoryWorkspace (of memory)?The workspace is a memory-backed filesystem, not capa",
+"hiddenPx": 360,
+"hiddenPct": 50,
+"scrollbarGutterPx": 0,
+"css": "overflow-x:auto client:354 scroll:714",
+"rect": [
+17,
+579.9,
+356,
+182
+],
+"seenAtScrollY": 0
+},
+{
+"route": "runtimes-catalogue",
+"vp": "390x844",
+"theme": "light",
+"kind": "ellipsis",
+"el": "div#root > div.ctl-frame > div.ctl-dock:nth(2) > button.ctl-dock-line > span.ctl-dock-facts:nth(3)",
+"text": "3 routes \u00b7 p95 400ms \u00b7 0 failed \u00b7 newest just now",
+"cut": 74,
+"lostPct": 21,
+"client": 280,
+"scroll": 354,
+"css": "width:279.625px max-width:none flex:0 1 auto",
+"rect": [
+79.1,
+821.3,
+279.6,
+17.4
+],
+"seenAtScrollY": 0
+}
+]
