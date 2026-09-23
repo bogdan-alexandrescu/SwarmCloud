@@ -140,12 +140,31 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
   const now = Date.now()
 
   return (
-    <>
+    /* ONE SUBJECT, SO ONE STACK — AND THE ORDER IS THE OPERATOR'S, NOT THE
+       DATA MODEL'S.
+       -----------------------------------------------------------------------
+       TWO THINGS CHANGED HERE AND BOTH ARE STRUCTURAL.
+
+       1. WHY AND THE ERROR MOVED ABOVE THE FIGURES. An agent's run panel is
+          opened for one of two reasons: to watch it, or to find out why it
+          stopped. The reason it stopped used to sit BELOW six boxed figures --
+          elapsed, attempts, peak memory, tokens, cost, checkpoints -- none of
+          which answers that question, so the one fact the reader came for was
+          under the six that were merely available. `Why` renders nothing when
+          there is nothing to say, so this costs a healthy run no space at all.
+
+       2. `.run-stack` IS WHAT STOPS FIFTEEN HAIRLINES. Measured on this
+          drawer before the change: 15 elements drawing `.section + .section`'s
+          top rule down a 5,155px scroller. See the rule in styles.css for the
+          argument; the wrapper is here because the rule needs something to
+          scope to, and it is one element rather than a class change on the
+          twenty-eight `.section`s this file renders. */
+    <div className="run-stack">
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
-      <RunMetrics run={run} now={now} />
       <Why task={task} />
       {task.last_error && <ErrorBanner text={task.last_error} />}
+      <RunMetrics run={run} now={now} />
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
       <Output run={run} />
@@ -157,7 +176,7 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
       <RunFiles task={task} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
-    </>
+    </div>
   )
 }
 
@@ -1130,7 +1149,15 @@ function AttemptCard({
           {isLatest && <span className="tag">latest</span>}
           {a.oom_near_miss && <Chip tone="bad">OOM near miss</Chip>}
         </h2>
-        <span className="ctl-card-note">{a.backend}</span>
+        {/* THE BACKEND IS A STRING THE API CHOSE, SO IT IS BROUGHT INTO THIS
+            CONSOLE'S REGISTER RATHER THAN LEFT SHOUTING. `a.backend` arrives
+            as `CLOUD_RUN_JOB` and was printed verbatim, two inches from a
+            state chip that lowercases the API's `RUNNING` to `running` -- two
+            machine tokens of the same kind, on the same line, in two different
+            cases. §13.2 of design-system.md allows `text-transform` for
+            exactly this and allows it in exactly this direction: quieter, and
+            only on a string we did not author. */}
+        <span className="ctl-card-note att-backend">{a.backend}</span>
       </div>
 
       <div className="ctl-card-body">

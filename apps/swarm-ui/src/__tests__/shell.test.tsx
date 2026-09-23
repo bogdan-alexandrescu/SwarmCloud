@@ -728,11 +728,32 @@ describe('B20: a measured zero and an unrendered track are different marks', () 
 // This reads the SHIPPED stylesheet, the same way every other assertion in
 // this file does, rather than a hand-written copy of the rule.
 describe('the capacity row protects the name, not the bar', () => {
+  /**
+   * RE-POINTED, AND WHAT MOVED IS THE SUBJECT RATHER THAN THE CLAIM.
+   *
+   * This used to select its rule with `STYLES.split('.ctl-util {')`, which
+   * matches the first occurrence of that SUBSTRING -- and `.drawer .ctl-util {`
+   * contains it and is declared ~2,400 lines earlier in the sheet. So from the
+   * moment the drawer's override was added, this test has been grading the
+   * drawer's four-column variant and the primitive it names has gone
+   * unmeasured. It stayed green because that variant happened to floor its
+   * name too.
+   *
+   * The claim below is unchanged and is now made against the rule it names: an
+   * anchored `^.ctl-util {` picks the top-level declaration only. The drawer's
+   * variant gets its own assertion underneath, because it no longer HAS a
+   * four-track row to floor -- see the second test.
+   */
+  const ruleFor = (selector: string): string => {
+    const at = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{`, 'm').exec(
+      STYLES,
+    )
+    expect(at, `styles.css must declare a top-level ${selector} rule`).not.toBeNull()
+    return STYLES.slice(at!.index).split('}')[0] ?? ''
+  }
+
   it('floors the name track and lets the bar give way', () => {
-    const block = STYLES.split('.ctl-util {')[1]
-    expect(block, 'styles.css must declare a .ctl-util rule').toBeDefined()
-    const rule = (block ?? '').split('}')[0] ?? ''
-    const tracks = /grid-template-columns:\s*([^;]+);/.exec(rule)
+    const tracks = /grid-template-columns:\s*([^;]+);/.exec(ruleFor('.ctl-util'))
     expect(tracks, '.ctl-util must declare its tracks').not.toBeNull()
     const first = (tracks?.[1] ?? '').trim()
     expect(
@@ -740,5 +761,31 @@ describe('the capacity row protects the name, not the bar', () => {
       'the NAME is the first track and must not be able to reach zero width',
     ).toBe(false)
     expect(first).toMatch(/minmax\(\s*\d+(ch|px)/)
+  })
+
+  /**
+   * THE DRAWER'S VARIANT MAKES THE SAME PROMISE IN A DIFFERENT SHAPE, and this
+   * is where the promise now lives for it.
+   *
+   * F2 of `docs/audits/2026-09-23/overflow-inventory.md` measured the old
+   * four-column version failing it at the drawer's own default width: `cpu not
+   * sampled` rendered `cpu not sam…`, `never measured` rendered `never mea…`,
+   * `latest heartbeat 3m ago` lost 77%. Four columns need 431px of content in a
+   * 413px row, so no re-weighting of the tracks fixes it -- it only chooses
+   * which of the four is cut, and the two that were being cut were the WORDS
+   * that say a figure was never measured.
+   *
+   * So the row is two lines here: name and figure, then bar and provenance.
+   * The assertion is therefore structural rather than about a floor -- the
+   * named areas have to exist and the bar has to be on the second line, which
+   * is the arrangement in which both the hatch and the words survive.
+   */
+  it('gives the drawer row two lines, so neither the hatch nor the words is cut', () => {
+    const rule = ruleFor('.drawer .ctl-util')
+    const areas = /grid-template-areas:\s*([^;]+);/.exec(rule)
+    expect(areas, '.drawer .ctl-util must name its areas').not.toBeNull()
+    const flat = (areas?.[1] ?? '').replace(/\s+/g, ' ').trim()
+    expect(flat, 'the name and the figure share the first line').toContain("'name figure'")
+    expect(flat, 'the bar and the provenance share the second').toContain("'track by'")
   })
 })

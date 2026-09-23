@@ -193,118 +193,182 @@ export function OverviewScreen() {
       ),
     [capacity, tasks, leases, providers, accounts, workflows, stats],
   )
-  const found = checks.reduce((n, c) => n + (c.status === 'found' ? c.problems.length : 0), 0)
+  // `found` IS NOT COUNTED HERE ANY MORE, and that is the point. It existed to
+  // feed two things: the `has-alarm` class on the old five-card grid, and the
+  // Attention tile's figure. Both are gone -- the grid because three panels in
+  // two tracks has no orphan to manage, the tile because the lead says the
+  // same number at page rank one line above where the tile stood. The lead
+  // derives its own count from the same `checks`, so there is no second place
+  // for the figure to be computed and therefore no way for the two to disagree.
   const tenant = dataOf(tasks)?.tenant_id ?? null
 
   return (
     <>
       <style>{OVERVIEW_CSS}</style>
 
-      {/* TITLE, PROVENANCE AND ONE CONTROL. The section's own question is
-          printed directly above this by the shell, so there is no subtitle
-          here and no description: the facts strip is the whole of what this
-          screen says about itself, and it says it in six mono words.
-          `.ctl-page-head` wraps, which is the entire mobile strategy -- the
-          strip drops under the title at 390px rather than needing a second,
-          phone-only header. */}
-      <div className="ctl-page-head">
+      {/* TITLE, THEN PROVENANCE ON ONE LINE UNDER IT.
+          -------------------------------------------------------------------
+          This used to be a title on the left and a right-aligned cluster on
+          the right: three `.ctl-fact`s and a bordered `refresh` button, pinned
+          to the far edge of a 1145px column. Two problems with that, and the
+          second is the structural one.
+
+          It disagreed with every other screen in the product. `Screen`
+          (Shell.tsx) renders a title with a summary line UNDER it -- "26
+          loaded · 6 live · u-bogdan · read just now refresh" -- on Agents,
+          Runtimes, Pools, Accounts and the rest. The landing page was the one
+          screen with a different header, which is the most expensive place in
+          a console to be inconsistent.
+
+          And a right-aligned strip 900px from the title it qualifies is not
+          read as belonging to it. Provenance is a subtitle: it goes where a
+          subtitle goes.
+
+          The button went with it. `refresh` is one of three controls on this
+          screen that do not navigate, and it is the only one that wore a box;
+          `.ctl-link`'s ink-plus-underline is the affordance every other
+          in-page control here uses. */}
+      <div className="ctl-page-head ov-head">
         <h1>Overview</h1>
-        <div className="is-end ov-chrome">
-          <ul className="ctl-facts ov-chrome-facts">
-            <li className="ctl-fact">
-              <b>scope</b>
-              {/* THE SCOPE IS NOT DECORATION. `/v1/stats` and `/v1/tasks` are
-                  tenant-scoped while the `global` pool is platform-wide, so a
-                  figure on this screen means nothing until you know which of
-                  the two it is. */}
-              {tenant === null ? <i className="ctl-em">&mdash;</i> : tenant}
-            </li>
-            <li
-              className="ctl-fact ov-tally"
-              aria-label={readTally(reads.length, landed, pending, refused, broken)}
-            >
-              <b>reads</b>
-              {/* THE DOT IS THE SEVERITY AND THE FRACTION IS THE FACT. "8/8"
-                  with a green disc and "6/8" with a red diamond are different
-                  pictures before either is read, and the sentence that used to
-                  be here is this element's accessible name. */}
-              <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
-              <span className="ov-num">
-                {landed}/{reads.length}
-              </span>
-            </li>
-            <li
-              className="ctl-fact"
-              // INTERPOLATED, NEVER TYPED OUT. This used to be the words
-              // "every 20 seconds" three hundred lines from the constant.
-              aria-label={`re-read every ${POLL_MS / 1000} seconds`}
-            >
-              <b>poll</b>
-              <span className="ov-num">{POLL_MS / 1000}s</span>
-              <HelpCard topic="poll-cadence" />
-            </li>
-          </ul>
-          <button className="ov-refresh" onClick={refresh}>
-            refresh
-          </button>
+        <ul className="ctl-facts ov-prov">
+          <li className="ctl-fact">
+            <b>scope</b>
+            {/* THE SCOPE IS NOT DECORATION. `/v1/stats` and `/v1/tasks` are
+                tenant-scoped while the `global` pool is platform-wide, so a
+                figure on this screen means nothing until you know which of
+                the two it is. */}
+            {tenant === null ? <i className="ctl-em">&mdash;</i> : tenant}
+          </li>
+          <li
+            className="ctl-fact ov-tally"
+            aria-label={readTally(reads.length, landed, pending, refused, broken)}
+          >
+            <b>reads</b>
+            {/* THE DOT IS THE SEVERITY AND THE FRACTION IS THE FACT. "8/8"
+                with a green disc and "6/8" with a red diamond are different
+                pictures before either is read, and the sentence that used to
+                be here is this element's accessible name. */}
+            <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
+            <span className="ov-num">
+              {landed}/{reads.length}
+            </span>
+          </li>
+          <li
+            className="ctl-fact"
+            // INTERPOLATED, NEVER TYPED OUT. This used to be the words
+            // "every 20 seconds" three hundred lines from the constant.
+            aria-label={`re-read every ${POLL_MS / 1000} seconds`}
+          >
+            <b>poll</b>
+            <span className="ov-num">{POLL_MS / 1000}s</span>
+            <HelpCard topic="poll-cadence" />
+          </li>
+          <li className="ctl-fact">
+            <button className="ctl-link ov-refresh" onClick={refresh}>
+              refresh
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      {/* REGION 1 OF TWO -- THE LEAD.
+          -------------------------------------------------------------------
+          THE ONE QUESTION THAT CHANGES WHAT SOMEBODY DOES NEXT GETS THE TOP OF
+          THE PAGE, UNBOXED, AT PAGE RANK.
+
+          It used to be drawn twice at tile rank: a third of the metric strip
+          ("Attention · 10 things") and then the first card of a five-card
+          grid, in a box the same size and weight as Spend. A control plane
+          that gives "what is wrong" the same silhouette as "what did it cost"
+          has told its reader that the two are equally urgent, and the reader
+          believes it.
+
+          It is a `.section` rather than a `.ctl-card` because a region is a
+          change of subject rather than an object (design-system.md §13.3), and
+          this one is the subject of the page. The duplicate tile is GONE --
+          §14 of the sheet is about an absence occupying its space, not about
+          a fact occupying two. */}
+      <section className="section ov-lead">
+        <AttentionLead checks={checks} />
+      </section>
+
+      {/* REGION 2 -- THE STATE OF THE PLATFORM.
+          Four figures, then the three panels that hold the detail behind
+          them. One hairline separates it from the lead, which is §13.3's
+          region rule spent once on the page's one real change of subject
+          rather than four times on a list of boxes. */}
+      <section className="section ov-state">
+        <MetricStrip
+          capacity={capacity}
+          stats={stats}
+          accounts={accounts}
+          spend={spend}
+        />
+
+        {/* THE GRID IS ASYMMETRIC ON PURPOSE AND IT HOLDS THREE PANELS, NOT
+            FIVE. The old grid was `repeat(N, 1fr)` with ten parity selectors
+            underneath it, because five equal cards never fill a three-track
+            row and the last one had to be widened by whichever shortfall the
+            track count produced. Three panels in a stated two-track layout
+            has no orphan, so all ten of those rules are deleted along with
+            the bug class they were managing.
+
+            WIDTH IS ALLOCATED BY WHAT NEEDS IT. "Running" is a table and gets
+            two thirds; "Spend" is one figure and a bar and gets a third;
+            "Headroom" is a four-column utilisation row five times over and
+            gets the whole width -- which is also the fix for F1 of the
+            overflow inventory, where the same rows in a 400px card rendered
+            `mock · 1…` for `mock · 15 can start`. */}
+        <div className="ov-grid">
+          <section className="ctl-card ov-running">
+            <CardHead title="Running" href="#agents/running" cta="agents" />
+            <RunningBody tasks={tasks} stats={stats} />
+          </section>
+
+          <section className="ctl-card ov-spend">
+            <CardHead title="Spend" href="#history/timeline" cta="history" help="token-cost" />
+            <SpendBody state={spend} tasks={tasks} />
+          </section>
+
+          {/* TWO CARDS BECAME ONE PANEL, AND THAT IS AN INFORMATION
+              ARCHITECTURE CHANGE RATHER THAN A LAYOUT ONE.
+              ---------------------------------------------------------------
+              "Capacity" and "Subscription pool" were two boxes at opposite
+              ends of a five-card grid answering ONE question: can I start more
+              work, and what stops me. They are the two ceilings, and they bind
+              in sequence -- a task clears every pool in its list, then takes a
+              subscription account. Reading them as unrelated panels is how an
+              operator raises the pool that is not binding, which is the exact
+              mistake `CapacityBody`'s own comment says this screen exists to
+              prevent.
+
+              One panel, one title, two labelled groups inside it. The groups
+              keep their own provenance foot, because they are two different
+              reads and a single foot would have to average two ages. */}
+          <section className="ctl-card ov-headroom">
+            <CardHead
+              title="Headroom"
+              note={tenant === null ? undefined : `tenant ${tenant}`}
+              href="#pools/profiles"
+              cta="pools"
+              help="pools-all-at-once"
+            />
+            <div className="ov-groups">
+              <div className="ov-group">
+                <h3 className="ov-grouphead">By runner profile</h3>
+                <CapacityBody state={capacity} />
+              </div>
+              <div className="ov-group">
+                <h3 className="ov-grouphead">
+                  By subscription account
+                  <HelpCard topic="binding-window" />
+                </h3>
+                <AccountsBody state={accounts} />
+              </div>
+            </div>
+          </section>
         </div>
-      </div>
-
-      <MetricStrip
-        capacity={capacity}
-        stats={stats}
-        accounts={accounts}
-        spend={spend}
-        checks={checks}
-        found={found}
-      />
-
-      {/* `has-alarm` rather than an inline span on the grid, because the
-          stylesheet needs to know it. The rules that stop this grid ending
-          with a blank right column are parity selectors over the cards, and a
-          card that silently spans two tracks shifts every parity below it. */}
-      <div className={`ctl-cards ov-cols${found > 0 ? ' has-alarm' : ''}`}>
-        {/* THE ALARM TAKES THE TOP WHEN IT IS RINGING. With something to say it
-            spans every track and is the first card under the tiles; when every
-            check came back clear it collapses into one column and gets out of
-            the way. A control plane whose problem list is the same size
-            whether or not there are problems teaches you to stop looking. */}
-        <section className="ctl-card ov-alarm">
-          <CardHead title="Needs attention" help="all-clear-basis" />
-          <AttentionBody checks={checks} />
-        </section>
-
-        <section className="ctl-card">
-          <CardHead
-            title="Capacity"
-            note={tenant === null ? undefined : `tenant ${tenant}`}
-            href="#pools/profiles"
-            cta="pools"
-            help="pools-all-at-once"
-          />
-          <CapacityBody state={capacity} />
-        </section>
-
-        <section className="ctl-card">
-          <CardHead title="Running" href="#agents/running" cta="agents" />
-          <RunningBody tasks={tasks} stats={stats} />
-        </section>
-
-        <section className="ctl-card">
-          <CardHead title="Spend" href="#history/timeline" cta="history" help="token-cost" />
-          <SpendBody state={spend} tasks={tasks} />
-        </section>
-
-        <section className="ctl-card">
-          <CardHead
-            title="Subscription pool"
-            href="#pools/accounts"
-            cta="accounts"
-            help="binding-window"
-          />
-          <AccountsBody state={accounts} />
-        </section>
-      </div>
+      </section>
     </>
   )
 }
@@ -652,16 +716,38 @@ function Dial({
 }
 
 // ---------------------------------------------------------------------------
-// The metric strip
+// The fact strip
 // ---------------------------------------------------------------------------
 
 /**
- * Five tiles, four doorways. Four are anchors because the answer to the number
- * is on another screen and making the number itself the link removes a step;
- * "Attention" is not, because its answer is the card directly below it and a
- * link to the screen you are on is a click that does nothing.
+ * FOUR FIGURES, FOUR DOORWAYS, AND NO FIFTH.
  *
- * EVERY TILE HAS FOUR RENDERINGS AND THEY MUST NOT CONVERGE:
+ * WHAT CHANGED, AND WHY IT IS A STRUCTURAL CHANGE RATHER THAN A COSMETIC ONE.
+ *
+ *   1. THE ATTENTION TILE IS GONE. It said the same thing the lead directly
+ *      above it now says at page rank -- `10 things` over `10 things need
+ *      attention` -- and it said it in the same strip as four figures nobody
+ *      has to act on. A fact drawn twice is not emphasis; it is a reader
+ *      checking whether the two numbers agree. The coverage that used to be
+ *      its foot ("8/8 ran · 1 blind") moved with it, to the lead's qualifier,
+ *      where it is beside the list it qualifies.
+ *
+ *   2. THE THREE LIVE FIGURES DROPPED THEIR PROVENANCE FOOT AND SPEND KEPT
+ *      ITS. Running, Units held and Headroom are all on the same twenty-second
+ *      poll, and the page head says so once (`poll 20s`, `reads 8/8`); four
+ *      copies of "read just now" under four figures that were read by the same
+ *      timer is the same fact four times. Spend is the one read on this screen
+ *      that does NOT re-poll, so a figure hours old would otherwise sit beside
+ *      three that refreshed twenty seconds ago and look exactly like them --
+ *      and it is denominated in dollars. Its foot is unconditional and carries
+ *      its coverage as well as its age.
+ *
+ *      THE OTHER THREE ARE NOT SILENT WHEN THEY GO STALE. `footFor` still
+ *      renders under any figure whose reading is older than two poll periods,
+ *      so the foot appearing now MEANS something -- this figure is not from
+ *      the current poll -- where before it was there whatever happened.
+ *
+ * EVERY FIGURE HAS FOUR RENDERINGS AND THEY MUST NOT CONVERGE:
  *
  *   - a figure;
  *   - `.ctl-pending`, a moving bar at the geometry the figure will occupy: the
@@ -671,33 +757,22 @@ function Dial({
  *   - `.ctl-mark.is-unread`, dashed and amber: the platform may well have it,
  *     we did not get it.
  *
- * The last three are all "no number", and the temptation is to let a tile fall
- * from one into the next. It must not: "not measured" is a claim ABOUT THE
- * PLATFORM, and drawing it over a request that is still in flight tells the
- * reader the figure does not exist when what is true is that it has not
- * arrived. So `reading` is a prop, it outranks `absent`, and every caller
- * passes it.
- *
- * WHAT USED TO BE HERE. Every tile carried a `sub` line defining its own term
- * -- "LEASED, DISPATCHED, STARTING, RUNNING -- the states that reserve
- * capacity" and four more like it, about 60 words that never changed and were
- * read once. A definition is not a qualifier; it belongs in the `?` and in
- * the tile's accessible name, which is where `say` now puts it.
+ * The last three are all "no number", and the temptation is to let one fall
+ * into the next. It must not: "not measured" is a claim ABOUT THE PLATFORM,
+ * and drawing it over a request that is still in flight tells the reader the
+ * figure does not exist when what is true is that it has not arrived. So
+ * `reading` is a prop, it outranks `absent`, and every caller passes it.
  */
 function MetricStrip({
   capacity,
   stats,
   accounts,
   spend,
-  checks,
-  found,
 }: {
   capacity: Result<Capacity>
   stats: Result<Stats>
   accounts: Result<AccountsPage>
   spend: Result<SpendRollup>
-  checks: Check[]
-  found: number
 }) {
   const cap = dataOf(capacity)
   const st = dataOf(stats)
@@ -710,10 +785,6 @@ function MetricStrip({
           .filter(([s]) => CONCURRENCY_STATES.has(s as TaskState))
           .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
 
-  const blind = checks.filter((c) => c.status === 'blind').length
-  const ran = checks.filter((c) => c.status === 'clear' || c.status === 'found').length
-  const reading = checks.filter((c) => c.status === 'reading').length
-
   const pool = accountHeadroom(accounts)
   const sp = dataOf(spend)
 
@@ -724,7 +795,7 @@ function MetricStrip({
         label="Running"
         value={inFlight}
         unit="agents"
-        foot={footFor(stats, 'counted')}
+        foot={staleFoot(stats, 'counted')}
         reading={stats.status === 'loading'}
         unread={stats.status === 'error' ? errorHeading(stats.error) : null}
         tone={inFlight !== null && inFlight > 0 ? 'good' : undefined}
@@ -736,7 +807,7 @@ function MetricStrip({
         label="Units held"
         value={global ? global.active : null}
         unit={global ? `of ${global.effective_limit}` : undefined}
-        foot={footFor(capacity, 'read')}
+        foot={staleFoot(capacity, 'read')}
         reading={capacity.status === 'loading'}
         unread={capacity.status === 'error' ? errorHeading(capacity.error) : null}
         absent={
@@ -751,41 +822,30 @@ function MetricStrip({
       />
 
       <Tile
-        // THE ONE TILE THAT IS NOT A DOORWAY, because its answer is on this
-        // screen: the card below holds the same checks in full and each of its
-        // rows links to the object it is about.
-        label="Attention"
-        value={ran === 0 ? null : found}
-        unit={found === 1 ? 'thing' : 'things'}
-        // THE FOOT IS THE HONEST PART, AND IT IS A COUNT RATHER THAN A
-        // SENTENCE. A "0" with two checks blind is a reassurance nobody
-        // earned, so the coverage sits under the figure every time rather than
-        // only when it is convenient.
-        foot={
-          ran === 0 && reading > 0
-            ? `${reading}/${checks.length} reading`
-            : `${ran}/${checks.length} ran${blind > 0 ? ` · ${blind} blind` : ''}`
-        }
-        // Three states, not two. Every check still in flight is a READING;
-        // every check blind with none in flight is a failure to read.
-        reading={ran === 0 && reading > 0}
-        unread={ran === 0 && reading === 0 && blind > 0 ? 'no check could run' : null}
-        tone={found > 0 ? 'alert' : ran > 0 && blind === 0 && reading === 0 ? 'good' : undefined}
-        // DERIVED FROM THE CHECKS THEMSELVES, never from a list typed out
-        // here. The hand-written version named five sources for six checks and
-        // the one it left out, dispatch, is the loudest problem this screen
-        // can draw.
-        say={`Derived on every read from ${sourceList(checks)}. Nothing stores, routes or acknowledges an alert on this platform, so this is not an inbox.`}
+        href="#pools/accounts"
+        // "Account headroom", not "Headroom". The panel below is called
+        // Headroom and covers BOTH ceilings -- the pools and the subscription
+        // accounts -- while this figure is the account half alone. Two things
+        // one word apart, one of which is a subset of the other, is how a
+        // reader concludes the platform has 37% of its capacity left when what
+        // is true is that its best account does.
+        label="Account headroom"
+        value={pool.pct === null ? null : Math.round(pool.pct)}
+        unit={pool.pct === null ? undefined : '% left'}
+        foot={pool.usable === null ? undefined : `best of ${pool.usable}/${pool.total}`}
+        reading={pool.reading}
+        unread={accounts.status === 'error' ? errorHeading(accounts.error) : null}
+        absent={pool.absent === null ? null : pool.foot ?? pool.sub}
+        tone={pool.pct !== null && pool.pct < 15 ? 'alert' : undefined}
+        say={pool.sub}
       />
 
       <Tile
         href="#history/timeline"
         label="Token spend"
         value={sp && sp.costUsd !== null ? money(sp.costUsd) : null}
-        // THE AGE IS NOT OPTIONAL ON THIS ONE. Spend is the only read on the
-        // screen that does not re-poll, so without its age a figure hours old
-        // sits beside five that refreshed twenty seconds ago and looks exactly
-        // like them.
+        // THE AGE IS NOT OPTIONAL ON THIS ONE, which is why it calls `footFor`
+        // and its three neighbours call `staleFoot`. See the note above.
         foot={sp ? `${sp.attemptsWithCost}/${sp.attempts} · ${footFor(spend, 'summed') ?? 'not summed'}` : footFor(spend, 'summed')}
         reading={spend.status === 'loading'}
         unread={spend.status === 'error' ? errorHeading(spend.error) : null}
@@ -797,19 +857,6 @@ function MetricStrip({
               : null
         }
         say="Token cost summed one request per sampled task. It is a sample rather than a bill, and it never includes infrastructure: no billing integration of any kind records Cloud Run, Firestore or GCS spend."
-      />
-
-      <Tile
-        href="#pools/accounts"
-        label="Headroom"
-        value={pool.pct === null ? null : Math.round(pool.pct)}
-        unit={pool.pct === null ? undefined : '% left'}
-        foot={pool.usable === null ? undefined : `best of ${pool.usable}/${pool.total}`}
-        reading={pool.reading}
-        unread={accounts.status === 'error' ? errorHeading(accounts.error) : null}
-        absent={pool.absent === null ? null : pool.foot ?? pool.sub}
-        tone={pool.pct !== null && pool.pct < 15 ? 'alert' : undefined}
-        say={pool.sub}
       />
     </div>
   )
@@ -831,6 +878,30 @@ function sourceList(checks: Check[]): string {
 function footFor(r: Result<unknown>, verb: string): string | undefined {
   const at = ageOf(r)
   return at === null ? undefined : `${verb} ${timeAgo(at)}`
+}
+
+/**
+ * The same provenance line, but ONLY WHEN IT SAYS SOMETHING.
+ *
+ * Four identical "read just now" lines under four figures that were read by
+ * the same twenty-second timer is one fact printed four times -- and the page
+ * head already prints it once, as `poll 20s` beside the read tally. What is
+ * worth a line is a figure that is NOT from the current poll, which is what a
+ * paused tab, a failed re-read or a stale cache produces.
+ *
+ * TWO POLL PERIODS, NOT ONE. One period is the ordinary gap between a poll
+ * landing and the next one firing, so a threshold there would make the foot
+ * flicker on and off once every twenty seconds under a healthy platform --
+ * chrome that moves is chrome a reader learns to ignore.
+ *
+ * A read with no `fetchedAt` at all still renders nothing, exactly as before:
+ * `footFor` has no age to print and inventing one is the whole class of bug
+ * this file exists against.
+ */
+function staleFoot(r: Result<unknown>, verb: string): string | undefined {
+  const at = ageOf(r)
+  if (at === null) return undefined
+  return Date.now() - at > POLL_MS * 2 ? footFor(r, verb) : undefined
 }
 
 function Tile({
@@ -2202,25 +2273,44 @@ function rank(a: AccountsPage['accounts'][number], w: ReturnType<typeof bindingW
 
 /** How many problems are open by default. The rest are one click away, here. */
 const ATTENTION_ROWS = 4
-
 /**
- * The card.
+ * THE LEAD -- and it is a region of the page now, not the first card of a grid.
  *
- * THE COVERAGE DIAL IS THE HONESTY ENCODING, and it replaced ninety words.
- * The ring is the eight checks; the filled arc is the ones that RAN and the
- * hatched arc is the ones that could not. So a short problem list over four
- * blind checks and a short problem list over eight clear ones are different
- * pictures before either is read -- which is the whole point, because only one
- * of them is good news.
+ * WHAT MOVED, AND WHY IT IS A LEVEL CHANGE RATHER THAN A RESTYLE.
  *
- * WHAT WAS DELETED. `checks.map((c) => c.note).join(' · ')` rendered eight
- * full sentences on the healthy path, saying nothing was wrong eight different
- * ways -- the single largest block of prose on the landing screen and the one
- * that shipped unconditionally. The population each check cleared is now the
- * dial's filled arc and the note's `8 of 8 checks`; the sentences are in the
- * `all-clear-basis` topic and in this card's accessible names.
+ * This was a `.ctl-card`: a bordered, rounded, --surface panel with a head, a
+ * body, a full-bleed provenance foot, and a two-column `.ov-dialrow` inside it
+ * holding the ring on the left and the list on the right. Above it, a fifth of
+ * the metric strip said `Attention · 10 things` in a box of exactly the same
+ * weight as `Token spend`. So the screen drew the one question that changes
+ * what somebody does next TWICE, both times at the rank of a tile, in the same
+ * silhouette as four figures nobody has to act on.
+ *
+ * It is now the page's opening statement: a ring, a title at --t-title, the
+ * coverage beside it, and the problems as rows on the page background. No box,
+ * no card head, no card foot. §13.3 of design-system.md is the rule -- a
+ * REGION is a change of subject and is never a box; a PANEL is an object and
+ * draws the one box there is. "What is wrong" is the page's subject, not one
+ * of its objects.
+ *
+ * WHAT DID NOT MOVE -- THE HONESTY ENCODING, WHICH IS THE WHOLE POINT OF THE
+ * COMPONENT.
+ *
+ *   - THE COVERAGE DIAL IS UNCHANGED and still replaces ninety words. The ring
+ *     is the checks; the filled arc is the ones that RAN and the hatched arc
+ *     is the ones that could not. A short problem list over four blind checks
+ *     and a short list over eight clear ones are different pictures before
+ *     either is read, which is the whole point, because only one of them is
+ *     good news. `data-partial`, `is-partial` and `--pct` are the same three
+ *     attributes `honesty.prose.test.tsx` mutates against.
+ *   - THE ALL-CLEAR IS STILL ONLY AN ALL-CLEAR WHEN EVERY CHECK RAN, and the
+ *     `Absent` mark still names which of the three kinds of nothing it is.
+ *   - THE COVERAGE COUNTS ARE STILL UNCONDITIONAL. They were `.ctl-card-foot`;
+ *     they are the qualifier on the title's own line, which is closer to the
+ *     list they qualify than the bottom of a card was. `N blind` is still a
+ *     digit on the surface with the sentence as its accessible name.
  */
-function AttentionBody({ checks }: { checks: Check[] }) {
+function AttentionLead({ checks }: { checks: Check[] }) {
   const problems = checks
     .flatMap((c) => (c.status === 'found' ? c.problems : []))
     .sort((a, b) => (a.severity === b.severity ? b.n - a.n : a.severity === 'bad' ? -1 : 1))
@@ -2237,111 +2327,127 @@ function AttentionBody({ checks }: { checks: Check[] }) {
 
   return (
     <>
-      <div className="ctl-card-body">
-        <div className="ov-dialrow">
-          <Dial
-            kind={dialKind}
-            measured={checks.length === 0 ? 0 : (ran / checks.length) * 100}
-            say={
-              `${ran} of ${checks.length} checks ran and found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}.` +
-              (blind.length > 0
-                ? ` ${blind.length} could not run, so this list is incomplete: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
-                : '') +
-              (reading.length > 0
-                ? ` ${reading.length} still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}.`
-                : '') +
-              (clear.length > 0
-                ? ` Clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
-                : '')
-            }
-          >
-            {ran === 0 ? (
-              <span className="ctl-em">&mdash;</span>
-            ) : (
+      <div className="ov-lead-head">
+        <Dial
+          kind={dialKind}
+          measured={checks.length === 0 ? 0 : (ran / checks.length) * 100}
+          say={
+            `${ran} of ${checks.length} checks ran and found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}.` +
+            (blind.length > 0
+              ? ` ${blind.length} could not run, so this list is incomplete: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
+              : '') +
+            (reading.length > 0
+              ? ` ${reading.length} still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}.`
+              : '') +
+            (clear.length > 0
+              ? ` Clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
+              : '') +
+            // WHERE THE CHECKS COME FROM, AND WHAT THIS IS NOT. This sentence
+            // was the Attention tile's accessible name; the tile is gone (it
+            // said the lead's own figure a second time) and the claim is not,
+            // because "nothing stores, routes or acknowledges an alert here"
+            // is the one thing a reader must not assume the opposite of. It is
+            // DERIVED FROM THE CHECKS rather than typed out: the hand-written
+            // version named five sources for six checks, and the one it left
+            // out, dispatch, is the loudest problem this screen can draw.
+            ` Derived on every read from ${sourceList(checks)}. Nothing stores, routes or acknowledges an alert on this platform, so this is not an inbox.`
+          }
+        >
+          {ran === 0 ? (
+            <span className="ctl-em">&mdash;</span>
+          ) : (
+            <>
+              {problems.length}
+              <span className="ctl-figure-unit">open</span>
+            </>
+          )}
+        </Dial>
+
+        <div className="ov-lead-say">
+          {/* THE COUNT IS IN THE TITLE WHEN THERE IS ONE, which is the whole
+              reason the tile could go: `10 things need attention` at --t-title
+              is the same fact the tile carried, said once, at the rank the
+              fact deserves. With nothing found the title is the subject alone
+              and the `Absent` mark below it carries which kind of nothing. */}
+          <h2 className="ov-lead-title">
+            {problems.length === 0
+              ? 'Needs attention'
+              : `${problems.length} ${problems.length === 1 ? 'thing needs' : 'things need'} attention`}
+          </h2>
+          {/* NEVER OPTIONAL. What could not be checked is not a footnote: it
+              is the reason a short list is or is not good news. Each figure is
+              a digit on the surface and the names are the accessible name, the
+              same split every other figure on this screen makes. */}
+          <p className="ov-lead-cover ov-checks">
+            <span
+              aria-label={
+                clear.length === 0
+                  ? 'no check came back clear'
+                  : `clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
+              }
+            >
+              {ran}/{checks.length} ran
+            </span>
+            {blind.length > 0 && (
               <>
-                {problems.length}
-                <span className="ctl-figure-unit">open</span>
+                {' · '}
+                <span
+                  className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}
+                  aria-label={`${blind.length} could not run, so this list is incomplete: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`}
+                >
+                  {blind.length} blind
+                </span>
               </>
             )}
-          </Dial>
-
-          <div className="ov-dialrow-rows">
-            {problems.length === 0 && reading.length === 0 && (
-              <Absent
-                kind={
-                  blind.length === 0 ? 'zero' : blind.every((c) => c.admin) ? 'admin' : 'partial'
-                }
-                heading={blind.length === 0 ? 'Nothing wrong' : `${blind.length} not checked`}
-                say={
-                  blind.length === 0
-                    ? `All ${clear.length} checks ran and all ${clear.length} came back clear. This is a real all-clear over the population each check examined, not silence.`
-                    : `${blind.length} of ${checks.length} checks could not run, so this is a partial all-clear: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
-                }
-                help="all-clear-basis"
-              />
+            {reading.length > 0 && (
+              <>
+                {' · '}
+                <span aria-label={`still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}`}>
+                  {reading.length} reading
+                </span>
+              </>
             )}
-
-            {problems.length > 0 && (
-              <ul className="ov-problems">
-                {problems.slice(0, ATTENTION_ROWS).map((p, i) => (
-                  <ProblemRow key={`${p.headline}-${i}`} problem={p} />
-                ))}
-              </ul>
-            )}
-
-            {/* Cut, never dropped -- and the rest open HERE. This used to link
-                to a trouble board, which no longer exists and should not:
-                there is no problem section at any level, so the overflow
-                cannot be somebody else's problem. */}
-            {problems.length > ATTENTION_ROWS && (
-              <details className="ov-more">
-                <summary>{problems.length - ATTENTION_ROWS} more</summary>
-                <ul className="ov-problems">
-                  {problems.slice(ATTENTION_ROWS).map((p, i) => (
-                    <ProblemRow key={`${p.headline}-more-${i}`} problem={p} />
-                  ))}
-                </ul>
-              </details>
-            )}
-          </div>
+          </p>
         </div>
       </div>
 
-      {/* NEVER OPTIONAL, AND NOW A ROW OF COUNTS. What could not be checked is
-          not a footnote: it is the reason a short list is or is not good news.
-          Each figure is a digit on the surface and the names are the strip's
-          accessible name, the same split every other card on this screen
-          makes. */}
-      <p className="ctl-card-foot ov-checks">
-        <span
-          aria-label={
-            clear.length === 0
-              ? 'no check came back clear'
-              : `clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
-          }
-        >
-          {ran}/{checks.length} ran
-        </span>
-        {blind.length > 0 && (
-          <>
-            {' · '}
-            <span
-              className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}
-              aria-label={`${blind.length} could not run, so this list is incomplete: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`}
-            >
-              {blind.length} blind
-            </span>
-          </>
+      <div className="ov-lead-body">
+        {problems.length === 0 && reading.length === 0 && (
+          <Absent
+            kind={blind.length === 0 ? 'zero' : blind.every((c) => c.admin) ? 'admin' : 'partial'}
+            heading={blind.length === 0 ? 'Nothing wrong' : `${blind.length} not checked`}
+            say={
+              blind.length === 0
+                ? `All ${clear.length} checks ran and all ${clear.length} came back clear. This is a real all-clear over the population each check examined, not silence.`
+                : `${blind.length} of ${checks.length} checks could not run, so this is a partial all-clear: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
+            }
+            help="all-clear-basis"
+          />
         )}
-        {reading.length > 0 && (
-          <>
-            {' · '}
-            <span aria-label={`still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}`}>
-              {reading.length} reading
-            </span>
-          </>
+
+        {problems.length > 0 && (
+          <ul className="ov-problems">
+            {problems.slice(0, ATTENTION_ROWS).map((p, i) => (
+              <ProblemRow key={`${p.headline}-${i}`} problem={p} />
+            ))}
+          </ul>
         )}
-      </p>
+
+        {/* Cut, never dropped -- and the rest open HERE. This used to link
+            to a trouble board, which no longer exists and should not:
+            there is no problem section at any level, so the overflow
+            cannot be somebody else's problem. */}
+        {problems.length > ATTENTION_ROWS && (
+          <details className="ov-more">
+            <summary>{problems.length - ATTENTION_ROWS} more</summary>
+            <ul className="ov-problems">
+              {problems.slice(ATTENTION_ROWS).map((p, i) => (
+                <ProblemRow key={`${p.headline}-more-${i}`} problem={p} />
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
     </>
   )
 }
@@ -2402,17 +2508,18 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
 const OVERVIEW_CSS = `
 /* ---- page head ---------------------------------------------------------- */
 
-.ov-chrome {
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s3);
-  flex-wrap: wrap;
+/* TITLE OVER PROVENANCE, WHICH IS WHAT EVERY OTHER SCREEN IN THIS PRODUCT
+   ALREADY DOES. ".ctl-page-head" is a wrapping flex row with an ".is-end"
+   slot on the right; this screen stops using that slot and stacks instead,
+   because a strip pinned 900px from the title it qualifies is not read as
+   belonging to it. "Screen" (Shell.tsx) renders exactly this shape on Agents,
+   Runtimes, Pools and the rest, so the landing page stops being the one
+   screen with a different header. */
+.ov-head { display: block; }
+.ov-prov {
+  padding: 0;
+  margin: 6px 0 0;
 }
-/* The strip sits on the title's line rather than under it, so it reads as
-   chrome. No rule above or below it: a two-sided rule is a boundary at 3:1 and
-   the pair would be the loudest thing on a screen whose whole claim is that
-   the figures are. */
-.ov-chrome-facts { padding: 0; }
 
 /* Every figure that can change is tabular, everywhere. Not optional in a
    column of them, and the read tally changes on every poll. */
@@ -2423,95 +2530,141 @@ const OVERVIEW_CSS = `
 }
 .ov-tally { gap: 6px; }
 
-/* A CONTROL, DECLARED. A button left to the user agent wears \`buttonface\` and
-   a border nothing in this sheet chose, which the spacing probe reports as an
-   unresolvable colour rather than as a finding -- so it is spelled out. */
+/* THE BOX CAME OFF THE REFRESH CONTROL. It was the one control on this screen
+   wearing a 1px --line border, a radius and a --surface fill -- a button
+   silhouette for something that re-runs eight reads and changes no state.
+   §1.3's rule for an in-page control is ink plus an underline (.ctl-link), and
+   the three other controls on this screen already use it; a fourth answer to
+   "this is clickable" is what the primitive exists to stop. What is left here
+   is the reset a <button> needs in order to be a link. */
 .ov-refresh {
-  padding: 5px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text-dim);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  padding: 0;
+  border: 0;
+  background: none;
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
   cursor: pointer;
-  transition: border-color var(--ctl-dur) ease, color var(--ctl-dur) ease;
 }
-.ov-refresh:hover { border-color: var(--text-faint); color: var(--text); }
-.ov-refresh:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
-/* ---- the card grid ------------------------------------------------------ */
+/* ---- the panel grid ----------------------------------------------------- */
 
-/* THE COLUMN COUNT IS EXPLICIT, and it has to be. The only way to stop a grid
-   ending with a blank right column is to know which card lands in the last
-   row, and an nth-child selector cannot ask a browser how many tracks
-   auto-fit produced. One column, then two, then three, each stated. */
-.ov-cols {
+/* THE PARITY SELECTORS ARE GONE WITH THE GRID THAT NEEDED THEM.
+   ---------------------------------------------------------------------------
+   The old grid was five equal cards in one to three "1fr" tracks, and ten
+   nth-child rules underneath it widening whichever card landed last so the
+   page did not end with a blank right column under a column that was still
+   going. Every one of those rules existed to manage an orphan that only
+   exists because five equal objects never fill a three-track row.
+
+   There are three panels now and the layout is ASYMMETRIC, which removes the
+   orphan by construction: two tracks, and the panel that needs the width takes
+   it. "Running" is a table and takes two thirds; "Spend" is one figure and a
+   bar and takes a third; "Headroom" spans both, because it draws five
+   four-column utilisation rows and a 400px column is what turned
+   "mock · 15 can start" into "mock · 1…" (F1 of the overflow inventory).
+
+   One breakpoint, and it is the system's (§7.1). Below it everything stacks,
+   which is what a phone wants and what the old three-stage grid spent two
+   breakpoints and ten selectors arriving at. */
+.ov-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--ctl-s3);
+  gap: var(--ctl-s5);
   align-items: start;
 }
-@media (min-width: 900px) {
-  .ov-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 @media (min-width: 1280px) {
-  .ov-cols { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* TWO EQUAL TRACKS, NOT 2:1. Measured at 1440: the running table has three
+     columns -- a name, a state chip and an elapsed time -- and two thirds of
+     the page put 420px of nothing between the state and the runtime. A track
+     wider than its content is not generosity, it is a gap the eye has to
+     cross. Headroom is the panel that genuinely needs the width (five
+     four-column utilisation rows beside three account rows) and it is the one
+     that spans. */
+  .ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-headroom { grid-column: 1 / -1; }
 }
 
-/* The alarm spans every track when it has something to say. In CSS rather than
-   an inline style so the parity rules below can account for the two or three
-   tracks it consumes. */
-.ov-cols.has-alarm > .ov-alarm { grid-column: 1 / -1; }
+/* ---- the lead ----------------------------------------------------------- */
 
-/* NO PAGE MAY END WITH A BLANK RIGHT COLUMN WHILE THE LEFT CONTINUES.
-   This grid holds five cards. In two tracks with no alarm that is 2+2+1, and
-   the odd one out leaves half a row of empty page under a column that is still
-   going. The last card therefore widens to fill its row. WHICH card that is
-   depends on the track count and on whether the alarm consumed a whole row
-   first, so every combination is stated. With T tracks and N cards the last
-   row is already full when N (no alarm) or N-1 (alarm) divides by T; otherwise
-   the last card widens by the shortfall. Written as parity selectors so a
-   sixth card added later is handled without anyone remembering this comment. */
-@media (min-width: 900px) and (max-width: 1279px) {
-  .ov-cols:not(.has-alarm) > section:last-child:nth-child(odd) { grid-column: 1 / -1; }
-  .ov-cols.has-alarm > section:last-child:nth-child(even) { grid-column: 1 / -1; }
+/* THE REGION'S OWN RHYTHM. ".section" already supplies the large break and the
+   one hairline between the two regions of this page; what is set here is the
+   internal spacing, which is one step down so the lead reads as one block
+   rather than as two. */
+.ov-lead-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s3);
+  flex-wrap: wrap;
 }
-@media (min-width: 1280px) {
-  .ov-cols:not(.has-alarm) > section:last-child:nth-child(3n + 1) { grid-column: 1 / -1; }
-  .ov-cols:not(.has-alarm) > section:last-child:nth-child(3n + 2) { grid-column: span 2; }
-  .ov-cols.has-alarm > section:last-child:nth-child(3n + 2) { grid-column: 1 / -1; }
-  .ov-cols.has-alarm > section:last-child:nth-child(3n) { grid-column: span 2; }
+.ov-lead-say { flex: 1 1 260px; min-width: 0; }
+/* --t-title, which is the page's second rank and the rank this fact has. It
+   was --t-lead inside a card head, one step below, competing with four other
+   card heads of exactly the same size. */
+.ov-lead-title {
+  margin: 0;
+  font-size: var(--t-title);
+  line-height: var(--lh-title);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+/* THE COVERAGE, ON THE TITLE'S OWN BLOCK RATHER THAN IN A FOOT AT THE BOTTOM
+   OF A CARD. It is chrome about the list -- mono, micro, faint -- and it is
+   now within one line of the list it qualifies instead of below it. */
+.ov-lead-cover {
+  display: block;
+  margin: 2px 0 0;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+/* The rows sit under the ring rather than beside it. The old two-column
+   ".ov-dialrow" put a 96px ring in a third-width card and gave the problem
+   headlines about 230px, which is why they were the shortest sentences on the
+   screen. Full width, and they are sentences again. */
+.ov-lead-body { margin-top: var(--ctl-s3); }
+/* The lead's ring is smaller than a card's: it is a qualifier on a title, not
+   the subject of a panel. */
+.ov-lead .ov-dial { --dial-size: 64px; }
+/* The all-clear reads at the lead's rank, not at a card body's. */
+.ov-lead-body > .ctl-empty.ov-empty > h3 {
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
 }
 
-/* ---- the metric strip --------------------------------------------------- */
+/* ---- the fact strip ----------------------------------------------------- */
 
-/* The whole tile is the doorway. The answer to every figure on the strip is on
-   another screen, and making the figure itself the link removes a step. */
+/* THE WHOLE FACT IS THE DOORWAY. The answer to every figure on the strip is on
+   another screen, and making the figure itself the link removes a step.
+
+   THE HOVER IS AN UNDERLINE, NOT A BORDER, because there is no border any
+   more (§B6.1). It is also not a transform: a 1px lift on an unboxed fact
+   moves the text and nothing else, which reads as a rendering glitch rather
+   than as an affordance. */
 a.ov-tile {
   display: block;
   text-decoration: none;
   color: inherit;
-  transition: border-color var(--ctl-dur) ease, transform var(--ctl-dur) ease;
 }
-a.ov-tile:hover { border-color: color-mix(in srgb, var(--info) 55%, var(--line)); }
-a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-@media (prefers-reduced-motion: no-preference) {
-  a.ov-tile:hover { transform: translateY(-1px); }
+a.ov-tile:hover .ctl-metric-value {
+  text-decoration: underline;
+  text-decoration-color: var(--line-soft);
+  text-underline-offset: 4px;
 }
+a.ov-tile:hover .ctl-metric-label { color: var(--text-dim); }
+a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 
-/* A MARK IS NOT A FIGURE, so the value slot stops being a 30px number the
-   moment it stops holding one. .ctl-metric.is-absent already drops the step;
-   this aligns the mark on the same baseline the digit sat on so the strip does
-   not jump between states. */
-.ov-tile .ctl-metric-value { display: flex; align-items: center; min-height: 34px; }
+/* A MARK IS NOT A FIGURE, so the value slot stops being a figure-sized number
+   the moment it stops holding one. ".ctl-metric.is-absent" already drops the
+   step; this aligns the mark on the same baseline the digit sat on so the
+   strip does not jump between states. */
+.ov-tile .ctl-metric-value { display: flex; align-items: center; min-height: 30px; }
 
 /* READING. The third absence, and it must not look like either of the other
    two: .ctl-metric.is-absent is hatched and says the platform has no such
    figure, .ctl-metric.is-unread is dashed and amber and says the read failed.
-   This one is neither -- the request is still out -- so the tile keeps its
-   ordinary solid border and the slot holds a bar that is visibly still moving,
-   at the geometry the figure will occupy. It carries no text: a gradient has
-   no luminance a contrast gate can measure. */
+   This one is neither -- the request is still out -- so the fact keeps its
+   ordinary unpainted rule and the slot holds a bar that is visibly still
+   moving, at the geometry the figure will occupy. It carries no text: a
+   gradient has no luminance a contrast gate can measure. */
 .ov-pending { display: block; width: 64px; height: 18px; }
 
 /* A read in flight inside a card draws the rules of the table that is coming,
@@ -2673,12 +2826,77 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   border: 1px solid var(--ctl-absent);
 }
 
+/* ---- headroom: one panel, two groups ------------------------------------ */
+
+/* TWO CARDS BECAME TWO GROUPS INSIDE ONE PANEL, and the padding moved up with
+   them: the panel owns the inset once, and each group draws no edge, no fill
+   and no radius of its own. §13.3 -- a panel is the one box; what repeats
+   inside it is a row, and a row draws nothing. */
+.ov-groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ctl-s5);
+  padding: var(--ctl-pad-chrome);
+}
+@media (min-width: 900px) {
+  /* The two ceilings side by side, which is the whole reason they are one
+     panel: a task clears every pool in its list AND THEN takes a subscription
+     account, so the two are read together or not at all. */
+  .ov-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ov-group { min-width: 0; }
+/* THE RING STACKS ABOVE ITS ROWS INSIDE A GROUP, RATHER THAN STANDING BESIDE
+   THEM. ".ov-dialrow" is a two-column flex built for a card whose whole body
+   was one dial and one list; inside a half-width group it indented every
+   account row by the dial's 96px plus the gap, so the two groups in this panel
+   started their rows 120px apart and read as unrelated. Stacked, the ring is
+   the group's own summary figure and the rows below it line up with the
+   profiles on the left. The dial itself is untouched -- it still carries the
+   coverage as a filled-versus-hatched arc, which is the fact the strip's
+   figure above does NOT carry. */
+.ov-group .ov-dialrow { display: block; }
+.ov-group .ov-dial { margin-bottom: var(--ctl-s2); }
+/* THE GROUP LABEL IS A RANK BELOW THE PANEL TITLE AND A RANK ABOVE THE ROWS.
+   --t-meta in the mono/faint label treatment, which is §13.2's label rank --
+   mono plus --text-faint, with no uppercase and no tracking, because those
+   were the third and fourth channels on a distinction that already had two. */
+.ov-grouphead {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  margin: 0 0 var(--ctl-s2);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text-faint);
+}
+/* The group's body and provenance take the panel's inset from .ov-groups, so
+   they set none of their own. */
+.ov-group .ctl-card-body { padding: 0; }
+/* THE FOOT STOPS BEING A FULL-BLEED BAR AND BECOMES A CAPTION, because there
+   are two of them in one panel and two --surface-2 bars stacked inside one box
+   is two boxes with the lines rubbed out. It keeps the mono/micro/faint
+   treatment, which is what said "this is about the reading, not the reading"
+   before the fill did. TWO FEET RATHER THAN ONE, deliberately: these are two
+   independent reads and a single merged foot would have to average two ages. */
+.ov-group .ctl-card-foot {
+  margin: var(--ctl-s3) 0 0;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+}
+
 /* ---- capacity and accounts --------------------------------------------- */
 
-/* The utilisation primitive is sized for a full-width screen; in a card that
-   is a third of the page its four fixed columns leave the name nothing.
-   Narrowed here only, and scoped to this file's cards, so no other screen's
-   bars move.
+/* The utilisation primitive is sized for a full-width screen; inside the
+   headroom panel it shares the width with the account group, so the name still
+   needs a stated floor rather than whatever four fixed tracks leave it.
+
+   F1 OF THE 2026-09-23 OVERFLOW INVENTORY IS FIXED BY THE PANEL'S NEW WIDTH,
+   NOT BY THIS RULE. The capacity rows were in a 400px third-of-a-grid card,
+   where "mock · 15 can start" (160px of content) got a 79px name column and
+   rendered "mock · 1…" -- a prefix of a number standing where the number was.
+   The panel spans the grid now, so the group is ~550px at 1440 and the same
+   template gives the name about 300. The stated minimum below is what keeps it
+   from happening again when the panel is narrower than that.
 
    ABOVE 900px ONLY. The primitive deliberately drops the track and the "set
    by" column on a phone and keeps the name and the figure; an unscoped
@@ -2686,8 +2904,8 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    It is the primitive's decision to make, not this screen's. */
 @media (min-width: 900px) {
   .ov-dialrow-rows .ctl-util,
-  .ctl-card-body > .ctl-util {
-    grid-template-columns: minmax(0, 1fr) minmax(48px, 88px) 52px 96px;
+  .ov-group .ctl-card-body > .ctl-util {
+    grid-template-columns: minmax(14ch, 1fr) minmax(40px, 88px) max-content minmax(0, 96px);
     gap: var(--ctl-s2);
     padding: 4px 0;
   }
@@ -2707,10 +2925,18 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 /* ---- attention ---------------------------------------------------------- */
 
 .ov-problems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s2); }
+/* THE LINK FOLLOWS THE SENTENCE. In a third-width card the third track was
+   pinned to an edge 230px away and that read as a column; out here on the full
+   page the same rule put "open ->" 1,100px from the headline it opens, with a
+   white gap between them that a reader has to cross to connect the two. A row
+   that is a sentence plus its verb keeps the verb next to the sentence, so the
+   track list stops at the content and "justify-content: start" holds the row
+   there rather than stretching it to the region's width. */
 .ov-problem {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) max-content;
-  gap: var(--ctl-s2);
+  grid-template-columns: 8px minmax(0, auto) max-content;
+  justify-content: start;
+  gap: var(--ctl-s3);
   align-items: baseline;
   font-size: var(--t-body);
   line-height: var(--lh-body);
