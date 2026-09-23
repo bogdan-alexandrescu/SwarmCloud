@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { Em, Mark } from './AgentDetail'
+import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
 import { loadAgentDetail, loadAttempts } from './api'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
@@ -222,10 +222,17 @@ function AttemptCard({ g, eventsRead }: { g: Group; eventsRead: boolean }) {
   return (
     <section className="ctl-card att-card">
       <div className="ctl-card-head">
+        {/* THE OUTCOME IS A STATE, SO IT IS A CHIP (§6.6). Both of these were
+            `.tag`: a bordered box, 13px mono 600, UPPERCASE and tracked. Four
+            attempt cards put eight of them on one pane, and `OOM NEAR MISS`
+            was wide enough to break its own box onto a second line -- a chip
+            whose label wraps is a paragraph with a border. As chips they are a
+            mark and a lowercase word, in the same vocabulary as the run's own
+            state two panes away. */}
         <h2 className="ctl-card-title">
           {g.label}
-          {out && <span className={`tag ${out.tone}`}>{out.label}</span>}
-          {a?.oom_near_miss && <span className="tag full">OOM near miss</span>}
+          {out && <Chip tone={out.tone}>{out.label}</Chip>}
+          {a?.oom_near_miss && <Chip tone="bad">OOM near miss</Chip>}
         </h2>
         <span className="ctl-card-note">
           {g.events.length} ev{a !== null && ` · ${a.backend}`}
@@ -323,9 +330,15 @@ function AttemptCard({ g, eventsRead }: { g: Group; eventsRead: boolean }) {
  * The outcome chip. Exit 0 is the only success; a null exit code is three different things
  * depending on what else the document says -- never a zero, and never a failure.
  */
-function outcome(a: AttemptRow): { label: string; tone: string } {
+function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
   if (a.exit_code === 0) return { label: 'exit 0', tone: 'ok' }
-  if (a.exit_code !== null) return { label: `exit ${a.exit_code}`, tone: 'full' }
+  // `bad`, not `.tag`'s `full`. `full` was a pool word borrowed for a failure
+  // colour; the chip vocabulary names the thing it means, and `is-bad` is the
+  // diamond -- the one mark on the screen with corners.
+  if (a.exit_code !== null) return { label: `exit ${a.exit_code}`, tone: 'bad' }
+  // NEVER STARTED IS NOT A FAILURE AND NOT A ZERO. `unknown` is the hollow
+  // ring: the state exists and there is no outcome to report, which is exactly
+  // what the tone is reserved for (§1.3, §6.6).
   if (a.started_at === null) return { label: 'never started', tone: 'unknown' }
   // TWO WORDS, NOT A CLAUSE. "running, no exit code yet" and "ended with no
   // exit code recorded" were sentences inside a chip; the tone and the `exit`

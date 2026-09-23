@@ -23,7 +23,6 @@ import {
   newestHeartbeat,
   reasonCopy,
   restoredFrom,
-  stateGlyph,
   stateTone,
   usageOf,
   whyAgent,
@@ -173,11 +172,39 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
  * from silently rendering in the default grey, which is the colour reserved
  * for "we do not know".
  */
-function chipTone(tone: Tone | 'unknown'): string {
+export function chipTone(tone: ChipTone): string {
   return tone === 'wait' ? 'warn' : tone
 }
 
-function Chip({ tone, children }: { tone: Tone | 'unknown'; children: ReactNode }) {
+/**
+ * The tones a chip may take. `Tone` from types.ts is the derived one; the
+ * other three are states a chip can be in that no task ever is -- an outcome
+ * nobody recorded (`unknown`), a fact rather than a verdict (`info`), and work
+ * an operator has held (`paused`).
+ */
+export type ChipTone = Tone | 'unknown' | 'info' | 'paused'
+
+/**
+ * A MARK AND A WORD, and the mark is the ONLY shape in it.
+ *
+ * design-system.md §6.6 rebuilt this primitive and §11.2 names the one thing
+ * the screens still had to do: `{stateGlyph(state)} {state}` inside the chip
+ * is a SECOND shape encoding of the fact the `<i>` already carries, and the
+ * pill was the only reason it did not read as two dots. The pill is gone, so
+ * the duplicate is gone with it -- here, in Agents.tsx and in AttemptTimeline.
+ *
+ * NOTHING THAT CARRIED INFORMATION LEFT. The shape channel is a TONE channel
+ * (§6.6's table is ok/warn/bad/info/paused/unknown/live, not a state table)
+ * and the `<i>` still carries all of it; the WORD, which §6.6 makes mandatory,
+ * is what separates PARKED from READY from QUEUED and it is now at full ink
+ * rather than in a mid-tone hue. The glyph was a third copy of a fact already
+ * drawn twice.
+ *
+ * EXPORTED, because there were four state chips in this group and §9.3 asked
+ * for one. Agents draws it forty times a screen; AttemptTimeline draws the
+ * attempt outcome with it; this file draws the run's own state.
+ */
+export function Chip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
   return (
     <span className={`ctl-chip is-${chipTone(tone)}`}>
       {/* Decoration only. The word beside it carries the meaning, because a
@@ -475,11 +502,14 @@ function Headline({
         {/* The state as a `.ctl-chip`, not the old `.st` span: `.st` is only
             coloured inside `.row`, so in a heading it silently rendered in the
             heading's own faint grey -- the one element on the page whose colour
-            is load-bearing was the one with none. The glyph stays because
-            colour is never the only signal. */}
-        <Chip tone={stateTone(task.state)}>
-          <span aria-hidden>{stateGlyph(task.state)}</span> {task.state}
-        </Chip>
+            is load-bearing was the one with none.
+
+            THE GLYPH IS GONE (§11.2, §6.6). It sat between the chip's own `<i>`
+            and the word, and once the pill stopped hiding it, it was plainly a
+            second dot beside the first -- the owner's "decorative double dot",
+            here and in Agents.tsx. Colour is still not the only signal: the
+            `<i>` carries the silhouette and the WORD carries the state. */}
+        <Chip tone={stateTone(task.state)}>{task.state}</Chip>
         <LivenessBadge task={task} events={events} now={now} />
         {/* B28. The route has existed and worked since it was written and
             nothing in this app called it, so an operator watching an agent
@@ -1091,8 +1121,14 @@ function AttemptCard({
           Attempt {ordinal}
           <span className="count-chip">gen {a.generation}</span>
           <Chip tone={chip.tone}>{chip.label}</Chip>
-          {isLatest && <span className="tag wait">latest</span>}
-          {a.oom_near_miss && <span className="tag full">OOM near miss</span>}
+          {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
+              these four screens where a hairline box is the right answer --
+              Koyeb's rule, quoted in §6.6: their one pill-shaped element is
+              metadata in a grey outline, which is how they keep a pill from
+              meaning "status". It stays a `.tag`; what changed is that the two
+              STATES beside it stopped being one. */}
+          {isLatest && <span className="tag">latest</span>}
+          {a.oom_near_miss && <Chip tone="bad">OOM near miss</Chip>}
         </h2>
         <span className="ctl-card-note">{a.backend}</span>
       </div>
@@ -2221,7 +2257,12 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
             <a href={pr.url} target="_blank" rel="noreferrer">
               #{pr.number}
             </a>{' '}
-            <span className={`tag ${pr.state === 'open' ? 'ok' : 'wait'}`}>{pr.state}</span>
+            {/* The pull request's own state, from the same vocabulary as every
+                other state on this screen. An open PR is `info` rather than
+                `ok`: it is a FACT about the branch, not a verdict that the run
+                went well (§1.3 -- the accent is a fact or a link, never a
+                verdict), and `is-info`'s flat bar is the mark that says so. */}
+            <Chip tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</Chip>
             {pr.created === false && ' · reused'}
           </li>
         )}

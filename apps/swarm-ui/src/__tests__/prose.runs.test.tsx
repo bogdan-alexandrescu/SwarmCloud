@@ -431,6 +431,84 @@ describe('Agents, with every help card closed', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// 2b. The state, drawn once
+// ---------------------------------------------------------------------------
+//
+// NEW, AND IT PINS THE RESTRAINT PASS'S CHIP DECISION WHERE IT LANDS HARDEST.
+// design-system.md §6.6 rebuilt `.ctl-chip` as A MARK AND A WORD, and §11.2
+// names the screens' half of it: `{stateGlyph(state)} {state}` inside the chip
+// was a SECOND shape encoding of the same fact, which the pill was hiding. A
+// run list draws forty of these, so this is the screen where a regression
+// would cost the most and be noticed the least.
+//
+// WHAT MOVED, AND WHY THIS IS A STRONGER CLAIM THAN WHAT IT REPLACES. Nothing
+// here used to be asserted at all -- the run row's state was covered only by
+// the word budget, which a duplicate glyph does not move because a bullet is
+// not a word. The assertions below are on the ENCODING: one mark, the word at
+// full ink beside it, and the tone derived rather than guessed. The honesty
+// invariant is in the last two: the WORD is what separates PARKED from READY
+// from QUEUED (the mark is a tone channel, not a state channel), and a live
+// state must never borrow the healthy silhouette.
+describe('the run list draws a state once', () => {
+  it('gives a row exactly one mark, and the word beside it', async () => {
+    const container = await renderAgents()
+    const chip = container.querySelector('.row .ctl-chip')
+    expect(chip, 'the run row draws no state chip').not.toBeNull()
+
+    // ONE MARK. The chip's own `<i>` is the mark; a second `<i>`, or a
+    // `stateGlyph` bullet rendered beside it, is the "decorative double dot"
+    // the owner named and is what this assertion exists to catch.
+    expect(chip!.querySelectorAll('i').length, 'a second mark is drawn inside the chip').toBe(1)
+    expect(chip!.textContent, 'a bullet glyph survives beside the word').not.toMatch(
+      /[●○✓✗⌀⏸]/,
+    )
+
+    // THE WORD IS MANDATORY (§6.6) and it is the row's accessible route to the
+    // state: the mark is `aria-hidden`, so if the word goes, a screen reader
+    // is told nothing at all. Rendered uppercase by the API and lowercased by
+    // the sheet, so the assertion is case-insensitive on purpose.
+    expect(chip!.textContent?.trim()).toMatch(/^running$/i)
+  })
+
+  it('never lets a live state borrow the healthy mark', async () => {
+    const container = await renderAgents()
+    // RUNNING holds a pool slot and costs money; SUCCEEDED does not. The two
+    // must not resolve to the same silhouette, which is what would happen if a
+    // screen mapped the tone by hand instead of through `stateTone`.
+    const live = container.querySelector('.row .ctl-chip')
+    expect(live!.classList.contains('is-live'), 'a RUNNING agent is not marked live').toBe(true)
+    expect(live!.classList.contains('is-ok'), 'a RUNNING agent borrowed the healthy mark').toBe(
+      false,
+    )
+
+    // The `recent` tab holds the SUCCEEDED row, and it is the other half of
+    // the same claim.
+    fireEvent.click(screen.getByRole('tab', { name: /Recent/ }))
+    await waitFor(() => expect(container.querySelector('.row .ctl-chip.is-ok')).not.toBeNull())
+    expect(
+      container.querySelector('.row .ctl-chip.is-live'),
+      'a finished agent is still drawn as live',
+    ).toBeNull()
+  })
+
+  it('draws a workflow group rollup with the same chip, not a filled pill', async () => {
+    // `.roll` was a 999px pill with a tinted background and the word in
+    // `--*-ink`, uppercase and tracked -- the silhouette §6.6 measured at
+    // 102x23px and replaced. WHAT MOVED: the fact is unchanged and is still
+    // the rolled-up word; what went is a second way of drawing a state.
+    const container = await renderAgents()
+    fireEvent.click(screen.getByRole('tab', { name: /Recent/ }))
+    fireEvent.click(screen.getByLabelText(/group by workflow/i))
+    await waitFor(() => expect(container.querySelector('.section.group')).not.toBeNull())
+    const head = container.querySelector('.section.group > h2')
+    expect(head!.querySelector('.roll'), 'the rollup is still a filled pill').toBeNull()
+    const rollChip = head!.querySelector('.ctl-chip')
+    expect(rollChip, 'the rollup lost its state word').not.toBeNull()
+    expect(rollChip!.textContent?.trim()).toMatch(/^(running|succeeded|failed|waiting)$/)
+  })
+})
+
 describe('AgentDetail, with every help card closed', () => {
   it('writes an unmeasured peak as a mark and an em dash, never as a figure', async () => {
     const el = await renderDetail()
