@@ -64,7 +64,13 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  assert.equal(p.href, '#agents/workflows')
+  // `#work/workflows`, NOT `#agents/workflows`. The section was renamed and
+  // `checks.ts` was renamed with it; this literal was not. `agents` survives
+  // only as an alias, and `nav.links.test.tsx` fails any internal href that
+  // uses one -- so a check whose href still said `agents` would be a link this
+  // app WRITES in a spelling it has retired, which is the one thing an alias
+  // may never become.
+  assert.equal(p.href, '#work/workflows')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.
   assert.match(p.detail, /wf_5e5ad3b6f7da4299a839/)
