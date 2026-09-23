@@ -267,11 +267,18 @@ make smoke concurrency-test race-test quota-test failure-test load-test
 ```bash
 git checkout -b feature/thing
 # edit
-make lint test           # shellcheck, terraform fmt/validate, tflint, unit tests
-make build push deploy   # to dev
-make smoke
-git push -u origin feature/thing && gh pr create
+git commit && git push -u origin feature/thing
+gh pr create
+gh run list --branch feature/thing   # read the run
+gh run view <id> --log-failed        # read the failure
 ```
+
+**The lint, the tests, the build and the deploy are all CI's**, not this
+machine's: `application.yml` and `terraform.yml` gate the pull request, and
+`release.yml` builds, applies and deploys on the way to an environment. See
+[where the gates run](ci.md). The `make` targets above this section are how
+those workflows invoke each suite and how an operator drives a deployment they
+already have credentials for — they are not steps in authoring a change.
 
 **Never edit `apps/common/swarm_common/`.** It is frozen by `CONTRACT.md`. If a
 change is genuinely needed there, say so in the PR description rather than making
