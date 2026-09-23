@@ -76,27 +76,36 @@ export function Dock() {
     return () => clearInterval(id)
   }, [])
 
-  // THE OVERLAP BUG, AND WHY IT IS MEASURED RATHER THAN ASSUMED.
+  // `--dock-h`: WHAT IT IS STILL FOR, NOW THAT NOTHING RESERVES SPACE.
   //
-  // This is fixed to the viewport, so `.app` reserves its height as bottom
-  // padding through `--dock-h`. That property used to be published as
-  // `open ? height : DOCK_COLLAPSED` -- what the dock INTENDS to be, not what
-  // it IS -- and it was wrong in two states that are both on screen today:
+  // THE OVERLAP IS FIXED IN THE FRAME, NOT HERE. This used to be
+  // `position: fixed` over a scrolling document, and `.app` bought the space
+  // back as bottom padding through this property. Both are gone: `.ctl-frame`
+  // is a two-row grid and this component is row 2, so the bar cannot overlap
+  // the scroller at any offset and there is no reservation left to keep in
+  // step. See `App.tsx`'s frame comment and design-system §3.4.
+  //
+  // THE PROPERTY SURVIVES BECAUSE TWO STICKY COLUMNS STILL NEED IT. `.ctl-rail`
+  // and the inspector size themselves against the SCROLLPORT -- the viewport
+  // minus this row -- and neither can express that in CSS without knowing this
+  // height. Dragging the dock taller shortens both, which is correct and is
+  // the whole reason it is measured rather than assumed.
+  //
+  // IT IS THE MEASURED BOX, NOT `open ? height : DOCK_COLLAPSED`. That
+  // arithmetic is what the dock INTENDS to be, and it was wrong in two states
+  // that are both on screen today:
   //
   //   * COLLAPSED WITH AN EXPIRED SESSION. The re-auth button sits outside the
   //     disclosure on purpose, so a collapsed dock is the 28px line PLUS a
-  //     button. The page reserved 28px and the button ate the last row of
-  //     every screen -- on the one screen state where the row underneath is a
-  //     failure somebody is trying to read.
+  //     button, and the arithmetic says 28.
   //   * NO DOCK AT ALL. Before any route has been called this component
-  //     renders nothing, and the effect still reserved 28px of blank gutter at
-  //     the foot of the first screen anyone sees.
+  //     renders nothing, and the arithmetic still claims 28px.
   //
   // Reading the box removes the class of bug rather than the two instances:
   // anything that changes this element's height -- a drag, a wrap at 390px, a
-  // future row -- moves the page's reservation with it. The fallback is the
-  // old arithmetic, for jsdom (no layout engine, every box is 0px high) and
-  // for any browser without ResizeObserver.
+  // future row -- moves both readers with it. The fallback is the old
+  // arithmetic, for jsdom (no layout engine, every box is 0px high) and for
+  // any browser without ResizeObserver.
   useEffect(() => {
     const root = document.documentElement
     const el = shell.current

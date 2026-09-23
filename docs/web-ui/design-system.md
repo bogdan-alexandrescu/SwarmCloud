@@ -348,8 +348,16 @@ keyboard tabbing now stop with the dock's height still clear instead of parking
 the element they just focused underneath it. **That is not the whole fix and
 this document does not pretend it is.** A fixed bar over a scrolling document
 always has content behind it at some offsets; the only complete answer is for
-the dock to be a row of the frame's grid rather than an overlay, which is a
-change to `Shell.tsx`.
+the dock to be a row of the frame's grid rather than an overlay.
+
+**AMENDED AGAIN BY §12, WHICH DID THAT — and both reservations above are now
+DELETED.** `.app`'s bottom padding is a plain `48px` and the `html`
+`scroll-padding-bottom` is gone; the dock is row 2 of `.ctl-frame`. Neither
+reservation was kept "just in case", because a reservation for a hazard that no
+longer exists is how the next reader concludes the hazard still does — and with
+the dock in flow they would have been dead space at the foot of every screen.
+`--dock-h` survives, still measured from the real box, because `.ctl-rail` and
+the inspector size sticky columns against the scrollport. See §12.
 
 ---
 
@@ -1162,14 +1170,10 @@ document height 1127 → 1112px.**
 
 Stated here rather than discovered at 3am.
 
-* **The dock still overlays resting content.** `scroll-padding-bottom` fixes
-  programmatic scrolls; it does nothing for an element that simply *sits* at the
-  viewport's bottom edge, because the dock is an opaque `position: fixed` bar at
-  `z-index: 45`. Occlusion at `scrollY = 0`, measured before → after: 390px
-  2 → 2, 1024px 18 → 9, 1280px 24 → 10, 1440px 3 → 2. The specific collision the
-  owner screenshotted is gone only because the 96px ring that was sitting there
-  is gone. **The complete fix is for the dock to be a row of the frame's grid
-  rather than an overlay**, which is `Shell.tsx` and belongs to the frame.
+* ~~**The dock still overlays resting content.**~~ **CLOSED BY §12**, which
+  made it a row of the frame's grid. Left here rather than deleted because this
+  entry is the third time the item appeared and the first two both read
+  "fixed": see §12.3 for what that cost and how the claim is checkable now.
 * **Overview's spend bar is still four saturated hues in one 8px rule** with the
   legend on the line below carrying no swatch. `.ov-mix` and `.ov-s1..4` live in
   `Overview.tsx`'s injected sheet. Screen phase: either one hue with the four
@@ -1209,3 +1213,119 @@ proved with a **viewport-relative DOM measurement and a screenshot that was
 read**, at 1440×900 and 390×844, before and after. A full-page capture is not
 evidence for a `position: fixed` dock: it paints the bar at its scroll position
 and will mislead you.
+
+---
+
+## 12. The frame — the dock stops being an overlay
+
+§11.3 left one item open and named its fix: *"the complete fix is for the dock
+to be a row of the frame's grid rather than an overlay."* This section is that
+change, and — because this item has now been declared fixed three times — it
+leads with the part that is easy to overstate.
+
+### 12.1 What it does NOT change, measured before claiming what it does
+
+**At steady state, with `--dock-h` correct, flow content renders
+pixel-for-pixel the same.** This was checked, not assumed: Overview at 1440×900
+and at 390×844, dock collapsed and dock open, before and after, screenshots read
+side by side. They are the same image.
+
+The arithmetic says they must be. With the old overlay, the viewport showed
+`scrollTop … scrollTop + 844` and the bar painted over the last `--dock-h` of
+it, so the operator saw `scrollTop … scrollTop + 604`. With the frame, the
+scroller *is* 604px tall and shows exactly that. Max scroll matches too, because
+`.app`'s old `padding-bottom: calc(var(--dock-h) + 48px)` contributed precisely
+the height the scroller now loses.
+
+**So this is a structural change, not a cosmetic one, and it should not be sold
+as a visible redesign of anything.** Anyone re-reading this with a screenshot in
+hand and finding no difference has found the truth, not a failure.
+
+### 12.2 What it does change
+
+The old guarantee held only while **two reservations stayed in step with a
+measured custom property**. The new one holds by construction: `.ctl-scroll`'s
+bottom edge *is* `.ctl-dock`'s top edge, because they are adjacent rows of the
+same grid. Concretely:
+
+All four counts below are `.app` leaf elements rendered beneath the bar on the
+Overview, measured in the browser at `scrollTop = 0` unless stated.
+
+| | Overlay | Frame |
+|---|---|---|
+| dock **open** (240px), 390×844 | **8** | **0** |
+| dock collapsed (29px), 390×844 | **3** | **0** |
+| dock collapsed (29px), 1440×900 | **1** | **0** |
+| dock collapsed, 390×844, `scrollTop = 600` | — | **0** |
+| what enforces it | `--dock-h` + `.app` padding + `scroll-padding-bottom` | one `grid-template-rows` |
+| correct on first paint, before any effect runs | no — `--dock-h` is published by a `useEffect` | yes, no JS involved |
+| covers a `position: absolute` popover near the bottom edge | yes, `z-index: 45` beats it | n/a, nothing is layered |
+
+The frame's zeros are not a tuned result — they are the same zero at every
+scroll offset and every width, because the scroller cannot paint outside its own
+box. The `scrollTop = 600` row is there because it was checked, not because it
+could have come out differently.
+
+The row that matters is the first: those 8 elements were **in the DOM, reported
+visible, focusable and hit-testable, while being invisible to the eye**. That is
+the gap `scroll-padding-bottom` was patching. It is gone rather than patched,
+and the honesty invariant is the reason to care — a figure an operator cannot
+see is not a figure they were shown.
+
+### 12.3 Why the claim is checkable now, when twice it was not
+
+Both previous passes reported this fixed. Neither was lying; both were asserting
+a property no gate could evaluate, and `spacing.test.tsx` cannot evaluate it
+either (§11.5 — jsdom, no layout engine).
+
+`shell.test.tsx`'s dock case is therefore **re-pointed rather than deleted**: it
+asserted `position: fixed` and `bottom: 0`, which is the overlay encoding and
+would now pin the bug. It asserts the frame instead — `display: grid`,
+`grid-template-rows: minmax(0, 1fr) auto`, `height: 100%`, and the dock *not*
+being `fixed`. Its docstring says what moved and why.
+
+**Both assertions were proved by mutation, not by passing.** Restoring
+`position: fixed` to `.ctl-dock` fails it; removing `min-width: 0` from
+`.ctl-scroll` fails it. A test that passes against the broken code is what got
+this item declared fixed twice.
+
+### 12.4 The two `min-*: 0`, and the regression that found the second
+
+A grid item defaults to `min-height: auto` / `min-width: auto` — *never shrink
+below your content*. Both had to be overridden and each failure is a real one:
+
+* without `min-height: 0`, the scroller sizes to the document and pushes the
+  dock off the bottom of the viewport — the original overlap wearing a hat;
+* without `min-width: 0`, the column takes the widest screen's min-content width
+  and **the whole frame overflows sideways**. This shipped for one iteration of
+  this very pass and was caught in a 390×844 screenshot — every card ran off the
+  right edge — by nothing else. It is the §11.5 lesson arriving on schedule.
+
+`height: 100%`, not `100dvh`: `body` carries the safe-area insets as padding, so
+`100%` inherits the `html, body, #root { height: 100% }` chain and lands inside
+the notch and the home indicator, where a viewport unit would ignore both.
+
+### 12.5 Consequences, including one that belongs to another screen
+
+* **The open dock's `box-shadow` is gone.** `0 -8px 24px rgb(0 0 0 / .22)` lifted
+  a floating panel off a document sliding underneath it. Nothing slides
+  underneath it now, so the shadow drew a depth the layout no longer has —
+  §11.2 took `--ctl-shadow` off the card and the tile for the same reason. The
+  hairline `border-top` is the separation, which is the reference set's answer.
+* **`.drawer` now paints over the dock instead of being sliced by it.** Below
+  1100px the agent detail drawer is `position: fixed; bottom: 0; z-index: 40`,
+  and the dock used to win on `z-index: 45` — a chrome bar cutting the bottom
+  29px off a `role="dialog"`. A modal covering the bar is the conventional
+  outcome and the better one, but the dock is now hidden while that drawer is
+  open at phone width. If that is wrong, the fix is `bottom: var(--dock-h, 0px)`
+  on `.drawer`, which is the drawer's section, not the frame's, and was not
+  edited from here.
+
+### 12.6 Not fixed, and not by this pass
+
+* **iOS URL-bar behaviour is unverified.** `height: 100%` resolves against the
+  *large* viewport, so with the URL bar shown the frame can exceed the visible
+  area. This is unchanged from before the pass and was tested in a headless
+  browser that has no URL bar. `100dvh` is the candidate fix and it interacts
+  with the safe-area padding above; neither was measured on a device.
+* Everything else in §11.3 that is not the dock bullet still stands.

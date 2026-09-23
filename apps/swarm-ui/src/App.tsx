@@ -482,44 +482,65 @@ export function App() {
   const inspector = at.taskId !== null
 
   return (
-    <>
-      {/* OUTSIDE `.app`, DELIBERATELY. The header's environment bar is 3px
-          tall and spans the full viewport width -- that full width is what
-          makes it readable in peripheral vision and in a scaled-down
-          screenshot, and an element inside `.app` stops at the content
-          gutter. The bar's own padding uses the same `--app-pad` token `.app`
-          does, so the wordmark still lines up with the nav below it at every
-          breakpoint. */}
-      <ProductHeader />
-      <div className={`app${inspector ? ' has-inspector' : ''}`}>
-        <Rail at={at} go={go} />
+    // THE FRAME (§3.4, §11.3). Two rows: everything that scrolls, then the
+    // dock. The dock USED to be `position: fixed` over a document that
+    // scrolled under it, and an opaque bar over a scrolling document has
+    // content behind it at some scroll offset -- always, by construction. Two
+    // passes tried to buy that back with reservations (`.app`'s bottom
+    // padding, then `scroll-padding-bottom`) and neither could work: bottom
+    // padding only clears the END of the document and scroll-padding only
+    // affects scrolls the browser performs. At rest, at scrollY=0, the bar
+    // still painted over whatever happened to land under it -- which at
+    // 390x844 was the row the owner screenshotted.
+    //
+    // Making it a ROW removes the class of bug instead of the instances:
+    // there is no offset at which a grid row overlaps its sibling, so there is
+    // nothing left to reserve and nothing left to tune.
+    <div className="ctl-frame">
+      {/* THE SCROLLER. The header travels with the content on purpose -- the
+          rail's `position: sticky; top: 0` pins it once the header has
+          scrolled away, and that behaviour is unchanged because the header is
+          still inside the same scrolling box the rail is. */}
+      <div className="ctl-scroll">
+        {/* OUTSIDE `.app`, DELIBERATELY. The header's environment bar is 3px
+            tall and spans the full viewport width -- that full width is what
+            makes it readable in peripheral vision and in a scaled-down
+            screenshot, and an element inside `.app` stops at the content
+            gutter. The bar's own padding uses the same `--app-pad` token
+            `.app` does, so the wordmark still lines up with the nav below it
+            at every breakpoint. */}
+        <ProductHeader />
+        <div className={`app${inspector ? ' has-inspector' : ''}`}>
+          <Rail at={at} go={go} />
 
-        {/* THE WORK AREA (§B3). A grid column, `min-width: 0`, no max-width.
-            Its own head sits inside it rather than above the rail, because the
-            head names the PAGE and the rail names the product. */}
-        <main className="work">
-          <Head at={at} section={section} />
+          {/* THE WORK AREA (§B3). A grid column, `min-width: 0`, no max-width.
+              Its own head sits inside it rather than above the rail, because
+              the head names the PAGE and the rail names the product. */}
+          <main className="work">
+            <Head at={at} section={section} />
 
-          {section === null ? (
-            at.sectionId === HELP ? (
-              <HelpScreen topic={at.tab} />
+            {section === null ? (
+              at.sectionId === HELP ? (
+                <HelpScreen topic={at.tab} />
+              ) : (
+                <ReferenceScreen />
+              )
             ) : (
-              <ReferenceScreen />
-            )
-          ) : (
-            <SectionBody sectionId={section.id} tab={at.tab} go={go} />
-          )}
-        </main>
+              <SectionBody sectionId={section.id} tab={at.tab} go={go} />
+            )}
+          </main>
 
-        {at.taskId !== null && <AgentDrawer taskId={at.taskId} pane={at.taskPane} go={go} />}
+          {at.taskId !== null && <AgentDrawer taskId={at.taskId} pane={at.taskPane} go={go} />}
+        </div>
       </div>
 
-      {/* THE DOCK (§B3), OUTSIDE `.app` for the same reason the header is:
-          it is fixed to the viewport and spans it. It also has to survive
-          navigation within the session, which a child of the routed body
-          could not. */}
+      {/* THE DOCK (§B3), A SIBLING OF THE SCROLLER RATHER THAN A LAYER OVER
+          IT. It is still outside `.app`, still spans the viewport, and still
+          survives navigation within the session -- it is rendered here, above
+          the routed body, exactly as before. What changed is that it now
+          OCCUPIES its height instead of borrowing it. */}
       <Dock />
-    </>
+    </div>
   )
 }
 
