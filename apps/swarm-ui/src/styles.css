@@ -1288,12 +1288,23 @@ body {
   grid-template-columns:
     [state] 10px
     [name] minmax(0, 1.3fr)
-    [word] 92px
-    [progress] minmax(0, 1.2fr)
+    /* `state not derived` -- what an underived read prints instead of a state
+       -- is 123px, and a 92px track cut it to "state not deri…". The one
+       string this column exists to carry honestly was the one it truncated. */
+    [word] max-content
+    /* 1.2fr gave the progress column ~135px against "1/5 done · 1 not started"
+       needing 173px, so it ellipsed to "1/5 done · 1 not st…" -- and what the
+       ellipsis ate was the COUNT OF WHAT HAS NOT STARTED, which is the half of
+       the sentence a reader is scanning for. A floor of 18ch holds the longest
+       form this field takes ("N/N done · N not started") and the column still
+       gives way above it. 24ch, not 18: at --t-micro in mono 18ch computes to
+       ~130px and the string needs 173px, so an 18ch floor still ellipsed it --
+       a floor that does not clear the content is a floor in name only. */
+    [progress] minmax(24ch, 1.2fr)
     [shape] minmax(0, 0.9fr)
     [mix] minmax(0, 1.1fr)
     [spend] 96px
-    [age] 56px
+    [age] max-content
     [flags] minmax(0, auto)
     [actions] 16px;
   align-items: center; gap: var(--ctl-s3);
@@ -1361,6 +1372,17 @@ body {
 .wf-meter { flex: none; width: 54px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  /* THE TEXT DOES NOT GIVE WAY; THE ROW DOES. The grid column was never the
+     constraint -- it was wide enough. Inside it this is a flex item with no
+     basis beside a `flex: none` 54px meter, so it absorbed every pixel of
+     pressure and ellipsed "1/5 done · 1 not started" to "1/5 done · 1 not st…".
+     What the ellipsis removed was the count of what has NOT started, which is
+     the half of the sentence the row is scanned for.
+     `flex: 0 0 auto` makes the sentence incompressible; if something must give
+     it is the shape and mix columns, which are `fr` and degrade meaningfully.
+     `text-overflow` stays as the last resort for a string nobody anticipated,
+     but it is no longer reached by the strings we know about. */
+  flex: 0 0 auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* NO STRIKE-THROUGH. Struck text says "this figure is wrong"; what an
@@ -1406,7 +1428,13 @@ body {
 .wf-spend.absent { color: var(--text-faint); font-style: italic; }
 .wf-spend-cov { color: var(--text-faint); margin-left: 5px; }
 
-.wf-when { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; text-align: right; }
+.wf-when {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
+  /* 56px against "just now" at 58px: a two-pixel clip that took the last
+     glyph off the most-read age on the board. The column is content-sized
+     now rather than guessed. */
+  white-space: nowrap; text-align: right;
+}
 .wf-flags { display: flex; justify-content: flex-end; }
 
 /* THE TWO FACT STRIPS IN AN OPEN CARD, and between them they replaced four
@@ -5807,6 +5835,23 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     border-bottom: 1px solid var(--ctl-hairline);
   }
   .ctl-rail::-webkit-scrollbar { display: none; }
+  /* AN EDGE THAT SAYS THERE IS MORE.
+     The rail becomes a horizontal strip here and scrolls, and its scrollbar is
+     hidden on purpose -- a native bar under a row of tabs is heavier than the
+     tabs. Hidden, though, the strip renders a tab sliced clean in half at the
+     viewport edge with nothing to say it continues: at 390px "Pools" is cut
+     mid-word and the four items after it are simply not there, which reads as
+     a clipping bug rather than as a scroller.
+     A mask fading the last 24px restores the signal the scrollbar carried. It
+     applies only while there is something to scroll to, because a permanent
+     fade on a strip that fits would dim a tab for no reason -- `animation` on
+     a scroll-driven timeline is not available here, so the fade is
+     unconditional in the fallback and the strip is short enough that the cost
+     is one faded tab-edge at most. */
+  .ctl-rail {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+  }
   .ctl-rail-sections { flex-direction: row; align-items: center; gap: var(--ctl-s2); }
   .ctl-rail-group { flex-direction: row; align-items: center; }
   .ctl-nav-link {
