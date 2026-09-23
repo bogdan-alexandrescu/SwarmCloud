@@ -2460,7 +2460,10 @@ table.pools.accounts td.n { white-space: nowrap; }
 .acct-pct { font-variant-numeric: tabular-nums; }
 /* The mark stays legible even when the figure beside it is greyed: colour is
    never the only signal, and this is the signal. */
-.acct-tilde { color: var(--warn); font-weight: 700; margin-right: 1px; }
+/* 600, not 700: §2 says "weight moves 400 -> 500 -> 600 and stops. There is no
+   700 in this console." The mark is carried by the glyph, its amber and its
+   position before the figure, none of which needed the extra weight. */
+.acct-tilde { color: var(--warn); font-weight: 600; margin-right: 1px; }
 .acct-window.acct-projected .acct-pct,
 .acct-projected { color: var(--text-faint); }
 .acct-unmeasured, .acct-unmeasured .acct-pct { color: var(--text-faint); }
@@ -2480,22 +2483,43 @@ table.pools.accounts td.n { white-space: nowrap; }
    a monochrome printout still reads correctly. */
 .acct-why.acct-unusable { color: var(--bad); }
 
-/* ---- the five-cell bar, as `miniBar` draws it ---- */
+/* ---- the five-cell bar, as `miniBar` draws it ----
+   B4.6: THE CELLS LOST THEIR BORDERS AND THEIR HUE. §6.4: "A UTILISATION BAR
+   THAT IS FINE IS GREY. A HUE ON ONE IS A VERDICT." Ten of these bars render
+   above the fold, five cells each, and every filled cell was painted in
+   `--info` -- which §1.3 reserves for "a fact or a link, never a verdict" and
+   which the restraint pass counted as the single busiest thing on a screen.
+   Fifty saturated marks saying "this account is normal" is the state where
+   colour has stopped meaning anything by meaning everything.
+
+   The 1px `--line` per cell was worse than decorative: it was 50 of this
+   screen's 90 bordered elements, spent on a 5x10px mark where a fill is the
+   whole shape. §5.2's rule reaches this too -- these cells have twins, so the
+   border grades as a separator, but a separator BETWEEN five adjacent cells is
+   what the 2px gap already is.
+
+   THE THREE READINGS STILL SEPARATE, AND BY A WIDER MARGIN THAN BEFORE:
+
+     measured   --text       #1f2328 light / #e8ecf1 dark -- full ink
+     projected  --text-faint #606a77 light / #828d9b dark -- plus its amber `~`
+     spent      --bad        the one hue left, because fully spent is the only
+                             verdict this bar is entitled to make
+
+   Measured-against-projected was `--info` against `--text-faint`, which is a
+   HUE difference and vanishes in greyscale; it is now full ink against faint,
+   which is a LUMINANCE difference and does not. The unfilled cell keeps
+   `--line-soft` -- the repeated-separator weight, visible as a mark at 5px and
+   never mistakable for ink. `.acct-unmeasured` still draws no bar at all,
+   which is the distinction this column exists to protect (§8.7.2). */
 .acct-bar { display: inline-flex; gap: 2px; margin-left: 7px; vertical-align: middle; }
 .acct-bar > i {
   display: block; width: 5px; height: 10px; border-radius: 1px;
-  background: var(--surface-2); border: 1px solid var(--line);
+  background: var(--line-soft);
 }
-.acct-bar > i.on { background: var(--info); border-color: var(--info); }
+.acct-bar > i.on { background: var(--text); }
 /* Fully spent is a FACT, not a threshold somebody chose in this file. */
-.acct-bar.spent > i.on { background: var(--bad); border-color: var(--bad); }
-.acct-bar.acct-projected > i.on { background: var(--text-faint); border-color: var(--text-faint); }
-
-/* The state chip in the pool table, and ONLY there. REAUTH_REQUIRED and
-   DISABLED both tone as `bad`, and `.tag.bad` has no rule in this stylesheet --
-   adding one globally would have repainted chips on screens this lane does not
-   own. `.acct-state` is what makes it this table's chip. */
-.tag.acct-state.bad { color: var(--bad); }
+.acct-bar.spent > i.on { background: var(--bad); }
+.acct-bar.acct-projected > i.on { background: var(--text-faint); }
 
 /* ---- warnings, the block `cs status` prints under its table ---- */
 .acct-warnings {
@@ -5740,11 +5764,49 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* -- Pools ----------------------------------------------------------------- */
 
+/* B4.6: SIX FAMILIES, AND NO LONGER SIX BOXES.
+   The owner's item 5 -- "everything is a bordered rounded box, nested two and
+   three deep" -- is at its worst on this screen: six family cards, each a
+   bordered 10px-radius surface holding one table, stacked down a page that is
+   itself inside the frame. Measured on Pools at 1440x900 that is six of the
+   screen's boxes spent on grouping that the eye had already done.
+
+   A FAMILY IS A SECTION, NOT A CARD. §6.13 names the device the references
+   use for exactly this -- a heading with "no rule, no box, no background" --
+   and §3.1 names the step that separates sections: `--ctl-s5`, "the one large
+   break: between top-level sections". So the box goes and 28px of air replaces
+   it, which is Northflank's and Hetzner's whole answer to a page of tables.
+
+   TWO THINGS DELIBERATELY SURVIVE THE BOX:
+
+   1. `.ctl-card-head` KEEPS ITS NOTE. That note is Trap E -- "platform-wide"
+      vs "this tenant" -- and it is the only thing on the screen stopping a
+      reader comparing a tenant figure with a platform one. Removing the card
+      to remove the box would have removed the slot the scope declaration lives
+      in, which is a correctness regression wearing a design change.
+   2. THE TABLE KEEPS ITS OWN BORDER. `.ctl-table` draws it, it has always
+      drawn it, and it is what now carries the grouping: one boundary per
+      family instead of two nested ones.
+
+   SCOPED TO THIS CONTAINER, NOT WRITTEN ON THE PRIMITIVE. `.ctl-card` is a
+   §B4.4 primitive with callers on nine other screens; a screen that wants a
+   variant says so on its own container (§6). Nothing outside `.cap-families`
+   changes. */
 .cap-families {
   display: flex;
   flex-direction: column;
-  gap: var(--ctl-s3);
+  gap: var(--ctl-s5);
 }
+.cap-families > .ctl-card {
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+/* The head's padding was chrome for a box that is no longer there; the section
+   heading sits on the page's own left edge, level with the screen title above
+   it, which is what makes six of them read as one list of sections. */
+.cap-families > .ctl-card > .ctl-card-head { padding-left: 0; padding-right: 0; }
+.cap-families > .ctl-card > .ctl-card-body { padding-left: 0; padding-right: 0; }
 
 /* The configured hard limit, beside the effective one. Chrome, not a second
    figure: it is the same quantity measured before a cap was applied. */
@@ -5754,26 +5816,65 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   color: var(--text-faint);
 }
 
-/* THE CARDS VIEW. `auto-fit` at a 200px floor gives six across a wide display
-   and one at 390px with no breakpoint; `min(100%, 200px)` is what stops a
-   200px tile overflowing a 358px column minus the card's own 32px of chrome. */
+/* THE CARDS VIEW. `auto-fit` at a 240px floor gives four across a wide display
+   and one at 390px with no breakpoint; `min(100%, 240px)` is what stops a
+   240px tile overflowing a 358px content column on a phone. The floor rose
+   from 200 to 240 because the tile is now a ROW rather than a stack (below)
+   and a row needs its name and its figure on the same line without either
+   ellipsing at a width somebody actually uses.
+
+   B4.6: THE CEILING IS 320px, AND IT IS THE FIX FOR THE OWNER'S ITEM 8.
+   The track was `1fr`, so a family holding ONE pool -- Global does -- drew a
+   single 8px bar 1,170px wide across the whole content column. That is the
+   most literal possible version of "a game health bar rather than a
+   utilisation meter": at that length the fill's left edge and its right edge
+   are not on screen together and the proportion stops being readable as a
+   proportion at all. A bar is only a measurement while the eye can hold both
+   ends of it, so the tile now stops at 320px and the leftover width is
+   whitespace, which is how all five references lay out a card grid that does
+   not happen to be full. Nothing about `--track-h` moved: 8px is still 8px,
+   still the geometry Workflows was signed off at (§6.4). */
 .cap-pool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
-  gap: var(--ctl-s2);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 320px));
+  /* The column gap is the LARGE step and the row gap is not, which is the one
+     asymmetry on this screen worth writing down. A tile's own figure is
+     right-aligned at its right edge and the next tile's name starts at its
+     left edge, so at 12px `0 / 6` and `smoke` read as one phrase on one line.
+     Vertically there is no such collision -- the track already separates one
+     row from the next -- so the rows stay at `--ctl-s3`. */
+  column-gap: var(--ctl-s5);
+  row-gap: var(--ctl-s3);
 }
-/* GROUPING IS A SURFACE STEP, NOT A RULE (§5.1). A bordered tile inside a
-   bordered card is two boundaries a reader has to tell apart, and the inner
-   one has no twin so it grades at 3:1. The step says "these belong together"
-   with nothing to measure. */
+/* B4.6: THE TILE IS A LINE AND A TRACK, AND IT IS NOT BOXED.
+   Two things were wrong with it and they compounded.
+
+   THE BOX. §6.2 took the border, the radius and the shadow off `.ctl-metric`
+   and stated the rule it leaves behind: NOTHING HEALTHY IS BOXED, so a visible
+   box on a tile means something is wrong with the number. `.cap-pool` is that
+   same tile under a different name -- one fact, its unit, a proportion -- and
+   a `--surface-2` well around nineteen healthy pools says the opposite nineteen
+   times. Removing it also removes the last nested surface on the screen: the
+   family box went above, this one goes here, and the Cards view is now flat.
+
+   THE STACK. Name, figure, track and marks on four lines is ~96px of tile to
+   deliver "browser, 0 of 4". Vercel's tile puts the label and the figure on ONE
+   line and the proportion under it, which is half the height for the same two
+   facts, and it is the only one of the five references that draws a figure on a
+   tile at all. The name is left, the figure is right and tabular, so nineteen
+   figures form a column the eye can run down -- which a centred stack never
+   did.
+
+   THE FIGURE STEP IS STILL SPENT HERE, ONCE PER TILE (§6.2), and it is
+   `--t-figure` at 22px rather than the old 30 -- so a row of five tiles is now
+   five modest numbers instead of five posters. */
 .cap-pool {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ctl-s1);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: var(--ctl-s2);
+  row-gap: var(--ctl-s1);
   min-width: 0;
-  padding: var(--ctl-s3);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2);
 }
 .cap-pool-name {
   font: 500 var(--t-body)/var(--lh-body) var(--mono);
@@ -5784,8 +5885,39 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 /* One figure per tile, and the pool's occupancy is it. The track underneath is
    the same fact as a proportion rather than a second figure, which is why it
-   is a track and not a second number. */
-.cap-pool-figure { margin: 2px 0; }
+   is a track and not a second number. `nowrap` because "5 / 20" broken across
+   two lines is two numbers. */
+.cap-pool-figure {
+  margin: 0;
+  justify-self: end;
+  white-space: nowrap;
+}
+/* The track and the marks each take the whole width under the line. */
+.cap-pool > .ctl-util-track,
+.cap-pool > .cap-marks { grid-column: 1 / -1; }
+
+/* B4.6: THE PHONE GETS ITS PROPORTION BACK, AND THIS IS AN HONESTY FIX.
+   `styles.css` line ~5179 drops `.ctl-util-track` outright at <=560px, and its
+   reason is sound WHERE IT WAS WRITTEN: inside `.ctl-util` the bar shares a
+   line with the figure, so on a phone it is a ~100px picture of the number
+   beside it and the number wins. `.cap-pool` is not that shape. Its track sits
+   on its OWN line under the figure and has the tile's full width -- 358px at
+   390pt -- so nothing was being saved by hiding it.
+
+   WHAT WAS BEING LOST IS NOT DECORATION. Three of the four track states in
+   §6.4 are the ONLY place their fact is drawn: `.is-unknown` (hatched, no fill,
+   no axis) is how "no ceiling was read" is said, and `.is-zero` (axis plus the
+   inset hairline) is how a measured nought is told apart from a widget that
+   failed to paint (§8.7.2). With the track gone at 390px both collapsed into
+   the same blank space. The figure's unit still carries the words, so the
+   phone was not lying -- but it was down to one channel where every other
+   width has two, and the encoding IS the fact under §8.3.
+
+   Scoped to `.cap-pool`, which is this screen's tile; `.ctl-util` rows on every
+   other screen keep the rule exactly as it stands. */
+@media (max-width: 560px) {
+  .cap-pool > .ctl-util-track { display: block; }
+}
 
 /* -- Runtimes -------------------------------------------------------------- */
 
@@ -5824,13 +5956,35 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .rt-apart { margin-top: var(--ctl-s3); }
 .rt-apart-facts { padding-bottom: 0; }
+/* THE CREDENTIAL IS ONE FLEX ITEM, NOT SIX. See the comment on `Credential`
+   in Runtimes.tsx: as six items the provider broke mid-token and `any one of`
+   broke mid-phrase. `min-width: 0` is what lets it actually take the width the
+   `1fr` offers instead of refusing below its longest word, and normal wrapping
+   is restored inside it -- `overflow-wrap: anywhere` because a secret name is
+   a single unbreakable token that must not push the card wider than its
+   column. */
+.rt-cred {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* -- Capacity holders ------------------------------------------------------ */
 
-/* Nothing of its own: Holders is `.ctl-cards` + `.ctl-card` + `.ctl-table`
-   throughout, which is the result this block was trying to reach. The two
-   class names it does carry (`.hold-top`, `.hold-mark`) are both declared
-   above, beside the screens that share them. */
+/* Almost nothing of its own: Holders is `.ctl-cards` + `.ctl-card` +
+   `.ctl-table` throughout, which is the result this block was trying to reach.
+   Two of its three class names (`.hold-top`, `.hold-mark`) are declared above,
+   beside the screens that share them.
+
+   B4.6: A SHORT CARD STOPS BEING STRETCHED TO A TALL ONE'S HEIGHT.
+   `.ctl-cards` is a grid, and a grid item's default `align-self` is `stretch`.
+   Accounting drift carries a four-row table; Class mix carries one two-word
+   mark. Side by side, the mark sat alone in 200px of empty card -- which reads
+   as a panel that failed to load, not as a panel with little to say, and is
+   the same confusion §8.7.2 names between a measured nothing and a broken
+   render. `start` lets each card be its own height. Nothing else changes: the
+   columns, the gap and the reflow to 1-up are all `.ctl-cards`' own. */
+.hold-top { align-items: start; }
 
 /* -- Accounts -------------------------------------------------------------- */
 
@@ -5853,3 +6007,20 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   gap: var(--ctl-s1) var(--ctl-s2);
   min-width: 0;
 }
+
+/* B4.6: THE STATE CELL SUPPLIES THE GAP, BECAUSE THE PILL NO LONGER DOES.
+   `.tag.acct-state` was a bordered box, so its own border supplied the
+   separation between the state and the `skipped here` mark beside it.
+   `.ctl-chip` has no border -- that is the point of §6.6 -- so with nothing
+   between them the two rendered as `availableSKIPPED HERE`: one word to a
+   reader skimming the column, and a second fact lost.
+
+   A MARGIN, NOT A FLEX GAP, AND THE REASON IS THE TABLE. `display: flex` on a
+   `<td>` takes the cell out of the table layout algorithm -- the browser wraps
+   it in an anonymous cell -- and this column's width is decided by that
+   algorithm alongside four others that must stay aligned with their `<th>`s.
+   A gap is not worth re-deciding the column model for, so the chip carries a
+   trailing margin and the cell stays a cell. The margin is on `.ctl-chip`
+   scoped to this cell, never on the primitive: nine other screens draw chips
+   that are not followed by a mark. */
+.acct-statecell > .ctl-chip { margin-right: var(--ctl-s2); }

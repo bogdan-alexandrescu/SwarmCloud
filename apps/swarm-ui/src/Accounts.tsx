@@ -33,9 +33,31 @@ import {
   type AccountAuthorization,
   type AccountReading,
   type AccountStateName,
+  type AccountTone,
   type AccountWindow,
   type RefreshResult,
 } from './types'
+
+/**
+ * `accountTone` -> the `.ctl-chip` modifier that draws it.
+ *
+ * WHY A TABLE RATHER THAN A TEMPLATE STRING. The five tones and the chip's
+ * five modifiers are NOT the same vocabulary: `wait` (DRAINING) has no `is-wait`
+ * and takes the caution triangle, which is the shape §6.6 assigns to
+ * "approaching a limit" and is what DRAINING is. Interpolating the tone into
+ * `is-${tone}` would have produced a class no rule matches, and an unmatched
+ * modifier on `.ctl-chip` does not fail loudly -- it falls back to
+ * `--chip-tone: var(--text-faint)`, the UNKNOWN mark. A DRAINING account would
+ * have rendered as an account whose state nobody derived, which is the exact
+ * class of lie §8.1 forbids. The map is what makes that impossible to write.
+ */
+const CHIP_MOD: Record<AccountTone, string> = {
+  ok: 'is-ok',
+  paused: 'is-paused',
+  wait: 'is-warn',
+  bad: 'is-bad',
+  unknown: 'is-unknown',
+}
 
 /**
  * THE ONE PROVIDER, AND THE ONE CREDENTIAL KIND -- stated, never picked.
@@ -560,8 +582,27 @@ function PoolRows({
         <WindowCell reading={five} window="five-hour" />
         <WindowCell reading={seven} window="seven-day" />
         <ClearsCell account={account} now={now} readAt={readAt} />
-        <td>
-          <span className={`tag acct-state ${tone}`}>{account.state}</span>
+        <td className="acct-statecell">
+          {/* B4.6: THE STATE IS A MARK AND A WORD, NOT A BADGE (§6.6).
+              This was `.tag.acct-state` -- a 1px border in the state hue, a
+              6px radius, 13px mono 500 UPPERCASE tracked, and the WORD itself
+              painted in the hue. Six of them down one column is six boxes to
+              say one word six times, which is the owner's "status chips are
+              heavy" on this screen.
+
+              `.ctl-chip` is the primitive that already made this decision for
+              the whole product, so this is a COLLAPSE (§9.3), not a restyle:
+              a 10px hued mark whose silhouette differs per state, and the word
+              beside it at --t-body in --text. NOTHING THAT CARRIED INFORMATION
+              WAS REMOVED -- the tone moved from `color` to `--chip-tone`, and
+              the shape vocabulary is a second, greyscale-safe channel the
+              bordered pill never had. The word arrives from the API shouting
+              (`REAUTH_REQUIRED`); the chip lowercases it exactly as `.wf-state`
+              does on Workflows, which §6.6 names as the screen to match. */}
+          <span className={`ctl-chip acct-state ${CHIP_MOD[tone]}`}>
+            <i aria-hidden="true" />
+            {account.state}
+          </span>
           {/* BEFORE the state's own note, and not instead of it. The state is
               still AVAILABLE and that is still true: the account is fine, the
               pool simply will not hand it to THIS tenant while the report
@@ -1587,7 +1628,14 @@ function Lending({
         <button type="button" onClick={() => void save()} disabled={!dirty || busy}>
           {busy ? 'saving…' : 'save lending'}
         </button>
-        {saved && <span className="tag ok">saved</span>}
+        {/* The second `.tag` on this screen, collapsed into the same primitive
+            for the same reason as the state chip above. */}
+        {saved && (
+          <span className="ctl-chip is-ok">
+            <i aria-hidden="true" />
+            saved
+          </span>
+        )}
       </span>
       {includesOwner && (
         <p className="muted small">

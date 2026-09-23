@@ -620,29 +620,44 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
 function Credential({ runtime }: { runtime: Runtime }) {
   if (runtime.provider === null) {
     return (
-      <>
-        {/* Not "unknown", and not an em dash: em dash means "not measured", and
-            this is measured. The answer is that it needs nothing. */}
+      /* Not "unknown", and not an em dash: em dash means "not measured", and
+         this is measured. The answer is that it needs nothing. */
+      <span className="rt-cred">
         <span className="ctl-chip is-ok">
           <i aria-hidden="true" />
           none needed
         </span>
-      </>
+      </span>
     )
   }
   if (runtime.secrets.length === 0) {
     return (
-      <>
+      <span className="rt-cred">
         <span className="mono">{runtime.provider}</span>{' '}
         {/* THE MARK STAYS. An empty credential cell beside a named provider is
             exactly what a failed read would look like, and this is not one --
             so it is marked as a measurement rather than left blank. */}
         <span className="ctl-mark is-zero">real zero</span>
-      </>
+      </span>
     )
   }
   return (
-    <>
+    /* B4.6: ONE WRAPPER, AND IT FIXES A REAL LAYOUT DEFECT.
+       `.ctl-fact` is `display: inline-flex`, so every child this component
+       returned became a FLEX ITEM of the fact: the provider span, the ` · `,
+       the `any one of`, and each secret. Flex items shrink independently, so
+       at the catalogue's card width the provider broke mid-token
+       (`demo-` / `vendor`) and the flag broke mid-phrase (`any` on one line,
+       `of` alone on the next, with `one` squeezed out of view). Both were
+       visible on the shipped Runtimes screen at 1440x900 and neither was a
+       gate failure -- `spacing.test.tsx` is jsdom and has no layout engine
+       (§0.3), so nothing in the repository could see it.
+
+       The wrapper makes the whole credential ONE flex item whose contents lay
+       out as ordinary text, which is what they are: a sentence fragment naming
+       a provider and its secrets. `secrets_any_of` stays WORDS, never a badge
+       -- the flag is the datum (§8.5.1) and this changes nothing about it. */
+    <span className="rt-cred">
       <span className="mono">{runtime.provider}</span> ·{' '}
       {runtime.secrets_any_of ? <strong>any one of</strong> : <strong>all of</strong>}{' '}
       {runtime.secrets.map((s, i) => (
@@ -651,7 +666,7 @@ function Credential({ runtime }: { runtime: Runtime }) {
           <code>{s}</code>
         </span>
       ))}
-    </>
+    </span>
   )
 }
 

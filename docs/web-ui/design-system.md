@@ -23,6 +23,13 @@ hold them (`test_ui_contrast.py`, `test_state_colour_discriminability.py`,
 different set of numbers and the same screens. Everything below either restates
 a decision that is already load-bearing or fills a hole the audit named.
 
+**AMENDED BY §11 (tokens) AND §12 (the first screens).** §11 moved the token
+layer and restyled no screen; §12 is the first section that restyles any, and
+it covers the four number-dense ones — Pools, Runtimes, Capacity holders,
+Accounts. §12 *applies* §§6.2, 6.4 and 6.6 rather than changing them, and it
+adds exactly one rule the system did not have (§12.3). **Read §12.4 with
+§11.3**: together they are the complete list of what is still wrong.
+
 **AMENDED BY §11, THE RESTRAINT PASS.** The owner's read of the shipped console
 was *"the design looks almost cartoonish"*, and the measurement found specific,
 countable causes rather than a general one. §11 is the record of what moved and
@@ -1186,6 +1193,11 @@ Stated here rather than discovered at 3am.
   box axis (Accounts: 87 full boxes, 128 bordered; Pools: 186 bordered, 47 pill
   radii) and the owner only screenshotted Accounts. Their state pills are
   screen-private classes, so the chip rebuild did not reach them.
+  **→ DONE IN §12.** The capacity-group screen pass collapsed `.tag.acct-state`
+  into `.ctl-chip` and took the hue and the 50 cell borders off the five-cell
+  bar; Pools lost its six nested family boxes. Measured in a browser, before →
+  after: **Accounts bordered 90 → 39, saturated borders 25 → 6, saturated
+  backgrounds 14 → 6, saturated text 19 → 13; Pools full boxes 15 → 9.** §12.
 
 ### 11.4 What must not be "improved"
 
@@ -1209,3 +1221,203 @@ proved with a **viewport-relative DOM measurement and a screenshot that was
 read**, at 1440×900 and 390×844, before and after. A full-page capture is not
 evidence for a `position: fixed` dock: it paints the bar at its scroll position
 and will mislead you.
+
+---
+
+## 12. The capacity group — the first screen pass
+
+**§11 was the token layer and said so: "No screen was restyled."** This is the
+first section that restyles screens. It covers the four number-dense ones —
+**Pools (`Capacity.tsx`), Runtimes, Capacity holders, Accounts** — and it
+amends §6.2, §6.4 and §6.6 by *applying* them rather than by changing them.
+Nothing in §§1–11 was re-decided. Where §12 needed something the system did not
+have, it is named below as an addition and it is screen-scoped.
+
+### 12.1 What the measurement found, on this HEAD rather than on the owner's screenshots
+
+The owner's screenshots predate §11, so every number below was re-measured in a
+browser at 1440×900 against the shipped tokens — otherwise this pass would have
+been fixing things §11 had already fixed. Two dev servers, the same DOM probe,
+before and after:
+
+| | Pools | Runtimes | Holders | **Accounts** |
+|---|---|---|---|---|
+| bordered elements | 26 → **20** | 29 → 29 | 11 → 11 | 90 → **39** |
+| full boxes (border + ≥6px radius, >60×20px) | 15 → **9** | 8 → 8 | 5 → 5 | 14 → 14 |
+| saturated borders | 0 | 0 | 0 | 25 → **6** |
+| saturated backgrounds | 20 | 5 | 4 | 14 → **6** |
+| saturated text | 1 | 1 | 1 | 19 → **13** |
+| uppercase elements | 60 | 93 | 16 | 67 → **61** |
+| largest type | 18px | 18px | 18px | 18px |
+
+**Accounts was by far the worst screen in the product and it is no longer the
+worst.** Pools' win does not show in `bordered` because what it lost was six
+*containers*, which is the `boxes` row. Runtimes' and Holders' rows are flat on
+purpose: what was wrong with them was not countable this way, and §12.4 says so
+rather than inventing a metric that would have moved.
+
+### 12.2 What moved
+
+1. **An account's state is a mark and a word** (§6.6 applied). `.tag.acct-state`
+   — a 1px border in the state hue, a 6px radius, 13px mono 500 UPPERCASE
+   tracked, with the **word itself painted in the hue** — is now `.ctl-chip`.
+   This is the collapse §9.3 asked for, not a new treatment: the primitive
+   already existed and Accounts was one of the four screens that had not
+   reached it. The tone moved from `color` to `--chip-tone`, so the word is
+   full ink and the mark carries the hue *and* a per-state silhouette, which is
+   a channel the bordered pill never had.
+
+   **`CHIP_MOD` is a lookup table and that is load-bearing.** `accountTone`
+   answers `ok | paused | wait | bad | unknown`; `.ctl-chip` ships
+   `is-ok | is-paused | is-warn | is-bad | is-unknown`. **They are not the same
+   vocabulary** — `wait` has no `is-wait` — and the obvious `is-${tone}` fails
+   *silently*, because an unmatched modifier falls through to the primitive's
+   default `--chip-tone: var(--text-faint)`, which is the **unknown** mark. A
+   DRAINING account would have rendered as an account whose state nobody
+   derived. That is §8.1's prohibition with the operands swapped and it is now
+   pinned by a test (§12.3).
+
+2. **A utilisation bar that is fine is grey** (§6.4 applied, to Accounts'
+   five-cell bar). Ten bars of five cells render above the fold and every
+   filled cell was `--info` — 50 saturated marks whose collective message was
+   "these accounts are normal". `--info` is "a fact or a link, never a verdict"
+   (§1.3). The fill is now `--text`; `--bad` survives for a fully spent window,
+   which is the one verdict this bar is entitled to make.
+
+   **The three readings separate by more than they did.** Measured was `--info`
+   and projected `--text-faint` — a *hue* difference, which vanishes in
+   greyscale. It is now full ink against faint, which is a *luminance*
+   difference and does not. The amber `~` is unchanged and `.acct-unmeasured`
+   still draws **no bar at all** (§8.7.2).
+
+   **The 1px `--line` per cell is gone.** Fifty of Accounts' ninety bordered
+   elements were spent outlining a 5×10px mark whose whole shape is its fill.
+   The unfilled cell is `--line-soft`, the repeated-separator weight.
+
+3. **The metric tile lost its box on Pools too, and gained a line** (§6.2
+   applied). `.cap-pool` is the same thing as `.ctl-metric` under another name
+   — one fact, its unit, a proportion — so it takes the same rule: **nothing
+   healthy is boxed.** Its `--surface-2` well is gone, which also removes the
+   last nested surface on the screen. It is now a **row** rather than a stack:
+   name left, figure right and tabular, track underneath. Measured, the tile
+   went **94px → 42px** high.
+
+4. **A family is a section, not a card.** Six bordered 10px-radius boxes, each
+   holding one table, stacked inside a page that is itself inside the frame.
+   §6.13 names the device the references use instead — a heading with "no rule,
+   no box, no background" — and §3.1 names the separator: `--ctl-s5`, "the one
+   large break: between top-level sections". The `.ctl-card-head` **keeps its
+   note**, because that note is Trap E (`platform-wide` vs `this tenant`) and
+   removing the card to remove the box would have removed the only thing
+   stopping a reader comparing a tenant figure with a platform one. Scoped to
+   `.cap-families > .ctl-card`; the primitive is untouched for its nine other
+   callers.
+
+5. **The proportion stops at 320px, and this is the answer to the owner's item
+   8.** The tile track was `1fr`, so a family holding one pool — Global does —
+   drew a single 8px bar **1,106px wide**. That is the most literal possible
+   "game health bar rather than a utilisation meter": at that length the fill's
+   two ends are not on screen together and the proportion stops reading as a
+   proportion. Measured, widest track **1106px → 320px**, and all nineteen
+   tracks are now one width instead of ranging 196–1106px.
+
+   **`--track-h` did not move and must not.** 8px is still 8px — §6.4 froze the
+   geometry because Workflows was signed off at it. What was wrong was the
+   *length*, which is the screen's, not the token's.
+
+6. **A short card stops being stretched to a tall one's height.** `.ctl-cards`
+   is a grid and a grid item stretches by default, so Holders' Class-mix card —
+   which carries one two-word mark — was held at the height of the four-row
+   table beside it. A mark alone in 200px of empty card reads as a panel that
+   failed to load, which is §8.7.2's confusion in a different costume.
+   `.hold-top { align-items: start }`. Measured **200px → 113px**.
+
+### 12.3 One new addition to the system, and one honesty fix nobody could see
+
+**THE ADDITION IS A SPACING RULE, AND IT EXISTS BECAUSE THE PILL WAS DOING A
+JOB NOBODY HAD NOTICED.** `.tag.acct-state` was a bordered box, so its border
+was the gap between the state and the `skipped here` mark beside it. `.ctl-chip`
+has no border by design, and with nothing between them the cell rendered
+`availableSKIPPED HERE` — one word to anyone skimming the column, and a second
+fact lost. `.acct-statecell > .ctl-chip { margin-right: var(--ctl-s2) }`.
+
+**A margin and not a flex gap, and the reason is the table.** `display: flex` on
+a `<td>` takes the cell out of the table layout algorithm, and this column's
+width is decided by that algorithm alongside four others that must stay aligned
+with their `<th>`s. A gap is not worth re-deciding the column model for.
+
+**THE HONESTY FIX: THE PHONE WAS DROPPING A PROPORTION.** `styles.css` drops
+`.ctl-util-track` outright at ≤560px, and the rule is right *where it was
+written* — inside `.ctl-util` the bar shares a line with the figure, so on a
+phone it is a ~100px picture of the number beside it. `.cap-pool` is not that
+shape: its track is on its own line with the tile's full width. Nothing was
+being saved, and what was being lost is not decoration. **Three of §6.4's four
+track states are the only place their fact is drawn** — `.is-unknown` (hatched,
+no fill, no axis) is how "no ceiling was read" is said, and `.is-zero` (axis
+plus inset hairline) is how a measured nought is told apart from a widget that
+failed to paint. With the track gone at 390px both collapsed into blank space.
+The figure's unit still carried the words, so the phone was not *lying* — but it
+was down to one channel where every other width has two, and §8.3 is explicit
+that the encoding **is** the fact. Re-shown, scoped to `.cap-pool`.
+
+**HOW THE TEST WAS WRITTEN, AND WHY IT IS A NEW FILE RATHER THAN A RE-POINT.**
+§8.8 says an assertion is re-pointed at the new encoding and never deleted.
+Before changing the chip, the existing suite was **mutated** to find out what it
+could see of the old one: duplicating the state word inside the chip —
+`{account.state}{account.state}` — left both `prose.budget.capacity.test.tsx`
+and `honesty.prose.test.tsx` green. **There was no assertion to re-point.** So
+`src/__tests__/encoding.accounts.test.tsx` is the assertion that was missing,
+and it was itself mutation-checked: replacing `CHIP_MOD[tone]` with
+`` is-${tone} `` fails it with *"DRAINING did not reach is-warn; it drew
+ctl-chip acct-state is-wait"*. It pins what this screen owns — that each state
+reaches its own modifier, that exactly one row may carry the unknown mark, and
+that the word and the mark never stand in for one another — and deliberately
+**not** the colours, sizes or shapes, which belong to `.ctl-chip` and are
+already held by `test_state_colour_discriminability.py`.
+
+### 12.4 What this pass did NOT fix
+
+* **Runtimes and Holders barely moved on any counter, and that is honest.**
+  What was wrong with Runtimes was a **layout defect no counter sees**:
+  `.ctl-fact` is `inline-flex`, so every child `Credential` returned became a
+  flex item, and at the catalogue's card width the provider broke mid-token
+  (`demo-` / `vendor`) and the flag broke mid-phrase — `any` on one line, `of`
+  alone on the next, `one` squeezed out of view. It is fixed by one wrapper
+  (`.rt-cred`) that makes the credential a single flex item laying out as
+  ordinary text. **`spacing.test.tsx` is jsdom and has no layout engine (§0.3),
+  so no gate in this repository could see it before or can confirm it now.** It
+  was found in a screenshot and is fixed in a screenshot.
+* **Runtimes still renders 93 uppercase elements on one screen.** They are
+  `.ctl-fact > b` — thirteen fact keys per card across four cards — and that
+  treatment is §6.13's decision, not this screen's. Changing it is a change to
+  the primitive and belongs in a pass that owns it.
+* **The `?` glyphs are still pills** (§11.3) and still come from
+  `HelpCard.tsx` / `HelpSection.tsx` React inline styles, which this pass did
+  not own. They are the largest remaining source of pill radii on all four
+  screens: 9 on Pools, 19 on Runtimes, 16 on Accounts.
+* **Accounts' `needs a person` banner is still a bordered, tinted box.**
+  `.banner` lives in the Trouble-board block of the sheet, not in this group's,
+  and one tinted box for the one thing that needs a human is defensible under
+  §6.9. It is named here so the decision is visible rather than assumed.
+* **`.ctl-mark` is unchanged**, so `NOT READ`, `SKIPPED HERE` and `PARTIAL` are
+  still bordered uppercase boxes. They look like the pill that was just
+  removed, and they are not the same thing: **the mark's border IS its
+  encoding** — dashed for a failed read, hatched for never measured, solid for
+  a real zero (§8.6). Softening them would spend the honesty channel to buy a
+  lower box count. If they are to change it must be as a redesign of the
+  absence vocabulary, with all eleven kinds moved together.
+* **The dock still overlays resting content at 390px**, exactly as §11.3 says.
+  Nothing here touches `Shell.tsx`.
+* **Pools' document got 68px taller** (2050 → 2118 at 1440×900). Six boxes were
+  traded for `--ctl-s5` of air between six sections, and air costs height. The
+  Cards view went the other way, 1821 → **1686**.
+
+### 12.5 One question this pass did not answer
+
+**Pools' Cards view and its Table view now disagree about what a family is.**
+In Cards the family is a section with a heading and no box; in Table it is the
+same, but the `.ctl-table` inside still draws its own border, so a reader
+toggling between them sees one boundary appear and disappear. Both are
+defensible and the toggle is an owner-facing control, so which one is right is
+a product judgement rather than a system one. Recorded, not decided — the same
+way §6.4 records `.wf-meter`'s blue.
