@@ -189,9 +189,53 @@ function Chip({ tone, children }: { tone: Tone | 'unknown'; children: ReactNode 
 }
 
 /** The em dash, as a token rather than a bare character, so "not measured" is
- *  styleable as a class of thing and never mistaken for a digit. */
-function Em() {
+ *  styleable as a class of thing and never mistaken for a digit.
+ *
+ *  EXPORTED because the other three screens of this group -- Agents,
+ *  AttemptTimeline and ArtifactViewer -- draw the same absence and were each
+ *  drawing it their own way. One definition, four screens. */
+export function Em() {
   return <span className="ctl-em">—</span>
+}
+
+/**
+ * THE SIX KINDS OF NOTHING, AS A SHAPE RATHER THAN A SENTENCE.
+ *
+ * This is `ABSENT_MARK` promoted out of this file's empty-state component and
+ * on to `.ctl-mark` (design-system.md §6.10, §8.6). It is the encoding the
+ * whole prose migration turns on, so it has to be one thing in one place: the
+ * six words are `measure.ts`'s own, and a screen does not get to invent a
+ * seventh phrasing of "we do not know".
+ *
+ * WHAT THE MARK CARRIES AND WHAT `say` CARRIES. The mark is the FACT -- two
+ * words, always rendered, greyscale-safe, legible in the screenshot somebody
+ * pastes into an incident channel at 3am, and readable with every help card
+ * shut. `say` is the same fact as a sentence, published as the mark's
+ * accessible name, so the words are on a keyboard and screen-reader route
+ * rather than only on a hover. That pairing is the difference between this and
+ * the attempt that turned the suite red: a `title=` has no visible anchor and
+ * no keyboard route at all.
+ *
+ * The REASONING -- why this figure can be absent, what would have written it --
+ * is neither of those. It is the `?` and `#help/<topic>`.
+ */
+export type MarkKind = 'zero' | 'absent' | 'unread' | 'partial' | 'admin' | 'pending'
+
+const MARK_WORD: Readonly<Record<MarkKind, string>> = {
+  zero: 'real zero',
+  absent: 'not measured',
+  unread: 'not read',
+  partial: 'partial',
+  admin: 'admin only',
+  pending: 'reading',
+}
+
+export function Mark({ kind, say }: { kind: MarkKind; say: string }) {
+  return (
+    <i className={`ctl-mark is-${kind}`} role="img" aria-label={say}>
+      {MARK_WORD[kind]}
+    </i>
+  )
 }
 
 /**
@@ -316,28 +360,38 @@ function Util({
  * same argument applies with more force here, because the thing being told
  * apart is whether a number exists at all.
  *
- * So every panel now carries a word. It is two syllables, it is in the corner,
- * it is always rendered, and it survives greyscale, a screenshot and a reader
- * who hovers nothing. That is the FACT. The `?` beside the heading carries
- * only the reasoning.
+ * WHAT THIS PASS CHANGED. The mark was an inline-styled span in the corner of
+ * this one component; it is now `<Mark>` on `.ctl-mark`, shared by all four
+ * screens of this group. And the BODY became optional. `.ctl-empty`'s shape is
+ * fixed at mark, heading, AT MOST one sentence, a link out
+ * (design-system.md §6.9) -- so a panel whose heading already carries the fact
+ * passes no children at all and renders no paragraph, rather than padding one
+ * out to fill the slot.
+ *
+ * `say` is the sentence, on the mark's accessible name. `help` is the
+ * reasoning, behind the `?`.
  */
-const ABSENT_MARK: Readonly<Record<'zero' | 'failed' | 'partial' | 'admin', string>> = {
-  zero: 'real zero',
-  failed: 'read failed',
+const EMPTY_MARK: Readonly<Record<'zero' | 'failed' | 'partial' | 'admin', MarkKind>> = {
+  zero: 'zero',
+  failed: 'unread',
   partial: 'partial',
-  admin: 'admin only',
+  admin: 'admin',
 }
 
 function Absent({
   kind,
   heading,
+  say,
   children,
   foot,
   help,
 }: {
   kind: 'zero' | 'failed' | 'partial' | 'admin'
   heading: string
-  children: ReactNode
+  /** The fact as a sentence, published as the mark's accessible name. */
+  say: string
+  /** At most one sentence. Omitted when the heading already carries the fact. */
+  children?: ReactNode
   foot?: string
   help?: TopicId
 }) {
@@ -345,65 +399,44 @@ function Absent({
   const descId = useId()
   return (
     <div className={`ctl-empty${cls}`} role={kind === 'zero' ? undefined : 'status'}>
-      <span
-        style={{
-          float: 'right',
-          marginLeft: 'var(--ctl-s3)',
-          border: '1px solid var(--line)',
-          borderRadius: 'var(--ctl-radius-sm)',
-          padding: '1px 6px',
-          fontWeight: 600,
-          fontSize: 'var(--t-meta)',
-          lineHeight: 'var(--lh-meta)',
-          fontFamily: 'var(--mono)',
-          letterSpacing: '.06em',
-          textTransform: 'uppercase',
-          color: 'var(--text-dim)',
-          background: 'var(--surface-2)',
-        }}
-      >
-        {ABSENT_MARK[kind]}
-      </span>
       <h3 aria-describedby={help === undefined ? undefined : descId}>
+        <Mark kind={EMPTY_MARK[kind]} say={say} />{' '}
         {heading}
         {help !== undefined && <HelpCard topic={help} describedById={descId} />}
       </h3>
-      <p>{children}</p>
+      {children !== undefined && <p>{children}</p>}
       {foot !== undefined && <span className="ctl-empty-foot">{foot}</span>}
     </div>
   )
 }
 
 /**
- * THE ATTEMPT CARD'S BOX, INLINE ON PURPOSE.
+ * THE ATTEMPT CARD'S BOX IS NO LONGER INLINE.
  *
- * `.panel` in styles.css is a heading modifier -- `display:flex` on an h2 --
- * and draws no container at all, so three attempts ran together into one
- * column with nothing marking where the second began. styles.css belongs to
- * another track this pass and the `ctl-` block has no card primitive, so the
- * box is inline: an inline style adds no selector and therefore cannot restyle
- * another screen, which is the rule the prefix exists to enforce. Every value
- * is an existing token, so it still flips with the theme.
+ * It used to be, and the comment that stood here said why: "`.panel` is a
+ * heading modifier and draws no container at all, so three attempts ran
+ * together into one column with nothing marking where the second began; the
+ * `ctl-` block has no card primitive, so the box is inline." That was true and
+ * it is the exact observation design-system.md §6.1 quotes as its reason for
+ * existing. The primitive exists now, so the inline object is gone and the
+ * card is `.ctl-card` / `.ctl-card-head` / `.ctl-card-body` / `.ctl-card-foot`
+ * like every other card in the product.
+ *
+ * `SUB` stays: it is a sub-BLOCK inside a card, not a card, and `.section`'s
+ * own 28px break is too much three deep.
  */
-const CARD: CSSProperties = {
-  border: '1px solid var(--line)',
-  borderRadius: 'var(--radius)',
-  background: 'var(--surface)',
-  padding: 'var(--ctl-s3)',
-  marginBottom: 'var(--ctl-s3)',
-}
-
-/** Sub-blocks inside a card. `.section`'s own 28px is too much three deep. */
 const SUB: CSSProperties = { marginBottom: 'var(--ctl-s3)' }
 
-/** A sub-block that follows a `dl.kv`, which has no bottom margin of its own,
- *  so its heading would otherwise sit directly on the last value. */
-const SUB_AFTER_KV: CSSProperties = { marginTop: 'var(--ctl-s5)', marginBottom: 'var(--ctl-s3)' }
-
-/** "1 attempt" / "3 attempts". Never "3 attempt(s)". */
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? '' : 's'}`
-}
+/**
+ * `plural` IS GONE, and its absence is the prose rule in one function.
+ *
+ * It existed so this screen could write "3 attempts" and "1 attempt" rather
+ * than "3 attempt(s)" -- correct English, and every call site of it was a
+ * figure wearing a noun. A count strip reads `3` under the key `att`, a chip
+ * reads `3`, and the noun is the column head or the key beside it, said once.
+ * Fourteen calls to this helper were fourteen repetitions of a word the reader
+ * had already read.
+ */
 
 function usd(v: number | null | undefined): ReactNode {
   // NEVER $0.00 for an unmeasured run. A zero here reads as "this was free",
@@ -457,25 +490,40 @@ function Headline({
           {reload && <StopRun task={task} what="this agent" reload={reload} />}
         </span>
       </h2>
-      <dl className="kv">
-        <dt>Elapsed</dt>
-        <dd>{el.text}</dd>
-        <dt>Tenant</dt>
-        <dd className="mono">{task.tenant_id}</dd>
-        <dt>Owner</dt>
-        <dd>{task.submitted_by ?? <Em />}</dd>
-        <dt>Created</dt>
-        <dd>{timeAgo(task.created_at)}</dd>
+      {/* A FACTS STRIP, NOT A DEFINITION LIST. Five `<dt>/<dd>` pairs down a
+          96px column is five rows of chrome for five short values; the strip
+          is one wrapping line, the key is two or three mono characters in the
+          label treatment, and the value is the sans face at full strength. A
+          fact whose value was not read KEEPS ITS SLOT AND ITS KEY -- a missing
+          row is indistinguishable from a row that was never going to be
+          there. */}
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>run</b>
+          {el.text}
+        </li>
+        <li className="ctl-fact">
+          <b>age</b>
+          {timeAgo(task.created_at)}
+        </li>
+        <li className={`ctl-fact${task.submitted_by === null ? ' is-absent' : ''}`}>
+          <b>by</b>
+          {task.submitted_by ?? <Em />}
+        </li>
+        <li className="ctl-fact">
+          <b>tenant</b>
+          <span className="mono">{task.tenant_id}</span>
+        </li>
         {task.workflow_id !== null && (
-          <>
-            <dt>Workflow</dt>
-            <dd className="mono">
+          <li className="ctl-fact">
+            <b>wf</b>
+            <span className="mono">
               {task.workflow_id}
-              {task.step_id !== null && ` · step ${task.step_id}`}
-            </dd>
-          </>
+              {task.step_id !== null && ` · ${task.step_id}`}
+            </span>
+          </li>
         )}
-      </dl>
+      </ul>
     </section>
   )
 }
@@ -494,33 +542,21 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
   if (attempts === null) {
     return (
       <div className="ctl-metrics">
-        <Metric
-          label="Elapsed"
-          value={el.text}
-          sub={elapsedNote(task)}
-          foot="from the task document, which loaded"
-        />
+        {/* THE SUBS ARE QUALIFIERS NOW, NOT SENTENCES. Each one names the
+            SOURCE of the figure above it in two or three words -- which is the
+            only thing the sentence was doing that a reader needed on the
+            surface. Why the attempt read can fail, and what may not be
+            concluded from one, is `#help/read-failed`. */}
+        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task)} foot="task document" />
         <Metric
           label="Attempts"
           value={`${task.attempt_count} / ${task.max_attempts}`}
-          sub="The task's own counter."
+          sub="task counter"
         />
         {/* No number may appear for anything that came from the attempt read.
             A reassuring zero on a failed read is the worst output available. */}
-        <Metric
-          label="Peak memory"
-          value="read failed"
-          tone="unread"
-          sub="The attempt query did not answer."
-          help="read-failed"
-        />
-        <Metric
-          label="Spend"
-          value="read failed"
-          tone="unread"
-          sub="The attempt query did not answer."
-          help="read-failed"
-        />
+        <Metric label="Peak memory" value="read failed" tone="unread" sub="attempt query" help="read-failed" />
+        <Metric label="Spend" value="read failed" tone="unread" sub="attempt query" help="read-failed" />
       </div>
     )
   }
@@ -551,11 +587,15 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
       <Metric
         label="Attempts"
         value={`${attempts.length}`}
-        unit={`/ ${task.max_attempts} allowed`}
+        unit={`/ ${task.max_attempts}`}
+        // THE TWO NUMBERS ARE THE FACT. "Every attempt the task counts has a
+        // document" was a sentence restating an equality the reader can see;
+        // `task counts 3` beside `2` is the same fact and is the shape of the
+        // discrepancy rather than a description of it.
         sub={
           attempts.length === task.attempt_count
-            ? 'Every attempt the task counts has a document.'
-            : `The task counts ${task.attempt_count}.`
+            ? 'documents · counter agrees'
+            : `task counts ${task.attempt_count}`
         }
         tone={attempts.length === task.attempt_count ? undefined : 'unread'}
       />
@@ -573,11 +613,12 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           sub={
             noCeiling ??
             (cls === null
-              ? 'The ceiling for this class is unknown.'
-              : `of ${cls.memory_gib} GiB granted · worst of ${plural(measured.length, 'measured attempt')}`)
+              ? 'ceiling unknown'
+              : `of ${cls.memory_gib} GiB · worst of ${measured.length}`)
           }
-          foot={nearMiss ? 'OOM near miss on at least one attempt' : undefined}
+          foot={nearMiss ? 'OOM near miss' : undefined}
           tone={nearMiss ? 'alert' : undefined}
+          help="oom-near-miss"
         />
       )}
       {tokIn === null && tokOut === null ? (
@@ -602,10 +643,12 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         <Metric
           label="Token cost"
           value={usd(cost)}
-          // The COVERAGE stays: "2 of 3 reported" is a fact about this run and
-          // the reason the total may not be the whole of it. That there is no
+          // The COVERAGE stays, as the two figures rather than as a sentence
+          // about them: "2 of 3 reported" is a fact about this run and the
+          // reason the total may not be the whole of it. That there is no
           // infrastructure cost to add is a fact about the platform, and moved.
-          sub={`Summed over ${plural(spent.length, 'attempt')} of ${attempts.length} that reported.`}
+          sub={`${spent.length} of ${attempts.length} reported`}
+          tone={spent.length === attempts.length ? undefined : 'unread'}
           help="token-cost"
         />
       )}
@@ -618,7 +661,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
       <Metric
         label="Checkpoints"
         value={`${ckpts}`}
-        sub={ckpts === 0 ? undefined : `Across ${plural(attempts.length, 'attempt')}.`}
+        sub={ckpts === 0 ? undefined : `across ${attempts.length}`}
         help="checkpoints"
       />
     </div>
@@ -640,28 +683,26 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
  */
 function ceilingNote(run: AgentRun): string | null {
   const { task, classes, classesRouteMissing } = run
-  if (classes === null) {
-    return classesRouteMissing
-      ? 'This API does not serve the resource-class catalogue, so the ceiling is unknown.'
-      : 'The resource-class catalogue could not be read, so the ceiling is unknown.'
-  }
-  if (classes[task.resource_class] === undefined) {
-    return `The catalogue has no class called ${task.resource_class} — it was renamed or retired, so there is no ceiling to compare with.`
-  }
+  // THREE WORDS, NOT THREE SENTENCES. Each one still names which of the three
+  // causes it is -- which is the whole reason this helper exists -- and the
+  // consequence they all shared ("so the ceiling is unknown") is drawn by the
+  // hatched track rather than restated in every tile that reads this.
+  if (classes === null) return classesRouteMissing ? 'no catalogue route' : 'catalogue unread'
+  if (classes[task.resource_class] === undefined) return `no class ${task.resource_class}`
   return null
 }
 
-/** Which halves of the token total were reported, and by how many attempts. */
+/**
+ * Which halves of the token total were reported, and by how many attempts.
+ *
+ * THE COVERAGE IS THE FACT AND IT IS TWO FRACTIONS. The sentence this replaces
+ * ended "A half no attempt reported is left out of this total rather than
+ * counted as zero" -- a rule of the platform, true of every run, which is
+ * exactly the material `#help/tokens-reported` holds. What varies per run, and
+ * therefore stays on the glass, is `in 2/3 · out 0/3`.
+ */
 function tokenRollupNote(total: number, withIn: number, withOut: number): string {
-  if (withIn === total && withOut === total) {
-    return `Both halves, summed over all ${plural(total, 'attempt')}.`
-  }
-  const head =
-    withIn === 0
-      ? 'No attempt reported input'
-      : `Input from ${withIn} of ${plural(total, 'attempt')}`
-  const tail = withOut === 0 ? 'none reported output' : `output from ${withOut}`
-  return `${head}, ${tail}. A half no attempt reported is left out of this total rather than counted as zero.`
+  return `in ${withIn}/${total} · out ${withOut}/${total}`
 }
 
 /**
@@ -676,21 +717,23 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  */
 function elapsedNote(task: Task): string {
   if (TERMINAL_STATES.has(task.state)) {
-    if (task.completed_at !== null) return `Finished ${timeAgo(task.completed_at)}.`
+    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at)}`
     // NO completion time, and `elapsed()` does not stop for that: it falls
     // through to `now - started_at` and keeps counting to the current clock.
-    // So the figure beside this sentence is not the length of the run, and it
-    // grows on every render -- which the sentence has to say, because nothing
-    // else on the tile can.
+    // So the figure beside this qualifier is not the length of the run and it
+    // grows on every render. `still counting` is what says that -- the tile
+    // cannot say it any other way, and it is three words rather than a
+    // paragraph because the WHY is `#help/read-failed`'s neighbour topic.
     return task.started_at === null
-      ? 'Finished, with neither a start nor a completion time recorded — the figure counts from submission to now.'
-      : 'Finished, with no completion time recorded — the figure counts to now, not to the end of the run, and keeps growing.'
+      ? 'no start, no finish · still counting'
+      : 'no finish recorded · still counting'
   }
-  if (task.state === 'PARKED') {
-    return 'Parked — wall time, not work. Nothing is executing and no capacity is held.'
-  }
-  if (task.started_at === null) return 'Time spent waiting. Nothing has started.'
-  return 'Still running.'
+  // "Parked -- wall time, not work. Nothing is executing and no capacity is
+  // held" was the first version, and the fact in it is the first three words:
+  // the figure is a clock, not a measure of work.
+  if (task.state === 'PARKED') return 'wall time, not work'
+  if (task.started_at === null) return 'waiting · nothing started'
+  return 'running'
 }
 
 function Alerts({ task }: { task: Task }) {
@@ -698,13 +741,25 @@ function Alerts({ task }: { task: Task }) {
 
   return (
     <>
+      {/* THE REASON TOKEN IS THE FACT; THE SENTENCE UNDER IT WAS NOT.
+          `REASON_COPY` is a table of platform invariants -- what
+          QUOTA_EXHAUSTED means is true of every parked task there has ever
+          been -- so it is `#help/park-on-missing-credential` and the rest of
+          the help index now, and the banner carries the enum the platform
+          recorded plus the one figure that varies: when it is eligible again.
+          `reasonText` remains the fallback for a reason this screen does not
+          recognise, because "we have no copy for that" is a fact about THIS
+          SCREEN and cannot live in a help topic keyed on the reason. */}
       {task.park_reason && (
         <div className="bar amber">
           <strong>{task.park_reason}</strong>
           {task.next_eligible_at && (
-            <> — eligible again {new Date(task.next_eligible_at).toLocaleString()}</>
+            <> · eligible {new Date(task.next_eligible_at).toLocaleString()}</>
           )}
-          <span className="blocker-copy">{reasonText(task.park_reason)}</span>
+          <HelpCard topic="park-on-missing-credential" />
+          {REASON_COPY[task.park_reason] === undefined && (
+            <span className="blocker-copy">{reasonText(task.park_reason)}</span>
+          )}
         </div>
       )}
 
@@ -726,23 +781,27 @@ function Alerts({ task }: { task: Task }) {
                 </>
               )}
               {/* ONE table of copy, in types.ts, shared with the agents list
-                  and the trouble board. The three cases hand-rolled here
-                  covered three of the twelve BlockedReasons; the other nine --
-                  PROVIDER_CONCURRENCY_LIMIT, RESOURCE_CLASS_LIMIT,
-                  RUNNER_LIMIT and BACKEND_LIMIT among them -- rendered an
-                  empty span in the banner whose entire job is "why is nothing
-                  happening". */}
-              <span className="blocker-copy">{reasonText(b.reason)}</span>
+                  and the trouble board -- and now drawn only for a reason this
+                  screen has no copy for. The twelve recognised reasons carry
+                  their meaning in `#help/blockers-at-an-instant`; an
+                  UNRECOGNISED one has nowhere else to say that it is
+                  unrecognised, so it still says it here. */}
+              {REASON_COPY[b.reason] === undefined && (
+                <span className="blocker-copy">{reasonText(b.reason)}</span>
+              )}
             </div>
           ))}
+          <HelpCard topic="blockers-at-an-instant" />
         </div>
       )}
 
+      {/* WHY THE STATE DOES NOT CHANGE was two sentences about the lease and
+          the pool; it is `#help/lease-and-pool-are-two-records`. What is on
+          the glass is that a cancellation has been asked for. */}
       {task.cancel_requested && live && (
         <div className="bar red">
-          Cancellation requested. The state will not change until the worker or
-          the reconciler releases the lease — releasing it from the API would
-          decrement a pool a live container still occupies.
+          Cancellation requested
+          <HelpCard topic="lease-and-pool-are-two-records" />
         </div>
       )}
     </>
@@ -765,12 +824,23 @@ function reasonText(reason: string): string {
     : 'This screen has no copy for that reason — it is printed above exactly as the platform recorded it.'
 }
 
+/**
+ * THE ONE SENTENCE THIS SCREEN KEEPS, and it keeps it deliberately.
+ *
+ * `whyAgent` is the answer to the question that brings people here: why has
+ * this agent not moved. §8.5 of design-system.md allows a name, a unit, a
+ * control's own label, a bare count and a qualifier -- and this is none of
+ * them, it is running text. It stays because it is a fact about THIS RUN, it
+ * is derived rather than looked up, and there is no encoding for it: a shape
+ * cannot say "the pool it wants is at its ceiling and three agents are ahead
+ * of it". The heading went, because a one-line panel headed "Why" is a word of
+ * chrome per word of content.
+ */
 function Why({ task }: { task: Task }) {
   const why = whyAgent(task)
   if (!why) return null
   return (
     <section className="section">
-      <h2>Why</h2>
       <p className="why-full">{why}</p>
     </section>
   )
@@ -780,25 +850,25 @@ function Why({ task }: { task: Task }) {
  * The error banner. Full text, monospace, NEVER one-line-truncated -- it is
  * the reason the page was opened.
  *
- * Three flavours, distinguished by prefix because each means something
- * different about who decided the task had failed.
+ * WHO WROTE IT IS THE FACT, AND IT IS ONE WORD. Three flavours, distinguished
+ * by prefix because each means something different about who decided the task
+ * had failed -- and each used to carry a sentence saying what that writer is.
+ * The writer's NAME is the part that varies and the part a reader acts on; an
+ * eyebrow carries it in the same treatment every other section label on this
+ * screen uses. What a reconciler is, and that the dispatch field is capped at
+ * 1000 characters, are platform invariants and live in `#help/read-failed`'s
+ * neighbourhood rather than above every error.
  */
 function ErrorBanner({ text }: { text: string }) {
   const reconciled = text.startsWith('reconciled:')
   // A dispatch failure is written as `<STABLE_CODE> (attempt att_...)`.
   const dispatch = /^[A-Z][A-Z0-9_]+ \(attempt /.test(text)
+  const origin = reconciled ? 'reconciler' : dispatch ? 'scheduler · dispatch' : 'agent, at finish'
 
   return (
     <section className="section">
-      <h2>Error</h2>
-      <div className="state failed">
-        <p className="err-origin">
-          {reconciled
-            ? 'Written by the reconciler, which found this attempt in a state it could not repair.'
-            : dispatch
-              ? 'A dispatch failure, recorded by the scheduler. The full message is in the operator logs — this field is truncated at 1000 characters.'
-              : "The agent's own error at finish, or the cancellation reason if it was cancelled before it held capacity."}
-        </p>
+      <div className="ctl-empty is-failed" role="status">
+        <span className="ctl-eyebrow">error · {origin}</span>
         <pre className="err full">{text}</pre>
       </div>
     </section>
@@ -815,14 +885,19 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
   if (attempts === null) {
     return (
       <section className="section">
-        <h2>Attempts</h2>
-        <Absent kind="failed" heading="The attempt history could not be read" help="read-failed">
-          {/* The DETAIL is the fact -- which read failed and how. What may not
-              be concluded from a failed read is a standing rule, and moved.
-              It is the whole body now, so a null one must not leave an empty
-              paragraph under a heading: the panel would still be marked READ
-              FAILED, but it would have stopped saying anything about which. */}
-          {attemptsDetail ?? 'The attempt query reported no detail.'}
+        <span className="ctl-eyebrow">attempts</span>
+        <Absent
+          kind="failed"
+          heading="Attempt history"
+          say="The attempt history could not be read. This is a failed read, not a task with no attempts."
+          help="read-failed"
+        >
+          {/* The DETAIL is the fact -- which read failed and how -- and §8.4
+              keeps it as the empty state's one allowed sentence. What may not
+              be concluded from a failed read is a standing rule, and moved. A
+              null detail passes no child at all rather than padding the slot
+              with a sentence about having nothing to say. */}
+          {attemptsDetail ?? undefined}
         </Absent>
       </section>
     )
@@ -839,37 +914,29 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
     const finished = TERMINAL_STATES.has(task.state)
     return (
       <section className="section">
-        <h2>Attempts</h2>
+        <span className="ctl-eyebrow">attempts</span>
         {task.attempt_count > 0 ? (
+          // THE TWO NUMBERS ARE THE FACT, and they are now the heading rather
+          // than a sentence under one: what the task counts against what came
+          // back. A reader needs no help card to see the gap, and the `PARTIAL`
+          // mark beside it says which kind of nothing this is.
           <Absent
             kind="partial"
-            heading={
-              finished
-                ? 'This task finished, and no attempt document came back'
-                : 'The task counts attempts, and no document came back'
-            }
+            heading={`counts ${task.attempt_count} · returned 0`}
+            say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${task.state}.`}`}
+            foot={finished ? undefined : task.state}
             help="attempt-documents"
-          >
-            {/* THE TWO NUMBERS ARE THE FACT: what the task counts against what
-                came back. The reader needs no help card to see the gap. */}
-            Counts {plural(task.attempt_count, 'attempt')}, query returned 0.
-            {!finished && (
-              <>
-                {' '}
-                Task is <code>{task.state}</code>.
-              </>
-            )}
-          </Absent>
+          />
         ) : (
-          <Absent kind="zero" heading="Nothing has been admitted yet" help="attempt-documents">
-            {/* "REAL ZERO" is printed in the corner of this panel by `Absent`,
-                always, in words -- so the one thing a reader must not have to
-                hover for is the one thing they cannot miss. What remains here
-                is the measurement itself and the state it was taken in. WHY a
-                task in that state has no attempts is the `?`. */}
-            The query succeeded and returned nothing. Task is{' '}
-            <code>{task.state}</code>.
-          </Absent>
+          // "REAL ZERO" is the mark, always rendered, in words -- so the one
+          // thing a reader must not have to hover for is the one thing they
+          // cannot miss. The heading is the state the measurement was taken in.
+          <Absent
+            kind="zero"
+            heading={`no attempt yet · ${task.state}`}
+            say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
+            help="attempt-documents"
+          />
         )}
       </section>
     )
@@ -886,19 +953,18 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
     <section className="section panel">
       <h2>
         Attempts
-        <span className="count-chip">{plural(ordered.length, 'document')}</span>
+        <span className="count-chip">{ordered.length}</span>
+        {ordered.length < task.attempt_count && (
+          // THE GAP, IN THE HEADING IT QUALIFIES. This was a full partial
+          // panel with a two-sentence body; the figures are the fact and the
+          // consequence ("every figure below describes only the attempts
+          // shown") is what the mark means.
+          <Mark
+            kind="partial"
+            say={`The task records ${task.attempt_count} attempts and ${ordered.length} documents came back. The rest are missing, not absent, so every figure below describes only the attempts shown.`}
+          />
+        )}
       </h2>
-
-      {ordered.length < task.attempt_count && (
-        <div className="ctl-empty is-partial" role="status">
-          <h3>Fewer documents than the task counts</h3>
-          <p>
-            The task records {plural(task.attempt_count, 'attempt')} and{' '}
-            {plural(ordered.length, 'document')} came back. The rest are missing,
-            not absent — every figure below describes only the attempts shown.
-          </p>
-        </div>
-      )}
 
       {/* SPEND OVER THE RUN, before the cards rather than after them: with
           three or more attempts the question "did the retries cost anything"
@@ -960,25 +1026,16 @@ function AttemptLegend() {
     'token-cost',
     'checkpoints',
   ]
+  // IT IS THE CARD FOOT NOW, not a hand-built inline row. `.ctl-card-foot` is
+  // the provenance strip design-system.md §6.1 gives every card, and it draws
+  // the same thing the inline object drew -- mono, faint, separated by a
+  // surface step rather than by a rule, which is what the spacing probe's
+  // separator/boundary test wants from a header or footer edge with no twin.
   return (
-    <p
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'baseline',
-        gap: '4px var(--ctl-s2)',
-        margin: 'var(--ctl-s3) 0 0',
-        paddingTop: 'var(--ctl-s3)',
-        borderTop: '1px solid var(--line)',
-        fontSize: 'var(--t-micro)',
-        lineHeight: 'var(--lh-micro)',
-        fontFamily: 'var(--mono)',
-        color: 'var(--text-faint)',
-      }}
-    >
-      <span>Reading these cards:</span>
+    <p className="ctl-card-foot att-legend">
+      <span>reading these cards:</span>
       {topics.map((id) => (
-        <a key={id} href={`#${HELP[id].anchor}`} style={{ color: 'var(--text-dim)' }}>
+        <a key={id} href={`#${HELP[id].anchor}`}>
           {HELP[id].title}
         </a>
       ))}
@@ -1018,71 +1075,89 @@ function AttemptCard({
         }
       : out
 
+  // THE DURATION, WHEN IT CANNOT BE COMPUTED. `attemptRan` measures from the
+  // start to NOW when there is no finish time, which is right for a running
+  // attempt and false for this one: an attempt that ended without its end
+  // being written stopped at some unknown moment, and "1h 40m so far" is a
+  // clock still running on a process that is gone. The sentence that said so
+  // is the mark's accessible name; what is on the glass is the em dash and
+  // `FINISH_NOT_RECORDED`'s own two words, which `measure.ts` already owns.
+  const lostEnd = end.over && a.completed_at === null && a.started_at !== null
+
   return (
-    <section className="section panel" style={CARD}>
-      <h2>
-        Attempt {ordinal}
-        <span className="count-chip">gen {a.generation}</span>
-        <Chip tone={chip.tone}>{chip.label}</Chip>
-        {isLatest && <span className="tag wait">latest</span>}
-        {a.oom_near_miss && (
-          <span className="tag full" title="Peak memory came close to the ceiling this attempt was given">
-            OOM near miss
-          </span>
-        )}
-      </h2>
+    <section className="ctl-card att-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">
+          Attempt {ordinal}
+          <span className="count-chip">gen {a.generation}</span>
+          <Chip tone={chip.tone}>{chip.label}</Chip>
+          {isLatest && <span className="tag wait">latest</span>}
+          {a.oom_near_miss && <span className="tag full">OOM near miss</span>}
+        </h2>
+        <span className="ctl-card-note">{a.backend}</span>
+      </div>
 
-      <dl className="kv">
-        <dt>Started</dt>
-        <dd>{a.started_at === null ? <Em /> : timeAgo(a.started_at)}</dd>
-        <dt>Finished</dt>
-        {/* Null is three different things and the chip above says which: still
-            running, never started, or ended without the field being written. */}
-        <dd>{a.completed_at === null ? <Em /> : timeAgo(a.completed_at)}</dd>
-        <dt>Duration</dt>
-        {/* `attemptRan` measures from the start to NOW when there is no finish
-            time, which is right for a running attempt and false for this one:
-            an attempt that ended without its end being written stopped at some
-            unknown moment, and "1h 40m so far" is a clock still running on a
-            process that is gone -- printed, until this branch existed, next to
-            the chip and the paragraph below that both say it is over. */}
-        <dd>
-          {end.over && a.completed_at === null && a.started_at !== null ? (
-            <span className="muted">
-              not recorded — it started {timeAgo(a.started_at)} and no finish
-              time was ever written, so how long it ran is unknown
-            </span>
-          ) : (
-            attemptRan(a, now)
-          )}
-        </dd>
-        <dt>Backend</dt>
-        <dd>{a.backend}</dd>
-        <dt>Execution</dt>
-        <dd className="mono uri">
-          {a.execution_name === null ? (
-            <span className="muted">
-              — never dispatched, so no execution was ever named
-            </span>
-          ) : (
-            a.execution_name
-          )}
-        </dd>
-        <dt>Attempt</dt>
-        <dd className="mono uri">{a.attempt_id}</dd>
-        <dt>Lease</dt>
-        <dd className="mono uri">{a.lease_id}</dd>
-      </dl>
+      <div className="ctl-card-body">
+        {/* EIGHT `<dt>/<dd>` PAIRS BECAME ONE STRIP. The values are short and
+            the keys are shorter; a 96px label column down the side of eight
+            single-line values is chrome outweighing content, three cards
+            deep. An absent value keeps its key and its slot. */}
+        <ul className="ctl-facts">
+          <li className={`ctl-fact${a.started_at === null ? ' is-absent' : ''}`}>
+            <b>start</b>
+            {a.started_at === null ? <Em /> : timeAgo(a.started_at)}
+          </li>
+          {/* Null is three different things and the chip above says which:
+              still running, never started, or ended without the field being
+              written. */}
+          <li className={`ctl-fact${a.completed_at === null ? ' is-absent' : ''}`}>
+            <b>end</b>
+            {a.completed_at === null ? <Em /> : timeAgo(a.completed_at)}
+          </li>
+          <li className={`ctl-fact${lostEnd ? ' is-absent' : ''}`}>
+            <b>ran</b>
+            {lostEnd ? (
+              <>
+                <Em />{' '}
+                <Mark
+                  kind="absent"
+                  say={`This attempt started ${timeAgo(a.started_at ?? '')} and no finish time was ever written, so how long it ran is unknown.`}
+                />
+              </>
+            ) : (
+              attemptRan(a, now)
+            )}
+          </li>
+          <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
+            <b>exec</b>
+            {a.execution_name === null ? (
+              <>
+                <Em />{' '}
+                <Mark
+                  kind="zero"
+                  say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
+                />
+              </>
+            ) : (
+              <span className="mono uri">{a.execution_name}</span>
+            )}
+          </li>
+          <li className="ctl-fact">
+            <b>att</b>
+            <span className="mono uri">{a.attempt_id}</span>
+          </li>
+          <li className="ctl-fact">
+            <b>lease</b>
+            <span className="mono uri">{a.lease_id}</span>
+          </li>
+        </ul>
 
-      {a.error !== null && (
-        <div style={{ marginTop: 10 }}>
-          <pre className="err full">{a.error}</pre>
-        </div>
-      )}
+        {a.error !== null && <pre className="err full">{a.error}</pre>}
 
-      <AttemptResources a={a} run={run} isLatest={isLatest} />
-      <AttemptSpend a={a} profile={run.task.runner_profile} />
-      <AttemptCheckpoints a={a} run={run} />
+        <AttemptResources a={a} run={run} isLatest={isLatest} />
+        <AttemptSpend a={a} profile={run.task.runner_profile} />
+        <AttemptCheckpoints a={a} run={run} />
+      </div>
     </section>
   )
 }
@@ -1156,6 +1231,10 @@ function AttemptResources({
   const { task, events, classes, classesDetail, classesRouteMissing } = run
   const cls: ResourceClassSpec | null = classes?.[task.resource_class] ?? null
   const hb = newestHeartbeat(a, events)
+  // Which of the three reasons there is no ceiling, as three words. One
+  // helper, shared with the metric strip, so the tile and the bars cannot
+  // disagree about why the same catalogue is missing.
+  const noCeiling = ceilingNote(run)
 
   // THE ATTEMPT HAS ENDED OR IT HAS NOT, and the same fallback figure means
   // two different things either way. A running attempt has no final peak YET.
@@ -1172,18 +1251,21 @@ function AttemptResources({
   // WHAT IS KNOWN ABOUT THE END, in the words of what was read. This page
   // cannot see a kill, a reclaim or a crash; it can see a finish time, a later
   // attempt document and the task's state, so it says those and stops.
-  const endedBecause: ReactNode =
-    end.over === false ? null : end.by === 'recorded' ? (
-      <>Its finish time is recorded, and no peak memory was written with it.</>
-    ) : end.by === 'superseded' ? (
-      <>A later attempt has replaced it, so nothing writes to this document again.</>
-    ) : (
-      <>
-        The task is <code>{task.state}</code> and this attempt was never marked
-        finished — the shape a kill, or a reconciler reclaim of a stale
-        generation, leaves behind.
-      </>
-    )
+  //
+  // IT IS A SENTENCE STILL, AND IT IS NOT ON THE GLASS. Two `<p className=
+  // "muted small">` blocks carried it under every attempt's bars -- around
+  // ninety words on a three-attempt run, repeated three times, saying the same
+  // thing about the same platform each time. The sentence is now the accessible
+  // name of the mark beside the figure it is about, which is where it can never
+  // be read as describing a different figure.
+  const endedBecause: string =
+    end.over === false
+      ? ''
+      : end.by === 'recorded'
+        ? 'Its finish time is recorded, and no peak memory was written with it.'
+        : end.by === 'superseded'
+          ? 'A later attempt has replaced it, so nothing writes to this document again.'
+          : `The task is ${task.state} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =
@@ -1208,39 +1290,33 @@ function AttemptResources({
 
   return (
     <div className="section" style={SUB}>
-      <h2>Requested vs utilised</h2>
-
-      {classes === null && (
-        <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-          <h3>
-            {classesRouteMissing
-              ? 'This API does not serve the resource-class catalogue'
-              : 'The resource-class catalogue could not be read'}
-          </h3>
-          <p>
-            {classesRouteMissing
-              ? 'The deployment answering this UI predates GET /v1/resource-classes, so the ceiling these measurements were taken under is unknown to this page. The measured side below is unaffected and is real.'
-              : `The measurements below are real; only the ceiling they should be read against is missing. ${classesDetail ?? ''}`}
-          </p>
-          <span className="ctl-empty-foot">
-            The bars are hatched with no fill rather than drawn empty — an empty
-            bar would claim 0% used.
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">requested vs utilised</span>
+        {/* THE CEILING'S ABSENCE, AS A MARK RATHER THAN A PANEL. Two
+            `.ctl-empty.is-partial` boxes with a heading, a paragraph and a
+            foot stood here -- and the foot said "the bars are hatched with no
+            fill rather than drawn empty", which is a caption for a thing the
+            reader is looking at. The bars below ARE hatched with no fill;
+            saying so is the one kind of sentence design-system.md §8.5
+            forbids outright. The three causes stay apart, because they send a
+            reader to three different places, and they stay apart in the WORD:
+            `no catalogue route` / `catalogue unread` / `no class <name>`. */}
+        {noCeiling !== null && (
+          <span className="is-end ctl-card-note">
+            {noCeiling}{' '}
+            <Mark
+              kind={classes === null ? 'unread' : 'absent'}
+              say={
+                classesRouteMissing
+                  ? 'The deployment answering this UI predates GET /v1/resource-classes, so the ceiling these measurements were taken under is unknown to this page. The measured side is unaffected and is real.'
+                  : classes === null
+                    ? `The resource-class catalogue could not be read, so only the ceiling is missing; the measurements are real. ${classesDetail ?? ''}`
+                    : `The catalogue has no class called ${task.resource_class}. It was renamed or retired after this task was submitted, so there is nothing to compare against.`
+              }
+            />
           </span>
-        </div>
-      )}
-
-      {classes !== null && cls === null && (
-        <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-          <h3>
-            The catalogue has no class called <code>{task.resource_class}</code>
-          </h3>
-          <p>
-            The task names a resource class the platform no longer publishes, so
-            there is nothing to compare against. The class was renamed or
-            removed after this task was submitted.
-          </p>
-        </div>
-      )}
+        )}
+      </div>
 
       <Util
         label={
@@ -1282,40 +1358,47 @@ function AttemptResources({
       />
 
       {/* The standing rules -- requests == limits, the tmpfs workspace, what
-          oom_near_miss actually asserts -- live ONCE in the legend at the end
-          of this section. Four lines of them repeated under every attempt made
-          a three-attempt run unreadable, and a note nobody reads is not a
-          note. Only what VARIES per attempt stays here. */}
-      {/* THE AGE GOES IN THE SENTENCE, not only in the `by` column: that
-          column is display:none below 560px, so on a phone the sentence is the
-          only thing left carrying it. */}
-      {a.peak_rss_bytes === null && liveRss !== null && hb !== null && (
-        <p className="muted small">
-          {ended ? (
+          oom_near_miss actually asserts -- live ONCE in the card foot at the
+          end of this section. Four lines of them repeated under every attempt
+          made a three-attempt run unreadable, and a note nobody reads is not a
+          note.
+
+          WHAT VARIES PER ATTEMPT IS A MARK NOW. Two paragraphs stood here --
+          "the memory figure is the last heartbeat reading before it stopped",
+          "this attempt ended with no peak memory recorded" -- roughly sixty
+          words under every attempt card. Both are one strip: the mark says
+          which kind of nothing, the `by` column beside the bar says where the
+          figure came from and how old it is, and the sentence is the mark's
+          accessible name. The AGE still reaches a phone, because it is in the
+          strip and not only in the `by` column, which is display:none below
+          560px. */}
+      {a.peak_rss_bytes === null && (liveRss !== null || (ended && a.started_at !== null)) && (
+        <p className="att-rss-note">
+          {liveRss !== null && hb !== null ? (
             <>
-              This attempt is over, so the memory figure is the last heartbeat
-              reading before it stopped ({timeAgo(hb.at)}) — not a live one.{' '}
-              {endedBecause} The final high-water mark is written at the end of
-              an attempt, and this one has already ended without it, so there
-              is none and none is coming.
+              <Mark
+                kind={ended ? 'partial' : 'pending'}
+                say={
+                  ended
+                    ? `This attempt is over, so the memory figure is the last heartbeat reading before it stopped, ${timeAgo(hb.at)} — not a live one. ${endedBecause} The final high-water mark is written at the end of an attempt and this one has already ended without it, so there is none and none is coming.`
+                    : `The memory figure is a live reading from the newest heartbeat event on this page, ${timeAgo(hb.at)}, not the final high-water mark — that is written when the attempt ends. The event page is oldest-first and capped, so on a long attempt the newest reading available here can be far older than the agent.`
+                }
+              />{' '}
+              {ended ? 'last' : 'live'} heartbeat {timeAgo(hb.at)}
             </>
           ) : (
             <>
-              The memory figure is a live reading from the newest heartbeat
-              event on this page ({timeAgo(hb.at)}), not the final high-water
-              mark — that is written when the attempt ends. The event page is
-              oldest-first and capped, so on a long attempt the newest reading
-              available here can be far older than the agent.
+              <Mark
+                kind="absent"
+                say={`This attempt ended with no peak memory recorded, and no heartbeat carrying one is on this page. ${endedBecause} What it used is unknown, which is why the figure is an em dash rather than a zero, and no later write will fill it in.`}
+              />{' '}
+              {end.over && end.by === 'superseded'
+                ? 'superseded'
+                : end.over && end.by === 'task-ended'
+                  ? task.state
+                  : 'ended'}
             </>
           )}
-        </p>
-      )}
-      {a.peak_rss_bytes === null && liveRss === null && ended && a.started_at !== null && (
-        <p className="muted small">
-          This attempt ended with no peak memory recorded, and no heartbeat
-          carrying one is on this page. {endedBecause} What it used is unknown —
-          which is why the figure is an em dash rather than a zero, and no later
-          write will fill it in.
         </p>
       )}
     </div>
@@ -1350,41 +1433,36 @@ function AttemptSpend({ a, profile }: { a: AttemptRow; profile: string }) {
   const reports = profile === 'claude-code' || profile === 'codex'
 
   if (!anything) {
-    // THREE DIFFERENT REASONS, and they need three different sentences. The
+    // THREE DIFFERENT REASONS, and they still need three different answers --
+    // but the answer is a MARK plus two or three words, not a paragraph. The
     // one that was collapsed first is the middle one: a running attempt has
     // nothing yet BECAUSE IT HAS NOT FINISHED, and telling its owner the
     // numbers are missing because of an old image sends them to rebuild an
-    // image over an attempt that is working correctly.
+    // image over an attempt that is working correctly. `pending` is the mark
+    // for that and it is a different silhouette from `not measured`, which is
+    // the distinction design-system.md §8.7.1 says must never collapse: still
+    // reading is not nothing reported.
     const running = a.completed_at === null && a.started_at !== null
+    const kind: MarkKind = !reports ? 'absent' : running ? 'pending' : a.started_at === null ? 'zero' : 'absent'
+    const word = !reports
+      ? `${profile} reports none`
+      : running
+        ? 'written at exit'
+        : a.started_at === null
+          ? 'never started'
+          : 'none recorded'
+    const say = !reports
+      ? `The ${profile} runner does not report tokens or cost at all. That is an absence of measurement, not a run that cost nothing.`
+      : running
+        ? "This attempt has not finished. Spend is parsed out of the runner's result and written when the attempt ends, so there is nothing yet — nothing is wrong and nothing needs doing."
+        : a.started_at === null
+          ? 'This attempt never started, so it consumed no tokens. That is a fact about the attempt rather than a missing measurement.'
+          : 'This attempt finished and recorded no usage. Attempts that ran before the worker capture shipped in an agent-runtime-base image carry null for every field — an absent measurement, not a free run.'
     return (
       <div className="section" style={SUB}>
-        <h2>Tokens and cost</h2>
-        <p className="muted">
-          {!reports ? (
-            <>
-              The <code>{profile}</code> runner does not report tokens or cost at
-              all. That is an absence of measurement, not a run that cost
-              nothing.
-            </>
-          ) : running ? (
-            <>
-              This attempt has not finished. Spend is parsed out of the
-              runner&apos;s result and written when the attempt ends, so there is
-              nothing yet — nothing is wrong and nothing needs doing.
-            </>
-          ) : a.started_at === null ? (
-            <>
-              This attempt never started, so it consumed no tokens. That is a
-              fact about the attempt rather than a missing measurement.
-            </>
-          ) : (
-            <>
-              This attempt finished and recorded no usage. Attempts that ran
-              before the worker capture shipped in an{' '}
-              <code>agent-runtime-base</code> image carry null for every field —
-              an absent measurement, not a free run.
-            </>
-          )}
+        <p className="att-spend-none">
+          <span className="ctl-eyebrow">tokens and cost</span>
+          <Mark kind={kind} say={say} /> {word}
         </p>
       </div>
     )
@@ -1392,19 +1470,32 @@ function AttemptSpend({ a, profile }: { a: AttemptRow; profile: string }) {
 
   return (
     <div className="section" style={SUB}>
-      <h2>Tokens and cost</h2>
-      <dl className="kv">
-        <dt>Input</dt>
-        <dd>{tokens(a.input_tokens)}</dd>
-        <dt>Output</dt>
-        <dd>{tokens(a.output_tokens)}</dd>
-        <dt>Cache read</dt>
-        <dd>{tokens(a.cache_read_input_tokens)}</dd>
-        <dt>Cache write</dt>
-        <dd>{tokens(a.cache_creation_input_tokens)}</dd>
-        <dt>Cost</dt>
-        <dd>{usd(a.cost_usd)}</dd>
-      </dl>
+      <span className="ctl-eyebrow">tokens and cost</span>
+      {/* The columns are shown WITH their em dashes rather than omitted:
+          omitting them, which the previous attempts table did, also hides the
+          numbers on the new attempts that do carry them. */}
+      <ul className="ctl-facts">
+        <li className={`ctl-fact${a.input_tokens === null ? ' is-absent' : ''}`}>
+          <b>in</b>
+          {tokens(a.input_tokens)}
+        </li>
+        <li className={`ctl-fact${a.output_tokens === null ? ' is-absent' : ''}`}>
+          <b>out</b>
+          {tokens(a.output_tokens)}
+        </li>
+        <li className={`ctl-fact${a.cache_read_input_tokens === null ? ' is-absent' : ''}`}>
+          <b>cache r</b>
+          {tokens(a.cache_read_input_tokens)}
+        </li>
+        <li className={`ctl-fact${a.cache_creation_input_tokens === null ? ' is-absent' : ''}`}>
+          <b>cache w</b>
+          {tokens(a.cache_creation_input_tokens)}
+        </li>
+        <li className={`ctl-fact${a.cost_usd === null ? ' is-absent' : ''}`}>
+          <b>cost</b>
+          {usd(a.cost_usd)}
+        </li>
+      </ul>
     </div>
   )
 }
@@ -1432,32 +1523,41 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
 
   return (
     <div className="section" style={{ ...SUB, marginBottom: 0 }}>
-      <h2>
-        Checkpoints
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">checkpoints</span>
         <span className="count-chip">{rows.length}</span>
-      </h2>
-
-      {restored !== null && (
-        <p className="muted">
-          Resumed from <code>{restored.checkpoint_id}</code>
-          {restored.from_attempt !== null && (
-            <>
-              , written by attempt <span className="mono">{restored.from_attempt}</span>
-            </>
-          )}
-          {restored.files !== null && <> · {plural(restored.files, 'file')} restored</>}
-          {restored.bytes !== null && <> · {bytesLabel(restored.bytes)}</>}. This attempt did not
-          start from an empty workspace.
-        </p>
-      )}
+        {/* RESUMED FROM, AS FACTS. "This attempt did not start from an empty
+            workspace" was the sentence; the checkpoint id IS that fact, and
+            the file count and byte total beside it are what a reader checks. */}
+        {restored !== null && (
+          <span className="is-end ctl-card-note">
+            resumed {restored.checkpoint_id}
+            {restored.from_attempt !== null && ` · from ${restored.from_attempt}`}
+            {restored.files !== null && ` · ${restored.files} files`}
+            {restored.bytes !== null && ` · ${bytesLabel(restored.bytes)}`}
+          </span>
+        )}
+      </div>
 
       {rows.length === 0 ? (
-        <p className="muted">
-          This attempt&apos;s document lists no checkpoint.{' '}
-          {a.started_at === null
-            ? 'It never started, so there was nothing to checkpoint.'
-            : 'Checkpointing is periodic, so an attempt shorter than one interval legitimately writes none.'}
-          {!eventsRead && ' The event read failed, so a checkpoint recorded only in an event would not be visible here either.'}
+        // A REAL ZERO OR AN UNKNOWN, AND THEY ARE DIFFERENT MARKS. The
+        // document lists none; whether that is the whole story depends on
+        // whether the events were read, because a checkpoint can be recorded
+        // in an event alone. Why periodic checkpointing legitimately writes
+        // none on a short attempt is `#help/checkpoints`.
+        <p className="att-ckpt-none">
+          <Mark
+            kind={eventsRead ? 'zero' : 'partial'}
+            say={
+              !eventsRead
+                ? "This attempt's document lists no checkpoint, and the event read failed — so a checkpoint recorded only in an event would not be visible here either. Whether this attempt wrote one is unknown."
+                : a.started_at === null
+                  ? "This attempt's document lists no checkpoint. It never started, so there was nothing to checkpoint."
+                  : "This attempt's document lists no checkpoint. Checkpointing is periodic, so an attempt shorter than one interval legitimately writes none."
+            }
+          />{' '}
+          {a.started_at === null ? 'never started' : 'none written'}
+          <HelpCard topic="checkpoints" />
         </p>
       ) : (
         <div className="ctl-table">
@@ -1482,11 +1582,17 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                   <td className="is-num">{r.bytes === null ? <Em /> : bytesLabel(r.bytes)}</td>
                   <td>
                     {r.uri === null ? (
-                      <span className="muted">
-                        {eventsRead
-                          ? '— its event is not on this page'
-                          : '— unknown: the event read failed'}
-                      </span>
+                      <>
+                        <Em />{' '}
+                        <Mark
+                          kind={eventsRead ? 'partial' : 'unread'}
+                          say={
+                            eventsRead
+                              ? "This checkpoint's event is not on this page, so its location is unknown. The events route is oldest-first, capped, and returns no page token."
+                              : 'The event read failed, so this checkpoint has no location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine.'
+                          }
+                        />
+                      </>
                     ) : (
                       <>
                         <span className="mono uri">{r.uri}</span>
@@ -1505,15 +1611,15 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                 </tr>
               ))}
             </tbody>
-            <caption>
-              Ids come from the attempt document; size and location come from
-              each checkpoint&apos;s own event.
-              {!eventsRead
-                ? ` The event read failed, so no size and no location could be attached to any of these ${rows.length} ids. They are unknown rather than missing, and nothing here says whether the checkpoints themselves are fine.`
-                : missingLocation > 0
-                  ? ` ${missingLocation} of ${rows.length} have no event on this page — the events route is oldest-first, capped, and returns no page token, so a long attempt's later checkpoints fall off the end.`
-                  : ''}
-            </caption>
+            {/* THE COVERAGE IS A FRACTION, NOT A PARAGRAPH. Where the ids and
+                the locations come from is `#help/checkpoints`; what this table
+                has to say for itself is how many of its rows have a location,
+                and each of those rows already carries its own mark. */}
+            {(!eventsRead || missingLocation > 0) && (
+              <caption>
+                {eventsRead ? rows.length - missingLocation : 0} of {rows.length} located
+              </caption>
+            )}
           </table>
         </div>
       )}
@@ -1537,12 +1643,13 @@ function LatestCheckpointNote({ run, attempts }: { run: AgentRun; attempts: Atte
   // what happened.
   if (run.events === null) {
     return (
-      <p className="muted small">
-        The task&apos;s restore pointer is{' '}
-        <span className="mono uri">{latest}</span>. The event read failed and a
-        checkpoint&apos;s uri is only ever recorded on its event, so nothing
-        listed above can be compared with it. Whether it matches a checkpoint
-        of these attempts is unknown.
+      <p className="att-restore">
+        <b>restore</b>
+        <span className="mono uri">{latest}</span>{' '}
+        <Mark
+          kind="unread"
+          say="The event read failed, and a checkpoint's uri is only ever recorded on its event — so nothing listed above can be compared with this pointer. Whether it matches a checkpoint of these attempts is unknown."
+        />
       </p>
     )
   }
@@ -1551,12 +1658,13 @@ function LatestCheckpointNote({ run, attempts }: { run: AgentRun; attempts: Atte
   )
   if (known) return null
   return (
-    <p className="muted small">
-      The task&apos;s restore pointer is{' '}
-      <span className="mono uri">{latest}</span>, which no checkpoint listed
-      above matches. Either its event is off this page or it was written by an
-      attempt whose document did not come back — it is not evidence the
-      checkpoint is gone.
+    <p className="att-restore">
+      <b>restore</b>
+      <span className="mono uri">{latest}</span>{' '}
+      <Mark
+        kind="partial"
+        say="No checkpoint listed above matches the task's restore pointer. Either its event is off this page or it was written by an attempt whose document did not come back — it is not evidence the checkpoint is gone."
+      />
     </p>
   )
 }
@@ -1588,43 +1696,51 @@ function Output({ run }: { run: AgentRun }) {
   const logsMalformed = logsRaw !== undefined && !logsOk
   const terminal = TERMINAL_STATES.has(task.state)
 
+  const retried = attempts !== null ? attempts.length > 1 : task.attempt_count > 1
+
   return (
     <section className="section panel">
-      <h2>Output</h2>
+      <div className="ctl-toolbar">
+        <h2>Output</h2>
+        {/* THE SCOPE LINE IS NOT OPTIONAL, AND IT IS NOW A QUALIFIER.
+            Everything in this panel comes from result_summary, which finish()
+            writes ONCE at terminal state. On a retried task it is the last
+            attempt's output and nothing else, and a panel that does not say so
+            gets read as the run's. Three words plus the mark carry that; the
+            two sentences explaining that the earlier attempts' output was
+            never summarised anywhere are `#help/attempt-documents`.
 
-      {/* THE SCOPE LINE IS NOT OPTIONAL. Everything in this panel comes from
-          result_summary, which finish() writes ONCE at terminal state. On a
-          retried task it is the last attempt's output and nothing else, and a
-          panel that does not say so gets read as the run's. */}
-      {/* THE FALLBACK MATTERS MORE THAN THE PRIMARY. With the attempt read
-          failed this panel cannot count attempts -- which is precisely when
-          the caveat is most needed -- and it used to vanish, leaving
-          artifacts, git outcome and logs rendered unqualified as the run's
-          output. `task.attempt_count` is the task's own counter, already shown
-          above, and answers the question when the query does not. */}
-      {(attempts !== null ? attempts.length > 1 : task.attempt_count > 1) && (
-        <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
-          Everything here describes the LAST attempt only. The result summary is
-          written once, at terminal state; the earlier attempts&apos; output was
-          never summarised anywhere.
-          {attempts === null &&
-            ` The attempt read failed, so the ${task.attempt_count} attempts are the task's own count rather than a document each.`}
-        </p>
-      )}
+            THE FALLBACK MATTERS MORE THAN THE PRIMARY. With the attempt read
+            failed this panel cannot count attempts -- which is precisely when
+            the caveat is most needed -- and it used to vanish, leaving
+            artifacts, git outcome and logs rendered unqualified as the run's
+            output. `task.attempt_count` is the task's own counter and answers
+            the question when the query does not. */}
+        {retried && (
+          <span className="is-end ctl-card-note">
+            <Mark
+              kind="partial"
+              say={`Everything in this panel describes the LAST attempt only. The result summary is written once, at terminal state; the earlier attempts' output was never summarised anywhere.${attempts === null ? ` The attempt read failed, so the ${task.attempt_count} attempts are the task's own count rather than a document each.` : ''}`}
+            />{' '}
+            last attempt of {attempts !== null ? attempts.length : task.attempt_count}
+          </span>
+        )}
+      </div>
 
       {!terminal ? (
-        <Absent kind="zero" heading="Nothing has been written yet">
-          A result summary is written only when an attempt finishes. This agent
-          has not finished, so there is nothing here — which is not the same as
-          producing nothing.
-        </Absent>
+        <Absent
+          kind="zero"
+          heading={`nothing written yet · ${task.state}`}
+          say="A result summary is written only when an attempt finishes. This agent has not finished, so there is nothing here — which is not the same as producing nothing."
+          help="attempt-documents"
+        />
       ) : summary === null ? (
-        <Absent kind="partial" heading="Finished with no result summary">
-          This agent reached <code>{task.state}</code> without one. A parked
-          attempt puts its summary in the event detail and in{' '}
-          <code>blocked_by</code> instead, so the timeline below is where to
-          look.
-        </Absent>
+        <Absent
+          kind="partial"
+          heading={`finished with no summary · ${task.state}`}
+          say="This agent reached a terminal state without a result summary. A parked attempt puts its summary in the event detail and in blocked_by instead, so the timeline below is where to look."
+          help="attempt-documents"
+        />
       ) : (
         <>
           <GitOutcome git={summary.git} artifacts={artifacts} task={task} />
@@ -1663,26 +1779,42 @@ function Artifacts({
   if (malformed) {
     return (
       <div className="section">
-        <h2>Artifacts</h2>
-        <Absent kind="partial" heading="The artifact list is not a list">
-          This result summary records an <code>artifacts</code> field that is not
-          an array, so nothing here can be listed. The attempt may well have
-          uploaded files — this is a malformed record, not an empty one.
-        </Absent>
+        <span className="ctl-eyebrow">artifacts</span>
+        <Absent
+          kind="partial"
+          heading="artifacts is not a list"
+          say="This result summary records an artifacts field that is not an array, so nothing here can be listed. The attempt may well have uploaded files — this is a malformed record, not an empty one."
+        />
       </div>
     )
   }
 
   return (
     <div className="section" style={SUB}>
-      <h2>
-        Artifacts
-        <span className="count-chip">{plural(artifacts.length, 'file')}</span>
-      </h2>
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">artifacts</span>
+        <span className="count-chip">{artifacts.length}</span>
+        {skipped.length > 0 && (
+          // THE CAP, AS A FRACTION AND A MARK. "N artifacts were skipped for
+          // exceeding the size cap, so this list is incomplete" plus the names
+          // was a `warn-text` paragraph under the table; the names are data
+          // and stay, the sentence is the mark's accessible name.
+          <span className="is-end ctl-card-note">
+            <Mark
+              kind="partial"
+              say={`${skipped.length} artifact${skipped.length === 1 ? ' was' : 's were'} skipped for exceeding the size cap, so this list is incomplete: ${skipped.join(', ')}`}
+            />{' '}
+            {skipped.length} over cap
+          </span>
+        )}
+      </div>
       {artifacts.length === 0 ? (
-        <p className="muted">
-          This attempt uploaded no artifacts. The read succeeded — the list is
-          empty, not missing.
+        <p className="att-none">
+          <Mark
+            kind="zero"
+            say="This attempt uploaded no artifacts. The read succeeded and the list is empty, not missing."
+          />{' '}
+          none uploaded
         </p>
       ) : (
         <div className="ctl-table">
@@ -1735,12 +1867,6 @@ function Artifacts({
       {showing !== null && (
         <ArtifactViewer taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
       )}
-      {skipped.length > 0 && (
-        <p className="warn-text">
-          {plural(skipped.length, 'artifact')} {skipped.length === 1 ? 'was' : 'were'} skipped for
-          exceeding the size cap, so this list is incomplete: {skipped.join(', ')}
-        </p>
-      )}
     </div>
   )
 }
@@ -1762,14 +1888,12 @@ function Logs({
   if (malformed) {
     return (
       <div className="section" style={SUB}>
-        <h2>Logs</h2>
-        <Absent kind="partial" heading="The log list is not a map of streams">
-          This result summary records a <code>logs</code> field that is not an
-          object of stream name to uri, so no stream can be listed from it. The
-          attempt may well have uploaded stdout and stderr — this is a
-          malformed record, not a run without logs. The value is reproduced
-          below so that a uri inside it is not lost.
-        </Absent>
+        <span className="ctl-eyebrow">logs</span>
+        <Absent
+          kind="partial"
+          heading="logs is not a map of streams"
+          say="This result summary records a logs field that is not an object of stream name to uri, so no stream can be listed from it. The attempt may well have uploaded stdout and stderr — this is a malformed record, not a run without logs. The value is reproduced below so a uri inside it is not lost."
+        />
         <pre className="json" style={{ maxHeight: 200, overflowY: 'auto' }}>
           {JSON.stringify(raw, null, 2)}
         </pre>
@@ -1780,38 +1904,45 @@ function Logs({
 
   return (
     <div className="section" style={SUB}>
-      <h2>Logs</h2>
+      <span className="ctl-eyebrow">logs</span>
       {entries.length === 0 ? (
-        <p className="muted">
-          No log stream was uploaded for this attempt. A stream that failed to
-          upload is absent from this list rather than recorded as empty.
+        <p className="att-none">
+          <Mark
+            kind="absent"
+            say="No log stream was uploaded for this attempt. A stream that failed to upload is absent from this list rather than recorded as empty."
+          />{' '}
+          none uploaded
         </p>
       ) : (
-        <dl className="kv">
+        <ul className="ctl-facts">
           {entries.map(([label, value]) => (
-            <div key={label} style={{ display: 'contents' }}>
-              <dt>{label}</dt>
-              <dd className="mono uri">
-                {typeof value === 'string' ? (
-                  <>
-                    {value}
-                    <button
-                      className="copy"
-                      onClick={() => navigator.clipboard?.writeText(`gsutil cat ${value}`)}
-                    >
-                      copy gsutil
-                    </button>
-                  </>
-                ) : (
-                  /* An entry whose value is not a string is not a uri. React
-                     would throw on an object child, and printing it as a
-                     location would send someone to gsutil with a number. */
-                  <span className="muted">{JSON.stringify(value)} — not a uri, so there is nothing to fetch</span>
-                )}
-              </dd>
-            </div>
+            <li className="ctl-fact" key={label}>
+              <b>{label}</b>
+              {typeof value === 'string' ? (
+                <>
+                  <span className="mono uri">{value}</span>
+                  <button
+                    className="copy"
+                    onClick={() => navigator.clipboard?.writeText(`gsutil cat ${value}`)}
+                  >
+                    copy gsutil
+                  </button>
+                </>
+              ) : (
+                /* An entry whose value is not a string is not a uri. React
+                   would throw on an object child, and printing it as a
+                   location would send someone to gsutil with a number. */
+                <>
+                  <span className="mono">{JSON.stringify(value)}</span>{' '}
+                  <Mark
+                    kind="absent"
+                    say="This log entry's value is not a string, so it is not a uri and there is nothing to fetch from it."
+                  />
+                </>
+              )}
+            </li>
           ))}
-        </dl>
+        </ul>
       )}
       <LogsFoot />
     </div>
@@ -1830,12 +1961,13 @@ function Logs({
  * The "Output, as the agent wrote it" panel below reads it.
  */
 function LogsFoot() {
+  // WHAT IT SAYS NOW, and it is a pointer rather than an explanation. These
+  // are object LOCATIONS from the result summary; the text window, including
+  // the live tail, is read by a different route and drawn by `RunFiles` below.
+  // A reader who needs to know which is which follows the link.
   return (
-    <p className="muted small">
-      These are the object locations recorded in the attempt&apos;s result
-      summary, which is written when the attempt ends. The window of text itself
-      — including the live tail of an attempt that is still running — is read
-      separately, and is in &ldquo;Output, as the agent wrote it&rdquo; below.
+    <p className="ctl-card-foot">
+      <span>locations only · text window below</span>
     </p>
   )
 }
@@ -1867,28 +1999,44 @@ function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] |
 
   return (
     <div className="section">
-      <h2>Spend, from the result summary</h2>
-      <p className="muted">
-        {unread
-          ? 'The attempt read failed, so whether any attempt document carries a typed spend figure is unknown. What follows is the last attempt’s own result summary — an untyped dict no query can reach — and it describes that attempt only.'
-          : 'No attempt document carries a typed spend figure, but the last attempt’s result summary does. These come from an untyped dict that no query can reach, and they describe the last attempt only.'}
-      </p>
-      <dl className="kv">
-        <dt>Input</dt>
-        <dd>{tokens(n('input_tokens'))}</dd>
-        <dt>Output</dt>
-        <dd>{tokens(n('output_tokens'))}</dd>
-        <dt>Cache read</dt>
-        <dd>{tokens(n('cache_read_input_tokens'))}</dd>
-        <dt>Cost</dt>
-        <dd>{usd(n('total_cost_usd'))}</dd>
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">spend · result summary</span>
+        <span className="is-end ctl-card-note">
+          <Mark
+            kind={unread ? 'unread' : 'partial'}
+            say={
+              unread
+                ? 'The attempt read failed, so whether any attempt document carries a typed spend figure is unknown. What follows is the last attempt’s own result summary — an untyped dict no query can reach — and it describes that attempt only.'
+                : 'No attempt document carries a typed spend figure, but the last attempt’s result summary does. These come from an untyped dict that no query can reach, and they describe the last attempt only.'
+            }
+          />{' '}
+          last attempt only
+        </span>
+      </div>
+      <ul className="ctl-facts">
+        <li className={`ctl-fact${n('input_tokens') === null ? ' is-absent' : ''}`}>
+          <b>in</b>
+          {tokens(n('input_tokens'))}
+        </li>
+        <li className={`ctl-fact${n('output_tokens') === null ? ' is-absent' : ''}`}>
+          <b>out</b>
+          {tokens(n('output_tokens'))}
+        </li>
+        <li className={`ctl-fact${n('cache_read_input_tokens') === null ? ' is-absent' : ''}`}>
+          <b>cache r</b>
+          {tokens(n('cache_read_input_tokens'))}
+        </li>
+        <li className={`ctl-fact${n('total_cost_usd') === null ? ' is-absent' : ''}`}>
+          <b>cost</b>
+          {usd(n('total_cost_usd'))}
+        </li>
         {Array.isArray(models) && (
-          <>
-            <dt>Models</dt>
-            <dd>{(models as string[]).join(', ')}</dd>
-          </>
+          <li className="ctl-fact">
+            <b>models</b>
+            {(models as string[]).join(', ')}
+          </li>
         )}
-      </dl>
+      </ul>
     </div>
   )
 }
@@ -1908,13 +2056,17 @@ function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] |
  * is worth knowing while it is still running.
  */
 function DispatchPanel({ task }: { task: Task }) {
+  // WHAT A DISPATCH IS -- chosen at submission, decides what happens to the
+  // work rather than how it runs -- is true of every task there has ever been
+  // and is `#help/dispatch-strategies`. The panel shows what THIS task chose.
   return (
     <section className="section panel">
-      <h2>Dispatch</h2>
-      <p className="muted" style={{ marginBottom: 10 }}>
-        Chosen at submission and stored on the task. It decides what happens to
-        the agent&apos;s work once the run finishes — nothing about how it runs.
-      </p>
+      <div className="ctl-toolbar">
+        <h2>
+          Dispatch
+          <HelpCard topic="dispatch-strategies" />
+        </h2>
+      </div>
       <DispatchFacts task={task} />
     </section>
   )
@@ -1970,48 +2122,53 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
 
       {git.error ? (
         <p className="warn-text">
-          The change could not be read from the workspace: {git.error}. This says
-          nothing about whether the agent did work — only that git could not be
-          asked.
+          <Mark
+            kind="unread"
+            say="The change could not be read from the workspace. This says nothing about whether the agent did work — only that git could not be asked."
+          />{' '}
+          {git.error}
         </p>
       ) : null}
 
       <PublishOutcome git={git} task={task} />
 
-      <dl className="kv">
-        <dt>Commits</dt>
-        <dd>
+      <ul className="ctl-facts">
+        <li className={`ctl-fact${commits.length === 0 ? ' is-absent' : ''}`}>
+          <b>commits</b>
           {commits.length === 0 ? (
-            <span className="muted">
-              none
-              {dirty.length > 0 && ' — the agent edited files without committing'}
-            </span>
+            <>
+              0
+              {dirty.length > 0 && (
+                <>
+                  {' '}
+                  <Mark
+                    kind="zero"
+                    say="The agent edited files and never ran git commit, which is the common case. The changes are in the patch and in the uncommitted count beside this."
+                  />
+                </>
+              )}
+            </>
           ) : (
             <>
-              {git.commit_count ?? commits.length} on top of{' '}
+              {git.commit_count ?? commits.length} on{' '}
               <span className="mono">{git.base ? git.base.slice(0, 10) : '—'}</span>
               {typeof git.insertions === 'number' && typeof git.deletions === 'number' && (
-                <span className="muted small">
-                  {' '}
-                  · +{git.insertions} −{git.deletions}
-                </span>
+                <> · +{git.insertions} −{git.deletions}</>
               )}
             </>
           )}
-        </dd>
+        </li>
 
         {dirty.length > 0 && (
-          <>
-            <dt>Uncommitted</dt>
-            <dd>
-              {plural(git.dirty_count ?? dirty.length, 'file')}
-              {git.dirty_truncated && <span className="muted small"> · list truncated</span>}
-            </dd>
-          </>
+          <li className="ctl-fact">
+            <b>dirty</b>
+            {git.dirty_count ?? dirty.length}
+            {git.dirty_truncated && ' · truncated'}
+          </li>
         )}
 
-        <dt>Patch</dt>
-        <dd>
+        <li className={`ctl-fact${patch ? '' : ' is-absent'}`}>
+          <b>patch</b>
           {patch ? (
             <>
               <span className="mono uri">{patch.uri}</span>
@@ -2023,53 +2180,63 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
               </button>
             </>
           ) : git.patch_omitted ? (
-            <span className="warn-text">
-              discarded at {num(git.patch_bytes)} bytes — over the cap. It was not
-              truncated: a truncated patch applies cleanly and silently drops the
-              rest of the change.
-            </span>
+            <>
+              <Mark
+                kind="partial"
+                say="The patch was discarded for exceeding the size cap. It was NOT truncated: a truncated patch applies cleanly and silently drops the rest of the change."
+              />{' '}
+              discarded at {num(git.patch_bytes)} bytes
+            </>
           ) : (
-            <span className="muted">none — nothing differed from the clone</span>
+            <>
+              <Em />{' '}
+              <Mark
+                kind="zero"
+                say="Nothing differed from the clone, so there is no patch. This is a real zero rather than a patch that failed to upload."
+              />
+            </>
           )}
-        </dd>
+        </li>
 
         {git.branch && (
-          <>
-            <dt>Branch</dt>
-            <dd className="mono">
+          <li className="ctl-fact">
+            <b>branch</b>
+            <span className="mono">
               {git.branch}
-              {git.pushed_head && (
-                <span className="muted small"> · {git.pushed_head.slice(0, 10)}</span>
-              )}
-            </dd>
-          </>
+              {git.pushed_head && ` · ${git.pushed_head.slice(0, 10)}`}
+            </span>
+          </li>
         )}
 
         {git.repository && (
-          <>
-            <dt>Repository</dt>
-            <dd className="mono uri">{git.repository}</dd>
-          </>
+          <li className="ctl-fact">
+            <b>repo</b>
+            <span className="mono uri">{git.repository}</span>
+          </li>
         )}
-      </dl>
 
-      {pr && (
-        <p className="muted" style={{ marginTop: 10 }}>
-          <a href={pr.url} target="_blank" rel="noreferrer">
-            #{pr.number}
-          </a>{' '}
-          <span className={`tag ${pr.state === 'open' ? 'ok' : 'wait'}`}>{pr.state}</span>
-          {pr.created === false && <span className="muted small"> · already existed, reused</span>}
-        </p>
-      )}
+        {pr && (
+          <li className="ctl-fact">
+            <b>pr</b>
+            <a href={pr.url} target="_blank" rel="noreferrer">
+              #{pr.number}
+            </a>{' '}
+            <span className={`tag ${pr.state === 'open' ? 'ok' : 'wait'}`}>{pr.state}</span>
+            {pr.created === false && ' · reused'}
+          </li>
+        )}
 
-      {git.auto_committed && (
-        <p className="muted small">
-          One commit on this branch was made by the worker, not the agent: the
-          agent left changes uncommitted and they would otherwise not have
-          reached the branch at all.
-        </p>
-      )}
+        {git.auto_committed && (
+          <li className="ctl-fact">
+            <b>by</b>
+            worker
+            <Mark
+              kind="partial"
+              say="One commit on this branch was made by the worker, not the agent: the agent left changes uncommitted and they would otherwise not have reached the branch at all."
+            />
+          </li>
+        )}
+      </ul>
 
       {commits.length > 0 && (
         <div className="ctl-table" style={{ marginTop: 10 }}>
@@ -2105,9 +2272,11 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
               ))}
             </tbody>
             {(git.commit_count ?? 0) > commits.length && (
+              // THE FRACTION IS THE CAVEAT. "the patch above carries all of
+              // them" is a standing fact about how the worker harvests, and
+              // the patch row above is one line up.
               <caption>
-                {git.commit_count} commits were made; the newest {commits.length} are listed. The
-                patch above carries all of them.
+                newest {commits.length} of {git.commit_count}
               </caption>
             )}
           </table>
@@ -2172,19 +2341,21 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   //    nothing, and must not be "finished off" by hand. Ahead of the general
   //    pushed-but-no-PR case below, which would tell you to do exactly that.
   if (isContributor && git.published === true) {
+    // THE ONE SENTENCE IS NOT NEGOTIABLE AND IT IS NOT THE EXPLANATION. §8.5
+    // allows an empty state one sentence; this is the sentence that stops an
+    // operator doing the expensive wrong thing, so it is the one kept and the
+    // description of what `integrate` is went to `#help/dispatch-strategies`.
     return (
-      <div className="ctl-empty" style={{ marginBottom: 10 }}>
-        <h3>Pushed, and no pull request — by request</h3>
-        <p>
-          This step is a <code>contributor</code> in an <code>integrate</code>{' '}
-          workflow. Its branch{' '}
-          <span className="mono">{git.branch ?? 'below'}</span> is on the forge and
-          the integrating step merges it into the single pull request the whole
-          workflow opens. <strong>Do not open one from this branch</strong> — that
-          is the second pull request this strategy exists to prevent.
-        </p>
-        {reason !== null && <span className="ctl-empty-foot">{reason}</span>}
-      </div>
+      <Absent
+        kind="zero"
+        heading="pushed · no pull request, by request"
+        say="This step is a contributor in an integrate workflow. Its branch is on the forge and the integrating step merges it into the single pull request the whole workflow opens."
+        foot={reason ?? undefined}
+        help="dispatch-strategies"
+      >
+        <strong>Do not open one from this branch</strong> — that is the second
+        pull request this strategy exists to prevent.
+      </Absent>
     )
   }
 
@@ -2192,17 +2363,15 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   //    call did not land. Re-running the agent would be the wrong response.
   if (git.published === true) {
     return (
-      <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-        <h3>The branch is pushed; no pull request was opened</h3>
-        <p>
-          The work reached the forge on{' '}
-          <span className="mono">{git.branch ?? 'the branch below'}</span>. Only
-          the pull-request call did not complete, so opening one by hand from
-          that branch is all that is left — re-running this agent would duplicate
-          work that already exists.
-        </p>
-        {reason !== null && <span className="ctl-empty-foot">{reason}</span>}
-      </div>
+      <Absent
+        kind="partial"
+        heading={`pushed · no pull request${git.branch ? ` · ${git.branch}` : ''}`}
+        say="The work reached the forge. Only the pull-request call did not complete, so the branch exists and the pull request does not."
+        foot={reason ?? undefined}
+      >
+        Open one by hand from that branch — re-running this agent would
+        duplicate work that already exists.
+      </Absent>
     )
   }
 
@@ -2214,19 +2383,18 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   //    the worker returns before `probe_repository`, so every field those
   //    branches read is absent.
   if (isCollect) {
+    // WHAT THE THREE STRATEGIES ARE is `#help/dispatch-strategies`, which is
+    // where the two sentences about `direct-pr` and `integrate` went. What is
+    // on the glass is that nothing was pushed BY REQUEST, which is the fact
+    // that stops someone debugging a token scope.
     return (
-      <div className="ctl-empty" style={{ marginBottom: 10 }}>
-        <h3>Nothing was pushed — this dispatch asked for <code>collect</code></h3>
-        <p>
-          <code>collect</code> is the default strategy: the agent&apos;s work is
-          harvested into this task&apos;s patch and artifacts, and the repository
-          is never written to. Nothing failed, and no token or forge setting
-          changes this. Submit with <code>direct-pr</code> to have the agent open
-          a pull request of its own, or run it as a step of an{' '}
-          <code>integrate</code> workflow for one pull request across the steps.
-        </p>
-        {reason !== null && <span className="ctl-empty-foot">{reason}</span>}
-      </div>
+      <Absent
+        kind="zero"
+        heading="nothing pushed · collect"
+        say="collect is the default strategy: the agent's work is harvested into this task's patch and artifacts and the repository is never written to. Nothing failed, and no token or forge setting changes this."
+        foot={reason ?? undefined}
+        help="dispatch-strategies"
+      />
     )
   }
 
@@ -2235,122 +2403,92 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   //    no. The patch is the deliverable.
   if (git.can_push === false) {
     return (
-      <div className="ctl-empty" style={{ marginBottom: 10 }}>
-        <h3>Not published: this token cannot write to the repository</h3>
-        <p>
-          The forge was asked and refused write access, so the patch below is the
-          deliverable. Nothing failed — granting the tenant&apos;s credential
-          write scope is what changes this.
-        </p>
-        {reason !== null && <span className="ctl-empty-foot">{reason}</span>}
-      </div>
+      <Absent
+        kind="zero"
+        heading="not published · token cannot write"
+        say="The forge was asked and refused write access, so the patch is the deliverable. Nothing failed — granting the tenant's credential write scope is what changes this."
+        foot={reason ?? undefined}
+      />
     )
   }
 
   // 6. No reason at all.
   if (reason === null) {
     return (
-      <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-        <h3>No pull request, and no reason was recorded</h3>
-        <p>
-          The worker writes <code>publish_reason</code> on every path, including
-          the successful ones, so its absence means this summary was written by
-          something other than the publish step.
-        </p>
-      </div>
+      <Absent
+        kind="partial"
+        heading="no pull request · no reason recorded"
+        say="The worker writes publish_reason on every path, including the successful ones, so its absence means this summary was written by something other than the publish step."
+      />
     )
   }
 
   // 7+. No structured signal beyond `published: false`, so the free-text
   //      reason is matched -- carefully. An unrecognised reason is printed
   //      verbatim and labelled as one, never forced into a bucket.
-  const known: { match: string; heading: string; body: ReactNode } | undefined = [
+  //
+  // EACH IS NOW A HEADING AND A SENTENCE ON THE MARK, not a heading and a
+  // paragraph. The headings are the causes, unchanged in substance and shorter
+  // in words, because the cause is what a reader acts on; the reasoning that
+  // used to sit under each one is the mark's accessible name. `kind` still
+  // separates the six, and it separates them the way §8.7.3 requires: a
+  // deliberate outcome is a real zero, a failure to reach the forge is a
+  // partial read, and neither is painted as the other.
+  const known:
+    | { match: string; heading: string; say: string; kind: 'zero' | 'partial' }
+    | undefined = [
     {
       match: 'changed nothing',
-      heading: 'Not published: the agent changed nothing',
-      body: (
-        <>
-          The workspace was identical to the clone, so there was nothing to push.
-          This is a statement about the run, not about publishing — the agent did
-          no work on the repository.
-        </>
-      ),
+      heading: 'not published · the agent changed nothing',
+      say: 'The workspace was identical to the clone, so there was nothing to push. This is a statement about the run, not about publishing — the agent did no work on the repository.',
+      kind: 'zero' as const,
     },
     {
       match: 'parked',
-      heading: 'Not published: this attempt parked',
-      body: (
-        <>
-          Publishing waits for the run to finish, and this attempt did not finish
-          — it checkpointed and released its capacity. The next attempt resumes
-          from the checkpoint and publishes then. Nothing is lost and nothing
-          needs doing.
-        </>
-      ),
+      heading: 'not published · this attempt parked',
+      say: 'Publishing waits for the run to finish, and this attempt did not finish — it checkpointed and released its capacity. The next attempt resumes from the checkpoint and publishes then. Nothing is lost and nothing needs doing.',
+      kind: 'zero' as const,
     },
     {
       match: 'not on a forge',
-      heading: 'Not published: this host is not a forge we can publish to',
-      body: (
-        <>
-          The repository is not on a forge this worker knows how to open a pull
-          request against, so the patch below is the deliverable — apply it by
-          hand.
-        </>
-      ),
+      heading: 'not published · not a forge we can publish to',
+      say: 'The repository is not on a forge this worker knows how to open a pull request against, so the patch is the deliverable — apply it by hand.',
+      kind: 'zero' as const,
     },
     {
       match: 'could not reach the forge',
-      heading: 'Not published: the forge did not answer',
-      body: (
-        <>
-          The forge could not be reached at all, so nothing is known about
-          whether publishing would have worked. This says nothing about the
-          agent&apos;s work, which is in the patch below.
-        </>
-      ),
+      heading: 'not published · the forge did not answer',
+      say: "The forge could not be reached at all, so nothing is known about whether publishing would have worked. This says nothing about the agent's work, which is in the patch.",
+      kind: 'partial' as const,
     },
     {
       match: 'publishing is disabled',
-      heading: 'Not published: publishing is off for this worker',
-      body: <>A configuration decision, not a failure. The patch below is the deliverable.</>,
+      heading: 'not published · publishing is off for this worker',
+      say: 'A configuration decision, not a failure. The patch is the deliverable.',
+      kind: 'zero' as const,
     },
     {
       match: 'repository url is unknown',
-      heading: 'Not published: the repository URL is unknown',
-      body: (
-        <>
-          The attempt had no repository to publish to. If the task was meant to
-          have one, it was submitted without <code>repository_url</code>.
-        </>
-      ),
+      heading: 'not published · repository url unknown',
+      say: 'The attempt had no repository to publish to. If the task was meant to have one, it was submitted without repository_url.',
+      kind: 'zero' as const,
     },
   ].find((c) => lower.includes(c.match))
 
   if (known !== undefined) {
-    return (
-      <div className="ctl-empty" style={{ marginBottom: 10 }}>
-        <h3>{known.heading}</h3>
-        <p>{known.body}</p>
-        <span className="ctl-empty-foot">{reason}</span>
-      </div>
-    )
+    return <Absent kind={known.kind} heading={known.heading} say={known.say} foot={reason} />
   }
 
   // The push itself was rejected -- a GitError, so the reason is git's own
   // message. This is the "something else moved the branch" case and it is the
   // one that needs a person to look at the branch.
   return (
-    <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-      <h3>Not published, and the reason is git&apos;s own</h3>
-      <p>
-        The push did not land. A rejected push usually means something else
-        moved the branch — this screen does not recognise the message well
-        enough to say which, so it is reproduced exactly as the worker recorded
-        it.
-      </p>
-      <span className="ctl-empty-foot">{reason}</span>
-    </div>
+    <Absent
+      kind="partial"
+      heading="not published · git's own message"
+      say="The push did not land. A rejected push usually means something else moved the branch — this screen does not recognise the message well enough to say which, so it is reproduced exactly as the worker recorded it."
+      foot={reason}
+    />
   )
 }
 
@@ -2390,56 +2528,79 @@ function Input({ run }: { run: AgentRun }) {
     <section className="section">
       <h2>Input</h2>
 
-      <dl className="kv">
-        <dt>Runner profile</dt>
-        <dd>{task.runner_profile}</dd>
-        <dt>Resource class</dt>
-        <dd>
+      {/* WHAT THE PROFILE NAME MEANS IS NOT ON THIS PAGE, and saying so was a
+          five-line paragraph under every run. It is a standing fact about the
+          platform -- the runner-profile catalogue is frozen and no route
+          serves it -- so it is `#help/runner-profile-by-name` beside the
+          profile it qualifies. The SIZING behind the resource class IS served,
+          and stays, as figures rather than as a sentence about figures. */}
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>profile</b>
+          {task.runner_profile}
+          <HelpCard topic="runner-profile-by-name" />
+        </li>
+        <li className="ctl-fact">
+          <b>class</b>
           {task.resource_class}
-          <span className="muted small">
-            {' '}
-            ·{' '}
-            {cls !== null
-              ? `${cls.cpu} vCPU · ${cls.memory_gib} GiB memory, of which the workspace may take ${cls.disk_gib} GiB · ${plural(cls.units, 'capacity unit')}`
-              : (noCeiling ?? 'the sizing behind this name is unknown')}
-          </span>
-        </dd>
-        <dt>Provider</dt>
-        <dd>{task.provider ?? <Em />}</dd>
-        <dt>Model</dt>
+          {cls !== null ? (
+            <> · {cls.cpu} vCPU · {cls.memory_gib} GiB · {cls.disk_gib} GiB disk · {cls.units}u</>
+          ) : (
+            <>
+              {' '}
+              <Mark
+                kind={run.classes === null ? 'unread' : 'absent'}
+                say={`The sizing behind this class name is unknown: ${noCeiling ?? 'the catalogue did not answer'}.`}
+              />
+            </>
+          )}
+        </li>
+        <li className={`ctl-fact${task.provider === null ? ' is-absent' : ''}`}>
+          <b>provider</b>
+          {task.provider ?? <Em />}
+        </li>
         {/* Recorded for attribution. It selects NOTHING about the container --
             image, command and resource spec all come from the profile. */}
-        <dd>{task.model ?? <Em />}</dd>
-        <dt>Priority</dt>
-        <dd>{task.priority}</dd>
-        <dt>Repository</dt>
-        <dd className="uri">
-          {task.repository_url ?? <Em />}
-          {task.repository_ref && ` @ ${task.repository_ref}`}
-        </dd>
-        <dt>Timeout</dt>
-        <dd>{task.timeout_seconds !== null ? `${task.timeout_seconds}s` : <Em />}</dd>
-      </dl>
+        <li className={`ctl-fact${task.model === null ? ' is-absent' : ''}`}>
+          <b>model</b>
+          {task.model ?? <Em />}
+        </li>
+        <li className="ctl-fact">
+          <b>prio</b>
+          {task.priority}
+        </li>
+        <li className={`ctl-fact${task.timeout_seconds === null ? ' is-absent' : ''}`}>
+          <b>timeout</b>
+          {task.timeout_seconds !== null ? `${task.timeout_seconds}s` : <Em />}
+        </li>
+        <li className={`ctl-fact${task.repository_url === null ? ' is-absent' : ''}`}>
+          <b>repo</b>
+          <span className="uri">
+            {task.repository_url ?? <Em />}
+            {task.repository_ref && ` @ ${task.repository_ref}`}
+          </span>
+        </li>
+      </ul>
 
-      {/* WHAT THE PROFILE NAME MEANS IS NOT ON THIS PAGE, and saying so is the
-          honest alternative to describing it from a client-side copy that
-          would drift the first time the catalogue changed. */}
-      <p className="muted small">
-        What <code>{task.runner_profile}</code> runs — its image, command,
-        timeout and checkpoint interval — is in the frozen runner-profile
-        catalogue, and no route serves it, so this page can show the name only.{' '}
-        <code>GET /v1/capacity</code> does publish each profile&apos;s resource
-        class, backend and provider; this screen does not read it.
-      </p>
-
-      <div className="section" style={SUB_AFTER_KV}>
-        <h2>Prompt</h2>
+      <div className="section" style={SUB}>
+        <span className="ctl-eyebrow">prompt</span>
         {prompt === null ? (
-          <p className="muted">
-            This task&apos;s input has no <code>prompt</code> string.{' '}
-            {record === null
-              ? 'Its input is not an object at all.'
-              : 'That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is below.'}
+          // TWO DIFFERENT FACTS, AND THEY STAY APART. An input that is not an
+          // object at all is a malformed submission; an object without a
+          // `prompt` key is legitimate, because the key is a convention of the
+          // CLI and mock runners rather than part of the schema. That second
+          // sentence is `#help/input-is-opaque`.
+          <p className="att-none">
+            <Mark
+              kind={record === null ? 'absent' : 'zero'}
+              say={
+                record === null
+                  ? "This task's input is not an object at all, so it carries no prompt string."
+                  : "This task's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is below."
+              }
+            />{' '}
+            {record === null ? 'input is not an object' : 'no prompt key'}
+            <HelpCard topic="input-is-opaque" />
           </p>
         ) : (
           <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
@@ -2449,16 +2610,22 @@ function Input({ run }: { run: AgentRun }) {
       </div>
 
       <div className="section" style={SUB}>
-        <h2>Metadata</h2>
+        <span className="ctl-eyebrow">metadata</span>
         {metadata === null ? (
-          <p className="muted">
-            The task document carried no metadata field at all — which is
-            different from being submitted with none.
+          <p className="att-none">
+            <Mark
+              kind="absent"
+              say="The task document carried no metadata field at all, which is different from being submitted with none."
+            />{' '}
+            no field
           </p>
         ) : Object.keys(metadata).length === 0 ? (
-          <p className="muted">
-            Submitted with no metadata. The read succeeded and the object is
-            empty — a real zero.
+          <p className="att-none">
+            <Mark
+              kind="zero"
+              say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
+            />{' '}
+            submitted with none
           </p>
         ) : (
           <div className="ctl-table">
@@ -2487,7 +2654,7 @@ function Input({ run }: { run: AgentRun }) {
 
       {input !== null && input !== undefined && (
         <div className="section" style={SUB}>
-          <h2>Full input</h2>
+          <span className="ctl-eyebrow">full input</span>
           <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
             {JSON.stringify(input, null, 2)}
           </pre>
@@ -2542,9 +2709,13 @@ function Timeline({
   if (events === null) {
     return (
       <section className="section">
-        <h2>Timeline</h2>
-        <Absent kind="failed" heading="The event history could not be read">
-          This is a failed read, not an empty history. {detail}
+        <span className="ctl-eyebrow">timeline</span>
+        <Absent
+          kind="failed"
+          heading="Event history"
+          say="The event history could not be read. This is a failed read, not an empty history."
+        >
+          {detail ?? undefined}
         </Absent>
       </section>
     )
@@ -2559,12 +2730,12 @@ function Timeline({
     // query wearing a success code.
     return (
       <section className="section">
-        <h2>Timeline</h2>
-        <Absent kind="failed" heading="Timeline unavailable">
-          This task must have at least a <code>submitted</code> event — it is
-          written in the same batch as the task itself — and the query returned
-          none. This is a failed read, not an empty history.
-        </Absent>
+        <span className="ctl-eyebrow">timeline</span>
+        <Absent
+          kind="failed"
+          heading="0 events · a task always has one"
+          say="This task must have at least a submitted event — it is written in the same batch as the task itself — and the query returned none. This is a failed read, not an empty history."
+        />
       </section>
     )
   }
@@ -2592,46 +2763,49 @@ function Timeline({
 
   return (
     <section className="section panel">
-      <h2>
-        Timeline
-        <span className="count-chip">{events.length} on this page</span>
-      </h2>
-
-      {endMissing ? (
-        <div className="ctl-empty is-partial" role="status" style={{ marginBottom: 10 }}>
-          <h3>This page stops before the end of the run</h3>
-          <p>
-            The task is <code>{task.state}</code> and a terminal task writes a
-            terminal event — none is on this page. The route orders events
-            oldest-first, caps the page server-side and returns no page token,
-            so the newest events are not reachable from this screen at all. The
-            end of this task&apos;s history is missing, not absent.
-          </p>
-          <span className="ctl-empty-foot">
-            {lastEvent === undefined
-              ? 'No event on this page.'
-              : `The newest event here is ${lastEvent.type}, ${timeAgo(lastEvent.at)}.`}
-          </span>
-        </div>
-      ) : (
-        <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
-          One page, oldest first. This screen asks for no page size, so the cap
-          is whatever the deployment&apos;s default is, and the response says
-          neither what it was nor how many events were left out — a page that
-          looks complete is not evidence that it is.
-        </p>
-      )}
+      <div className="ctl-toolbar">
+        <h2>
+          Timeline
+          <span className="count-chip">{events.length}</span>
+        </h2>
+        {/* WHAT THE PAGE DOES AND DOES NOT COVER, AS ONE QUALIFIER.
+            Two paragraphs stood here -- one for the proven case (a terminal
+            task with no terminal event, which proves the page ends before the
+            run did) and one for the unproven (the route caps the page and
+            names neither the cap nor the remainder). Both said the same thing
+            about the route, which is `#help/partial-read`; what differs is
+            whether this page can PROVE it is short, and that is the difference
+            between a `partial` mark and a `pending` one. */}
+        <span className="is-end ctl-card-note">
+          <Mark
+            kind={endMissing ? 'partial' : 'pending'}
+            say={
+              endMissing
+                ? `The task is ${task.state} and a terminal task writes a terminal event — none is on this page. The route orders events oldest-first, caps the page server-side and returns no page token, so the newest events are not reachable from this screen at all. The end of this task's history is missing, not absent.`
+                : "One page, oldest first. This screen asks for no page size, so the cap is whatever the deployment's default is, and the response says neither what it was nor how many events were left out — a page that looks complete is not evidence that it is."
+            }
+          />{' '}
+          {endMissing
+            ? lastEvent === undefined
+              ? 'ends early'
+              : `ends at ${lastEvent.type}, ${timeAgo(lastEvent.at)}`
+            : 'oldest first · cap unknown'}
+        </span>
+      </div>
 
       {groups.map((g) => (
         <div className="section panel" key={g.key}>
           <h2>
             {g.label}
-            <span className="count-chip">{plural(g.events.length, 'event')}</span>
+            <span className="count-chip">{g.events.length}</span>
           </h2>
           {g.events.length === 0 ? (
-            <p className="muted">
-              No event on this page belongs here — the page ends before them, or
-              none were written.
+            <p className="att-none">
+              <Mark
+                kind="partial"
+                say="No event on this page belongs to this attempt — the page ends before them, or none were written. The two cannot be told apart from here."
+              />{' '}
+              none on this page
             </p>
           ) : (
             <ol className="timeline">

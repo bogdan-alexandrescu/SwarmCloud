@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
+import { Mark } from './AgentDetail'
 import { loadArtifactContent } from './api'
-import { errorHeading, errorReassurance, num, type ApiError } from './fetch'
+import { errorHeading, num, type ApiError } from './fetch'
+import { HelpCard } from './HelpCard'
 import {
   artifactKind,
   type ArtifactContent,
@@ -87,13 +89,27 @@ export function ArtifactViewer({
           ✕
         </button>
       </div>
-      {state.kind === 'loading' && <p className="muted">Reading {artifact.name}…</p>}
+      {/* STILL READING IS NOT NOTHING REPORTED (§8.7.1), and the difference is
+          drawn rather than written: `.ctl-pending` is the moving, lighter
+          surface at the geometry the text will occupy, and the mark says
+          `reading` in words for anyone the motion does not reach. */}
+      {state.kind === 'loading' && (
+        <p className="art-loading">
+          <Mark kind="pending" say={`Reading ${artifact.name}. The read is in flight.`} />
+          <span className="ctl-pending art-loading-bar" />
+        </p>
+      )}
       {state.kind === 'error' && (
-        <div className="state partial" role="status">
-          <h3>{errorHeading(state.error)}</h3>
+        <div className="ctl-empty is-failed" role="status">
+          <h3>
+            <Mark
+              kind="unread"
+              say={`${errorHeading(state.error)}. Nothing may be concluded about this artifact's content: it is not empty and it is not missing, the read did not complete.`}
+            />{' '}
+            {errorHeading(state.error)}
+          </h3>
           <p>{state.error.message}</p>
-          <p className="muted small">{errorReassurance(state.error)}</p>
-          <button type="button" onClick={() => void load()}>
+          <button type="button" className="retry" onClick={() => void load()}>
             try again
           </button>
         </div>
@@ -106,33 +122,46 @@ export function ArtifactViewer({
 function Body({ data }: { data: ArtifactContent }) {
   const name = data.artifact.name ?? ''
 
+  // FOUR STATUSES, FOUR MARKS. They were four paragraphs, and the paragraphs
+  // did the telling-apart: "the object is not in the bucket" against "the
+  // store could not be read" against "not text" is three different remedies
+  // and they were three blocks of grey prose that look identical at a glance.
+  // The mark does it in one glyph and two words, greyscale-safe, and the
+  // paragraph is its accessible name. `detail` is the server's own sentence
+  // about THIS read and stays as the empty state's one sentence.
   if (data.status === 'absent') {
     return (
-      <Note heading="The object is not in the bucket">
-        This task&rsquo;s manifest records this artifact, and the object is not
-        there. {data.detail} The manifest is the record of what the worker
-        uploaded, so this is a missing object rather than an artifact the agent
-        never wrote.
+      <Note
+        kind="absent"
+        heading="object not in the bucket"
+        say="This task's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
+      >
+        {data.detail}
       </Note>
     )
   }
 
   if (data.status === 'unreadable') {
     return (
-      <Note heading="The artifact store could not be read">
-        {data.detail} Nothing may be concluded about this artifact&rsquo;s
-        content from this &mdash; it is not empty and it is not missing; the
-        read did not complete.
+      <Note
+        kind="unread"
+        heading="artifact store could not be read"
+        say="Nothing may be concluded about this artifact's content — it is not empty and it is not missing; the read did not complete."
+      >
+        {data.detail}
       </Note>
     )
   }
 
   if (data.status === 'binary') {
     return (
-      <Note heading="Not text">
-        {data.detail}
+      <Note
+        kind="absent"
+        heading={`not text · ${num(data.total_bytes)} bytes`}
+        say="This artifact is not text, so there is no window to render. Its location is below; read it with your own credentials."
+      >
         <span className="art-binary-meta">
-          {num(data.total_bytes)} bytes · <span className="mono uri">{data.uri}</span>
+          <span className="mono uri">{data.uri}</span>
           <CopyGsutil uri={data.uri} />
         </span>
       </Note>
@@ -145,10 +174,15 @@ function Body({ data }: { data: ArtifactContent }) {
     <>
       <Provenance data={data} />
       {content === '' ? (
-        <p className="muted">
-          This artifact exists and is <strong>empty</strong>. The read succeeded
-          and the object is zero bytes &mdash; the agent created the file and
-          wrote nothing into it.
+        // A MEASURED ZERO. `''` is a file the agent created and left blank,
+        // and it is the one thing here that is a real reading rather than an
+        // absence -- so it takes the `real zero` mark and never the em dash.
+        <p className="art-empty">
+          <Mark
+            kind="zero"
+            say="This artifact exists and is empty. The read succeeded and the object is zero bytes — the agent created the file and wrote nothing into it."
+          />{' '}
+          0 bytes
         </p>
       ) : (
         <Rendered name={name} content={content} />
@@ -168,31 +202,48 @@ function Body({ data }: { data: ArtifactContent }) {
 function Provenance({ data }: { data: ArtifactContent }) {
   return (
     <div className="art-prov">
-      {data.truncated ? (
-        <p className="warn-text">
-          <strong>This is a window, not the whole artifact.</strong> Showing{' '}
-          {num(data.returned_bytes)} of {num(data.total_bytes)} bytes. The rest
-          was not read. Download below, or read the object from its uri.
-        </p>
-      ) : (
-        <p className="muted small">
-          {num(data.total_bytes)} bytes, complete.
-        </p>
-      )}
-      {data.redacted ? (
-        <p className="warn-text">
-          {data.redaction_count} credential-shaped{' '}
-          {data.redaction_count === 1 ? 'value was' : 'values were'} masked in
-          this artifact when it was served. They are in the object in the
-          bucket; masking here does not remove them from there, and anything
-          recognisable should be rotated.
-        </p>
-      ) : (
-        <p className="muted small">
-          Redacted at read time against {data.redaction.rules} credential
-          families; nothing matched.
-        </p>
-      )}
+      <ul className="ctl-facts">
+        {/* THE WINDOW. Four sentences -- "This is a window, not the whole
+            artifact. Showing N of M bytes. The rest was not read. Download
+            below, or read the object from its uri." -- became the fraction
+            and a `partial` mark. The fraction is the fact; that the rest was
+            not read is what `partial` means; the two ways to get the whole
+            object are the two buttons on this same strip. */}
+        <li className={`ctl-fact${data.truncated ? ' is-absent' : ''}`}>
+          <b>bytes</b>
+          {data.truncated ? (
+            <>
+              {num(data.returned_bytes)} of {num(data.total_bytes)}{' '}
+              <Mark
+                kind="partial"
+                say="This is a window, not the whole artifact. The rest was not read — download what is shown, or read the object from its uri."
+              />
+            </>
+          ) : (
+            <>{num(data.total_bytes)} · complete</>
+          )}
+        </li>
+        {/* THE COUNT IS THE DIFFERENCE between "this output is clean" and
+            "this output had four credentials in it and you should rotate
+            them", so the count stays on the glass. That masking here does not
+            remove them from the bucket is a standing fact about the read path
+            and is `#help/credential-names-not-values`. */}
+        <li className={`ctl-fact art-redacted${data.redacted ? ' is-absent' : ''}`}>
+          <b>masked</b>
+          {data.redacted ? (
+            <>
+              {data.redaction_count}{' '}
+              <Mark
+                kind="unread"
+                say={`${data.redaction_count} credential-shaped value${data.redaction_count === 1 ? ' was' : 's were'} masked in this artifact when it was served. They are still in the object in the bucket; masking here does not remove them from there, and anything recognisable should be rotated.`}
+              />
+            </>
+          ) : (
+            <>0 of {data.redaction.rules} families</>
+          )}
+          <HelpCard topic="credential-names-not-values" />
+        </li>
+      </ul>
       <span className="art-prov-actions">
         <Download name={data.artifact.name ?? 'artifact'} content={data.content ?? ''} />
         <CopyGsutil uri={data.uri} />
@@ -218,6 +269,9 @@ function Download({ name, content }: { name: string; content: string }) {
     a.click()
     URL.revokeObjectURL(url)
   }
+  // A SENTENCE THAT *IS* THE CONTROL (§8.5.3). The label says what the button
+  // saves -- what is on screen, not a second unredacted fetch of the whole
+  // object -- and that distinction is the reason the button exists at all.
   return (
     <button type="button" className="copy" onClick={save}>
       download what is shown
@@ -238,11 +292,31 @@ function CopyGsutil({ uri }: { uri: string | null }) {
   )
 }
 
-function Note({ heading, children }: { heading: string; children: ReactNode }) {
+/**
+ * One of the three non-`ok` statuses, as `.ctl-empty` + a mark.
+ *
+ * `say` is the paragraph that used to be the body. `children` is what the
+ * SERVER said about this particular read, which is the only sentence §8.4
+ * leaves in an empty state, and it is omitted rather than padded when there is
+ * nothing to say.
+ */
+function Note({
+  kind,
+  heading,
+  say,
+  children,
+}: {
+  kind: 'absent' | 'unread'
+  heading: string
+  say: string
+  children?: ReactNode
+}) {
   return (
-    <div className="state partial" role="status">
-      <h3>{heading}</h3>
-      <p>{children}</p>
+    <div className={`ctl-empty is-${kind === 'unread' ? 'failed' : 'partial'}`} role="status">
+      <h3>
+        <Mark kind={kind} say={say} /> {heading}
+      </h3>
+      {children !== undefined && children !== null && <p>{children}</p>}
     </div>
   )
 }
@@ -486,11 +560,19 @@ export function Transcript({ source }: { source: string }) {
   try {
     parsed = JSON.parse(source)
   } catch {
+    // WHY THE RAW SOURCE IS THE RIGHT ANSWER -- a viewer that dropped what it
+    // could not parse would be hiding part of the agent's reasoning -- is the
+    // reason this fallback exists and is stated in this file's header, where a
+    // maintainer reads it. On the glass it is one mark: `not measured`, which
+    // is what "this view could not derive a conversation from it" means.
     return (
       <>
-        <p className="muted small">
-          This artifact is named like a transcript and is not valid JSON, so it
-          is shown as it was written.
+        <p className="art-fallback">
+          <Mark
+            kind="absent"
+            say="This artifact is named like a transcript and is not valid JSON, so it is shown exactly as it was written rather than reorganised into a shape it is not."
+          />{' '}
+          not valid JSON
         </p>
         <pre className="art-text">{source}</pre>
       </>
@@ -501,9 +583,12 @@ export function Transcript({ source }: { source: string }) {
   if (turns === null) {
     return (
       <>
-        <p className="muted small">
-          This transcript is valid JSON in a shape this view does not recognise,
-          so it is shown as recorded rather than reorganised into one it is not.
+        <p className="art-fallback">
+          <Mark
+            kind="absent"
+            say="This transcript is valid JSON in a shape this view does not recognise, so it is shown as recorded rather than reorganised into one it is not."
+          />{' '}
+          shape not recognised
         </p>
         <pre className="art-text">{JSON.stringify(parsed, null, 2)}</pre>
       </>
@@ -532,8 +617,15 @@ function TranscriptRow({ turn }: { turn: TranscriptTurn }) {
       {turn.text !== '' ? (
         <div className="art-turn-body">{turn.text}</div>
       ) : (
-        <p className="muted small">
-          This event carries no text. Open the record to see what it does carry.
+        // `''` IS NOT A FAILURE. An `init` or a `result` event legitimately
+        // carries no prose, which is a real zero; the record behind the button
+        // beside it is where the rest of the event is.
+        <p className="art-fallback">
+          <Mark
+            kind="zero"
+            say="This event carries no text of its own, which is legitimate for an init or a result event. Open the record to see what it does carry."
+          />{' '}
+          no text
         </p>
       )}
       {raw && <pre className="art-code">{JSON.stringify(turn.raw, null, 2)}</pre>}

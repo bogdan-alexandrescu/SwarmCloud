@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+// `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
+// written and which design-system.md §9.1 names as the source to promote from.
+// One definition for the four screens of this group; a second copy of a mark
+// whose whole job is to be recognisable is a contradiction in terms.
+import { Em, Mark } from './AgentDetail'
 import { loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
 import { HelpCard } from './HelpCard'
@@ -18,10 +23,20 @@ import {
 
 type Tab = 'live' | 'waiting' | 'recent'
 
-const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: 'live', label: 'Live', hint: 'Holding a pool slot, and costing money' },
-  { id: 'waiting', label: 'Waiting', hint: 'Durable and free: READY or PARKED' },
-  { id: 'recent', label: 'Recent', hint: 'Finished, one way or another' },
+/**
+ * THE THREE TABS, AND WHERE THEIR SENTENCES WENT.
+ *
+ * `hint` was a `title=` on each tab -- "Holding a pool slot, and costing
+ * money" -- which is exactly the medium design-system.md §8.3 names as the one
+ * that fails: no visible anchor, no keyboard route, invisible in a screenshot.
+ * It is `aria-label` now, which a keyboard and a screen reader both reach, and
+ * the tab's own word plus its count is what a sighted reader needs. Which
+ * states cost nothing is `#help/capacity`.
+ */
+const TABS: { id: Tab; label: string; say: string }[] = [
+  { id: 'live', label: 'Live', say: 'Live: holding a pool slot, and costing money' },
+  { id: 'waiting', label: 'Waiting', say: 'Waiting: durable and free — READY or PARKED' },
+  { id: 'recent', label: 'Recent', say: 'Recent: finished, one way or another' },
 ]
 
 function tabOf(t: Task): Tab {
@@ -49,14 +64,23 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
           <>
-            {d.tasks.length} loaded · {live} holding a slot
-            {d.tenant_id && ` · tenant ${d.tenant_id}`}
+            {d.tasks.length} loaded · {live} live
+            {d.tenant_id && ` · ${d.tenant_id}`}
           </>
         )
       }}
       empty={{
-        heading: 'No agents',
-        body: 'The read succeeded and returned nothing. Nothing has been submitted under this tenant, or everything has aged out of the page.',
+        heading: 'No agents · real zero',
+        // ONE SENTENCE, WHICH IS WHAT §6.9 ALLOWS AN EMPTY STATE. The second
+        // sentence -- "nothing has been submitted under this tenant, or
+        // everything has aged out of the page" -- was two guesses about a
+        // cause this screen cannot see, and the link is where a reader finds
+        // out which states a page holds.
+        body: (
+          <>
+            The read succeeded and returned nothing. <HelpCard topic="tenant-scope" />
+          </>
+        ),
       }}
     >
       {(d) => (
@@ -122,26 +146,40 @@ function AgentsBody({
     [page.tasks, tab, profile],
   )
 
+  // THE SCOPE OF EVERY FIGURE ABOVE, IN ONE QUALIFIER.
+  //
+  // Two sentences carried this -- "filters apply to the N loaded rows" above
+  // the table and "More rows exist beyond this page. Counts and grouping above
+  // describe only what is loaded." below it -- and they said the same thing
+  // twice, about the same page, in two places a reader has to hold together.
+  // It is one `.ctl-card-note`-shaped qualifier in the toolbar now, carrying
+  // the figure that varies and the fact that there is more; the sentence is
+  // its accessible name. A count that looks server-side but is not is the same
+  // lie as an error rendered as an empty list, so the qualifier is never
+  // conditional on there being a next page -- only its second half is.
+  const scopeSay = page.next_page_token
+    ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
+    : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
+
   return (
     <>
-      <div className="tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id}
-            className={tab === t.id ? 'on' : ''}
-            title={t.hint}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label} <span className="badge">{counts[t.id]}</span>
-          </button>
-        ))}
-      </div>
+      <div className="ctl-toolbar">
+        <div className="ctl-seg" role="tablist">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              aria-label={t.say}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label} <span className="badge">{counts[t.id]}</span>
+            </button>
+          ))}
+        </div>
 
-      <div className="filters">
-        <label>
-          Profile
+        <label className="ag-filter">
+          <span className="ctl-eyebrow">profile</span>
           <select value={profile} onChange={(e) => setProfile(e.target.value)}>
             <option value="">all</option>
             {profiles.map((p) => (
@@ -151,8 +189,9 @@ function AgentsBody({
             ))}
           </select>
         </label>
+
         {tab !== 'live' && (
-          <label className="check">
+          <label className="ag-filter check">
             <input
               type="checkbox"
               checked={grouped}
@@ -161,27 +200,32 @@ function AgentsBody({
             Group by workflow
           </label>
         )}
-        {/* Every filter here runs over the loaded page only, and says so. A
-            count that looks server-side but is not is the same lie as an
-            error rendered as an empty list. */}
-        <span className="client-side">filters apply to the {page.tasks.length} loaded rows</span>
+
+        <span className="is-end ag-scope" aria-label={scopeSay}>
+          {page.tasks.length} loaded{page.next_page_token ? ' · more beyond' : ''}
+        </span>
       </div>
 
       {rows.length === 0 ? (
-        <div className="state">
-          <h3>Nothing in this tab</h3>
-          {/* A REAL ZERO, SAID AS ONE. The two state names that used to be in
-              the middle branch are a restatement of the contract in prose
-              (§5); `#help/capacity` lists which states cost nothing, read
-              from the set that owns them at render time. */}
-          <p>
-            {tab === 'live'
-              ? 'No agent is holding a pool slot right now — a real zero from a successful read.'
-              : tab === 'waiting'
-                ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
-                : 'Nothing has finished in the loaded page.'}
+        // A REAL ZERO, DRAWN AS ONE. The mark is the fact -- two words, always
+        // rendered, legible with every card shut -- and the sentence that used
+        // to stand here is its accessible name. Which states cost nothing is
+        // `#help/capacity`, read from the set that owns them.
+        <div className="ctl-empty">
+          <h3>
+            <Mark
+              kind="zero"
+              say={
+                tab === 'live'
+                  ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
+                  : tab === 'waiting'
+                    ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
+                    : 'Nothing has finished in the loaded page.'
+              }
+            />{' '}
+            nothing in {tab}
             <HelpCard topic="capacity" />
-          </p>
+          </h3>
         </div>
       ) : grouped && tab !== 'live' ? (
         <GroupedRows rows={rows} now={now} onOpen={onOpen} />
@@ -191,13 +235,6 @@ function AgentsBody({
             <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
           ))}
         </div>
-      )}
-
-      {page.next_page_token && (
-        <p className="client-side page-note">
-          More rows exist beyond this page. Counts and grouping above describe
-          only what is loaded.
-        </p>
       )}
     </>
   )
@@ -245,8 +282,17 @@ function GroupedRows({
                   workflow" is a sentence, not an id, so it is not wrapped. */}
               {wf === '' ? 'No workflow' : <Id>{wf}</Id>}
               <span className={`roll ${roll}`}>{roll}</span>
-              <span className="client-side">
-                {tasks.length} step{tasks.length === 1 ? '' : 's'} in this page
+              {/* THE FIGURE IS THE FACT. "3 steps in this page" said `3` and
+                  then re-said, in four more words, the thing the toolbar's
+                  scope qualifier already says once for the whole screen. A
+                  header saying "3 steps" when the workflow has nine and six
+                  fell off page one is the lie this qualifier exists to
+                  prevent, and the count plus the mark is the shape of it. */}
+              <span
+                className="ag-scope"
+                aria-label={`${tasks.length} of this workflow's steps are in the loaded page. The workflow may have more; this grouping is client-side over what was loaded.`}
+              >
+                {tasks.length} here
               </span>
             </h2>
             <div className="rows">
@@ -293,7 +339,14 @@ function TaskRow({
         }
       }}
     >
+      {/* THE STATE DOT, AHEAD OF THE WORD. `.ctl-dot`'s seven silhouettes are
+          the same vocabulary the chips use, so the shape is readable before
+          the word is -- which is what makes forty rows scannable down the left
+          edge rather than readable one at a time. The WORD IS STILL MANDATORY:
+          colour and shape are the second and third signals, never the only
+          one. */}
       <span className={`st ${stateTone(task.state)}`}>
+        <i className={`ctl-dot is-${stateTone(task.state) === 'wait' ? 'warn' : stateTone(task.state)}`} aria-hidden />
         <span aria-hidden>{stateGlyph(task.state)}</span> {task.state}
       </span>
 
@@ -306,7 +359,7 @@ function TaskRow({
       </span>
 
       <span className="owner" title={task.submitted_by ?? undefined}>
-        {task.submitted_by?.split('@')[0] ?? '—'}
+        {task.submitted_by?.split('@')[0] ?? <Em />}
       </span>
 
       <span className="wf">
@@ -314,17 +367,17 @@ function TaskRow({
             from and the one a 422 names back. One rule for every identifier on
             every screen, and it is `<Id>`; see `.id` in styles.css. */}
         {task.step_id ? (
-          <span className="tag" title={`workflow ${task.workflow_id}`}>
+          <span className="tag" aria-label={`workflow ${task.workflow_id}`}>
             <Id>{task.step_id}</Id>
           </span>
         ) : (
-          <span className="dash">—</span>
+          <span className="ctl-em">—</span>
         )}
       </span>
 
       <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
 
-      <span className="try" title={`${task.attempt_count} of ${task.max_attempts} attempts used`}>
+      <span className="try" aria-label={`${task.attempt_count} of ${task.max_attempts} attempts used`}>
         {task.attempt_count}/{task.max_attempts}
       </span>
 

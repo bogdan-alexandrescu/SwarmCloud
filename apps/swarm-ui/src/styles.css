@@ -1413,6 +1413,16 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* Agents screen (Screen A)                                                  */
 /* ------------------------------------------------------------------------ */
 
+/* NO SCREEN RENDERS `.tabs` ANY MORE, and it is still here on purpose.
+   The run list was its last caller and now uses `.ctl-seg`, which is the tab
+   bar `design-system.md` §6.11 decided ("three tab bars -> `.ctl-seg` + the
+   rail"). The rules below stay because `test_workflow_step_measurements.py:635`
+   pins `.tabs button { ... flex: 0 0 auto }` verbatim, and that file is the
+   Overview lane's to rewrite -- §9.5 of the spec names it as the hardest edit
+   of this phase. Deleting these rules without that rewrite turns the gate red
+   for a screen this group does not own. Flagged in the report; not deleted
+   here. */
+
 /* §B4.3 move 4: STOP SPENDING 1068px ON FOUR-CHARACTER LABELS.
    `.tabs button { flex: 1 }` divided the whole content width between however
    many tabs there were, so "All" and "Mine" each took a quarter of a 1400px
@@ -1460,7 +1470,11 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   color: var(--text-faint);
   font-style: italic;
 }
-.page-note { margin-top: 10px; }
+/* `.page-note` IS GONE. It styled one paragraph on one screen -- "More rows
+   exist beyond this page. Counts and grouping above describe only what is
+   loaded." -- which is now the toolbar's `.ag-scope` qualifier. Nothing
+   rendered it and no test pinned it, so it goes rather than becoming the
+   forty-eighth selector nobody can safely remove. */
 
 /* THE PANEL QUALIFIER: one line under a panel, where a paragraph used to be.
    Mark, then the fact, then a link to the argument -- in that order, because
@@ -1525,8 +1539,15 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 
 /* PHONE: nine columns do not fold, they are re-authored. The "why" line is
    promoted, the identifiers are dropped -- someone on a phone is checking why
-   their agent has not moved, and that outranks every id. */
-@media (max-width: 640px) {
+   their agent has not moved, and that outranks every id.
+
+   560, NOT 640. `design-system.md` §7.1 retires 420, 640 and 720 and says each
+   existing use moves to the nearest survivor; 560 is 80px from 640 and 899 is
+   259px, so 560 is it. What changes is 561-640px, which now keeps the wide row
+   instead of the re-authored one -- and keeps it safely, because every fixed
+   column in `.row` already ellipses and the name track is `minmax(0, 1fr)`, so
+   the row degrades by truncating rather than by overflowing. */
+@media (max-width: 560px) {
   .row {
     grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 4px;
@@ -1543,6 +1564,149 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      is a tab at 390pt, and half a pixel of type was never the reason four of
      them fitted. */
   .tabs button { padding: 8px 6px; }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The run group: Agents, AgentDetail, AttemptTimeline, ArtifactViewer        */
+/* ------------------------------------------------------------------------ */
+/* WHAT THESE RULES ARE AND WHAT THEY ARE NOT. Every box, card, strip, mark and
+   toolbar on the four run screens is a `ctl-` primitive from §B4.4; nothing
+   below re-declares a border, a radius, a surface or a type step. What is left
+   is the handful of places a screen has to say where a primitive SITS -- a
+   gap, a wrap, an alignment -- which is the only thing §6 of
+   docs/web-ui/design-system.md leaves to a screen.
+
+   THE RUN GROUP CARRIES NO PARAGRAPH SELECTORS, and that is the visible half
+   of this pass. `.muted`, `.muted.small`, `.warn-text`, `.err-origin`,
+   `.provenance`, `.blocker-copy` and `dl.kv` between them drew about 700 words
+   across these four screens; they are still in the sheet because other screens
+   use them, and the run group no longer reaches for any of them except
+   `.warn-text` on the one git error that is a server string. */
+
+/* A qualifier on a figure computed over the LOADED PAGE rather than over the
+   platform. Same treatment as `.ctl-card-note` -- muted, mono, one line, does
+   not wrap -- because it is the same job: the fact that would otherwise have
+   been a sentence under the count. The full sentence is its `aria-label`. */
+.ag-scope {
+  flex: none;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+/* A toolbar control and its label on one baseline. The label is `.ctl-eyebrow`,
+   which is `display:block` by default and must not take its own line here. */
+.ag-filter { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
+.ag-filter > .ctl-eyebrow { display: inline; margin: 0; }
+.ag-filter select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-body);
+}
+/* The state dot leads the state word in a row. `.ctl-dot` is 8px and carries
+   its own shape; the gap is s1 because the pair is one token, not two. */
+.row .st > .ctl-dot { margin-right: var(--ctl-s1); }
+
+/* An attempt card, and the two-level nesting the run screen genuinely needs:
+   a card per attempt, sub-blocks inside it. `--ctl-s3` between cards is the
+   region step; nothing here changes the card's own chrome. */
+.att-card + .att-card { margin-top: var(--ctl-s3); }
+/* A sub-block's eyebrow and its qualifier on one line. `.ctl-toolbar`'s own
+   32px minimum is for a row of controls; a label row does not need it. */
+.att-sub-head { min-height: 0; margin-bottom: var(--ctl-s2); }
+/* THE LINE THAT REPLACED A PARAGRAPH. A mark plus two or three words, on the
+   baseline, in the label treatment -- so it reads as chrome about the panel
+   rather than as a sentence in it. Every one of these was a `<p class="muted">`
+   of one to four sentences. */
+.att-none,
+.att-spend-none,
+.att-ckpt-none,
+.att-rss-note,
+.art-fallback,
+.art-empty,
+.art-loading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  margin: 0;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+.att-spend-none > .ctl-eyebrow { margin: 0; }
+/* The task's restore pointer, which is a fact with a key like any other. */
+.att-restore {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  margin: var(--ctl-s3) 0 0;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-faint);
+}
+.att-restore > b {
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+/* The card foot as a link row. `.ctl-card-foot` supplies the surface step, the
+   mono face and the tone; this is only the wrapping. */
+.ctl-card-foot,
+.att-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s1) var(--ctl-s2);
+  margin: var(--ctl-s3) 0 0;
+}
+.ctl-card-foot a { color: var(--text-dim); }
+
+/* STILL READING, DRAWN AT THE GEOMETRY THE TEXT WILL OCCUPY (§8.7.1).
+   `.ctl-pending` carries the moving surface and NO text -- it has no luminance
+   the contrast gate can measure, so it may not carry a colour either. The word
+   is in the mark beside it. */
+.art-loading-bar {
+  flex: 1 1 120px;
+  height: var(--track-h);
+  border-radius: var(--track-radius);
+}
+
+/* ---- the run group at 390px ---- */
+/* THREE THINGS CHANGE AND NOTHING IS HIDDEN. Every qualifier, mark and fact
+   above is still on the screen at 390px; what changes is how it wraps and how
+   big it is to hit. */
+@media (max-width: 560px) {
+  /* A QUALIFIER MAY WRAP ONCE IT IS NOT IN A CARD HEADER. §6.1's `nowrap` is
+     there so a note cannot become a subtitle under a card title -- which is a
+     rule about the CARD HEAD, where the note sits beside a title on one
+     baseline. In a sub-head or a toolbar there is no title to sit under, and
+     `nowrap` at 390px means a 40-character coverage note pushes the page into
+     a horizontal scroll. These are the honesty qualifiers; truncating one is
+     not an option, so they wrap. */
+  .att-sub-head > .ctl-card-note,
+  .ctl-toolbar > .ctl-card-note,
+  .ag-scope {
+    white-space: normal;
+    text-align: left;
+  }
+  /* 44px TOUCH TARGETS (§7.2), WHICH THE PRIMITIVE DOES NOT SHIP. `.ctl-seg`
+     declares a 30px segment and no phone rule; the run list is the first
+     screen to render one, so the rule lands here rather than staying a line in
+     the specification. THE TYPE DOES NOT GROW WITH IT -- the segment gets
+     taller, not louder. */
+  .ctl-seg > button { min-height: 44px; }
+  /* The select is the other control on this toolbar and gets the same target.
+     Its font-size stays at --t-body: a 16px minimum is an iOS zoom-avoidance
+     trick, and this sheet's --t-body is 14px everywhere by decision. */
+  .ag-filter select { min-height: 44px; }
+  /* The facts strip is already a wrapping flex row; at 390px it wants the
+     tighter of the two gaps so a six-fact strip is three lines rather than
+     six. */
+  .ctl-facts { gap: var(--ctl-s1) var(--ctl-s2); }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1575,7 +1739,12 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 .drawer-close:hover { color: var(--text); border-color: var(--text-faint); }
 
-@media (max-width: 640px) {
+/* 560, not 640 -- §7.1's nearest survivor, the same move the run list's own
+   phone block made. Nothing changes for a phone: `width: min(560px, 100vw)`
+   already caps the drawer at the viewport, so what this rule adds is the
+   full-bleed edge, and between 561 and 640px a 560px drawer with a 1px left
+   rule on a 600px screen is correct rather than a regression. */
+@media (max-width: 560px) {
   /* Full-screen push on a phone. A 560px drawer on a 390pt screen is a modal
      with extra steps. */
   .drawer { width: 100vw; border-left: none; }

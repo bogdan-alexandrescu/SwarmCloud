@@ -683,6 +683,43 @@ function isPanel(el: Element): boolean {
 }
 
 /**
+ * ONE CONTROL WITH SEGMENTS, NOT A ROW OF CONTENT BLOCKS.
+ *
+ * The third exemption to the gutter floor, and it is the same argument the
+ * `.acct-bar` one above makes: `boxGutter` forbids ZERO between two cards,
+ * chips or tracks, "which is what reads as one wider element rather than two".
+ * A segmented control is the case where reading as one element is the whole
+ * design intent -- `design-system.md` §6.11 settles it as "ONE BORDERED GROUP,
+ * NOT N PILLS", with 1px internal dividers and the active segment marked by a
+ * surface step. Its segments MUST touch; a 4px gutter between them would
+ * produce the row of pills the primitive exists to replace.
+ *
+ * FOUND BY RENDERING IT. `.ctl-seg` shipped in the foundation pass and no
+ * screen used it, so this probe never saw one. The first screen to render it
+ * -- the run list's Live / Waiting / Recent tabs -- reported `3 surfaces in a
+ * row with a 0px gutter` in both themes: the active segment is a surface
+ * because it paints `--surface-2`, and the other two are surfaces because
+ * `button + button` draws the divider as a left border on the child.
+ *
+ * THE PREDICATE IS STRUCTURAL, not a class name, so it cannot rot into an
+ * allowlist: a container that paints its own visible border, whose every
+ * surface-bearing child is a `<button>`, is one bordered group of controls.
+ * A row of cards fails it on the first count (cards are not buttons); a
+ * toolbar of loose buttons fails it on the second (a toolbar paints no border
+ * of its own). Only a bordered group of segments passes.
+ */
+function isSegmentedGroup(el: Element, surfaces: readonly Element[]): boolean {
+  if (surfaces.length === 0) return false
+  if (!surfaces.every((k) => k.tagName === 'BUTTON')) return false
+  const s = styleOf(el)
+  return SIDES.some((side) => {
+    if (borderPx(s, side) <= 0) return false
+    const c = colour(s.getPropertyValue(`border-${side.toLowerCase()}-color`))
+    return c !== null && c.a > 0.02
+  })
+}
+
+/**
  * How far the nearest text is held off `side`, and how tall (or wide) the
  * content inside this element is.
  *
@@ -1022,7 +1059,7 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
     if (display === 'flex' || display === 'inline-flex' || display === 'grid' || display === 'inline-grid') {
       const kids = boxChildren(el)
       const surfaces = kids.filter(isPanel)
-      if (surfaces.length >= 2) {
+      if (surfaces.length >= 2 && !isSegmentedGroup(el, surfaces)) {
         const cols = display.endsWith('grid') ? tracks(s.gridTemplateColumns || '') : []
         const multiCol =
           display.endsWith('grid') ? cols.length >= 2 || /repeat\(/.test(s.gridTemplateColumns || '') : !s.flexDirection.startsWith('column')
