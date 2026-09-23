@@ -321,7 +321,7 @@ export function OverviewScreen() {
             `mock · 1…` for `mock · 15 can start`. */}
         <div className="ov-grid">
           <section className="ctl-card ov-running">
-            <CardHead title="Running" href="#agents/running" cta="agents" />
+            <CardHead title="Running" href="#work/running" cta="agents" />
             <RunningBody tasks={tasks} stats={stats} />
           </section>
 
@@ -349,7 +349,7 @@ export function OverviewScreen() {
             <CardHead
               title="Headroom"
               note={tenant === null ? undefined : `tenant ${tenant}`}
-              href="#pools/profiles"
+              href="#capacity/profiles"
               cta="pools"
               help="pools-all-at-once"
             />
@@ -791,7 +791,7 @@ function MetricStrip({
   return (
     <div className="ctl-metrics">
       <Tile
-        href="#agents/running"
+        href="#work/running"
         label="Running"
         value={inFlight}
         unit="agents"
@@ -803,7 +803,7 @@ function MetricStrip({
       />
 
       <Tile
-        href="#pools/pools"
+        href="#capacity/pools"
         label="Units held"
         value={global ? global.active : null}
         unit={global ? `of ${global.effective_limit}` : undefined}
@@ -822,7 +822,7 @@ function MetricStrip({
       />
 
       <Tile
-        href="#pools/accounts"
+        href="#capacity/accounts"
         // "Account headroom", not "Headroom". The panel below is called
         // Headroom and covers BOTH ceilings -- the pools and the subscription
         // accounts -- while this figure is the account half alone. Two things
@@ -1508,7 +1508,7 @@ function RunningRow({ task }: { task: Task }) {
   return (
     <tr>
       <th scope="row">
-        <a className="ctl-link ov-link" href={`#agents/task/${encodeURIComponent(task.id)}`}>
+        <a className="ctl-link ov-link" href={`#work/task/${encodeURIComponent(task.id)}`}>
           {task.runner_profile}
         </a>
         <span className="ctl-sub">{task.id}</span>

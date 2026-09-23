@@ -149,7 +149,31 @@ interface SectionDef {
   tabs: TabDef[]
 }
 
-const SECTIONS: SectionDef[] = [
+/**
+ * The two section ids this file also compares against by hand.
+ *
+ * Constants rather than literals because each was spelled in four places in
+ * `fromHash` and `canonical` alone, and a rename that updated three of them
+ * would not fail to compile -- it would route one link wrong. The other four
+ * sections are never compared against and stay literals in the array, where
+ * there is only one of each to be wrong.
+ */
+const WORK = 'work'
+const CAPACITY = 'capacity'
+
+/**
+ * EXPORTED FOR THE SWEEPS, which is not the same as exported for reuse.
+ *
+ * `__tests__/spacing.test.tsx` held its own hand-written copy of every route
+ * the rail can reach -- under a comment saying "a screen added without being
+ * added here would be a screen nothing measures, which is the hole this
+ * repository keeps producing". It was right, and it was itself the hole: when
+ * two sections were renamed the copy went on naming the old ids, every route
+ * resolved through SECTION_ALIASES, and the sweep quietly examined 798 shapes
+ * where it had examined 1295. Zero findings, 500 shapes unmeasured, nothing
+ * red. It derives from this array now.
+ */
+export const SECTIONS: SectionDef[] = [
   {
     id: 'overview',
     label: 'Overview',
@@ -162,8 +186,26 @@ const SECTIONS: SectionDef[] = [
     tabs: [{ id: 'now', label: 'Overview' }],
   },
   {
-    id: 'agents',
-    label: 'Agents',
+    // RENAMED WITH THE LABEL, not left behind it. An id that says `agents`
+    // under a section called Work is the same two-spellings defect in a
+    // quieter place: SECTION_ALIASES would keep every old href working, and
+    // because it would, nothing would ever make anyone update one. Every
+    // internal link was moved with it, and `nav.links.test.tsx` fails the
+    // build if an internal href ever uses an alias again.
+    id: WORK,
+    // WAS 'Agents', which made the rail read `Agents > Agents` and the
+    // breadcrumb `Agents ▸ Agents`, because this section's first tab is the
+    // agent list and both levels render (Rail draws the tab strip whenever
+    // tabs.length > 1, and so does the crumb).
+    //
+    // The section is not the agent list. It holds the agent list, the workflow
+    // list, and the two screens that CREATE one of each -- four screens whose
+    // common noun is the work itself, not one of its two shapes. Naming the
+    // parent after one of its children is what produced the duplicate, and
+    // renaming the child would have been the wrong half: `Work > Agents`,
+    // `Work > Workflows`, `Work > Submit a task` each say something the
+    // section name does not, which is the test a tab has to pass.
+    label: 'Work',
     question:
       'What is running, what is waiting, what did it produce — and why has mine not moved?',
     tabs: [
@@ -208,20 +250,35 @@ const SECTIONS: SectionDef[] = [
     tabs: [{ id: 'catalogue', label: 'Runtimes' }],
   },
   {
-    // `capacity` was the old id and still resolves; see SECTION_ALIASES.
-    id: 'pools',
-    label: 'Pools',
+    // BACK TO `capacity`, which this section was called before an earlier
+    // pass renamed it to `pools`. That rename is what produced `Pools > Pools`
+    // -- it named the parent after its first child -- so this is not churn for
+    // its own sake, it is undoing the half of that change that was wrong. Both
+    // old spellings resolve; see SECTION_ALIASES.
+    id: CAPACITY,
+    // THE SECOND `X > X`. Same defect as Work above and the same fix: this
+    // section has five tabs, so both levels render, and the first tab is the
+    // pool table -- `Pools > Pools`.
+    //
+    // `Capacity` is the section's own `question` in one word, and it is the
+    // word the five tabs have in common: pools, profiles, holders, accounts
+    // and provider quota are five different ceilings on the same thing. The id
+    // stays `pools` for the reason given on Work.
+    label: 'Capacity',
     question:
       'Is there room to run more, which ceiling is the binding one, and what is holding what there is?',
     tabs: [
       { id: 'pools', label: 'Pools' },
       { id: 'profiles', label: 'Runner profiles' },
-      // "Capacity holders" rather than "Holders": the screen answers "what is
-      // holding capacity, and do the two records of that agree", and "Holders"
-      // alone does not say holders of WHAT -- which, sitting one tab away from
-      // "Accounts", is the reading that makes someone open it looking for
-      // people. The longer heading was the better name and it won.
-      { id: 'holders', label: 'Capacity holders' },
+      // "Holders", and the earlier argument for "Capacity holders" is what
+      // makes it right rather than what it overrules. That argument was:
+      // "Holders" alone does not say holders of WHAT, and one tab away from
+      // "Accounts" it reads as people. True -- while the section was called
+      // Pools. The section is now called Capacity, so the parent supplies the
+      // noun the tab was carrying for it, and `Capacity > Capacity holders`
+      // says it twice. The requirement never changed; what changed is where it
+      // is met.
+      { id: 'holders', label: 'Holders' },
       // Accounts moved out of Settings deliberately. The subscription pool's
       // five-hour and seven-day windows are the only used-against-available
       // reading this platform has that is not a pool counter, and a
@@ -302,10 +359,10 @@ const HELP = HELP_ROUTE
  * and the address bar is rewritten to the new form so the next copy of the
  * link is the current one.
  *
- * `capacity` and `activity` are NOT here although they were old top-level
- * hashes: they are section ids that were renamed, and SECTION_ALIASES resolves
- * them first, with their tail intact. An entry here as well would be dead and
- * would read as the place those two are handled.
+ * `agents`, `pools` and `activity` are NOT here although all three were old
+ * top-level hashes: they are section ids that were renamed, and SECTION_ALIASES
+ * resolves them first, with their tail intact. An entry here as well would be
+ * dead and would read as the place they are handled.
  */
 const LEGACY: Record<string, { section: string; tab: string }> = {
   home: { section: 'overview', tab: 'now' },
@@ -313,10 +370,14 @@ const LEGACY: Record<string, { section: string; tab: string }> = {
   // any level. The hash still resolves, and it resolves to the screen that
   // carries the derived checks it used to hold.
   trouble: { section: 'overview', tab: 'now' },
-  holders: { section: 'pools', tab: 'holders' },
-  quota: { section: 'pools', tab: 'quota' },
-  agents: { section: 'agents', tab: 'running' },
-  workflows: { section: 'agents', tab: 'workflows' },
+  holders: { section: CAPACITY, tab: 'holders' },
+  quota: { section: CAPACITY, tab: 'quota' },
+  // `agents` and `pools` are NOT here, for the reason given above: they are
+  // section ids that were renamed, SECTION_ALIASES resolves them with their
+  // tail intact, and an entry here would be dead code that reads as the place
+  // they are handled. `workflows` is different -- it was never a section id,
+  // it was a top-level hash for what is now a tab, so it belongs here.
+  workflows: { section: WORK, tab: 'workflows' },
   counts: { section: 'history', tab: 'counts' },
   tenants: { section: 'admin', tab: 'tenants' },
   settings: { section: 'admin', tab: 'limits' },
@@ -334,14 +395,34 @@ const LEGACY: Record<string, { section: string; tab: string }> = {
  * named.
  */
 const SECTION_ALIASES: Record<string, string> = {
-  capacity: 'pools',
+  agents: WORK,
+  // `capacity` -> `pools` -> `capacity`. The middle spelling had a life of its
+  // own in saved links, so it resolves too; what it must never do again is
+  // appear in a link this app writes.
+  pools: CAPACITY,
   activity: 'history',
 }
+
+/**
+ * NO INTERNAL LINK MAY USE ONE OF THESE. An alias is for a hash someone else
+ * saved -- a runbook, an incident note, a message from 3am -- and it exists so
+ * that link still lands. It is not a second name this app may write.
+ *
+ * The distinction is not decorative. An alias that internal links also use is
+ * a spelling nothing can ever retire: every href keeps working, so nothing
+ * fails, so nobody updates one, and the old name outlives the rename by years.
+ * That is the defect that put `Agents > Agents` in the rail in the first place.
+ *
+ * `__tests__/nav.links.test.tsx` reads every `#`-href literal in
+ * `apps/swarm-ui/src` and fails if one starts with a key of this map, or names
+ * a section or tab that does not exist.
+ */
+export const INTERNAL_LINKS_MAY_NOT_USE_ALIASES = Object.keys(SECTION_ALIASES)
 
 /** `#settings/<tail>` from the two-pane Settings screen. */
 const LEGACY_SETTINGS: Record<string, { section: string; tab: string }> = {
   limits: { section: 'admin', tab: 'limits' },
-  accounts: { section: 'pools', tab: 'accounts' },
+  accounts: { section: CAPACITY, tab: 'accounts' },
 }
 
 /** Which pane of one agent is open. */
@@ -379,7 +460,14 @@ function firstTab(s: SectionDef): string {
 export function fromHash(): Route {
   const hash = window.location.hash.replace(/^#/, '')
   const seg = hash.split('/')
-  const head = seg[0] ?? ''
+  const raw = seg[0] ?? ''
+  // ALIASED FIRST, ONCE, so that every check below sees one spelling. The
+  // drawer branch used to test `head === 'agents'` on the unresolved head; the
+  // moment the section was renamed that test would have been the only place
+  // still answering to the old name, and `#work/task/<id>` -- the address in
+  // every workflow node and every saved deep link -- would have resolved to
+  // the section and dropped the task id, opening the list instead of the agent.
+  const head = SECTION_ALIASES[raw] ?? raw
   const tail = seg.slice(1)
   const blank: Pick<Route, 'taskId' | 'taskPane'> = { taskId: null, taskPane: 'detail' }
 
@@ -391,11 +479,12 @@ export function fromHash(): Route {
   // would turn a stale link into a page that looks right and answers nothing.
   if (head === HELP) return { sectionId: HELP, tab: tail.join('/'), ...blank }
 
-  // THE AGENT DRAWER, in its current form and its old one. `agents/task/<id>`
+  // THE AGENT DRAWER, in its current form and its old one. `work/task/<id>`
   // is explicit so that a task whose id happens to spell a tab name cannot be
-  // mistaken for one; `agents/<id>` is what the old nav wrote and is still
-  // accepted, after the tab names have had their chance to match.
-  if (head === 'agents' && tail[0] === 'task' && tail.length > 1) {
+  // mistaken for one; `work/<id>` is what the old nav wrote and is still
+  // accepted, after the tab names have had their chance to match. `head` is
+  // already aliased, so `#work/task/<id>` reaches here too.
+  if (head === WORK && tail[0] === 'task' && tail.length > 1) {
     const rest = tail.slice(1)
     const attempts = rest[rest.length - 1] === 'attempts'
     // Task ids are opaque and may contain characters that were encoded on the
@@ -404,7 +493,7 @@ export function fromHash(): Route {
     const id = (attempts ? rest.slice(0, -1) : rest).join('/')
     if (id) {
       return {
-        sectionId: 'agents',
+        sectionId: WORK,
         tab: 'running',
         taskId: decodeURIComponent(id),
         taskPane: attempts ? 'attempts' : 'detail',
@@ -417,14 +506,14 @@ export function fromHash(): Route {
     return { sectionId: to.section, tab: to.tab, ...blank }
   }
 
-  const section = sectionOf(SECTION_ALIASES[head] ?? head)
+  const section = sectionOf(head)
   if (section) {
     const wanted = tail.join('/')
     const tab = section.tabs.find((t) => t.id === wanted)
     if (tab) return { sectionId: section.id, tab: tab.id, ...blank }
-    // An agents tail that matches no tab is a task id from the old nav.
-    if (section.id === 'agents' && wanted) {
-      return { sectionId: 'agents', tab: 'running', taskId: decodeURIComponent(wanted), taskPane: 'detail' }
+    // A Work tail that matches no tab is a task id from the old nav.
+    if (section.id === WORK && wanted) {
+      return { sectionId: WORK, tab: 'running', taskId: decodeURIComponent(wanted), taskPane: 'detail' }
     }
     // An unrecognised tail falls back to the section's first pane rather than
     // rendering nothing: a mistyped hash must not produce a blank screen.
@@ -441,7 +530,7 @@ export function fromHash(): Route {
 /** The one spelling of a route. What the address bar is rewritten to. */
 export function canonical(r: Route): string {
   if (r.taskId !== null) {
-    const base = `agents/task/${encodeURIComponent(r.taskId)}`
+    const base = `${WORK}/task/${encodeURIComponent(r.taskId)}`
     return r.taskPane === 'attempts' ? `${base}/attempts` : base
   }
   if (r.sectionId === REFERENCE) return REFERENCE
@@ -810,33 +899,44 @@ function SectionBody({
   tab: string
   go: (to: string) => void
 }) {
-  const openAgent = (id: string) => go(`agents/task/${encodeURIComponent(id)}`)
+  const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
 
+  // THE NINE CASES BELOW ARE BUILT FROM THE CONSTANTS, not spelled out. When
+  // `agents` became `work` and `pools` became `capacity`, nine literal cases
+  // here stopped matching and nine screens rendered "No such pane" -- through
+  // a `default` branch written to explain a hand-typed address, so it looked
+  // like a considered answer rather than a break. Nothing was red: the routes
+  // still resolved, the rail still drew, the screens were simply gone. The one
+  // thing that noticed was the shape-count floor in `spacing.test.tsx`, which
+  // fell from 1295 to 798.
+  //
+  // A template literal case is checked against the same constant the section
+  // is declared with, so the next rename cannot separate them.
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen />
 
-    case 'agents/running':
+    case `${WORK}/running`:
       return <AgentsScreen onOpen={openAgent} />
-    case 'agents/workflows':
+    case `${WORK}/workflows`:
       return <WorkflowsScreen />
-    case 'agents/new':
+    case `${WORK}/new`:
       return <SubmitScreen />
-    case 'agents/new-workflow':
+    case `${WORK}/new-workflow`:
       return <SubmitWorkflowScreen />
 
     case 'runtimes/catalogue':
       return <RuntimesScreen />
 
-    case 'pools/pools':
+    case `${CAPACITY}/pools`:
       return <CapacityScreen />
-    case 'pools/profiles':
+    case `${CAPACITY}/profiles`:
       return <ProfilesScreen />
-    case 'pools/holders':
+    case `${CAPACITY}/holders`:
       return <HoldersScreen />
-    case 'pools/accounts':
+    case `${CAPACITY}/accounts`:
       return <AccountsScreen />
-    case 'pools/quota':
+    case `${CAPACITY}/quota`:
       return <QuotaDetailScreen />
 
     case 'history/timeline':

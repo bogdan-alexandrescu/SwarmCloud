@@ -25,7 +25,7 @@ import STYLES from '../styles.css?raw'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 
-import { App } from '../App'
+import { App, SECTIONS } from '../App'
 import {
   probe,
   resolveSheet,
@@ -37,30 +37,27 @@ import {
 } from './spaceprobe'
 
 /**
- * Every route the rail can reach.
+ * Every route the rail can reach, DERIVED rather than restated.
  *
  * NOT A SAMPLE. `test_nav_headings_agree.py` already holds that every
- * `SectionBody` case has a tab and every tab has a case, so this list is the
- * product's whole surface; a screen added without being added here would be a
- * screen nothing measures, which is the hole this repository keeps producing.
+ * `SectionBody` case has a tab and every tab has a case, so this is the
+ * product's whole surface; a screen added without being swept is a screen
+ * nothing measures, which is the hole this repository keeps producing.
+ *
+ * IT USED TO BE A HAND-WRITTEN COPY of the same fifteen routes, under that
+ * same comment. On 2026-09-24 two sections were renamed -- `agents` to `work`,
+ * `pools` to `capacity` -- and the copy was not, so every one of its nine
+ * stale routes resolved through SECTION_ALIASES instead of failing. The sweep
+ * still ran, still reported zero findings, and examined 798 shapes where it
+ * had examined 1295. Five hundred shapes went unmeasured and the only thing
+ * that noticed was the floor assertion at the bottom of this file, which was
+ * written for exactly this and is the reason it was caught at all.
+ *
+ * A list that has to be kept in step by hand is a list that will not be. This
+ * one cannot go stale: adding a tab adds a route, and renaming a section
+ * renames one.
  */
-const ROUTES = [
-  'overview/now',
-  'agents/running',
-  'agents/workflows',
-  'agents/new',
-  'agents/new-workflow',
-  'runtimes/catalogue',
-  'pools/pools',
-  'pools/profiles',
-  'pools/holders',
-  'pools/accounts',
-  'pools/quota',
-  'history/timeline',
-  'history/counts',
-  'admin/limits',
-  'admin/tenants',
-] as const
+const ROUTES = SECTIONS.flatMap((s) => s.tabs.map((t) => `${s.id}/${t.id}`))
 
 type Theme = 'dark' | 'light'
 

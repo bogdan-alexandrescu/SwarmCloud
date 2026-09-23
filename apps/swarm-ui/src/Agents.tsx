@@ -385,7 +385,7 @@ function TaskRow({
       {/* ONE LINE, NOT THREE. This was a flex COLUMN -- profile over model over
           id -- which is what made a 30px row 72px tall and the list read as
           stacked cards rather than as a list. The one screen the owner named as
-          already right (`#agents/workflows`) puts ten facts on one 37px line;
+          already right (`#work/workflows`) puts ten facts on one 37px line;
           three facts get one line here for the same reason. */}
       <span className="agent">
         <b>{task.runner_profile}</b>

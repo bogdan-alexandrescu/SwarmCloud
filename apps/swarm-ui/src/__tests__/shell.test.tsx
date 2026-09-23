@@ -123,7 +123,7 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
     // §B2: "AttemptTimeline.tsx stops being a screen and becomes a view mode
     // inside the agent inspector. It answers no question that 'what is
     // running, what did it produce' does not already own."
-    window.location.hash = '#agents/task/t-1/attempts'
+    window.location.hash = '#work/task/t-1/attempts'
     render(<App />)
 
     const drawer = document.querySelector('.ctl-drawer')
@@ -184,7 +184,25 @@ describe('B3: the rail', () => {
     const sections = [...rail!.querySelectorAll('.ctl-rail-group > .ctl-nav-link')].map(
       (b) => b.textContent?.trim(),
     )
-    expect(sections).toEqual(['Overview', 'Agents', 'Runtimes', 'Pools', 'History', 'Admin'])
+    // `Work` and `Capacity`, not `Agents` and `Pools`. Both of those named the
+    // section after its own first tab, and because both sections have more
+    // than one tab the rail drew the name twice -- `Agents > Agents`,
+    // `Pools > Pools` -- and so did the breadcrumb. The assertion below on
+    // `Holders` is the other half: the tab could drop the word `Capacity` only
+    // once the section carried it.
+    expect(sections).toEqual(['Overview', 'Work', 'Runtimes', 'Capacity', 'History', 'Admin'])
+
+    // NO SECTION MAY BE NAMED AFTER ONE OF ITS OWN TABS. The regression this
+    // file exists to catch, stated as the rule rather than as one spelling of
+    // it, so a future section cannot reintroduce it under a different name.
+    const railGroups = [...rail!.querySelectorAll('.ctl-rail-group')]
+    for (const g of railGroups) {
+      const name = g.querySelector('.ctl-nav-link')?.textContent?.trim()
+      const own = [...g.querySelectorAll('[role="tab"]')].map((b) =>
+        (b.firstChild?.textContent ?? '').trim(),
+      )
+      expect(own, `section "${name}" is named after one of its own tabs`).not.toContain(name)
+    }
 
     // THE PROPERTY THAT MATTERS: the second level does not appear on demand.
     // Pools' five tabs are in the DOM while Overview is the open section, so
@@ -196,9 +214,9 @@ describe('B3: the rail', () => {
       (b.firstChild?.textContent ?? '').trim(),
     )
     expect(tabs).toContain('Runner profiles')
-    expect(tabs).toContain('Capacity holders')
+    expect(tabs).toContain('Holders')
     expect(tabs).toContain('Tenants')
-    // Agents(4) + Pools(5) + History(2) + Admin(2). Overview and Runtimes have
+    // Work(4) + Capacity(5) + History(2) + Admin(2). Overview and Runtimes have
     // one pane each and draw no second level -- one tab under one section is a
     // duplicate of the section.
     expect(tabs.length).toBe(13)

@@ -963,7 +963,13 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
       <p className="checked-at">
         {woke ? 'The scheduler was woken by this submission.'
           : 'The scheduler was not woken; it will pick this up on its next pass.'}{' '}
-        <a href={`#agents/${encodeURIComponent(task.id)}`}>Open it</a>
+        {/* The EXPLICIT drawer form. `#work/<id>` also resolves -- it is
+            the shape the old nav wrote -- but only after every tab name
+            has had its chance to match, so a task whose id ever spelled
+            `running` or `workflows` would open that tab instead of the
+            agent. This screen writes ids it was just handed by the API
+            and has no say in, so it writes the form that cannot collide. */}
+        <a href={`#work/task/${encodeURIComponent(task.id)}`}>Open it</a>
       </p>
     </div>
   )

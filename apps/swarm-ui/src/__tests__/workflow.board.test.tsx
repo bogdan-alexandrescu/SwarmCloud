@@ -517,7 +517,7 @@ describe('the expanded canvas', () => {
     const { container } = card({ ...w, steps }, tasks, true)
     const node = nodeNamed(container, 'scan-a')
     expect(node.tagName).toBe('A')
-    expect(node.getAttribute('href')).toBe('#agents/task/task_scan_a')
+    expect(node.getAttribute('href')).toBe('#work/task/task_scan_a')
     // The node is the ONLY target. Three anchors pointing at one page is the
     // shape this replaced; a fourth appearing inside would be the same defect.
     expect(node.querySelector('a')).toBeNull()

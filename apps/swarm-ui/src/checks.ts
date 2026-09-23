@@ -214,7 +214,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       headline: `${dead.length} lease${dead.length === 1 ? ' is' : 's are'} past the TTL`,
       detail:
         'The lease timeout has run out as well as the heartbeat going quiet. Capacity is held by something that is almost certainly gone.',
-      href: '#pools/holders',
+      href: '#capacity/holders',
     })
   }
   if (silent.length > 0) {
@@ -223,7 +223,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       n: silent.length,
       headline: `${silent.length} worker${silent.length === 1 ? '' : 's'} silent past the grace period`,
       detail: `No heartbeat for ${page.thresholds.heartbeat_grace_seconds}s or more. This is already the reconciler's trigger, and its next pass is up to five minutes away.`,
-      href: '#pools/holders',
+      href: '#capacity/holders',
     })
   }
   if (overdue.length > 0) {
@@ -233,7 +233,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       headline: `${overdue.length} lease${overdue.length === 1 ? ' was' : 's were'} admitted but never dispatched`,
       detail:
         'Capacity was reserved and the backend was never handed the work. These hold units while doing nothing.',
-      href: '#pools/holders',
+      href: '#capacity/holders',
     })
   }
 
@@ -287,7 +287,7 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
             // floors at zero, so it would render every pending reset as
             // "just now" -- the opposite of what it says.
             : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, now)}` : ''}. Work on this provider parks rather than fails.`,
-        href: '#pools/quota',
+        href: '#capacity/quota',
         linkLabel: 'quota, all tenants · admin',
       })
     } else if (tone === 'wait') {
@@ -296,7 +296,7 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
         n: 1,
         headline: `${p.provider} is ${q.state}`,
         detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}. Throughput is reduced, not stopped.`,
-        href: '#pools/quota',
+        href: '#capacity/quota',
         linkLabel: 'quota, all tenants · admin',
       })
     }
@@ -338,7 +338,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       n: reauth.length,
       headline: `${reauth.length} account${reauth.length === 1 ? ' needs' : 's need'} signing in again`,
       detail: `${reauth.map((a) => a.label).join(', ')} — the broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.`,
-      href: '#pools/accounts',
+      href: '#capacity/accounts',
     })
   }
   if (never.length > 0) {
@@ -347,7 +347,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       n: never.length,
       headline: `${never.length} account${never.length === 1 ? ' has' : 's have'} never been polled`,
       detail: `${never.map((a) => a.label).join(', ')} — no reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.`,
-      href: '#pools/accounts',
+      href: '#capacity/accounts',
     })
   }
   if (stale.length > 0) {
@@ -356,7 +356,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       n: stale.length,
       headline: `${stale.length} account reading${stale.length === 1 ? ' is' : 's are'} too old to trust`,
       detail: `${stale.map((a) => a.label).join(', ')} — the last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.`,
-      href: '#pools/accounts',
+      href: '#capacity/accounts',
     })
   }
 
@@ -398,7 +398,7 @@ function poolCheck(capacity: Result<Capacity>): Check {
       n: over.length,
       headline: `${over.length} pool${over.length === 1 ? '' : 's'} holding more than the ceiling allows`,
       detail: `${over.map((p) => poolLabel(p.name)).join(', ')} — admission cannot produce this, so it is a ceiling lowered under running work or a slot never released. Running "make pool-check" resolves which.`,
-      href: '#pools/pools',
+      href: '#capacity/pools',
     })
   }
   if (paused.length > 0) {
@@ -461,7 +461,7 @@ function failureCheck(tasks: Result<TaskPage>): Check {
         // is component state rather than part of the hash, so this lands on
         // the list and the label says where to go from there rather than
         // promising a filter the address bar cannot carry.
-        href: '#agents/running',
+        href: '#work/running',
         linkLabel: 'agents · Recent tab',
       },
     ],
@@ -629,7 +629,7 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
         (eligible.length > 0
           ? `${eligible.length} ${eligible.length === 1 ? 'has a step' : 'have steps'} READY: eligible, and picked up by nothing.`
           : 'Every stalled step is parked or not yet started; the parked check says on what.'),
-      href: '#agents/workflows',
+      href: '#work/workflows',
     })
   }
 
@@ -646,7 +646,7 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
       n: unjudged.length,
       headline: `${unjudged.length} workflow${unjudged.length === 1 ? ' could' : 's could'} not be judged`,
       detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} — ${why}. Whether ${unjudged.length === 1 ? 'it is' : 'they are'} moving is unknown, not fine.`,
-      href: '#agents/workflows',
+      href: '#work/workflows',
     })
   }
 
@@ -739,7 +739,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       n: person.length,
       headline: `${person.length} parked ${unitFor(person)} will not resume without a person`,
       detail: `${whyEach(person)}. No timer ends any of these. They hold no capacity while they wait, so nothing is being spent -- the work is simply not happening.`,
-      href: '#agents/running',
+      href: '#work/running',
       linkLabel: 'agents · Waiting tab',
     })
   }
@@ -749,7 +749,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       n: clock.length,
       headline: `${clock.length} parked ${unitFor(clock)} waiting on a clock`,
       detail: `${whyEach(clock)}. ${soonest(clock, now)} Parked work holds no capacity, so this costs nothing while it waits.`,
-      href: '#agents/running',
+      href: '#work/running',
       linkLabel: 'agents · Waiting tab',
     })
   }
@@ -759,7 +759,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       n: unclassified.length,
       headline: `${unclassified.length} parked ${unitFor(unclassified)} with no reason this build understands`,
       detail: `${whyEach(unclassified)}. Either the platform grew a park reason newer than this bundle, or the task was parked without one recorded. Whether it will resume by itself is unknown.`,
-      href: '#agents/running',
+      href: '#work/running',
       linkLabel: 'agents · Waiting tab',
     })
   }

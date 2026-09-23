@@ -215,10 +215,43 @@ Specifically, these must stay in the docs and must not be softened:
 
 ## Before you say you are finished
 
+**THIS MACHINE AUTHORS CODE AND OPENS PULL REQUESTS. NOTHING ELSE.**
+
+Tests run in CI. Builds run in CI. Deployments run in CI. Do not run `make
+test`, `make lint`, `pytest`, `vitest` or a build here — not the full gate and
+not one file of it. The owner has said so four times; the fourth was *"why are
+you running tests in here!??? Make it so that tests run in CI, builds run in
+CI, deployments run in CI. Here we only author code, create PRs."*
+
+There is no narrow-suite exception. "Just this one file, it takes six seconds"
+is what produced the fourth telling.
+
+So the finishing sequence is:
+
 ```bash
-make lint        # shellcheck + doc links + terraform fmt/validate + tflint + manifests
-make test        # unit tests + terraform tests + the guard and parity self-tests
+git commit && git push          # then:
+gh pr create                    # or push to an existing PR branch
+gh run list --branch <branch>   # read the run
+gh run view <id> --log-failed   # read the failure
 ```
+
+Report the CI run's conclusion. Never report a local exit code, because there
+should not be one.
+
+**Proving a test actually catches its defect is still required** — see the
+mutation rule below. Prove it by committing an assertion that would fail, and
+letting CI demonstrate that, rather than by running the mutation here. A
+mutation proven in CI is proven for everyone forever; one proven on this laptop
+is proven once.
+
+What the CI jobs cover, so you know what you are waiting for:
+
+| workflow | jobs |
+|---|---|
+| `application.yml` | shell · python (unit) · ui (typecheck + component) · integration (emulator) · manifests · build images |
+| `terraform.yml` | fmt/validate/tflint · `terraform test` (86 assertions) · checkov · plan (main only) |
+| `security.yml` | filesystem · secrets · iac · policy · images (scheduled) |
+| `release.yml` | verify · build · infrastructure · deploy (push to main, env-gated) |
 
 `make test` is fully offline — no credentials, no emulator, nothing created. It
 runs the unit tests, `terraform test` over `tests/terraform` (86 assertions

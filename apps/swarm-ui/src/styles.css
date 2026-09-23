@@ -615,7 +615,7 @@ body {
    `.section > h2` below sets `text-transform: uppercase`, and two screens put
    a workflow id inside one. The screen therefore showed
    `WF_BCDC9180E4FB4A209F31` for an id that is lowercase in Firestore, in the
-   API, in every log line and in the `#agents/task/<id>` address you would
+   API, in every log line and in the `#work/task/<id>` address you would
    paste it into -- so the only thing the id is for, being copied, was the one
    thing it could not do. `QuotaDetail.tsx:94-96` already refuses to do this to
    tenant ids and writes the reason next to the refusal. This is that refusal
@@ -658,7 +658,7 @@ body {
    stops at the content gutter. `.brand-row` re-applies `--app-max` and
    `--app-pad` so the wordmark still lines up with the nav below it.
 
-   DENSITY. 44px tall, 13px wordmark, 10.5px keys: the Lens / Nomad register
+   DENSITY. 52px tall, 18px wordmark, 10.5px keys: the Lens / Nomad register
    the redesign is aimed at, not a marketing header. It is chrome, and chrome
    that spends 80px of a 900px screen is chrome that has stopped being useful. */
 .brand {
@@ -684,7 +684,12 @@ body {
   max-width: var(--app-max);
   margin: 0 auto;
   padding: 0 var(--app-pad);
-  min-height: 44px;
+  /* 52, up from 44, and the density argument above still holds -- it is the
+     reason this is 52 and not 64. The mark is 36px; 44 left it 4px of air top
+     and bottom, which reads as a logo jammed into a strip rather than one
+     sitting in a header. 8px each side is the least that does not, and 52px of
+     a 900px screen is still under 6% spent on chrome. */
+  min-height: 52px;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -694,7 +699,9 @@ body {
 .brand-home {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  /* Scaled with the lockup: 9 x 1.3 = 11.7 -> 12. Holding the old 9px while
+     the mark and the word both grew would have closed the gap optically. */
+  gap: 12px;
   color: var(--text);
   text-decoration: none;
   /* The mark inherits this, so it is the same ink as the wordmark in both
@@ -704,9 +711,18 @@ body {
 .brand-home:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 6px; }
 .brand-mark { display: block; }
 .brand-word {
-  /* --lh-flush: the box is `.brand-row`'s 44px min-height. The wordmark is
+  /* --lh-flush: the box is `.brand-row`'s 52px min-height. The wordmark is
      centred in it and must not add leading that grows the product header. */
-  font: 400 var(--t-body)/var(--lh-flush) var(--font);
+  /* --t-title, and it is the scale's own step rather than a seventh one added
+     for the logo. The owner asked for the logo 30% larger; 14 x 1.3 = 18.2,
+     and --t-title is 18px -- the arithmetic landed on a step that already
+     exists. A `--t-brand: 18px` was written first and typescale.test.ts
+     refused it, correctly: "a seventh step is how seventeen sizes came back
+     last time, one defensible addition at a time", and a second declaration of
+     a size the scale already has is the least defensible kind.
+     The role fits too. This is the product's name, which is what the title
+     step is for; it is not a lead, and it is certainly not body. */
+  font: 400 var(--t-title)/var(--lh-flush) var(--font);
   white-space: nowrap;
 }
 /* Two weights, one word: the swarm is the noun and the cloud is where it runs.
@@ -1015,7 +1031,7 @@ body {
 /* ---- task rows ---- */
 /* SIX ROWS WERE SIX FLOATING CARDS. NOW THEY ARE ONE LIST.
    ---------------------------------------------------------------------------
-   `#agents/workflows` is the screen the owner named as already right, and the
+   `#work/workflows` is the screen the owner named as already right, and the
    thing that makes it right is measurable: its rows are 37px, single-line, and
    they STACK -- `.wf-card + .wf-card` drops the duplicated top border, so ten
    rows draw one box and nine hairlines rather than ten boxes. This list drew
@@ -1701,7 +1717,7 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    It held `input & output →` and `attempts →`, and this rule's own comment
    recorded that they needed 199px of non-wrapping row -- which is why NODE_W
    had been widened from 212 to 236 to fit them. Both pointed at the same page
-   the step id already pointed at: `#agents/task/<id>` and the same drawer's
+   the step id already pointed at: `#work/task/<id>` and the same drawer's
    `attempts` TAB. Three anchors, one destination. The card is the link now
    (see `StepNode`) and the row is deleted.
    NODE_W IS 248 AND CHROME NO LONGER SETS IT. It is set by the widest string a

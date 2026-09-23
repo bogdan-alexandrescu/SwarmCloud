@@ -327,7 +327,15 @@ export function ProductHeader({
       {t.bar && <div className={`brand-bar ${t.className}`} aria-hidden />}
       <div className="brand-row">
         <a className="brand-home" href="#overview/now">
-          <SwarmMark size={28} title="SwarmCloud" />
+          {/* 36, not 28: the owner asked for the logo 30% larger and
+              28 x 1.3 is 36.4. Rounded DOWN to a whole pixel because
+              the mark strokes at 1.1 and 1.5 units in a 24-unit
+              viewBox -- a fractional width puts those strokes on half
+              pixels and the hexagon renders soft, which is the one
+              thing a 6-vertex mark at this size cannot afford.
+              36 > MARK_COMPACT_MAX, so the FULL geometry still
+              applies and nothing about the drawing changes but scale. */}
+          <SwarmMark size={36} title="SwarmCloud" />
           <span className="brand-word">
             <b>Swarm</b>Cloud
           </span>

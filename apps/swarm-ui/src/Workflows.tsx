@@ -528,7 +528,7 @@ export function WorkflowCard({
               same grey `?`. */}
           <i className={dotClass(header)} aria-hidden />
           {/* B17. This id is lowercase everywhere it actually lives --
-              Firestore, the API, the logs and the `#agents/task/<id>` address.
+              Firestore, the API, the logs and the `#work/task/<id>` address.
               Printed as WF_BCDC9180… it cannot be pasted anywhere, which is
               the only thing an id is for. */}
           <Id>{workflow.workflow_id}</Id>
@@ -1128,8 +1128,8 @@ function StepNode({
   // The owner's words: "The agent task node should be clicable not have links
   // inisde it if all of them point to the same page or section." There were
   // THREE anchors on this node and all three landed on the same page: the step
-  // id and `input & output →` both went to `#agents/task/<id>`, and
-  // `attempts →` went to `#agents/task/<id>/attempts`, which `App.tsx` resolves
+  // id and `input & output →` both went to `#work/task/<id>`, and
+  // `attempts →` went to `#work/task/<id>/attempts`, which `App.tsx` resolves
   // to the SAME drawer with its second tab selected -- one click away once you
   // are there, and reachable from the drawer's own tab strip. So all three
   // collapse into one target and `.node-links` is gone entirely.
@@ -1241,7 +1241,7 @@ function StepNode({
         <a
           className={`node ${p.tone}`}
           title={p.title}
-          href={`#agents/task/${encodeURIComponent(taskId)}`}
+          href={`#work/task/${encodeURIComponent(taskId)}`}
         >
           {body}
         </a>
@@ -1337,7 +1337,7 @@ interface StepFigures {
  *
  * This was a plain `<div>` with no href and no onClick, so from "draft is
  * parked" there was no click that reached `draft`. It is now an `<a>` to
- * `#agents/task/<id>` -- the route App.tsx already resolves to the full agent
+ * `#work/task/<id>` -- the route App.tsx already resolves to the full agent
  * run: runtime environment, attempts, spend, duration, logs, checkpoints,
  * artifacts and outputs. An anchor rather than a click handler on purpose: it
  * is middle-clickable, copyable, and reachable by keyboard without this file

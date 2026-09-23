@@ -1,0 +1,130 @@
+/**
+ * Every internal hash link resolves, and none of them rides an alias.
+ *
+ * WHAT THIS CATCHES. `SECTION_ALIASES` keeps an old section id working so a
+ * link someone saved in a runbook still lands. That is the whole point of it,
+ * and it is also its hazard: if the app's OWN links use the old spelling too,
+ * every one of them keeps working after a rename, so nothing fails, so nobody
+ * updates one, and the old name outlives the rename indefinitely. The rename
+ * that produced this file found `#agents/...` in eighteen places in
+ * `checks.ts` alone -- all of which would have gone on saying `agents` under a
+ * section called Work, silently, forever.
+ *
+ * So the rule is: an alias is for hashes this app did not write. Anything the
+ * app writes uses the current spelling, and this test is what makes that true
+ * rather than merely intended.
+ *
+ * It reads the SOURCE, not a render. A render exercises the links a fixture
+ * happens to reach; the eighteen in `checks.ts` are produced by branches that
+ * need a specific unhealthy platform to appear at all, and the one that is
+ * wrong will be the one no fixture produces.
+ */
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+import { INTERNAL_LINKS_MAY_NOT_USE_ALIASES, fromHash } from '../App'
+import { HELP_ROUTE } from '../help'
+
+const SRC = join(__dirname, '..')
+
+function sources(dir: string): string[] {
+  const out: string[] = []
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name)
+    if (statSync(full).isDirectory()) {
+      // The test directory is excluded: a test may legitimately write an OLD
+      // hash, because asserting that an old hash still resolves is exactly
+      // what a rename needs proven.
+      if (name !== '__tests__' && name !== 'node_modules') out.push(...sources(full))
+    } else if (/\.(tsx?|css|html)$/.test(name)) {
+      out.push(full)
+    }
+  }
+  return out
+}
+
+/**
+ * Hash links as the app writes them.
+ *
+ * Only `href` attributes and `location.hash` assignments, not every `#` in the
+ * file: the stylesheet and the comments are full of `#agents/task/<id>` as
+ * PROSE, describing what an address used to be, and prose about an old name is
+ * not a link to it.
+ */
+function links(): { file: string; hash: string }[] {
+  const found: { file: string; hash: string }[] = []
+  for (const file of sources(SRC)) {
+    const text = readFileSync(file, 'utf8')
+    // BOTH SPELLINGS OF A LINK. `href=` is the JSX attribute; `href:` is an
+    // object property, which is how every one of `checks.ts`'s links is
+    // written -- and `checks.ts` holds more of them than the rest of the app
+    // put together. Matching only the attribute form found 14 links and
+    // reported them all sound while the eighteen that mattered went unread.
+    for (const m of text.matchAll(/href\s*[=:]\s*(?:"|'|`|\{"|\{'|\{`)#([A-Za-z0-9/_.-]+)/g)) {
+      found.push({ file: file.slice(SRC.length + 1), hash: m[1]! })
+    }
+    for (const m of text.matchAll(/location\.hash\s*=\s*(?:'|"|`)#?([A-Za-z0-9/_.-]+)/g)) {
+      found.push({ file: file.slice(SRC.length + 1), hash: m[1]! })
+    }
+  }
+  return found
+}
+
+/** `fromHash` reads `window.location.hash`, so the hash is set and it is called. */
+function resolve(hash: string) {
+  window.location.hash = `#${hash}`
+  return fromHash()
+}
+
+describe('internal navigation links', () => {
+  it('finds links to check, so an empty sweep cannot pass as a clean one', () => {
+    // The guard this repository keeps needing: a regex that matched nothing
+    // reports the same "no failures" as a codebase with no defects.
+    expect(links().length).toBeGreaterThan(25)
+  })
+
+  it('never writes a section id that only an alias keeps alive', () => {
+    const aliased = links().filter((l) =>
+      INTERNAL_LINKS_MAY_NOT_USE_ALIASES.includes(l.hash.split('/')[0]!),
+    )
+    expect(
+      aliased.map((l) => `${l.file}: #${l.hash}`),
+      'these use a retired section id. It still resolves, which is why nothing ' +
+        'else would have told you. Write the current spelling; the alias is for ' +
+        'links this app did not write.',
+    ).toEqual([])
+  })
+
+  it('resolves every link to a pane that exists', () => {
+    const dead: string[] = []
+    for (const l of links()) {
+      const head = l.hash.split('/')[0]!
+      // `#help/<topic>` carries a topic verbatim and HelpScreen answers for an
+      // unknown one by name, so there is no dead tail here to find.
+      if (head === HELP_ROUTE) continue
+      const r = resolve(l.hash)
+      // A hash that resolves to the HOME section while naming something else
+      // is the failure mode: `fromHash` falls back to the first section rather
+      // than rendering nothing, so a typo looks like a working link.
+      if (r.sectionId !== head && r.taskId === null) {
+        dead.push(`${l.file}: #${l.hash} -> ${r.sectionId}/${r.tab}`)
+      }
+    }
+    expect(dead, 'these fell through to another section').toEqual([])
+  })
+
+  it('resolves every link to a TAB that exists, not just a section', () => {
+    const dead: string[] = []
+    for (const l of links()) {
+      const [head, ...rest] = l.hash.split('/')
+      if (head === HELP_ROUTE || rest.length === 0) continue
+      const wanted = rest.join('/')
+      const r = resolve(l.hash)
+      // A task drawer link carries an id, not a tab, and is resolved as one.
+      if (r.taskId !== null) continue
+      if (r.tab !== wanted) dead.push(`${l.file}: #${l.hash} -> tab "${r.tab}"`)
+    }
+    expect(dead, 'these named a pane that does not exist and fell back to the first one').toEqual([])
+  })
+})
