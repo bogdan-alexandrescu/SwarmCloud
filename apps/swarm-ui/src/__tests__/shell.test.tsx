@@ -557,13 +557,49 @@ describe('B18: the strip collapses to one line and expands on click', () => {
     )
   })
 
-  it('is fixed to the viewport, 28px at rest, and resizes within 120px-70vh', () => {
+  /**
+   * RE-POINTED (§3.4, §11.3). This used to assert `position: fixed` and
+   * `bottom: 0` -- the OVERLAY encoding. The dock is now a row of
+   * `.ctl-frame`'s grid instead, so those two declarations are gone and
+   * asserting them would pin the bug: an opaque fixed bar over a scrolling
+   * document has content behind it at some scroll offset, always, and two
+   * passes of reservations (`.app`'s bottom padding, then
+   * `scroll-padding-bottom`) failed to buy that space back.
+   *
+   * WHAT MOVED: "always at the bottom of the viewport" was expressed by
+   * `position: fixed; bottom: 0` and is now expressed by the frame being
+   * exactly one viewport tall with the dock as its second row. So the
+   * assertion moves to the frame -- and it asserts the two `min-*: 0` that
+   * make it work, because each was a real defect. Without `min-height: 0` the
+   * scroller sizes to its content and pushes the dock off-screen; without
+   * `min-width: 0` the frame overflows sideways (caught only in a 390px
+   * screenshot -- jsdom has no layout engine, see §11.5).
+   *
+   * The dock's OWN guarantees -- 28px at rest, 120px-70vh when dragged -- are
+   * unchanged and still asserted below.
+   */
+  it('is a row of the frame, 28px at rest, and resizes within 120px-70vh', () => {
     const style = withStyles()
+
+    const frame = render(<div className="ctl-frame" />)
+    const f = getComputedStyle(frame.container.querySelector('.ctl-frame')!)
+    expect(f.display).toBe('grid')
+    // Row 1 takes what is left, row 2 is the dock at its own height.
+    expect(f.gridTemplateRows).toBe('minmax(0, 1fr) auto')
+    expect(f.height).toBe('100%')
+
+    const scroll = render(<div className="ctl-scroll" />)
+    const s = getComputedStyle(scroll.container.querySelector('.ctl-scroll')!)
+    expect(s.overflow).toBe('auto')
+    // jsdom normalises `0` to `0px`; either spelling is the same rule.
+    expect(s.minHeight).toMatch(/^0(px)?$/)
+    expect(s.minWidth).toMatch(/^0(px)?$/)
+
+    // NOT AN OVERLAY ANY MORE. `position: fixed` here is the defect, so this
+    // asserts its absence rather than trusting the frame rules above.
     const { container } = render(<div className="ctl-dock" />)
     const dock = getComputedStyle(container.querySelector('.ctl-dock')!)
-    expect(dock.position).toBe('fixed')
-    // jsdom normalises `0` to `0px`; either spelling is the same rule.
-    expect(dock.bottom).toMatch(/^0(px)?$/)
+    expect(dock.position).not.toBe('fixed')
 
     const line = render(<button className="ctl-dock-line" />)
     expect(getComputedStyle(line.container.querySelector('button')!).minHeight).toBe(

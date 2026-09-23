@@ -454,53 +454,67 @@ body {
 :root { --app-max: 1880px; --app-pad: var(--gutter); }
 @media (min-width: 1280px) { :root { --app-pad: 24px; } }
 @media (min-width: 1600px) { :root { --app-pad: 32px; } }
-/* THE BOTTOM GUTTER READS THE DOCK'S ACTUAL HEIGHT, and until now it did not.
-   `Dock.tsx:80` publishes `--dock-h` on `documentElement` and TWO rules consume
-   it -- `.ctl-rail`'s max-height and the inspector's -- while `.app` reserved
-   the literal `28px + 48px`, the collapsed bar and nothing else. The dock is
-   resizable from 120px to 70vh AND remembers its height in localStorage across
-   sessions, so an operator who once dragged it tall has every screen's last
-   rows permanently hidden under it from then on, on every visit, with no
-   indication that anything is there.
-
-   The comment that stood here called the overlay deliberate. It is deliberate
-   at 28px and it is a bug at 70vh: reserving the collapsed bar is a decision
-   about a panel that opens and closes, not about one that opens and STAYS. The
-   fallback keeps the old behaviour before any read, which is what `--dock-h`'s
-   two existing readers already assume.
-
-   `src/__tests__/spacing.test.tsx` cannot see this -- it renders into jsdom,
-   which has no layout engine, so it measures declared CSS and never a box
-   intersection. The one-line fix is invisible to every gate in this repository
-   and the defect was too. */
-.app { max-width: var(--app-max); margin: 0 auto; padding: 0 var(--app-pad) calc(var(--dock-h, 28px) + 48px); }
-
-/* THE OTHER HALF OF THE DOCK RESERVATION, AND IT IS NOT THE SAME HALF.
+/* THE FRAME, AND THE END OF THE DOCK RESERVATION (§3.4, §11.3).
    ---------------------------------------------------------------------------
-   `.app`'s bottom padding above reserves the dock's real height at the END of
-   the document, which is what a previous pass fixed and which works: scrolled
-   to the bottom at 390x844 there is clearance and nothing sits under the bar.
-   What it does NOT do is anything about the other scroll positions -- the bar
-   is opaque `--surface` at z-index 45, so at any intermediate offset it paints
-   over whatever happens to rest at the viewport's bottom edge. At scrollY=0 on
-   a 390px landing page that was measured as two occluded elements and at
-   1024-1280 as eighteen and twenty-four.
+   TWO PASSES TRIED TO RESERVE SPACE FOR AN OVERLAY. Neither could work, and
+   the reason is worth writing down because the third attempt would have been
+   to tune one of them again.
 
-   `scroll-padding-bottom` is the part of that which CSS can fix: it makes
-   every programmatic scroll -- an anchor jump, a `scrollIntoView`, and the
-   keyboard tabbing that an operator reaching a control near the foot of a long
-   screen actually uses -- stop with the dock's height still clear, instead of
-   parking the element it just focused underneath an opaque bar.
+     * `.app { padding-bottom: calc(var(--dock-h) + 48px) }` cleared the dock
+       at the END of the document. Scrolled to the foot there was clearance --
+       and at every other offset the bar still painted over whatever rested at
+       the viewport's bottom edge, because bottom padding is a property of the
+       document, not of the viewport.
+     * `html { scroll-padding-bottom: ... }` cleared it for scrolls the
+       BROWSER performs -- an anchor jump, `scrollIntoView`, keyboard tabbing.
+       It does nothing at rest, and at rest is where the owner's screenshot was
+       taken: at scrollY=0, 390x844, the strip cut through the row beneath it.
 
-   IT IS NOT THE WHOLE FIX AND THIS COMMENT SAYS SO RATHER THAN LETTING THE
-   NEXT READER ASSUME IT IS. A fixed bar over a scrolling document always has
-   content behind it at some offsets; the only complete answer is for the dock
-   to be a row of the frame's grid rather than an overlay, which is a change to
-   `Shell.tsx` and belongs to the frame, not to the token layer. What this pass
-   could do about the SPECIFIC collision the owner screenshotted -- the strip
-   cutting through the attention dial at 390px -- it did by deleting the 96px
-   ring that was sitting there. */
-html { scroll-padding-bottom: calc(var(--dock-h, 28px) + var(--ctl-s3)); }
+   An opaque bar over a scrolling document has content behind it at some
+   offset, always, by construction. So the dock stopped being over the
+   document: `.ctl-frame` is a two-row grid, the scroller is row 1 and the dock
+   is row 2, and no offset exists at which a grid row overlaps its sibling.
+   Both reservations are therefore DELETED rather than kept "just in case" --
+   with the dock in flow they would be dead space at the foot of every screen,
+   and a reservation for a hazard that no longer exists is how the next reader
+   concludes the hazard still does.
+
+   `--dock-h` IS STILL PUBLISHED AND STILL READ. `Dock.tsx` measures the real
+   box; `.ctl-rail` and the inspector use it to size a sticky column against
+   the SCROLLPORT, which is the viewport minus the dock row. Those two readers
+   are why the custom property survives the overlay that introduced it.
+
+   HEIGHT IS `100%`, NOT `100dvh`, because `body` carries the safe-area insets
+   as padding: `100%` inherits the chain `html, body, #root { height: 100% }`
+   and therefore lands inside the notch and the home indicator, where a
+   viewport unit would ignore both and overflow by the inset. */
+.ctl-frame { height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+/* BOTH `min-*: 0` ARE LOAD-BEARING, and each was a real defect before it was
+   written. A grid item's default is `min-height: auto` / `min-width: auto`,
+   which means "never shrink below your content" -- so:
+
+     * without `min-height: 0` the scroller sizes to the document and pushes
+       the dock off the bottom of the viewport, which is the original overlap
+       wearing a different hat;
+     * without `min-width: 0` the column takes the widest screen's min-content
+       width and the whole frame overflows sideways. This one was caught in a
+       390px screenshot -- every card ran off the right edge -- and by nothing
+       else, because jsdom has no layout engine to overflow.
+
+   `overflow-x` follows `overflow-y` to `auto` per the spec once one axis is
+   not `visible`, which matches what the document used to do with a too-wide
+   table: scroll, rather than clip a column off. */
+.ctl-scroll {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  scroll-padding-bottom: var(--ctl-s3);
+}
+/* The dock is the other grid item and shrinks for the same reason: its facts
+   line ellipsises at 390px, which it cannot do from a min-content floor. */
+.ctl-dock { min-width: 0; }
+
+.app { max-width: var(--app-max); margin: 0 auto; padding: 0 var(--app-pad) 48px; }
 
 /* --measure: the width a SENTENCE is allowed, now that the page is not one.
    Removing the cap above makes tables, charts and graphs full-bleed, which is
@@ -4857,12 +4871,19 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-inspector-grip:hover { background: color-mix(in srgb, var(--info) 35%, transparent); }
 
 /* ---- the dock (§B3, §B18) ---- */
+/* A ROW OF `.ctl-frame`, NOT A LAYER OVER IT (§3.4, §11.3). `position: fixed;
+   inset: auto 0 0; z-index: 45` is gone, and with it the whole class of bug it
+   created -- there is no scroll offset at which a grid row overlaps its
+   sibling, so nothing reserves space for this element any more and nothing
+   needs to. It still spans the viewport and is still always on screen; it now
+   does that by occupying its height rather than by floating above content that
+   was pretending the height was free.
+
+   IT KEEPS ITS OWN BACKGROUND. `--surface` against the scroller's `--bg` plus
+   the hairline is what separates the bar from the last row of content, and
+   that separation now has to be drawn rather than implied by the shadow an
+   overlay cast. */
 .ctl-dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 45;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--line);
@@ -4910,7 +4931,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
 
-.ctl-dock.is-open { box-shadow: 0 -8px 24px rgb(0 0 0 / .22); }
+/* THE OPEN DOCK'S SHADOW IS GONE. `0 -8px 24px rgb(0 0 0 / .22)` was there to
+   lift a floating panel off the document sliding underneath it. Nothing slides
+   underneath it any more, so the shadow was drawing a depth the layout no
+   longer has -- and §11.2 took `--ctl-shadow` off the card and the tile for
+   the same reason it comes off here. The hairline `border-top` above is the
+   separation, which is the reference set's answer too. */
 .ctl-dock-grip {
   height: 6px;
   margin-top: -3px;
