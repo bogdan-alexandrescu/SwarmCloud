@@ -103,7 +103,13 @@ def test_the_workflow_form_sends_an_input_for_every_step():
     step's own parsed input, not from a constant.
     """
     send = _send_body()
-    assert "input: parsed.input" in send, (
+    # THE KEY AND ITS SOURCE, not one spelling of the local that holds it. The
+    # submit rebuild renamed `parsed` to `built` and this assertion went red on
+    # a screen whose behaviour was unchanged and whose comment had got BETTER.
+    # What must hold is that `input` is in the body and is derived from the
+    # step, never a constant -- so that is what is matched: the key, assigned
+    # from something with a member access on it rather than a literal.
+    assert re.search(r"\binput:\s*\w+\.input\b", send), (
         "SubmitWorkflow.tsx does not put `input` in the step body. Every step "
         "then arrives with input == {} (WorkflowStepCreate.input is "
         "Field(default_factory=dict)) and run_cli_agent refuses it with "
@@ -124,7 +130,15 @@ def test_the_workflow_form_sends_input_from_when_a_filename_was_given():
         "SubmitWorkflow.tsx does not put `input_from` in the step body, so no "
         "workflow built on this screen can stage an upstream artifact."
     )
-    assert "stagedArtifacts(s, dependsOn)" in send, (
+    # THE FILTERING, not the helper that used to do it. The rebuild inlined
+    # `stagedArtifacts` into a loop over `depends`, which is `dependsOf(s, steps)`
+    # -- the same filtered list, read the same way. What must hold is that the
+    # thing iterated to build `staged` is the DEPENDENCY list and not the raw
+    # `from` map, because only that stops a source which is not a dependency
+    # being sent.
+    assert re.search(r"const depends = dependsOf\(", send) and re.search(
+        r"for \(const source of depends\)", send
+    ), (
         "`input_from` must be built from the FILTERED depends_on, so a source "
         "that is not a dependency cannot be sent"
     )
@@ -267,7 +281,10 @@ def test_the_form_refuses_rather_than_submitting_a_step_with_no_required_key():
     asserted to be reachable strictly earlier in `send` than `postWorkflow`.
     """
     send = _send_body()
-    assert "missingInputKeys(parsed.input, required)" in send, (
+    # The CHECK, not its old name. `missingInputKeys` became `missingRequired`
+    # and now takes the profile's keys via `requiredInputKeys`; both are shared
+    # with Submit.tsx rather than duplicated, which is the better shape.
+    assert re.search(r"missingRequired\(s\.input,\s*requiredInputKeys\(", send), (
         "SubmitWorkflow.tsx does not check the step's input against the keys its "
         "runner requires"
     )
@@ -303,7 +320,15 @@ def test_the_form_treats_an_unread_contract_as_unread_and_not_as_permission():
         "requiredInputKeys must return null for an API that did not say, not []"
     )
     send = _send_body()
-    assert "required === null ? [] : missingInputKeys" in send, (
+    # WHERE the null is handled moved; THAT it is handled has not. The ternary
+    # used to sit in `send`; it is now the first line of `missingRequired`
+    # (Submit.tsx), which both screens call -- so the rule is stated once
+    # instead of twice, and this asserts it where it now lives.
+    from_submit = _src("Submit.tsx")
+    assert re.search(
+        r"function missingRequired\([^)]*\)[^{]*\{\s*if \(required === null\) return \[\]",
+        from_submit,
+    ), (
         "`send` must apply NO rule when the contract is unread, rather than "
         "inventing one"
     )
@@ -316,13 +341,24 @@ def test_the_form_refuses_a_blank_string_as_loudly_as_a_missing_key():
     `run_cli_agent` tests `not prompt.strip()`, so a check for mere presence
     would pass the typo straight through to the identical failure.
     """
-    source = _src("SubmitWorkflow.tsx")
-    missing = re.search(r"function missingInputKeys\(.*?\n}", source, re.S)
-    assert missing is not None, "SubmitWorkflow.tsx has no missingInputKeys"
-    body = missing.group(0)
-    assert "typeof value !== 'string'" in body, "a non-string value must count as missing"
-    assert "value.trim() === ''" in body, (
+    # THE RULE, wherever it now lives. `SubmitWorkflow.tsx` had its own
+    # `missingInputKeys`; the submit rebuild deleted it and both screens now
+    # call `missingRequired` from `Submit.tsx` -- one statement of the rule
+    # instead of two agreeing copies, which is the better shape and the one
+    # this repository keeps asking for. Asserted in the helper AND at the
+    # workflow screen's import, because a rule the other screen does not call
+    # is a rule the other screen does not have.
+    helper = re.search(r"export function missingRequired\(.*?\n}", _src("Submit.tsx"), re.S)
+    assert helper is not None, "Submit.tsx has no missingRequired"
+    body = helper.group(0)
+    assert "typeof v !== 'string'" in body, "a non-string value must count as missing"
+    assert "v.trim() === ''" in body, (
         "a blank string must count as missing: run_cli_agent refuses it too"
+    )
+    assert re.search(r"import \{[^}]*\bmissingRequired\b[^}]*\} from '\./Submit'",
+                     _src("SubmitWorkflow.tsx"), re.S), (
+        "SubmitWorkflow.tsx does not import missingRequired, so the workflow "
+        "screen is not covered by the rule asserted above"
     )
 
 
@@ -361,14 +397,33 @@ def test_the_api_refuses_an_input_from_that_is_not_a_dependency(client):
 def test_the_staging_control_offers_only_the_steps_this_step_depends_on():
     """Offering a non-dependency would offer a 422, and describe a broken workflow."""
     source = _src("SubmitWorkflow.tsx")
-    assert "const stageable = step.dependsOn.filter((d) => others.includes(d))" in source, (
+    # WHAT THE CONTROL IS NARROWED TO, not the name of the local it was
+    # narrowed into. The rebuild replaced `stageable` and `stagedArtifacts`
+    # with one function, `dependsOf(step, steps)`, used in both places -- so
+    # the offered list and the sent list can no longer disagree, which the two
+    # separate spellings allowed. Three things are asserted, and together they
+    # are the rule `validate_dag` enforces:
+    resolver = re.search(r"function dependsOf\(.*?\n}", source, re.S)
+    assert resolver is not None, "SubmitWorkflow.tsx has no dependsOf"
+    #   (a) it resolves to steps in an EARLIER stage and nothing else, whether
+    #       the step names its dependencies or takes the whole previous stage;
+    assert "s.stage < step.stage" in resolver.group(0), (
+        "dependsOf does not narrow to earlier stages, so a same-stage or later "
+        "step could be offered -- which is the 422 `does not depend on it`"
+    )
+    assert "earlier.includes(id)" in resolver.group(0), (
+        "a named dependency is not filtered against what is actually earlier, "
+        "so a step moved into this stage stays wired to it"
+    )
+    #   (b) the filename boxes are rendered over that list;
+    assert "{depends.map((id) => (" in source and "const depends = dependsOf(step, steps)" in source, (
         "the staging control is not narrowed to this step's dependencies"
     )
-    staged = re.search(r"function stagedArtifacts\(.*?\n}", source, re.S)
-    assert staged is not None, "SubmitWorkflow.tsx has no stagedArtifacts"
-    assert "for (const source of dependsOn)" in staged.group(0), (
-        "input_from must be built by walking depends_on, so a stale filename "
-        "cannot be sent for a dependency that was unchecked"
+    #   (c) and `send` walks the same list when it builds `input_from`, so a
+    #       filename typed for a dependency that was later unchecked is not sent.
+    assert "for (const source of depends)" in _send_body(), (
+        "input_from must be built by walking the resolved dependencies, so a "
+        "stale filename cannot be sent for a dependency that was unchecked"
     )
 
 
