@@ -65,6 +65,9 @@ export function Dock() {
   const [open, setOpen] = useState(false)
   const [height, setHeight] = useState(() => readPane(DOCK))
   const dragging = useRef(false)
+  const shell = useRef<HTMLDivElement | null>(null)
+  const s = summariseProbes(probes)
+  const drawn = probes.length > 0
 
   // The ages on this strip are the whole point of it, so they move on their
   // own rather than only when a fetch happens to land.
@@ -73,17 +76,56 @@ export function Dock() {
     return () => clearInterval(id)
   }, [])
 
-  // The rendered height, published as a custom property so the page's bottom
-  // padding can reserve exactly the collapsed bar and nothing more. Set on the
-  // documentElement rather than passed down: the dock is fixed to the viewport
-  // and `.app` is not its ancestor.
+  // THE OVERLAP BUG, AND WHY IT IS MEASURED RATHER THAN ASSUMED.
+  //
+  // This is fixed to the viewport, so `.app` reserves its height as bottom
+  // padding through `--dock-h`. That property used to be published as
+  // `open ? height : DOCK_COLLAPSED` -- what the dock INTENDS to be, not what
+  // it IS -- and it was wrong in two states that are both on screen today:
+  //
+  //   * COLLAPSED WITH AN EXPIRED SESSION. The re-auth button sits outside the
+  //     disclosure on purpose, so a collapsed dock is the 28px line PLUS a
+  //     button. The page reserved 28px and the button ate the last row of
+  //     every screen -- on the one screen state where the row underneath is a
+  //     failure somebody is trying to read.
+  //   * NO DOCK AT ALL. Before any route has been called this component
+  //     renders nothing, and the effect still reserved 28px of blank gutter at
+  //     the foot of the first screen anyone sees.
+  //
+  // Reading the box removes the class of bug rather than the two instances:
+  // anything that changes this element's height -- a drag, a wrap at 390px, a
+  // future row -- moves the page's reservation with it. The fallback is the
+  // old arithmetic, for jsdom (no layout engine, every box is 0px high) and
+  // for any browser without ResizeObserver.
   useEffect(() => {
     const root = document.documentElement
-    root.style.setProperty('--dock-h', `${open ? height : DOCK_COLLAPSED}px`)
+    const el = shell.current
+    if (el === null) {
+      root.style.setProperty('--dock-h', '0px')
+      return () => {
+        root.style.removeProperty('--dock-h')
+      }
+    }
+    const assumed = open ? height : DOCK_COLLAPSED
+    const publish = () =>
+      root.style.setProperty(
+        '--dock-h',
+        `${Math.round(el.getBoundingClientRect().height || assumed)}px`,
+      )
+    publish()
+    const Observer = globalThis.ResizeObserver
+    if (typeof Observer !== 'function') {
+      return () => {
+        root.style.removeProperty('--dock-h')
+      }
+    }
+    const ro = new Observer(publish)
+    ro.observe(el)
     return () => {
+      ro.disconnect()
       root.style.removeProperty('--dock-h')
     }
-  }, [open, height])
+  }, [open, height, drawn, s.expired])
 
   const ceiling = useCallback(
     () => Math.max(DOCK.min, Math.round((globalThis.innerHeight || DOCK.max) * 0.7)),
@@ -116,18 +158,21 @@ export function Dock() {
     writePane(DOCK, height)
   }, [height])
 
-  if (probes.length === 0) {
+  if (!drawn) {
     // NOTHING HAS BEEN READ YET, so there is nothing to be provenance ABOUT.
     // An empty dock would be a bar claiming a summary of no reads; the strip
     // has always rendered nothing in this case and that stays true.
     return null
   }
 
-  const s = summariseProbes(probes)
   const tone = s.expired ? 'is-bad' : s.failed > 0 ? 'is-warn' : 'is-ok'
 
   return (
-    <div className={`ctl-dock${open ? ' is-open' : ''}`} style={open ? { height } : undefined}>
+    <div
+      ref={shell}
+      className={`ctl-dock${open ? ' is-open' : ''}`}
+      style={open ? { height } : undefined}
+    >
       {open && (
         <div
           className="ctl-dock-grip"
@@ -181,20 +226,30 @@ export function Dock() {
 
       {open && (
         <div className="ctl-dock-body">
-          <p className="ctl-dock-lead">
-            One cell per route this browser tab has called. The age is of the
-            newest <strong>successful</strong> payload, which is the part that
-            says whether a panel showing an old figure is showing a stale one.
-            {' '}
-            <a href={`#${helpAnchor(HELP_TOPIC)}`}>What these mean &rarr;</a>
-            {' · '}
+          {/* THE LEAD PARAGRAPH IS GONE AND ITS TWO FACTS ARE STILL HERE.
+              It ran to 36 words to say two things: one cell per route, and the
+              age is of the newest SUCCESSFUL payload. The first is what the
+              grid of cells already looks like; the second is fused to the
+              figure it qualifies, in `DataSources.tsx`'s own cell labels and
+              in the foot below. What is left is the two destinations, which
+              were the only part of that paragraph anyone clicked. */}
+          <div className="ctl-toolbar ctl-dock-tools">
+            <span className="ctl-eyebrow">Routes called in this tab</span>
+            <a className="is-end" href={`#${helpAnchor(HELP_TOPIC)}`}>
+              What these mean &rarr;
+            </a>
             <a href="#reference">Every read, in a table &rarr;</a>
-          </p>
+          </div>
           <DataSourceCells probes={probes} />
+          {/* THE PROVENANCE STRIP: when, over what, from how many. One line,
+              and it stays because a p95 whose basis is unstated is a p95 that
+              means something else -- the same class of defect as a count
+              computed over a partial read. The paragraph that used to say so
+              twice is in `#help/api-reads`. */}
           <p className="ctl-dock-foot">
-            p95 is taken over the <strong>last attempt of each route</strong> —
-            one sample per route, {s.routes} in total. This tab keeps no request
-            history, so it is not a percentile over every request made.
+            newest successful payload · p95 over the{' '}
+            <strong>last attempt of each route</strong>, {s.routes} sample
+            {s.routes === 1 ? '' : 's'}
           </p>
         </div>
       )}
