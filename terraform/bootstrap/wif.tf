@@ -33,6 +33,30 @@ locals {
   ref_condition = join(" || ", [
     for ref in var.github_allowed_refs : "assertion.ref == \"${ref}\""
   ])
+
+  # THE SAME PIN A THIRD TIME, through the claim GitHub itself constructs.
+  #
+  # `sub` is minted by GitHub as `repo:<owner>/<name>:<context>:<value>`, and
+  # for a branch run that is `repo:owner/name:ref:refs/heads/main`. Pinning it
+  # is STRICTER than the repository and ref clauses above rather than a
+  # restatement of them: those two are satisfied by any token carrying the
+  # right repository and ref attributes, while this one also fixes the CONTEXT
+  # segment to `ref:`. A token minted for `repo:owner/name:environment:prod` or
+  # `repo:owner/name:pull_request` does not match it, whatever else it carries.
+  #
+  # It is also the only form checkov's CKV_GCP_125 recognises, and that check
+  # is right to insist: it reads `assertion.sub`, rejects the abusable claims
+  # (`actor`, `workflow`, and the rest -- any of which an attacker controls by
+  # naming a workflow), rejects a wildcard in either half, and requires the
+  # repo value to be a real `org/name`. A condition it cannot read is a
+  # condition nobody is checking on our behalf.
+  #
+  # Derived from the same two variables as the clauses above, so the three
+  # cannot drift apart.
+  sub_condition = join(" || ", [
+    for ref in var.github_allowed_refs :
+    "assertion.sub == \"repo:${var.github_repository}:ref:${ref}\""
+  ])
 }
 
 resource "google_iam_workload_identity_pool" "github" {
@@ -69,10 +93,23 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repo_ref" = "assertion.repository + \"@\" + assertion.ref"
   }
 
-  # Both clauses matter. The repository check stops any other repo; the ref
-  # check stops a pull request from a fork, or a branch anyone can push, from
-  # minting a deploy token.
-  attribute_condition = "assertion.repository == \"${var.github_repository}\" && (${local.ref_condition})"
+  # All three clauses matter, and each stops something the others do not.
+  #
+  #   repository   stops any other repo on GitHub. Without it the pool trusts
+  #                GitHub's issuer, which is to say every repository on it.
+  #   ref          stops a branch anyone can push, and a pull request from a
+  #                fork, from minting a deploy token.
+  #   sub          stops a token minted for a different CONTEXT on an allowed
+  #                ref -- an environment or a pull_request subject -- and is
+  #                the form CKV_GCP_125 reads (see `sub_condition` above).
+  #
+  # UNVERIFIED UNTIL A RUN AUTHENTICATES. The `sub` format below is GitHub's
+  # documented `repo:<owner>/<name>:ref:<git-ref>` for a branch run. If a
+  # workflow ever fails at google-github-actions/auth with the token rejected
+  # rather than absent, print the run's OIDC claims and compare them here
+  # before widening anything -- and never widen this to `refs/pull/*`, for the
+  # reason application.yml's `build` job spends twenty lines on.
+  attribute_condition = "assertion.repository == \"${var.github_repository}\" && (${local.ref_condition}) && (${local.sub_condition})"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"

@@ -158,8 +158,8 @@ interface SectionDef {
  * sections are never compared against and stay literals in the array, where
  * there is only one of each to be wrong.
  */
-const WORK = 'work'
-const CAPACITY = 'capacity'
+export const WORK = 'work'
+export const CAPACITY = 'capacity'
 
 /**
  * EXPORTED FOR THE SWEEPS, which is not the same as exported for reuse.
@@ -192,7 +192,16 @@ export const SECTIONS: SectionDef[] = [
     // because it would, nothing would ever make anyone update one. Every
     // internal link was moved with it, and `nav.links.test.tsx` fails the
     // build if an internal href ever uses an alias again.
-    id: WORK,
+    // A LITERAL, not the WORK constant, and the reason is a gate rather than a
+    // preference: `tests/unit/control_plane/test_nav_headings_agree.py` reads
+    // this array out of the TypeScript with a regex -- it cannot import it,
+    // because it is a Python test asserting that every SectionBody case has a
+    // tab and every tab has a case. `id: WORK` made it fail to COLLECT, which
+    // took the whole unit-test job down rather than one assertion. The
+    // constant is still used everywhere a comparison happens; the
+    // `nav.links.test.tsx` assertion that the two constants name real sections
+    // is what stops these drifting apart.
+    id: 'work',
     // WAS 'Agents', which made the rail read `Agents > Agents` and the
     // breadcrumb `Agents ▸ Agents`, because this section's first tab is the
     // agent list and both levels render (Rail draws the tab strip whenever
@@ -255,7 +264,7 @@ export const SECTIONS: SectionDef[] = [
     // -- it named the parent after its first child -- so this is not churn for
     // its own sake, it is undoing the half of that change that was wrong. Both
     // old spellings resolve; see SECTION_ALIASES.
-    id: CAPACITY,
+    id: 'capacity', // a literal for the same reason as `work` above
     // THE SECOND `X > X`. Same defect as Work above and the same fix: this
     // section has five tabs, so both levels render, and the first tab is the
     // pool table -- `Pools > Pools`.
@@ -901,42 +910,60 @@ function SectionBody({
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
 
-  // THE NINE CASES BELOW ARE BUILT FROM THE CONSTANTS, not spelled out. When
-  // `agents` became `work` and `pools` became `capacity`, nine literal cases
-  // here stopped matching and nine screens rendered "No such pane" -- through
-  // a `default` branch written to explain a hand-typed address, so it looked
-  // like a considered answer rather than a break. Nothing was red: the routes
-  // still resolved, the rail still drew, the screens were simply gone. The one
-  // thing that noticed was the shape-count floor in `spacing.test.tsx`, which
-  // fell from 1295 to 798.
+  // EVERY CASE IS A STRING LITERAL, and that is required rather than casual.
   //
-  // A template literal case is checked against the same constant the section
-  // is declared with, so the next rename cannot separate them.
+  // WHAT HAPPENED. When `agents` became `work` and `pools` became `capacity`,
+  // nine literal cases here stopped matching and nine screens rendered "No
+  // such pane" -- through a `default` branch written to explain a hand-typed
+  // address, so the break looked like a considered answer. Nothing was red in
+  // the browser: the routes resolved, the rail drew, the screens were simply
+  // gone.
+  //
+  // THE FIRST FIX WAS WRONG. These were rewritten as `` case `${WORK}/running` ``
+  // so a rename could not separate them from the section declaration. That
+  // broke the thing that actually catches this:
+  // `tests/unit/control_plane/test_nav_headings_agree.py` reads this switch out
+  // of the source with a regex -- it is a Python test and cannot import
+  // TypeScript -- and asserts in BOTH directions that every tab has a case and
+  // every case has a tab. A template literal is opaque to it, so the test
+  // stopped COLLECTING, which took the whole unit-test job down and told us
+  // nothing about the nine screens.
+  //
+  // With literals it says exactly the right thing:
+  //
+  //     tab 'Agents' points at work/running, which SectionBody has no case for:
+  //     clicking it renders the 'No such pane' panel
+  //
+  // That is a better guarantee than matching constants, because it checks the
+  // whole mapping rather than one spelling of one half of it. The chain that
+  // holds it together: `nav.links.test.tsx` binds WORK/CAPACITY to SECTIONS,
+  // SECTIONS declares its ids as literals, and the Python gate binds SECTIONS
+  // to these cases. Nothing in it can move alone.
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen />
 
-    case `${WORK}/running`:
+    case 'work/running':
       return <AgentsScreen onOpen={openAgent} />
-    case `${WORK}/workflows`:
+    case 'work/workflows':
       return <WorkflowsScreen />
-    case `${WORK}/new`:
+    case 'work/new':
       return <SubmitScreen />
-    case `${WORK}/new-workflow`:
+    case 'work/new-workflow':
       return <SubmitWorkflowScreen />
 
     case 'runtimes/catalogue':
       return <RuntimesScreen />
 
-    case `${CAPACITY}/pools`:
+    case 'capacity/pools':
       return <CapacityScreen />
-    case `${CAPACITY}/profiles`:
+    case 'capacity/profiles':
       return <ProfilesScreen />
-    case `${CAPACITY}/holders`:
+    case 'capacity/holders':
       return <HoldersScreen />
-    case `${CAPACITY}/accounts`:
+    case 'capacity/accounts':
       return <AccountsScreen />
-    case `${CAPACITY}/quota`:
+    case 'capacity/quota':
       return <QuotaDetailScreen />
 
     case 'history/timeline':

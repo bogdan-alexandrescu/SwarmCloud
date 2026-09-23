@@ -63,20 +63,41 @@ test('an unknown topic is carried to the screen, not rewritten away', () => {
 test('adding Help did not capture anything that was not Help', () => {
   for (const [hash, section] of [
     ['#reference', 'reference'],
-    ['#agents/running', 'agents'],
+    ['#work/running', 'work'],
     ['#helpers', 'overview'], // a head that merely STARTS with "help"
-    ['#capacity/holders', 'pools'], // the alias, tail intact
+    ['#capacity/holders', 'capacity'],
+    // BOTH RETIRED SPELLINGS, with their tails intact. These are the hashes in
+    // runbooks and in the links people paste to each other at 3am; `capacity`
+    // is a third, from before an earlier pass renamed it to `pools` and this
+    // one renamed it back. An alias that drops the tail lands the reader on
+    // the section's first pane, which looks like a working link to the wrong
+    // screen -- worse than a dead one.
+    ['#agents/running', 'work'],
+    ['#pools/holders', 'capacity'],
   ] as const) {
     at(hash)
     assert.equal(fromHash().sectionId, section, `${hash} no longer resolves as it did`)
   }
-  at('#capacity/holders')
-  assert.equal(fromHash().tab, 'holders', 'the alias lost its tail')
+  for (const hash of ['#capacity/holders', '#pools/holders'] as const) {
+    at(hash)
+    assert.equal(fromHash().tab, 'holders', `${hash} lost its tail`)
+  }
 })
 
 test('the agent drawer still resolves, including a task id spelling "help"', () => {
-  at('#agents/task/help')
+  at('#work/task/help')
   const r = fromHash()
-  assert.equal(r.sectionId, 'agents')
+  assert.equal(r.sectionId, 'work')
   assert.equal(r.taskId, 'help')
+
+  // AND THROUGH THE ALIAS. `#agents/task/<id>` is the address in every saved
+  // deep link and in the audit evidence. `fromHash` resolves the alias BEFORE
+  // the drawer branch runs for exactly this reason: when the branch tested the
+  // raw head it was the one place still answering to the old name, and this
+  // hash would have resolved to the section with the task id dropped --
+  // opening the list instead of the agent, silently.
+  at('#agents/task/help')
+  const viaAlias = fromHash()
+  assert.equal(viaAlias.sectionId, 'work')
+  assert.equal(viaAlias.taskId, 'help')
 })

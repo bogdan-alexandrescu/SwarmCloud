@@ -446,24 +446,36 @@ def test_metric_tiles_mark_good_and_alert_with_a_shape(rules):
     `content` renders nothing -- and the two marks have to differ by something
     that is not their fill.
     """
-    good = _shape_of(rules, (".ctl-metric.is-good::after",))
-    alert = _shape_of(rules, (".ctl-metric.is-alert::after",))
+    # THE MARK MOVED, AND THE RULE DID NOT. The landing-page redesign took the
+    # box away from the metric -- there is no card, so there is no corner for a
+    # corner mark to sit in -- and the mark went to the label's baseline:
+    #
+    #     .ctl-metric.is-good  .ctl-metric-label::after
+    #     .ctl-metric.is-alert .ctl-metric-label::after
+    #
+    # The property this test exists for is untouched: both states carry a REAL
+    # pseudo-element with a size, and the two differ by GEOMETRY and not only
+    # by fill, so the page still reads in greyscale. Only the selector moved,
+    # so only the selector is updated. Pinning the old one would have this test
+    # failing on a redesign that kept every guarantee it asserts.
+    good = _shape_of(rules, (".ctl-metric.is-good .ctl-metric-label::after",))
+    alert = _shape_of(rules, (".ctl-metric.is-alert .ctl-metric-label::after",))
 
     for name, shape in (("is-good", good), ("is-alert", alert)):
         assert "content" in shape, (
-            f"`.ctl-metric.{name}::after` sets no `content`, so the mark never "
-            f"renders and the tile is back to being colour-only"
+            f"`.ctl-metric.{name} .ctl-metric-label::after` sets no `content`, so "
+            f"the mark never renders and the figure is back to being colour-only"
         )
         assert {"width", "height"} <= set(shape), (
-            f"`.ctl-metric.{name}::after` has no size"
+            f"`.ctl-metric.{name} .ctl-metric-label::after` has no size"
         )
 
     geometry = {"border-radius", "clip-path", "transform"}
     good_geom = {k: v for k, v in good.items() if k in geometry}
     alert_geom = {k: v for k, v in alert.items() if k in geometry}
     assert good_geom != alert_geom, (
-        "the good and alert tiles carry the same shape of mark, so the tile "
-        f"tone is again the only signal: both are {good_geom}"
+        "the good and alert figures carry the same shape of mark, so colour is "
+        f"again the only signal: both are {good_geom}"
     )
 
 

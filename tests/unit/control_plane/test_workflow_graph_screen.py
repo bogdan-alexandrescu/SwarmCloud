@@ -87,6 +87,26 @@ def _code(source: str) -> str:
     return "\n".join(kept)
 
 
+def _work_id() -> str:
+    """The Work section's id, read out of App.tsx rather than spelled here.
+
+    It has been `agents` and is now `work`, and every assertion in this file
+    that pinned the old spelling went red on a rename that changed no
+    behaviour -- while a rewrite that broke the link would have passed, because
+    the string was all they checked.
+
+    App.tsx declares the id twice on purpose: as a string LITERAL in SECTIONS,
+    because `test_nav_headings_agree.py` parses that array with a regex and
+    cannot resolve a constant, and as `export const WORK` for the nine
+    SectionBody cases and the router comparisons, which must not be renamable
+    apart. The constant is what is read here, and
+    `apps/swarm-ui/src/__tests__/nav.links.test.tsx` asserts the two agree.
+    """
+    m = re.search(r"export const WORK = '([a-z-]+)'", _src("App.tsx"))
+    assert m, "App.tsx no longer exports a WORK section id"
+    return m.group(1)
+
+
 def _decl(source: str, opener: str) -> str:
     """One top-level declaration: from `opener` to the closing brace in column 0.
 
@@ -335,9 +355,14 @@ def test_every_dag_node_with_a_task_is_a_link_to_that_run():
     missing href.
     """
     wf = _src("Workflows.tsx")
-    assert "href={`#agents/task/${encodeURIComponent(taskId)}`}" in wf, (
-        "the step node carries no href, so there is no click that reaches the agent run"
-    )
+    # THE SECTION ID IS READ, NOT SPELLED. It was `agents` and is now `work`;
+    # pinning either spelling makes this assertion fail on a rename that
+    # changed nothing, which is how four assertions in this suite went stale in
+    # one commit. What must hold is that the node links to THE DRAWER ROUTE of
+    # whatever the section is currently called.
+    assert (
+        "href={`#%s/task/${encodeURIComponent(taskId)}`}" % _work_id() in wf
+    ), "the step node carries no href, so there is no click that reaches the agent run"
     assert "<a\n" in wf or "<a " in wf, "no anchor element is rendered by the screen"
 
 
@@ -351,11 +376,18 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
 
     hashes = re.findall(r"href=\{`#([^`$]*)\$\{", wf)
     assert hashes, "the node builds no hash; this test would check nothing"
-    assert hashes[0] == "agents/task/", f"unexpected node hash prefix {hashes[0]!r}"
+    assert hashes[0] == f"{_work_id()}/task/", f"unexpected node hash prefix {hashes[0]!r}"
 
     router = _decl(app, "function fromHash(")
-    assert "head === 'agents'" in router and "tail[0] === 'task'" in router, (
-        "App.tsx no longer resolves `agents/task/<id>`, so every node link is dead"
+    # `head === WORK`, through the CONSTANT. App.tsx declares the id as a
+    # literal in SECTIONS (a regex in test_nav_headings_agree.py reads that
+    # array and cannot resolve a constant) and compares against the constant
+    # everywhere else, so the comparison here is the constant's name. That is
+    # the stronger thing to assert anyway: it is what makes the nine
+    # SectionBody cases and the four router comparisons impossible to rename
+    # apart.
+    assert "head === WORK" in router and "tail[0] === 'task'" in router, (
+        f"App.tsx no longer resolves `{_work_id()}/task/<id>`, so every node link is dead"
     )
     assert "taskId: decodeURIComponent(id)" in router, (
         "the resolved route carries no task id, so the drawer would open on nothing"

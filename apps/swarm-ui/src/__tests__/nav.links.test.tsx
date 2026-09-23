@@ -23,7 +23,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { INTERNAL_LINKS_MAY_NOT_USE_ALIASES, fromHash } from '../App'
+import { CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, fromHash } from '../App'
 import { HELP_ROUTE } from '../help'
 
 const SRC = join(__dirname, '..')
@@ -78,6 +78,18 @@ function resolve(hash: string) {
 }
 
 describe('internal navigation links', () => {
+  it('binds the id constants to sections that exist', () => {
+    // SECTIONS declares its ids as string LITERALS, because a Python gate
+    // parses the array out of this file with a regex and cannot resolve a
+    // constant; the constants exist so that the nine `SectionBody` cases and
+    // the four comparisons in `fromHash` cannot drift from it. Two spellings
+    // of one id is exactly the defect this file was written to stop, so the
+    // two are tied together here rather than trusted to stay in step.
+    const ids = SECTIONS.map((s) => s.id)
+    expect(ids, 'the WORK constant names no section').toContain(WORK)
+    expect(ids, 'the CAPACITY constant names no section').toContain(CAPACITY)
+  })
+
   it('finds links to check, so an empty sweep cannot pass as a clean one', () => {
     // The guard this repository keeps needing: a regex that matched nothing
     // reports the same "no failures" as a codebase with no defects.

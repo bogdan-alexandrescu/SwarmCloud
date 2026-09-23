@@ -257,7 +257,12 @@ def test_the_step_node_reaches_its_inputs_and_outputs():
     a step you were already looking at.
     """
     node = body_of(src("Workflows.tsx"), "function StepNode(")
-    assert "#agents/task/" in node, "the step node links nowhere"
+    # Read, not spelled: the section was renamed `agents` -> `work` and this
+    # assertion checked the old string. See `_work_id` in
+    # test_workflow_graph_screen.py for why the constant is the thing to read.
+    work = re.search(r"export const WORK = '([a-z-]+)'", src("App.tsx"))
+    assert work, "App.tsx no longer exports a WORK section id"
+    assert f"#{work.group(1)}/task/" in node, "the step node links nowhere"
     assert "input &amp; output" in node or "input & output" in node, (
         "the step node offers no route to what the step read or wrote"
     )
@@ -594,36 +599,79 @@ def test_the_dag_fills_the_width_it_is_given():
 
 
 def test_no_overview_row_ends_with_a_blank_right_column():
-    """Five panels in two tracks is 2+2+1, and the odd one out leaves half a row
-    of empty page under a column that is still going."""
+    """The property, not the grid that used to satisfy it.
+
+    IT WAS five panels in `.ov-cols` over two and three tracks, and the orphan
+    was managed with `:last-child:nth-child(odd)` and
+    `:last-child:nth-child(3n + 2)` parity rules. The landing page was then
+    rewritten -- `.ov-cols` and both parity rules are gone -- and this
+    assertion went red while the guarantee it exists for held perfectly:
+    `.ov-grid` is THREE panels over ONE breakpoint, and the one that would be
+    left alone in the second row is named and spans (`.ov-headroom`).
+
+    So what is asserted is the guarantee. For every grid on this page that
+    declares a fixed track count: the track count is EXPLICIT (an auto-fitting
+    list cannot be asked how many tracks it produced, so no rule below it can
+    be known to be correct), and if the panel count leaves an orphan in the
+    last row, some child is given a span.
+    """
     ov = src("Overview.tsx")
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in ov
-    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in ov, (
-        "the extra page width buys no extra column"
+
+    grids = re.findall(r"\n\.(ov-[a-z-]+) \{([^}]*)\}", ov, re.S)
+    multi = [
+        (name, body)
+        for name, body in grids
+        if "display: grid" in body and f".{name} {{ grid-template-columns: repeat(" in ov
+    ]
+    assert multi, "no Overview grid declares a fixed multi-track layout any more"
+
+    for name, body in multi:
+        # EXPLICIT TRACKS. This is the assertion the parity rules depended on
+        # and it is the one that still matters: `auto-fit` makes the number of
+        # tracks a runtime property of the container width, and nothing written
+        # in CSS can then know which panel lands last.
+        assert "auto-fit" not in body and "auto-fill" not in body, (
+            f".{name} fits its own tracks, so nothing knows which panel lands in "
+            f"the last row"
+        )
+
+    # AND NO ORPHAN IS LEFT UNMANAGED. `.ov-grid` holds three panels over two
+    # tracks, so exactly one would sit alone; it spans. Asserted as a span
+    # existing inside the same breakpoint that sets the track count, because a
+    # span outside it would apply at the stacked width too, where it means
+    # nothing and hides the mistake.
+    two_track = re.search(
+        r"@media \(min-width: 1280px\) \{(.*?)\n\}", ov, re.S
     )
-    assert ":last-child:nth-child(odd) { grid-column: 1 / -1; }" in ov, (
-        "in two tracks, an odd last panel still leaves the right column blank"
-    )
-    assert ":last-child:nth-child(3n + 2) { grid-column: span 2; }" in ov, (
-        "in three tracks, a last row of two still leaves the third track blank"
-    )
-    # An auto-fitting track list cannot be asked how many tracks it produced,
-    # so the parity rules above are meaningless unless the count is stated.
-    # Scoped to the `.ov-cols` rule: `.ov-kv` fits its own tracks and should.
-    cols = re.search(r"\n\.ov-cols \{[^}]*\}", ov, re.S)
-    assert cols is not None, ".ov-cols has no rule of its own"
-    assert "auto-fit" not in cols.group(0), (
-        ".ov-cols fits its own tracks again, so nothing knows which panel lands "
-        "in the last row and the parity rules above cannot be correct"
+    assert two_track is not None, "the Overview grid has no two-track breakpoint"
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in two_track.group(1)
+    assert "grid-column: 1 / -1" in two_track.group(1), (
+        "three panels in two tracks leaves one alone in the second row, and "
+        "nothing spans it, so the right column ends blank under a column that "
+        "is still going"
     )
 
 
-def test_the_alarm_span_is_in_css_where_the_parity_rules_can_see_it():
-    """An inline `gridColumn` shifts every parity below it invisibly."""
+def test_no_overview_panel_spans_tracks_from_an_inline_style():
+    """An inline `gridColumn` shifts every rule below it invisibly.
+
+    RENAMED FROM `test_the_alarm_span_is_in_css_where_the_parity_rules_can_see_it`,
+    because the alarm span it was named after is deliberately gone: the
+    `has-alarm` class fed the old five-card grid's orphan handling, and
+    Overview.tsx says so where the count used to be computed -- "the grid
+    because three panels in two tracks has no orphan to manage".
+
+    What survives is the assertion that mattered, and it is the whole test now:
+    a track span lives in CSS where every other rule can be read against it.
+    An inline style is invisible to the stylesheet, so a panel spanning from
+    one silently invalidates every layout rule that follows.
+    """
     ov = src("Overview.tsx")
-    assert "has-alarm" in ov
-    assert ".ov-cols.has-alarm > .ov-alarm { grid-column: 1 / -1; }" in ov
     assert "gridColumn" not in ov, "a panel still spans tracks from an inline style"
+    assert "grid-column:" in ov, (
+        "no panel spans tracks at all now; if that is deliberate, the grid must "
+        "have no orphan -- which is what the test above measures"
+    )
 
 
 def test_the_bars_and_tabs_are_capped():
