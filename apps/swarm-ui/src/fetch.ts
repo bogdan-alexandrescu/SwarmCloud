@@ -253,28 +253,6 @@ export function noteFixtureProbe(
   })
 }
 
-/**
- * Forget every probe, as a fresh tab has none.
- *
- * THE REGISTRY IS MODULE STATE, so inside one test file it outlives the
- * component that filled it. `src/__tests__/shell.test.tsx` asserts that a
- * head with no successful read says "nothing has loaded" and prints no
- * digit -- the defining bug of this product, in the frame -- and that test
- * passed on its own while failing in the file, because an earlier test in
- * the same file had rendered screens whose fixture reads registered
- * successes here.
- *
- * A test that is green alone and red in company is worse than a red one: it
- * is a gate that reports the order tests ran in. So `src/__tests__/setup.ts`
- * calls this after every test, and it is a real function rather than a mock
- * -- there is nothing to mock, the state is a Map in this module.
- */
-export function forgetProbes(): void {
-  probes.clear()
-  snapshotStale = true
-  for (const fn of probeListeners) fn()
-}
-
 export function subscribeProbes(fn: () => void): () => void {
   probeListeners.add(fn)
   return () => probeListeners.delete(fn)
@@ -286,6 +264,41 @@ export function probeSnapshot(): ProbeRecord[] {
     snapshotStale = false
   }
   return snapshot
+}
+
+/**
+ * Empty the registry, so "nothing has loaded in this tab" is true again.
+ *
+ * WHY THIS EXISTS. `probes` is module state, and module state in a test file
+ * outlives the test that wrote it: Vitest isolates per FILE, not per test. So
+ * one test that renders `<App />` and lets a fixture read land leaves a
+ * `lastSuccessAt` behind, and the NEXT test in that file sees a head that says
+ * "newest read just now" over a render in which nothing has read anything.
+ *
+ * That is not hypothetical. `shell.test.tsx`'s B3 head assertion -- "a head
+ * that rendered a zero age against no successful read would be the defining
+ * bug of this product, in the frame" -- failed for exactly this reason on
+ * every run of that file on its own, and passed in the full suite only because
+ * the tests before it happened to finish before the 300ms fixture landed. A
+ * guard that holds only when it runs first is the failure mode this suite was
+ * built to remove, so `setup.ts` calls this between tests the same way
+ * `restoreMocks` puts a stubbed global back.
+ *
+ * Nothing in the running application calls it. The app has one registry for
+ * the life of the tab, which is the thing the head's age is an age OF.
+ */
+/*
+ * TWO LANES WROTE THIS FUNCTION INDEPENDENTLY and git merged both copies
+ * without a conflict, because they landed in different parts of the file.
+ * TypeScript caught the redeclaration; nothing else would have. The surviving
+ * body is the stricter of the two -- it empties `snapshot` as well as marking
+ * it stale, so a reader that ignores the flag cannot serve the old array.
+ */
+export function forgetProbes(): void {
+  probes.clear()
+  snapshot = []
+  snapshotStale = true
+  for (const fn of probeListeners) fn()
 }
 
 export interface FetchOptions {

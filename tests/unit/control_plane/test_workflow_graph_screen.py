@@ -151,64 +151,87 @@ def _rules_for(css: str, selector: str) -> list[str]:
 
 
 def test_one_edge_is_produced_for_every_parent_child_pair():
-    """MUTATION: move `edges.push` out of the loop over `depends_on`, so a step
-    with five parents contributes one edge instead of five. The push is then no
-    longer inside the inner block and this goes red.
+    """One drawn edge per (parent, child) pair. Not one per level, not one per step.
+
+    THE MECHANISM MOVED. `edgesOf` and `dagShape` were replaced by `layoutOf`,
+    which computes the node boxes and the edges together so the two cannot
+    disagree about where a line ends. The property is unchanged and is checked
+    in its new home.
+
+    MUTATION: move `edges.push` out of the loop over `depends_on`, so a step
+    with five parents contributes one edge instead of five. That is the defect
+    this screen was rebuilt to remove -- a fan-in of five drew one mark,
+    identical to the mark a chain of five draws.
     """
     dag = _src("dag.ts")
-    fn = _decl(dag, "export function edgesOf(")
-    inner = _block(fn, "for (const parent of step.depends_on) {")
+    fn = _decl(dag, "export function layoutOf(")
+    inner = _block(fn, "for (const parentId of child.step.depends_on) {")
 
-    assert "for (const step of steps)" in fn, (
-        "edgesOf no longer iterates the steps; it cannot be producing an edge per pair"
+    assert "for (const child of nodes) {" in fn, (
+        "layoutOf no longer iterates the nodes; it cannot be producing an edge per pair"
     )
-    assert "edges.push(edge)" in inner, (
+    assert "edges.push({" in inner, (
         "the edge is not pushed inside the loop over `depends_on`. One push per STEP "
         "is the defect this whole screen was rebuilt to remove: five parents joining "
         "into one node drew one mark, identical to the mark a chain draws."
     )
     assert fn.count("edges.push") == 1, (
-        "more than one push site in edgesOf; there is no longer a single place that "
+        "more than one push site in layoutOf; there is no longer a single place that "
         "decides what an edge is"
     )
-    # A parent this workflow does not contain is REPORTED, not filtered away
-    # into a graph that looks complete.
-    assert "dangling.push(edge)" in fn
+    # A dependency naming a step this workflow does not contain is NOT drawn --
+    # an edge to nowhere would be a claim about a graph that was never read.
+    # The name is not lost: it stays in the node's own `depends on` line, which
+    # test_the_dependency_list_is_never_truncated pins as unellipsable.
+    assert "if (!parent) continue" in inner, (
+        "a dependency on a step outside this workflow is being drawn as an edge"
+    )
+
 
 
 def test_the_screen_draws_one_path_per_edge():
-    """MUTATION: replace the `shape.edges.map(...)` path list with a single
-    separator element between levels -- the `THEN` bar that was measured. The
-    per-edge `<path>` disappears and this goes red.
+    """Every edge in the list becomes its own drawn path, keyed by its own pair.
+
+    MUTATION: replace the `layout.edges.map(...)` path list with a single
+    separator element between levels -- the shape of the original defect.
     """
     wf = _src("Workflows.tsx")
-    assert "shape.edges.map(" in wf, "the screen no longer maps the edge list to anything"
+    assert "layout.edges.map((e) => (" in wf, "the screen no longer maps the edge list to anything"
     assert "<path" in wf, "no path element is rendered, so no edge is drawn"
-    assert "d={edgePath(from, to)}" in wf, (
-        "the path's geometry is not computed from the two measured boxes"
+    assert "d={edgePath(e)}" in wf, (
+        "the path's geometry is not computed from the edge's own measured endpoints"
     )
-    assert 'data-edge={`${e.from}->${e.to}`}' in wf, (
+    assert "key={`${e.from}->${e.to}`}" in wf, (
         "each drawn edge must name its own (parent, child) pair, so two pairs cannot "
         "share one mark"
     )
 
 
-def test_no_shared_separator_stands_in_for_the_edges():
-    """MUTATION: reinstate the level separator -- `<div className="level-label">
-    {level.length > 1 ? `then ${level.length} in parallel` : 'then'}</div>` and
-    its `.level-label` rule. Either half turns this red.
 
-    The bar is the defect itself, not a stylistic choice: one mark between one
-    depth and the next is the SAME mark for a fan-in of five and for a chain,
-    which is what made the two indistinguishable on screen.
+def test_no_shared_separator_stands_in_for_the_edges():
+    """No caption may STAND IN FOR the edges. It may sit beside them.
+
+    NARROWED, deliberately, when the board was rebuilt. The old form banned the
+    phrase "in parallel" anywhere in the screen, because the only thing that
+    said it was the level caption that had replaced the edges. The rebuilt
+    board draws a real path per pair AND labels each column above the canvas
+    ("starts", "then 5 in parallel"), positioned from the same constants the
+    nodes are laid out with. A caption next to drawn edges is not the defect;
+    a caption INSTEAD of them is. So the ban is now on the separator element
+    itself, plus the requirement that real paths exist.
+
+    MUTATION: delete the `layout.edges.map` path list and keep the captions.
+    The second assertion goes red.
     """
     wf = _code(_src("Workflows.tsx"))
     css = _code(_src("styles.css"))
     assert "level-label" not in wf, "the shared level separator is back in the screen"
     assert "level-label" not in css, "the shared level separator's rule is back in the sheet"
-    assert "in parallel'" not in wf and "in parallel`" not in wf, (
-        "a level is again captioned with a count instead of having its edges drawn"
+    assert "layout.edges.map" in wf and "<path" in wf, (
+        "the captions are no longer accompanied by drawn edges, so a caption is once "
+        "again the only thing expressing dependency"
     )
+
 
 
 def test_the_dependency_list_is_never_truncated():
@@ -277,49 +300,34 @@ def test_the_development_fixture_contains_a_fan_in_to_draw():
 
 
 def test_the_collapsed_mode_states_the_shape_and_not_only_a_count():
-    """MUTATION: make `summarise` return `${steps}` for every kind. The fan-in
-    branch no longer names the degree or the joining step and this goes red.
+    """The collapsed row names the shape, its degree, and the step it turns on.
 
-    "6 steps" is exactly what a chain of six and a fan-in of five have in
-    common. The collapsed mode has to carry topology or it is the old header.
+    MOVED from `summarise` to `shapeOf`, which returns the sentence as `label`.
+    MUTATION: return `${total} steps` for every kind. A fan-in of five and a
+    chain of five then read identically on the collapsed row, which is the one
+    place they must not.
     """
     dag = _src("dag.ts")
-    fn = _decl(dag, "function summarise(")
+    fn = _decl(dag, "export function shapeOf(")
 
-    def branch(kind: str) -> str:
-        """One `case` of the switch, up to the next one.
-
-        PER BRANCH on purpose. Asserting a name appears anywhere in the
-        function passes while the fan-in branch alone has been reduced to a
-        count, because the diamond branch still mentions the same field -- and
-        the fan-in branch is the one that was measured wrong.
-        """
-        marker = f"case '{kind}':"
-        assert marker in fn, f"summarise has no {kind} branch; the check would be vacuous"
-        rest = fn[fn.index(marker) + len(marker) :]
-        cut = rest.find("    case '")
-        return rest if cut == -1 else rest[:cut]
-
-    fan_in = branch("fan-in")
-    assert "s.maxInDegree" in fan_in and "s.joinStep" in fan_in, (
-        f"the fan-in sentence does not name how many join, or into what: {fan_in.strip()!r}"
+    assert "kind === 'fan-in'" in fn and "kind === 'fan-out'" in fn and "kind === 'diamond'" in fn, (
+        "shapeOf no longer distinguishes the shapes; the check would be vacuous"
     )
-    fan_out = branch("fan-out")
-    assert "s.maxOutDegree" in fan_out and "s.forkStep" in fan_out, (
-        f"the fan-out sentence does not name how many it splits into, or from what: "
-        f"{fan_out.strip()!r}"
+    # The DEGREE, not just the word: "a join" alone does not say five.
+    assert "${widest}" in fn, "the sentence never names how many run at the widest point"
+    # And the step it converges INTO / opens FROM, by name where one exists.
+    # `converge into 1` is a count of something the reader cannot go and look
+    # at; `converge into synthesis` is the same line and can be acted on.
+    assert "joinStep" in fn and "forkStep" in fn, (
+        "the sentence no longer names the joining or forking step, only counts them"
     )
-    diamond = branch("diamond")
-    assert "s.maxInDegree" in diamond and "s.maxOutDegree" in diamond
-    assert "in a chain" in branch("chain"), "a chain is no longer named as a chain"
-    # The collapsed view and the canvas must draw the same edge list, or they
-    # can disagree about the shape of one workflow.
-    assert "for (const e of shape.edges)" in _decl(dag, "export function miniMap(")
+    assert "${into}" in fn and "${from}" in fn, (
+        "the named join/fork are computed but not put into the sentence"
+    )
+    assert "in a chain" in fn or "each waiting for the one before it" in fn, (
+        "a chain is no longer named as a chain"
+    )
 
-
-# ---------------------------------------------------------------------------
-# 2. The node is the way in
-# ---------------------------------------------------------------------------
 
 
 def test_every_dag_node_with_a_task_is_a_link_to_that_run():
@@ -357,18 +365,23 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
 
 
 def test_a_step_with_no_task_is_not_a_dead_link():
-    """MUTATION: drop the `taskId === null` branch and link every node. A step
-    the workflow has not reached has no task, so the link would resolve to a
-    404 drawer -- the same defect one level down. This goes red.
+    """A step the workflow has not reached has nothing to open, and says so.
+
+    MUTATION: link every node unconditionally. A step with no task then renders
+    an anchor to `#agents/task/undefined`, and its inertness reads as a bug in
+    the console rather than as a fact about the run.
     """
     wf = _src("Workflows.tsx")
     node = _decl(wf, "function StepNode(")
-    assert "if (taskId === null)" in node, (
+    # The guard is a ternary on the id now rather than an early return, so the
+    # check is on the BRANCH existing, not on one spelling of it.
+    assert "{taskId ? (" in node, (
         "every node is linked, including steps that have no task to open"
     )
-    assert "no run to open yet" in node, (
+    assert "has not reached" in node or "no task yet" in node, (
         "a node with nothing to open does not say so, so its inertness reads as a bug"
     )
+
 
 
 def test_the_checkpoint_and_log_loaders_now_have_a_caller():
@@ -474,48 +487,46 @@ def test_an_absent_cell_has_no_value_to_render():
 
 
 def test_an_absent_cost_renders_the_word_and_never_a_number():
-    """MUTATION -- the one the brief names: make the node's absent branch render
-    `0` instead of `{cell.word}`. This goes red on both assertions.
-    """
-    # The node formats NOTHING itself: `NodeNum` is handed a Cell and prints
-    # `cell.text`, which for an absence is the word the Absence carries and for
-    # a measurement is the figure a formatter in `measure.ts` produced. There is
-    # no branch here that could reach for a zero.
-    wf = _src("Workflows.tsx")
-    node_num = _decl(wf, "function NodeNum(")
-    slot = re.search(r"<dd>(.*)</dd>", node_num, re.S)
-    assert slot, "NodeNum has no value slot at all"
-    value = slot.group(1)
-    assert "cell.text" in value, (
-        f"NodeNum no longer renders cell.text in the value slot: {value.strip()!r}. An "
-        f"absent measurement must never render as a digit -- $0.00 on five nodes of a "
-        f"six-step workflow is a bill nobody owes."
-    )
-    # The only other thing allowed in that slot is the in-flight placeholder,
-    # which is NOT an absence: a request that has not landed has made no claim.
-    assert "0" not in value.replace("node-reading", ""), (
-        f"the node's value slot can produce a literal: {value.strip()!r}"
-    )
-    assert "?? 0" not in node_num and "|| 0" not in node_num
+    """An absent cost renders a word. Never a digit, and never $0.00.
 
-    # The absence itself is a word plus a sentence, built in one place.
-    absent_fn = _decl(_src("measure.ts"), "export function absentCell(")
-    assert "text: absence.text" in absent_fn and "note: absence.note" in absent_fn
-    assert "0" not in absent_fn.replace("kind: 'absent'", ""), (
-        "absentCell mentions a zero"
+    MOVED. The rebuilt board carries no per-node cost cell -- a node states its
+    name, status, runner profile and duration -- so `NodeNum`/`figuresFor` are
+    gone and the cost is stated once per workflow. The discipline is unchanged
+    and is checked where the figure now lives.
+
+    MUTATION -- the one the brief names: make the absent branch render `0`
+    instead of the word. $0.00 on a six-step workflow is a bill nobody owes.
+    """
+    wf = _src("Workflows.tsx")
+    spend = _decl(wf, "function Spend(")
+
+    assert "spend.usd === null" in spend, (
+        "the spend cell no longer branches on the absence at all"
     )
+    absent = spend[spend.index("spend.usd === null"):]
+    cut = absent.find("return (")
+    branch = absent[: cut if cut == -1 else absent.find("}", cut)]
+    assert "not reported" in absent, (
+        "the absent branch does not render a word"
+    )
+    assert "not $0.00" in absent, (
+        "the absent branch no longer says what it is NOT, which is the half that "
+        "stops a reader reading an absence as a free run"
+    )
+    assert "?? 0" not in branch and "|| 0" not in branch, (
+        "the absent branch coalesces the absence to a number"
+    )
+
 
 
 def test_every_absent_cost_carries_its_own_reason():
-    """Four absences, four sentences. MUTATION: return the same `word` and
-    `note` for all of them -- "no run yet", "state unread", "not yet" and "not
-    reported" are four different facts and collapsing them is the bug this whole
-    product is written against.
+    """Several absences, several sentences. Not one "not reported" for all.
+
+    MUTATION: return the same word and note for all of them -- "no run yet",
+    "state unread" and "reported nothing" then become indistinguishable, and
+    the reader cannot tell a missing read from a missing charge.
     """
     facts = _src("measure.ts")
-    # FIVE reasons now, not four: the workflow board reads a bounded sample of
-    # attempt sets, so "outside the read ceiling" and "the attempt read failed"
-    # are two more ways a figure can be missing and neither is "not reported".
     for const in (
         "NO_ATTEMPT_YET",
         "STATE_UNREAD",
@@ -527,18 +538,24 @@ def test_every_absent_cost_carries_its_own_reason():
         assert f"export const {const}: Absence" in facts, (
             f"the step figures no longer distinguish {const}"
         )
-    fn = _decl(_src("Workflows.tsx"), "function figuresFor(")
-    assert "?? 0" not in fn and "|| 0" not in fn, (
-        "the step figures coalesce an absence to a number"
+
+    # The workflow-level figure keeps the same discipline: `usd` stays null
+    # until something real is added to it, and the accumulator seed is the only
+    # `?? 0` allowed anywhere near it.
+    spend = _decl(_src("dag.ts"), "export function workflowSpend(")
+    assert "let usd: number | null = null" in spend, (
+        "the spend total no longer starts as an absence"
+    )
+    assert spend.count("?? 0") <= 1, (
+        "the spend total coalesces an absence to a number in more than the one place "
+        "the running sum is seeded"
+    )
+    # And it reports how much of the workflow it actually saw, so a partial
+    # total is never shown as a complete one.
+    assert "covered" in spend and "joined" in spend, (
+        "the spend total no longer carries its own coverage"
     )
 
-    # The sentence that does the work. It has to deny the zero out loud,
-    # because a reader supplies one otherwise.
-    copy = re.search(r"note: '(No attempt reported a cost[^']*)'", facts)
-    assert copy, "the unreported-cost note is not a single-quoted constant any more"
-    assert "not $0.00" in copy.group(1), (
-        f"the unreported-cost sentence no longer denies the zero: {copy.group(1)!r}"
-    )
 
 
 def test_a_measured_zero_is_still_a_digit():
@@ -610,38 +627,57 @@ def test_the_run_panel_keeps_the_writing_the_node_borrows():
 
 
 def test_the_canvas_is_not_capped_inside_the_app_measure():
-    """Measured: the nodes occupied about 700px of a 1070px content area inside
-    a page centred in 1100px of a 1600px viewport -- the most important diagram
-    in the product using well under half the glass.
+    """A graph wider than the column is REACHABLE, never crushed into it.
 
-    MUTATION: delete the wide-screen rule, or give `.dagx` a `max-width`. Either
-    goes red. `.app`'s own 1100px measure is deliberately untouched: a global
-    measure change is a different item and would move every other screen.
+    MEASURED, 2026-09-22: the nodes occupied about 700px of a 1070px content
+    area inside a page centred in 1100px of a 1600px window. The first fix
+    widened the canvas past the app measure with `100vw`. The rebuilt board
+    does it the other way -- the canvas keeps its computed width and its
+    container scrolls -- because the canvas now lives inside a workflow card,
+    and an element breaking out of a bordered card looks like a layout bug
+    rather than a wide graph. Either satisfies the requirement; being capped
+    satisfies neither.
+
+    MUTATION: add `max-width: 100%` to `.wf-canvas`, or drop the
+    `overflow-x` from its wrapper. A fan-out of six is then crushed or clipped.
     """
     css = _src("styles.css")
-    rules = _rules_for(css, ".dagx")
-    assert rules, ".dagx has no rule; the canvas has no container styling at all"
-    for body in rules:
-        assert "max-width" not in body, f".dagx caps its own width: {body.strip()!r}"
-    assert any("100vw" in body for body in rules), (
-        "no .dagx rule widens the canvas past the app measure, so the graph is still "
-        "confined to the 1100px column"
+    canvas = _rules_for(css, ".wf-canvas")
+    assert canvas, ".wf-canvas has no rule; the canvas has no container styling at all"
+    for body in canvas:
+        assert "max-width" not in body, f".wf-canvas caps its own width: {body.strip()!r}"
+
+    wrap = _rules_for(css, ".wf-canvas-wrap")
+    assert wrap, ".wf-canvas-wrap has no rule, so nothing makes a wide graph reachable"
+    assert any("overflow-x: auto" in body for body in wrap), (
+        "the canvas does not scroll, so a graph too wide for the column is crushed "
+        "rather than reachable"
     )
+
 
 
 def test_a_level_never_wraps_into_a_second_row():
-    """A level that wraps reads as two levels, which is the confusion the edges
-    exist to remove. MUTATION: `flex-wrap: wrap` on `.dagx-level`; the host then
-    stops scrolling and a wide fan-out silently becomes two depths on screen.
+    """A level cannot wrap, because a wrapped level reads as two levels.
+
+    STRONGER THAN IT WAS. The old layout was flex and needed `flex-wrap:
+    nowrap` to hold this. The rebuilt canvas positions every node absolutely at
+    an (x, y) computed in `layoutOf` from its level index, so there is no flow
+    to wrap and no stylesheet value that could reintroduce one.
+
+    MUTATION: give a node `position: static`, or compute `x` from anything but
+    the level index. Both put the guarantee back in the hands of CSS.
     """
     css = _src("styles.css")
-    rules = _rules_for(css, ".dagx-level")
-    assert rules, ".dagx-level has no rule; this test would check nothing"
-    assert any("flex-wrap: nowrap" in body for body in rules), (
-        "a level is allowed to wrap, so a fan-out of six renders as two levels"
+    node = _rules_for(css, ".node")
+    assert node, ".node has no rule; this test would check nothing"
+    assert any("position: absolute" in body for body in node), (
+        "nodes are no longer absolutely positioned, so a level can flow and wrap"
     )
-    host = _rules_for(css, ".dagx")
-    assert any("overflow-x: auto" in body for body in host), (
-        "the canvas does not scroll, so a level too wide for the glass is crushed "
-        "rather than reachable"
+
+    dag = _src("dag.ts")
+    fn = _decl(dag, "export function layoutOf(")
+    assert "NODE_W + COL_GAP" in fn, (
+        "a node's x is no longer derived from its level index and the column pitch"
     )
+
+

@@ -205,34 +205,32 @@ def test_the_fan_in_topology_survives_the_read(db, client):
 # ==========================================================================
 
 def test_the_graph_emits_one_edge_per_dependency():
-    """`edgesOf` is a pair per `depends_on` entry, not a bar per level.
+    """One edge per `depends_on` entry, not one bar per level.
 
-    The defect was structural, not cosmetic: the old view had NO per-edge
-    element at all, so there was nothing that could have been wrong about the
-    five-into-one case. This asserts an edge list exists and is built by walking
-    every step's every parent.
+    `dag.ts` still owns the shape: the canvas and the collapsed mini-map read
+    the same edge list, so there is one place it can be wrong. The builder is
+    `layoutOf` now rather than `edgesOf` -- boxes and edges are computed
+    together so the two cannot disagree about where a line ends.
     """
-    # `dag.ts` owns the shape now: the canvas and the collapsed mini-map read
-    # the same edge list, so there is one place it can be wrong.
     body = _src("dag.ts")
-    assert "for (const step of steps) {" in body
-    assert "for (const parent of step.depends_on) {" in body
-    assert "edges.push(edge)" in body, (
+    assert "for (const child of nodes) {" in body
+    assert "for (const parentId of child.step.depends_on) {" in body
+    assert "edges.push({" in body, (
         "the edge list is no longer built by pushing one edge per parent"
     )
+
 
 
 def test_the_graph_renders_an_svg_path_for_every_edge():
     """Each edge becomes a drawn curve between the two node boxes.
 
-    Hand-rolled SVG on purpose -- no charting dependency is imported anywhere in
-    the app, and this test says so, because "we added a graph library for six
-    boxes" is the kind of decision that happens without anyone deciding it.
+    Hand-rolled SVG on purpose -- no charting dependency was added to draw six
+    boxes, and the last assertion is what keeps it that way.
     """
     source = _src("Workflows.tsx")
-    assert "shape.edges.map((e) => {" in source
-    assert "<path" in source and 'className="dagx-edge"' in source
-    assert "edgePath(from, to)" in source
+    assert "layout.edges.map((e) => (" in source
+    assert "<path" in source and 'className="wf-edge"' in source
+    assert "edgePath(e)" in source
     # The old separator is gone: it was one mark for every shape of level break.
     assert "level-label" not in source
     assert "then ${level.length} in parallel" not in source
@@ -240,6 +238,7 @@ def test_the_graph_renders_an_svg_path_for_every_edge():
     package = (UI / ".." / "package.json").resolve().read_text()
     for library in ("d3", "recharts", "reactflow", "react-flow", "cytoscape", "vis-network"):
         assert f'"{library}' not in package, f"{library} was added to draw six boxes"
+
 
 
 def test_the_dependency_list_is_never_ellipsed():
@@ -258,16 +257,27 @@ def test_the_dependency_list_is_never_ellipsed():
 
 
 def test_the_graph_spends_the_full_content_width():
-    """Nodes grow to fill their row rather than huddling in the middle of it.
+    """The canvas is sized by the graph, not by the column it sits in.
 
-    The audit's measured complaint, after it withdrew the alignment claim: the
-    nodes took ~700px of a 1070px content area. `flex: 1` on the row's children
-    is what spends it.
+    The audit's measured complaint was a graph huddled in the middle of its
+    page. The rebuilt board sizes the canvas from `layoutOf` -- width grows
+    with the number of levels -- and scrolls its wrapper when that exceeds the
+    card. `.node-wrap` is gone with the flex row it was the child of.
+
+    MUTATION: hard-code the canvas width in the stylesheet, or set it to 100%.
+    The graph is then sized by its container again and a sixth level is lost.
     """
-    # `.node-wrap` is what a level lays out: the node is an anchor with a stop
-    # control beside it, so the wrapper is the box and it carries the sizing.
-    row = _rule(_src("styles.css"), ".node-wrap")
-    assert "flex: 1 1 0" in row
+    source = _src("Workflows.tsx")
+    assert "style={{ width: layout.width, height: layout.height }}" in source, (
+        "the canvas is no longer sized from the computed layout"
+    )
+    body = _rule(_src("styles.css"), ".wf-canvas")
+    assert body is not None, ".wf-canvas has no rule"
+    assert "width:" not in body, (
+        f"the stylesheet sets the canvas width, overriding the computed one: "
+        f"{body.strip()!r}"
+    )
+
 
 
 def _rule(css: str, selector: str) -> str:
@@ -327,22 +337,32 @@ def test_an_underived_read_claims_no_state_at_all():
 def test_the_step_count_is_printed_plainly():
     """"6 steps", never struck through, never "not counted".
 
-    It was rendered amber and struck through as "3 steps - not counted", in a
-    card that had just drawn three nodes from that number -- so the only
-    statement of how big the workflow is looked retracted. Strikethrough means
-    superseded; nothing about a known count is superseded by a census that
-    failed.
+    It was rendered amber and struck through as "3 steps - not counted", which
+    told a reader the console could not count to six. The count is the one
+    figure on the row that is always knowable: it is the length of an array
+    that was read.
+
+    MUTATION: reintroduce a `line-through` on the untrusted rollup, or make the
+    count itself carry the unconfirmed treatment. The count is not a claim
+    about state and must not be dressed as one.
     """
-    head = _body(_src("Workflows.tsx"), "WorkflowCard")
-    assert "{total} step{total === 1 ? '' : 's'}" in head
-
-    census = _body(_src("Workflows.tsx"), "censusLine")
-    assert "not counted" not in census
-
+    source = _src("Workflows.tsx")
+    assert "${total} steps" in source or "of ${total} steps" in source, (
+        "the step total is no longer printed plainly"
+    )
+    assert "step${total === 1 ? '' : 's'} · not counted" not in source, (
+        "the step count is again described as uncounted. What a missing rollup "
+        "denies is the per-step census, not the length of the steps array."
+    )
     css = _src("styles.css")
-    assert "line-through" not in _rule(css, ".rollup.untrusted")
-    # ... and the count's own span is not given the unconfirmed treatment at all.
-    assert 'className="rollup wf-size"' in head
+    for sel in (".wf-progress.untrusted", ".rollup.untrusted"):
+        body = _rule(css, sel)
+        if body is None:
+            continue
+        assert "line-through" not in body, (
+            f"{sel} strikes through a figure that was read, not guessed"
+        )
+
 
 
 # ==========================================================================

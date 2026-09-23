@@ -553,34 +553,44 @@ def test_widening_the_page_did_not_widen_the_prose():
 
 
 def test_the_dag_fills_the_width_it_is_given():
-    """`align-items: center` plus `justify-content: center` drew the graph as a
-    ~132px column with roughly 430px of blank page beside it at 1024px.
+    """The canvas is sized by the graph, not by the column it sits in.
 
-    THE MECHANISM CHANGED AND THE MEASUREMENT DID NOT. `.level`/`.level-steps`
-    are gone: the graph is now a canvas (`.dagx`) that draws real edges, and it
-    stops being a narrow column by making the nodes GROW into the canvas rather
-    than by aligning a fixed-width stack to the left. `justify-content: center`
-    on a level is now correct -- with `flex-grow` there is no free space to
-    centre in until a level is narrower than the glass, and a two-node level
-    centred under its parent is what makes the edges read.
+    MEASURED: `align-items: center` plus `justify-content: center` drew the
+    graph as a ~132px column with roughly 430px of blank page beside it at
+    1024px.
 
-    MUTATION: drop the `flex: 1 1 0` from the node, or cap the canvas. Either
-    puts the blank page back and this goes red.
+    THE MECHANISM CHANGED when the board was rebuilt. The flex row that
+    `.node-wrap { flex: 1 1 0 }` grew inside is gone; nodes are positioned
+    absolutely at coordinates `layoutOf` computes, and the canvas is given that
+    computed width. Nothing can centre it into a narrow column any more,
+    because nothing is laying it out. What CAN go wrong is the stylesheet
+    overriding the computed size, so that is what is pinned.
+
+    MUTATION: set a width on `.wf-canvas`, or cap it with a max-width. The
+    graph is sized by its container again and a sixth level is lost.
     """
+    source = src("Workflows.tsx")
+    assert "style={{ width: layout.width, height: layout.height }}" in source, (
+        "the canvas is no longer sized from the computed layout"
+    )
+
     css = src("styles.css")
-    # The box the level lays out. It is the wrapper, because the node is an
-    # anchor with a stop control beside it.
-    wrap = re.search(r"\n\.node-wrap \{[^}]*\}", css, re.S)
-    assert wrap is not None, ".node-wrap has no rule; the level lays out nothing"
-    assert "flex: 1 1 0" in wrap.group(0), (
-        "the node no longer grows into the canvas, so a wide page puts the graph "
-        "back in a narrow column with blank page beside it"
+    canvas = re.search(r"\n\.wf-canvas \{[^}]*\}", css, re.S)
+    assert canvas is not None, ".wf-canvas has no rule; the canvas has no container styling"
+    assert "max-width" not in canvas.group(0), (
+        f".wf-canvas caps its own width: {canvas.group(0).strip()!r}"
     )
-    host = re.search(r"\n\.dagx \{[^}]*\}", css, re.S)
-    assert host is not None, ".dagx has no rule; the canvas has no container styling"
-    assert "max-width" not in host.group(0), (
-        ".dagx caps its own width, so the graph is confined again"
+    assert "width:" not in canvas.group(0), (
+        "the stylesheet sets the canvas width, overriding the computed one"
     )
+
+    # And a graph wider than the card stays REACHABLE rather than being clipped.
+    wrap = re.search(r"\n\.wf-canvas-wrap \{[^}]*\}", css, re.S)
+    assert wrap is not None, ".wf-canvas-wrap has no rule"
+    assert "overflow-x: auto" in wrap.group(0), (
+        "the canvas does not scroll, so a graph too wide for the card is crushed"
+    )
+
 
 
 def test_no_overview_row_ends_with_a_blank_right_column():

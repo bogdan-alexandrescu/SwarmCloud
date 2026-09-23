@@ -720,153 +720,170 @@ body {
 .row .when { color: var(--text-faint); }
 .row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 
-/* ---- the workflow card heading ---- */
-.wf-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-/* The DERIVED state, and the only state this heading prints. A chip rather than
-   a word in the sentence because the reader's eye lands on the heading first
-   and this is the claim being made. `text-transform: none` because `.section >
-   h2` uppercases and a state word shouted in caps reads as an alarm. */
-/* LONGHANDS, not a `font:` shorthand: a shorthand carrying a custom property
-   is not expanded into its longhands by every parser, jsdom included, which is
-   the reason styles.css already gives for the hairline and the track axis.
-   --t-meta is the chip step; the uppercase that step normally carries is
-   overridden above, and the reason is written there. */
-.wf-state {
-  font-size: var(--t-meta);
-  line-height: var(--lh-meta);
-  font-weight: 600;
-  font-family: var(--mono);
-  letter-spacing: 0;
-  text-transform: none;
-}
-.wf-state.ok      { color: var(--ok); }
-.wf-state.bad     { color: var(--bad); }
-.wf-state.live    { color: var(--info); }
-.wf-state.wait    { color: var(--warn); }
-.wf-state.unknown { color: var(--text-faint); }
-.wf-when { font-weight: 400; color: var(--text-faint); }
-.wf-size code { font-size: inherit; }
+/* The board-level mode switch. Replaces `.dagx-modes`: the classes it
+   styled are not rendered by any component after the board rewrite. */
+/* ---- the workflow board ---- */
+/* TWO FORMS OF ONE THING. Collapsed is a LIST ROW -- one horizontal line per
+   workflow, dense enough to choose between ten of them without opening any.
+   Expanded is a CANVAS -- real edges between generous cards, flowing left to
+   right along dependency depth.
 
-/* ---- workflow dag ----------------------------------------------------- */
-/* WHAT THIS REPLACED, and why none of it survived.
-   `.level-label` drew ONE separator bar between one depth and the next -- the
-   same bar whether five independent steps joined into a sixth or five steps ran
-   strictly one after another. There were no edges at all, so the view could not
-   express the one thing it exists to show. `.node-dep` then ellipsed the only
-   complete statement of the graph in words (`← cold-start, fencing, allorn…`,
-   two of five parents hidden). Both are gone: edges are drawn as real paths,
-   one per (parent, child) pair, and the dependency list wraps. */
+   THE FIELD THAT IS NOT NEGOTIABLE ON THE COLLAPSED ROW IS THE SHAPE. Five
+   steps in parallel and five steps in a chain have the same id, the same
+   state, the same fraction done and the same spend. They are different runs,
+   and a list that draws them identically has thrown away the one thing the
+   graph work exists to show. `.wf-shape` carries it twice: the widths as text
+   for a reader and a screen reader, and a mini-map drawn from the same layout
+   the expanded canvas uses for the eye. */
 
-/* The board-level mode switch. */
-.dagx-modes {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin: 0 0 14px;
-}
-.dagx-modes-label {
-  /* --lh-flush: the box is the `.dagx-modes` strip, whose height is set by the
-     pill buttons beside this label; leading here would push the strip taller
-     than its own controls. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
+.wf-modebar { display: flex; gap: 4px; margin-bottom: var(--ctl-s3); }
+.wf-mode {
+  font: 500 var(--t-micro)/var(--lh-flush) var(--mono);
   text-transform: uppercase; letter-spacing: .06em;
-  color: var(--text-faint);
-}
-.dagx-modes button {
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
   color: var(--text-dim);
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: 999px; padding: 4px 12px; cursor: pointer;
+  padding: 8px 12px; border-radius: 6px; cursor: pointer;
 }
-.dagx-modes button.on { color: var(--text); border-color: var(--info); }
-.dagx-modes-note { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); }
-
-/* The collapsed mode. Shape, not just a count. */
-.dagx-topo {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 8px 0 2px;
-}
-.dagx-mini { flex: 0 0 auto; overflow: visible; }
-.dagx-mini line { stroke: var(--text-faint); stroke-width: 1.2; }
-.dagx-mini circle { fill: var(--text-faint); }
-.dagx-mini circle.t-ok { fill: var(--ok); }
-.dagx-mini circle.t-bad { fill: var(--bad); }
-.dagx-mini circle.t-live { fill: var(--info); }
-.dagx-mini circle.t-wait { fill: var(--text-faint); }
-/* An unread state is not a muted state: hollow, so it cannot be mistaken for
-   a step that is simply waiting. */
-.dagx-mini circle.t-unknown { fill: none; stroke: var(--warn); stroke-width: 1.2; }
-.dagx-topo-text { display: flex; flex-direction: column; min-width: 0; }
-.dagx-shape { font: var(--t-body)/var(--lh-body) var(--font); color: var(--text); }
-.dagx-topo-sub { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
-.dagx-open {
-  margin-left: auto;
-  font: 500 var(--t-body)/var(--lh-body) var(--font); color: var(--text-dim);
-  background: transparent; border: 1px solid var(--line);
-  border-radius: 8px; padding: 4px 12px; cursor: pointer;
-}
-.dagx-open:hover { color: var(--text); border-color: var(--info); }
-
-/* The canvas. Relative, because the edge layer is positioned inside it. */
-.dagx {
-  position: relative;
-  margin-top: 10px;
-  padding: 12px 0 4px;
-  overflow-x: auto;
-}
-/* FULL CONTENT WIDTH, and wider than the 1100px `.app` measure once there is
-   glass for it. The most important diagram in the product used about 700px of
-   a 1070px column; this bleeds it out symmetrically about the card's centre,
-   which is the page's centre, without touching `.app` -- a global measure
-   change belongs to the layout item, not to this one. */
-@media (min-width: 1240px) {
-  .dagx {
-    width: min(calc(100vw - 48px), 1520px);
-    margin-left: calc(50% - min(calc(50vw - 24px), 760px));
-  }
-}
-.dagx-edges {
-  position: absolute; top: 0; left: 0;
-  pointer-events: none;
-  overflow: visible;
-}
-/* `--text-faint`, NOT `--line`. The hairline token measures 1.18-1.36:1 against
-   both surfaces -- about a third of the 3:1 floor for a non-text mark -- and an
-   edge is not a hairline between two cells here: it is the entire content of
-   this view. Drawing the one signal the screen was rebuilt to add in the
-   faintest colour in the sheet would have shipped the defect back with extra
-   steps. `--text-faint` is the token this sheet already raised to ~4.9:1. */
-.dagx-edge {
-  fill: none;
-  stroke: var(--text-faint);
-  stroke-width: 1.5;
-}
-.dagx-edges marker path { fill: var(--text-faint); }
-.dagx-levels { display: flex; flex-direction: column; gap: 34px; position: relative; }
-.dagx-level {
-  display: flex; gap: 16px; justify-content: center; align-items: stretch;
-  /* NO WRAP. A level that wraps reads as two levels, which is the confusion
-     this whole block exists to remove; the host scrolls instead. */
-  flex-wrap: nowrap;
+.wf-mode.is-on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--info) 55%, var(--line));
+  background: color-mix(in srgb, var(--info) 12%, var(--surface));
 }
 
-/* THE WRAPPER IS THE BOX, because the node is an anchor AND carries a stop
-   control, and a <button> inside an <a> is invalid HTML with two activations
-   fighting over one click. They are siblings; this element is what the level
-   lays out, what the edges are measured to, and what a reader sees as "the
-   node". It carries the sizing that used to sit on `.node` itself. */
-.node-wrap {
-  display: flex; flex-direction: column;
-  flex: 1 1 0; min-width: 168px; max-width: 268px;
-  /* Above the edge layer, so a curve passes behind the box it points at. */
-  position: relative; z-index: 1;
+.wf-board { display: flex; flex-direction: column; gap: var(--ctl-s2); }
+/* The board is a LIST, so the hairline `.section + .section` draws between
+   panels would cut every row off from its own open body. */
+.wf-card { margin-bottom: 0; }
+.wf-card + .wf-card { border-top-width: 0; padding-top: 0; }
+
+/* The heading IS the bar. `.section > h2` still applies -- the row is how this
+   workflow is named, so it stays in the document outline -- and the button
+   inside it turns the uppercase back off for its own contents. B17's rule on
+   `.id` is what keeps the id lowercase regardless. */
+.wf-h { margin: 0; }
+.wf-bar {
+  width: 100%;
+  display: grid;
+  /* caret - id - state - progress - shape - runner mix - spend - age - flags */
+  grid-template-columns:
+    12px minmax(0, 1.3fr) 104px minmax(0, 1.2fr) minmax(0, 0.9fr)
+    minmax(0, 1.1fr) 96px 62px minmax(0, auto);
+  align-items: center; gap: 12px;
+  text-align: left; text-transform: none; letter-spacing: normal;
+  color: var(--text); font-family: var(--font); font-size: var(--t-meta);
+  line-height: var(--lh-meta); font-weight: 400;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 12px;
+  cursor: pointer;
 }
+.wf-bar:hover { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+.wf-card.is-open .wf-bar { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.wf-caret { color: var(--text-faint); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.wf-bar .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-state { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+.wf-state.ok { color: var(--ok-ink); }
+.wf-state.bad { color: var(--bad-ink); }
+.wf-state.live { color: var(--info-ink); }
+.wf-state.wait { color: var(--warn-ink); }
+.wf-state.unknown { color: var(--text-faint); }
+
+.wf-progress { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* A METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the server
+   reports an incomplete rollup there is no bar at all -- only the struck-out
+   words -- because a two-thirds-empty bar over a failed read is exactly the
+   substitution this console refuses. */
+.wf-meter {
+  flex: none; display: block; width: 54px; height: 6px;
+  border-radius: 999px; background: var(--line); overflow: hidden;
+}
+.wf-meter-fill { display: block; height: 100%; background: var(--ok); }
+.wf-progress-text {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* NO STRIKE-THROUGH. Struck text says "this figure is wrong"; what an
+   underived rollup means is "the census behind this figure was not taken",
+   and the step count beside it was read from an array and is correct. The
+   product shipped "3 steps - not counted" struck through in amber, which told
+   a reader the console could not count to six. Amber alone carries the doubt,
+   and the words say what is missing. */
+.wf-progress.untrusted {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--warn);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.wf-shape { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wf-shape-text { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+.wf-mini { flex: none; overflow: visible; }
+.wf-mini-edge { stroke: var(--line); stroke-width: 1; }
+/* The dots carry state as well as shape, so the row says WHERE in the graph
+   the trouble is, not only that there is some. */
+.wf-mini-dot { fill: var(--text-faint); }
+.wf-mini-dot.ok { fill: var(--ok); }
+.wf-mini-dot.bad { fill: var(--bad); }
+.wf-mini-dot.live { fill: var(--info); }
+.wf-mini-dot.wait { fill: var(--text-faint); }
+.wf-mini-dot.unknown { fill: var(--warn); }
+
+.wf-mix { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+.wf-chip {
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 5px; color: var(--text-dim); white-space: nowrap;
+}
+.wf-chip-n { color: var(--text-faint); margin-left: 3px; }
+.wf-chip.more { color: var(--text-faint); }
+
+/* AN ABSENT COST IS NOT $0.00. The absent treatment is the one every unmeasured
+   figure in this console gets: faint and italic, with the word rather than a
+   number. A reported 0 is a MEASURED zero and renders as a digit, in the
+   ordinary colour. */
+/* `font-style: normal` is DECLARED, not left to the initial value. jsdom's
+   `getComputedStyle` answers "" for a property no rule sets, and "" is not
+   "italic" -- so the test that proves the absent treatment differs from the
+   measured one would pass with the italic rule deleted. A guard that is
+   strongest when it is broken is the failure mode this suite exists to
+   remove. */
+.wf-spend {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal;
+  color: var(--text-dim); white-space: nowrap; text-align: right;
+}
+.wf-spend.absent { color: var(--text-faint); font-style: italic; }
+.wf-spend-cov { color: var(--text-faint); margin-left: 5px; }
+
+.wf-when { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; text-align: right; }
+.wf-flags { display: flex; justify-content: flex-end; }
+
+.wf-body {
+  border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 8px 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+}
+/* It SCROLLS rather than shrinking. A twenty-step workflow across six levels
+   is genuinely wider than a phone, and scaling it to fit turns the step names
+   into texture -- which is the one thing a node must not become. */
+.wf-canvas-wrap { overflow-x: auto; padding-bottom: 6px; }
+.wf-legend { position: relative; height: 14px; margin: 0 0 6px; padding: 0; list-style: none; }
+.wf-legend li {
+  position: absolute; top: 0;
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-canvas { position: relative; }
+.wf-edges { position: absolute; left: 0; top: 0; pointer-events: none; }
+.wf-edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.wf-arrowhead { fill: var(--line); }
 
 .node {
-  display: flex; flex-direction: column;
-  flex: 1 1 auto; min-width: 0;
+  position: absolute;
+  display: flex; flex-direction: column; gap: 3px;
   background: var(--surface); border: 1px solid var(--line);
   border-left: 3px solid var(--text-faint);
-  border-radius: 8px; padding: 8px 12px;
-  position: relative; z-index: 1;
+  border-radius: 8px; padding: 9px 12px;
+  box-sizing: border-box;
 }
 /* A node with no run yet is not wrapped -- there is nothing to link to -- so it
    is its own flex child and needs the sizing the wrapper would have given it. */
@@ -880,34 +897,44 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
-.node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-/* THE NODE IS A DOORWAY. The step id is the link to the task's own screen,
-   where its input and its output are; it used to be a `title` on a `<div>`. */
-.node-open { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line); }
-.node-open:hover { color: var(--info); border-bottom-color: currentColor; }
-.node-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
-.node-state { font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
-.node-meta { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
+.node-id a { color: var(--text); text-decoration: none; }
+.node-id a:hover { text-decoration: underline; }
+.node-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* FIVE KINDS OF TIME, FIVE TREATMENTS -- and the first one has no number at
+   all. A step that has not started HAS NO DURATION; `0s` would be a claim that
+   it ran instantly. Waiting (queued or parked) is not working, so it is drawn
+   in the waiting colour rather than the running one. */
+.node-dur { font: var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal; color: var(--text-dim); }
+.node-dur.is-ran { color: var(--text-dim); }
+.node-dur.is-running { color: var(--info-ink); }
+.node-dur.is-queued, .node-dur.is-parked { color: var(--warn-ink); }
+.node-dur.is-none { color: var(--text-faint); font-style: italic; }
+/* THE DEPENDENCY LIST WRAPS AND IS NEVER ELLIPSED. It is the only complete
+   statement of the graph in text, and the screen-reader path to it. The board
+   rewrite re-added `overflow: hidden; text-overflow: ellipsis; white-space:
+   nowrap` here, which is the exact defect the edge work was done to remove --
+   it rendered `<- cold-start, fencing, allorn...`, hiding two of five parents
+   on the one node where the parents are the whole point. Pinned by
+   test_the_dependency_list_is_never_truncated and
+   test_the_dependency_list_is_never_ellipsed. */
+/* Neither a width cap nor a white-space declaration belongs in the rule below,
+   even at a harmless value: the two tests that pin it ban those PROPERTIES by
+   name rather than by value, because it was an innocuous-looking pair of them
+   that truncated this line last time. The comment sits outside the braces
+   because those tests read the rule body as text, this one included.
+   Wrapping is `overflow-wrap` alone. */
 .node-dep {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
-  margin-top: 4px;
-  /* NEVER TRUNCATED. This list is the complete statement of the graph in
-     words. It wraps; it does not ellipse. */
   overflow-wrap: anywhere;
 }
-.node-dep-list { color: var(--text-dim); }
-.node-go {
-  margin-top: 6px;
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--info);
-}
-.node-go.is-none { color: var(--text-faint); }
-
-/* ---- what the step actually did ----
-   Four figures per node. THE ABSENT TREATMENT IS THE POINT: a measurement the
-   platform never recorded renders as a phrase in the faint token, dashed, and
-   a measurement that IS zero renders as an ordinary digit in the ordinary
-   colour. Making those two look alike is the single most expensive misreading
-   this screen can produce, and `measure.ts` is where the rule lives. */
+/* A SENTENCE, never a numeral. Dashed underline so it reads as "there is no
+   figure here" rather than as a small figure. */
+/* Recovered when the four run figures came back onto the node. These four
+   rules were dropped with the old `.node-*` block during the board merge,
+   while `.node-num.is-absent`, `.node-why`, `.node-links` and
+   `.node-reading` survived -- so the treatments existed with nothing to
+   treat. Already on the scale; carried across unchanged. */
 .node-nums {
   display: flex; flex-direction: column; gap: 1px; margin: 5px 0 0;
   padding-top: 5px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
@@ -925,8 +952,6 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* A SENTENCE, never a numeral. Dashed underline so it reads as "there is no
-   figure here" rather than as a small figure. */
 .node-num.is-absent dd {
   color: var(--ctl-absent);
   font-variant-numeric: normal;
@@ -959,11 +984,23 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   /* The `font-size: 13px` that was here is now what `.nav button` already is
      (--t-body), so the declaration restated its parent and went. */
   .nav button { padding: 8px 10px; }
-  /* A level keeps its row on a phone rather than stacking: stacked, siblings
-     read as a sequence, which is exactly what the edges are here to deny. The
-     host scrolls sideways and the nodes stay narrow but whole. */
-  .dagx-level { gap: 10px; }
-  .node { min-width: 132px; max-width: 200px; }
+  /* The collapsed row drops the runner mix, the spend and the age before it
+     drops anything else: all three are on the open card, and none of them is
+     the thing a narrow viewport is worst at replacing. THE SHAPE STAYS AT
+     EVERY WIDTH -- a row that cannot tell a fan-out from a chain has lost the
+     only field that is not recoverable by squinting at the others. */
+  .wf-bar {
+    grid-template-columns: 12px minmax(0, 1.4fr) 88px 56px minmax(0, auto);
+    gap: 8px;
+  }
+  .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text { display: none; }
+}
+
+@media (min-width: 561px) and (max-width: 900px) {
+  .wf-bar {
+    grid-template-columns: 12px minmax(0, 1.4fr) 96px minmax(0, 1fr) minmax(0, 0.8fr) 60px;
+  }
+  .wf-mix, .wf-spend, .wf-flags { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3415,7 +3452,7 @@ table.pools tbody tr.unmeasured {
 .stop-btn.inline { padding: 2px 6px; }
 
 .run-stop { margin-left: auto; }
-.node-stop { margin-top: 6px; }
+.node-stop { margin-top: auto; padding-top: 4px; }
 
 /* "stop requested" is not a button and must not look like one: the request is
    already in, and something that invited a second press would imply the first

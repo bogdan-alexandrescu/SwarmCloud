@@ -56,6 +56,9 @@ CLOUDBUILD_REGION="${CLOUDBUILD_REGION:-${REGION}}"
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-3600s}"
 BUILD_MACHINE="${BUILD_MACHINE:-E2_HIGHCPU_8}"
 
+# Advisory only. The check that can actually stop a bad image is the one inside
+# the submit loop below -- see the comment there for why a single check here is
+# not enough.
 if git_dirty; then
   warn "working tree is dirty; ${TAG} will not reproduce from git alone"
 fi
@@ -212,6 +215,19 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
       info "generated $(basename "${config}") for ${path}"
       ;;
   esac
+
+  # RE-CHECKED PER IMAGE, and fatal. `gcloud builds submit` tarballs the working
+  # DIRECTORY, not a commit, and this loop uploads one tarball per image over
+  # several minutes. A single check before the loop therefore proves nothing
+  # about the seventh upload: on 2026-09-22 this script started against a clean
+  # tree at 23:20, a merge began at 23:21:20, and swarm-ui's tarball went up at
+  # 23:28:23 carrying half-merged sources under a tag naming a commit that did
+  # not contain them. The build failed, which was luck -- a green one would have
+  # published an image whose tag was a lie, and nothing downstream could have
+  # detected it.
+  if git_dirty && [[ -z "${ALLOW_DIRTY_BUILD:-}" ]]; then
+    die "working tree went dirty during the run; ${image}:${TAG} would be tagged with a commit it does not contain. Re-run from a clean tree, or set ALLOW_DIRTY_BUILD=1 to build uncommitted work on purpose."
+  fi
 
   info "submitting to Cloud Build (${CLOUDBUILD_REGION}), tag ${TAG}"
   gcloud builds submit "${REPO_ROOT}" \
