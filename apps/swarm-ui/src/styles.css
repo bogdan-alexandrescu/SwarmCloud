@@ -6519,3 +6519,336 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    scoped to this cell, never on the primitive: nine other screens draw chips
    that are not followed by a mark. */
 .acct-statecell > .ctl-chip { margin-right: var(--ctl-s2); }
+
+/* ==========================================================================
+   §B20. THE SUBMIT FLOWS — Submit.tsx and SubmitWorkflow.tsx
+   ==========================================================================
+
+   THE SCREENS THESE REPLACE WERE A SCROLL, NOT A FLOW. Both were a single
+   column of stacked blocks at the full width of the work area: at 1440 the
+   `input` textarea measured 1145px, the capacity facts sat ~600px above the
+   submit button, and the button itself was below the fold on a 900px viewport.
+   Nothing on either screen said what order to do things in, and nothing put
+   "is there room" and "what am I about to send" on screen at the same time.
+
+   SO THE STRUCTURE IS: a numbered build column, and ONE place to act beside
+   it. `.sbf` is the two-column shell; `.sbf-build` holds the moves in order;
+   `.sbf-send` is sticky and carries the facts the click depends on together
+   with the button that makes it. Below 1080px it is one column and the send
+   panel is the last thing on the page, which is where it already was.
+
+   NO HAIRLINE BETWEEN MOVES, and that is a decision rather than an omission.
+   `.section + .section` draws one, and §13.3 allows exactly that between two
+   regions. Here the ordinal disc is a stronger boundary marker than a 1px rule
+   — §5.1's "grouping is a surface step, separation is a hairline, prefer the
+   step" applied to the case where there is already a glyph doing it — so the
+   separation is `--ctl-s5` of space and the disc, and the rule is not drawn.
+
+   WHAT DRAWS A BOX HERE, exhaustively, under §13.3: `.sbf-send` (one panel),
+   `.wfb-stage` (one panel per parallel band), and the native form controls,
+   whose border is `:where(.app input, select, textarea)`'s and not this
+   section's to remove. Everything else that used to be an edge is a
+   `--surface-2` fill: the runner rows, the setting offers, the action rows,
+   the step cards, the add controls. Every button this section adds sets
+   `border: 0` deliberately, because the sheet's `:where(.app button)` floor
+   would otherwise put a box around each of nine offers.
+
+   CASING: nothing here is `.filters`, and that is load-bearing. `.filters
+   button` carries `text-transform: capitalize` (legal under §13.2 because it
+   renders a machine token as a word), and the old workflow form put its own
+   authored labels inside it — so `add step` and `submit workflow` rendered as
+   `Add Step` and `Submit Workflow` while the task form, whose button was not
+   in `.filters`, rendered `Submit one task`. Two controls of the same rank,
+   two cases, for a reason that was never about either of them. */
+
+.sbf {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ctl-s5);
+  align-items: start;
+}
+.sbf-build { min-width: 0; }
+.sbf-side { min-width: 0; }
+
+/* 300px, not a fraction: the send panel holds three facts and a button and has
+   no reason to grow with the display, whereas the build column has every
+   reason to. */
+@media (min-width: 1080px) {
+  .sbf { grid-template-columns: minmax(0, 1fr) 300px; }
+  .sbf-send { position: sticky; top: var(--ctl-s5); }
+}
+
+/* ---- a numbered move ---- */
+.sbf-move { margin-bottom: var(--ctl-s5); }
+.sbf-move:last-child { margin-bottom: 0; }
+.sbf-move-h {
+  display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap;
+  margin: 0 0 var(--ctl-s3);
+  font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600;
+  color: var(--text);
+}
+/* A DISC, NOT A RING. Same substitution §13.3 made for `.ctl-q-glyph`: the
+   step reads as an ordinal without adding a bordered element per move. */
+.sbf-move-n {
+  flex: none; width: 22px; height: 22px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-2); color: var(--text-dim);
+  /* --lh-flush: the box is the 22px disc above. A glyph centred in a fixed
+     square takes its leading from the square, not from the text step. */
+  font: 600 var(--t-meta)/var(--lh-flush) var(--mono); font-style: normal;
+}
+
+/* ---- the runner catalogue, as rows ---- */
+/* INVARIANT 10, MADE VISIBLE. A `<select>` hid the one thing that makes
+   caller-named execution safe: what each name actually selects. A row per
+   profile shows the resource class, the weight, the backend and whether a
+   provider key is needed, and a disabled profile shows the platform's own
+   reason instead of vanishing from the list. */
+.sbf-runners { list-style: none; margin: 0 0 var(--ctl-s3); padding: 0; display: grid; gap: 2px; }
+/* A GRID, so the radio occupies its own column and the two text lines stack
+   beside it rather than under it. */
+.sbf-runner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: var(--ctl-s2); row-gap: 1px;
+  padding: var(--ctl-s2) var(--ctl-s3);
+  background: transparent;
+  /* DECLARED AND TRANSPARENT, the pattern §13.5 names: a rule that appeared
+     only on selection would shift every row sideways by 2px at the moment the
+     list most needs to hold still. */
+  border-left: 2px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  min-height: var(--row-h);
+  cursor: pointer;
+}
+.sbf-runner > input { grid-row: 1; grid-column: 1; align-self: center; }
+.sbf-runner > span { grid-column: 2; }
+.sbf-runner:hover { background: var(--surface-2); }
+.sbf-runner.is-on { background: var(--surface-2); border-left-color: var(--text); }
+/* The reason a profile is refused is the most useful line in the row, so the
+   row is NOT dimmed away — the name and the facts are, and the reason is not. */
+.sbf-runner.is-off { cursor: not-allowed; }
+.sbf-runner.is-off:hover { background: transparent; }
+.sbf-runner.is-off .sbf-runner-name,
+.sbf-runner.is-off .sbf-runner-facts { color: var(--text-faint); }
+.sbf-runner-name { font: 500 var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
+.sbf-runner.is-on .sbf-runner-name { font-weight: 600; }
+.sbf-runner-facts { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+
+.sbf-room {
+  display: grid; gap: var(--ctl-s2); max-width: var(--measure); min-width: 0;
+  background: var(--surface-2); border-radius: var(--ctl-radius-sm);
+  padding: var(--ctl-s3);
+}
+.sbf-room > .muted { margin: 0; }
+.sbf-room-h { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-faint); }
+.sbf-room-h > .mono { font-size: var(--t-body); color: var(--text); }
+/* The blocker rows are the capacity group's primitive and keep their own box;
+   inside a fill they would otherwise sit on `--surface`, which is the page. */
+.sbf-room .blocker-row { background: var(--surface); }
+
+/* ---- the input, as fields ---- */
+.sbf-input { display: grid; gap: var(--ctl-s3); }
+.sbf-field { display: grid; gap: var(--ctl-s1); max-width: var(--measure); min-width: 0; }
+/* The editor is whatever ValueEditor returned, and it is always the field's
+   own direct child, so one rule gives every kind its width without naming
+   them. `.sbf-key`'s controls are excluded by the child combinator. */
+.sbf-field > input,
+.sbf-field > textarea,
+.sbf-field > select { width: 100%; }
+.sbf-key { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+.sbf-name {
+  display: inline-flex; align-items: baseline; gap: var(--ctl-s2);
+  font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint);
+  min-width: 0;
+}
+.sbf-name > .mono { font-size: var(--t-body); color: var(--text); }
+.sbf-req { font-style: normal; font-size: var(--t-micro); color: var(--text-dim); }
+.sbf-rename { max-width: 200px; }
+.sbf-kind { min-height: 24px; padding: 2px 6px; font-size: var(--t-micro); }
+.sbf-num { max-width: 160px; }
+.sbf-note { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sbf-none { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
+.sbf-empty, .sbf-bad { font-style: normal; font-size: var(--t-micro); }
+.sbf-empty { color: var(--text-faint); }
+.sbf-bad { color: var(--warn-ink); }
+
+.sbf-flag { display: inline-flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); color: var(--text-dim); }
+.sbf-list { display: grid; gap: var(--ctl-s1); }
+.sbf-list > input { width: 100%; }
+.sbf-listact { display: flex; gap: var(--ctl-s3); }
+
+/* A TEXT BUTTON, NOT A PILL. `:where(.app button)` puts a 1px box around every
+   unstyled button; a field with a remove, a kind and two list controls would
+   be four boxes inside one row. The sheet already draws several buttons as
+   plain text (`.ctl-nav-link`, `.art-open`) and this is the same case. */
+.sbf-mini {
+  border: 0; background: transparent; padding: 0; min-height: 0;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.sbf-mini:not(:disabled):hover { color: var(--text); }
+
+/* ---- browser actions, built rather than typed ---- */
+.sbf-acts { display: grid; gap: var(--ctl-s1); }
+.sbf-act {
+  display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap;
+  background: var(--surface-2); border-radius: var(--ctl-radius-sm);
+  padding: var(--ctl-s2);
+}
+/* --lh-flush: the number is baseline-free chrome inside a row whose height is
+   set by the controls beside it. */
+.sbf-act-n { flex: none; min-width: 12px; font: var(--t-micro)/var(--lh-flush) var(--mono); color: var(--text-faint); }
+.sbf-act > select { flex: none; }
+.sbf-act > input { flex: 1 1 140px; min-width: 0; }
+
+/* ---- the offers ---- */
+/* THE DISCOVERY SURFACE. Every key here is one a runner actually reads, with
+   the runner's own account of it underneath, so the answer to "what can I put
+   in this?" is on the screen instead of in a schema somebody has to find.
+   A fill, not a box: nine bordered pills is nine boxes. */
+.sbf-add { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); margin-top: var(--ctl-s2); }
+.sbf-offer {
+  display: grid; gap: 1px; text-align: left; align-content: start;
+  border: 0; border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+  padding: var(--ctl-s2) var(--ctl-s3);
+  max-width: 252px; min-height: 0;
+}
+.sbf-offer > .mono, .sbf-offer > span:first-child { font-size: var(--t-body); color: var(--text); }
+.sbf-offer-note { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sbf-offer:not(:disabled):hover { background: color-mix(in srgb, var(--surface-2) 88%, var(--text)); }
+.sbf-offer.is-own > span:first-child { color: var(--text-dim); }
+
+/* ---- the one place to act ---- */
+.sbf-send {
+  display: grid; gap: var(--ctl-s3);
+  padding: var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.sbf-send > h2 {
+  margin: 0;
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  font-weight: 600; color: var(--text-faint);
+}
+/* A COLUMN, BECAUSE THE PANEL IS 300px. `.ctl-facts` is a wrapping flex ROW,
+   which is right in a 790px card and wrong here: `steps 1 of 50 stages 1
+   result collect` ran together on one line with three keys and three values
+   indistinguishable from each other. */
+.sbf-send .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: var(--ctl-s2); padding: 0; }
+.sbf-send .ctl-fact { justify-content: space-between; gap: var(--ctl-s3); }
+.sbf-send .ctl-fact > b { flex: none; }
+.sbf-send .warn-text { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+/* THE ONE FILLED CONTROL IN THE CONSOLE, and it is ink rather than a hue: the
+   references put their primary action in the text colour, not in a sixth
+   saturated hue (§B4.2). It is the only button on either screen that commits
+   anything. */
+.sbf-go {
+  width: 100%; min-height: 34px;
+  justify-content: center;
+  background: var(--text); border-color: var(--text); color: var(--bg);
+  font-weight: 600;
+}
+.sbf-go:not(:disabled):hover { background: var(--text-dim); border-color: var(--text-dim); color: var(--bg); }
+
+/* ==========================================================================
+   The workflow plan — stages, not a list
+   ==========================================================================
+
+   THE OLD FORM'S FIRST SCREEN HAD THREE DEAD ENDS ON IT: "Every step needs an
+   id.", "— no other named step yet" and "— depend on a step first", all at
+   once, on a form where nothing could yet be any of those things. All three
+   came from the same decision: that the step's NAME was the primitive and
+   everything else keyed off it.
+
+   A stage is the primitive instead. Steps sit side by side in a band and run
+   together; the next band waits for the one above it. "These three in
+   parallel, then this one" is four clicks and no typing, and the picture of it
+   is the layout rather than a list of ids. Ids are generated, shown, and
+   editable — the API's refusals name them, so they must be readable. */
+
+.wfb-stage {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--ctl-s3);
+}
+/* The connector is a BACKGROUND, not a border: it is a mark of flow between
+   two panels, and §13.3 gives the border budget to the panel itself. */
+.wfb-stage + .wfb-stage { position: relative; margin-top: 24px; }
+.wfb-stage + .wfb-stage::before {
+  content: ''; position: absolute; left: 24px; top: -19px;
+  width: 2px; height: 14px; border-radius: 2px;
+  background: var(--line-soft);
+}
+.wfb-stage-h { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; margin-bottom: var(--ctl-s2); }
+.wfb-stage-n { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
+.wfb-stage-say { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* SIDE BY SIDE IS THE STATEMENT. Two steps in one band are two columns, which
+   is what "in parallel" looks like; at 390pt they stack and the band header is
+   what still says it. */
+.wfb-steps {
+  display: grid; gap: var(--ctl-s2);
+  grid-template-columns: repeat(auto-fit, minmax(min(272px, 100%), 1fr));
+  align-items: start;
+}
+.wfb-step {
+  display: grid; gap: var(--ctl-s2); min-width: 0;
+  background: var(--surface-2);
+  border-radius: var(--ctl-radius-sm);
+  padding: var(--ctl-s3);
+}
+.wfb-step-h { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+.wfb-id { flex: 1 1 130px; min-width: 0; }
+.wfb-profile { flex: 0 1 auto; min-width: 0; }
+.wfb-drop { margin-left: auto; }
+.wfb-cost {
+  margin: 0; display: flex; align-items: center; gap: var(--ctl-s1); flex-wrap: wrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+.wfb-step .sbf-field { max-width: none; }
+/* THE OFFERS GO COMPACT INSIDE A STEP, AND THE EXPLANATION MOVES RATHER THAN
+   DISAPPEARS. A step card is a ~370px grid column by construction, so six
+   offers with a two-line note each is a 600px card holding one step. Here the
+   offer is its key alone, wrapping as a chip row; the runner's account of the
+   key still arrives, as `.sbf-note` under the field, at the moment it is
+   actually needed — after it has been added. The task screen has the width and
+   keeps the note on the offer itself. */
+.wfb-step .sbf-offer { max-width: none; padding: 3px var(--ctl-s2); }
+.wfb-step .sbf-offer-note { display: none; }
+.wfb-step .sbf-offer > .mono, .wfb-step .sbf-offer > span:first-child { font-size: var(--t-micro); }
+.wfb-step .sbf-add { gap: var(--ctl-s1); }
+/* The unread mark, its words and its `?` are three flex items in a 340px row;
+   at `--t-meta` the glyph wrapped alone onto a third line. */
+.wfb-step .ctl-panel-note { font-size: var(--t-micro); gap: var(--ctl-s1) var(--ctl-s2); }
+
+.wfb-add {
+  display: grid; gap: 1px; align-self: start; text-align: left;
+  border: 0; border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  padding: var(--ctl-s2) var(--ctl-s3);
+  font-size: var(--t-body);
+}
+.wfb-add:not(:disabled):hover { background: color-mix(in srgb, var(--surface-2) 88%, var(--text)); color: var(--text); }
+.wfb-add-say { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-faint); }
+.wfb-add.is-stage { width: 100%; margin-top: var(--ctl-s3); }
+
+/* The dependency refinement, behind the answer it already has. The summary
+   line states what this step waits for; opening it is for changing that. */
+.wfb-more > summary {
+  cursor: pointer; list-style: none;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+.wfb-more > summary::-webkit-details-marker { display: none; }
+.wfb-more > summary::marker { content: ''; }
+.wfb-dep { color: var(--text); }
+.wfb-deps { display: grid; gap: var(--ctl-s1); margin-top: var(--ctl-s2); }
+.wfb-deps .check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-body); color: var(--text-dim); }
+.wfb-stage-from { margin-top: var(--ctl-s2); }
+.wfb-from { display: grid; gap: 2px; margin-top: var(--ctl-s1); font-size: var(--t-micro); color: var(--text-dim); }
