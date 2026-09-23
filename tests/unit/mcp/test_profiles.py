@@ -590,6 +590,67 @@ def test_the_result_tool_attaches_the_failure_block():
     assert client.attempt_reads == 1
 
 
+def test_a_failed_workflow_step_carries_the_same_failure_block():
+    """"Which step failed" was already answerable; "and why" was not.
+
+    A fan-out is where that gap costs most: four failed steps of twenty, each
+    reported as a state word, is four investigations with no starting point.
+    The step's block comes from the SAME function as a single task's, so the
+    two cannot describe one dead agent differently.
+    """
+    import json
+
+    from swarm_mcp import server, workflows
+
+    # The route's real envelope shape: `step_rows` joins step.task_id to the
+    # TASK DOCUMENTS the same read returned, under `tasks` -- it never fetches
+    # them one by one. Getting this wrong in a fake is how a test passes against
+    # a shape the server does not send.
+    bad_task = dict(_failed_task())
+    bad_task["id"] = "task_bad"
+    bad_task["last_error"] = "boom"
+    envelope = {
+        "workflow": {
+            "workflow_id": "wf_1",
+            "state": "FAILED",
+            "state_source": workflows.DERIVED,
+            "steps": [
+                {"step_id": "ok", "task_id": "task_ok"},
+                {"step_id": "bad", "task_id": "task_bad"},
+            ],
+        },
+        "tasks": [
+            {"id": "task_ok", "state": "SUCCEEDED", "runner_profile": "mock"},
+            bad_task,
+        ],
+    }
+
+    class _WorkflowClient:
+        def __init__(self):
+            self.attempt_reads = 0
+
+        def request(self, method, path, **kwargs):
+            return envelope
+
+        def attempts(self, task_id, *, limit=20):
+            assert task_id == "task_bad", f"attempts read for {task_id}"
+            self.attempt_reads += 1
+            return [{"attempt_id": "att_1", "generation": 1, "exit_code": 9,
+                     "backend": "CLOUD_RUN_JOB", "error": "boom"}]
+
+    client = _WorkflowClient()
+    report = json.loads(
+        server._call(client, "swarm_workflow_result", {"workflow_id": "wf_1"})
+    )
+    steps = {s["step_id"]: s for s in report["steps"]}
+    assert steps["bad"]["produced"]["failure"]["last_attempt"]["exit_code"] == 9
+    # The healthy step carries no `failure` key and cost no extra read.
+    assert "failure" not in steps["ok"]["produced"]
+    assert client.attempt_reads == 1, (
+        "the attempts route must be read once, for the failed step only"
+    )
+
+
 def test_the_result_tool_adds_nothing_when_the_task_succeeded():
     """No `failure` key at all on a healthy result -- an empty one would read as
     a failure with no detail."""

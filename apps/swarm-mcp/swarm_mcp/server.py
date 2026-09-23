@@ -434,7 +434,14 @@ TOOLS: list[dict[str, Any]] = [
             "on that read, and `state_incomplete_because` means it derived over "
             "a partial read. Bring a step's work into a local tree with "
             "swarm_apply, or several steps' work onto one branch with "
-            "swarm_integrate, using the task ids below."
+            "swarm_integrate, using the task ids below.\n"
+            "\n"
+            "A step that FAILED also carries `failure`, the same per-attempt "
+            "block swarm_result gives: the last attempt's backend, exit code, "
+            "error and near-OOM flag, and every earlier attempt's exit code. In "
+            "a fan-out this is the difference between 'four of twenty failed' "
+            "and four investigations that each have a starting point. "
+            "`exit_code: null` means NOT RECORDED and never 0."
         ),
         "inputSchema": {
             "type": "object",
@@ -845,10 +852,28 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         # produce" would be a second chance for the two answers to disagree
         # about the same workflow.
         envelope = workflows.fetch(client, args["workflow_id"])
+
+        def _describe_step(task: dict[str, Any]) -> dict[str, Any]:
+            """A step's result, plus WHY it died when it did.
+
+            "Which step failed" is answerable from the rollup already; "and why"
+            was not, and a fan-out is where that gap hurts most -- four failed
+            steps of twenty, each reported as a state word, is four
+            investigations with no starting point. `explain_failure` costs one
+            extra read per FAILED step and nothing at all for the others,
+            because it returns None on the state check before touching the
+            client.
+            """
+            out = describe_task(task)
+            failure = explain_failure(client, task)
+            if failure is not None:
+                out["failure"] = failure
+            return out
+
         return json.dumps(
             workflows.report(
                 envelope,
-                describe=describe_task if name == "swarm_workflow_result" else None,
+                describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
             indent=2,
         )
