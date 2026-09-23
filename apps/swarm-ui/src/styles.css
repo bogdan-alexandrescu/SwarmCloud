@@ -1586,7 +1586,11 @@ ol.timeline li::before {
    fifteen routes, saying the same thing on every one of them. */
 .source-cells {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  /* `min(100%, 210px)`, not a bare 210px: at 390px the dock's content column is
+     narrower than the track and a bare minimum overflows it rather than
+     reflowing. The `min()` is what lets this grid go 1-up on a phone with no
+     media query, which is the construction the design system standardises. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
   gap: 6px;
   margin-top: 10px;
 }
@@ -1607,7 +1611,17 @@ ol.timeline li::before {
    Styling this as an error is what makes a working page look broken. */
 .source.info { border-left-color: var(--info); }
 
-.s-path   { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* THE DOT LEADS THE ROUTE (operator pass). The tone was carried by the left
+   border and by the status text's colour -- two channels, both hue, so in the
+   greyscale screenshot that gets pasted into an incident channel a 403 and a
+   dead route were the same cell. `.ctl-dot` is the product's shared state
+   vocabulary as a SILHOUETTE, so the two are told apart by shape first.
+
+   The truncation moved to `.s-path-t`: `text-overflow` does not apply to an
+   anonymous flex item, so the path needs its own box once the dot is a sibling
+   inside this cell. */
+.s-path   { display: flex; align-items: center; gap: 6px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); }
+.s-path-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); text-align: right; }
 .source.ok   .s-status { color: var(--ok); }
 .source.warn .s-status { color: var(--warn); }
@@ -2861,9 +2875,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    from one declaration, and no `color` on any of it. The figure goes in a
    child, centred by the grid rather than by absolute positioning, so the box
    is measurable. */
+/* THE FALLBACKS ARE LOAD-BEARING FOR THE GATE, not belt-and-braces. `--pct`
+   and `--measured` are INSTANCE properties: the screen sets them inline, so
+   they are not in `:root` and `spaceprobe.ts:158` throws
+   "--pct is used and never declared" on a bare `var(--pct)` -- which is a hard
+   error that takes the whole spacing sweep down, not a finding. The component
+   default below is the same 0, so the fallbacks change no pixel. */
 .ctl-dial {
   --pct: 0;
-  --measured: var(--pct);
+  --measured: var(--pct, 0);
   position: relative;
   display: grid;
   place-items: center;
@@ -2877,8 +2897,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   inset: 0;
   border-radius: var(--ctl-radius-pill);
   background: conic-gradient(
-    var(--info) 0 calc(var(--pct) * 1%),
-    var(--surface-2) calc(var(--pct) * 1%) 100%
+    var(--info) 0 calc(var(--pct, 0) * 1%),
+    var(--surface-2) calc(var(--pct, 0) * 1%) 100%
   );
   /* The ring, not the disc: a 10px band cut out of the middle. Two masks
      composited, which is the only way to do this without a second element. */
@@ -2894,8 +2914,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dial.is-partial::before {
   background:
     conic-gradient(
-      var(--info) 0 calc(var(--measured) * 1%),
-      transparent calc(var(--measured) * 1%) 100%
+      var(--info) 0 calc(var(--measured, 0) * 1%),
+      transparent calc(var(--measured, 0) * 1%) 100%
     ),
     var(--ctl-hatch);
 }
@@ -4785,4 +4805,85 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   /* Log lines are wrapped by the writer, not by us: re-wrapping a column of
      timestamps makes a continuation line indistinguishable from a new entry. */
   white-space: pre;
+}
+
+/* ==========================================================================
+   THE OPERATOR SCREENS — Pool limits, Platform counts, Provider quota
+   ==========================================================================
+
+   Six rules, and nothing here invents a primitive. Every one of these is an
+   `is-`/`has-` modifier on a `ctl-` component or a grid template that belongs
+   to one screen, which is what `docs/web-ui/design-system.md` §6 allows a
+   screen to add. The components themselves are §B4.4's and are not touched. */
+
+/* -- 1. The binding operand -------------------------------------------------
+   THE ARITHMETIC THAT REPLACED A SENTENCE. `AdminSettings` used to carry "a
+   task must clear EVERY pool its profile lists, so its ceiling is the MINIMUM
+   across them" as a bordered paragraph at the top of the screen. A sentence
+   asserting an arithmetic rule is the weakest way to show one: the reader has
+   to carry it to the figures and apply it themselves, which is exactly what
+   nobody did when five pools went to 40 and one stayed at 5.
+
+   So the operands are drawn. Every profile card lists each pool it takes with
+   that pool's own ceiling in agents, and the one that binds is promoted. The
+   reader sees three numbers, one of them marked, and it is the smallest --
+   `min()` needs no gloss once its inputs are beside its output.
+
+   IT IS A LUMINANCE STEP, NOT A HUE AND NOT A RULE. `--text-faint` to `--text`
+   is a large step in greyscale, so the mark survives the screenshot that gets
+   pasted into an incident channel; a coloured operand would not. And it draws
+   no border, deliberately: `spaceprobe.ts:1156` grades a single border with no
+   same-signature sibling as a 3:1 component boundary, so a rule under one
+   `.ctl-fact` in a strip of unruled ones is a gate failure waiting to happen.
+   The card foot names the binding pool in words as the redundant channel. */
+.ctl-fact.is-binding       { color: var(--text); font-weight: 600; }
+.ctl-fact.is-binding > b   { color: var(--text-dim); }
+
+/* -- 2. The total's slot ----------------------------------------------------
+   The figure, its mark and its `?` on one baseline. `align-items: baseline` is
+   what keeps a 30px figure and a 12px mark sitting on the same line rather
+   than the mark floating at the figure's optical centre. It wraps, because at
+   390px the mark goes under the figure rather than off the card.             */
+.counts-total {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  margin: 0 0 var(--ctl-s3);
+}
+
+/* -- 3. The histogram inside a card ----------------------------------------
+   `.split-row`'s own template caps the bar at 280px, which is right on a full
+   page and wrong inside a 340px card: the bar then stops well short of the
+   card's edge and the row reads as left-over space rather than as a scale.
+   Inside a counts card the bar takes the fraction instead, so every row ends
+   on the same right edge as the card. The name and figure tracks are
+   unchanged, because those are the two columns whose width carries meaning. */
+.counts-card .split-row { grid-template-columns: 110px minmax(0, 1fr) 46px; }
+
+/* -- 4. The pool name in a `ctl-` table -------------------------------------
+   `table.pools .pool-name` carried this and five other screens still use that
+   table, so the rule is re-declared for the primitive rather than moved off
+   it. The raw id underneath is `.ctl-sub`, which the primitive already owns. */
+.ctl-table .pool-name { font-weight: 500; }
+
+/* -- 5. The `?` beside an eyebrow -------------------------------------------
+   AN `is-`/`has-` MODIFIER, NOT A REDEFINITION. `.ctl-eyebrow` is a §B4.4
+   primitive and `display: block` is its own decision; a screen that needs the
+   help trigger on the label's baseline asks for that on itself rather than
+   changing the primitive under every future caller. The trigger is a control,
+   not a word, so it also opts out of the label treatment's tracking. */
+.ctl-eyebrow.has-q { display: flex; align-items: baseline; gap: var(--ctl-s2); }
+.ctl-eyebrow.has-q button { letter-spacing: 0; }
+
+/* -- 6. 390px ---------------------------------------------------------------
+   The one breakpoint these screens need, and it is the phone survivor from
+   §7.1. `.ctl-cards` reflows to 1-up with no query at all and `.ctl-table`
+   scrolls sideways, so all that is left is the histogram: at 390px a 110px
+   name track plus a 46px figure leaves 100px of bar, which is a bar that
+   cannot be read. The bar goes and the two columns that carry the fact stay --
+   §6.8's rule that columns are DROPPED, never relabelled into "Label: value". */
+@media (max-width: 560px) {
+  .counts-card .split-row { grid-template-columns: minmax(0, 1fr) 46px; }
+  .counts-card .sr-bar { display: none; }
 }

@@ -55,13 +55,40 @@ function tenantPanel(): HTMLElement {
   return section as HTMLElement
 }
 
+/**
+ * The total's slot, which is now ALWAYS drawn.
+ *
+ * WHAT MOVED. The total used to be a `.provenance` line -- "54 task documents
+ * across the 9 states that are written" -- rendered only when there was a
+ * total, and the partial case printed a `.warn-text` sentence instead. Both are
+ * gone. The card now carries one `.ctl-figure` whose slot is present either
+ * way: a measured total is the digits, and a withheld one is `.ctl-em` under
+ * `.ctl-figure.is-absent` with the `partial` mark beside it.
+ *
+ * WHY THAT IS A STRONGER CLAIM THAN THE SENTENCE WAS. A card that simply
+ * omitted its total when it could not compute one is indistinguishable from a
+ * card that never had a total; the reader has to notice an absence. Drawing the
+ * hole means there is nothing to notice. The sentence itself did not disappear
+ * -- it is the figure's `aria-label`, and the argument is at #help/withheld-total.
+ */
+function totalFigure(panel: HTMLElement): HTMLElement {
+  const fig = panel.querySelector('.counts-total .ctl-figure')
+  if (!fig) throw new Error('the total slot is not drawn at all')
+  return fig as HTMLElement
+}
+
 describe('a complete response', () => {
   it('shows the total, so the rule below is not being kept by accident', async () => {
     await run({ status: 'ok', data: stats(), fetchedAt: Date.now() })
     const panel = await waitFor(tenantPanel)
     const sum = Object.values(COMPLETE).reduce((a, b) => a + b, 0)
-    expect(panel.querySelector('.provenance')?.textContent).toContain(String(sum))
-    expect(panel.textContent).not.toContain('did not come back')
+
+    const fig = totalFigure(panel)
+    expect(fig.textContent).toContain(String(sum))
+    expect(fig.className).not.toContain('is-absent')
+    expect(fig.querySelector('.ctl-em')).toBeNull()
+    // And nothing claims the response was partial.
+    expect(panel.querySelector('.ctl-mark.is-partial')).toBeNull()
   })
 
   it('renders a measured zero as 0 and not as an em dash', async () => {
@@ -73,6 +100,27 @@ describe('a complete response', () => {
 })
 
 describe('a partial response', () => {
+  /**
+   * WHAT MOVED, AND WHERE THE WORDS WENT.
+   *
+   * The sentence "2 states did not come back (PARKED, RUNNING). No total is
+   * shown." is gone from the surface. Three things carry it now, and each is
+   * visible with every help card shut:
+   *
+   *   - `.ctl-mark.is-partial` -- the word `partial`, dashed on one side only,
+   *     which is the shape of the hole. Greyscale-safe, so it survives the
+   *     screenshot pasted into an incident channel, which the amber
+   *     `.warn-text` did not.
+   *   - `.ctl-card-note` -- `7 of 9 states`, the coverage as a figure in the
+   *     card's qualifier slot.
+   *   - the histogram itself -- PARKED and RUNNING each keep their row and
+   *     each show `.ctl-em`, so "which states" is read off the same rows the
+   *     digits are read off rather than out of a parenthesis.
+   *
+   * The full sentence is the total figure's `aria-label`, and the argument is
+   * at #help/withheld-total. NOTHING WAS WEAKENED: the rule that the sum must
+   * not be printed is asserted below exactly as before.
+   */
   it('withholds the total and names every state that did not come back', async () => {
     const partial = { ...COMPLETE }
     delete partial.RUNNING
@@ -80,15 +128,35 @@ describe('a partial response', () => {
     await run({ status: 'ok', data: stats({ tasks_by_state: partial }), fetchedAt: Date.now() })
 
     const panel = await waitFor(tenantPanel)
-    const warning = panel.querySelector('.warn-text')?.textContent ?? ''
-    expect(warning).toContain('did not come back')
-    expect(warning).toContain('PARKED')
-    expect(warning).toContain('RUNNING')
-    expect(warning).toContain('No total is shown')
 
-    // THE RULE. Not "it warns" -- it must also NOT print the sum.
-    expect(panel.querySelector('.provenance')).toBeNull()
+    // The partial-ness is on the surface, as a mark rather than a sentence.
+    expect(panel.querySelector('.ctl-mark.is-partial')?.textContent).toBe('partial')
+    expect(panel.querySelector('.ctl-card-note')?.textContent).toBe(
+      `${REAL_STATES.length - 2} of ${REAL_STATES.length} states`,
+    )
+
+    // WHICH states, from the rows -- every one of them, still named.
+    for (const state of ['PARKED', 'RUNNING']) {
+      const row = Array.from(panel.querySelectorAll('.split-row')).find((r) =>
+        r.textContent?.startsWith(state),
+      )
+      expect(row, `${state} lost its row`).toBeTruthy()
+      expect(row!.querySelector('.sr-n .ctl-em'), `${state} is not marked absent`).not.toBeNull()
+    }
+
+    // THE RULE. Not "it marks" -- it must also NOT print the sum. The slot is
+    // drawn, and what is in it is the em dash and no digit at all.
+    const fig = totalFigure(panel)
+    expect(fig.className).toContain('is-absent')
+    expect(fig.querySelector('.ctl-em')).not.toBeNull()
+    expect(fig.textContent).not.toMatch(/\d/)
     expect(panel.textContent).not.toContain('task documents across')
+
+    // The words did not evaporate; they are the figure's accessible name.
+    const label = fig.getAttribute('aria-label') ?? ''
+    expect(label).toContain('No total is shown')
+    expect(label).toContain('PARKED')
+    expect(label).toContain('RUNNING')
   })
 
   it('renders the missing states as em dashes rather than as zeros', async () => {
@@ -102,14 +170,32 @@ describe('a partial response', () => {
     expect(running?.querySelector('.sr-n')?.textContent).toBe('—')
   })
 
+  /**
+   * The degenerate partial: nothing arrived at all.
+   *
+   * WHAT MOVED. The `.warn-text` sentence is the `.ctl-mark.is-partial` and the
+   * `0 of 9 states` note, exactly as in the test above -- this case is not
+   * special-cased into different words, which was half the point of making the
+   * encoding uniform. The rule it guards is unchanged: a response carrying no
+   * counts is a failed query, so no figure on the card may be a number.
+   */
   it('a response with NO counts at all is called a failed query, not an idle platform', async () => {
     await run({ status: 'ok', data: stats({ tasks_by_state: {} }), fetchedAt: Date.now() })
     const panel = await waitFor(tenantPanel)
-    expect(panel.querySelector('.provenance')).toBeNull()
-    expect(panel.querySelector('.warn-text')?.textContent).toContain('did not come back')
+
+    expect(panel.querySelector('.ctl-mark.is-partial')).not.toBeNull()
+    expect(panel.querySelector('.ctl-card-note')?.textContent).toBe(
+      `0 of ${REAL_STATES.length} states`,
+    )
+
+    const fig = totalFigure(panel)
+    expect(fig.className).toContain('is-absent')
+    expect(fig.textContent).not.toMatch(/\d/)
+
     for (const state of REAL_STATES) {
       const row = Array.from(panel.querySelectorAll('.split-row')).find((r) => r.textContent?.startsWith(state))
       expect(row?.querySelector('.sr-n')?.textContent).toBe('—')
+      expect(row?.querySelector('.sr-n .ctl-em')).not.toBeNull()
     }
   })
 })
@@ -128,12 +214,40 @@ describe('scope', () => {
     expect(tenantPanel().textContent).not.toContain('99')
   })
 
+  /**
+   * WHAT MOVED. "Admin only — these figures are absent from this response
+   * rather than zero." was the only thing on this panel, and it was the only
+   * panel with no figure of its own to carry a marker. It has one now: the
+   * card keeps its title and its figure SLOT, and the slot holds `.ctl-em`
+   * under `.ctl-figure.is-absent` with `.ctl-mark.is-admin` beside it.
+   *
+   * The sentence is the figure's `aria-label` and #help/admin-gate-not-failure.
+   *
+   * THE THIRD ASSERTION IS NEW AND IS THE POINT OF THE `is-admin` VARIANT.
+   * Not entitled is not broken: a non-admin genuinely cannot read
+   * /v1/admin/*, so nothing here may take the failure treatment. Painting it
+   * red tells someone their platform is down when it is not, on every visit.
+   */
   it('an ABSENT platform block is stated as absent, never as zero', async () => {
     await run({ status: 'ok', data: stats({ platform_tasks_by_state: undefined }), fetchedAt: Date.now() })
     await waitFor(tenantPanel)
-    const everyone = screen.getByRole('heading', { name: /Every tenant/ }).closest('section')
-    expect(everyone?.textContent).toContain('absent from this response rather than zero')
-    expect(everyone?.querySelectorAll('.split-row').length).toBe(0)
+    const everyone = screen.getByRole('heading', { name: /Every tenant/ }).closest('section')!
+
+    // Absent, and drawn as such, with no hovering and no open card.
+    const fig = everyone.querySelector('.counts-total .ctl-figure')!
+    expect(fig.className).toContain('is-absent')
+    expect(fig.querySelector('.ctl-em')).not.toBeNull()
+    expect(fig.textContent).not.toMatch(/\d/)
+    expect(everyone.querySelector('.ctl-mark.is-admin')?.textContent).toBe('admin only')
+    expect(fig.getAttribute('aria-label')).toContain(
+      'absent from this response rather than zero',
+    )
+
+    // Not entitled is not broken.
+    expect(everyone.querySelector('.ctl-mark.is-unread')).toBeNull()
+    expect(everyone.className).not.toContain('is-failed')
+
+    expect(everyone.querySelectorAll('.split-row').length).toBe(0)
   })
 })
 
@@ -147,7 +261,23 @@ describe('a failed read of the counts', () => {
 
     expect(screen.queryByRole('heading', { name: /This tenant/ })).toBeNull()
     expect(document.querySelectorAll('.split-row').length).toBe(0)
-    expect(document.body.textContent).toContain('This says nothing about how much work the platform is carrying.')
+
+    // WHAT MOVED. "No counts are shown, because none arrived. This says nothing
+    // about how much work the platform is carrying." was two sentences in the
+    // middle of the failure panel. The panel is `.ctl-empty.is-failed` now and
+    // the visible, greyscale-safe anchor is `.ctl-mark.is-unread` -- the word
+    // `not read`, dashed, which is this sheet's mark for "the read failed, and
+    // the platform may well know the answer". The sentences ride on it as its
+    // accessible name, so there is a keyboard and a screen-reader route to them
+    // -- which is precisely what the `title=` attempt that turned this suite
+    // red the last time did not have.
+    const panel = document.querySelector('.ctl-empty.is-failed')!
+    expect(panel, 'the failure is not drawn as a failed empty state').not.toBeNull()
+    const mark = panel.querySelector('.ctl-mark.is-unread')!
+    expect(mark.textContent).toBe('not read')
+    expect(mark.getAttribute('aria-label')).toContain(
+      'This says nothing about how much work the platform is carrying.',
+    )
 
     // The copy block explaining the aggregation cost names counts of STATES,
     // which are a property of the contract rather than a measurement of the
@@ -176,7 +306,22 @@ describe('the states that can never be written', () => {
       // rather than "this cannot happen".
       expect(rows.some((r) => r.startsWith(state))).toBe(false)
     }
-    expect(panel.textContent).toContain('never written to a task document')
     expect(rows).toHaveLength(REAL_STATES.length)
+
+    // WHAT MOVED. "3 of the 12 states in the contract are never written to a
+    // task document and are not listed above: SUBMITTED, QUEUED,
+    // DEAD_LETTERED." was a 24-word footnote restating an arithmetic the
+    // reader could not check. What stays is the part that cannot be inferred
+    // from the histogram -- WHICH states are missing from it and why their
+    // absence is deliberate -- as a named list in the card's provenance strip.
+    // The sentence is at #help/states. The list is still DERIVED from
+    // `NEVER_WRITTEN`, so it cannot drift if a state is added.
+    const foot = panel.querySelector('.ctl-card-foot')!
+    expect(foot, 'the excluded states are named nowhere').not.toBeNull()
+    for (const state of NEVER_WRITTEN) {
+      expect(foot.textContent, `${state} is excluded and unnamed`).toContain(state)
+    }
+    // And the `?` that holds the reason is present and shut.
+    expect(foot.querySelector('button[aria-label^="What "]')).not.toBeNull()
   })
 })
