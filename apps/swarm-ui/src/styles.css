@@ -2862,8 +2862,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    child, centred by the grid rather than by absolute positioning, so the box
    is measurable. */
 .ctl-dial {
+  /* Declared here rather than on :root because they are PER INSTANCE -- a
+     dial's fill is its own. Every use carries `, 0` for the same reason: a
+     component-scoped token is invisible to anything resolving the sheet
+     statically, and an unresolved `var()` in a `calc()` drops the whole
+     declaration, which would draw a full ring for a value nobody reported.
+     The fallback is the same 0 declared here, so the picture is identical and
+     the sheet no longer depends on cascade order to be readable. */
   --pct: 0;
-  --measured: var(--pct);
+  --measured: var(--pct, 0);
   position: relative;
   display: grid;
   place-items: center;
@@ -2877,8 +2884,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   inset: 0;
   border-radius: var(--ctl-radius-pill);
   background: conic-gradient(
-    var(--info) 0 calc(var(--pct) * 1%),
-    var(--surface-2) calc(var(--pct) * 1%) 100%
+    var(--info) 0 calc(var(--pct, 0) * 1%),
+    var(--surface-2) calc(var(--pct, 0) * 1%) 100%
   );
   /* The ring, not the disc: a 10px band cut out of the middle. Two masks
      composited, which is the only way to do this without a second element. */
@@ -2894,8 +2901,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dial.is-partial::before {
   background:
     conic-gradient(
-      var(--info) 0 calc(var(--measured) * 1%),
-      transparent calc(var(--measured) * 1%) 100%
+      var(--info) 0 calc(var(--measured, 0) * 1%),
+      transparent calc(var(--measured, 0) * 1%) 100%
     ),
     var(--ctl-hatch);
 }
