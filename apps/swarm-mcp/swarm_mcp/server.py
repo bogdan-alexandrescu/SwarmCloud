@@ -45,6 +45,7 @@ from .patches import (
     describe_task,
     download,
     explain_absence,
+    explain_failure,
     integrate,
     patch_uri,
 )
@@ -195,7 +196,22 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "What a finished task produced: its commits, its patch, its pull "
             "request, and -- when there is no pull request -- WHY, which has six "
-            "different causes needing six different responses."
+            "different causes needing six different responses. Every result also "
+            "names the `runner_profile` that ran and the `backend` it resolves "
+            "to.\n"
+            "\n"
+            "WHEN THE TASK FAILED it additionally carries `failure`, read from "
+            "the per-attempt record: the last attempt's backend, execution name, "
+            "exit code, error and whether it came near an OOM, plus every "
+            "EARLIER attempt's exit code and error -- which the task document "
+            "cannot give you, because `result_summary` is written once at "
+            "terminal state and a task that failed twice and succeeded on the "
+            "third try carries only the third attempt's numbers.\n"
+            "\n"
+            "`exit_code: null` means NOT RECORDED. It is not 0. Reporting it as "
+            "0 says the agent exited cleanly, which is the one thing it did not "
+            "do. `failure.note` means the task failed before any agent ran, so "
+            "the investigation is admission and dispatch rather than the agent."
         ),
         "inputSchema": {
             "type": "object",
@@ -730,7 +746,17 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return json.dumps({"profiles": catalogue.catalogue()}, indent=2)
 
     if name == "swarm_result":
-        return json.dumps(describe_task(client.task(args["task_id"])), indent=2)
+        task = client.task(args["task_id"])
+        described = describe_task(task)
+        # ONLY ON A FAILURE, and only here. `explain_failure` costs one extra
+        # round trip to the attempts route, which is where the exit code, the
+        # backend that actually ran and the earlier attempts' errors live --
+        # none of them are on the task document. A successful read pays nothing
+        # because the function returns None without asking.
+        failure = explain_failure(client, task)
+        if failure is not None:
+            described["failure"] = failure
+        return json.dumps(described, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()

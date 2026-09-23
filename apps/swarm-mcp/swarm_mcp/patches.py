@@ -174,6 +174,122 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: The states that mean "this went wrong", as the frozen vocabulary spells
+#: them. `DEAD_LETTER` is not a member and is matched anyway, because
+#: `client.TERMINAL` already carries both spellings defensively and a failure
+#: explainer that silently declined to explain an unrecognised spelling would
+#: be the worst possible place to be strict.
+FAILED_STATES = frozenset({"FAILED", "DEAD_LETTERED", "DEAD_LETTER"})
+
+
+def explain_failure(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any] | None:
+    """The per-attempt facts that make a dead agent actionable. None if it lived.
+
+    "task failed" is not a report. What a reader needs is which attempt, on
+    which backend, with what exit code, and what the worker said -- and none of
+    those are on the task document. `result_summary` is written once at terminal
+    state, so a task that failed twice and succeeded on the third try carries
+    only the third attempt's numbers; the per-attempt record is the only place
+    the others exist.
+
+    ONE EXTRA ROUND TRIP, AND ONLY ON A FAILURE. Every successful result read
+    would otherwise pay for a list it has nothing to say about. The condition is
+    the task's state, so the cost lands exactly where the information is wanted.
+
+    A FAILED READ IS REPORTED, NOT SWALLOWED. If the attempts route cannot be
+    read, this says so in `attempts_unreadable` rather than returning None --
+    None means "this task did not fail", and collapsing "it failed and I could
+    not find out why" into that would be the exact substitution this repository
+    keeps deleting.
+
+    `exit_code: null` MEANS NOT RECORDED. It must never be rendered as 0, which
+    is the one value that would read as a clean exit on a task that failed. The
+    same rule as the em dash in `sc`, in the place where getting it wrong is
+    most expensive.
+    """
+    if str(task.get("state") or "") not in FAILED_STATES:
+        return None
+
+    task_id = task_id_of(task)
+    out: dict[str, Any] = {
+        "state": task.get("state"),
+        # From the task, so there is always something here even when the
+        # attempts route cannot be read.
+        "last_error": task.get("last_error"),
+        "attempt_count": task.get("attempt_count"),
+    }
+    if not task_id:
+        # NOT the same as "no attempts". Without an id the route cannot be
+        # asked at all, so the attempts are UNREADABLE -- reporting that as an
+        # empty list would say this task failed before any agent ran, which is
+        # a claim nobody checked.
+        out["attempts_unreadable"] = (
+            "this task document carries no id, so its attempts cannot be read. "
+            "The exit code and the backend that ran are UNKNOWN"
+        )
+        return out
+    try:
+        attempts = client.attempts(task_id)
+    except SwarmError as exc:
+        out["attempts_unreadable"] = (
+            f"the per-attempt record could not be read: {exc}. The exit code and "
+            "the backend that ran are UNKNOWN, not absent"
+        )
+        return out
+
+    if not attempts:
+        # A real measurement, and a meaningful one: a task can reach FAILED
+        # without ever being attempted -- admission or dispatch failed -- and
+        # that is a different investigation from an agent that ran and died.
+        out["attempts"] = []
+        out["note"] = (
+            "this task has no attempt records, so it failed before any agent "
+            "ran -- look at admission and dispatch, not at the agent"
+        )
+        return out
+
+    # Newest first, per the route's contract, so the last attempt is the one
+    # that decided the outcome.
+    last = attempts[0]
+    out["last_attempt"] = {
+        "attempt_id": last.get("attempt_id"),
+        "generation": last.get("generation"),
+        # The backend that ACTUALLY ran, which is the ground truth. The
+        # catalogue-derived `backend` on the result beside this is what the
+        # profile says it should have been; the two differing is itself a
+        # finding.
+        "backend": last.get("backend"),
+        "execution_name": last.get("execution_name"),
+        "exit_code": last.get("exit_code"),
+        "error": last.get("error"),
+        # OOM is a common way an agent dies and is invisible in an exit code
+        # alone. `oom_near_miss` says the run came close even when it survived,
+        # which is the difference between "make the prompt smaller" and
+        # "use a bigger resource class".
+        "oom_near_miss": last.get("oom_near_miss"),
+        "peak_rss_bytes": last.get("peak_rss_bytes"),
+    }
+    if last.get("exit_code") is None:
+        out["last_attempt"]["exit_code_note"] = (
+            "not recorded -- this is UNKNOWN, not 0. A missing exit code and a "
+            "clean exit are different facts and only one of them means the "
+            "agent finished"
+        )
+    if len(attempts) > 1:
+        # Earlier attempts are the whole reason this route exists: their
+        # numbers are the ones `result_summary` overwrote.
+        out["earlier_attempts"] = [
+            {
+                "attempt_id": a.get("attempt_id"),
+                "generation": a.get("generation"),
+                "exit_code": a.get("exit_code"),
+                "error": a.get("error"),
+            }
+            for a in attempts[1:]
+        ]
+    return out
+
+
 @dataclass
 class ApplyResult:
     task_id: str

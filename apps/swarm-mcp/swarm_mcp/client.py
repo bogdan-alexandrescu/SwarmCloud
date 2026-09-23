@@ -514,6 +514,33 @@ class SwarmClient:
             return list(data.get("events") or [])
         return list(data or [])
 
+    def attempts(self, task_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Every attempt for one task, newest first, as the route serves them.
+
+        WHY THIS IS NOT ANSWERABLE FROM THE TASK. `result_summary` is written
+        once, by `finish()`, at terminal state -- so a task that failed twice
+        and succeeded on the third attempt carries ONLY attempt three's
+        numbers. The exit code, the error and the backend that actually ran are
+        per-ATTEMPT, and `GET /v1/tasks/{id}/attempts` is where they live. That
+        route already existed; this is the client method that reaches it, not a
+        second way to get the same answer.
+
+        An empty list is a MEASUREMENT here -- a task admitted but never
+        attempted really has none -- so a failure to read raises rather than
+        returning `[]`, which is the rule `sc` states at the top of its module
+        and the one most worth keeping on a path that explains failures.
+        """
+        data = self.request("GET", f"/v1/tasks/{task_id}/attempts?limit={limit}")
+        if isinstance(data, dict):
+            attempts = data.get("attempts")
+            if attempts is None:
+                raise SwarmError(
+                    f"GET /v1/tasks/{task_id}/attempts answered without an "
+                    "`attempts` field"
+                )
+            return [a for a in attempts if isinstance(a, dict)]
+        return list(data or [])
+
     def logs(
         self,
         task_id: str,

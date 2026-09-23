@@ -43,6 +43,7 @@ from .patches import (
     describe_task,
     download,
     explain_absence,
+    explain_failure,
     integrate,
     patch_uri,
 )
@@ -293,6 +294,41 @@ def cmd_follow(client: SwarmClient, args) -> int:
     return EXIT_FAIL if failed else EXIT_OK
 
 
+def _print_failure(client: SwarmClient, task: dict[str, Any]) -> None:
+    """The per-attempt detail, printed only when the task failed.
+
+    The SAME function the MCP tool calls. A terminal that explained a failure
+    differently from the tool would be two accounts of one dead agent.
+    """
+    failure = explain_failure(client, task)
+    if failure is None:
+        return
+    if failure.get("attempts_unreadable"):
+        print(f"  attempts  {failure['attempts_unreadable']}")
+        return
+    if failure.get("note"):
+        print(f"  attempts  {failure['note']}")
+        return
+    last = failure.get("last_attempt") or {}
+    # `exit_code_note` carries the "this is UNKNOWN, not 0" sentence, and a
+    # bare `—` in its place would be the very substitution it exists to stop.
+    exit_code = last.get("exit_code")
+    shown = str(exit_code) if exit_code is not None else "not recorded (UNKNOWN, not 0)"
+    print(f"  attempt {last.get('attempt_id') or '—'}  gen {last.get('generation')}")
+    print(f"    backend  {last.get('backend') or '—'}  exit {shown}")
+    if last.get("execution_name"):
+        print(f"    execution {last['execution_name']}")
+    if last.get("oom_near_miss"):
+        print("    OOM near miss -- the run came close to its memory limit")
+    if last.get("error"):
+        print(f"    error    {last['error']}")
+    for earlier in failure.get("earlier_attempts") or []:
+        print(
+            f"    earlier  gen {earlier.get('generation')} "
+            f"exit {earlier.get('exit_code')} {earlier.get('error') or ''}".rstrip()
+        )
+
+
 def cmd_result(client: SwarmClient, args) -> int:
     task = client.task(args.task_id)
     if args.json:
@@ -301,6 +337,7 @@ def cmd_result(client: SwarmClient, args) -> int:
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
     print(f"{args.task_id}  {task.get('state')}")
+    _print_failure(client, task)
     if not git:
         print(f"  code: {explain_absence(task)}")
         return EXIT_OK

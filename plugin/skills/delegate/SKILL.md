@@ -209,7 +209,27 @@ a `null` there means the catalogue does not hold that profile any more, which is
 
 Two more, from outside that list:
 
-* A task in `FAILED` or `DEAD_LETTER` carries `error` in the result. Quote it.
+* A task in `FAILED` or `DEAD_LETTERED` carries `error` in the result **and a
+  `failure` block**, read from the per-attempt record. That block is what turns
+  "task failed" into a report: the last attempt's backend, execution name, exit
+  code, error and whether it came near an OOM, plus **every earlier attempt's**
+  exit code and error. The earlier ones are not available anywhere else —
+  `result_summary` is written once at terminal state, so a task that failed
+  twice and succeeded on the third try carries only the third attempt's numbers.
+
+  Three readings that are easy to get wrong:
+
+  * **`exit_code: null` is NOT RECORDED, not 0.** Zero means the agent exited
+    cleanly, which is the one thing it did not do. Say "not recorded".
+  * **`failure.note`** means there are no attempt records at all: the task
+    failed *before any agent ran*. Look at admission and dispatch, not at the
+    prompt.
+  * **`failure.attempts_unreadable`** means the route could not be read. The
+    exit code is unknown, not absent — do not report the failure as having no
+    exit code.
+
+  `oom_near_miss` is the difference between "make the unit smaller" and "use a
+  bigger resource class", and it is invisible in an exit code alone.
 * **Several failing at once is a platform answer, not an agent answer.** Run
   `swarm_trouble` before re-dispatching: an exhausted quota window, a paused
   pool or an account needing re-auth will fail the retry the same way, and

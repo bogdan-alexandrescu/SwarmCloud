@@ -409,6 +409,201 @@ def test_the_result_of_a_task_names_its_profile_and_its_backend():
     assert stale["backend"] is None
 
 
+# --------------------------------------------------------------------------
+# "task failed" is not a report
+# --------------------------------------------------------------------------
+
+
+class _AttemptClient:
+    """A client that serves one task and its attempt list, and counts reads."""
+
+    def __init__(self, task, attempts=None, raises=False):
+        self._task = task
+        self._attempts = attempts if attempts is not None else []
+        self._raises = raises
+        self.attempt_reads = 0
+
+    def task(self, task_id):
+        return self._task
+
+    def attempts(self, task_id, *, limit=20):
+        self.attempt_reads += 1
+        if self._raises:
+            raise SwarmError("403: the attempts route refused this caller")
+        return self._attempts
+
+
+def _failed_task(**extra):
+    return {"id": "task_x", "state": "FAILED", "runner_profile": "claude-code", **extra}
+
+
+def test_a_successful_result_costs_no_extra_round_trip():
+    """`explain_failure` returns None without asking, so the common read pays
+    nothing. THE MUTATION THIS CATCHES: move the state check below the fetch."""
+    from swarm_mcp.patches import explain_failure
+
+    client = _AttemptClient({"id": "task_x", "state": "SUCCEEDED"})
+    assert explain_failure(client, {"id": "task_x", "state": "SUCCEEDED"}) is None
+    assert client.attempt_reads == 0
+
+
+def test_a_failure_names_the_attempt_the_backend_and_the_exit_code():
+    """The four facts a reader needs and the task document does not carry."""
+    from swarm_mcp.patches import explain_failure
+
+    client = _AttemptClient(
+        _failed_task(last_error="agent exited non-zero", attempt_count=2),
+        attempts=[
+            {"attempt_id": "att_2", "generation": 2, "backend": "GKE_AUTOPILOT",
+             "execution_name": "swarm-job-abc", "exit_code": 137,
+             "error": "killed", "oom_near_miss": True, "peak_rss_bytes": 8_000_000},
+            {"attempt_id": "att_1", "generation": 1, "backend": "CLOUD_RUN_JOB",
+             "exit_code": 1, "error": "first try failed"},
+        ],
+    )
+    failure = explain_failure(client, _failed_task(attempt_count=2))
+    last = failure["last_attempt"]
+    assert last["attempt_id"] == "att_2"
+    assert last["backend"] == "GKE_AUTOPILOT"
+    assert last["exit_code"] == 137
+    assert last["oom_near_miss"] is True
+    assert last["execution_name"] == "swarm-job-abc"
+
+    # The EARLIER attempt is the whole reason the route exists: `result_summary`
+    # is written once at terminal state and would have overwritten it.
+    assert failure["earlier_attempts"] == [
+        {"attempt_id": "att_1", "generation": 1, "exit_code": 1,
+         "error": "first try failed"}
+    ]
+
+
+def test_a_missing_exit_code_is_reported_as_unknown_and_never_as_zero():
+    """The most expensive possible instance of the three-marks rule.
+
+    0 means the agent exited cleanly. A task that FAILED with no recorded exit
+    code did not exit cleanly, so rendering the absence as 0 states the opposite
+    of what happened.
+
+    THE MUTATION THIS CATCHES: `"exit_code": last.get("exit_code", 0)` or
+    `last.get("exit_code") or 0` -- either of the two ways this is normally
+    written wrong.
+    """
+    from swarm_mcp.patches import explain_failure
+
+    client = _AttemptClient(
+        _failed_task(),
+        attempts=[{"attempt_id": "att_1", "generation": 1, "exit_code": None}],
+    )
+    failure = explain_failure(client, _failed_task())
+    assert failure["last_attempt"]["exit_code"] is None
+    assert "not recorded" in failure["last_attempt"]["exit_code_note"]
+    assert "not 0" in failure["last_attempt"]["exit_code_note"]
+
+    # A real 0 must NOT pick up the note -- it is a measurement.
+    client = _AttemptClient(
+        _failed_task(),
+        attempts=[{"attempt_id": "att_1", "generation": 1, "exit_code": 0}],
+    )
+    failure = explain_failure(client, _failed_task())
+    assert failure["last_attempt"]["exit_code"] == 0
+    assert "exit_code_note" not in failure["last_attempt"]
+
+
+def test_no_attempts_at_all_is_a_finding_and_not_an_empty_report():
+    """A task can reach FAILED without any agent running -- admission or
+    dispatch failed. That is a different investigation, and saying nothing would
+    send the reader to read an agent's logs that do not exist."""
+    from swarm_mcp.patches import explain_failure
+
+    client = _AttemptClient(_failed_task(), attempts=[])
+    failure = explain_failure(client, _failed_task())
+    assert failure["attempts"] == []
+    assert "before any agent ran" in failure["note"]
+    assert "last_attempt" not in failure
+
+
+def test_an_unreadable_attempts_route_is_reported_rather_than_swallowed():
+    """None means "this task did not fail". Returning it because the attempts
+    route 403'd would report a failed task as a healthy one -- the exact
+    substitution of a failed read for an empty result this repository keeps
+    deleting."""
+    from swarm_mcp.patches import explain_failure
+
+    client = _AttemptClient(_failed_task(), raises=True)
+    failure = explain_failure(client, _failed_task())
+    assert failure is not None, "an unreadable route must not read as 'did not fail'"
+    assert "UNKNOWN, not absent" in failure["attempts_unreadable"]
+    # What IS known from the task survives the failed read.
+    assert failure["state"] == "FAILED"
+
+
+def test_a_task_with_no_id_is_unreadable_rather_than_never_attempted():
+    """Two claims that look alike and are not.
+
+    "This task has no attempt records" says an agent never ran, and sends the
+    reader to admission and dispatch. Without a task id nothing was ASKED, so
+    saying that would be a claim nobody checked. The id being missing is itself
+    the defect `task_id_of` exists for -- the API names the field `id`, and
+    reading it as `task_id` made every task on the platform look unstarted.
+    """
+    from swarm_mcp.patches import explain_failure
+
+    client = _AttemptClient({"state": "FAILED"}, attempts=[])
+    failure = explain_failure(client, {"state": "FAILED"})
+    assert "attempts_unreadable" in failure
+    assert "note" not in failure, (
+        "a task whose attempts were never asked for must not be reported as one "
+        "that never ran"
+    )
+    assert client.attempt_reads == 0
+
+
+def test_dead_lettered_counts_as_failed_under_both_spellings():
+    """`client.TERMINAL` already carries both defensively, and a failure
+    explainer that declined to explain an unrecognised spelling would be the
+    worst place to be strict."""
+    from swarm_mcp.patches import FAILED_STATES, explain_failure
+
+    assert {"FAILED", "DEAD_LETTERED", "DEAD_LETTER"} <= FAILED_STATES
+    for state in ("DEAD_LETTERED", "DEAD_LETTER"):
+        task = {"id": "task_x", "state": state}
+        client = _AttemptClient(task, attempts=[])
+        assert explain_failure(client, task) is not None
+
+
+def test_the_result_tool_attaches_the_failure_block():
+    """Routed, not merely written: a function nothing calls explains nothing."""
+    import json
+
+    from swarm_mcp import server
+
+    task = _failed_task(last_error="boom")
+    client = _AttemptClient(
+        task,
+        attempts=[{"attempt_id": "att_1", "generation": 1, "exit_code": 2,
+                   "backend": "CLOUD_RUN_JOB", "error": "boom"}],
+    )
+    payload = json.loads(server._call(client, "swarm_result", {"task_id": "task_x"}))
+    assert payload["state"] == "FAILED"
+    assert payload["runner_profile"] == "claude-code"
+    assert payload["failure"]["last_attempt"]["exit_code"] == 2
+    assert client.attempt_reads == 1
+
+
+def test_the_result_tool_adds_nothing_when_the_task_succeeded():
+    """No `failure` key at all on a healthy result -- an empty one would read as
+    a failure with no detail."""
+    import json
+
+    from swarm_mcp import server
+
+    task = {"id": "task_x", "state": "SUCCEEDED", "runner_profile": "mock"}
+    client = _AttemptClient(task)
+    payload = json.loads(server._call(client, "swarm_result", {"task_id": "task_x"}))
+    assert "failure" not in payload
+    assert client.attempt_reads == 0
+
+
 def test_the_delegation_skill_never_recommends_a_profile_the_platform_refuses():
     """Prose cannot be refused at runtime, so it is checked here.
 
