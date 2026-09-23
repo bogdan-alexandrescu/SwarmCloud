@@ -2,7 +2,16 @@ import { useState } from 'react'
 import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
 import { errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
-import { Id, Screen, timeAgo } from './Shell'
+import { HelpCard } from './HelpCard'
+import { Screen, timeAgo } from './Shell'
+import {
+  InputFields,
+  Move,
+  buildInput,
+  missingRequired,
+  seedFields,
+  type InputField,
+} from './Submit'
 import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
@@ -14,17 +23,43 @@ import {
 } from './types'
 
 /**
- * Submit a multi-step workflow -- the only WRITE screen in this UI.
+ * Build a multi-step workflow -- the only WRITE screen in this UI besides
+ * `Submit.tsx`, and the one the owner's verdict hit hardest.
  *
- * NO CLIENT-SIDE DAG CHECK. `validate_dag` (swarm_api/validation.py) names one
- * concrete cycle -- "workflow dependency graph contains a cycle: build -> test
- * -> build" -- and that sentence is the entire value of the 422. A copy of it
- * here would restate server logic check-contract-parity.sh cannot check, so it
- * would drift from the thing that actually decides.
+ * WHAT WAS WRONG WAS THE MODEL, NOT THE STYLING. The old form was a flat list
+ * of steps. Each step had a `step id` TEXT BOX that had to be filled in before
+ * anything else on the screen worked; dependencies were checkboxes over the
+ * ids you had already typed; and the `input` was a `<textarea class="mono">`
+ * whose label read `input (JSON object)` and whose value started as `{}`. On a
+ * first visit that produced three dead ends stacked on top of each other --
+ * "Every step needs an id.", "— no other named step yet", "— depend on a step
+ * first" -- and the only way out of all three was to type an identifier whose
+ * only job was to be typed again later.
+ *
+ * SO THE MODEL IS STAGES, AND IDS ARE GENERATED. A workflow is a column of
+ * stages; a stage holds the steps that run at the same time. "These three run
+ * in parallel, then this one" is two gestures -- add three steps to a stage,
+ * add a stage -- and no id is ever typed. Ids are still SHOWN and still
+ * editable, because the API's refusals name them ("workflow dependency graph
+ * contains a cycle: build -> test -> build") and a reader has to be able to
+ * find the step a message is about.
+ *
+ * THE DAG IS STILL FULLY EXPRESSIBLE. A stage is the DEFAULT for
+ * `depends_on`, not a replacement for it: every step can narrow its own
+ * dependencies to any subset of the steps in earlier stages, from a list of
+ * generated names. Any DAG can be layered topologically, so nothing the API
+ * accepts has become unreachable from here -- the common shape just costs
+ * nothing.
+ *
+ * NO CLIENT-SIDE DAG CHECK, unchanged. `validate_dag`
+ * (swarm_api/validation.py) names one concrete cycle and that sentence is the
+ * entire value of the 422. A copy of it here would restate server logic
+ * check-contract-parity.sh cannot check. Stages cannot produce a cycle in the
+ * first place, and a narrowed dependency can only ever point backwards.
  *
  * AND A FAILED POST IS NOT A FAILED GET: a refused request created nothing, a
- * request that never came back may have created everything. Two renderings, and
- * the ambiguous one offers no retry -- a blind resubmit runs it twice.
+ * request that never came back may have created everything. Two renderings,
+ * and the ambiguous one offers no retry -- a blind resubmit runs it twice.
  */
 
 interface FormSources {
@@ -54,8 +89,7 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
     : { status: 'ok', data, fetchedAt: cap.fetchedAt, serverAt: cap.serverAt }
 }
 
-/** One reason this form refused to send, attributed to the step that caused it.
- *  `stepId` is `''` for a step that has not been named yet. */
+/** One reason this form refused to send, attributed to the step that caused it. */
 interface StepProblem { stepId: string; message: string }
 
 /** `not_sent`: this browser refused; NOTHING left, so there is nothing to check for.
@@ -70,8 +104,7 @@ type Submission =
 /**
  * `routes/workflows.create_workflow`'s `dispatch` block: what was ACCEPTED, not
  * what was sent. Null when the 201 carried none, which is an API older than the
- * field rather than a workflow that chose nothing -- the same distinction
- * `dispatchOf` keeps for a task.
+ * field rather than a workflow that chose nothing.
  */
 export interface DispatchEcho {
   strategy: string
@@ -148,86 +181,54 @@ async function postWorkflow(body: unknown): Promise<Submission> {
   return res.status < 500 ? { kind: 'rejected', error } : { kind: 'uncertain', error }
 }
 
+/* ==========================================================================
+   THE PLAN
+   ========================================================================== */
+
 interface StepDraft {
+  /** React identity and nothing else; never sent. */
   key: number
-  stepId: string
+  /** The `step_id` the API sees. GENERATED from the profile, editable, never
+   *  a prerequisite for anything else on the screen working. */
+  id: string
   profile: string
-  dependsOn: string[]
-  /** RAW TEXT, not a parsed object -- the same choice `Submit.tsx` makes.
-   *  A half-typed JSON object has to survive a keystroke, and parsing on every
-   *  change would delete the character that made it invalid. */
-  input: string
+  /** Which parallel band this runs in. 0 is "starts immediately". */
+  stage: number
+  /** `null` -- the default -- means "every step in the previous stage". A list
+   *  narrows it to a chosen subset of the steps in EARLIER stages. Nothing can
+   *  point sideways or forwards, so nothing here can make a cycle. */
+  after: string[] | null
+  input: InputField[]
   /** upstream step_id -> artifact filename. Keyed by step id and NOT by the
    *  dependency's position, so reordering or removing a step cannot silently
    *  re-point a filename at a different upstream. */
-  inputFrom: Record<string, string>
+  from: Record<string, string>
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-type ParsedInput =
-  | { ok: true; input: Record<string, unknown> }
-  | { ok: false; message: string }
-
-/**
- * One step's `input`, parsed exactly as `Submit.tsx` parses the single-agent
- * form's: blank means `{}`, and anything that is not a JSON OBJECT is refused
- * here rather than sent -- `WorkflowStepCreate.input` is `dict[str, Any]`, so a
- * bare array or number is a 422 about a type the caller cannot see.
- */
-function parseStepInput(text: string): ParsedInput {
-  try {
-    const parsed: unknown = JSON.parse(text.trim() === '' ? '{}' : text)
-    if (!isRecord(parsed)) {
-      return { ok: false, message: 'the API stores input as a JSON object, so this must be one' }
-    }
-    return { ok: true, input: parsed }
-  } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : 'this is not JSON' }
+/** A name nothing else in the plan is using. The profile is the stem because
+ *  it is the one word about a step a reader already knows. */
+function autoId(profile: string, taken: Set<string>): string {
+  const stem = profile.trim() === '' ? 'step' : profile.trim()
+  for (let i = 1; i < 999; i++) {
+    const candidate = `${stem}-${i}`
+    if (!taken.has(candidate)) return candidate
   }
+  return `${stem}-${taken.size + 1}`
 }
 
-/**
- * The keys this step's runner demands and this step's input does not carry.
- *
- * The test is the RUNNER's, restated from `run_cli_agent`: present, a string,
- * and not blank. A looser one here would pass `{"prompt": ""}` through to the
- * identical failure, which is the whole class of defect this control exists to
- * close -- the screen accepted it, the platform accepted it, and the agent
- * refused it minutes later having already spent a slot and mounted a credential.
- */
-function missingInputKeys(input: Record<string, unknown>, required: string[]): string[] {
-  return required.filter((key) => {
-    const value = input[key]
-    return typeof value !== 'string' || value.trim() === ''
-  })
-}
-
-/**
- * `input_from`, narrowed to the dependencies that still exist.
- *
- * `validate_dag` refuses a source that is not also a dependency -- "an artifact
- * cannot be staged from a step that may not have run yet" -- so the map is
- * built FROM the filtered `depends_on` rather than filtered afterwards. A
- * filename typed against a dependency that was later unchecked is kept in the
- * draft and simply not sent, so re-checking it restores what was typed.
- */
-function stagedArtifacts(step: StepDraft, dependsOn: string[]): Record<string, string> {
-  const staged: Record<string, string> = {}
-  for (const source of dependsOn) {
-    const filename = (step.inputFrom[source] ?? '').trim()
-    if (filename !== '') staged[source] = filename
-  }
-  return staged
+/** What this step actually waits for, resolved. */
+function dependsOf(step: StepDraft, steps: StepDraft[]): string[] {
+  const earlier = steps.filter((s) => s.stage < step.stage).map((s) => s.id)
+  if (step.after === null) return steps.filter((s) => s.stage === step.stage - 1).map((s) => s.id)
+  // Filtered against the plan as it stands now: a narrowed dependency whose
+  // step was deleted or moved into this stage is silently unwired rather than
+  // sent as an edge to a step that is no longer upstream.
+  return step.after.filter((id) => earlier.includes(id))
 }
 
 export function SubmitWorkflowScreen() {
   return (
-    // ONE SENTENCE IN THE EMPTY STATE (§6.9). The second -- that a caller may
-    // only name a profile from the catalogue -- is invariant 10, it is the
-    // same sentence on every visit, and it is `#help/runner-profile-by-name`.
+    // ONE SENTENCE IN THE EMPTY STATE (§6.9).
     <Screen title="Submit a workflow" load={loadSubmitForm}
       summary={(d) => `${d.profiles.length} runner profiles offered to this tenant`}
       empty={{ heading: 'No runner profiles', body: 'The catalogue read succeeded and named no runner profile.' }}>
@@ -237,13 +238,20 @@ export function SubmitWorkflowScreen() {
 }
 
 function Form({ sources }: { sources: FormSources }) {
-  const first = sources.profiles[0]
   const byName = new Map<string, RunnerProfile>(sources.profiles)
-  // `'{}'` and not `''`, so the textarea shows the shape the field takes before
-  // anything is typed into it. `Submit.tsx` seeds its own the same way.
-  const blank = (key: number): StepDraft =>
-    ({ key, stepId: '', profile: first ? first[0] : '', dependsOn: [], input: '{}', inputFrom: {} })
-  const [steps, setSteps] = useState<StepDraft[]>([blank(1)])
+  // `?? true` and not `|| true`: an older API omits `available`, and `false ||
+  // true` is true, which would offer a profile we know the API would refuse.
+  const offered = sources.profiles.filter(([, p]) => (p.available ?? true) !== false)
+  // `loadSubmitForm` returns `empty` for a zero-length catalogue, so
+  // `sources.profiles[0]` exists. The fallback is for the case where every
+  // profile in a non-empty catalogue is disabled: the form still has to name a
+  // profile in its first step rather than render a step with no runner.
+  const firstProfile = (offered[0] ?? sources.profiles[0])?.[0] ?? ''
+  const [nextKey, setNextKey] = useState(2)
+  const [steps, setSteps] = useState<StepDraft[]>(() => [{
+    key: 1, id: `${firstProfile}-1`, profile: firstProfile, stage: 0,
+    after: null, input: seedFields([], requiredInputKeys(byName.get(firstProfile))), from: {},
+  }])
   const [dispatch, setDispatch] = useState<DispatchDraft>({
     strategy: DEFAULT_STRATEGY,
     carrier: DEFAULT_CARRIER,
@@ -254,81 +262,94 @@ function Form({ sources }: { sources: FormSources }) {
   // so `maxSteps` stays null and nothing here caps the form.
   const raw = sources.limits === null ? undefined : sources.limits.max_workflow_steps
   const maxSteps = typeof raw === 'number' ? raw : null
-  // The only check made here: duplicate ids, cycles and unknown profiles are all named precisely by the API.
-  const ids = steps.map((s) => s.stepId.trim())
-  const unnamed = ids.some((id) => id === '')
+
+  const stageCount = steps.reduce((m, s) => Math.max(m, s.stage + 1), 1)
+  const stages = Array.from({ length: stageCount }, (_, i) => steps.filter((s) => s.stage === i))
+  const atCeiling = maxSteps !== null && steps.length >= maxSteps
+
+  const addStep = (stage: number) => {
+    const taken = new Set(steps.map((s) => s.id))
+    setSteps([...steps, {
+      key: nextKey, id: autoId(firstProfile, taken), profile: firstProfile, stage,
+      after: null, input: seedFields([], requiredInputKeys(byName.get(firstProfile))), from: {},
+    }])
+    setNextKey(nextKey + 1)
+  }
+  const patch = (key: number, next: StepDraft) => setSteps(steps.map((s) => (s.key === key ? next : s)))
+  const drop = (key: number) => {
+    const left = steps.filter((s) => s.key !== key)
+    // Close the gap a removed stage leaves, so "stage 3" never sits under
+    // "stage 1" with an empty band between them.
+    const live = Array.from(new Set(left.map((s) => s.stage))).sort((a, b) => a - b)
+    setSteps(left.map((s) => ({ ...s, stage: live.indexOf(s.stage) })))
+  }
+
   // The steps nothing else depends on. `integrate` opens ONE pull request and
   // `resolve_integrator_step` therefore requires exactly one of these, so this
-  // is what lets the control NAME the step that would open it. It is a preview
-  // only: nothing below is gated on it, matching this screen's standing rule
-  // that the API decides the DAG and names its own refusal.
-  const dependedOn = new Set(steps.flatMap((s) => s.dependsOn.filter((d) => ids.includes(d))))
-  const terminals = ids.filter((id) => id !== '' && !dependedOn.has(id))
+  // is what lets the control NAME the step that would open it. A preview only:
+  // nothing below is gated on it, matching this screen's standing rule that the
+  // API decides the DAG and names its own refusal.
+  const dependedOn = new Set(steps.flatMap((s) => dependsOf(s, steps)))
+  const terminals = steps.map((s) => s.id).filter((id) => !dependedOn.has(id))
+
   const send = () => {
     // BUILT AND CHECKED BEFORE ANYTHING IS SENT. Every problem found here is a
     // workflow that would have been accepted by the API and then failed at the
-    // agent, one step at a time, having spent a slot on each -- so the refusal
-    // is worth more than the submission. Every step is checked, not just the
-    // first bad one: fixing them one round-trip at a time is the same wait.
+    // agent, one step at a time, having spent a slot on each. Every step is
+    // checked, not just the first bad one: fixing them one round-trip at a
+    // time is the same wait.
     const problems: StepProblem[] = []
     const body: Array<Record<string, unknown>> = []
+    const seen = new Set<string>()
     for (const s of steps) {
-      const stepId = s.stepId.trim()
-      const parsed = parseStepInput(s.input)
-      if (!parsed.ok) {
-        // Labelled "Not sent", as `Submit.tsx` labels its own: a refusal phrased
-        // like the API's sends someone looking at the platform for a typo that
-        // is in this textarea.
-        problems.push({ stepId, message: `Not sent — ${parsed.message}.` })
+      const id = s.id.trim()
+      if (id === '') { problems.push({ stepId: id, message: 'Not sent — this step has no name.' }); continue }
+      if (seen.has(id)) { problems.push({ stepId: id, message: 'Not sent — two steps are called this.' }); continue }
+      seen.add(id)
+      const built = buildInput(s.input)
+      if (!built.ok) {
+        // Labelled "Not sent", as `Submit.tsx` labels its own: a refusal
+        // phrased like the API's sends someone looking at the platform for a
+        // mistake that is on this screen.
+        problems.push({ stepId: id, message: `Not sent — ${built.message}.` })
         continue
       }
       // null means THIS API DID NOT SAY which keys the runner demands, which is
       // not the same as demanding none. Nothing is checked in that case and the
-      // form says so above; inventing a rule here would refuse valid workflows.
-      const required = requiredInputKeys(byName.get(s.profile))
-      const missing = required === null ? [] : missingInputKeys(parsed.input, required)
+      // step says so; inventing a rule here would refuse valid workflows.
+      const missing = missingRequired(s.input, requiredInputKeys(byName.get(s.profile)))
       if (missing.length > 0) {
         problems.push({
-          stepId,
-          message:
-            // The KEYS are named rather than the word "prompt": `required_keys`
-            // is a list the API sends, and a message that hardcoded one of its
-            // values would start lying the first time a runner demanded another.
-            //
-            // WHAT TO TYPE, AND NOTHING ELSE. The two sentences that followed
-            // explained that the runner raises this only after the step has
-            // been dispatched and given a credential -- which is why the check
-            // is here rather than left to the API, and is therefore an
-            // argument about the design rather than an instruction to the
-            // person reading it. The panel says it once, above the list.
-            `Not sent — add ${missing.map((k) => `"${k}": "…"`).join(', ')}, ` +
-            `which ${s.profile} refuses an attempt without.`,
+          stepId: id,
+          // The KEYS are named rather than the word "prompt": `required_keys`
+          // is a list the API sends, and a message that hardcoded one of its
+          // values would start lying the first time a runner demanded another.
+          message: `Not sent — ${s.profile} requires ${missing.map((k) => `input.${k}`).join(', ')} as a non-empty string.`,
         })
         continue
       }
-      // depends_on is filtered to ids that still exist: renaming a step after another
-      // depends on it would otherwise send an edge to a step that is no longer here.
-      const dependsOn = s.dependsOn.filter((d) => ids.includes(d))
-      const staged = stagedArtifacts(s, dependsOn)
+      const depends = dependsOf(s, steps)
+      const staged: Record<string, string> = {}
+      for (const source of depends) {
+        const filename = (s.from[source] ?? '').trim()
+        if (filename !== '') staged[source] = filename
+      }
       body.push({
-        step_id: stepId,
+        step_id: id,
         runner_profile: s.profile,
         // SENT ALWAYS, including when it is `{}`. `WorkflowStepCreate.input` is
         // `Field(default_factory=dict)`, so an omitted `input` is an accepted
         // workflow whose every agent step fails -- the defect this screen had.
         // An empty object here is a caller who chose it, not a form that forgot.
-        input: parsed.input,
-        depends_on: dependsOn,
+        input: built.input,
+        depends_on: depends,
         // Omitted when empty, unlike `input`: an empty `input_from` is exactly
         // the default and stages nothing, whereas an empty `input` is a payload
         // the runner still has to read.
         ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
       })
     }
-    if (problems.length > 0) {
-      setSub({ kind: 'not_sent', problems })
-      return
-    }
+    if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     setSub({ kind: 'sending' })
     const repo = dispatch.repositoryUrl.trim()
     void postWorkflow({
@@ -340,192 +361,227 @@ function Form({ sources }: { sources: FormSources }) {
       ...(repo === '' ? {} : { repository_url: repo }),
     }).then(setSub)
   }
-  return (
-    <>
-      <Outcome sub={sub} />
-      <section className="section panel">
-        <h2>Steps<span className="count-chip">{steps.length}{maxSteps === null ? '' : ` of ${maxSteps}`}</span></h2>
-        {steps.map((s, i) => (
-          <StepRow key={s.key} step={s} profiles={sources.profiles} removable={steps.length > 1}
-            // Self-dependency and a dependency on a step not in the workflow are
-            // both rejected by validate_dag; not offering them beats explaining them.
-            others={ids.filter((id, j) => id !== '' && j !== i)}
-            required={requiredInputKeys(byName.get(s.profile))}
-            onChange={(next) => setSteps(steps.map((o, j) => (j === i ? next : o)))}
-            onRemove={() => setSteps(steps.filter((_, j) => j !== i))} />
-        ))}
-        <div className="filters" style={{ marginTop: 10 }}>
-          <button disabled={maxSteps !== null && steps.length >= maxSteps}
-            onClick={() => setSteps([...steps, blank(Math.max(...steps.map((s) => s.key)) + 1)])}>add step</button>
-          <button disabled={unnamed || sub.kind === 'sending'} onClick={send}>
-            {sub.kind === 'sending' ? 'submitting…' : 'submit workflow'}
-          </button>
-          {unnamed && <span className="warn-text">Every step needs an id.</span>}
-        </div>
-        {/* AN UNREAD LIMIT IS NOT AN ABSENT LIMIT, and it is now drawn as one:
-            the step counter beside the heading says `N` with no `of M`, and
-            this line carries the mark for why. The 30-word paragraph -- that
-            nothing caps the form, that no number is guessed, that the API
-            enforces its own and names it -- is the standing rule for an absent
-            measurement and is `#help/absent-vs-zero`. `limitsDetail` stays: it
-            is the server's own words about THIS read and is the only part that
-            says where to look. */}
-        {maxSteps === null && (
-          <p
-            className="ctl-panel-note"
-            aria-label={`The step limit could not be read, so nothing caps this form and no number is guessed. ${sources.limitsDetail} The API enforces its own limit and names it.`}
-          >
-            <i className="ctl-mark is-unread">not read</i>
-            step limit · nothing caps this form
-            <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
-          </p>
-        )}
-      </section>
 
-      <section className="section panel">
-        <h2>What happens to the work</h2>
+  return (
+    <div className="sbf">
+      <div className="sbf-build">
+        <Outcome sub={sub} />
+
+        <Move n={1} title="Lay out the plan" aside={<HelpCard topic="runner-profile-by-name" />}>
+          {/* STAGES, NOT A LIST. Everything in one band runs at the same time;
+              the next band waits for it. That is the whole dependency model a
+              reader needs for the common shape, and it is expressed by WHERE a
+              step is rather than by what its neighbours are called. */}
+          {stages.map((inStage, i) => (
+            <div className="wfb-stage" key={i}>
+              <div className="wfb-stage-h">
+                <span className="wfb-stage-n">{i === 0 ? 'first' : `then`}</span>
+                <span className="wfb-stage-say">
+                  {i === 0
+                    ? (inStage.length === 1 ? 'starts immediately' : `${inStage.length} steps start together`)
+                    : (inStage.length === 1 ? 'waits for everything above' : `${inStage.length} steps run together, after everything above`)}
+                </span>
+              </div>
+              <div className="wfb-steps">
+                {inStage.map((s) => (
+                  <StepCard key={s.key} step={s} steps={steps} profiles={offered}
+                    required={requiredInputKeys(byName.get(s.profile))}
+                    removable={steps.length > 1}
+                    onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
+                ))}
+                <button type="button" className="wfb-add" disabled={atCeiling} onClick={() => addStep(i)}>
+                  add a step here <span className="wfb-add-say">runs alongside</span>
+                </button>
+              </div>
+            </div>
+          ))}
+          <button type="button" className="wfb-add is-stage" disabled={atCeiling} onClick={() => addStep(stageCount)}>
+            add a stage <span className="wfb-add-say">waits for everything above</span>
+          </button>
+          {atCeiling && maxSteps !== null && (
+            <p className="warn-text">This tenant&apos;s limit is {maxSteps} steps.</p>
+          )}
+          {/* AN UNREAD LIMIT IS NOT AN ABSENT LIMIT, and it is drawn as one:
+              the step counter beside the heading says `N` with no `of M`, and
+              this line carries the mark for why. */}
+          {maxSteps === null && (
+            <p className="ctl-panel-note"
+              aria-label={`The step limit could not be read, so nothing caps this form and no number is guessed. ${sources.limitsDetail} The API enforces its own limit and names it.`}>
+              <i className="ctl-mark is-unread">not read</i>
+              step limit · nothing caps this form
+              <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
+            </p>
+          )}
+        </Move>
+
         {/* `steps.length` is passed live, so the pull-request count on each
             option moves as steps are added. That is the entire point: with six
             steps on the form, `direct-pr` reads "up to 6 pull requests" and
             `integrate` reads "exactly one", side by side, before anything is
             submitted. */}
-        <DispatchChoice
-          draft={dispatch}
-          onChange={setDispatch}
-          steps={steps.length}
-          scale="workflow"
-          terminals={terminals}
-        />
-      </section>
-    </>
+        <Move n={2} title="Choose what happens to the work">
+          <DispatchChoice
+            draft={dispatch}
+            onChange={setDispatch}
+            steps={steps.length}
+            scale="workflow"
+            terminals={terminals}
+          />
+        </Move>
+      </div>
+
+      <aside className="sbf-side">
+        <div className="sbf-send">
+          <h2>Ready to send</h2>
+          <ul className="ctl-facts">
+            <li className="ctl-fact">
+              <b>steps</b>
+              {steps.length}{maxSteps === null ? '' : ` of ${maxSteps}`}
+            </li>
+            <li className="ctl-fact">
+              <b>stages</b>
+              {stageCount}
+            </li>
+            <li className="ctl-fact">
+              <b>result</b>
+              {dispatch.strategy}
+            </li>
+          </ul>
+          <button type="button" className="sbf-go" disabled={sub.kind === 'sending'} onClick={send}>
+            {sub.kind === 'sending' ? 'Submitting…' : 'Submit this workflow'}
+          </button>
+        </div>
+      </aside>
+    </div>
   )
 }
 
-function StepRow({ step, profiles, others, removable, required, onChange, onRemove }: {
-  step: StepDraft; profiles: Array<[string, RunnerProfile]>; others: string[]
+function StepCard({ step, steps, profiles, required, removable, onChange, onRemove }: {
+  step: StepDraft
+  steps: StepDraft[]
+  profiles: Array<[string, RunnerProfile]>
   /** What this step's runner refuses to start without, or null when this API
-   *  did not say. Computed once by the form so both the live warning here and
-   *  the refusal in `send` read the same answer. */
+   *  did not say. Computed by the form so the live warning here and the
+   *  refusal in `send` read the same answer. */
   required: string[] | null
-  removable: boolean; onChange: (next: StepDraft) => void; onRemove: () => void
+  removable: boolean
+  onChange: (next: StepDraft) => void
+  onRemove: () => void
 }) {
+  const [open, setOpen] = useState(false)
   const chosen = profiles.find(([name]) => name === step.profile)
-  // Live, so a missing prompt is visible while it is still being typed rather
-  // than only on the click that would have submitted it. The refusal in `send`
-  // is still the thing that stops the submission -- this only stops the reader
-  // being surprised by it.
-  const parsed = parseStepInput(step.input)
-  const missing = parsed.ok && required !== null ? missingInputKeys(parsed.input, required) : []
-  // ONLY the dependencies. `validate_dag` refuses an `input_from` source that
-  // is not also a dependency, so offering one would be offering a 422 -- and
-  // worse, the workflow it describes stages a file from a step that may not
-  // have run. Unchecking a dependency removes its row and nothing else.
-  const stageable = step.dependsOn.filter((d) => others.includes(d))
-  const inputId = `wf-step-input-${step.key}`
+  const depends = dependsOf(step, steps)
+  const missing = missingRequired(step.input, required)
+  const built = buildInput(step.input)
+  // Every step in an EARLIER stage. Offering a step in the same stage or a
+  // later one would be offering a 422, and worse, a workflow that stages a
+  // file from a step that may not have run.
+  const upstream = steps.filter((s) => s.stage < step.stage).map((s) => s.id)
+
+  const retitle = (profile: string) => onChange({
+    ...step, profile,
+    // The id follows the profile ONLY while it is still the generated one.
+    // A name somebody typed is theirs and survives a profile change.
+    id: /^[a-z0-9-]+-\d+$/.test(step.id) && step.id.startsWith(`${step.profile}-`)
+      ? autoId(profile, new Set(steps.filter((s) => s.key !== step.key).map((s) => s.id)))
+      : step.id,
+    input: seedFields(step.input, requiredInputKeys(profiles.find(([n]) => n === profile)?.[1])),
+  })
+
   return (
-    <div className="row" style={{ display: 'block', paddingBottom: 10 }}>
-      <div className="filters">
-        <label>
-          step id
-          {/* No text-transform, no normalising: this is the id the DAG is built from, and the id a 422 names back. */}
-          <input className="mono" value={step.stepId} spellCheck={false}
-            onChange={(e) => onChange({ ...step, stepId: e.target.value })} />
-        </label>
-        <label>
-          runner profile
-          <select value={step.profile} onChange={(e) => onChange({ ...step, profile: e.target.value })}>
-            {/* Only what the API would accept. Offering a disabled profile
-                and then refusing it on submit makes the form the liar. `?? true`
-                and not `|| true`: an older API omits the field, and `false ||
-                true` is true, which would show a profile we know is refused. */}
-            {profiles
-              .filter(([, p]) => (p.available ?? true) !== false)
-              .map(([name]) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-          </select>
-        </label>
-        {/* UNITS, never "agents": admission increments every pool this step needs
-            by its resource class's weight, so one large step costs four. */}
-        {chosen && <span className="muted small">{chosen[1].resource_class} · {chosen[1].units} units · {chosen[1].backend}</span>}
-        {removable && <button onClick={onRemove}>remove</button>}
-      </div>
-      <div className="filters">
-        <span className="muted small">depends on</span>
-        {others.length === 0 ? <span className="muted small">— no other named step yet</span> : others.map((id) => (
-          <label key={id} className="check">
-            <input type="checkbox" checked={step.dependsOn.includes(id)}
-              onChange={(e) => onChange({ ...step, dependsOn: e.target.checked
-                ? [...step.dependsOn, id] : step.dependsOn.filter((d) => d !== id) })} />
-            <Id>{id}</Id>
-          </label>
-        ))}
-      </div>
-      {/* THE FIELD WHOSE ABSENCE MADE EVERY WORKFLOW FROM THIS SCREEN FAIL.
-          Same control and same error handling as the single-agent form
-          (`Submit.tsx`), deliberately: two idioms for one field is how the two
-          halves drifted far enough apart for one of them to lose it entirely. */}
-      {/* THE FIELD'S LABEL CARRIES ITS CONTRACT (§8.4.3 / §8.5.3). A field's
-          own label is one of the five kinds of word a view may show, and the
-          requirement is part of the label rather than a paragraph under it:
-          `input (JSON object) — claude-code reads input.prompt`. The 40-word
-          note that also explained opacity and validation is
-          `#help/input-is-opaque`. The absent case keeps its own mark, because
-          "this API did not say" and "this profile requires nothing" are two
-          different facts and a blank label would collapse them. */}
-      <label className="t-label" htmlFor={inputId}>
-        input (JSON object)
-        {required !== null && required.length > 0 && (
-          <span className="t-label-note">
-            {step.profile} reads{' '}
-            <code>{required.map((k) => `input.${k}`).join(', ')}</code>
-          </span>
+    <div className="wfb-step">
+      <div className="wfb-step-h">
+        {/* The id is SHOWN because the API's refusals name it, and editable
+            because someone may want a word that means something. It is never
+            a prerequisite: it already has a value. */}
+        <input className="mono wfb-id" value={step.id} spellCheck={false} aria-label="step name"
+          onChange={(e) => onChange({ ...step, id: e.target.value })} />
+        <select className="wfb-profile" aria-label={`${step.id} runner profile`} value={step.profile}
+          onChange={(e) => retitle(e.target.value)}>
+          {/* Only what the API would accept. Offering a disabled profile and
+              then refusing it on submit makes the form the liar. */}
+          {profiles.map(([name]) => <option key={name} value={name}>{name}</option>)}
+        </select>
+        {removable && (
+          <button type="button" className="sbf-mini wfb-drop" onClick={onRemove}>remove</button>
         )}
-        {required === null && (
-          <span
-            className="t-label-note"
-            aria-label="This API did not say which keys this profile requires, so nothing is checked here."
-          >
-            <i className="ctl-mark is-unread">not read</i> required keys
-          </span>
-        )}
-      </label>
-      <textarea id={inputId} className="mono" rows={4} style={{ width: '100%' }} value={step.input}
-        spellCheck={false} onChange={(e) => onChange({ ...step, input: e.target.value })} />
-      {!parsed.ok && <p className="warn-text" role="alert">Not sent — {parsed.message}.</p>}
-      {/* THE KEYS, NAMED. What stays is the part that says what to type; what
-          went is the second sentence explaining that a missing key costs a
-          dispatch and a credential -- true, unchanged, and the reason the
-          check exists rather than something to re-read on every keystroke. */}
-      {missing.length > 0 && (
-        <p
-          className="warn-text"
-          role="alert"
-          aria-label={`${step.profile} requires ${missing.map((k) => `input.${k}`).join(', ')} as a non-empty string. Submitting without it produces a step that is dispatched, given a credential, and then fails, so this form will not send it.`}
-        >
-          Not sent — {step.profile} requires{' '}
-          <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a
-          non-empty string.
+      </div>
+      {/* UNITS, never "agents": admission increments every pool this step needs
+          by its resource class's weight, so one large step costs four. */}
+      {chosen && (
+        <p className="wfb-cost">
+          {chosen[1].resource_class} · {chosen[1].units} unit{chosen[1].units === 1 ? '' : 's'} · {chosen[1].backend}
+          <HelpCard topic="units-not-agents" />
         </p>
       )}
-      <div className="filters">
-        <span className="muted small">stage an artifact from</span>
-        {stageable.length === 0
-          ? <span className="muted small">— depend on a step first</span>
-          : stageable.map((id) => (
-            <label key={id}>
-              <span className="mono">{id}</span>
-              {/* The filename as the UPSTREAM step wrote it into SWARM_ARTIFACTS_DIR.
-                  It arrives in this step's workspace under the same name. Blank
-                  means nothing is staged from that step. */}
-              <input className="mono" value={step.inputFrom[id] ?? ''} spellCheck={false}
-                placeholder="artifact filename"
-                onChange={(e) => onChange({ ...step, inputFrom: { ...step.inputFrom, [id]: e.target.value } })} />
+
+      <InputFields profile={step.profile} fields={step.input} required={required}
+        idPrefix={`wf${step.key}`} onChange={(input) => onChange({ ...step, input })} />
+
+      {!built.ok && <p className="warn-text" role="alert">Not sent — {built.message}.</p>}
+      {missing.length > 0 && (
+        <p className="warn-text" role="alert"
+          aria-label={`${step.profile} requires ${missing.map((k) => `input.${k}`).join(', ')} as a non-empty string. Submitting without it produces a step that is dispatched, given a credential, and then fails, so this form will not send it.`}>
+          Not sent — {step.profile} requires{' '}
+          <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a non-empty string.
+        </p>
+      )}
+
+      {/* THE TWO ADVANCED CONTROLS, BEHIND THE ANSWER THEY ALREADY HAVE.
+          Both used to be open rows saying "— no other named step yet" and "—
+          depend on a step first" on a form where nothing could yet be either.
+          The summary line states what IS true; opening it is for changing it. */}
+      {step.stage > 0 && (
+        <details className="wfb-more" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+          {/* CLOSED, THE SUMMARY IS THE ANSWER; OPEN, IT IS THE QUESTION. The
+              two read the same sentence otherwise -- the summary said "waits
+              for everything in the stage above" directly above a checkbox
+              labelled "everything in the stage above", which is one fact
+              rendered twice and neither of them obviously the control. */}
+          <summary>
+            {open ? 'choose what this waits for' : <>
+              waits for{' '}
+              {step.after === null
+                ? <span className="wfb-dep">everything in the stage above</span>
+                : depends.length === 0
+                  ? <span className="wfb-dep">nothing — it starts with the first stage</span>
+                  : <span className="wfb-dep mono">{depends.join(', ')}</span>}
+            </>}
+          </summary>
+          <div className="wfb-deps">
+            <label className="check">
+              <input type="checkbox" checked={step.after === null}
+                onChange={(e) => onChange({ ...step, after: e.target.checked ? null : depends })} />
+              <span>everything in the stage above</span>
             </label>
-          ))}
-      </div>
+            {step.after !== null && upstream.map((id) => (
+              <label className="check" key={id}>
+                <input type="checkbox" checked={step.after?.includes(id) ?? false}
+                  onChange={(e) => onChange({ ...step, after: e.target.checked
+                    ? [...(step.after ?? []), id]
+                    : (step.after ?? []).filter((d) => d !== id) })} />
+                <span className="mono">{id}</span>
+              </label>
+            ))}
+          </div>
+          {depends.length > 0 && (
+            <div className="wfb-stage-from">
+              <p className="t-label">stage a file from a step it waits for</p>
+              {depends.map((id) => (
+                <label className="wfb-from" key={id}>
+                  <span className="mono">{id}</span>
+                  {/* The filename as the UPSTREAM step wrote it into
+                      SWARM_ARTIFACTS_DIR. It arrives in this step's workspace
+                      under the same name. Blank stages nothing. */}
+                  <input className="mono" value={step.from[id] ?? ''} spellCheck={false}
+                    placeholder="artifact filename"
+                    onChange={(e) => onChange({ ...step, from: { ...step.from, [id]: e.target.value } })} />
+                </label>
+              ))}
+            </div>
+          )}
+        </details>
+      )}
     </div>
   )
 }
@@ -542,9 +598,6 @@ function StepRow({ step, profiles, others, removable, required, onChange, onRemo
 function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number }) {
   if (echo === null) {
     // AN ABSENT ECHO IS NOT A CHOSEN DEFAULT, and the mark is what says so.
-    // The 28-word account of why -- an API older than the field, open the
-    // workflow to read it off its tasks -- is
-    // `#help/dispatch-absent-is-old-api`.
     return (
       <p
         className="ctl-panel-note"
@@ -598,12 +651,6 @@ function Outcome({ sub }: { sub: Submission }) {
   // writes that collection again, so a chip would read "queued" forever.
   if (sub.kind === 'created') {
     return (
-      // THE FACTS STRIP (§6.13), where a sentence with three facts and a
-      // clause used to be. The clause -- that no progress is shown because a
-      // workflow's own state is written once at submission and never updated
-      // -- is the reason there is no state chip here, and a missing chip is
-      // not a thing anyone can see; so it is the `progress` fact's own value,
-      // keyed and dashed, rather than a sentence about the panel.
       <div className="state" role="status">
         <h3>Workflow submitted</h3>
         <ul className="ctl-facts">
@@ -640,9 +687,7 @@ function Outcome({ sub }: { sub: Submission }) {
         {/* THE ONE SENTENCE IS THE INVARIANT. "Nothing was sent, so nothing
             was created" is what stops someone opening the Workflows board to
             look for a workflow that is not there, and no encoding carries it
-            -- an absence of a side effect has nothing to attach a mark to.
-            The 30 words after it argued for the check's existence and are
-            `#help/input-is-opaque`. */}
+            -- an absence of a side effect has nothing to attach a mark to. */}
         <p>Nothing was sent, so nothing was created.</p>
         <ul>
           {sub.problems.map((p, i) => (
@@ -684,11 +729,7 @@ function Outcome({ sub }: { sub: Submission }) {
           "request body failed validation"). Raw, so no pattern is restated here. */}
       {error.detail !== undefined && <pre>{JSON.stringify(error.detail, null, 1)}</pre>}
       {/* ONE SENTENCE EACH, AND BOTH ARE THE INVARIANT RATHER THAN AN
-          EXPLANATION OF IT: whether anything was created. Neither can be an
-          encoding, because what they are about is a side effect that did or
-          did not happen somewhere else. The uncertain one keeps the
-          instruction that prevents the damage -- look before you resubmit --
-          and loses the clause explaining why running twice is bad. */}
+          EXPLANATION OF IT: whether anything was created. */}
       <p>{uncertain
         ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
         : 'Nothing was created. Correct the steps below and submit again.'}</p>
