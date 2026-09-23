@@ -108,18 +108,30 @@ def _run(tmp: Path, snippet: str, *, fake_gcloud: str, env_extra: dict[str, str]
 
     # common.sh refuses to source a group- or world-writable env file, and it is
     # right to: it sources it as shell.
+    # ONE ENVIRONMENT NAME PER CALL, derived from the caller's own tmp_path.
+    # Every case in this file used the single name "itest", so every case wrote
+    # the SAME repo file -- terraform/environments/itest/itest.tfvars -- with
+    # DIFFERENT contents. Serially that is only untidy, because each write lands
+    # before the next read. Under `-n auto` it is a data race, and it failed as
+    # one: a case asserting there is no front door read the tfvars a concurrent
+    # case had just written declaring one.
+    #
+    # The name is what selects the tfvars path, so making the name unique makes
+    # the path unique, and the cases stop sharing anything at all.
+    environment = f"itest{abs(hash(str(tmp))) % 10**8:08d}"
     env_file = tmp / "env"
     env_file.write_text(
-        f"PROJECT_ID={PROJECT}\nREGION=us-central1\nENVIRONMENT=itest\n"
+        f"PROJECT_ID={PROJECT}\nREGION=us-central1\nENVIRONMENT={environment}\n"
     )
     env_file.chmod(0o600)
 
     # A private terraform environment, so the assertions do not move when Track C
     # edits dev.tfvars -- and so the "no front door" case can exist at all.
     if tfvars is not None:
-        env_dir = REPO / "terraform" / "environments" / "itest"
+        env_dir = REPO / "terraform" / "environments" / environment
         env_dir.mkdir(parents=True, exist_ok=True)
-        (env_dir / "itest.tfvars").write_text(tfvars)
+        (env_dir / f"{environment}.tfvars").write_text(tfvars)
+        _CREATED.append(env_dir)
 
     script = tmp / "probe.sh"
     script.write_text(
@@ -144,13 +156,33 @@ def _run(tmp: Path, snippet: str, *, fake_gcloud: str, env_extra: dict[str, str]
     )
 
 
+#: The tfvars directories THIS test made, so teardown removes those and only
+#: those. Populated by `_run`, drained by the fixture below.
+_CREATED: list[Path] = []
+
+
 @pytest.fixture(autouse=True)
 def _clean_itest_environment():
-    """The private tfvars directory is this file's, and does not outlive it."""
+    """Remove the private tfvars directories this test created. Only those.
+
+    TWO RACES WERE HERE, and the second one hid behind the fix for the first.
+
+    Every case used the single environment name `itest`, so every case wrote
+    the same repo file with different contents; concurrently, a case asserting
+    there is no front door read the tfvars a sibling had just written declaring
+    one. `_run` now derives a unique name per call, which settles that.
+
+    But this fixture then removed every directory matching `itest*` after every
+    test -- so the teardown of one case deleted the tfvars a CONCURRENT case
+    was still reading, and the same two assertions failed for a second reason
+    that looked exactly like the first. A cleanup keyed on a pattern cleans up
+    other people's work. It is keyed on what was actually created instead.
+    """
     yield
-    env_dir = REPO / "terraform" / "environments" / "itest"
-    if env_dir.exists():
-        shutil.rmtree(env_dir)
+    while _CREATED:
+        env_dir = _CREATED.pop()
+        if env_dir.is_dir():
+            shutil.rmtree(env_dir, ignore_errors=True)
 
 
 def test_the_front_door_is_preferred_over_the_cloud_run_url(tmp_path) -> None:

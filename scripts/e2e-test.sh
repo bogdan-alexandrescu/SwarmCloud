@@ -480,7 +480,9 @@ for id in ${TASK_IDS[@]+"${TASK_IDS[@]}"}; do
     else
       # Re-read once before calling it a disagreement: these are two reads of a
       # moving system, and a task that finished between them is not a defect.
-      sleep 3
+      # The pause is the poll interval's, scaled: it exists to let a moving
+      # system move, so against a fake that cannot move it need not be waited.
+      sleep "${SWARM_REREAD_PAUSE_SECONDS:-3}"
       FS_STATE="$(task_state "${id}")"
       assert_eq "${FS_STATE}" "${API_STATE}" "${id}: Firestore vs API state"
     fi

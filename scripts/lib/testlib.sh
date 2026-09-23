@@ -490,7 +490,14 @@ wait_for_state() {
       printf '%s' "${state}"
       return 1
     fi
-    sleep 2
+    # INJECTABLE, defaulting to the 2s this has always polled at against a real
+    # deployment. The offline suite drives this loop against a fake gcloud
+    # where nothing ever moves, so every negative case burns its whole timeout
+    # two seconds at a time -- which is where 700 of `make test`'s 790 seconds
+    # went. Lowering it changes how OFTEN the state is read and nothing about
+    # what is read or concluded, so a fake that answers instantly is entitled
+    # to be polled instantly.
+    sleep "${SWARM_POLL_INTERVAL_SECONDS:-2}"
   done
 }
 

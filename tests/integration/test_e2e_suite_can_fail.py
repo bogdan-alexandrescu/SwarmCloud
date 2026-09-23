@@ -38,6 +38,17 @@ from fake_platform import install, scenario
 REPO = Path(__file__).resolve().parents[2]
 SUITE = REPO / "scripts" / "e2e-test.sh"
 
+#: The wait a negative case is allowed before it reports the state it last saw.
+#:
+#: Left at the deployment value on purpose. Cutting it to 2s looked like the
+#: fix for this file's ~480s and was measured not to be: one suite run costs
+#: ~31s at either setting, because the time is not spent waiting. It is spent
+#: in the fake `curl`, which is a Python script and pays ~42ms of interpreter
+#: startup on each of the ~600 requests a run makes. A shorter timeout only
+#: buys back the tail of the cases that genuinely stall, and it buys that at
+#: the cost of a real scenario being cut off before it settles.
+SUITE_TIMEOUT = "20"
+
 pytestmark = pytest.mark.skipif(
     not SUITE.exists() or shutil.which("jq") is None,
     reason="scripts/e2e-test.sh and jq are both required",
@@ -79,7 +90,7 @@ def run_suite(tmp_path: Path, **deviations) -> Run:
     env["FAKE_SWARM_SCENARIO"] = str(scenario_path)
 
     proc = subprocess.run(
-        [str(SUITE), "--timeout", "20"],
+        [str(SUITE), "--timeout", SUITE_TIMEOUT],
         cwd=REPO,
         env=env,
         capture_output=True,
@@ -262,7 +273,7 @@ def test_not_measured_becomes_a_failure_when_the_caller_requires_it(tmp_path):
     scenario_path.write_text(json.dumps(scenario(spend_recorded=False, executions="live")))
     env["FAKE_SWARM_SCENARIO"] = str(scenario_path)
     proc = subprocess.run(
-        [str(SUITE), "--timeout", "20", "--require-spend"],
+        [str(SUITE), "--timeout", SUITE_TIMEOUT, "--require-spend"],
         cwd=REPO, env=env, capture_output=True, text=True, timeout=300,
     )
     transcript = proc.stdout + proc.stderr

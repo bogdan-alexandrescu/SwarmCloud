@@ -66,10 +66,20 @@ SCRIPT = REPO / "scripts" / "race-test.sh"
 PROJECT = "swarm-test-project"
 API_URL = "https://swarm-api-test.example.invalid"
 
-pytestmark = pytest.mark.skipif(
-    not SCRIPT.exists() or shutil.which("jq") is None,
-    reason="race-test.sh and jq are both required",
-)
+
+#: AND SERIALLY. Every case in this file measures TIME -- an injected delay the
+#: gate must notice, or a process that must still be running when it is looked
+#: at. Both premises are about how long real work takes, so under `-n auto`
+#: they compete with seven other workers for the CPU and the thing they measure
+#: moves. They failed exactly that way and pass alone, which is the signature.
+#: `make test` runs `-m "not serial" -n auto` first, then these on their own.
+pytestmark = [
+    pytest.mark.skipif(
+        not SCRIPT.exists() or shutil.which("jq") is None,
+        reason="race-test.sh and jq are both required",
+    ),
+    pytest.mark.serial,
+]
 
 
 #: `gcloud auth print-access-token` is the only gcloud call left on this path --

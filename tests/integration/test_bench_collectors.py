@@ -46,10 +46,20 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCH_API = ROOT / "scripts" / "bench-api.sh"
 BENCH_UI = ROOT / "scripts" / "bench-ui.sh"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("jq") is None or shutil.which("curl") is None,
-    reason="the collectors need jq and curl",
-)
+
+#: AND SERIALLY. Every case in this file measures TIME -- an injected delay the
+#: gate must notice, or a process that must still be running when it is looked
+#: at. Both premises are about how long real work takes, so under `-n auto`
+#: they compete with seven other workers for the CPU and the thing they measure
+#: moves. They failed exactly that way and pass alone, which is the signature.
+#: `make test` runs `-m "not serial" -n auto` first, then these on their own.
+pytestmark = [
+    pytest.mark.skipif(
+        shutil.which("jq") is None or shutil.which("curl") is None,
+        reason="the collectors need jq and curl",
+    ),
+    pytest.mark.serial,
+]
 
 #: Every route answers with this baseline cost.
 #:

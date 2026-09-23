@@ -671,4 +671,22 @@ def install(tmp: Path) -> dict[str, str]:
     env["NO_COLOR"] = "1"
     env["CLOUD_RUN_JOB"] = "swarm-verify"
     env["TMPDIR"] = str(tmp / "tmp")
+    # NOTHING HERE MOVES ON ITS OWN. The fake answers every read from a
+    # scenario file that this process wrote before the run started, so a poll
+    # loop waiting for a state to change is waiting for something that cannot
+    # happen, and the 2s interval it uses against a real deployment is 2s of
+    # nothing. Every negative case in test_e2e_suite_can_fail.py burns its
+    # whole `--timeout` that way: the file took ~480s of `make test`'s ~790s.
+    #
+    # This lowers how OFTEN the state is read and changes nothing about what is
+    # read or what is concluded from it, so the assertions are the same
+    # assertions -- a scenario that failed to be caught at 2s still fails to be
+    # caught at 0.02s. The real default lives in testlib.sh and is untouched.
+    # NO POLL-INTERVAL OVERRIDE, and the reason is worth keeping. It looks like
+    # the obvious lever and it is the wrong one twice over: `wait_for_state`
+    # loops until a DEADLINE, so a shorter interval does not shorten the wait
+    # at all -- and the fake `curl` below is a Python process, ~42ms of
+    # interpreter startup per call, so polling ten times as often makes a wait
+    # measurably SLOWER. Measured: the interval knob cost ~4s per long wait.
+    # What actually made this suite fast was running its cases in parallel.
     return env

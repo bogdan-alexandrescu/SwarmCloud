@@ -212,7 +212,7 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@# keeps producing. pytest already fails on each case that matters: exit 4
 	@# for a path that is not there, exit 5 for a path that collects nothing,
 	@# exit 1 for a failing test. Nothing here needs to second-guess it.
-	@uv run --project . pytest tests/unit -q
+	@uv run --project . pytest tests/unit -q -n auto
 	@# tests/integration is OFFLINE -- it drives the real scripts end to end with
 	@# a fake gcloud and a fake curl on PATH under --dry-run, creating nothing and
 	@# needing no credentials. It was in no target, and it rotted exactly as the
@@ -220,7 +220,9 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@# error is not an empty result") correctly taught fs_request to check the
 	@# status code, the fake curl had never honoured `-o`/`-w`, and all three
 	@# files errored in their fixture for 95 commits with nothing to report it.
-	@uv run --project . pytest tests/integration -q
+	@uv run --project . pytest tests/integration -q -n auto -m "not serial"
+	@# The timing-sensitive files, alone and unhurried. See their pytestmark.
+	@uv run --project . pytest tests/integration -q -m serial
 	@$(MAKE) ui-component-test
 	@$(MAKE) tf-test
 
