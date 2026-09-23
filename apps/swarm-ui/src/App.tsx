@@ -5,6 +5,7 @@ import {
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { INSPECTOR, clampPane, readPane, summariseProbes, writePane } from './panes'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
@@ -16,7 +17,7 @@ import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
-import { useHelpDisclosure } from './HelpCard'
+import { useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
@@ -747,12 +748,38 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
  * is drawn by `.ctl-q-card` rather than inline so the question inherits the
  * same surface as everything else in the frame.
  */
+/**
+ * THE SECOND HELP CARD IN THIS APP, and it now shares the first one's placement.
+ *
+ * This rendered `.ctl-q-card` and positioned it with CSS alone, so it missed
+ * every fix made to `HelpCard`: measured 2026-09-24 at 390px, all four of these
+ * opened 299px past the right edge. The rail becomes a horizontal SCROLLER
+ * below 900px, so a glyph scrolled off to the right reports an anchor outside
+ * the viewport and a card anchored to it lands outside too.
+ *
+ * `useEdgeSafePlacement` is imported rather than reimplemented. Two
+ * implementations of one widget is exactly how the first one's fixes stopped
+ * reaching the second, and a third would do it again.
+ */
 function SectionQuestion({ section }: { section: SectionDef }) {
   const { state, trigger, hover } = useHelpDisclosure()
   const cardId = `q-${section.id}`
+  const [anchorRef, placement] = useEdgeSafePlacement(state.open)
+
+  const card = (
+    <span
+      id={cardId}
+      role={state.pinned ? 'dialog' : 'tooltip'}
+      className="ctl-q-card"
+      style={placement}
+    >
+      <strong className="ctl-q-title">{section.label} answers</strong>
+      <span className="ctl-q-body">{section.question}</span>
+    </span>
+  )
 
   return (
-    <span className="ctl-q" {...hover}>
+    <span className="ctl-q" {...hover} ref={anchorRef}>
       <button
         type="button"
         className="ctl-q-glyph"
@@ -763,12 +790,8 @@ function SectionQuestion({ section }: { section: SectionDef }) {
       >
         ?
       </button>
-      {state.open && (
-        <span id={cardId} role={state.pinned ? 'dialog' : 'tooltip'} className="ctl-q-card">
-          <strong className="ctl-q-title">{section.label} answers</strong>
-          <span className="ctl-q-body">{section.question}</span>
-        </span>
-      )}
+      {state.open &&
+        (typeof document === 'undefined' ? card : createPortal(card, document.body))}
     </span>
   )
 }

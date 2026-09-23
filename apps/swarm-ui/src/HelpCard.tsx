@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useReducer, useRef, type CSSProperties } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useReducer, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import { HELP, type TopicId } from './help'
 
 /**
@@ -249,11 +250,39 @@ const GLYPH: CSSProperties = {
   verticalAlign: 'middle',
 }
 
+/**
+ * THE CARD DOES NOT DECIDE WHICH WAY IT OPENS; `useEdgeSafePlacement` does.
+ *
+ * This carried `left: 0` and nothing else, so every card opened rightward from
+ * its anchor whatever sat to the right of it. Measured 2026-09-24 by opening
+ * all 82 of them: nine were unusable. Three on Runtimes opened 98, 84 and 11px
+ * past the viewport; two on Workflows opened 278 and 309px past it, which is
+ * not a clipped card but an invisible one. One on Pools was painted over by a
+ * sibling, and two on Submit opened below the fold with one of those also
+ * under a button.
+ *
+ * Anchors near the right edge need to open LEFTWARD and anchors near the
+ * bottom need to open UPWARD. CSS alone cannot see that -- anchor positioning
+ * would, and is not available here -- so the decision is measured once on open
+ * and written as an inline offset. `left`/`right`/`top`/`bottom` are therefore
+ * deliberately absent below: the hook supplies exactly one horizontal and one
+ * vertical anchor, and a default here would fight it.
+ */
 const CARD: CSSProperties = {
-  position: 'absolute',
-  zIndex: 40,
-  top: 'calc(100% + 6px)',
-  left: 0,
+  /* `position` and the offsets come from `useEdgeSafePlacement`, which portals
+     this to <body> and places it in VIEWPORT coordinates. It has to leave the
+     anchor's subtree: on Pools the card sat at z-index 200 and was still
+     painted over by `.cap-families`, a `position: static; z-index: auto` div,
+     because an ancestor of the anchor opens a stacking context that ranks
+     below it. No z-index on a trapped element can win that -- the comparison
+     never reaches the top level. Portalling is the only fix that generalises
+     to the next panel someone wraps in a transform or a filter. */
+  // ABOVE THE SIBLINGS, not just above the parent's children. At 40 a card on
+  // Pools was painted over by a panel that establishes its own stacking
+  // context, so the card's z-index was being compared inside a context the
+  // panel had already won. 200 clears every in-page surface in this app; the
+  // dock and the drawer are higher still and are meant to be.
+  zIndex: 200,
   width: 'max-content',
   minWidth: '240px',
   maxWidth: '360px',
@@ -265,6 +294,91 @@ const CARD: CSSProperties = {
   textAlign: 'left',
   lineHeight: 1.5,
   cursor: 'auto',
+}
+
+/**
+ * Which way a card may open without leaving the viewport.
+ *
+ * Measured against the GLYPH rather than the card: the card is what we are
+ * placing, so its own position is the thing in flux, while the anchor is
+ * fixed. `useLayoutEffect` so the flip happens before paint -- in an effect
+ * the card would be seen off-screen for a frame and then jump.
+ *
+ * Re-measured on scroll and resize because both move the anchor under a card
+ * that is already open; a card correct when it opened is not correct after the
+ * page moves beneath it.
+ */
+export function useEdgeSafePlacement(
+  open: boolean,
+): [RefObject<HTMLSpanElement>, CSSProperties] {
+  const ref = useRef<HTMLSpanElement>(null)
+  const [place, setPlace] = useState<CSSProperties>({ visibility: 'hidden' })
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const measure = () => {
+      const node = ref.current
+      if (!node) return
+      const anchor = node.getBoundingClientRect()
+      // The widest the card is allowed to be, from CARD's own maxWidth. Read as
+      // a number rather than trusting the rendered width: on the first pass the
+      // card may not have been laid out yet.
+      const CARD_MAX = 360
+      const MARGIN = 8
+      const overflowsRight = anchor.left + CARD_MAX + MARGIN > window.innerWidth
+      const overflowsLeft = anchor.right - CARD_MAX - MARGIN < 0
+      // Both sides overflow only on a viewport narrower than the card, where
+      // the honest answer is to pin it to the left margin and let maxWidth
+      // (min(44ch, 86vw) in the sheet) do the rest.
+      // VIEWPORT COORDINATES, because the card is portalled to <body> and is
+      // `position: fixed` -- it has no positioned ancestor to be relative to.
+      // CLAMPED ON BOTH BRANCHES, and the second one is why. The right-flip
+      // read `anchor.right - CARD_MAX` with no upper bound, which is correct
+      // only while the anchor is on screen. The rail becomes a horizontal
+      // SCROLLER below 900px, so a glyph scrolled off to the right reports an
+      // `anchor.right` of ~1049 in a 390px viewport and the card opened 299px
+      // past the edge -- the flip meant to keep it in view was the thing that
+      // threw it out. One clamp applied to whichever side wins.
+      const wanted = overflowsRight && !overflowsLeft ? anchor.right - CARD_MAX : anchor.left
+      const maxLeft = Math.max(MARGIN, window.innerWidth - CARD_MAX - MARGIN)
+      const horizontal: CSSProperties = { left: Math.min(Math.max(MARGIN, wanted), maxLeft) }
+
+      // Vertical: below unless it would not fit there and fits better above.
+      //
+      // MEASURED, NOT ESTIMATED. A constant here was wrong by 16px on Submit --
+      // the card cleared a 220px guess and then hung below the fold anyway,
+      // because these cards are as tall as their content and one of them has a
+      // values list. On the first pass the card is not laid out yet, so the
+      // estimate is the fallback and the real height replaces it the moment
+      // there is one; `measure` re-runs on scroll and resize, so the second
+      // pass is never far away.
+      const card = ref.current?.querySelector<HTMLElement>('[role="tooltip"], [role="note"]')
+      const cardH = card?.getBoundingClientRect().height || 220
+      const roomBelow = window.innerHeight - anchor.bottom - 6
+      // CLAMPED, so "below the fold" cannot happen at all: if it fits below it
+      // goes below, if it fits better above it goes above, and if neither has
+      // room it is pinned inside the viewport rather than hanging out of it.
+      // The +16px overflow on Submit was a card that fit NEITHER way; flipping
+      // it merely moved which edge it escaped from.
+      const below = anchor.bottom + 6
+      const above = anchor.top - 6 - cardH
+      const top =
+        cardH <= roomBelow ? below
+        : above >= MARGIN ? above
+        : Math.max(MARGIN, Math.min(below, window.innerHeight - cardH - MARGIN))
+
+      setPlace({ position: 'fixed', ...horizontal, top })
+    }
+    measure()
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+  }, [open])
+
+  return [ref, place]
 }
 
 const CARD_TITLE: CSSProperties = {
@@ -352,9 +466,29 @@ export function HelpCardView({
 }: HelpCardViewProps) {
   const t = HELP[topic]
   const values = t.values?.() ?? []
+  const [anchorRef, placement] = useEdgeSafePlacement(state.open)
+
+  const cardNode = (
+        <span id={cardId} role={helpRole(state)} style={{ ...CARD, ...placement }}>
+          <strong style={CARD_TITLE}>{t.title}</strong>
+          <span style={CARD_BODY}>{t.short}</span>
+          {values.length > 0 && (
+            <ul style={CARD_VALUES}>
+              {values.map((v) => (
+                <li key={v.term} style={CARD_VALUE} title={v.note}>
+                  {v.term}
+                </li>
+              ))}
+            </ul>
+          )}
+          <a href={`#${t.anchor}`} style={CARD_LINK}>
+            Full explanation &rarr;
+          </a>
+        </span>
+  )
 
   return (
-    <span style={WRAP} {...hover}>
+    <span style={WRAP} {...hover} ref={anchorRef}>
       <button
         type="button"
         style={GLYPH}
@@ -381,24 +515,22 @@ export function HelpCardView({
         {t.short}
       </span>
 
-      {state.open && (
-        <span id={cardId} role={helpRole(state)} style={CARD}>
-          <strong style={CARD_TITLE}>{t.title}</strong>
-          <span style={CARD_BODY}>{t.short}</span>
-          {values.length > 0 && (
-            <ul style={CARD_VALUES}>
-              {values.map((v) => (
-                <li key={v.term} style={CARD_VALUE} title={v.note}>
-                  {v.term}
-                </li>
-              ))}
-            </ul>
-          )}
-          <a href={`#${t.anchor}`} style={CARD_LINK}>
-            Full explanation &rarr;
-          </a>
-        </span>
-      )}
+      {/* PORTALLED ONLY WHERE THERE IS A DOCUMENT TO PORTAL INTO.
+          `tests/run.mjs` renders this component to a STRING with no DOM, and
+          `createPortal(…, document.body)` throws `document is not defined`
+          there. Rendered inline in that case the markup is identical in every
+          respect those tests assert -- they read the card's text, its role and
+          its values, none of which the portal changes. What the portal changes
+          is which stacking context the node lands in, and a string has none. */}
+      {state.open &&
+        (typeof document === 'undefined' ? (
+          cardNode
+        ) : (
+          createPortal(
+          cardNode,
+          document.body,
+          )
+        ))}
     </span>
   )
 }
