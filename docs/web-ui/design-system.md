@@ -1209,3 +1209,193 @@ proved with a **viewport-relative DOM measurement and a screenshot that was
 read**, at 1440×900 and 390×844, before and after. A full-page capture is not
 evidence for a `position: fixed` dock: it paints the bar at its scroll position
 and will mislead you.
+
+---
+
+## 12. The run group — the screen phase's first lane
+
+**Scope: `Agents.tsx`, `AgentDetail.tsx`, `AttemptTimeline.tsx`,
+`ArtifactViewer.tsx` and their sections of `styles.css`.** §11 was the token
+layer and restyled no screen. This is the first screen lane on top of it, and
+it took the run group because that is where §6.6's chip decision lands in
+quantity: a run list draws one status per row, forty rows at a time.
+
+Nothing here re-decides anything in §1–§11. Where this lane needed something
+§6 had not said, it is written below and marked as an addition.
+
+### 12.1 What the measurement found, on these two screens
+
+Measured in a browser at 1440×900 on the dev fixtures, before → after. The
+overlap figures are DOM rectangles intersected with every clipping ancestor,
+because an ellipsed cell reports its full text width to
+`getBoundingClientRect` and two neighbours that never touch on screen read as
+an overlap if you do not.
+
+| The run list (`.work`, `#agents/running`) | Before | After |
+|---|---|---|
+| bordered elements | 18 | **11** |
+| uppercase elements | 3 | **2** |
+| painted overlaps | 2 | **0** |
+| rendered words | 114 | **106** |
+| row height | 72px | **31px** (`--row-h`) |
+| ways the state is drawn, per row | 3 | **1** |
+
+| The run detail (`.drawer`) | Before | After |
+|---|---|---|
+| overlapping text pairs (unclipped, whole subtree) | 9 | **3** |
+| type steps off the six-step scale | 21px ×5 | **none** |
+
+The three overlaps that remain are in `Dispatch.tsx` (`.dsp-facts`, twice) and
+`RunFiles.tsx` (`.ckpt-head`). Both are other lanes' components; §12.5 records
+them with their measurements rather than reaching into them.
+
+### 12.2 The run list is the Workflows row, because that is the one the owner kept
+
+`#agents/workflows` is the internal reference (§11.4) and the thing that makes
+it right is measurable: **its rows are one line tall and they stack.**
+`.wf-card + .wf-card` drops the duplicated top border, so ten rows draw one box
+and nine hairlines. The run list drew `gap: var(--ctl-s1)` between bordered,
+rounded, 72px rows: six rows were six separate floating objects, which is
+"everything is a bordered rounded box" in the place this product repeats a box
+the most.
+
+**The list carries the box; the row carries one hairline.** That division is
+not cosmetic and `spacing.test.tsx` is what settled it. The first attempt gave
+each row the full border and softened only the shared edge, and the probe
+rejected it twice:
+
+```
+divider-under-floor  div.clickable.row [top] 1.88 < 3
+surfaces-touch       div.rows [row] 0 < 4 — 6 stacked surfaces with a 0px gutter
+```
+
+Both are the same mistake seen from two sides. §5.2: a rule is graded as a
+SEPARATOR (1.5:1) only when the element draws exactly one border and has an
+adjacent twin — a row drawing four is graded as a boundary at 3:1, which
+`--line-soft` cannot meet and should not have to. So the surface and the
+boundary moved up to `.rows`, and the row keeps a single `border-top` on
+`.row + .row`. That is `.ctl-table`'s construction (§6.7) and it passes.
+
+`.rows` is `display: block`, not `flex` with `gap: 0`. The flex column existed
+to make the gutter; there is no gutter. **Stated plainly because it looks like
+a dodge of `surfaces-touch` and is not**: that check only runs on a flex or
+grid parent, its subject is a gutter between boxes, and its own stated reason —
+zero between two boxes "reads as one wider element rather than two" — is the
+intent here, the same one `isSegmentedGroup` already exempts `.ctl-seg` on.
+
+### 12.3 Three additions to §6, each the smallest thing that worked
+
+1. **A row's tracks must be width-derived, not content-derived.** Each row is
+   its own grid, so an `auto` track resolves per row: the one row carrying a
+   dispatch flag sized `[flags]` to its own 190px tag and pulled every column
+   left of it out of line with the five rows above. **Ragged columns are what a
+   list of independent grids gives you unless every track is stated**, so
+   `[flags]` is an `fr` and keeps its width on the rows with nothing to put in
+   it — §14, a thing that is absent occupies the space it would have occupied.
+   This belongs in §6.8 and is offered for it.
+
+2. **`[state]` is sized to the longest state word, not the common one.**
+   112px is `dead_lettered` at `--t-body` plus the 10px mark and its gap. The
+   word is mandatory (§6.6) and the mark is a TONE channel, not a state
+   channel — PARKED, READY and QUEUED share a silhouette and are told apart by
+   the word alone. A track that ellipses it would be the honesty invariant paid
+   out for tidiness.
+
+3. **The inspector is a breakpoint that no media query can see.** Opening an
+   agent narrows the list from 1165px to ~670px without the viewport changing,
+   and `[name]` resolved to 23px — the identity of every row clipped to
+   nothing, on the one screen where the row you just opened is the row you are
+   watching. `.app.has-inspector .row` drops owner, attempts-used, resource
+   class and the model, and gives the width to the name. `.ctl-util`'s comment
+   already states the principle: a column that loses 40px still does its job; a
+   NAME that loses 40px stops saying which row it is.
+
+### 12.4 What the chip decision cost and what it bought
+
+Every status on these four screens is now `.ctl-chip`, and `Chip` is exported
+from `AgentDetail.tsx` so there is one of it (§9.3 asked for this; there were
+four).
+
+* **The duplicate glyph is gone** from `Agents.tsx` and `AgentDetail.tsx` —
+  §11.2 item 3's outstanding half. `{stateGlyph(state)} {state}` inside the
+  chip was a second shape encoding of the fact the `<i>` carries, and the pill
+  was the only thing hiding it. **Nothing that carried information left:** the
+  `<i>` still carries the tone silhouette and the word — now at full ink — is
+  what separates the states that share one.
+* **`.roll` is deleted** (four rules). A workflow group's rolled-up state was
+  the last filled pill on the list: 999px radius, an 18% tint of the state hue,
+  the word in `--*-ink`, uppercase and tracked. It is the same kind of fact as
+  every other state in the list and is drawn the same way.
+* **`AttemptTimeline`'s outcome and `oom near miss` were `.tag`s** — bordered,
+  uppercase, tracked, eight of them on one pane, and `OOM NEAR MISS` was wide
+  enough to break its own box onto a second line. A chip whose label wraps is a
+  paragraph with a border.
+* **`latest` stays a `.tag`, deliberately.** It is metadata, not a state, and
+  Koyeb's rule (§6.6) is that a pill-shaped thing should be metadata in a grey
+  hairline — that is how a pill is kept from meaning "status". It is the only
+  box left on an attempt card's heading, and it is faint.
+* **An open pull request is `is-info`, not `is-ok`.** §1.3: the accent is a
+  fact or a link, never a verdict. An open PR is a fact about the branch, not a
+  judgement that the run went well.
+
+**The chip has no box, so a title has to supply the gap the border used to
+be.** `.att-card .ctl-card-title` is a flex row with `--ctl-s2`; without it
+`Attempt · gen 1` ran straight into `never started`, because the markup has no
+whitespace there. Worth writing down: every place a `.tag` becomes a `.ctl-chip`
+inherits this.
+
+**A new guard, and it was mutated to prove it.** `prose.runs.test.tsx` gained
+`the run list draws a state once` — one mark per row, no bullet glyph beside
+the word, the word present, and a live state never borrowing the healthy
+silhouette. The word budget does **not** catch a duplicate glyph, because a
+bullet is not a word; restoring the glyph, flattening the tone to `ok` and
+restoring `.roll` each failed exactly one assertion and nothing else. No test
+was deleted or weakened.
+
+### 12.5 What this lane did NOT fix
+
+* **`Dispatch.tsx`'s `DispatchChip` is now the loudest object on the run
+  list** — `INTEGRATE/CONTRIBUTOR`, a bordered uppercase tracked `.tag`, 190px
+  wide. It is a status and §6.6 says it is a chip. It is another lane's
+  component, so the row only constrains where it sits: at 390px and with the
+  inspector open it drops to its own line rather than being ellipsed, because
+  `integrate/contrib…` loses the half that says which.
+* **`.dsp-facts` overlaps its own note twice** (`collect` × 59px,
+  `checkpoints` × 93px) and **`RunFiles.tsx`'s `.ckpt-head` overlaps the
+  `<details>` above it** (76px). Measured, not inferred; `Dispatch.tsx` and
+  `RunFiles.tsx`.
+* **`Liveness.tsx` puts a 17-word sentence in the drawer's heading** — *"No
+  event for 3m. Heartbeat events are only every ~150s, so this is not yet
+  alarming."* §8.4 says that belongs behind the `?`.
+* **`charts/TimeSeries.tsx`'s empty state is a 4-line, 40-word paragraph in a
+  bordered box** (`Nothing was measured`), and it is the largest block of prose
+  in the drawer. §6.9's shape is mark, heading, one sentence, a link out.
+* **`.ctl-util`'s figure column is a flat `78px`** and overflowed six times in
+  a 560px drawer. **Request, not a change:** `max-content` there is strictly
+  safer than a fixed width for all five callers. The rule's track list is read
+  verbatim by `shell.test.tsx:696` and the primitive is shared with Overview,
+  Capacity, Holders and Workflows, so this lane scoped the fix to
+  `.drawer .ctl-util` instead.
+* **`.ctl-subnav` draws the drawer's two panes as filled pills** (`Detail` /
+  `Attempts`), which §6.11 settles as `.ctl-seg`'s job — one bordered group,
+  not N pills. It is rendered by `App.tsx`.
+* **The `?` glyph pills** (14 in this drawer) are still `HelpCard.tsx` inline
+  styles, as §11.3 recorded.
+
+### 12.6 One conflict found, and it was silently costing a column
+
+`styles.css` carried **two `@media (max-width: 560px)` blocks styling `.row`** —
+one in the run list's own region and one ~360 lines later in the workflow
+board's, which does not own `.row`. Equal specificity, so the later template
+won and the earlier block's `display: none` on `.when` survived unopposed:
+**the run list shipped with no elapsed time at 390px**, which is the one column
+that screen's own comment says a phone reader came for. Both `.row` rules in
+the board's block are deleted; one element, one phone block, and it is the one
+in the run list's region. `.row .meta` went with them — nothing has rendered a
+`.meta` cell in a task row since the row was rewritten, so the two rules were a
+selector pair keeping each other alive.
+
+**Ownership, flagged rather than assumed.** `CLAUDE.md` puts `docs/` with
+Track D; §10 already records the same flag for this file. This section is
+appended rather than woven into §1–§11 so that two lanes amending the document
+in the same pass conflict on nothing.

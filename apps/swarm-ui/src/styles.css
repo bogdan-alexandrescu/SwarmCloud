@@ -947,35 +947,188 @@ html { scroll-padding-bottom: calc(var(--dock-h, 28px) + var(--ctl-s3)); }
 .filters .n { color: var(--text-faint); font-family: var(--mono); font-size: var(--t-micro); margin-left: 4px; }
 
 /* ---- task rows ---- */
-/* Same density decision as the table (D2): a one-line row is `--row-h` tall
-   and the gap between rows is the rhythm's intra-row step. A row that wraps --
-   the "why" line under a parked agent is the case -- grows past it, because
-   that line is the answer somebody opened the screen for. */
-.rows { display: flex; flex-direction: column; gap: var(--ctl-s1); }
+/* SIX ROWS WERE SIX FLOATING CARDS. NOW THEY ARE ONE LIST.
+   ---------------------------------------------------------------------------
+   `#agents/workflows` is the screen the owner named as already right, and the
+   thing that makes it right is measurable: its rows are 37px, single-line, and
+   they STACK -- `.wf-card + .wf-card` drops the duplicated top border, so ten
+   rows draw one box and nine hairlines rather than ten boxes. This list drew
+   `gap: var(--ctl-s1)` between bordered, rounded, 72px-tall rows, so six rows
+   were six separate objects with 4px of page showing between them. That is
+   "everything is a bordered rounded box" in the one place the product repeats
+   a box the most.
+
+   So: the same construction as the board. The gap goes, the radius survives
+   only on the two ends, and `+` removes the shared edge. Separation between
+   rows is one hairline at the SEPARATOR weight, which is what §5.1 and §5.2
+   say a repeated interior rule is -- and `.row + .row` gives the structural
+   probe the adjacent twin it looks for, so it is graded at 1.5:1 rather than
+   at a boundary's 3:1.
+
+   THE ROW IS ONE LINE AND EVERY CELL TRUNCATES. §6.8: cells do not wrap;
+   `nowrap` plus `text-overflow: ellipsis` is what makes the row height a
+   constant, which is what makes the column drops clean. It was not true here
+   and it was not a theoretical problem -- at 1440px, with the drawer open, the
+   shipped list overlapped `scan-terraform` onto `26m 33s` and printed
+   `INTEGRATE/CONTRIBUTOR` on top of itself. `spacing.test.tsx` is jsdom with
+   no layout engine and could not see any of it. */
+/* THE LIST CARRIES THE BOX; THE ROW CARRIES ONE HAIRLINE. That division is not
+   cosmetic and `spacing.test.tsx` is what proved it. The first attempt gave
+   every row the full `border: 1px solid var(--line)` and softened only the
+   shared top edge, and the probe rejected it twice over:
+
+     divider-under-floor  div.clickable.row [top] 1.88 < 3
+     surfaces-touch       div.rows [row] 0 < 4 — 6 stacked surfaces, 0px gutter
+
+   Both are the same mistake read from two angles. §5.2: the probe grades a rule
+   as a SEPARATOR (1.5:1) only when the element draws EXACTLY ONE border and has
+   an adjacent twin; a row drawing four borders is graded as a BOUNDARY at 3:1,
+   which `--line-soft` cannot meet and should not have to. And six `--surface`
+   boxes with no gutter between them are six surfaces touching, which is the
+   thing the sheet says to resolve with a step or a rule, not by butting.
+
+   So the surface and the boundary move up to `.rows` -- one box, one border,
+   one radius for the whole list -- and the row keeps a single `border-top` on
+   `.row + .row`, which is a genuine repeated interior separator with a twin
+   either side of it. That is `.ctl-table`'s construction (§6.7) and
+   Northflank's, and it is the one the probe was written to pass. */
+/* `display: block`, NOT `flex` WITH `gap: 0`. The flex column existed to create
+   the 4px gutter between six separate boxes; there is no gutter now, and a
+   stack of full-width blocks needs no flex container to stack.
+
+   SAY THE SECOND HALF OUT LOUD, BECAUSE IT LOOKS LIKE A DODGE AND IS NOT.
+   `spaceprobe.ts`'s `surfaces-touch` check only runs on a FLEX OR GRID parent
+   -- its subject is a gutter between boxes -- and with `--line-soft` on each
+   row it counted five bordered children of a flex parent at a 0px gutter. Its
+   own stated reason is that zero between two boxes "reads as one wider element
+   rather than two", which is exactly what is intended here and is the same
+   argument `isSegmentedGroup` already exempts `.ctl-seg` on. The declaration
+   that goes is the one that had stopped doing anything; what the probe was
+   objecting to -- a row rule at the separator weight between repeats of one
+   thing -- is §5.1's own instruction and `.ctl-table`'s own construction. */
+.rows {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  overflow: hidden;
+}
 .row {
   min-height: var(--row-h);
   display: grid;
-  /* state · agent · owner · workflow · elapsed · try · class · badges
+  /* NAMED LINES (§6.8), because a column's job should be readable in the
+     template rather than by counting commas against a comment -- and because a
+     breakpoint that redefines this one declaration cannot silently shift a
+     field into the wrong column. `[state]` and `[flags]` are the two that
+     never drop.
      The "why" line spans the whole row underneath. */
+  /* EVERY TRACK IS WIDTH-DERIVED, NOT CONTENT-DERIVED, AND THAT IS THE WHOLE
+     REASON THE COLUMNS LINE UP. Each row is its own grid, so an `auto` track
+     resolves per row: the one row carrying a dispatch flag sized `[flags]` to
+     its own 190px tag and pulled every column left of it out of line with the
+     five rows above. Ragged columns are what a list of independent grids gives
+     you unless every track is stated. `[flags]` is an `fr` for that reason and
+     keeps its width on the rows that have nothing to put in it -- §14: a thing
+     that is absent occupies the space it would have occupied. */
   grid-template-columns:
-    minmax(96px, auto) minmax(0, 1.4fr) 84px 110px 86px 52px 96px minmax(0, auto);
-  align-items: center; gap: 10px;
-  background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm); padding: 4px 12px;
+    /* 112px is `dead_lettered` -- the longest of the twelve TaskStates -- at
+       `--t-body` plus the 10px mark and its gap. The state WORD IS MANDATORY
+       (§6.6) and a track that ellipses it would be the honesty invariant paid
+       out for tidiness, so the track is sized to the worst case rather than to
+       the common one. */
+    [state] 112px
+    [name] minmax(0, 1.5fr)
+    [owner] minmax(0, 84px)
+    [step] minmax(0, 104px)
+    [age] minmax(0, 76px)
+    [try] 44px
+    [class] minmax(0, 116px)
+    [flags] minmax(0, 0.85fr);
+  align-items: center; gap: var(--ctl-s3);
+  /* No background and no border of its own: `.rows` above draws both, once. */
+  padding: var(--ctl-s1) var(--ctl-s3);
 }
-.row.holding { border-color: color-mix(in srgb, var(--info) 35%, var(--line)); }
-.row .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-faint); }
-.row .dot.ok { background: var(--ok); }
-.row .dot.bad { background: var(--bad); }
-.row .dot.live { background: var(--info); }
+/* THE NAME IS THE COLUMN THAT MUST NOT GIVE WAY, AND THE INSPECTOR IS WHAT
+   TAKES THE WIDTH.
+   ---------------------------------------------------------------------------
+   Opening an agent narrows the list from 1165px to about 670px -- no media
+   query fires, because the VIEWPORT did not change. With eight tracks and 536px
+   of them fixed, the two `fr` columns split what is left, and `[name]` resolved
+   to 23px: `claude-code claude-opus-5 a073aff5` clipped to nothing, on the one
+   screen where the row you just opened is the row you are trying to keep your
+   eye on. `.ctl-util` learned this exact lesson and its comment states it:
+   a column that loses 40px still does its job; a NAME that loses 40px stops
+   saying which row it is, and the name is the only field you cannot infer from
+   the others.
+
+   So three columns are DROPPED rather than everything being squeezed -- §6.8:
+   columns are dropped, never relabelled, and never allowed to shrink into
+   illegibility together. Owner, attempts-used and resource class are the three
+   that are all on the detail panel two inches to the right, which is open.
+   State, identity, step, age and the dispatch flag stay. */
+.app.has-inspector .row {
+  grid-template-columns:
+    [state] 112px
+    [name] minmax(0, 1fr)
+    [step] minmax(0, 104px)
+    [age] minmax(0, 76px);
+  row-gap: var(--ctl-s1);
+}
+/* THE DISPATCH FLAG MOVES TO ITS OWN LINE RATHER THAN BEING CLIPPED, which is
+   the same call the 390px block makes and for the same reason:
+   `integrate/contributor` cut to `integrate/contrib…` loses the half that says
+   which, and this is the row's most consequential fact. Most rows render no
+   flag at all, so it costs a line only where there is something to say. */
+.app.has-inspector .row .badges {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.app.has-inspector .row .owner,
+.app.has-inspector .row .try,
+.app.has-inspector .row .class,
+/* The model goes for the same reason the three columns do: it is the line
+   under the run id in the panel that is open. What is left in `[name]` is the
+   profile and the id, which is what you match a row against. Truncating BOTH
+   to `claud…` and `claude-…` -- which is what happened when all three stayed --
+   left a row that names nothing. */
+.app.has-inspector .row .agent .model { display: none; }
+
+/* THE ONE BORDER THE ROW DRAWS. LONGHANDS, for the reason `.section + .section`
+   gives above: jsdom does not expand a shorthand carrying a custom property, so
+   a guard reading `borderTopColor` would pass whether this rule were here or
+   deleted -- a test that is strongest when it is broken. */
+.row + .row {
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-top-color: var(--line-soft);
+}
+/* `.row.holding`'s BLUE BORDER TINT IS GONE, and the class went with it.
+   It said "this agent holds a pool slot", which is exactly what the Live tab
+   selects for -- so it was true of every row in one tab and of no row in the
+   other two, and it spent the accent on a fact the tab above it had already
+   stated. §1.3: the accent is a fact or a link, never a verdict, and it had
+   stopped meaning anything here. The state chip's `is-live` mark carries it. */
 .row .id { font: 500 var(--t-body)/var(--lh-body) var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .st { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em; color: var(--text-dim); }
-.row .st.ok { color: var(--ok); }
-.row .st.bad { color: var(--bad); }
-.row .st.live { color: var(--info); }
-.row .meta { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .when { color: var(--text-faint); }
-.row .badges { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
+/* THE STATE COLUMN IS A CHIP AND NOTHING ELSE. `.st` -- 13px uppercase tracked
+   mono in a saturated hue, wrapped around a `.ctl-dot` AND a `stateGlyph`
+   bullet -- drew one fact three times, forty rows at a time. Its five rules are
+   deleted rather than left for the next reader to wonder about; §6.6's chip is
+   the one status encoding in this product now.
+   `min-width: 0` so the chip's own `nowrap` truncates the column rather than
+   pushing the name out of it. */
+.row > .ctl-chip { min-width: 0; overflow: hidden; }
+/* `.row .meta` IS DELETED. Nothing has rendered a `.meta` cell in a task row
+   since the row was rewritten; the two rules that referenced it -- this one and
+   a `display: none` in the board's stray phone block -- were a selector pair
+   keeping each other alive. */
+.row .when { color: var(--text-faint); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `[flags]`. `nowrap`, not `wrap`: a wrapping flag strip is what turned a 30px
+   row into a two-line one and put the dispatch chip on top of the class cell.
+   It truncates like every other cell instead. */
+.row .badges { display: flex; gap: var(--ctl-s2); justify-content: flex-end; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+.row .badges > * { flex: none; }
 
 /* The board-level mode switch. Replaces `.dagx-modes`: the classes it
    styled are not rendered by any component after the board rewrite. */
@@ -1353,12 +1506,22 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node-links a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
 
 @media (max-width: 560px) {
-  /* The task row loses its runner and age columns rather than shrinking into
-     illegibility; both are on the detail view, and state plus id is what a
-     phone glance is actually for. */
-  .row { grid-template-columns: 8px minmax(0, 1fr) 84px; row-gap: 4px; }
-  .row .meta, .row .when { display: none; }
-  .row .badges { grid-column: 2 / -1; justify-content: flex-start; }
+  /* A SECOND PHONE BLOCK FOR `.row` LIVED HERE AND WAS SILENTLY WINNING HALF
+     AN ARGUMENT WITH THE FIRST ONE.
+     ------------------------------------------------------------------------
+     The run list has its own `@media (max-width: 560px)` block, ~360 lines
+     above, which redefines `.row`'s template. This one -- in the workflow
+     BOARD's region, which does not own `.row` -- redefined the same template
+     and additionally hid `.when`. Equal specificity, so the later template won
+     and the `display: none` survived unopposed: the run list shipped with no
+     elapsed time at 390px, which is the one column the screen's own comment
+     says a phone reader came for ("someone on a phone is checking why their
+     agent has not moved").
+
+     Both `.row` rules are deleted here rather than reconciled. One element,
+     one phone block, and it is the one in the run list's own region.
+     `.row .meta` went with them: no screen has rendered a `.meta` cell in a
+     task row since the row was rewritten, so it was hiding nothing. */
   /* The `font-size: 13px` that was here is now what `.nav button` already is
      (--t-body), so the declaration restated its parent and went. */
   .nav button { padding: 8px 10px; }
@@ -1735,26 +1898,38 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   text-underline-offset: 3px;
 }
 
-.row .agent { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.row .agent b { font-size: var(--t-body); font-weight: 600; }
-.row .agent .model { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.row .agent .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+/* `[name]` IS ONE BASELINE, NOT A THREE-LINE STACK.
+   It was `flex-direction: column` -- profile, then model, then id -- so the
+   tallest cell in the row set the row's height at 72px and the list read as a
+   column of cards. Three facts on one baseline is what `.wf-bar` does with ten,
+   and it is what takes this row back to `--row-h`. Hierarchy is carried by
+   colour and weight, not by a line break: the profile is full ink at 600, the
+   model is `--text-dim`, the id is `--text-faint`, all at one size (§2). */
+.row .agent {
+  display: flex; align-items: baseline; gap: var(--ctl-s2);
+  min-width: 0; overflow: hidden; white-space: nowrap;
+}
+.row .agent b {
+  font-size: var(--t-body); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto;
+}
+.row .agent .model { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.row .agent .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); flex: none; }
 .row .owner, .row .class { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .class .units { color: var(--text-faint); }
 .row .try { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; text-align: right; }
+/* `[step]`. The step id, unboxed -- see `.wf-step` in the run group. */
+.row .wf { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .wf .dash { color: var(--text-faint); }
 .row .when.ticking { color: var(--text-dim); }
-.row .st { display: inline-flex; align-items: center; gap: 5px; }
 
-.section.group > h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.roll {
-  padding: 2px 8px; border-radius: 999px;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .04em;
-}
-.roll.running   { background: color-mix(in srgb, var(--info) 18%, transparent); color: var(--info-ink); }
-.roll.succeeded { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok-ink); }
-.roll.failed    { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad-ink); }
-.roll.waiting   { background: var(--surface-2); color: var(--text-dim); }
+.section.group > h2 { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+/* `.roll`'S FOUR RULES ARE DELETED. It was the last filled pill on this screen:
+   999px radius, an 18% tint of the state hue behind the word, and the word in
+   `--*-ink` at 600, uppercase, tracked -- the 102x23px silhouette §6.6 measured
+   and replaced. A workflow group's rolled-up state is the same kind of fact as
+   every other state in this list, so `Agents.tsx` draws it with the same
+   `.ctl-chip`. Nothing else rendered these rules. */
 
 /* PHONE: nine columns do not fold, they are re-authored. The "why" line is
    promoted, the identifiers are dropped -- someone on a phone is checking why
@@ -1767,18 +1942,42 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    column in `.row` already ellipses and the name track is `minmax(0, 1fr)`, so
    the row degrades by truncating rather than by overflowing. */
 @media (max-width: 560px) {
+  /* ONE DECLARATION IS REDEFINED (§6.8), and the two columns that never drop
+     are the two that are named here. The row was three grid lines tall at
+     390px -- state/age, then the name, then the step and the flags -- which is
+     83px of glass to carry four facts, and six of those filled the screen. It
+     is one line now, the same shape as at 1440px with six columns removed.
+     Columns are DROPPED, never relabelled into "Label: value": a stacked
+     record is a different and worse thing than a row. */
   .row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    row-gap: 4px;
+    grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] auto;
+    row-gap: var(--ctl-s1);
+    column-gap: var(--ctl-s2);
+    /* 12px OF SIDE PADDING BOUGHT BACK FOR THE NAME, MEASURED RATHER THAN
+       GUESSED. At 390px `[name]` resolved to 146px against the 151px that
+       `claude-code` + the id actually need, so every row read `claude-co…`.
+       Four of the five missing pixels are two 4px trims off this padding and
+       the fifth is the agent cell's own gap below; the alternative was to
+       shrink `[state]`, and a state word that ellipses is the one thing the
+       track's own comment says it may never do. The page gutter already
+       supplies the outer margin, so `--ctl-s2` inside the row is separation,
+       not crowding. */
+    padding-left: var(--ctl-s2);
+    padding-right: var(--ctl-s2);
   }
-  .row .st { grid-column: 1; }
-  .row .when { grid-column: 2; text-align: right; }
-  .row .agent { grid-column: 1 / -1; flex-direction: row; align-items: baseline; gap: 8px; }
-  .row .agent .id, .row .agent .model { display: none; }
-  .row .why { order: 9; -webkit-line-clamp: 2; }
-  .row .owner, .row .try, .row .class { display: none; }
-  .row .wf { grid-column: 1; }
-  .row .badges { grid-column: 2; }
+  .row .agent { gap: var(--ctl-s1); }
+  /* The id survives and the model goes. On a phone the id is what somebody is
+     matching against the one in their terminal; the model is on the detail. */
+  .row .agent .model { display: none; }
+  .row .owner, .row .try, .row .class, .row .wf { display: none; }
+  /* THE DISPATCH FLAG IS NOT TRUNCATED, IT IS MOVED. `integrate/contributor`
+     is 21 characters and it is the row's most consequential fact -- this step
+     is going to write to a repository. Ellipsing it to `integrate/contrib…`
+     loses the half that says which. Most rows have no flag at all
+     (`DispatchChip` renders nothing for a plain `collect`), so this costs a
+     second line only on the rows that have something to say. */
+  .row .badges { grid-column: 1 / -1; order: 8; justify-content: flex-start; flex-wrap: wrap; overflow: visible; }
+  .row .why { grid-column: 1 / -1; order: 9; -webkit-line-clamp: 2; }
   /* Padding only. The 12.5px that was here is --t-body everywhere now: a tab
      is a tab at 390pt, and half a pixel of type was never the reason four of
      them fitted. */
@@ -1824,9 +2023,80 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   color: var(--text);
   font-size: var(--t-body);
 }
-/* The state dot leads the state word in a row. `.ctl-dot` is 8px and carries
-   its own shape; the gap is s1 because the pair is one token, not two. */
-.row .st > .ctl-dot { margin-right: var(--ctl-s1); }
+/* `[step]`. THE STEP ID, WITH THE BOX TAKEN OFF IT.
+   It was a `.tag` -- a 1px `currentColor` box, uppercase, tracked -- which is
+   the status treatment, applied to an identifier. Koyeb's rule, quoted in §6.6,
+   is the opposite way round: the one pill-shaped thing in their console is
+   METADATA, and that is how they stop a pill from meaning "status". Here the
+   box did not even hold: `.tag` does not shrink, so `scan-terraform` in a
+   104px column printed straight over the elapsed time beside it.
+   B17 stands: `<Id>` inside keeps it lowercase whatever the ancestor does. */
+.wf-step {
+  display: block;
+  min-width: 0;
+  color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* A SECTION HEADING INSIDE A TOOLBAR WAS FALLING OFF THE TYPE SCALE.
+   `.section > h2` is `--t-title`, and it is a CHILD combinator; three panels on
+   the run detail -- Output, Dispatch, Timeline -- put their `<h2>` inside a
+   `.ctl-toolbar` so that a qualifier could sit beside it, which took the
+   heading out of that rule's reach and handed it the user agent's own
+   `1.5em` -- 21px, measured, on a scale whose top step is 22. Six steps mean
+   six steps; a seventh arriving by default is the same defect as declaring
+   one. The toolbar is the only wrapper this happens through, so the fix is
+   scoped to it rather than loosened to `.section h2`, which would also catch
+   the card titles that are deliberately `--t-lead`. */
+.section > .ctl-toolbar > h2 {
+  font-size: var(--t-title);
+  line-height: var(--lh-title);
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+/* THE UTILISATION ROW OVERFLOWED ITS FIGURE COLUMN IN THE DRAWER, SIX TIMES.
+   `.ctl-util` sizes its figures at a flat `78px`, which is right on Overview
+   and Capacity where the row has a whole page to sit in. In a 560px drawer the
+   same row carries `7.20 GiB / 8.00 GiB` in that 78px and the text ran into
+   `.ctl-util-by` beside it -- measured, six overlapping pairs on one run, at
+   1440px, none of them visible to `spacing.test.tsx`.
+
+   THE FIX IS SCOPED HERE RATHER THAN APPLIED TO THE PRIMITIVE, and that is a
+   track decision, not a preference: `.ctl-util`'s track list is read verbatim
+   by `shell.test.tsx:696` and the rule is shared with three screens this lane
+   does not own. `max-content` on the figure is what the primitive should
+   probably take -- it is strictly safer than a fixed 78px for every caller --
+   and it is filed as a request in §11.6 rather than made here. */
+.drawer .ctl-util {
+  grid-template-columns: minmax(12ch, 1fr) minmax(48px, 120px) max-content minmax(0, auto);
+  gap: var(--ctl-s2);
+}
+.drawer .ctl-util-figure { white-space: nowrap; }
+.drawer .ctl-util-by {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* `latest` IS METADATA AND IS THE ONE BOX LEFT ON AN ATTEMPT CARD'S HEADING.
+   The two facts that sat beside it -- the outcome and the OOM near miss -- are
+   STATES and are chips now, so this is no longer one badge among three. Faint
+   rather than inheriting the heading's full ink, which is what makes it read
+   as a hairline-outlined label instead of as a fourth status. */
+.att-card .ctl-card-title > .tag { color: var(--text-faint); }
+/* THE GAP THE BORDER USED TO BE. An attempt card's title carries the label and
+   then one to three status objects, and while those were `.tag`s a 1px box and
+   6px of padding stood in for the space between them -- the markup has no
+   whitespace there. A chip has no box, so `Attempt · gen 1` ran straight into
+   `never started`. `--ctl-s2` is the step for "inside a panel, between two
+   things on one line"; `wrap` so a third object goes under rather than out. */
+.att-card .ctl-card-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s2);
+}
 
 /* An attempt card, and the two-level nesting the run screen genuinely needs:
    a card per attempt, sub-blocks inside it. `--ctl-s3` between cards is the
@@ -1970,8 +2240,17 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 
 .row.clickable { cursor: pointer; }
-.row.clickable:hover { border-color: var(--text-faint); }
-.row.clickable:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* HOVER IS A SURFACE STEP, NOT A BORDER CHANGE. The rows share their edges now
+   (`.row + .row`), so repainting one row's border repaints the line its
+   neighbour is sitting on and the whole list twitches as the cursor runs down
+   it. §5.1: grouping is a surface step, separation is a hairline -- prefer the
+   step. It is also hueless, which §1.3 asks of every control state that is not
+   focus. */
+.row.clickable:hover { background: var(--surface-2); }
+/* `outline-offset: -2px`, not `2px`. A positive offset draws the focus ring
+   OUTSIDE the row, over the rows above and below it, now that there is no gap
+   between them; inset, it traces the row it belongs to. */
+.row.clickable:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 
 /* key/value grid used by every detail panel */
 dl.kv {

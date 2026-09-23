@@ -3,7 +3,10 @@ import { useEffect, useMemo, useState } from 'react'
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
 // whose whole job is to be recognisable is a contradiction in terms.
-import { Em, Mark } from './AgentDetail'
+// `Chip` joins them for the same reason: §9.3 of design-system.md counted four
+// status chips in this product and asked for one, and the rebuilt `.ctl-chip`
+// is only a rebuild if the screens stop hand-rolling their own.
+import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
 import { loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
 import { HelpCard } from './HelpCard'
@@ -14,7 +17,6 @@ import {
   TERMINAL_STATES,
   elapsed,
   rollupState,
-  stateGlyph,
   stateTone,
   whyAgent,
   type Task,
@@ -22,6 +24,22 @@ import {
 } from './types'
 
 type Tab = 'live' | 'waiting' | 'recent'
+
+/**
+ * A group's rolled-up state, in the chip's own tone vocabulary.
+ *
+ * `rollupState` answers in four words of its own and `stateTone` only takes a
+ * TaskState, so the mapping has to happen somewhere. It happens here, in four
+ * lines, rather than by widening either of those -- both live in `types.ts`,
+ * which another track owns. `waiting` maps to `wait`, which `chipTone` draws
+ * as the caution triangle: work that is held is not work that is fine.
+ */
+function rollTone(roll: ReturnType<typeof rollupState>): ChipTone {
+  if (roll === 'running') return 'live'
+  if (roll === 'succeeded') return 'ok'
+  if (roll === 'failed') return 'bad'
+  return 'wait'
+}
 
 /**
  * THE THREE TABS, AND WHERE THEIR SENTENCES WENT.
@@ -281,7 +299,14 @@ function GroupedRows({
                   the same reason it is not uppercased here either. "No
                   workflow" is a sentence, not an id, so it is not wrapped. */}
               {wf === '' ? 'No workflow' : <Id>{wf}</Id>}
-              <span className={`roll ${roll}`}>{roll}</span>
+              {/* THE ROLLUP PILL WAS THE LAST FILLED PILL ON THIS SCREEN.
+                  `.roll` was a 999px pill with an 18%-tint background and the
+                  word in `--*-ink`, uppercase, tracked, 600 -- the exact
+                  silhouette §6.6 measured at 102x23px and replaced. It is the
+                  same kind of fact as every other state here, so it is drawn
+                  the same way. `.roll`'s four rules went with it; nothing else
+                  rendered them. */}
+              <Chip tone={rollTone(roll)}>{roll}</Chip>
               {/* THE FIGURE IS THE FACT. "3 steps in this page" said `3` and
                   then re-said, in four more words, the thing the toolbar's
                   scope qualifier already says once for the whole screen. A
@@ -316,7 +341,6 @@ function TaskRow({
   now: number
   onOpen: (taskId: string) => void
 }) {
-  const holding = CONCURRENCY_STATES.has(task.state)
   const why = whyAgent(task)
   const el = elapsed(task, now)
   const units = RESOURCE_UNITS[task.resource_class]
@@ -327,8 +351,13 @@ function TaskRow({
   const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
 
   return (
+    // `holding` IS GONE FROM THE MARKUP AS WELL AS FROM THE SHEET. It tinted
+    // the row's border in the accent to say "this agent holds a pool slot",
+    // which is precisely what the Live tab selects for -- true of every row in
+    // one tab and of no row in the other two. The state chip's `is-live` mark
+    // says it per row; see `.row.holding` in styles.css for the argument.
     <div
-      className={`row clickable${holding ? ' holding' : ''}`}
+      className="row clickable"
       role="button"
       tabIndex={0}
       onClick={() => onOpen(task.id)}
@@ -339,17 +368,25 @@ function TaskRow({
         }
       }}
     >
-      {/* THE STATE DOT, AHEAD OF THE WORD. `.ctl-dot`'s seven silhouettes are
-          the same vocabulary the chips use, so the shape is readable before
-          the word is -- which is what makes forty rows scannable down the left
-          edge rather than readable one at a time. The WORD IS STILL MANDATORY:
-          colour and shape are the second and third signals, never the only
-          one. */}
-      <span className={`st ${stateTone(task.state)}`}>
-        <i className={`ctl-dot is-${stateTone(task.state) === 'wait' ? 'warn' : stateTone(task.state)}`} aria-hidden />
-        <span aria-hidden>{stateGlyph(task.state)}</span> {task.state}
-      </span>
+      {/* ONE MARK AND ONE WORD, WHICH IS THE WHOLE CHIP DECISION (§6.6).
+          This column drew the state THREE TIMES: a `.ctl-dot` silhouette, then
+          `stateGlyph`'s bullet, then the word in 13px uppercase tracked mono in
+          a saturated hue. Forty rows of that is the owner's "decorative double
+          dot" and "status chips are heavy" in one column.
 
+          `.ctl-chip` is the primitive that replaced all three: a 10px mark
+          carrying the silhouette, and the word in the sans face at --t-body in
+          FULL INK -- which is a stronger reading of the state than the coloured
+          uppercase was, because the word no longer competes with the hue for
+          the same channel. The mark is `aria-hidden` inside the primitive, so
+          a screen reader gets the word once. */}
+      <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+
+      {/* ONE LINE, NOT THREE. This was a flex COLUMN -- profile over model over
+          id -- which is what made a 30px row 72px tall and the list read as
+          stacked cards rather than as a list. The one screen the owner named as
+          already right (`#agents/workflows`) puts ten facts on one 37px line;
+          three facts get one line here for the same reason. */}
       <span className="agent">
         <b>{task.runner_profile}</b>
         {task.model && <span className="model">{task.model}</span>}
@@ -363,11 +400,22 @@ function TaskRow({
       </span>
 
       <span className="wf">
-        {/* `.tag` uppercases, and a step id is the string the DAG is built
-            from and the one a 422 names back. One rule for every identifier on
-            every screen, and it is `<Id>`; see `.id` in styles.css. */}
+        {/* THE BOX CAME OFF THE STEP ID, and it is the one cell that was
+            measurably broken: `.tag` draws a bordered box that does not shrink,
+            so `scan-terraform` in a 110px column overlapped the elapsed time
+            beside it at 1440px -- twice on the shipped list, three times with
+            the drawer open. An id is not a status and does not get a status's
+            chrome; `<Id>` is the one rule for every identifier on every screen
+            (B17) and the column position is what says which id this is. */}
         {task.step_id ? (
-          <span className="tag" aria-label={`workflow ${task.workflow_id}`}>
+          // The accessible name carries BOTH ids. It used to carry only the
+          // workflow's, which meant a screen reader was told the workflow and
+          // never the step -- the visible string. Naming both is what the
+          // sighted reader gets from the column plus the cell.
+          <span
+            className="wf-step"
+            aria-label={`workflow ${task.workflow_id}, step ${task.step_id}`}
+          >
             <Id>{task.step_id}</Id>
           </span>
         ) : (
@@ -392,7 +440,14 @@ function TaskRow({
           a list of forty are the ones that are going to write to a repository. */}
       <span className="badges">
         <DispatchChip task={task} />
-        {cancelling && <span className="tag full">cancelling…</span>}
+        {/* A STATE, SO IT IS A CHIP. `cancelling` is the one thing on this row
+            that contradicts the state word beside it -- the task still reads
+            RUNNING because the lease is still held (invariant 3) and only
+            `cancel_requested` is set. It was a bordered uppercase `.tag` in
+            --bad, which drew it louder than the state it qualifies; as a chip
+            it is a caution mark and the word, in the same vocabulary as every
+            other state on the screen. */}
+        {cancelling && <Chip tone="wait">cancelling</Chip>}
       </span>
 
       {/* The reason this screen exists on a phone: someone is checking why
