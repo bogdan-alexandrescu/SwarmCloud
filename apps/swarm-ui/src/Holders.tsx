@@ -179,26 +179,26 @@ function Drift({ board }: { board: HoldersBoard }) {
         </div>
       ) : (
         <div className="ctl-card-body is-flush">
-          <div className="ctl-table">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Pool</th>
-                  <th scope="col" className="is-num">From leases</th>
-                  <th scope="col" className="is-num">Counter</th>
-                  <th scope="col" className="is-num">Delta</th>
+          <div className="ctl-table is-stacked">
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Pool</th>
+                  <th role="columnheader" scope="col" className="is-num">From leases</th>
+                  <th role="columnheader" scope="col" className="is-num">Counter</th>
+                  <th role="columnheader" scope="col" className="is-num">Delta</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {disagreeing.map((r) => (
-                  <tr key={r.name} className="is-warn">
-                    <th scope="row">
+                  <tr role="row" key={r.name} className="is-warn">
+                    <th role="rowheader" scope="row">
                       {poolLabel(r.name)}
                       <span className="ctl-sub">{r.name}</span>
                     </th>
-                    <td className="is-num">{r.held}</td>
-                    <td className="is-num">{r.active}</td>
-                    <td className="is-num">
+                    <td role="cell" data-label="From leases" className="is-num">{r.held}</td>
+                    <td role="cell" data-label="Counter" className="is-num">{r.active}</td>
+                    <td role="cell" data-label="Delta" className="is-num">
                       {r.active !== null ? (r.active > r.held ? '+' : '') : ''}
                       {r.active !== null ? r.active - r.held : <span className="ctl-em">—</span>}
                     </td>
@@ -301,43 +301,45 @@ function ClassMix({ rows }: { rows: LeaseRow[] }) {
 function HolderTable({ rows }: { rows: LeaseRow[] }) {
   const sorted = [...rows].sort((a, b) => b.units - a.units)
   return (
-    <section className="ctl-card hold-all">
-      <div className="ctl-card-head">
+    /* §B6.1: the screen's one full-width table is the one box on it. It was
+       a card wrapping a card-body wrapping a `.ctl-table`, which drew two
+       rounded edges 16px apart around five columns. */
+    <section className="section hold-all">
+      <div className="ctl-toolbar">
         <h2 className="ctl-card-title">Every holder</h2>
-        <span className="ctl-card-note">
+        <span className="ctl-card-note is-end">
           {rows.length} row{rows.length === 1 ? '' : 's'}
         </span>
       </div>
-      <div className="ctl-card-body is-flush">
-        <div className="ctl-table">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Task</th>
-                <th scope="col">Tenant</th>
+      <div className="ctl-table is-stacked">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Task</th>
+                <th role="columnheader" scope="col">Tenant</th>
                 {/* §8.4(3): THE CAVEAT ATTACHES TO THE COLUMN. "units are
                     weighted, not agent counts" was a footnote under the table
                     that a reader had to carry back up to the column it was
                     about. In the heading it cannot be missed and cannot be
                     applied to the wrong column. */}
-                <th scope="col" className="is-num">
+                <th role="columnheader" scope="col" className="is-num">
                   Units (weighted)
                   <HelpCard topic="units-not-agents" />
                 </th>
-                <th scope="col">Dispatch</th>
-                <th scope="col" className="is-num">Gen</th>
+                <th role="columnheader" scope="col">Dispatch</th>
+                <th role="columnheader" scope="col" className="is-num">Gen</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {sorted.map((l) => (
-                <tr key={l.lease_id}>
-                  <th scope="row">
+                <tr role="row" key={l.lease_id}>
+                  <th role="rowheader" scope="row">
                     {l.task_id.slice(-10)}
                     <span className="ctl-sub">{l.lease_id.slice(-10)}</span>
                   </th>
-                  <td>{l.tenant_id}</td>
-                  <td className="is-num">{l.units}</td>
-                  <td>
+                  <td role="cell" data-label="Tenant">{l.tenant_id}</td>
+                  <td role="cell" data-label="Units (weighted)" className="is-num">{l.units}</td>
+                  <td role="cell" data-label="Dispatch">
                     {/* The state, as a word AND as a shape -- `.ctl-dot`
                         carries the silhouette so the column survives
                         greyscale and a colour-blind reader. */}
@@ -346,12 +348,11 @@ function HolderTable({ rows }: { rows: LeaseRow[] }) {
                       {l.dispatch_state === 'LEASED' ? 'awaiting' : 'dispatched'}
                     </span>
                   </td>
-                  <td className="is-num">{l.generation}</td>
+                  <td role="cell" data-label="Gen" className="is-num">{l.generation}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
       </div>
     </section>
   )

@@ -1791,18 +1791,47 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info-ink); }
 .scope.tenant   { background: color-mix(in srgb, var(--paused) 15%, transparent); color: var(--paused-ink); }
 
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* §B6.1: `.table-wrap` IS THE PANEL, because something has to be.
+   This was a bare `overflow-x: auto` with no edge at all, so `table.pools`
+   shipped as the exact inverse of §13.3: a rule under every row (the level
+   that is supposed to draw nothing) and no box around the whole (the level
+   that is supposed to draw the one). `.ctl-table` next to it draws the same
+   table the right way round, so one app had two opposite answers for one
+   construction — `pools/accounts` and `pools/pools` side by side in the rail.
+   It is now the same box `.ctl-table` is, declared once here. */
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.ctl-card .table-wrap { border-color: transparent; border-radius: 0; background: none; }
 table.pools { width: 100%; border-collapse: collapse; font-size: var(--t-body); }
 table.pools th, table.pools td {
   padding: 7px 10px;
   text-align: left;
-  border-bottom: 1px solid var(--line-soft);
+  /* §B6.1 / §13.3: A ROW IS SEPARATED BY NOTHING. This drew a `--line-soft`
+     rule under every cell of every row — on `pools/accounts` that was 27 of
+     the screen's 74 bordered elements, for six rows of data. The same argument
+     `.ctl-table` already carries applies verbatim: what separates two rows is
+     their height, their alternating mono/sans split and the fill step, and
+     Northflank's dense tables draw no row border at all. */
   white-space: nowrap;
 }
+/* The one rule permitted inside a panel, on the same terms as `.ctl-table`:
+   a column head says once, at the top, where the data starts — and it says it
+   on a fill step, at `--line-soft`, not at `--text-faint`. The old
+   `border-bottom-color: var(--text-faint)` made this the strongest horizontal
+   on the screen, heavier than the panel's own edge. */
 table.pools thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
-  border-bottom-color: var(--text-faint);
 }
 table.pools .n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 table.pools tbody tr.over   { background: color-mix(in srgb, var(--bad) 8%, transparent); }
@@ -2131,10 +2160,20 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    does not own. `max-content` on the figure is what the primitive should
    probably take -- it is strictly safer than a fixed 78px for every caller --
    and it is filed as a request in §11.6 rather than made here. */
+/* §B6.2 restated the row as a wrapping flex line, so this override is restated
+   in the same terms. The intent is unchanged and so are the numbers: a 12ch
+   name floor rather than 18ch because the drawer is narrower, a 120px ceiling
+   on the bar, and a figure that takes exactly the width its content needs.
+   What is new is that when those four no longer fit — which at 413px is
+   always, and is what cut `never measured` to `never mea…` — the line WRAPS
+   instead of squeezing the two text columns to nothing. */
 .drawer .ctl-util {
-  grid-template-columns: minmax(12ch, 1fr) minmax(48px, 120px) max-content minmax(0, auto);
-  gap: var(--ctl-s2);
+  gap: var(--ctl-s1) var(--ctl-s2);
 }
+.drawer .ctl-util > .ctl-util-name { flex: 1 1 12ch; }
+.drawer .ctl-util > .ctl-util-track { flex: 1 1 48px; max-width: 120px; }
+.drawer .ctl-util > .ctl-util-figure { flex: 0 0 auto; }
+.drawer .ctl-util > .ctl-util-by { flex: 0 1 auto; }
 .drawer .ctl-util-figure { white-space: nowrap; }
 .drawer .ctl-util-by {
   min-width: 0;
@@ -3381,6 +3420,19 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border-radius: 0;
   background: none;
 }
+/* §B6.1: AND NEITHER DOES A TABLE INSIDE A CARD. Exactly the rule above, for
+   the construction that actually shipped on the dense screens: every table
+   panel was `.ctl-card > .ctl-card-body.is-flush > .ctl-table > table`, and
+   `.ctl-table` draws the same 1px/--radius/--surface box `.ctl-card` had
+   already drawn 16px outside it. Two concentric rounded rectangles around one
+   table, on seven panels of `pools/pools` alone. §13.3 says the panel is THE
+   ONE BOX; which of the two elements draws it is an implementation detail, and
+   the outer one wins because it is the one the head and the foot belong to. */
+.ctl-card .ctl-table {
+  border-color: transparent;
+  border-radius: 0;
+  background: none;
+}
 .ctl-card-head {
   display: flex;
   align-items: baseline;
@@ -4436,11 +4488,38 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      catalogue has. `ch` rather than px precisely so this survived the type
      scale: the name moved from 12.5px to --t-body and 18ch is still 18
      characters of the mono face. */
-  grid-template-columns: minmax(18ch, 1fr) minmax(48px, 160px) 78px 128px;
+  /* §B6.2 — THE ROW WRAPS; THE NAME NEVER TRUNCATES. (Inventory F1 and F2.)
+     The four tracks above summed to ~441px of minimum and the row they ship in
+     is 348px inside Overview's three-up card and 413px inside the agent
+     drawer, so the only track that could give was the `1fr` one: the NAME.
+     `.ctl-util-name` resolved to 79.33px against 160-211px of content and
+     rendered `mock · 1…` — a prefix of a number standing where the number was
+     — and, in the drawer, `never mea…` and `cpu not sam…`, which is the
+     honesty vocabulary itself being cut. A grid cannot fix that, because a
+     grid has no way to say "and if you do not fit, take another line".
+
+     So the row is a WRAPPING FLEX LINE rather than a fixed four-column grid.
+     The wrap point is decided by the container alone — every basis below is a
+     constant — so all the rows in one list wrap identically and the columns
+     stay aligned with each other, which is the property the grid was there
+     for. When the container is wide the row is the same four columns it was.
+     When it is narrow the name keeps its line and the bar, the figure and the
+     provenance take the next one: "the name holds a floor and the bar gives
+     way", which is what this primitive's own comment has always said. */
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--ctl-s3);
+  gap: var(--ctl-s1) var(--ctl-s3);
   padding: 5px 0;
 }
+.ctl-util > .ctl-util-name { flex: 1 1 18ch; }
+.ctl-util > .ctl-util-track { flex: 1 1 48px; max-width: 160px; }
+.ctl-util > .ctl-util-figure { flex: 0 0 78px; }
+/* `margin-left: auto` so the provenance keeps its column when the line wraps:
+   on a full row it changes nothing (the track already absorbs the slack), and
+   on a wrapped one it holds the last field at the right edge instead of
+   stranding it under the name. */
+.ctl-util > .ctl-util-by { flex: 0 0 128px; margin-left: auto; }
 /* NO RULE BETWEEN TWO OF THESE (§B5.3), and this one is the sheet's own
    example turned around. §5.2 of the design system cites `.ctl-util +
    .ctl-util` as the canonical case where `--line-soft` is LEGAL — it is a
@@ -4454,13 +4533,18 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    Space is enough. */
 .ctl-util + .ctl-util { margin-top: var(--ctl-s2); }
 
+/* §B6.2: THE ELLIPSIS IS GONE, not moved. An ellipsis on this element was
+   never a graceful degradation — the string it truncates is `mock · 15 can
+   start` and `never measured`, so what it removes is the measurement or the
+   word that says there is no measurement. With the row wrapping (above) there
+   is a whole line for the name; on the rare string longer than one line it
+   wraps to two rather than losing its tail. A two-line row is legible; a
+   one-line row that says `1` where the value is `15` is not. */
 .ctl-util-name {
   font: var(--t-body)/var(--lh-body) var(--mono);
   color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .ctl-util-name b { color: var(--text); font-weight: 500; }
 
@@ -4931,13 +5015,20 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   font: 400 var(--t-micro)/var(--lh-flush) var(--mono);
   color: var(--text-faint);
 }
+/* §B6.1: PROVENANCE SEPARATES BY A SURFACE STEP, NOT BY A RULE — the decision
+   `.ctl-card-foot` already carries, applied to the slot the foot moved into
+   when the panel became the table. A `--line` rule here is the boundary
+   weight, drawn a second time inside a box that has already drawn its
+   boundary; and on the same screen a `.ctl-card-foot` two panels up was
+   saying the same kind of thing with a fill. The step carries the meaning the
+   rule did not: the caption is about the READING, not the reading itself. */
 .ctl-table caption {
   caption-side: bottom;
   padding: var(--ctl-s2) 10px;
   text-align: left;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
-  border-top: 1px solid var(--line);
+  background: var(--surface-2);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -5669,7 +5760,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      figures: the bar is a picture of the number beside it, and dropping the
      number instead would leave a picture with nothing under it. "Set by" is
      the one part that has a home on the detail screen. */
-  .ctl-util { grid-template-columns: minmax(0, 1fr) 84px; gap: var(--ctl-s2); }
+  /* §B6.2: the tracks are flex bases now, so the two that remain are named
+     rather than a two-column template. Same two survivors, same reason. */
+  .ctl-util { gap: var(--ctl-s1) var(--ctl-s2); }
+  .ctl-util > .ctl-util-name { flex: 1 1 12ch; }
+  .ctl-util > .ctl-util-figure { flex: 0 0 84px; }
   .ctl-util-track, .ctl-util-by { display: none; }
 
   /* The `font-size: 12px` here is gone for the reason `table.pools` gives
@@ -6251,11 +6346,20 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .rt-eyebrow { margin: 0; }
 
 /* Consecutive top-level cards on these screens. `.ctl-cards` owns the gap
-   inside a grid; a card that is its own region owns the gap after itself. */
-.cap-headroom,
-.rt-backends,
-.rt-sizing,
+   inside a grid; a card that is its own region owns the gap after itself.
+   §B6.1: `.cap-headroom`, `.rt-backends` and `.rt-sizing` are `.section`s now
+   rather than top-level cards, so they take `.section`'s own `--ctl-s5` and
+   the hairline `.section + .section` draws — which is what §13.3 says a change
+   of subject is separated by. Only `.hold-top`, still a `.ctl-cards` grid, is
+   left here. */
 .hold-top { margin-bottom: var(--ctl-s3); }
+/* TWO SUMMARY CARDS OF DIFFERENT HEIGHTS ARE TWO CARDS OF DIFFERENT HEIGHTS.
+   `.ctl-cards` is a grid, so its default `align-items: stretch` grew `Class
+   mix` — whose body on a clean board is one `real zero` mark — to the height
+   of the drift table beside it: a 110px empty box, which is exactly the
+   "everything is a bordered rounded box" reading. A card is as tall as what
+   is in it. */
+.hold-top { align-items: start; }
 
 /* -- Pools ----------------------------------------------------------------- */
 
@@ -6296,6 +6400,19 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   border: none;
   border-radius: 0;
   background: none;
+}
+/* AND THE TABLE TAKES THE BOX BACK, because §B6.1 took it away. That rule --
+   "a `.ctl-table` inside a `.ctl-card` draws no second box" -- is right
+   everywhere the card draws the first one, and this is the single place in
+   the sheet where a card draws none. The two rules composed to zero: six
+   family tables shipped as a header ground with nothing around them, which is
+   the opposite of what the paragraph above spent a screenshot arguing for.
+   CSS cannot ask whether an ancestor painted an edge, so the exception is
+   stated here, next to the `border: none` that creates it. */
+.cap-families > .ctl-card .ctl-table {
+  border-color: var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
 }
 /* The head's padding was chrome for a box that is no longer there; the section
    heading sits on the page's own left edge, level with the screen title above
@@ -6519,3 +6636,369 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    scoped to this cell, never on the primitive: nine other screens draw chips
    that are not followed by a mark. */
 .acct-statecell > .ctl-chip { margin-right: var(--ctl-s2); }
+
+/* ==========================================================================
+   §B6 — THE DENSE AND OPERATOR SCREENS, RESTRUCTURED
+   ==========================================================================
+   Runtimes, Pools, Capacity holders, Accounts, Provider quota, Pool limits and
+   Platform counts. §B5 (the layout system) decided the gutter, the casing and
+   which level of the hierarchy may draw a box; this block APPLIES those to the
+   seven screens that are almost entirely tables and facts, and changes three
+   things §B5 deliberately left to the build lanes:
+
+     §B6.1  the panel is one box, and the table inside it is not a second one
+            (in place, beside `.ctl-card .ctl-card` and `table.pools`)
+     §B6.2  `.ctl-util` wraps instead of truncating       (in place, F1 / F2)
+     §B6.3  a table stops being a table below 900px       (here, F6)
+     §B6.4  a list of facts is a key COLUMN, not a paragraph of pairs (here)
+
+   §B6.3 and §B6.4 are the two that change LEVELS rather than values, so they
+   are the reason this block exists. Everything else here is one of the three
+   §B5 rules being applied where §B5 said it would have to be applied.
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   §B6.3 — BELOW 900px A TABLE STOPS BEING A TABLE
+   --------------------------------------------------------------------------
+   THE DEFECT, ranked F6 in `docs/audits/2026-09-23/overflow-inventory.md` and
+   the worst thing on these screens: at 390pt every data table hid a fifth to
+   two thirds of its columns behind an `overflow-x: auto` that paints NO
+   scrollbar on this platform. `pools/pools`' Headroom table showed one of its
+   five columns -- five profile names, no values at all -- above a footer
+   reading `5 of 5 measured`. That is the honesty invariant inverted: the app
+   measured five things, said so, and drew a picture whose correct reading is
+   "nothing here".
+
+   A SCROLLBAR IS NOT THE FIX. Making the hidden columns reachable still makes
+   a reader drag sideways once per row to compare two numbers, and the columns
+   are the comparison. Below the width where the columns fit, the row is the
+   record and the columns are its fields -- so each row becomes a stacked
+   record with its own key column, which is what Railway and Northflank both
+   do at this width, and every value is on screen with nothing to drag.
+
+   WHY THE LABELS COME FROM CSS AND NOT FROM MARKUP. `content: attr(data-label)`
+   adds no DOM and no text node, so the column name appears beside its value at
+   390pt and the rendered-word budgets in `prose.budget*.test.tsx` -- which
+   count text nodes a reader can see -- measure the same screens they always
+   did. A duplicated `<span>` per cell would have added ~70 words to Pools.
+
+   WHY EVERY ELEMENT CARRIES AN EXPLICIT `role`. Changing `display` on a table
+   element REMOVES its implicit ARIA role in every browser, so a stacked table
+   is, to a screen reader, a pile of anonymous blocks. The markup in the seven
+   screens below therefore states `role="table"`, `rowgroup`, `row`,
+   `columnheader`, `rowheader` and `cell` explicitly. They are the roles those
+   elements already had; writing them down is what keeps them once `display`
+   moves. `honesty.capacity.test.tsx` queries `getByRole('rowheader')` and
+   `getByRole('columnheader')` and is unchanged by any of this, which is the
+   check that the roles still say what they said.
+
+   OPT-IN, via `.is-stacked`. Three screens this lane does not own also render
+   `table.pools`, and a stacked row with no `data-label` would be a column of
+   unlabelled values -- strictly worse than a sideways scroll. So the layout
+   turns on only where the labels exist. */
+@media (max-width: 899px) {
+  /* Nothing scrolls sideways any more, so the scroller that hid the columns
+     is not merely unused: it is removed, or it would clip the stacked rows. */
+  .ctl-table.is-stacked,
+  .table-wrap.is-stacked {
+    overflow-x: visible;
+  }
+  .is-stacked > table,
+  .is-stacked > table > thead,
+  .is-stacked > table > tbody,
+  .is-stacked > table > tbody > tr,
+  .is-stacked > table > tbody > tr > th,
+  .is-stacked > table > tbody > tr > td {
+    display: block;
+    width: auto;
+  }
+  /* The column heads are said once per cell now, so the head ROW is not drawn
+     -- but it stays in the accessibility tree, because it is still what the
+     `role="columnheader"` cells are, and `scope="col"` still associates them
+     with the values below. Visually hidden, never `display: none`. */
+  .is-stacked > table > thead {
+    /* `position: relative`, NOT the usual `position: absolute` visually-hidden
+       recipe, and this cost a measurement to find. This app scrolls inside
+       `.ctl-scroll`, not on the document, and nothing between a `<thead>` and
+       `<html>` is positioned -- so an absolutely positioned head resolves
+       against the INITIAL containing block, leaves the scroller's overflow
+       entirely, and each one lands at its static y in document coordinates.
+       Seven of them down `pools/pools` took `documentElement.scrollHeight`
+       from 844 to 4474 at 390pt: a page-length scrollbar attached to seven
+       1px boxes nobody can see. It is the same failure mode as the help
+       card's (inventory F8) -- a rule that constrains SIZE and not POSITION.
+       In flow at 1px, clipped, it cannot escape anything. */
+    position: relative;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* A `<caption>` inside a `display: block` table is still a table-caption, so
+     the browser wraps it in an anonymous table box that shrinks to fit -- the
+     provenance line rendered as a 70px column of one word per line. */
+  .is-stacked > table > caption {
+    display: block;
+    border-radius: 0 0 var(--radius) var(--radius);
+  }
+  /* THE RECORD. `--ctl-s3` of air inside it, the panel's own padding at the
+     sides, and NOTHING between two of them (§13.3: a row is separated by
+     nothing). What tells two records apart is that each opens with a name at
+     lead rank and the fields under it are a mono key column. */
+  .is-stacked > table > tbody > tr {
+    /* `height: auto` IS LOAD-BEARING, and it cost a broken screenshot to find.
+       `.ctl-table tbody tr` pins the row at `--row-h` (30px) -- correct for a
+       table row, fatal for a block one, because a five-field record is ~150px
+       of content inside a 30px box and every record then paints on top of the
+       next. jsdom cannot see it; the 390pt screenshot showed five rows of
+       Pools written over each other. */
+    height: auto;
+    padding: var(--ctl-s3) var(--ctl-pad-chrome);
+  }
+  .is-stacked > table > tbody > tr > th[scope='row'] {
+    padding: 0 0 var(--ctl-s2);
+    font-size: var(--t-lead);
+    line-height: var(--lh-lead);
+    font-weight: 600;
+    white-space: normal;
+  }
+  /* THE RAW ID UNDER THE NAME NEEDS ITS OWN LEADING BACK. `.ctl-sub` is set at
+     `--lh-flush`, which is chosen so that a name and an id together come to
+     exactly `--row-h` inside a 30px table row. The record's name is at
+     `--t-lead` here, so that flush line-height paints `tenant:u-bogdan` on top
+     of `u-bogdan` above it -- seen at 390pt on `pools/holders`. */
+  .is-stacked > table > tbody > tr > th[scope='row'] .ctl-sub,
+  .is-stacked > table > tbody > tr > th[scope='row'] .raw {
+    line-height: var(--lh-micro);
+  }
+  /* THE ROW TONE'S LEFT RULE MOVES TO THE RECORD. In a table it is drawn as a
+     background on the first CELL, which costs no layout and cannot push a
+     column out of line. Stacked, the first cell is the full-width name line,
+     so a 3px rule at its left edge lands under the first letters of the name.
+     On the record it sits in the padding the record already has, and the three
+     FORMS -- full rule / half rule / hatch -- are unchanged, which is what
+     keeps the three states apart in greyscale. */
+  .is-stacked > table > tbody > tr.is-bad > :first-child,
+  .is-stacked > table > tbody > tr.is-warn > :first-child,
+  .is-stacked > table > tbody > tr.is-paused > :first-child {
+    background-image: none;
+  }
+  .is-stacked > table > tbody > tr.is-bad,
+  .is-stacked > table > tbody > tr.is-warn,
+  .is-stacked > table > tbody > tr.is-paused {
+    background-repeat: no-repeat;
+    background-position: left center;
+  }
+  .is-stacked > table > tbody > tr.is-bad {
+    background-image: linear-gradient(var(--bad), var(--bad));
+    background-size: 3px 100%;
+  }
+  .is-stacked > table > tbody > tr.is-warn {
+    background-image: linear-gradient(var(--warn), var(--warn));
+    background-size: 3px 46%;
+  }
+  .is-stacked > table > tbody > tr.is-paused {
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--paused) 0 2px,
+      transparent 2px 4px
+    );
+    background-size: 3px 100%;
+  }
+  /* A FIELD IS A KEY AND A VALUE ON ONE LINE, with every key ENDING at the
+     same x down the whole record -- the property a table had and a wrapped
+     list of pairs does not. The key column is right-aligned (it inherits the
+     `<th>`'s alignment through the grid) so the keys' right edge and the
+     values' left edge are both straight, which is the ledger shape and is why
+     `13ch` is a width rather than `max-content`.
+
+     `.ctl-table .is-num`'s right alignment SURVIVES this block, on
+     specificity, and that is the wanted outcome rather than an accident worth
+     correcting: the figures then line up on their own right edge with the
+     tabular-nums they are already set in, so `4210` and `9` are comparable
+     down a record the way they were comparable down a column. Text cells stay
+     left, beside their key. */
+  .is-stacked > table > tbody > tr > td {
+    display: grid;
+    grid-template-columns: minmax(0, 13ch) minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--ctl-s3);
+    padding: 2px 0;
+    text-align: left;
+    white-space: normal;
+  }
+  .is-stacked > table > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+    color: var(--text-faint);
+  }
+  /* EVERY PART OF THE VALUE STAYS IN THE VALUE COLUMN. A cell is often two or
+     three elements -- Accounts' window cell is `—` plus `not measured`, its
+     state cell is a chip plus a mark plus a note -- and each one is a grid
+     item, so without this the second lands in the KEY column on the next row
+     and `not measured` reads as the name of the field below it. Pinned to
+     column 2 they stack under the first part, where they belong. */
+  .is-stacked > table > tbody > tr > td[data-label] > * {
+    grid-column: 2;
+  }
+  /* A grid item fills its column by default, which for a mark or a chip means
+     a 190px dashed box around two words. They are the only children here that
+     draw an edge, so they are the only ones that have to be told to be as wide
+     as they are -- a figure must keep `stretch`, or `.is-num`'s right
+     alignment has nothing to align against. */
+  .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
+  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip {
+    justify-self: start;
+  }
+  /* A cell with no column of its own -- Accounts' expanded detail spans all
+     five -- is a block, not a field, and must not grow an empty key column. */
+  .is-stacked > table > tbody > tr > td:not([data-label]) {
+    display: block;
+    padding: var(--ctl-s2) 0 0;
+  }
+  /* The head row is gone, so the first record needs the panel's top edge to
+     read as the start of the data rather than as a cropped row. */
+  .is-stacked > table > tbody > tr:first-child {
+    padding-top: var(--ctl-pad-chrome);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   §B6.4 — A LIST OF FACTS IS A KEY COLUMN, NOT A PARAGRAPH OF PAIRS
+   --------------------------------------------------------------------------
+   `.ctl-facts` is `flex-wrap: wrap`, so thirteen `<b>key</b> value` pairs on a
+   runtime card render as a justified blob: `max run 5m size demo-small cpu 3
+   vCPU` on one line, `mem 7 GiB ws of mem 3 GiB weight 1u` on the next. Every
+   key sits at whatever x the previous value ended at, which is the one thing a
+   reader cannot use -- there is no column to run an eye down, so finding `mem`
+   means reading the line. Four cards of that is the Runtimes screen, and the
+   brief's count of 93 shouting elements was counting the same pairs.
+
+   THE FIX IS A COLUMN, and it is the whole of it: the key takes a fixed basis
+   so every key on the card starts at the same x and every value starts at the
+   same x after it. The pairs did not change, their order did not change, and
+   nothing was removed. What changed is that the card now has a left edge for
+   the eye to travel down, which is what Railway's service panel and Koyeb's
+   instance panel both are.
+
+   A MODIFIER, not the primitive. Eleven files render `.ctl-facts` and seven of
+   them are other lanes'; several use it as a genuinely inline strip (a toolbar
+   fact, a chip row) where a key column would be wrong. This is opt-in for the
+   case it is right for: a CARD whose body IS its facts. */
+.ctl-facts.is-rows {
+  display: grid;
+  /* One field per line up to ~220px of content, two above it. `min(100%, …)`
+     for the same reason `.ctl-cards` uses it: it is what stops a fixed track
+     overflowing a narrower container, and it is why this needs no query. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  align-items: baseline;
+  gap: 1px var(--ctl-s3);
+  padding: 0;
+}
+.ctl-facts.is-rows > .ctl-fact {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ctl-s2);
+  min-height: 20px;
+}
+/* `--fact-key` is the key column's width, and it is a per-list property rather
+   than a constant because the keys differ in KIND between callers: the
+   catalogue card's are words this product chose (`ws of mem`, 9ch, the longest
+   of them), while Pool limits' are POOL NAMES off the response
+   (`anthropic · u-bogdan`, 20ch). One value would either wrap the second set
+   mid-token or indent the first set by half a card.
+
+   THE DEFAULT IS THE FALLBACK IN THE `var()`, NOT A DECLARATION ON `:root`.
+   This is a local property of one primitive, and `:root` is where this sheet
+   keeps the tokens every screen may read -- putting a 9ch measurement there
+   would invite a screen to reach for it. It also keeps `spaceprobe.ts` honest:
+   it resolves the sheet from the `:root` table and treats an undeclared name
+   with no fallback as an error, which is the right answer for a token and the
+   wrong one for this. */
+.ctl-facts.is-rows > .ctl-fact > b {
+  flex: 0 0 var(--fact-key, 9ch);
+}
+/* Pool limits' operand list: the key is a pool label off the response, and the
+   longest this platform produces is `anthropic · u-bogdan`. At the 9ch default
+   it wrapped to `claude-` / `code` and `anthropic · u-` / `bogdan`, which
+   breaks an identifier across a line -- the one thing §B17 says must not
+   happen to a string a reader may need to paste. */
+.adm-operands { --fact-key: 20ch; }
+/* The value takes the rest of the line and wraps inside it. `min-width: 0` is
+   what lets a long image name wrap instead of forcing the row wider than the
+   card, which is how `demo-runtime-viewport` used to widen a 340px track. */
+.ctl-facts.is-rows > .ctl-fact > :not(b) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------------------
+   §B6.5 — THE OWNER'S CASING QUESTION, ON THE ONE SCREEN §B5.2 COULD NOT REACH
+   --------------------------------------------------------------------------
+   "some helper text is all CAPS and others are regular caps?? WHY?"
+
+   §B5.2 answered that for the SHEET -- `text-transform: uppercase` is banned,
+   and `typescale.test.ts` holds it at zero. It cannot answer it for a string
+   that arrives already shouting. The frozen task states do:
+   `tasks_by_state` is keyed `READY`, `PARKED`, `LEASED`, `DISPATCHED`,
+   `STARTING`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, and Platform
+   counts renders those keys verbatim down a histogram while `.ctl-chip` on
+   `agents/running` renders THE SAME NINE STRINGS in lower case one click
+   away. One vocabulary, two registers, on two screens of one console -- which
+   is the inconsistency the owner is reading, in the half of it a source scan
+   cannot see.
+
+   `lowercase` is the one direction §13.2 leaves legal, for exactly this: it
+   makes a string WE DID NOT AUTHOR quieter, rather than emphasising one we
+   did. The DOM keeps `READY`, so what a reader copies out of this screen is
+   still the state the API names, and `honesty.counts.test.tsx` -- which reads
+   `textContent` -- measures the same strings it always did. */
+.counts-card .sr-name,
+.counts-card .ctl-card-foot { text-transform: lowercase; }
+
+/* TWO SCOPES OF DIFFERENT HEIGHTS ARE TWO CARDS OF DIFFERENT HEIGHTS, the same
+   finding as `.hold-top`: a non-admin's `Every tenant` card holds one em dash
+   and one `admin only` mark, and the grid's default `stretch` grew it to the
+   410px of the nine-state histogram beside it. The absence is the point of
+   that card and it is stated in two marks; 400px of empty box around them
+   says nothing the marks do not, and says it in the one visual language the
+   owner has already called cartoonish. */
+.counts-scopes { align-items: start; }
+
+/* --------------------------------------------------------------------------
+   §B6.6 — THE RESIDUAL SIDEWAYS SCROLL, MEASURED AND DELIBERATELY NOT HIDDEN
+   --------------------------------------------------------------------------
+   §B6.3 removes the sideways scroll below 900px. It does not remove it ABOVE
+   900px, and measurement says it should not pretend to. Swept at 900, 1000,
+   1100, 1200 and 1280 on the five routes with tables:
+
+     width   pools/accounts   pools/pools     runtimes/catalogue
+      900       215px          109px, 30px         40px
+     1000       115px            9px               —
+     1100        15px            —                 —
+     1200+       —               —                 —
+
+   The cause is the rail: at 899 it is a top strip and the content column is
+   the full 868px; at 900 it takes 152px back, so the content is NARROWER one
+   pixel above the breakpoint than one pixel below it. Stacking a 950px-wide
+   record to fix a 115px scroll would be the wrong shape for a desktop window
+   — those columns are ~50px too wide, which is a column problem rather than a
+   level one, and the next pass on these tables should take it as one.
+
+   WHAT WAS TRIED AND REVERTED, so nobody re-derives it. The obvious patch is
+   the `background-attachment: local` scroll-shadow: two surface-coloured
+   layers that travel with the content over two pinned shadow layers, so an
+   edge fades in exactly when there is something past it. It works, it needs
+   no DOM, and it is the affordance F6 and F7 both say is missing. It also
+   puts a `background-image` on `.ctl-table` and `.table-wrap`, and
+   `spaceprobe.ts`'s `behind()` walk stops at the first ancestor carrying one
+   and returns "unresolved" — so every border inside every table in the app
+   loses its contrast and separator grading, on both themes. That probe is the
+   only automated floor this sheet has for those, and trading it for a fade is
+   not a trade worth making. Teaching `behind()` to composite over a gradient's
+   `background-color` would be weakening a gate to land a cosmetic, which this
+   lane is not allowed to do and should not want to.
+
+   So: recorded, with its numbers, rather than papered over. */

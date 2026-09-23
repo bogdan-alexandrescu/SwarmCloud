@@ -69,23 +69,23 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                 {list.length} tenant{list.length === 1 ? '' : 's'}
               </span>
             </div>
-            <div className="ctl-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Tenant</th>
-                    <th scope="col">State</th>
+            <div className="ctl-table is-stacked">
+              <table role="table">
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <th role="columnheader" scope="col">Tenant</th>
+                    <th role="columnheader" scope="col">State</th>
                     {/* The unit rides on the column name: these are the two
                         columns where a 0 and a blank mean different things and
                         the heading is where that is cheapest to say. */}
-                    <th scope="col" className="is-num">Limit</th>
-                    <th scope="col" className="is-num">Requests left</th>
-                    <th scope="col" className="is-num">429s</th>
-                    <th scope="col">Last 429</th>
-                    <th scope="col">Reported</th>
+                    <th role="columnheader" scope="col" className="is-num">Limit</th>
+                    <th role="columnheader" scope="col" className="is-num">Requests left</th>
+                    <th role="columnheader" scope="col" className="is-num">429s</th>
+                    <th role="columnheader" scope="col">Last 429</th>
+                    <th role="columnheader" scope="col">Reported</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody role="rowgroup">
                   {list
                     .sort((a, b) => a.tenant_id.localeCompare(b.tenant_id))
                     .map((q) => (
@@ -118,11 +118,11 @@ function Row({ q }: { q: QuotaState }) {
   const admitsNothing = q.effective_limit === 0
 
   return (
-    <tr className={admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined}>
+    <tr role="row" className={admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined}>
       {/* No text-transform here. Tenant ids are opaque and a displayed id that
           differs from the real one is unusable. */}
-      <th scope="row" className="mono">{q.tenant_id}</th>
-      <td>
+      <th role="rowheader" scope="row" className="mono">{q.tenant_id}</th>
+      <td role="cell" data-label="State">
         {/* The chip carries the state WORD and repeats it as a silhouette, so
             the six provider states stay apart in a greyscale screenshot --
             which is where this screen is actually read. */}
@@ -135,17 +135,21 @@ function Row({ q }: { q: QuotaState }) {
           deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN, so it
           renders as 0 with the state chip beside it doing the explaining --
           not as an em dash, which would read as "not measured". */}
-      <td className="is-num">{q.effective_limit}</td>
+      <td role="cell" data-label="Limit" className="is-num">{q.effective_limit}</td>
       {/* These genuinely can be absent, and absent is not zero. The em dash
           carries `.ctl-em`, which is this sheet's one mark for "nothing was
           ever recorded" -- dimmed, non-tabular and unselectable, so it cannot
           be copied out of the table as if it were a value. */}
-      <td className="is-num">
+      <td role="cell" data-label="Requests left" className="is-num">
         {q.requests_remaining === null ? <Em what="requests remaining" /> : q.requests_remaining}
       </td>
-      <td className="is-num">{q.rate_limit_count}</td>
-      <td>{q.last_429_at ? timeAgo(q.last_429_at) : <Em what="last 429" />}</td>
-      <td>{q.updated_at ? timeAgo(q.updated_at) : <Em what="reported" />}</td>
+      <td role="cell" data-label="429s" className="is-num">{q.rate_limit_count}</td>
+      <td role="cell" data-label="Last 429">
+        {q.last_429_at ? timeAgo(q.last_429_at) : <Em what="last 429" />}
+      </td>
+      <td role="cell" data-label="Reported">
+        {q.updated_at ? timeAgo(q.updated_at) : <Em what="reported" />}
+      </td>
     </tr>
   )
 }

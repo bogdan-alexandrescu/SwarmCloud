@@ -348,12 +348,21 @@ describe('the capacity board as a whole', () => {
     renderCapacity(capacity({ tenant_id: 'eng', runner_profiles: { 'claude-code': profile({ admission: admission({}) }) } }))
     await screen.findByRole('rowheader', { name: 'claude-code' })
 
-    const card = document.querySelector('.ctl-card')
-    const note = card?.querySelector('.ctl-card-note')
-    expect(note, 'the headroom card declares no scope at all').not.toBeNull()
+    // §B6.1 RE-POINT. The claim, the slot and the words are unchanged; the
+    // PANEL moved. Headroom was a `.ctl-card` wrapping a `.ctl-table` -- two
+    // concentric boxes -- and is now a `.section.cap-headroom` whose heading
+    // and qualifier sit on the page above the one box, which is the
+    // construction the pool families beside it already used. So this asks the
+    // headroom panel by name instead of asking for "the first card on the
+    // screen", which after the change is a pool family and answers
+    // `platform-wide`. The qualifier is still a `.ctl-card-note`, still in the
+    // panel's own head, still beside the figures rather than in a banner.
+    const panel = document.querySelector('.cap-headroom')
+    const note = panel?.querySelector('.ctl-card-note')
+    expect(note, 'the headroom panel declares no scope at all').not.toBeNull()
     expect(note?.textContent).toContain('eng')
-    // It is in the same card as the figures it scopes, not a banner above them.
-    expect(card?.querySelector('table')).not.toBeNull()
+    // It is in the same panel as the figures it scopes, not a banner above them.
+    expect(panel?.querySelector('table')).not.toBeNull()
   })
 
   it('declares scope on every pool family, so two figures are never silently compared', async () => {
