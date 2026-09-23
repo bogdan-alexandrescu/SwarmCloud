@@ -2861,9 +2861,22 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    from one declaration, and no `color` on any of it. The figure goes in a
    child, centred by the grid rather than by absolute positioning, so the box
    is measurable. */
+/* EVERY USE OF THESE TWO CARRIES A FALLBACK, and that is not defensive style.
+   `--pct` and `--measured` are PARAMETERS of this component -- a caller sets
+   them inline -- so they are deliberately not `:root` tokens. But
+   `spaceprobe.ts` resolves the shipped sheet as flat text against the `:root`
+   table alone and THROWS on a `var()` that is neither declared there nor given
+   a fallback (spaceprobe.ts:157). Written without one, this block took the
+   whole spacing sweep down with `--pct is used and never declared` before it
+   measured a single element -- a gate that fails at parse time reports nothing
+   about the app, which is the worst way for one to be red.
+
+   The fallback is also the correct CSS on its own terms: a `.ctl-dial` that
+   renders before its caller has a figure computes 0% rather than dropping the
+   declaration and inheriting whatever `--pct` some ancestor happened to set. */
 .ctl-dial {
   --pct: 0;
-  --measured: var(--pct);
+  --measured: var(--pct, 0);
   position: relative;
   display: grid;
   place-items: center;
@@ -2877,8 +2890,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   inset: 0;
   border-radius: var(--ctl-radius-pill);
   background: conic-gradient(
-    var(--info) 0 calc(var(--pct) * 1%),
-    var(--surface-2) calc(var(--pct) * 1%) 100%
+    var(--info) 0 calc(var(--pct, 0) * 1%),
+    var(--surface-2) calc(var(--pct, 0) * 1%) 100%
   );
   /* The ring, not the disc: a 10px band cut out of the middle. Two masks
      composited, which is the only way to do this without a second element. */
@@ -2894,8 +2907,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dial.is-partial::before {
   background:
     conic-gradient(
-      var(--info) 0 calc(var(--measured) * 1%),
-      transparent calc(var(--measured) * 1%) 100%
+      var(--info) 0 calc(var(--measured, 0) * 1%),
+      transparent calc(var(--measured, 0) * 1%) 100%
     ),
     var(--ctl-hatch);
 }

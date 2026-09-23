@@ -295,7 +295,21 @@ function topology(over: Partial<RuntimeTopology>): RuntimeTopology {
 // Overview -- the default route, and the screen the owner linked
 // ---------------------------------------------------------------------------
 
-function renderOverview(over: { accounts?: Account[]; spend?: Partial<SpendRollup> } = {}) {
+/**
+ * `reads` replaces one of the eight after the healthy defaults are set.
+ *
+ * It exists because a screen that renders eight successful reads passes
+ * against a provenance line hard-coded to "everything landed" -- which is the
+ * mutation that got past the first draft of the two tests at the foot of this
+ * block. The failure cases have to be rendered, not reasoned about.
+ */
+function renderOverview(
+  over: {
+    accounts?: Account[]
+    spend?: Partial<SpendRollup>
+    reads?: Partial<Record<keyof typeof api, Result<unknown>>>
+  } = {},
+) {
   api.loadCapacity.mockResolvedValue(ok(CAPACITY))
   api.loadTasks.mockResolvedValue(ok(EMPTY_TASKS))
   api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
@@ -306,6 +320,9 @@ function renderOverview(over: { accounts?: Account[]; spend?: Partial<SpendRollu
     ok({ ...accountsPage(over.accounts ?? [NEVER_POLLED, MEASURED_ZERO]) }),
   )
   api.loadSpend.mockResolvedValue(ok(spend(over.spend ?? {})))
+  for (const [name, result] of Object.entries(over.reads ?? {})) {
+    api[name as keyof typeof api].mockResolvedValue(result)
+  }
   return render(<OverviewScreen />)
 }
 
@@ -338,17 +355,59 @@ describe('Overview, with every help card closed', () => {
     expect(document.querySelectorAll('.ctl-util-track.is-unknown').length).toBe(1)
   })
 
-  it('writes an unreported cost as a phrase and a measured zero cost as a figure', async () => {
+  // RE-POINTED, NOT WEAKENED. The two sentences this used to read off the
+  // surface -- "N attempts carry no cost figure and are counted as unmeasured,
+  // not as zero" and the phrase "not reported" in the figure slot -- are gone
+  // from the screen. WHERE THEY WENT: the count is now the digit `N unmeasured`
+  // in the card's provenance foot, the kind of nothing is the two-word
+  // `.ctl-mark.is-absent`, and the full sentence is that mark's accessible name
+  // and the `token-cost` topic.
+  //
+  // WHAT IS PINNED HERE IS A STRICTER CLAIM THAN THE SENTENCE WAS. A paragraph
+  // can sit beside a figure it does not describe; these assertions are all on
+  // the figure itself -- its text has no digit, it carries `data-measured
+  // ="false"`, and the mark naming the absence is inside the same card. That
+  // is the property the invariant actually needs and the prose never had.
+  it('draws an unreported cost as an em dash and a mark, with no digit anywhere near it', async () => {
     renderOverview({ spend: { costUsd: null, attempts: 3, attemptsWithCost: 0 } })
-    expect(await screen.findByText('not reported', undefined, WAIT)).toBeTruthy()
+    // WAITS ON THE SPEND CARD, not on the first `not measured` to appear. The
+    // Units-held tile draws one too and its read lands first, so waiting on
+    // the word asserted against a card that had not rendered yet -- green in
+    // isolation, red under the full suite, which is the worst of both.
+    await waitFor(() => expect(document.querySelector('.ov-figure')).not.toBeNull(), WAIT)
     expectAllCardsClosed()
 
-    const figure = [...document.querySelectorAll('.ov-figure')][0]
-    expect(textOf(figure)).toBe('not reported')
+    const figure = document.querySelector('.ov-figure')
+    expect(figure, 'the spend card drew no figure slot at all').not.toBeNull()
+    // THE EM DASH, AND NOT A DIGIT. `0` here is the lie the whole file exists
+    // to stop, and so is `$0.00`.
+    expect(figure!.querySelector('.ctl-em'), 'the absent cost is not marked absent').not.toBeNull()
     expect(textOf(figure), 'an absent cost rendered a digit').not.toMatch(/\d/)
-    // The count of what is missing stays on the surface beside it.
-    expect(visibleText()).toContain('no cost figure')
-    expect(visibleText()).toContain('unmeasured, not as zero')
+    // The figure declares its own status, so nothing has to read the text to
+    // know which of the two it is.
+    expect(figure!.getAttribute('data-measured')).toBe('false')
+    // It also must not wear the figure step: at 30px a dash reads as a
+    // quantity, which is why `.ctl-figure.is-absent` drops it to --t-body.
+    expect(figure!.className).toContain('is-absent')
+
+    // THE KIND OF NOTHING, AS A WORD, WITHOUT HOVERING ANYTHING. Two words,
+    // visible, greyscale-safe, in the same card as the figure.
+    const marks = [...document.querySelectorAll('.ctl-mark.is-absent')]
+    expect(marks.length, 'no absence mark was drawn beside the figure').toBeGreaterThan(0)
+    expect(marks.some((m) => textOf(m) === 'not measured')).toBe(true)
+
+    // AND THE SENTENCE IS STILL REACHABLE -- as an accessible name, which has
+    // a keyboard route and survives a screenshot, unlike the `title=` that
+    // turned this suite red the last time someone tried this.
+    // BOTH the tile and the card carry it, because the strip summarises the
+    // cards; the All variant is what keeps this from failing on the screen
+    // agreeing with itself.
+    expect(
+      screen.getAllByLabelText(/no attempt in this sample reported a cost/i).length,
+    ).toBeGreaterThan(0)
+
+    // The count of what is missing stays on the surface as a DIGIT.
+    expect(visibleText()).toContain('3 unmeasured')
   })
 
   it('writes a MEASURED zero cost as a digit, which is the other half of the rule', async () => {
@@ -356,9 +415,25 @@ describe('Overview, with every help card closed', () => {
     // The tile and the metric strip both carry it, so this waits on the set.
     expect((await screen.findAllByText('$0.0000', undefined, WAIT)).length).toBeGreaterThan(0)
     expectAllCardsClosed()
-    expect(textOf(document.querySelector('.ov-figure'))).toBe('$0.0000')
-    expect(visibleText()).not.toContain('not reported')
-    expect(visibleText()).toContain('every attempt in the sample carried a cost figure')
+    const figure = document.querySelector('.ov-figure')
+    expect(textOf(figure)).toBe('$0.0000')
+    // THE OTHER HALF OF THE RULE, at the same attribute. A measured zero says
+    // so on the figure rather than in a sentence under it, and the sentence
+    // that used to be there -- "every attempt in the sample carried a cost
+    // figure" -- is gone from the surface: what replaced it is the ABSENCE of
+    // the `N unmeasured` count, which only appears when there is one.
+    expect(figure!.getAttribute('data-measured')).toBe('true')
+    expect(figure!.className).not.toContain('is-absent')
+    expect(figure!.querySelector('.ctl-em'), 'a measured zero was marked absent').toBeNull()
+    const card = figure!.closest('.ctl-card')
+    expect(card, 'the figure is not in a card').not.toBeNull()
+    expect(
+      card!.querySelector('.ctl-mark.is-absent'),
+      'a measured zero drew an absence mark',
+    ).toBeNull()
+    // `N unmeasured` only appears when there IS one, so its absence is the
+    // positive claim that every attempt carried a figure.
+    expect(textOf(card)).not.toContain('unmeasured')
   })
 
   it('keeps the count of failed attempt reads on the surface, not behind the ?', async () => {
@@ -371,18 +446,147 @@ describe('Overview, with every help card closed', () => {
     //
     // The sentence is assembled from several text nodes (`{n}` of `{n}`), so
     // it is read off the rendered page rather than matched as one string.
-    await waitFor(
-      () => expect(visibleText()).toContain('2 of 5 attempt reads failed'),
-      WAIT,
-    )
+    await waitFor(() => expect(visibleText()).toContain('2 of 5 reads failed'), WAIT)
     expectAllCardsClosed()
-    expect(visibleText()).toContain('spend is in none of these figures')
+
+    // RE-POINTED. The count is the part that must not need a hover and it is
+    // still a digit on the surface, in the card's provenance foot. The clause
+    // that followed it -- "so their spend is in none of these figures" -- plus
+    // the error detail are now that element's accessible name, which is where
+    // an explanation is allowed to live and where a screen reader gets it at
+    // the figure rather than a paragraph away from it.
+    const failed = screen.getByLabelText(/spend is in none of these figures/i)
+    expect(textOf(failed)).toBe('2 of 5 reads failed')
+    expect(failed.getAttribute('aria-label')).toContain('HTTP 503')
+    // ONE MESSAGE IS ONE FAILURE'S. The rollup keeps only the first error it
+    // saw, so the rest are named as unexplained rather than explained wrongly.
+    expect(failed.getAttribute('aria-label')).toContain('unexplained')
   })
 
+  // RE-POINTED. `.sub` -- the subtitle line under the page title -- is gone
+  // from this screen entirely; the owner's directive was that a data view
+  // carries no subtitle. The cadence moved into the page head's facts strip,
+  // where it is a two-character mono value beside a three-letter key.
+  //
+  // WHAT IS PINNED IS THE SAME PROPERTY: the figure is INTERPOLATED FROM THE
+  // TIMER CONSTANT and not typed out. That is what stopped the words "every 20
+  // seconds" sitting three hundred lines from `POLL_MS` and drifting from it.
+  // Both spellings are checked -- the visible `20s` and the accessible name
+  // that says it in full -- because a constant rendered in one place and a
+  // sentence hard-coded in the other is exactly the shape being prevented.
   it('states the cadence from the timer constant rather than in words', async () => {
     renderOverview()
     await screen.findByText('never', undefined, WAIT)
-    expect(textOf(document.querySelector('.sub'))).toContain('re-read every 20s')
+    expect(document.querySelector('.sub'), 'the screen grew a subtitle again').toBeNull()
+
+    const poll = screen.getByLabelText(/re-read every 20 seconds/i)
+    expect(textOf(poll)).toContain('20s')
+    // ...and the sentence is not on the surface. `textOf` would read the
+    // HelpCard's visually-hidden copy straight back out, which is exactly the
+    // trap `visibleText` exists for, so the claim is made against that.
+    expect(visibleText()).not.toContain('re-read every')
+  })
+
+  // THE READ TALLY. "all 8 reads landed" used to be a clause in the subtitle,
+  // and it is the sentence a reader checks to decide whether to trust the rest
+  // of the screen -- so it may not be said before it is true. It is now a
+  // fraction plus a dot whose SHAPE carries the outcome, with the sentence as
+  // the accessible name.
+  it('counts what landed as a fraction and a shape, never as a claim', async () => {
+    renderOverview()
+    await screen.findByText('never', undefined, WAIT)
+    expectAllCardsClosed()
+
+    const tally = document.querySelector('.ov-tally')
+    expect(tally, 'the page head carries no read tally').not.toBeNull()
+    // WAITS FOR THE EIGHTH READ. The spend rollup is a fan-out keyed off the
+    // task page, so it lands AFTER the accounts row this test woke on -- and
+    // a tally read at that instant says 7/8 with the "still asking" ring,
+    // which is correct and is not what this test is about. Asserting without
+    // waiting made it pass in isolation and fail under the full suite.
+    await waitFor(() => expect(textOf(tally)).toContain('8/8'), WAIT)
+    // A landed-everything tally is the ok disc. The default `.ctl-dot` -- a
+    // hollow ring -- means "still asking", and `is-bad` means a read failed;
+    // the three must not be the same picture.
+    expect(tally!.querySelector('.ctl-dot.is-ok'), 'the tally drew no outcome').not.toBeNull()
+    expect(tally!.getAttribute('aria-label')).toContain('8 of 8 reads landed')
+  })
+
+  // THE OTHER HALF, AND THE ONE A MUTATION GOT PAST. The test above renders
+  // the case where everything landed, so it passes just as happily against a
+  // tally hard-coded to `reads.length/reads.length` -- which is the page
+  // vouching for itself while a read is lying on the floor. This renders a
+  // read that FAILED and pins the shortfall, the tone and the sentence.
+  it('counts a failed read as failed, and never rounds it up to landed', async () => {
+    renderOverview({
+      reads: {
+        loadStats: {
+          status: 'error',
+          error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' },
+        },
+      },
+    })
+    await screen.findByText('never', undefined, WAIT)
+    expectAllCardsClosed()
+
+    const tally = document.querySelector('.ov-tally')
+    // Same wait, same reason: seven of the eight have to land before the one
+    // that failed is the only one outstanding.
+    await waitFor(
+      () => expect(textOf(tally), 'a failed read was counted as landed').toContain('7/8'),
+      WAIT,
+    )
+    // The SHAPE, not only the hue: a diamond is the one mark with corners and
+    // it survives the screenshot that a red pixel does not.
+    expect(tally!.querySelector('.ctl-dot.is-bad'), 'a failed read drew no mark').not.toBeNull()
+    expect(tally!.querySelector('.ctl-dot.is-ok'), 'a failed read drew the healthy mark').toBeNull()
+    expect(tally!.getAttribute('aria-label')).toContain('1 of 8 reads failed')
+  })
+
+  // THE PARTIAL ALL-CLEAR, WHICH IS THE CASE THE WHOLE CARD EXISTS FOR.
+  //
+  // WHAT MOVED: two paragraphs -- "Nothing wrong in the N checks that ran" and
+  // "N of M could not run — a partial all-clear, and what it did not look at
+  // is listed below" -- plus `checks.map(c => c.note).join(' · ')`, which was
+  // eight full sentences on the healthy path.
+  //
+  // WHERE THE WORDS LIVE NOW: the ring's filled arc is the checks that RAN and
+  // its hatched arc is the ones that could not, so a short problem list over
+  // blind checks and a short list over clear ones are different pictures
+  // before either is read. The sentences are the dial's accessible name, the
+  // `N blind` figure's accessible name, and the `all-clear-basis` topic.
+  //
+  // A MUTATION GOT PAST THE FIRST DRAFT OF THIS FILE by pinning `dialKind` to
+  // 'measured' unconditionally -- a full ring over checks that never ran, the
+  // absence-as-measurement lie in its purest form. That is what this kills.
+  it('draws a partial all-clear as a partial ring, never as a full one', async () => {
+    // A non-admin genuinely cannot read /v1/leases, so one check goes blind.
+    renderOverview({
+      reads: {
+        loadLeases: {
+          status: 'error',
+          error: { kind: 'admin_required', httpStatus: 403, code: null, message: 'admin only' },
+        },
+      },
+    })
+    await screen.findByText('never', undefined, WAIT)
+    expectAllCardsClosed()
+
+    const dial = document.querySelector('.ov-dial')
+    expect(dial, 'the attention card drew no coverage dial').not.toBeNull()
+    // THE HOLE IN THE TOTAL IS DRAWN AS A HOLE.
+    expect(dial!.getAttribute('data-partial'), 'a partial coverage drew a full ring').toBe('yes')
+    expect(dial!.className).toContain('is-partial')
+    // The ring is filled to the checks that RAN, not to 100%.
+    expect(dial!.getAttribute('style')).not.toContain('--pct: 100')
+    expect(dial!.getAttribute('aria-label')).toMatch(/could not run/i)
+
+    // AND IT IS NOT PAINTED AS BREAKAGE. A non-admin's platform is not down.
+    const marks = [...document.querySelectorAll('.ctl-mark')].map((m) => textOf(m))
+    expect(marks, 'an admin gate was drawn as a failed read').not.toContain('not read')
+
+    // The count of what was never looked at is a digit on the surface.
+    expect(visibleText()).toContain('1 blind')
   })
 })
 

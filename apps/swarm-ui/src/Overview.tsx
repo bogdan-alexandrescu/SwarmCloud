@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
   loadCapacity,
@@ -39,50 +39,66 @@ import {
 } from './types'
 
 /**
- * OVERVIEW. The landing screen, and the one-stop shop.
+ * OVERVIEW. The landing screen: what is running, what is wrong, what capacity
+ * is left, what it is costing.
  *
- * It answers five questions on one laptop screen, and each ends in a link to
- * the screen that goes deeper -- except the derived checks, which have no
- * deeper screen because there is no problem board and should not be one; every
- * row of that pane links to the OBJECT it is about instead. Nothing here is a
- * dead end and nothing here is the last word: this screen's job is to tell you
- * which of the other four sections to open, in the first three seconds.
+ * A DASHBOARD, NOT A DOCUMENT. This screen used to answer its five questions in
+ * prose -- 309 rendered words on a HEALTHY platform, eight sentences of which
+ * said nothing was wrong eight different ways. It now answers them in figures,
+ * dials, tracks and marks, and `prose.budget.test.tsx` holds the count.
+ *
+ * THE INVARIANT IS UNCHANGED AND THE MEDIUM IS WHAT MOVED.
+ *
+ *   This console must never present an absence as a measurement. A figure
+ *   nothing reported is not zero. A state nobody derived is not QUEUED. A
+ *   partial total is not a total.
+ *
+ * That was carried by paragraphs. It is now carried by the absence vocabulary
+ * in `styles.css` §B4.4 -- `.ctl-mark`, `.ctl-em`, the hatched track, the
+ * hatched dial arc, `.ctl-pending` -- each of which is visible without
+ * hovering anything, survives greyscale and a screenshot, and is ATTACHED to
+ * the figure it qualifies. That last property is the one the prose never had:
+ * a paragraph can sit beside a figure it does not describe; an attribute on
+ * the figure cannot.
+ *
+ * WHERE THE SENTENCES WENT, in the order the design system allows them
+ * (docs/web-ui/design-system.md §8.4): the unit and the figure itself, then
+ * `.ctl-card-note` beside the title, then `.ctl-card-foot` for provenance,
+ * then the `?` card, then `docs/`. Every mark also carries the full sentence
+ * as its accessible name, so the words are one keystroke away and are not
+ * behind a hover -- which is precisely how the previous attempt failed.
+ *
+ * FIVE QUESTIONS, FIVE CARDS, and each ends in a link to the screen that goes
+ * deeper -- except the derived checks, which have no deeper screen because
+ * there is no problem board and should not be one; every row of that card
+ * links to the OBJECT it is about instead.
  *
  *   1. CAPACITY -- used against available, and WHICH pool binds each runner
  *      profile. The conjunction is the whole trap: a task must clear every
  *      pool in its list at the same moment, so its ceiling is the MINIMUM
- *      across them. Raising the pool that is not binding changes nothing, and
- *      an operator who cannot see which one binds raises the wrong one.
+ *      across them. Raising the pool that is not binding changes nothing.
  *   2. WHAT IS RUNNING, with runtime so far.
  *   3. WHAT IS WRONG, derived from real state -- never from an alert model,
- *      because this platform has none. WORKFLOWS COUNT AS RUNNING THINGS
- *      HERE. This screen used not to contain the word: with a three-step
- *      workflow in the tenant holding one READY step and two PARKED ones it
- *      said "nothing is running" and was, sentence by sentence, correct --
- *      because a workflow that has stopped moving breaks no lease, holds no
- *      capacity and fails no task, so not one of the six checks could see it.
- *      `checks.ts` now asks about workflows and about parked work directly.
+ *      because this platform has none. Workflows count as running things here.
  *   4. SPEND, in tokens and dollars of token cost, with the scope named.
  *   5. THE SUBSCRIPTION POOL's headroom, which is the ceiling that binds
- *      first in practice and used to be buried three clicks down.
+ *      first in practice.
  *
- * EIGHT READS, INDEPENDENTLY -- seven routes plus the spend rollup fanned out
- * over them. One failing must not blank the page and must not leave the page
- * looking complete, so each panel owns its own state and the line under the
- * title counts what landed, what is still in flight, what failed and what was
- * refused for want of admin. Those are four different things and the line says
- * which. `Screen` is deliberately not used here because it has exactly one
- * load and one failure, and this screen has eight of each.
+ * EIGHT READS, INDEPENDENTLY. One failing must not blank the page and must not
+ * leave the page looking complete, so each card owns its own state and the
+ * facts strip in the page head counts what landed, what is still in flight,
+ * what failed and what was refused for want of admin. Those are four different
+ * things and the strip's dot plus its accessible name say which.
  *
  * WHAT THIS SCREEN DOES NOT DRAW, and why it is not a placeholder:
  *   - infrastructure cost in dollars. There is no billing integration of any
- *     kind, so Cloud Run, Firestore and GCS spend are simply not recorded.
- *     The spend panel says so in words rather than showing a figure that
+ *     kind, so Cloud Run, Firestore and GCS spend are simply not recorded. The
+ *     spend card's foot names the scope rather than showing a figure that
  *     would be read as the whole bill.
- *   - an alert inbox. Nothing stores, routes or acknowledges an alert. What
- *     is here is DERIVED from state that exists, re-derived on every read, and
- *     it says which checks could not run rather than implying silence is calm.
- *   - checkpoint contents. Only a uri, an id and a byte size are recorded.
+ *   - an alert inbox. Nothing stores, routes or acknowledges an alert. What is
+ *     here is DERIVED from state that exists, re-derived on every read, and
+ *     the coverage dial says which checks could not run rather than implying
+ *     silence is calm.
  */
 export function OverviewScreen() {
   // TWO REFRESH CADENCES, on purpose.
@@ -95,14 +111,12 @@ export function OverviewScreen() {
   // `/v1/stats` is one Firestore count() per state -- twelve aggregation
   // queries -- and the spend rollup is a fan-out of one request per sampled
   // task. Polling either would make the screen that is open all day the most
-  // expensive thing on the platform, and would spend the caller's 20 rps
-  // bucket on figures that change slowly.
+  // expensive thing on the platform.
   //
-  // BOTH THEREFORE CARRY THEIR READ AGE, on the tile and, for spend, in the
-  // panel as well. A figure that does not re-poll sitting beside five that
-  // refresh every twenty seconds is indistinguishable from them unless it says
-  // how old it is, and the one that goes stale is the one denominated in
-  // dollars.
+  // BOTH THEREFORE CARRY THEIR READ AGE, in the tile foot and, for spend, in
+  // the card foot as well. A figure that does not re-poll sitting beside five
+  // that refresh every twenty seconds is indistinguishable from them unless it
+  // says how old it is, and the one that goes stale is denominated in dollars.
   const [live, setLive] = useState(0)
   const [heavy, setHeavy] = useState(0)
   const refresh = useCallback(() => {
@@ -122,10 +136,7 @@ export function OverviewScreen() {
   const accounts = useRead(loadAccountPool, live)
   // ON THE LIVE CADENCE, with the other five, because a workflow that has
   // stopped moving is the fact this screen was worst at reporting and a figure
-  // that only refreshes when someone presses a button cannot report it. It is
-  // one indexed list read of the same class as the others; the route derives
-  // each row's state from steps it has already loaded, so the browser does not
-  // pay for a second join.
+  // that only refreshes when someone presses a button cannot report it.
   const workflows = useRead(loadWorkflows, live)
   const stats = useRead(loadStats, heavy)
 
@@ -138,17 +149,14 @@ export function OverviewScreen() {
     capacity, tasks, leases, providers, accounts, workflows, stats, spend,
   ]
 
-  // A 401 is a PAGE-level state, not a panel-level one: an expired IAP session
-  // fails all of them at once, and seven independently empty panels is the bug
+  // A 401 is a PAGE-level state, not a card-level one: an expired IAP session
+  // fails all of them at once, and seven independently empty cards is the bug
   // this whole UI is built against.
   if (reads.some((r) => isKind(r, 'unauthenticated') || isKind(r, 'session_expired'))) {
     return (
-      <div className="state failed">
-        <h3>Your session expired</h3>
-        <p>
-          The API answered a sign-in page instead of data — nothing on this
-          screen is a reading of the platform.
-        </p>
+      <div className="ctl-empty is-failed ov-page-empty">
+        <Mark kind="unread" say="The API answered a sign-in page instead of data, so nothing on this screen is a reading of the platform." />
+        <h3>Session expired</h3>
         <button className="retry" onClick={() => window.location.reload()}>
           Reload to sign in
         </button>
@@ -157,16 +165,14 @@ export function OverviewScreen() {
   }
 
   // FOUR OUTCOMES, COUNTED SEPARATELY, because they are four different facts
-  // about this screen and collapsing any two of them produces a sentence that
-  // is false at first paint.
+  // about this screen and collapsing any two of them produces a claim that is
+  // false at first paint.
   //
   //   - landed: a reading arrived (`empty` is a reading: it is a real zero).
   //   - pending: still in flight. On first paint that is ALL of them, and
-  //     "all 7 reads landed" printed then is the screen's own provenance line
-  //     lying about the screen.
+  //     "8/8" printed then is the screen's own provenance lying about itself.
   //   - refused: 403 on the one admin route here. Not a failure -- a non-admin
-  //     legitimately cannot make it -- but it did not land either, and the
-  //     Leases check below reports itself blind at the same moment.
+  //     legitimately cannot make it -- but it did not land either.
   //   - failed: everything else.
   const landed = reads.filter(
     (r) => r.status === 'ok' || r.status === 'empty' || r.status === 'stale',
@@ -178,9 +184,8 @@ export function OverviewScreen() {
   // `Date.now()` IS TAKEN HERE, not inside the checks, and the dependency list
   // is deliberately the reads rather than a clock. Two checks measure an age
   // and one of them decides whether a workflow is stalled; re-deriving on a
-  // ticking clock would re-render every panel on this screen once a second to
-  // move a threshold that is ten minutes wide. A read lands every twenty
-  // seconds, which is 3% of the narrowest age this panel reports.
+  // ticking clock would re-render every card on this screen once a second to
+  // move a threshold that is ten minutes wide.
   const checks = useMemo(
     () =>
       deriveChecks(
@@ -190,39 +195,60 @@ export function OverviewScreen() {
     [capacity, tasks, leases, providers, accounts, workflows, stats],
   )
   const found = checks.reduce((n, c) => n + (c.status === 'found' ? c.problems.length : 0), 0)
+  const tenant = dataOf(tasks)?.tenant_id ?? null
 
   return (
     <>
       <style>{OVERVIEW_CSS}</style>
 
-      {/* Title and provenance on ONE line. The section's own question is
-          already printed directly above this by the shell, so a stacked title
-          block here spends forty pixels of a screen whose whole promise is
-          that it fits without scrolling. */}
-      <div className="ov-topline">
-        <div className="head">
-          {/* NO ENVIRONMENT BADGE. Every other screen carries a hardcoded
-              "dev" here; nothing in this app reads an environment, and on the
-              one screen whose whole claim is that each figure declares where
-              it came from, a word nobody measured is the loudest thing on it.
-              It comes back when the API reports its own environment. */}
-          <h1>Overview</h1>
+      {/* TITLE, PROVENANCE AND ONE CONTROL. The section's own question is
+          printed directly above this by the shell, so there is no subtitle
+          here and no description: the facts strip is the whole of what this
+          screen says about itself, and it says it in six mono words.
+          `.ctl-page-head` wraps, which is the entire mobile strategy -- the
+          strip drops under the title at 390px rather than needing a second,
+          phone-only header. */}
+      <div className="ctl-page-head">
+        <h1>Overview</h1>
+        <div className="is-end ov-chrome">
+          <ul className="ctl-facts ov-chrome-facts">
+            <li className="ctl-fact">
+              <b>scope</b>
+              {/* THE SCOPE IS NOT DECORATION. `/v1/stats` and `/v1/tasks` are
+                  tenant-scoped while the `global` pool is platform-wide, so a
+                  figure on this screen means nothing until you know which of
+                  the two it is. */}
+              {tenant === null ? <i className="ctl-em">&mdash;</i> : tenant}
+            </li>
+            <li
+              className="ctl-fact ov-tally"
+              aria-label={readTally(reads.length, landed, pending, refused, broken)}
+            >
+              <b>reads</b>
+              {/* THE DOT IS THE SEVERITY AND THE FRACTION IS THE FACT. "8/8"
+                  with a green disc and "6/8" with a red diamond are different
+                  pictures before either is read, and the sentence that used to
+                  be here is this element's accessible name. */}
+              <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
+              <span className="ov-num">
+                {landed}/{reads.length}
+              </span>
+            </li>
+            <li
+              className="ctl-fact"
+              // INTERPOLATED, NEVER TYPED OUT. This used to be the words
+              // "every 20 seconds" three hundred lines from the constant.
+              aria-label={`re-read every ${POLL_MS / 1000} seconds`}
+            >
+              <b>poll</b>
+              <span className="ov-num">{POLL_MS / 1000}s</span>
+              <HelpCard topic="poll-cadence" />
+            </li>
+          </ul>
+          <button className="ov-refresh" onClick={refresh}>
+            refresh
+          </button>
         </div>
-        <p className="sub">
-          <Scope tasks={tasks} /> · <Provenance
-            total={reads.length}
-            landed={landed}
-            pending={pending}
-            refused={refused}
-            broken={broken}
-          />{' '}
-          {/* THE CADENCE, INTERPOLATED, NEVER TYPED OUT. It used to be the
-              words "every 20 seconds" in the spend panel, three hundred
-              lines away from the constant -- the shape §5 of the migration
-              table lists as a restatement nothing checks. */}
-          · re-read every {POLL_MS / 1000}s{' '}
-          <button onClick={refresh}>refresh</button>
-        </p>
       </div>
 
       <MetricStrip
@@ -234,51 +260,47 @@ export function OverviewScreen() {
         found={found}
       />
 
-      {/* `has-alarm` rather than an inline span on the panel, because the
-          stylesheet needs to know it. The rules that stop this grid ending with
-          a blank right column are parity selectors over the panels, and a panel
-          that silently spans two tracks shifts every parity below it. */}
-      <div className={`ov-cols${found > 0 ? ' has-alarm' : ''}`}>
+      {/* `has-alarm` rather than an inline span on the grid, because the
+          stylesheet needs to know it. The rules that stop this grid ending
+          with a blank right column are parity selectors over the cards, and a
+          card that silently spans two tracks shifts every parity below it. */}
+      <div className={`ctl-cards ov-cols${found > 0 ? ' has-alarm' : ''}`}>
         {/* THE ALARM TAKES THE TOP WHEN IT IS RINGING. With something to say it
-            spans both columns and is the first panel under the tiles; when
-            every check came back clear it collapses into one column and gets
-            out of the way. A control plane whose problem list is the same size
-            whether or not there are problems teaches you to stop looking.
-
-            This is the one pane with no "open →" of its own, and that is not an
-            oversight: there is no problem board to open. Every row carries the
-            link to the object it is about, and the rows that do not fit expand
-            in place rather than pointing at a screen that does not exist. */}
-        <section className="section panel ov-alarm">
-          <PanelHead title="Needs attention" count={found} />
+            spans every track and is the first card under the tiles; when every
+            check came back clear it collapses into one column and gets out of
+            the way. A control plane whose problem list is the same size
+            whether or not there are problems teaches you to stop looking. */}
+        <section className="ctl-card ov-alarm">
+          <CardHead title="Needs attention" help="all-clear-basis" />
           <AttentionBody checks={checks} />
         </section>
 
-        <section className="section panel">
-          <PanelHead
-            title="Capacity, by what binds it"
+        <section className="ctl-card">
+          <CardHead
+            title="Capacity"
+            note={tenant === null ? undefined : `tenant ${tenant}`}
             href="#pools/profiles"
-            cta="all pools"
+            cta="pools"
             help="pools-all-at-once"
           />
           <CapacityBody state={capacity} />
         </section>
 
-        <section className="section panel">
-          <PanelHead title="Running now" href="#agents/running" cta="all agents" />
+        <section className="ctl-card">
+          <CardHead title="Running" href="#agents/running" cta="agents" />
           <RunningBody tasks={tasks} stats={stats} />
         </section>
 
-        <section className="section panel">
-          <PanelHead title="Spend" href="#history/timeline" cta="history" />
+        <section className="ctl-card">
+          <CardHead title="Spend" href="#history/timeline" cta="history" help="token-cost" />
           <SpendBody state={spend} tasks={tasks} />
         </section>
 
-        <section className="section panel">
-          <PanelHead
+        <section className="ctl-card">
+          <CardHead
             title="Subscription pool"
             href="#pools/accounts"
-            cta="all accounts"
+            cta="accounts"
             help="binding-window"
           />
           <AccountsBody state={accounts} />
@@ -288,20 +310,51 @@ export function OverviewScreen() {
   )
 }
 
-/*
- * NO FOOTER OF HELP LINKS ON THIS SCREEN, and that is a decision.
+/**
+ * The read tally as a sentence, for the strip's accessible name.
  *
- * `Runtimes.tsx` and `Accounts.tsx` carry one because each HAD a legend --
- * a `<dl>` of titles and paragraphs -- and deleting a legend outright takes
- * away the index of what a screen's marks mean along with the essay. This
- * screen never had one, so a row of nine links here would be prose the
- * migration ADDED to the default route. Measured: it cost 35 rendered words
- * against the 16 the panels gave up, which is the opposite of the
- * instruction.
- *
- * Every `?` on this screen already links to `#help/<id>` in its own footer,
- * so nothing is unreachable without it.
+ * "all 8 reads landed" is the sentence this has to earn, and it is only true
+ * when nothing is in flight, nothing failed and nothing was refused. Said
+ * before that it is the page vouching for itself while every card is still a
+ * skeleton -- the single most misleading thing a control plane can say,
+ * because it is said in the place a reader checks to decide whether to trust
+ * the rest.
  */
+function readTally(
+  total: number,
+  landed: number,
+  pending: number,
+  refused: number,
+  broken: number,
+): string {
+  const parts: string[] = []
+  if (broken > 0) parts.push(`${broken} of ${total} reads failed`)
+  else parts.push(`${landed} of ${total} reads landed`)
+  if (pending > 0) parts.push(`${pending} still arriving`)
+  // A refused read is not a landed one. "all 8 landed" here would contradict
+  // the Leases check, which is simultaneously reporting itself blind.
+  if (refused > 0) parts.push(`${refused} needs admin, so ${refused === 1 ? 'one check' : `${refused} checks`} could not run`)
+  return parts.join('; ')
+}
+
+/**
+ * Which dot the tally wears.
+ *
+ * STILL READING IS NOT AN ABSENCE AND NOT A FAILURE, so it takes `.ctl-dot`'s
+ * DEFAULT -- a hollow ring, deliberately outside the ok/warn/bad triad. An
+ * admin gate is information rather than breakage, so it is the accent and
+ * never the warning tone.
+ */
+function tallyTone(pending: number, refused: number, broken: number): string {
+  if (broken > 0) return 'is-bad'
+  if (pending > 0) return ''
+  if (refused > 0) return 'is-info'
+  return 'is-ok'
+}
+
+// ---------------------------------------------------------------------------
+// Read plumbing
+// ---------------------------------------------------------------------------
 
 /**
  * How often the cheap reads re-run.
@@ -511,82 +564,91 @@ function ageOf(r: Result<unknown>): number | null {
   return r.status === 'ok' || r.status === 'stale' ? r.fetchedAt : null
 }
 
+// ---------------------------------------------------------------------------
+// The absence vocabulary
+// ---------------------------------------------------------------------------
+
 /**
- * THE SCOPE LINE, and it is not decoration.
+ * SIX KINDS OF NOTHING, SIX WORDS, ONE SET OF SILHOUETTES.
  *
- * `/v1/stats` and `/v1/tasks` are tenant-scoped while the `global` pool is
- * platform-wide, so a figure on this screen means nothing until you know which
- * of the two it is. Every panel below declares its own scope; this says whose
- * view the screen as a whole is.
+ * These are `measure.ts`'s words and `styles.css` §B4.4's marks, and a screen
+ * does not get to invent a seventh phrasing of "we do not know". The border
+ * style carries the kind -- solid for a measurement, dashed for a failure,
+ * hatched for an absence, dotted for a read in flight -- so the six stay apart
+ * in greyscale and in the screenshot that gets pasted into an incident
+ * channel, which is where these screens are actually read.
  */
-function Scope({ tasks }: { tasks: Result<TaskPage> }) {
-  const page = dataOf(tasks)
-  if (!page?.tenant_id) return <>your tenant</>
+const MARK_WORD = {
+  zero: 'real zero',
+  absent: 'not measured',
+  unread: 'not read',
+  partial: 'partial',
+  admin: 'admin only',
+  pending: 'reading',
+} as const
+
+type MarkKind = keyof typeof MARK_WORD
+
+/**
+ * The mark, and the sentence that used to be a paragraph.
+ *
+ * `say` is the accessible name. THIS IS THE WHOLE MECHANISM OF THE MIGRATION
+ * and it is not a `title=`: a tooltip has no visible anchor and no keyboard
+ * route, which is why the previous attempt at this turned the suite red. A
+ * mark is visible without hovering anything, is in the tab order of the
+ * assistive tree, and is attached to the figure it qualifies -- and a
+ * paragraph can sit next to a figure it does not describe while an attribute
+ * on the figure cannot.
+ */
+function Mark({ kind, say }: { kind: MarkKind; say: string }) {
   return (
-    <>
-      tenant <strong>{page.tenant_id}</strong>
-    </>
+    <span className={`ctl-mark is-${kind}`} role="img" aria-label={say}>
+      {MARK_WORD[kind]}
+    </span>
   )
 }
 
 /**
- * How much of this screen is actually a reading, in one clause.
+ * THE DIAL, and the reason the unfilled arc is always painted.
  *
- * "all 7 reads landed" is the sentence this has to earn, and it is only true
- * when nothing is in flight, nothing failed and nothing was refused. Printed
- * before that it is the page vouching for itself while every panel is still a
- * skeleton -- which is the single most misleading thing a control plane can
- * say, because it is said in the place a reader checks to find out whether to
- * trust the rest.
+ * Hetzner paints the whole ring in every meter they ship and fills the
+ * measured part of it. A partial total then LOOKS partial, because the
+ * unmeasured remainder is visibly present and visibly not filled. That is the
+ * invariant rendered rather than narrated.
+ *
+ * `measured` is the share of the POPULATION this figure speaks for, not the
+ * figure itself. A subscription headroom of 100% read off one of three
+ * accounts is not a 100% ring: it is a ring filled a third of the way and
+ * hatched the rest, with 100% in the middle. Those are two different facts and
+ * the dial is the only place on the screen that can hold both at once.
  */
-function Provenance({
-  total,
-  landed,
-  pending,
-  refused,
-  broken,
+function Dial({
+  kind,
+  measured,
+  say,
+  children,
 }: {
-  total: number
-  landed: number
-  pending: number
-  refused: number
-  broken: number
+  kind: 'measured' | 'partial' | 'unknown' | 'zero'
+  /** 0-100, the share of the population that reported. */
+  measured: number
+  say: string
+  children: ReactNode
 }) {
-  if (broken > 0) {
-    return (
-      <strong className="ov-broken">
-        {broken} of {total} reads failed
-        {pending > 0 && ` · ${pending} still arriving`}
-        {refused > 0 && ` · ${refused} admin only`}
-      </strong>
-    )
-  }
-  if (pending > 0) {
-    return (
-      <>
-        {landed} of {total} reads landed · {pending} still arriving
-        {refused > 0 && ` · ${refused} admin only`}
-      </>
-    )
-  }
-  // Nothing failed and nothing is outstanding, but a refused read is not a
-  // landed one. Saying "all 7 landed" here would contradict the Leases check
-  // below, which is simultaneously reporting itself blind.
-  if (refused > 0) {
-    return (
-      <>
-        {landed} of {total} reads landed ·{' '}
-        <span className="ov-info">
-          {refused} needs admin, so {refused === 1 ? 'one check' : `${refused} checks`} below could
-          not run
-        </span>
-      </>
-    )
-  }
+  const pct = Math.max(0, Math.min(100, Math.round(measured)))
   return (
-    <>
-      all {total} reads landed
-    </>
+    <div
+      className={`ctl-dial ov-dial${kind === 'measured' ? '' : ` is-${kind}`}`}
+      // Strings, not numbers: React appends `px` to a numeric value for a
+      // known length property, and a custom property that arrives as `57px`
+      // makes `calc(var(--pct) * 1%)` invalid and the arc disappear.
+      style={{ '--pct': String(pct), '--measured': String(pct) } as CSSProperties}
+      role="img"
+      aria-label={say}
+      data-partial={kind === 'partial' ? 'yes' : 'no'}
+      data-measured={kind === 'unknown' ? 'false' : 'true'}
+    >
+      <b className="ctl-dial-figure">{children}</b>
+    </div>
   )
 }
 
@@ -595,29 +657,33 @@ function Provenance({
 // ---------------------------------------------------------------------------
 
 /**
- * Five tiles, four doorways. Four of them are anchors, because the answer to
- * the number is on another screen and making the number itself the link
- * removes a step; "Needs attention" is not, because its answer is the pane
- * directly below it and a link to the screen you are on is a click that does
- * nothing.
+ * Five tiles, four doorways. Four are anchors because the answer to the number
+ * is on another screen and making the number itself the link removes a step;
+ * "Attention" is not, because its answer is the card directly below it and a
+ * link to the screen you are on is a click that does nothing.
  *
- * Every tile has FOUR renderings and they must not converge:
+ * EVERY TILE HAS FOUR RENDERINGS AND THEY MUST NOT CONVERGE:
  *
  *   - a figure;
- *   - "reading…", a pulsing bar: the read is in flight and there is nothing to
- *     say yet;
- *   - "not recorded", dashed and grey: the platform genuinely has no such
+ *   - `.ctl-pending`, a moving bar at the geometry the figure will occupy: the
+ *     read is in flight and there is nothing to say yet;
+ *   - `.ctl-mark.is-absent`, hatched: the platform genuinely has no such
  *     figure;
- *   - the error, dashed and amber: the platform may well have it, we did not
- *     get it.
+ *   - `.ctl-mark.is-unread`, dashed and amber: the platform may well have it,
+ *     we did not get it.
  *
  * The last three are all "no number", and the temptation is to let a tile fall
- * from one into the next. It must not: "not recorded" is a claim ABOUT THE
- * PLATFORM, and printing it over a request that is still in flight tells the
+ * from one into the next. It must not: "not measured" is a claim ABOUT THE
+ * PLATFORM, and drawing it over a request that is still in flight tells the
  * reader the figure does not exist when what is true is that it has not
- * arrived. Against a real API that lasts as long as the request, and a hung
- * request leaves the claim on screen for ever. So `reading` is a prop, it
- * outranks `absent`, and every caller passes it.
+ * arrived. So `reading` is a prop, it outranks `absent`, and every caller
+ * passes it.
+ *
+ * WHAT USED TO BE HERE. Every tile carried a `sub` line defining its own term
+ * -- "LEASED, DISPATCHED, STARTING, RUNNING -- the states that reserve
+ * capacity" and four more like it, about 60 words that never changed and were
+ * read once. A definition is not a qualifier; it belongs in the `?` and in
+ * the tile's accessible name, which is where `say` now puts it.
  */
 function MetricStrip({
   capacity,
@@ -656,14 +722,14 @@ function MetricStrip({
     <div className="ctl-metrics">
       <Tile
         href="#agents/running"
-        label="Running now"
+        label="Running"
         value={inFlight}
         unit="agents"
-        sub="LEASED, DISPATCHED, STARTING, RUNNING — the states that reserve capacity"
         foot={footFor(stats, 'counted')}
         reading={stats.status === 'loading'}
         unread={stats.status === 'error' ? errorHeading(stats.error) : null}
         tone={inFlight !== null && inFlight > 0 ? 'good' : undefined}
+        say="Agents in LEASED, DISPATCHED, STARTING or RUNNING — the four states that reserve capacity. Counted by /v1/stats, one aggregation query per state."
       />
 
       <Tile
@@ -671,100 +737,80 @@ function MetricStrip({
         label="Units held"
         value={global ? global.active : null}
         unit={global ? `of ${global.effective_limit}` : undefined}
-        // "units", never "agents": admission increments by the resource
-        // class's weight, so 8 may be two large agents or eight standard ones.
-        sub="weighted units on the platform-wide global pool — not a count of agents"
         foot={footFor(capacity, 'read')}
         reading={capacity.status === 'loading'}
         unread={capacity.status === 'error' ? errorHeading(capacity.error) : null}
         absent={
           capacity.status !== 'error' && cap !== null && global === null
-            ? 'no global pool'
+            ? 'No global pool is configured, so nothing reports a platform-wide unit count.'
             : null
         }
         tone={global && overCeiling(global) ? 'alert' : undefined}
+        // "units", never "agents": admission increments by the resource
+        // class's weight, so 8 may be two large agents or eight standard ones.
+        say="Weighted units held on the platform-wide global pool. Admission counts a resource class's weight, so this is not a count of agents."
       />
 
       <Tile
         // THE ONE TILE THAT IS NOT A DOORWAY, because its answer is on this
-        // screen: the pane below holds the same checks in full, and each of
-        // its rows links to the object it is about. It used to point at the
-        // trouble board; a link to the page you are already on is a click that
-        // does nothing, which is worse than no link.
-        label="Needs attention"
+        // screen: the card below holds the same checks in full and each of its
+        // rows links to the object it is about.
+        label="Attention"
         value={ran === 0 ? null : found}
         unit={found === 1 ? 'thing' : 'things'}
-        // DERIVED FROM THE CHECKS THEMSELVES, never from a list typed out
-        // here. The hand-written version named five sources for six checks and
-        // the one it left out, dispatch, is the loudest problem this screen
-        // can draw -- a reader told "1 thing" over a caption with no dispatch
-        // in it does not expect a platform-wide pause.
-        // "nothing found in …" is a result and is only said once something has
-        // actually looked. While the checks are still reading, the line names
-        // what they are reading and nothing more.
-        sub={
-          ran > 0 && found === 0
-            ? `nothing found in ${sourceList(checks)}`
-            : `derived from ${sourceList(checks)}`
-        }
-        // THE FOOT IS THE HONEST PART. A "0" with two checks blind is a
-        // reassurance nobody earned, so the count of checks that could not run
-        // sits under the figure every time rather than only when it is
-        // convenient.
+        // THE FOOT IS THE HONEST PART, AND IT IS A COUNT RATHER THAN A
+        // SENTENCE. A "0" with two checks blind is a reassurance nobody
+        // earned, so the coverage sits under the figure every time rather than
+        // only when it is convenient.
         foot={
           ran === 0 && reading > 0
-            ? `${reading} of ${checks.length} checks still reading${blind > 0 ? ` · ${blind} could not run` : ''}`
-            : ran === 0
-              ? `all ${checks.length} checks were blind`
-              : `${ran} of ${checks.length} checks ran${blind > 0 ? ` · ${blind} could not` : ''}${reading > 0 ? ` · ${reading} still reading` : ''}`
+            ? `${reading}/${checks.length} reading`
+            : `${ran}/${checks.length} ran${blind > 0 ? ` · ${blind} blind` : ''}`
         }
         // Three states, not two. Every check still in flight is a READING;
-        // every check blind with none in flight is a failure to read; and the
-        // amber "no check ran" treatment over a page that has been open for
-        // 200ms was the second of those printed over the first.
+        // every check blind with none in flight is a failure to read.
         reading={ran === 0 && reading > 0}
         unread={ran === 0 && reading === 0 && blind > 0 ? 'no check could run' : null}
         tone={found > 0 ? 'alert' : ran > 0 && blind === 0 && reading === 0 ? 'good' : undefined}
+        // DERIVED FROM THE CHECKS THEMSELVES, never from a list typed out
+        // here. The hand-written version named five sources for six checks and
+        // the one it left out, dispatch, is the loudest problem this screen
+        // can draw.
+        say={`Derived on every read from ${sourceList(checks)}. Nothing stores, routes or acknowledges an alert on this platform, so this is not an inbox.`}
       />
 
       <Tile
         href="#history/timeline"
         label="Token spend"
         value={sp && sp.costUsd !== null ? money(sp.costUsd) : null}
-        sub={
-          sp
-            ? `${sp.attemptsWithCost} of ${sp.attempts} attempts, over the ${sp.tasksSampled} most recent tasks that ran`
-            : 'summed from the attempts of the most recent tasks that ran'
-        }
         // THE AGE IS NOT OPTIONAL ON THIS ONE. Spend is the only read on the
-        // screen that does not re-poll -- it moves when someone presses
-        // refresh and at no other time -- so without its age a figure hours
-        // old sits beside five that refreshed twenty seconds ago and looks
-        // exactly like them. The scope caveat stays too: this is the number
-        // someone screenshots, and "spend" with no qualifier reads as the bill.
-        foot={`${footFor(spend, 'summed') ?? 'not summed yet'} · refresh only · token cost, never infra`}
+        // screen that does not re-poll, so without its age a figure hours old
+        // sits beside five that refreshed twenty seconds ago and looks exactly
+        // like them.
+        foot={sp ? `${sp.attemptsWithCost}/${sp.attempts} · ${footFor(spend, 'summed') ?? 'not summed'}` : footFor(spend, 'summed')}
         reading={spend.status === 'loading'}
         unread={spend.status === 'error' ? errorHeading(spend.error) : null}
         absent={
           spend.status === 'empty'
-            ? 'no task has run'
+            ? 'No task has run, so there is no attempt to sum.'
             : sp && sp.costUsd === null
-              ? 'no attempt reported cost'
+              ? 'No attempt in this sample reported a cost. That is an absent measurement, not $0.00.'
               : null
         }
+        say="Token cost summed one request per sampled task. It is a sample rather than a bill, and it never includes infrastructure: no billing integration of any kind records Cloud Run, Firestore or GCS spend."
       />
 
       <Tile
         href="#pools/accounts"
-        label="Subscription headroom"
+        label="Headroom"
         value={pool.pct === null ? null : Math.round(pool.pct)}
         unit={pool.pct === null ? undefined : '% left'}
-        sub={pool.sub}
-        foot={pool.foot}
+        foot={pool.usable === null ? undefined : `best of ${pool.usable}/${pool.total}`}
         reading={pool.reading}
         unread={accounts.status === 'error' ? errorHeading(accounts.error) : null}
-        absent={pool.absent}
+        absent={pool.absent === null ? null : pool.foot ?? pool.sub}
         tone={pool.pct !== null && pool.pct < 15 ? 'alert' : undefined}
+        say={pool.sub}
       />
     </div>
   )
@@ -774,7 +820,7 @@ function MetricStrip({
  * The checks' own labels, as an English list.
  *
  * Read off `checks` rather than written out, so a seventh check cannot leave
- * the caption describing six.
+ * the description naming six.
  */
 function sourceList(checks: Check[]): string {
   const names = checks.map((c) => c.label.toLowerCase())
@@ -793,12 +839,12 @@ function Tile({
   label,
   value,
   unit,
-  sub,
   foot,
   reading,
   unread,
   absent,
   tone,
+  say,
 }: {
   /** Omitted only where the answer is already on this screen. */
   href?: string | undefined
@@ -806,7 +852,7 @@ function Tile({
   /** The figure. null means there is none, and the three props below say why. */
   value: number | string | null
   unit?: string | undefined
-  sub: string
+  /** The qualifier, in the mono chrome layer. A count, never a definition. */
   foot?: string | undefined
   /** True while the read is IN FLIGHT. Not an absence -- not yet anything. */
   reading?: boolean | undefined
@@ -815,16 +861,13 @@ function Tile({
   /** Set when the platform genuinely has no such figure. */
   absent?: string | null
   tone?: 'alert' | 'good' | undefined
+  /** The sentence. The tile's accessible name, and nothing renders it. */
+  say: string
 }) {
-  // ORDER MATTERS, AND THIS IS THE ORDER.
-  //
-  // A failed read outranks everything: it must never fall through to a figure
-  // from an earlier state or to a reassuring absence. `reading` comes next and
-  // outranks BOTH the figure and the absence -- a tile with a figure in hand
-  // is not re-drawn as a skeleton mid-refresh (callers only pass `reading` for
-  // a first load, where `value` is null anyway), and a tile with nothing in
-  // hand must say "reading", never "not recorded", which is a statement about
-  // the platform rather than about this request.
+  // ORDER MATTERS, AND THIS IS THE ORDER. A failed read outranks everything:
+  // it must never fall through to a figure from an earlier state or to a
+  // reassuring absence. `reading` comes next and outranks BOTH the figure and
+  // the absence.
   const state = unread ? 'unread' : reading ? 'reading' : value === null ? 'absent' : 'value'
   const cls =
     state === 'unread'
@@ -841,26 +884,23 @@ function Tile({
 
   // An <a> with no href is not a link and is not focusable, so a tile with
   // nowhere to go is a plain element rather than an anchor that looks like one.
-  // The hover and focus rules are scoped to `a.ov-tile` and simply do not
-  // apply to it.
   const Box = href === undefined ? 'div' : 'a'
 
   return (
-    <Box className={`ctl-metric ov-tile ${cls}`} href={href}>
+    <Box className={`ctl-metric ov-tile ${cls}`} href={href} aria-label={`${label}. ${say}`}>
       <span className="ctl-metric-label">{label}</span>
       <span className="ctl-metric-value">
         {state === 'unread' ? (
-          unread
+          <Mark kind="unread" say={unread ?? 'The read failed.'} />
         ) : state === 'reading' ? (
-          // The bar is decoration and carries no meaning a screen reader could
-          // use; the word beside it is the state, so the word is the thing
-          // that is announced.
-          <>
-            <span className="skeleton ov-bar" aria-hidden />
-            <span className="ov-reading-word">reading…</span>
-          </>
+          // NO WORD AT ALL. A read in flight is the one absence that is
+          // temporary, and the moving bar at the figure's own geometry is the
+          // whole statement -- lighter than the hatch and visibly still going,
+          // so it cannot be read as "nobody reported this". It carries no text
+          // because a gradient has no luminance any contrast gate can measure.
+          <i className="ctl-pending ov-pending" aria-hidden />
         ) : state === 'absent' ? (
-          absent ?? 'not recorded'
+          <Mark kind="absent" say={absent ?? 'Nothing recorded this figure.'} />
         ) : (
           <>
             {value}
@@ -868,97 +908,111 @@ function Tile({
           </>
         )}
       </span>
-      <span className="ctl-metric-sub">{sub}</span>
       {foot && <span className="ctl-metric-foot">{foot}</span>}
     </Box>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Panel chrome
+// Card chrome
 // ---------------------------------------------------------------------------
 
 /**
- * Every panel's header carries the link out. "Nothing is a dead end" is a
- * property of the component rather than of each author's diligence: there is
- * no way to draw a panel here without naming the screen that goes deeper.
+ * Every card's header carries the link out, the qualifier and the `?`.
+ *
+ * "Nothing is a dead end" is a property of the component rather than of each
+ * author's diligence: there is no way to draw a card here without naming the
+ * screen that goes deeper.
+ *
+ * `note` IS THE SLOT THE PARAGRAPHS COLLAPSED INTO. Right-aligned, muted,
+ * mono, one line, no verb required: `8 of 8 checks`, `tenant eng`,
+ * `4 of 4 attempts`. A qualifier that wraps under the title has become a
+ * subtitle, which is a paragraph with better manners.
  */
-function PanelHead({
+function CardHead({
   title,
-  count,
+  note,
   href,
   cta,
   help,
 }: {
   title: string
-  count?: number
+  note?: string | undefined
   /**
-   * The topic that used to be a paragraph under this panel.
+   * The topic that used to be a paragraph under this card.
    *
-   * ON THE TITLE, NEVER ON A FIGURE. A `?` tucked against a number reads
-   * as a footnote marker on the number, which is how a measured figure
-   * becomes one nobody trusts.
+   * ON THE TITLE, NEVER ON A FIGURE. A `?` tucked against a number reads as a
+   * footnote marker on the number, which is how a measured figure becomes one
+   * nobody trusts.
    */
   help?: TopicId
   /**
-   * Omitted by exactly one panel, "Needs attention", and the reason is that
-   * there is no screen that is a deeper version of it: it is derived from six
-   * reads across four sections, each of its rows already links to the object
-   * it is about, and the rows that do not fit expand in place. Every OTHER
-   * panel draws one table and has a screen that draws the whole of it, so
-   * leaving this off is a decision rather than a default.
+   * Omitted by exactly one card, "Needs attention", and the reason is that
+   * there is no screen that is a deeper version of it.
    */
   href?: string | undefined
   cta?: string | undefined
 }) {
   return (
-    <div className="ov-h">
-      <h2>
+    <div className="ctl-card-head">
+      <h2 className="ctl-card-title">
         {title}
         {help !== undefined && <HelpCard topic={help} />}
-        {typeof count === 'number' && count > 0 && <span className="ov-count">{count}</span>}
       </h2>
+      {note !== undefined && <span className="ctl-card-note">{note}</span>}
       {href !== undefined && cta !== undefined && (
         <a className="ov-link" href={href}>
-          {cta} →
+          {cta} &rarr;
         </a>
       )}
     </div>
   )
 }
 
-/** The four ways a panel can have nothing to draw, kept visually distinct. */
-function Nothing({
+/**
+ * The four ways a card can have nothing to draw, kept visually distinct.
+ *
+ * THE MARK IS THE MARKER, and it replaced a paragraph. `is-failed`,
+ * `is-partial` and `is-admin` are colour, and colour is not a distinction a
+ * screenshot in an incident channel preserves; the mark is two words, a border
+ * style and a fill, and it survives both. The heading is the FACT, three or
+ * four words of it. The explanation is the mark's accessible name and the `?`.
+ */
+function Absent({
   kind,
   heading,
+  say,
   help,
-  children,
 }: {
   kind: 'zero' | 'failed' | 'partial' | 'admin'
   heading: string
-  /** Where the paragraph that used to be `children` went. */
+  say: string
   help?: TopicId
-  children: ReactNode
 }) {
-  const cls = kind === 'zero' ? '' : `is-${kind}`
+  const cls = kind === 'zero' ? '' : ` is-${kind}`
+  const mark: MarkKind =
+    kind === 'zero' ? 'zero' : kind === 'failed' ? 'unread' : kind === 'partial' ? 'partial' : 'admin'
   return (
-    <div className={`ctl-empty ov-tight ${cls}`}>
-      {/* THE HEADING IS THE MARKER and it stays a sentence: `is-failed`,
-          `is-partial` and `is-admin` are colour, and colour is not a
-          distinction a screenshot in an incident channel preserves. The
-          BODY is what shrank -- to the fact, with its explanation behind
-          the `?` beside the heading. */}
+    <div className={`ctl-empty ov-empty${cls}`}>
+      <Mark kind={mark} say={say} />
       <h3>
         {heading}
         {help !== undefined && <HelpCard topic={help} />}
       </h3>
-      <p>{children}</p>
     </div>
   )
 }
 
-function Reading() {
-  return <div className="skeleton ov-skel" aria-hidden />
+/**
+ * A read in flight, at the geometry the content will occupy.
+ *
+ * A THING THAT IS ABSENT OCCUPIES THE SPACE IT WOULD HAVE OCCUPIED. If the
+ * card shrinks when the data does not arrive, the operator cannot see that
+ * something should have been there -- the same failure as printing a zero, one
+ * layer down.
+ */
+function Reading({ rows = 3 }: { rows?: number }) {
+  return <div className="ctl-ghost ov-ghost" style={{ '--rows': String(rows) } as CSSProperties} aria-hidden />
 }
 
 // ---------------------------------------------------------------------------
@@ -969,7 +1023,7 @@ function Reading() {
  * One row per runner profile: how many more could start, and WHICH POOL STOPS
  * MORE.
  *
- * This is the screen's most load-bearing panel and the reason is arithmetic. A
+ * This is the screen's most load-bearing card and the reason is arithmetic. A
  * task must clear EVERY pool in its list at the same moment, so the number of
  * agents it can still start is the minimum across them divided by the
  * profile's weight -- never a sum, and never the pool an operator happens to
@@ -980,29 +1034,41 @@ function Reading() {
  * TRAP D: `profile.pools` is the CALLING TENANT'S pool list, including for an
  * admin, because service.capacity() calls pool_names_for(ctx.tenant_id)
  * unconditionally. So this answers "how many more could I start", never "how
- * much capacity does the platform have". The scope is stated on the heading,
- * every time, and a platform-wide figure is not faked by substituting another
+ * much capacity does the platform have". The scope is the card's note, every
+ * time, and a platform-wide figure is not faked by substituting another
  * tenant's pools.
  */
 function CapacityBody({ state }: { state: Result<Capacity> }) {
-  if (state.status === 'loading') return <Reading />
+  if (state.status === 'loading') {
+    return (
+      <div className="ctl-card-body">
+        <Reading />
+      </div>
+    )
+  }
   if (state.status === 'error') {
     const b = blindness(state.error)
     return (
-      <Nothing
-        kind={b.admin ? 'admin' : 'failed'}
-        heading="Pool state could not be read"
-        help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      >
-        {b.why} No figure here is a claim about room.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind={b.admin ? 'admin' : 'failed'}
+          heading="Pool state unread"
+          say={`${b.why} No figure here is a claim about room.`}
+          help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+        />
+      </div>
     )
   }
   if (state.status === 'empty') {
     return (
-      <Nothing kind="zero" heading="No pools exist" help="capacity">
-        The read succeeded and returned nothing — a real zero.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind="zero"
+          heading="No pools exist"
+          say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+          help="capacity"
+        />
+      </div>
     )
   }
 
@@ -1012,14 +1078,13 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
 
   if (profiles.length === 0) {
     return (
-      <Nothing
-        kind="partial"
-        heading="No runner profile came back"
-        help="pools-all-at-once"
-      >
-        {cap.pools.length} pools read, no runner profile — so no ceiling is
-        computed here.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind="partial"
+          heading="No runner profile"
+          say={`${cap.pools.length} pools were read and no runner profile came back, so no ceiling is computed here.`}
+        />
+      </div>
     )
   }
 
@@ -1032,7 +1097,7 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
 
   return (
     <>
-      <div className="ov-card">
+      <div className="ctl-card-body">
         {profiles.map(([name, profile]) => (
           <ProfileRow
             key={name}
@@ -1043,9 +1108,8 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
           />
         ))}
       </div>
-      <p className="provenance">
-        for tenant {tenant ?? '(the caller)'} — not a platform figure ·{' '}
-        {cap.pools.length} pools read
+      <p className="ctl-card-foot">
+        {cap.pools.length} pools · {footFor(state, 'read') ?? 'not read'}
       </p>
     </>
   )
@@ -1056,11 +1120,10 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
  *
  * `poolLabel` renders `provider:anthropic:tenant:u-bogdan` as
  * "anthropic · u-bogdan", which does not fit a half-width column and is
- * ellipsised to "anthropic · u-…" -- losing nothing useful, because the panel
- * heading already says every figure on it is for that tenant. Repeating the
+ * ellipsised to "anthropic · u-…" -- losing nothing useful, because the card's
+ * note already says every figure on it is for that tenant. Repeating the
  * tenant on every row costs the characters that identify WHICH pool binds,
- * which is the one thing the column exists for. Another tenant's name is kept
- * verbatim, and the raw pool name is always on the title.
+ * which is the one thing the column exists for.
  */
 function bindingLabel(name: string, tenant: string | undefined): string {
   if (tenant) {
@@ -1078,10 +1141,9 @@ function bindingLabel(name: string, tenant: string | undefined): string {
  *                 track reads as "0% used", which is a claim.
  * `pct === 0`     MEASURED zero. This used to render as a zero-width fill on a
  *                 near-white track, which is pixel-for-pixel a widget that
- *                 failed to paint: the same page is scrupulous about this
- *                 distinction in prose and threw it away in the one place it is
- *                 drawn. A measured zero now gets a visible BASELINE TICK at the
- *                 origin, so "nothing is running" is legible as a reading.
+ *                 failed to paint. A measured zero gets a visible BASELINE
+ *                 TICK at the origin, so "nothing is running" is legible as a
+ *                 reading.
  * `pct > 0`       an ordinary fill.
  *
  * The tick is deliberately NOT a minimum width on the fill. A 3px fill would
@@ -1139,7 +1201,7 @@ function ProfileRow({
   // THE BAR IS THE BINDING POOL'S, not an average and not the global pool's.
   // Averaging a profile's pools would draw a comfortable half-full bar for a
   // profile that cannot start anything because one of its six pools is at
-  // zero -- which is precisely the failure this panel exists to make visible.
+  // zero -- precisely the failure this card exists to make visible.
   const known = binding !== null && binding.effective_limit > 0
   const ratio = known ? binding.active / binding.effective_limit : 0
   const paused = binding !== null && isPaused(binding)
@@ -1157,9 +1219,6 @@ function ProfileRow({
     <div className="ctl-util">
       <span className="ctl-util-name" title={`${name} · ${profile.units} unit(s) per agent`}>
         <b>{name}</b>{' '}
-        {/* Short on purpose: this sits in a column that is ~200px wide in a
-            two-up layout, and a truncated headroom figure is worse than a terse
-            one. */}
         {h.agents === null ? (
           /* An em dash, never a 0. `uncapped` means nothing limits this;
              `unknown` means a required pool could not be read and the true
@@ -1177,11 +1236,11 @@ function ProfileRow({
           </span>
         ) : h.agents === 0 ? (
           <span className="ov-stop">
-            · none can start
+            · 0 can start
             {/* The count, because more than one pool can refuse at the same
-                moment and a panel that implies one sends an operator to raise
-                a ceiling that changes nothing. */}
-            {h.blockers.length > 1 && ` (${h.blockers.length} pools)`}
+                moment and a card that implies one sends an operator to raise a
+                ceiling that changes nothing. */}
+            {h.blockers.length > 1 && ` (${h.blockers.length})`}
           </span>
         ) : (
           <>· {h.agents} can start</>
@@ -1206,7 +1265,7 @@ function ProfileRow({
             <span className="ctl-util-of"> / {binding.effective_limit}</span>
           </>
         ) : (
-          <span className="ctl-em">—</span>
+          <span className="ctl-em">&mdash;</span>
         )}
       </span>
 
@@ -1220,12 +1279,10 @@ function ProfileRow({
       >
         {/* More than one pool can be at its ceiling at once. This column has
             room for one name, so when several refuse it says SO rather than
-            picking one -- the detail is on the Capacity board. */}
-        {/* "refusing", not "full": one of them may be PAUSED, which is a
-            different fact with the opposite remedy, and a single word here
-            cannot carry both. */}
+            picking one. "refusing", not "full": one of them may be PAUSED,
+            which is a different fact with the opposite remedy. */}
         {h.blockers.length > 1
-          ? `${h.blockers.length} pools refusing`
+          ? `${h.blockers.length} refusing`
           : paused
             ? 'paused'
             : !h.complete
@@ -1250,12 +1307,12 @@ const RUNNING_ROWS = 4
  * What is running, longest-running first.
  *
  * TWO SOURCES, DELIBERATELY, AND BOTH ARE NAMED. The COUNT comes from
- * `/v1/stats`, which is an exact Firestore count() per state. The ROWS come
- * from `/v1/tasks?limit=200`, which is the 200 most recently CREATED tasks
- * (store.py:408 orders created_at DESCENDING) -- so an agent that has been
- * running for two days while 200 newer tasks were created is counted and not
- * listed. The caption prints both numbers rather than quietly showing whichever
- * is smaller, because the gap between them is itself information.
+ * `/v1/stats`, an exact Firestore count() per state. The ROWS come from
+ * `/v1/tasks?limit=200`, the 200 most recently CREATED tasks (store.py:408
+ * orders created_at DESCENDING) -- so an agent running for two days while 200
+ * newer tasks were created is counted and not listed. The caption prints both
+ * figures rather than quietly showing whichever is smaller, because the gap
+ * between them is itself information.
  */
 function RunningBody({
   tasks,
@@ -1264,25 +1321,36 @@ function RunningBody({
   tasks: Result<TaskPage>
   stats: Result<Stats>
 }) {
-  if (tasks.status === 'loading') return <Reading />
+  if (tasks.status === 'loading') {
+    return (
+      <div className="ctl-card-body">
+        <Reading rows={4} />
+      </div>
+    )
+  }
   if (tasks.status === 'error') {
     const b = blindness(tasks.error)
     return (
-      <Nothing
-        kind={b.admin ? 'admin' : 'failed'}
-        heading="The task list could not be read"
-        help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      >
-        {b.why} This panel is blind; it is not reporting that nothing is
-        running.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind={b.admin ? 'admin' : 'failed'}
+          heading="Task list unread"
+          say={`${b.why} This card is blind; it is not reporting that nothing is running.`}
+          help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+        />
+      </div>
     )
   }
   if (tasks.status === 'empty') {
     return (
-      <Nothing kind="zero" heading="No task exists yet" help="absent-vs-zero">
-        The read succeeded and returned nothing — a real zero.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind="zero"
+          heading="No task exists"
+          say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+          help="absent-vs-zero"
+        />
+      </div>
     )
   }
 
@@ -1290,7 +1358,7 @@ function RunningBody({
   const running = page.tasks
     .filter((t) => CONCURRENCY_STATES.has(t.state))
     // Oldest start first: the longest-running agent is the one worth seeing,
-    // and it is the one a fixed-height panel would otherwise cut off.
+    // and it is the one a fixed-height card would otherwise cut off.
     .sort((a, b) => startKey(a) - startKey(b))
 
   const st = dataOf(stats)
@@ -1303,50 +1371,61 @@ function RunningBody({
 
   if (running.length === 0) {
     return (
-      <Nothing kind="zero" heading="Nothing is running">
-        No task on the {page.tasks.length} most recently created is in LEASED,
-        DISPATCHED, STARTING or RUNNING.{' '}
-        {counted === null
-          ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
-          : counted === 0
-            ? 'The state counts agree: zero.'
-            : `The state counts say ${counted} — those agents were created before this page begins.`}
-      </Nothing>
+      <>
+        <div className="ctl-card-body">
+          <Absent
+            kind="zero"
+            heading="Nothing running"
+            say={
+              `No task on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. ` +
+              (counted === null
+                ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
+                : counted === 0
+                  ? 'The state counts agree: zero.'
+                  : `The state counts say ${counted}; those agents were created before this page begins.`)
+            }
+          />
+        </div>
+        <p className="ctl-card-foot">
+          0 of {page.tasks.length} newest
+          {counted !== null && counted !== 0 && <> · stats say {counted}</>}
+        </p>
+      </>
     )
   }
 
   const shown = running.slice(0, RUNNING_ROWS)
 
   return (
-    <div className="ctl-table">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Agent</th>
-            <th scope="col">State</th>
-            <th scope="col" className="is-num">
-              Runtime
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((t) => (
-            <RunningRow key={t.id} task={t} />
-          ))}
-        </tbody>
-        <caption>
-          {running.length} on the {page.tasks.length} most recently created
-          tasks
-          {counted !== null && counted !== running.length && (
-            <>
-              {' '}
-              · <code>/v1/stats</code> counts <b>{counted}</b> in these states
-            </>
-          )}
-          {running.length > shown.length && <> · showing the {shown.length} longest-running</>}
-        </caption>
-      </table>
-    </div>
+    <>
+      <div className="ctl-card-body is-flush ctl-table ov-rows">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Agent</th>
+              <th scope="col">State</th>
+              <th scope="col" className="is-num">
+                Runtime
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((t) => (
+              <RunningRow key={t.id} task={t} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* THE GAP BETWEEN THE TWO SOURCES IS THE INFORMATION, so both figures
+          stay on the surface as digits. `/v1/stats` counting more than the
+          page holds is not a discrepancy to hide: it is agents older than the
+          200 most recently created. */}
+      <p className="ctl-card-foot">
+        {running.length} of {page.tasks.length} newest
+        {counted !== null && counted !== running.length && <> · stats say {counted}</>}
+        {running.length > shown.length && <> · showing {shown.length}</>}
+      </p>
+    </>
   )
 }
 
@@ -1362,16 +1441,12 @@ function RunningRow({ task }: { task: Task }) {
         <a className="ov-link" href={`#agents/task/${encodeURIComponent(task.id)}`}>
           {task.runner_profile}
         </a>
-        {/* The id, and only the id. `whyAgent` used to be appended here and
-            could never print: it answers for PARKED, READY, FAILED and
-            CANCELLED, and every row in this table is LEASED, DISPATCHED,
-            STARTING or RUNNING by construction. A call that always returns ''
-            reads as a "why" column that is mysteriously always empty. */}
         <span className="ctl-sub">{task.id}</span>
       </th>
       <td>
-        {/* The word is mandatory; the dot is decoration. Roughly 8% of male
-            viewers cannot separate this panel's amber from its red. */}
+        {/* The word is mandatory; the dot is the shape that repeats it.
+            Roughly 8% of male viewers cannot separate this card's amber from
+            its red. */}
         <span className={`ctl-chip ${chipTone(task.state)}`}>
           <i aria-hidden />
           {stateGlyph(task.state)} {task.state}
@@ -1416,70 +1491,79 @@ function chipTone(state: TaskState): string {
 /**
  * Tokens and token cost, over a named sample.
  *
- * THE SCOPE IS THE PANEL. `cost_usd` and the four token counts live on the
+ * THE SCOPE IS THE CARD. `cost_usd` and the four token counts live on the
  * ATTEMPT and no route aggregates them, so a total can only be assembled one
  * request per task -- which makes the sample size a request count and the
- * figure a sample rather than a bill. Every sentence here exists to stop this
- * number being read as "what this tenant has spent".
+ * figure a sample rather than a bill. The card's note and foot carry that; the
+ * five sentences that used to are in the `?`.
  *
  * A NULL IS NOT A ZERO, and it is the difference between a mock run that
  * genuinely cost nothing and a result whose usage failed to parse.
  * `record_usage` in agent_worker/control.py omits a key the runner did not
- * report and says so in its own docstring; this panel counts how many attempts
- * carried no figure and prints that count rather than folding them in as
- * zeros.
+ * report and says so in its own docstring; this card counts how many attempts
+ * carried no figure and draws that count rather than folding them in as zeros.
  */
 function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result<TaskPage> }) {
   if (state.status === 'loading') {
-    // A READ IS IN FLIGHT, and now that is the only way to reach this line:
-    // either the task page has not landed (the fan-out starts when it does) or
-    // the twelve attempt reads are out. `useSpend` mirrors a task read that
-    // landed `empty` or failed into this Result, so a tenant whose fan-out
-    // will never start does not watch a skeleton pulse for it.
-    return <Reading />
+    return (
+      <div className="ctl-card-body">
+        <Reading rows={4} />
+      </div>
+    )
   }
   if (state.status === 'error') {
     // TWO FAILURES, AND WHAT THE READER DOES NEXT DIFFERS. This rollup is
     // built ON the task page: when the task read is the one that failed, no
     // attempt read was made at all, nothing is known about the attempt route,
-    // and the thing to fix is the task list. Saying "no attempt read
-    // completed" there would send someone after a route that was never called.
+    // and the thing to fix is the task list.
     if (tasks.status === 'error') {
       const b = blindness(tasks.error)
       return (
-        <Nothing
-          kind={b.admin ? 'admin' : 'failed'}
-          heading="Spend could not be assembled"
-        >
-          It is summed from the attempts of the most recent tasks, and the task
-          list itself could not be read. {b.why} No attempt read was made, so
-          nothing here is a statement about spend.
-        </Nothing>
+        <div className="ctl-card-body">
+          <Absent
+            kind={b.admin ? 'admin' : 'failed'}
+            heading="Spend unassembled"
+            say={`Spend is summed from the attempts of the most recent tasks, and the task list itself could not be read. ${b.why} No attempt read was made, so nothing here is a statement about spend.`}
+          />
+        </div>
       )
     }
     return (
-      <Nothing kind="failed" heading="No attempt read completed" help="read-failed">
-        {errorHeading(state.error)} — {state.error.message} No figure is shown.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind="failed"
+          heading="No attempt read completed"
+          say={`${errorHeading(state.error)} — ${state.error.message} No figure is shown.`}
+          help="read-failed"
+        />
+      </div>
     )
   }
   if (state.status === 'empty') {
     // TWO ZEROS, AND THEY ARE NOT THE SAME ZERO. "Every task on the page has
     // no attempts" describes tasks that exist; on a tenant with no tasks at
-    // all it would describe a page that is not there. The Running panel draws
-    // "No task exists yet" from this same read and the two must not disagree.
+    // all it would describe a page that is not there.
     if (tasks.status === 'empty') {
       return (
-        <Nothing kind="zero" heading="No task exists yet" help="absent-vs-zero">
-          The task read succeeded and returned nothing — a real zero, so there
-          are no attempts to sum.
-        </Nothing>
+        <div className="ctl-card-body">
+          <Absent
+            kind="zero"
+            heading="No task exists"
+            say="The task read succeeded and returned nothing — a real zero, so there are no attempts to sum."
+            help="absent-vs-zero"
+          />
+        </div>
       )
     }
     return (
-      <Nothing kind="zero" heading="No task has ever run" help="attempt-documents">
-        Every task on the page has an attempt count of 0 — a real zero.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind="zero"
+          heading="No task has run"
+          say="Every task on the page has an attempt count of 0 — a real zero."
+          help="attempt-documents"
+        />
+      </div>
     )
   }
 
@@ -1488,94 +1572,140 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
 
   return (
     <>
-      <dl className="ov-kv">
-        <div>
-          <dt>Cost</dt>
-          <dd className="ov-figure">
-            {s.costUsd === null ? <span className="ctl-em">not reported</span> : money(s.costUsd)}
-          </dd>
-        </div>
-        <div>
-          <dt>Input</dt>
-          <dd>{tokens(s.inputTokens)}</dd>
-        </div>
-        <div>
-          <dt>Output</dt>
-          <dd>{tokens(s.outputTokens)}</dd>
-        </div>
-        <div>
-          <dt>Cache read</dt>
-          <dd>{tokens(s.cacheReadTokens)}</dd>
-        </div>
-        <div>
-          <dt>Cache write</dt>
-          <dd>{tokens(s.cacheCreationTokens)}</dd>
-        </div>
-      </dl>
-
-      {s.failedReads > 0 && (
-        <p className="warn-text">
-          {/* THE COUNT IS THE MARKER and it stays first: these figures are a
-              sum over a sample with a hole in it, and the size of the hole is
-              the thing that must not need a hover. ONE MESSAGE IS ONE
-              FAILURE'S -- the rollup keeps only the first error it saw
-              (api.ts, loadSpend), so the rest are named as unexplained
-              rather than explained wrongly, and WHY that is the right shape
-              is behind the `?`. */}
-          {s.failedReads} of {s.tasksSampled} attempt reads failed, so their
-          spend is in none of these figures.
-          <HelpCard topic="partial-read" />{' '}
-          {s.failedReads === 1 ? (
-            <>It failed with: {s.failedDetail ?? 'no message was recorded'}</>
-          ) : (
-            <>
-              One failed with: {s.failedDetail ?? 'no message was recorded'} — the
-              other {s.failedReads - 1} are unexplained here.
-            </>
-          )}
-        </p>
-      )}
-
-      <p className="provenance">
-        {s.attempts} attempts across the {s.tasksSampled} most recently created
-        tasks that have run
-        {s.tasksWithAttempts > s.tasksSampled && (
-          <> — {s.tasksWithAttempts} such tasks are on the page</>
+      <div className="ctl-card-body">
+        {/* THE FIGURE, AND THE ONE THING IT IS NOT. `.ctl-figure.is-absent`
+            drops to --t-body on purpose: at 30px the words "not reported"
+            read as a quantity, which is the exact confusion this state exists
+            to prevent. Nothing but a measured number gets the figure step. */}
+        <b
+          className={`ctl-figure ov-figure${s.costUsd === null ? ' is-absent' : ''}`}
+          data-measured={s.costUsd === null ? 'false' : 'true'}
+        >
+          {s.costUsd === null ? <span className="ctl-em">&mdash;</span> : money(s.costUsd)}
+        </b>
+        {s.costUsd === null && (
+          <div className="ov-figure-mark">
+            <Mark
+              kind="absent"
+              say="No attempt in this sample reported a cost. That is an absent measurement and not $0.00: record_usage omits a key the runner did not report."
+            />
+          </div>
         )}
-        {s.from && s.to && (
+
+        {/* THE TOKEN MIX, AS A PROPORTION RATHER THAN FOUR NUMBERS IN A LIST.
+            Hand-rolled: four `<i>` widths off one total, one series colour
+            each, `--series-5` for the neutral. A segment whose count is ABSENT
+            is not drawn at all and its fact keeps its slot below with an em
+            dash -- a missing segment and a zero-width segment are the same
+            picture, so the em dash is what tells them apart. */}
+        <TokenMix s={s} />
+      </div>
+
+      {/* PROVENANCE, IN ONE LINE, WHERE PROVENANCE GOES. Four paragraphs used
+          to say this: the sample size, the span, the age of the sum, that it
+          does not re-poll, and how many attempts carried no cost. They are
+          counts, so they are drawn as counts. */}
+      <p className="ctl-card-foot">
+        {s.attempts} attempts / {s.tasksSampled} tasks
+        {' · '}
+        {footFor(state, 'summed') ?? 'not summed'} · no re-poll
+        {unmeasured > 0 && (
           <>
-            {' '}
-            · {new Date(s.from).toLocaleString()} → {new Date(s.to).toLocaleString()}
+            {' · '}
+            <span className="ov-warn">{unmeasured} unmeasured</span>
           </>
         )}
-      </p>
-      {/* THE AGE OF THE SUM, not of the tasks it covers. The line above is the
-          span of `created_at` across the sample, which moves with the sample
-          and not with the read; this is when the fan-out actually ran. They
-          differ by however long ago someone last pressed refresh, because this
-          is the one panel on the screen that does not re-poll -- which stays
-          on the surface, in three words, because a figure that ages while its
-          neighbours refresh is indistinguishable from them otherwise. */}
-      <p className="provenance">
-        summed {timeAgo(state.fetchedAt)} · does not re-poll
-        <HelpCard topic="poll-cadence" />
-      </p>
-      <p className="provenance">
-        {/* THE COUNT OF WHAT IS MISSING, kept as a digit on the surface. The
-            second half -- that no infrastructure cost is recorded anywhere on
-            this platform -- is the `token-cost` topic. */}
-        {unmeasured > 0
-          ? `${unmeasured} attempt${unmeasured === 1 ? ' carries' : 's carry'} no cost figure and ${unmeasured === 1 ? 'is' : 'are'} counted as unmeasured, not as zero`
-          : 'every attempt in the sample carried a cost figure'}
-        <HelpCard topic="token-cost" />
+        {/* THE COUNT OF WHAT IS MISSING, KEPT AS A DIGIT ON THE SURFACE. These
+            figures are a sum over a sample with a hole in it, and the size of
+            the hole is the thing that must not need a hover. ONE MESSAGE IS
+            ONE FAILURE'S -- the rollup keeps only the first error it saw
+            (api.ts, loadSpend), so the rest are unexplained rather than
+            explained wrongly. */}
+        {s.failedReads > 0 && (
+          <>
+            {' · '}
+            <span
+              className="ov-bad"
+              aria-label={`${s.failedReads} of ${s.tasksSampled} attempt reads failed, so their spend is in none of these figures. ${
+                s.failedReads === 1
+                  ? `It failed with: ${s.failedDetail ?? 'no message was recorded'}`
+                  : `One failed with: ${s.failedDetail ?? 'no message was recorded'} — the other ${s.failedReads - 1} are unexplained here.`
+              }`}
+            >
+              {s.failedReads} of {s.tasksSampled} reads failed
+            </span>
+            <HelpCard topic="partial-read" />
+          </>
+        )}
       </p>
     </>
   )
 }
 
-/** A number of tokens, or an em dash. Never 0 for an absent measurement. */
-function tokens(v: number | null): ReactNode {
-  if (v === null) return <span className="ctl-em">—</span>
+/**
+ * The four token counts as one proportion, plus their figures.
+ *
+ * A BAR AND A FACTS STRIP, NOT A DEFINITION LIST. The `<dl>` this replaced
+ * spent a 13px uppercase key and a line of its own on each of four numbers
+ * that only mean anything against each other; the bar puts them against each
+ * other and the strip keeps the digits.
+ *
+ * AN ABSENT COUNT DRAWS NO SEGMENT. A zero-width segment and a segment that
+ * was never measured are the same picture, so an absent count is left out of
+ * the bar entirely and its fact carries `.ctl-em` -- and when EVERY count is
+ * absent the bar is not drawn at all, because an empty track reads as "0
+ * tokens", which is a claim.
+ */
+function TokenMix({ s }: { s: SpendRollup }) {
+  const parts = [
+    { key: 'in', v: s.inputTokens, series: 1 },
+    { key: 'out', v: s.outputTokens, series: 2 },
+    { key: 'c-rd', v: s.cacheReadTokens, series: 3 },
+    { key: 'c-wr', v: s.cacheCreationTokens, series: 4 },
+  ] as const
+  const total = parts.reduce((n, p) => n + (p.v ?? 0), 0)
+  const anyMeasured = parts.some((p) => p.v !== null)
+
+  return (
+    <>
+      {anyMeasured && total > 0 ? (
+        <div
+          className="ov-mix"
+          role="img"
+          aria-label={parts
+            .map((p) => `${p.key} ${p.v === null ? 'not measured' : p.v}`)
+            .join(', ')}
+        >
+          {parts.map((p) =>
+            p.v === null || p.v === 0 ? null : (
+              <i
+                key={p.key}
+                className={`ov-mix-seg ov-s${p.series}`}
+                style={{ width: `${(p.v / total) * 100}%` }}
+              />
+            ),
+          )}
+        </div>
+      ) : (
+        // Every count absent, or a measured total of zero with no proportion
+        // to draw. Either way there is no scale, so no track is drawn: an
+        // empty track is a claim that the scale starts somewhere.
+        <div className="ov-mix is-unknown" role="img" aria-label="No attempt in this sample reported a token count, so there is no proportion to draw." />
+      )}
+      <ul className="ctl-facts ov-mix-facts">
+        {parts.map((p) => (
+          <li className={`ctl-fact${p.v === null ? ' is-absent' : ''}`} key={p.key}>
+            <b>{p.key}</b>
+            {p.v === null ? <i className="ctl-em">&mdash;</i> : <span className="ov-num">{tokens(p.v)}</span>}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+
+/** A number of tokens, never 0 for an absent measurement. */
+function tokens(v: number): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`
   return String(v)
@@ -1605,33 +1735,29 @@ function money(v: number): string {
  * The POOL's headroom is the BEST usable account's, not the sum and not the
  * mean: one agent is served by one account, so what matters is whether any
  * account can take it. An account that is REAUTH_REQUIRED, never observed, or
- * too stale to trust is excluded from the figure and counted in the line
- * underneath -- excluded rather than treated as full, because "we do not know"
- * is not "there is room".
+ * too stale to trust is excluded from the figure and counted in `usable` --
+ * excluded rather than treated as full, because "we do not know" is not
+ * "there is room".
  *
  * AND A WINDOW THAT HAS ALREADY RESET IS ONE OF THE THINGS WE DO NOT KNOW.
  * `bindingWindow` scores a `reset: true` window as FULL -- deliberately, so a
  * window that refilled cannot be the binding one while another still has room
  * -- which means it comes back as binding precisely when every window has
  * reset, or on a tie. Its `utilization` then describes the window BEFORE the
- * reset. Reading it raw drew "10 % left" in the red under-15% tone for an
- * account whose five-hour window had just cleared, while the Accounts screen
- * said "cleared" for the same account and the same window. `readingOf` is the
- * one place that distinction is encoded, so it is asked rather than
- * re-derived: only a `live` reading is a figure.
- */
-/**
- * EXPORTED so the arithmetic below can be asserted.
+ * reset. `readingOf` is the one place that distinction is encoded, so it is
+ * asked rather than re-derived: only a `live` reading is a figure.
  *
- * A verifier found on 2026-09-22 that replacing
- * `accounts.length - unread - projected - notServing` with plain
- * `accounts.length` left the entire suite green. The tile would then have read
- * "best of 3 usable accounts" while its own foot line named two of the three
- * as having no reading -- a tile contradicting itself, which is the exact
- * defect class this function was rewritten to remove.
+ * `usable` AND `total` ARE WHAT THE DIAL DRAWS. The ring is the share of the
+ * pool this figure speaks for, and the figure in the middle is the headroom.
+ * A headroom of 100% read off one of three accounts is not a full ring: it is
+ * a ring filled a third of the way and hatched the rest, with 100% in it.
  *
- * Nothing could catch it because nothing could call this. That is the whole
- * lesson: a derivation a test cannot import is a derivation nothing guards.
+ * EXPORTED so the arithmetic below can be asserted. A verifier found on
+ * 2026-09-22 that replacing `accounts.length - unread - projected -
+ * notServing` with plain `accounts.length` left the entire suite green. The
+ * tile would then have read "best of 3 usable accounts" while its own foot
+ * named two of the three as having no reading. Nothing could catch it because
+ * nothing could call this.
  */
 export function accountHeadroom(state: Result<AccountsPage>): {
   pct: number | null
@@ -1639,6 +1765,10 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   foot: string | undefined
   reading: boolean
   absent: string | null
+  /** Accounts this figure could have come from. null when nothing was read. */
+  usable: number | null
+  /** Accounts in scope, whether or not any reading arrived. */
+  total: number
 } {
   if (state.status === 'loading') {
     return {
@@ -1647,6 +1777,8 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       foot: undefined,
       reading: true,
       absent: null,
+      usable: null,
+      total: 0,
     }
   }
   if (state.status === 'error') {
@@ -1656,6 +1788,8 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       foot: undefined,
       reading: false,
       absent: null,
+      usable: null,
+      total: 0,
     }
   }
   if (state.status === 'empty') {
@@ -1665,6 +1799,8 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       foot: 'read succeeded · a real zero',
       reading: false,
       absent: 'no accounts',
+      usable: 0,
+      total: 0,
     }
   }
 
@@ -1672,10 +1808,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   // THE SCOPE IS PART OF THE FIGURE. `/v1/accounts` returns the accounts this
   // TENANT owns or has been lent, never the platform's -- so `accounts.length`
   // is not the number registered, and a sentence here that says "registered"
-  // makes a platform-wide claim out of a tenant-wide list. On 2026-09-22 the
-  // tile read "every registered account has a current reading" for tenant
-  // `eng`, which owned the one account that had one, while two accounts in
-  // `u-bogdan` had never been polled at all.
+  // makes a platform-wide claim out of a tenant-wide list.
   const scope = state.data.tenant_id ? `in ${state.data.tenant_id}` : 'across every tenant'
   // The raw id, beside the display string above. `unreadableFor` matches on the
   // id, and `scope` has already been turned into a sentence fragment.
@@ -1696,8 +1829,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   // Accounts the broker is ALREADY SKIPPING for this tenant, because this
   // tenant reported them unreadable. Their headroom is real and unavailable,
   // and it is usually the LARGEST figure on the screen precisely because
-  // nothing has been spending it. Counting one made this tile answer "can
-  // anything run?" with the headroom of the one account that cannot.
+  // nothing has been spending it.
   const unreadableHere: string[] = []
 
   for (const a of accounts) {
@@ -1711,11 +1843,12 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       unreadableHere.push(a.label)
       continue
     }
-    // The two ways a reading can be missing, told apart the same way the pool
-    // panel's rows tell them apart: nobody has ever polled this account, or
-    // the poll landed and reported no window. Both are unknown headroom; NEITHER
-    // is 100%. `usagepoll.py` fails safe by recording nothing when it cannot
-    // read an account's token, so this is the shape the live platform produces.
+    // The two ways a reading can be missing, told apart the same way the
+    // account rows tell them apart: nobody has ever polled this account, or
+    // the poll landed and reported no window. Both are unknown headroom;
+    // NEITHER is 100%. `usagepoll.py` fails safe by recording nothing when it
+    // cannot read an account's token, so this is the shape the live platform
+    // produces.
     if (a.observed_at === null) {
       unread.push(a.label)
       continue
@@ -1756,15 +1889,16 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       foot: 'a missing reading is not 0% used, and a window that has cleared has not been read since',
       reading: false,
       absent: 'nothing measured',
+      usable: 0,
+      total: accounts.length,
     }
   }
 
   return {
     pct: best.pct,
-    // THE AGE IS PART OF THE FIGURE, and it was missing. Every other tile on
-    // this row carries the age of the read behind it; this one showed a
-    // percentage with nothing saying whether it was measured a minute or four
-    // days ago. A reading from four days ago is not a current one.
+    // THE AGE IS PART OF THE FIGURE. Every other tile on the strip carries the
+    // age of the read behind it; this one showed a percentage with nothing
+    // saying whether it was measured a minute or four days ago.
     sub: `best of ${countOf(usable, 'usable account')} · its ${best.key.replace('_', '-')} window binds · read ${timeAgo(best.observedAt)}`,
     // DERIVED, NEVER ASSERTED, AND IT NAMES NAMES. The previous wording --
     // "every registered account has a current reading" -- was a sentence
@@ -1775,6 +1909,8 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       : `all ${countOf(accounts.length, 'account')} ${scope} ${accounts.length === 1 ? 'has' : 'have'} a current reading`,
     reading: false,
     absent: null,
+    usable,
+    total: accounts.length,
   }
 }
 
@@ -1793,6 +1929,11 @@ function countOf(n: number, noun: string): string {
  * them into one count -- "N accounts excluded -- paused, stale, cleared or
  * needing sign-in" -- was the old wording, and it did not even list the case
  * that actually applies here.
+ *
+ * THIS IS NOW AN ACCESSIBLE NAME RATHER THAN A PARAGRAPH. The counts it
+ * summarises are drawn: the dial's hatched arc is the accounts with no
+ * reading, and the card's note is `best of 1/3`. The sentence is what a
+ * screen reader gets and what the `?` expands.
  */
 function absenceSentence(
   unread: string[],
@@ -1821,31 +1962,40 @@ function absenceSentence(
 const ACCOUNT_ROWS = 3
 
 function AccountsBody({ state }: { state: Result<AccountsPage> }) {
-  if (state.status === 'loading') return <Reading />
+  if (state.status === 'loading') {
+    return (
+      <div className="ctl-card-body">
+        <Reading rows={3} />
+      </div>
+    )
+  }
   if (state.status === 'error') {
     const b = blindness(state.error)
     return (
-      <Nothing
-        kind={b.admin ? 'admin' : 'failed'}
-        heading="The account pool could not be read"
-        help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
-      >
-        {b.why} This says nothing about whether the accounts have room.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind={b.admin ? 'admin' : 'failed'}
+          heading="Account pool unread"
+          say={`${b.why} This says nothing about whether the accounts have room.`}
+          help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+        />
+      </div>
     )
   }
   if (state.status === 'empty') {
     return (
-      <Nothing
-        kind="zero"
-        heading="No account is registered"
-        help="park-on-missing-credential"
-      >
-        The read succeeded and returned nothing — a real zero.
-      </Nothing>
+      <div className="ctl-card-body">
+        <Absent
+          kind="zero"
+          heading="No account registered"
+          say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+          help="park-on-missing-credential"
+        />
+      </div>
     )
   }
 
+  const pool = accountHeadroom(state)
   const total = state.data.accounts.length
   const accounts = [...state.data.accounts]
     .map((a) => ({ a, w: bindingWindow(a) }))
@@ -1855,127 +2005,144 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
     .sort((x, y) => rank(x.a, x.w) - rank(y.a, y.w))
     .slice(0, ACCOUNT_ROWS)
 
+  // THE RING IS THE COVERAGE, THE FIGURE IS THE HEADROOM, and the two are
+  // different facts. `.is-partial` hatches the accounts that reported nothing,
+  // so a confident 100% read off one of three is visibly one third of a ring.
+  const coverage = total === 0 ? 0 : ((pool.usable ?? 0) / total) * 100
+  const dialKind =
+    pool.pct === null
+      ? 'unknown'
+      : (pool.usable ?? 0) < total
+        ? 'partial'
+        : pool.pct === 0
+          ? 'zero'
+          : 'measured'
+
   return (
     <>
-      <div className="ov-card">
-        {accounts.map(({ a, w }) => {
-          // FIVE KINDS OF READING, AND ONLY ONE OF THEM IS A CURRENT FIGURE.
-          // `readingOf` is the same function the Accounts screen uses, so the
-          // two screens cannot disagree about the same account: an account
-          // whose binding window has reset reads "~90% · cleared" here and
-          // "cleared" there, rather than a confident red 90% on one screen and
-          // "cleared" on the other.
-          // `bindingWindow` returns null when no window carried a usable
-          // figure, and the two reasons for that are different sentences:
-          // nobody has ever polled this account, or the poll landed and
-          // reported no window. `readingOf` makes the same split, so the
-          // no-window case is spelled the same way here.
-          const r: AccountReading =
-            a.observed_at === null
-              ? { kind: 'never' }
-              : w === null
-                ? { kind: 'absent' }
-                : readingOf(a, w.key)
-          // `null`, never 0: the width of a bar nobody measured is not zero,
-          // it does not exist. Narrowing on `pct !== null` below is also what
-          // keeps `r.pct` reachable without a cast.
-          const pct =
-            r.kind === 'live' || r.kind === 'stale' || r.kind === 'reset' ? r.pct : null
-          const projected = isProjected(r)
-          const windowName = w?.key.replace(/_/g, '-') ?? null
-          return (
-            <div className="ctl-util" key={a.account_id}>
-              <span className="ctl-util-name" title={a.account_id}>
-                <b>{a.label}</b> · {a.assigned} assigned
-              </span>
-              {/* Never observed, or no reading for the binding window: hatched
-                  with no fill. A plain empty track here would claim 0% used,
-                  which for an account nobody has polled is a number nobody
-                  measured. A PROJECTED reading does get a bar -- the figure is
-                  real -- but a grey one, never the red or amber that says a
-                  ceiling is being approached now. */}
-              <UtilTrack
-                pct={pct}
-                fillClass={
-                  projected
-                    ? 'ov-projected'
-                    : a.state !== 'AVAILABLE'
-                      ? 'is-paused'
-                      : pct !== null && pct > 90
-                        ? 'is-bad'
-                        : pct !== null && pct > 75
-                          ? 'is-warn'
-                          : ''
-                }
-                over={false}
-                zeroTitle={`Measured: this account reported 0% of its binding window used. The bar has a baseline because this zero is a reading, not a missing one.`}
-              />
-              <span
-                className="ctl-util-figure"
-                title={
-                  r.kind === 'reset' && windowName
-                    ? `The ${windowName} window, the binding one, passed its reset ${timeAgo(r.resetsAt)}. It has cleared; no reading taken since has arrived, so this figure describes the window before it.`
-                    : r.kind === 'stale'
-                      ? `Read ${timeAgo(r.observedAt)}, which is past the broker's staleness window. The figure is real and describes an earlier moment.`
-                      : undefined
-                }
-              >
-                {pct !== null ? (
-                  <>
-                    {/* The same mark `cs status` and the Accounts screen use
-                        for a figure that is real but not current. */}
-                    {projected && <span className="ov-tilde">~</span>}
-                    {Math.round(pct)}%
-                  </>
-                ) : (
-                  <span className="ctl-em">—</span>
-                )}
-              </span>
-              {/* A CURRENT READING CARRIES ITS AGE TOO. `stale` and `cleared`
-                  have said how old they are for as long as this panel has
-                  existed; a `live` reading printed only the window name, so
-                  the one row on the panel with a confident figure was the one
-                  row that did not say when it was measured. Thirty minutes is
-                  the staleness window, so "live" spans a range wide enough to
-                  matter. */}
-              <span className="ctl-util-by">
-                {needsAHuman(a)
-                  ? 'sign in again'
-                  : // Before every reading word, because it outranks all of
-                    // them: whatever this row's figure says, the pool will not
-                    // hand this account to this tenant while the report stands.
-                    unreadableFor(a, state.data.tenant_id)
-                    ? 'pool is skipping it here'
-                    : r.kind === 'never'
-                    ? 'never polled'
-                    : r.kind === 'absent'
-                      ? 'no window reported'
-                      : r.kind === 'reset'
-                        ? 'cleared'
+      <div className="ctl-card-body">
+        <div className="ov-dialrow">
+          <Dial kind={dialKind} measured={coverage} say={pool.sub}>
+            {pool.pct === null ? (
+              <span className="ctl-em">&mdash;</span>
+            ) : (
+              <>
+                {Math.round(pool.pct)}
+                <span className="ctl-figure-unit">% left</span>
+              </>
+            )}
+          </Dial>
+          <div className="ov-dialrow-rows">
+            {accounts.map(({ a, w }) => {
+              // FIVE KINDS OF READING, AND ONLY ONE OF THEM IS A CURRENT
+              // FIGURE. `readingOf` is the same function the Accounts screen
+              // uses, so the two screens cannot disagree about the same
+              // account: an account whose binding window has reset reads
+              // "~90% · cleared" here and "cleared" there.
+              const r: AccountReading =
+                a.observed_at === null
+                  ? { kind: 'never' }
+                  : w === null
+                    ? { kind: 'absent' }
+                    : readingOf(a, w.key)
+              // `null`, never 0: the width of a bar nobody measured is not
+              // zero, it does not exist.
+              const pct =
+                r.kind === 'live' || r.kind === 'stale' || r.kind === 'reset' ? r.pct : null
+              const projected = isProjected(r)
+              const windowName = w?.key.replace(/_/g, '-') ?? null
+              return (
+                <div className="ctl-util" key={a.account_id}>
+                  <span className="ctl-util-name" title={a.account_id}>
+                    <b>{a.label}</b> <span className="ov-num">· {a.assigned}</span>
+                  </span>
+                  {/* Never observed, or no reading for the binding window:
+                      hatched with no fill. A plain empty track here would
+                      claim 0% used, which for an account nobody has polled is
+                      a number nobody measured. A PROJECTED reading does get a
+                      bar -- the figure is real -- but a grey one, never the
+                      red or amber that says a ceiling is being approached
+                      now. */}
+                  <UtilTrack
+                    pct={pct}
+                    fillClass={
+                      projected
+                        ? 'ov-projected'
+                        : a.state !== 'AVAILABLE'
+                          ? 'is-paused'
+                          : pct !== null && pct > 90
+                            ? 'is-bad'
+                            : pct !== null && pct > 75
+                              ? 'is-warn'
+                              : ''
+                    }
+                    over={false}
+                    zeroTitle={`Measured: this account reported 0% of its binding window used. The bar has a baseline because this zero is a reading, not a missing one.`}
+                  />
+                  <span
+                    className="ctl-util-figure"
+                    title={
+                      r.kind === 'reset' && windowName
+                        ? `The ${windowName} window, the binding one, passed its reset ${timeAgo(r.resetsAt)}. It has cleared; no reading taken since has arrived, so this figure describes the window before it.`
                         : r.kind === 'stale'
-                          ? `stale ${timeAgo(r.observedAt)}`
-                          : a.state !== 'AVAILABLE'
-                            ? a.state.toLowerCase()
-                            : r.kind === 'live' && windowName !== null
-                              ? `${windowName} · ${timeAgo(r.observedAt)}`
-                              : (windowName ?? '—')}
-              </span>
-            </div>
-          )
-        })}
+                          ? `Read ${timeAgo(r.observedAt)}, which is past the broker's staleness window. The figure is real and describes an earlier moment.`
+                          : undefined
+                    }
+                  >
+                    {pct !== null ? (
+                      <>
+                        {/* The same mark `cs status` and the Accounts screen
+                            use for a figure that is real but not current. */}
+                        {projected && <span className="ov-tilde">~</span>}
+                        {Math.round(pct)}%
+                      </>
+                    ) : (
+                      <span className="ctl-em">&mdash;</span>
+                    )}
+                  </span>
+                  {/* A CURRENT READING CARRIES ITS AGE TOO. `stale` and
+                      `cleared` have said how old they are for as long as this
+                      card has existed; a `live` reading printed only the
+                      window name, so the one row with a confident figure was
+                      the one row that did not say when it was measured. */}
+                  <span className="ctl-util-by">
+                    {needsAHuman(a)
+                      ? 'sign in again'
+                      : // Before every reading word, because it outranks all
+                        // of them: whatever this row's figure says, the pool
+                        // will not hand this account to this tenant while the
+                        // report stands.
+                        unreadableFor(a, state.data.tenant_id)
+                        ? 'pool is skipping it'
+                        : r.kind === 'never'
+                        ? 'never polled'
+                        : r.kind === 'absent'
+                          ? 'no window reported'
+                          : r.kind === 'reset'
+                            ? 'cleared'
+                            : r.kind === 'stale'
+                              ? `stale ${timeAgo(r.observedAt)}`
+                              : a.state !== 'AVAILABLE'
+                                ? a.state.toLowerCase()
+                                : r.kind === 'live' && windowName !== null
+                                  ? `${windowName} · ${timeAgo(r.observedAt)}`
+                                  : (windowName ?? '—')}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </div>
-      <p className="provenance">
-        {/* THE TRUNCATION MARKER STAYS, because a list showing five of nine
-            and a list showing all five are the same picture otherwise. The
-            two rules that used to be spelled out here -- which window binds,
-            and what the tilde means -- are drawn in the rows themselves: a
-            hatched track with no fill, an em dash, a tilde. The sentences
-            are in the panel's `?` and in the footer. */}
+      {/* THE TRUNCATION MARKER STAYS, because a list showing three of nine and
+          a list showing all three are the same picture otherwise. The two
+          rules that used to be spelled out here -- which window binds, and
+          what the tilde means -- are drawn in the rows themselves: a hatched
+          track with no fill, an em dash, a tilde. */}
+      <p className="ctl-card-foot">
         {countOf(total, 'account')}
-        {total > accounts.length && (
-          <> · showing the {accounts.length} that most need looking at</>
-        )}
-        {state.data.tenant_id ? ` · scope ${state.data.tenant_id}` : ' · every tenant'}
+        {total > accounts.length && <> · showing {accounts.length}</>}
+        {state.data.tenant_id ? ` · ${state.data.tenant_id}` : ' · every tenant'}
       </p>
     </>
   )
@@ -1998,19 +2165,28 @@ function rank(a: AccountsPage['accounts'][number], w: ReturnType<typeof bindingW
 //
 // The derivation itself lives in ./checks.ts. It moved there so it could be
 // RUN: it is the only part of this screen whose failure mode is silence, and
-// `apps/swarm-ui/test/checks.test.mjs` drives it directly -- a stalled
-// workflow, parked steps, and the healthy case that has to stay quiet. What is
-// left here draws what it returns.
+// `apps/swarm-ui/test/checks.test.mjs` drives it directly. What is left here
+// draws what it returns.
 
 /** How many problems are open by default. The rest are one click away, here. */
 const ATTENTION_ROWS = 4
 
 /**
- * The panel.
+ * The card.
  *
- * Problems first, worst first. Then, ALWAYS, the line that says what could not
- * be checked -- it is not a footnote, it is the reason a short list is or is
- * not good news.
+ * THE COVERAGE DIAL IS THE HONESTY ENCODING, and it replaced ninety words.
+ * The ring is the eight checks; the filled arc is the ones that RAN and the
+ * hatched arc is the ones that could not. So a short problem list over four
+ * blind checks and a short problem list over eight clear ones are different
+ * pictures before either is read -- which is the whole point, because only one
+ * of them is good news.
+ *
+ * WHAT WAS DELETED. `checks.map((c) => c.note).join(' · ')` rendered eight
+ * full sentences on the healthy path, saying nothing was wrong eight different
+ * ways -- the single largest block of prose on the landing screen and the one
+ * that shipped unconditionally. The population each check cleared is now the
+ * dial's filled arc and the note's `8 of 8 checks`; the sentences are in the
+ * `all-clear-basis` topic and in this card's accessible names.
  */
 function AttentionBody({ checks }: { checks: Check[] }) {
   const problems = checks
@@ -2019,111 +2195,140 @@ function AttentionBody({ checks }: { checks: Check[] }) {
   const blind = checks.filter((c): c is Extract<Check, { status: 'blind' }> => c.status === 'blind')
   const reading = checks.filter((c) => c.status === 'reading')
   const clear = checks.filter((c): c is Extract<Check, { status: 'clear' }> => c.status === 'clear')
+  const ran = clear.length + checks.filter((c) => c.status === 'found').length
+  const complete = blind.length === 0 && reading.length === 0
+
+  // THE ALL-CLEAR IS ONLY AN ALL-CLEAR WHEN EVERY CHECK RAN. Some of what
+  // could be wrong was never looked at, and a dial hatched for the part
+  // nobody examined says that without a sentence.
+  const dialKind = ran === 0 ? 'unknown' : complete ? 'measured' : 'partial'
 
   return (
     <>
-      {problems.length === 0 &&
-        reading.length === 0 &&
-        (blind.length === 0 ? (
-          <div className="ctl-empty ov-tight">
-            <h3>
-              Nothing is wrong that this platform records
-              <HelpCard topic="all-clear-basis" />
-            </h3>
-            {/* THE COUNT IS THE BASIS and it never leaves the surface: an
-                all-clear over six checks and an all-clear over one are the
-                same sentence without it. */}
-            <p>All {clear.length} checks ran and all {clear.length} came back clear.</p>
-          </div>
-        ) : (
-          // NOT an all-clear, and it must not be drawn as one. Some of what
-          // could be wrong was never looked at.
-          <div
-            className={`ctl-empty ov-tight ${blind.every((c) => c.admin) ? 'is-admin' : 'is-partial'}`}
+      <div className="ctl-card-body">
+        <div className="ov-dialrow">
+          <Dial
+            kind={dialKind}
+            measured={checks.length === 0 ? 0 : (ran / checks.length) * 100}
+            say={
+              `${ran} of ${checks.length} checks ran and found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}.` +
+              (blind.length > 0
+                ? ` ${blind.length} could not run, so this list is incomplete: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
+                : '') +
+              (reading.length > 0
+                ? ` ${reading.length} still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}.`
+                : '') +
+              (clear.length > 0
+                ? ` Clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
+                : '')
+            }
           >
-            <h3>
-              Nothing wrong in the {clear.length} check
-              {clear.length === 1 ? '' : 's'} that ran
-              <HelpCard topic="all-clear-basis" />
-            </h3>
-            {/* NOT AN ALL-CLEAR, and the count of what was never looked at is
-                what says so. It is a digit on the surface for the same reason
-                an unmeasured figure is an em dash: the alternative reads as
-                good news. */}
-            <p>
-              {blind.length} of {clear.length + blind.length} could not run — a
-              partial all-clear, and what it did not look at is listed below.
-            </p>
+            {ran === 0 ? (
+              <span className="ctl-em">&mdash;</span>
+            ) : (
+              <>
+                {problems.length}
+                <span className="ctl-figure-unit">open</span>
+              </>
+            )}
+          </Dial>
+
+          <div className="ov-dialrow-rows">
+            {problems.length === 0 && reading.length === 0 && (
+              <Absent
+                kind={
+                  blind.length === 0 ? 'zero' : blind.every((c) => c.admin) ? 'admin' : 'partial'
+                }
+                heading={blind.length === 0 ? 'Nothing wrong' : `${blind.length} not checked`}
+                say={
+                  blind.length === 0
+                    ? `All ${clear.length} checks ran and all ${clear.length} came back clear. This is a real all-clear over the population each check examined, not silence.`
+                    : `${blind.length} of ${checks.length} checks could not run, so this is a partial all-clear: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
+                }
+                help="all-clear-basis"
+              />
+            )}
+
+            {problems.length > 0 && (
+              <ul className="ov-problems">
+                {problems.slice(0, ATTENTION_ROWS).map((p, i) => (
+                  <ProblemRow key={`${p.headline}-${i}`} problem={p} />
+                ))}
+              </ul>
+            )}
+
+            {/* Cut, never dropped -- and the rest open HERE. This used to link
+                to a trouble board, which no longer exists and should not:
+                there is no problem section at any level, so the overflow
+                cannot be somebody else's problem. */}
+            {problems.length > ATTENTION_ROWS && (
+              <details className="ov-more">
+                <summary>{problems.length - ATTENTION_ROWS} more</summary>
+                <ul className="ov-problems">
+                  {problems.slice(ATTENTION_ROWS).map((p, i) => (
+                    <ProblemRow key={`${p.headline}-more-${i}`} problem={p} />
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
-        ))}
+        </div>
+      </div>
 
-      {problems.length > 0 && (
-        <ul className="ov-list">
-          {problems.slice(0, ATTENTION_ROWS).map((p, i) => (
-            <ProblemRow key={`${p.headline}-${i}`} problem={p} />
-          ))}
-        </ul>
-      )}
-      {/* Cut, never dropped — and the rest open HERE. This used to link to a
-          trouble board, which no longer exists and should not: there is no
-          problem section at any level, so the overflow cannot be somebody
-          else's problem. A <details> keeps the landing screen short without
-          the fifth problem being a link to nowhere, and it needs no state of
-          its own. */}
-      {problems.length > ATTENTION_ROWS && (
-        <details className="ov-more">
-          <summary>
-            {problems.length - ATTENTION_ROWS} more, worst first
-          </summary>
-          <ul className="ov-list">
-            {problems.slice(ATTENTION_ROWS).map((p, i) => (
-              <ProblemRow key={`${p.headline}-more-${i}`} problem={p} />
-            ))}
-          </ul>
-        </details>
-      )}
-
-      {/* NEVER OPTIONAL. A short problem list over four blind checks and a
-          short problem list over six clear ones look identical, and only one of
-          them is good news. */}
-      <p className="provenance ov-checks">
-        {clear.length > 0 && (
+      {/* NEVER OPTIONAL, AND NOW A ROW OF COUNTS. What could not be checked is
+          not a footnote: it is the reason a short list is or is not good news.
+          Each figure is a digit on the surface and the names are the strip's
+          accessible name, the same split every other card on this screen
+          makes. */}
+      <p className="ctl-card-foot ov-checks">
+        <span
+          aria-label={
+            clear.length === 0
+              ? 'no check came back clear'
+              : `clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
+          }
+        >
+          {ran}/{checks.length} ran
+        </span>
+        {blind.length > 0 && (
           <>
-            clear: {clear.map((c) => c.label.toLowerCase()).join(', ')}
-            {' — '}
-            {clear.map((c) => c.note).join(' · ')}
+            {' · '}
+            <span
+              className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}
+              aria-label={`${blind.length} could not run, so this list is incomplete: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`}
+            >
+              {blind.length} blind
+            </span>
+          </>
+        )}
+        {reading.length > 0 && (
+          <>
+            {' · '}
+            <span aria-label={`still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}`}>
+              {reading.length} reading
+            </span>
           </>
         )}
       </p>
-      {reading.length > 0 && (
-        <p className="provenance">
-          still reading: {reading.map((c) => c.label.toLowerCase()).join(', ')}
-        </p>
-      )}
-      {blind.length > 0 && (
-        <p className={blind.every((c) => c.admin) ? 'provenance ov-info' : 'warn-text'}>
-          {blind.length} check{blind.length === 1 ? '' : 's'} could not run, so
-          this list is incomplete:{' '}
-          {blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join(' · ')}
-        </p>
-      )}
     </>
   )
 }
 
-/** One problem, with the link it goes out by. */
+/**
+ * One problem, with the link it goes out by.
+ *
+ * THE HEADLINE IS THE FACT AND THE DETAIL IS THE EXPLANATION, so the headline
+ * is on the surface and the detail is the row's accessible name. A dot repeats
+ * the severity as a shape, because roughly 8% of male viewers cannot separate
+ * this card's amber from its red and a screenshot of it keeps neither.
+ */
 function ProblemRow({ problem: p }: { problem: Problem }) {
   return (
-    <li className="ov-item">
-      <span className={`ctl-chip ${p.severity === 'bad' ? 'is-bad' : 'is-warn'}`}>
-        <i aria-hidden />
-        {p.severity === 'bad' ? 'act' : 'watch'}
-      </span>
-      <p>
-        <b>{p.headline}</b> — {p.detail}
-      </p>
+    <li className="ov-problem" aria-label={`${p.headline}. ${p.detail}`}>
+      <i className={`ctl-dot ${p.severity === 'bad' ? 'is-bad' : 'is-warn'}`} aria-hidden />
+      <b>{p.headline}</b>
       <a className="ov-link" href={p.href}>
-        {p.linkLabel ?? 'open'} →
+        {p.linkLabel ?? 'open'} &rarr;
       </a>
     </li>
   )
@@ -2134,54 +2339,90 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
 // ---------------------------------------------------------------------------
 
 /**
- * WHY THIS IS HERE AND NOT IN styles.css.
+ * WHY THIS IS STILL HERE AND NOT IN styles.css.
  *
- * styles.css belongs to the lane that built the `ctl-` primitives, and a
- * second author appending to it during the same change is how two blocks of
- * CSS end up disagreeing about the same selector. Everything this screen needs
- * that the primitives do not already provide is below, every selector is
- * `ov-`-prefixed so it can reach nothing outside this file, and it uses only
- * tokens that already exist -- no new colour, no new spacing step. It should
- * be folded into the primitive sheet the next time that file is opened; until
- * then it is scoped and it is here.
+ * docs/web-ui/design-system.md §9.5 asks for this block to be folded into the
+ * primitive sheet. It is not folded in THIS pass and the reason is specific
+ * rather than lazy: `test_ui_contrast.py` and `test_state_colour_discriminability.py`
+ * scan `styles.css` as text and grade every `color`/`background` pair in it,
+ * and this pass shipped without running the Python suites. Moving 200 lines
+ * under a gate nobody ran is how a screen lands red. Everything below uses
+ * ONLY tokens that already exist -- no new colour, no new mix, no new spacing
+ * step -- so the fold is a move rather than a rewrite when someone does it
+ * with the gates in front of them.
  *
- * THE LAYOUT USED TO BE TRACK-COUNT-AGNOSTIC and is not any more, which is a
- * deliberate trade and worth stating here rather than only at the rule. An
- * auto-fitting grid needs no breakpoints to maintain, and in exchange nothing
- * -- not the stylesheet, not this file -- can know how many tracks it produced.
- * That is exactly what the rules below need in order to stop the page ending
- * with a blank right column under a column that is still going. Three stated
- * breakpoints cost three lines; a page that wastes a third of a 1600px screen
+ * Every selector is `ov-`-prefixed and can therefore reach nothing outside
+ * this file.
+ *
+ * THE LAYOUT IS TRACK-COUNT-EXPLICIT AND THAT IS DELIBERATE. An auto-fitting
+ * grid needs no breakpoints to maintain, and in exchange nothing -- not the
+ * stylesheet, not this file -- can know how many tracks it produced. That is
+ * exactly what the rules below need in order to stop the page ending with a
+ * blank right column under a column that is still going. Two stated
+ * breakpoints cost two lines; a page that wastes a third of a 1600px screen
  * costs it every time anyone opens the product.
+ *
+ * THE BREAKPOINTS ARE THE SYSTEM'S. Overview used to carry a private set at
+ * 641, 720 and 1400. Those are retired: the card grid now turns at 900 and
+ * 1280, which are two of the five the design system names (§7.1), and the
+ * `.ctl-util` override turns at 900 rather than 641.
  */
 const OVERVIEW_CSS = `
-.ov-topline {
+/* ---- page head ---------------------------------------------------------- */
+
+.ov-chrome {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
   gap: var(--ctl-s3);
   flex-wrap: wrap;
-  margin-bottom: var(--ctl-s3);
 }
-.ov-topline .head { margin-bottom: 0; }
-.ov-topline .sub { margin: 0; }
+/* The strip sits on the title's line rather than under it, so it reads as
+   chrome. No rule above or below it: a two-sided rule is a boundary at 3:1 and
+   the pair would be the loudest thing on a screen whose whole claim is that
+   the figures are. */
+.ov-chrome-facts { padding: 0; }
 
-/* THE COLUMN COUNT IS EXPLICIT, and it used to be fitted automatically.
-   The old declaration was correct about widths
-   and unknowable about COUNT, and the count is what the rules below need: the
-   only way to stop a grid ending with a blank right column is to know which
-   panel lands in the last row, and an nth-child selector cannot ask a browser
-   how many tracks were fitted. One column, then two, then three, each stated. */
+/* Every figure that can change is tabular, everywhere. Not optional in a
+   column of them, and the read tally changes on every poll. */
+.ov-num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.ov-tally { gap: 6px; }
+
+/* A CONTROL, DECLARED. A button left to the user agent wears \`buttonface\` and
+   a border nothing in this sheet chose, which the spacing probe reports as an
+   unresolvable colour rather than as a finding -- so it is spelled out. */
+.ov-refresh {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text-dim);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  cursor: pointer;
+  transition: border-color var(--ctl-dur) ease, color var(--ctl-dur) ease;
+}
+.ov-refresh:hover { border-color: var(--text-faint); color: var(--text); }
+.ov-refresh:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---- the card grid ------------------------------------------------------ */
+
+/* THE COLUMN COUNT IS EXPLICIT, and it has to be. The only way to stop a grid
+   ending with a blank right column is to know which card lands in the last
+   row, and an nth-child selector cannot ask a browser how many tracks
+   auto-fit produced. One column, then two, then three, each stated. */
 .ov-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--ctl-s3);
   align-items: start;
 }
-@media (min-width: 720px) {
+@media (min-width: 900px) {
   .ov-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (min-width: 1400px) {
+@media (min-width: 1280px) {
   .ov-cols { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
@@ -2191,63 +2432,81 @@ const OVERVIEW_CSS = `
 .ov-cols.has-alarm > .ov-alarm { grid-column: 1 / -1; }
 
 /* NO PAGE MAY END WITH A BLANK RIGHT COLUMN WHILE THE LEFT CONTINUES.
-   This grid holds five panels. In two tracks with no alarm that is 2+2+1, and
+   This grid holds five cards. In two tracks with no alarm that is 2+2+1, and
    the odd one out leaves half a row of empty page under a column that is still
-   going -- on a console whose brief is "graphs and diagrams everywhere
-   possible", empty space is the most expensive thing on screen.
-
-   The last panel therefore widens to fill its row. WHICH panel that is depends
-   on the track count and on whether the alarm consumed a whole row first, so
-   every combination is stated. With T tracks and N panels the last row is
-   already full when N (no alarm) or N-1 (alarm) divides by T; otherwise the
-   last panel widens by the shortfall. Written as parity selectors so a sixth
-   panel added later is handled without anyone remembering this comment. */
-@media (min-width: 720px) and (max-width: 1399px) {
+   going. The last card therefore widens to fill its row. WHICH card that is
+   depends on the track count and on whether the alarm consumed a whole row
+   first, so every combination is stated. With T tracks and N cards the last
+   row is already full when N (no alarm) or N-1 (alarm) divides by T; otherwise
+   the last card widens by the shortfall. Written as parity selectors so a
+   sixth card added later is handled without anyone remembering this comment. */
+@media (min-width: 900px) and (max-width: 1279px) {
   .ov-cols:not(.has-alarm) > section:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .ov-cols.has-alarm > section:last-child:nth-child(even) { grid-column: 1 / -1; }
 }
-@media (min-width: 1400px) {
+@media (min-width: 1280px) {
   .ov-cols:not(.has-alarm) > section:last-child:nth-child(3n + 1) { grid-column: 1 / -1; }
   .ov-cols:not(.has-alarm) > section:last-child:nth-child(3n + 2) { grid-column: span 2; }
   .ov-cols.has-alarm > section:last-child:nth-child(3n + 2) { grid-column: 1 / -1; }
   .ov-cols.has-alarm > section:last-child:nth-child(3n) { grid-column: span 2; }
 }
 
-/* .section carries a 28px bottom margin for a stacked page; inside a grid that
-   is dead space between rows that the gap already provides. */
-.ov-cols > section { margin-bottom: 0; }
+/* ---- the metric strip --------------------------------------------------- */
 
-.ov-h {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--ctl-s3);
-  margin: 0 0 var(--ctl-s2);
+/* The whole tile is the doorway. The answer to every figure on the strip is on
+   another screen, and making the figure itself the link removes a step. */
+a.ov-tile {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--ctl-dur) ease, transform var(--ctl-dur) ease;
 }
-.ov-h > h2 {
-  display: flex;
-  align-items: baseline;
-  gap: var(--ctl-s2);
-  margin: 0;
-  /* §B4.1: the uppercase small-caps treatment that came OFF .section > h2
-     lands here, on a panel LABEL, which is the level it belongs to. --t-meta
-     is the step that owns 600/uppercase/tracking. (No backticks in this
-     comment: it lives inside a JS template literal, where one ends the CSS.) */
-  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
-  text-transform: uppercase;
-  letter-spacing: .07em;
-  color: var(--text-faint);
+a.ov-tile:hover { border-color: color-mix(in srgb, var(--info) 55%, var(--line)); }
+a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+@media (prefers-reduced-motion: no-preference) {
+  a.ov-tile:hover { transform: translateY(-1px); }
 }
-.ov-count {
-  padding: 0 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bad) 16%, transparent);
-  color: var(--bad);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  letter-spacing: 0;
+
+/* A MARK IS NOT A FIGURE, so the value slot stops being a 30px number the
+   moment it stops holding one. .ctl-metric.is-absent already drops the step;
+   this aligns the mark on the same baseline the digit sat on so the strip does
+   not jump between states. */
+.ov-tile .ctl-metric-value { display: flex; align-items: center; min-height: 34px; }
+
+/* READING. The third absence, and it must not look like either of the other
+   two: .ctl-metric.is-absent is hatched and says the platform has no such
+   figure, .ctl-metric.is-unread is dashed and amber and says the read failed.
+   This one is neither -- the request is still out -- so the tile keeps its
+   ordinary solid border and the slot holds a bar that is visibly still moving,
+   at the geometry the figure will occupy. It carries no text: a gradient has
+   no luminance a contrast gate can measure. */
+.ov-pending { display: block; width: 64px; height: 18px; }
+
+/* A read in flight inside a card draws the rules of the table that is coming,
+   so the card does not change height when the rows arrive. */
+.ov-ghost { margin: 2px 0; }
+
+/* THE TABLE GIVES UP ITS OWN EDGES INSIDE A CARD, and that is a geometry fix
+   as much as a visual one. .ctl-table carries a border, a radius and a fill,
+   so a body wearing it is a SURFACE sitting directly on .ctl-card-foot, which
+   is another one -- and .ctl-card is a flex column with no gap, so the two
+   touch. spacing.test.tsx reports exactly that. A gutter is the wrong answer:
+   the card has already drawn this box, and a bordered table inset inside a
+   bordered card is a box in a box. The scroll behaviour is what the primitive
+   is here for and it stays.
+
+   (No backticks in this comment: it lives inside a JS template literal, where
+   one ends the CSS.) */
+.ctl-card-body.ov-rows {
+  border: 0;
+  border-radius: 0;
+  background: none;
 }
+
+/* ---- cards -------------------------------------------------------------- */
 
 .ov-link {
+  flex: none;
   color: var(--info);
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   text-decoration: none;
@@ -2257,105 +2516,137 @@ const OVERVIEW_CSS = `
 .ov-link:hover { border-bottom-color: currentColor; }
 .ov-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 
-/* The whole tile is the doorway. The answer to every figure on the strip is on
-   another screen, and making the figure itself the link removes a step. */
-a.ov-tile {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-  transition: border-color .15s ease, transform .15s ease;
+/* An empty state INSIDE a card rather than as the page. The card already draws
+   the box and the title, so a second bordered surface inside it is one box too
+   many -- and a tone wash under a mark that already names the kind is
+   redundant twice over. The MARK is the greyscale-safe signal and the h3
+   colour is the second one; the box is the card's. */
+.ctl-empty.ov-empty {
+  border: 0;
+  background: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  flex-wrap: wrap;
 }
-a.ov-tile:hover { border-color: color-mix(in srgb, var(--info) 55%, var(--line)); }
-a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-@media (prefers-reduced-motion: no-preference) {
-  a.ov-tile:hover { transform: translateY(-1px); }
+/* Not --t-title. A card's own title is --t-lead and an empty state inside it
+   cannot be louder than the card it is in. */
+.ctl-empty.ov-empty > h3 {
+  margin: 0;
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
+}
+/* The page-level one keeps its box: there is no card around it. */
+.ov-page-empty { display: flex; align-items: flex-start; gap: var(--ctl-s3); flex-wrap: wrap; }
+.ov-page-empty > h3 { margin: 0; flex: 1 1 auto; }
+.ov-page-empty > .retry { margin-top: 0; }
+
+/* ---- the dial row ------------------------------------------------------- */
+
+/* The dial is the card's proportion and the rows are its detail. NO
+   BREAKPOINT: the rows carry a 260px flex basis and the row wraps when the
+   ring and the rows stop fitting beside each other, which at 390px is always.
+   A width that answers for itself is one fewer number to keep in step with
+   the other five. */
+.ov-dialrow {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s3);
+  flex-wrap: wrap;
+}
+.ov-dialrow-rows { flex: 1 1 260px; min-width: 0; }
+.ov-dial { --dial-size: 96px; flex: none; }
+.ov-dial .ctl-dial-figure {
+  font-size: var(--t-figure);
+  line-height: var(--lh-figure);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* A ring nobody could fill holds no figure, so what is in the middle is an em
+   dash and it must not wear the figure step: at 30px a dash reads as a
+   quantity. */
+.ov-dial.is-unknown .ctl-dial-figure {
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 500;
 }
 
-.ov-card {
-  padding: var(--ctl-s2) var(--ctl-s3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-/* The utilisation primitive is sized for a full-width screen; in a half-width
-   panel its four fixed columns leave the name nothing. Narrowed here only --
-   scoped to this file's cards, so no other screen's bars move.
+/* ---- spend -------------------------------------------------------------- */
 
-   ABOVE 640px ONLY. The primitive deliberately drops the track and the "set
+.ov-figure { margin: 0 0 var(--ctl-s2); }
+.ov-figure-mark { margin: calc(-1 * var(--ctl-s1)) 0 var(--ctl-s2); }
+
+/* THE TOKEN MIX. Four segments, one total, hand-rolled -- the proportion is
+   the point and four numbers in a list is not one. Height and radius are the
+   track's, because every proportion in this product is drawn at that size. */
+.ov-mix {
+  display: flex;
+  height: var(--track-h);
+  border-radius: var(--track-radius);
+  overflow: hidden;
+  background: var(--surface-2);
+  margin-bottom: var(--ctl-s2);
+}
+.ov-mix-seg { height: 100%; }
+/* NOTHING MEASURED, SO NO SCALE. Hatched rather than left empty: an empty
+   track claims the scale starts somewhere and the value is at the start of
+   it, which is the absent-as-zero lie in bar form. */
+.ov-mix.is-unknown { background: var(--ctl-hatch); }
+/* SERIES, NEVER STATE. A segment drawn in --ok is read as a verdict; these are
+   identities, and each metric keeps its colour across the product. */
+.ov-s1 { background: var(--series-1); }
+.ov-s2 { background: var(--series-2); }
+.ov-s3 { background: var(--series-3); }
+.ov-s4 { background: var(--series-4); }
+.ov-mix-facts { padding: 0; }
+
+/* ---- capacity and accounts --------------------------------------------- */
+
+/* The utilisation primitive is sized for a full-width screen; in a card that
+   is a third of the page its four fixed columns leave the name nothing.
+   Narrowed here only, and scoped to this file's cards, so no other screen's
+   bars move.
+
+   ABOVE 900px ONLY. The primitive deliberately drops the track and the "set
    by" column on a phone and keeps the name and the figure; an unscoped
    override here would out-specify that and put four columns back into 358px.
    It is the primitive's decision to make, not this screen's. */
-@media (min-width: 641px) {
-  .ov-card .ctl-util {
-    grid-template-columns: minmax(0, 1fr) minmax(56px, 96px) 54px 104px;
+@media (min-width: 900px) {
+  .ov-dialrow-rows .ctl-util,
+  .ctl-card-body > .ctl-util {
+    grid-template-columns: minmax(0, 1fr) minmax(48px, 88px) 52px 96px;
     gap: var(--ctl-s2);
     padding: 4px 0;
   }
 }
 
-/* NOT --t-lead. A screen gets one lead paragraph; Overview draws one of these
-   per PANEL, and five leads on a page is no lead at all. --t-body. */
-.ov-lead {
-  margin: 0 0 var(--ctl-s2);
-  font-size: var(--t-body);
-  line-height: var(--lh-body);
-  color: var(--text-dim);
-}
-.ov-lead b { color: var(--text); font-weight: 600; }
-
-/* "nothing more can start" is the one phrase on this screen that changes what
-   someone does next, so it is not left as ordinary grey text. */
+/* "0 can start" is the one phrase on this screen that changes what someone
+   does next, so it is not left as ordinary grey text. */
 .ov-stop { color: var(--bad); font-weight: 500; }
-
-.ov-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s2); }
-.ov-item {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content;
-  gap: var(--ctl-s3);
-  align-items: baseline;
-}
-.ov-item > p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
-.ov-item > p > b { color: var(--text); font-weight: 600; }
-
-.ov-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: var(--ctl-s2); margin: 0; }
-.ov-kv > div { min-width: 0; }
-.ov-kv dt { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
-.ov-kv dd { margin: 2px 0 0; font: var(--t-body)/var(--lh-body) var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
-/* The one figure in the pair gets --t-figure: this IS the number the panel is
-   for, and the 19px it used to take was a step nothing else in the sheet had. */
-.ov-kv dd.ov-figure { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; }
-
-/* An empty state INSIDE a panel, rather than as the page. The panel's own
-   heading has already said what this is about, so the padding comes down. */
-.ov-tight { padding: var(--ctl-s3); }
-.ov-skel { height: 76px; border-radius: var(--radius); }
-
-/* READING. The third absence, and it must not look like either of the other
-   two: .ctl-metric.is-absent is dashed and grey and says the platform has no
-   such figure, .ctl-metric.is-unread is dashed and amber and says the read
-   failed. This one is neither — the request is still out — so the tile keeps
-   its ordinary solid border and the value slot holds a bar that is visibly
-   still moving. */
-.ov-tile.ov-reading .ctl-metric-value {
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s2);
-  /* A word, not a number, so --t-body -- the same rule .ctl-metric.is-absent
-     follows. Nothing but a measured figure takes --t-figure. */
-  font-size: var(--t-body);
-  font-weight: 500;
-  color: var(--text-faint);
-  letter-spacing: 0;
-}
-.ov-bar { flex: 0 0 auto; width: 46px; height: 12px; }
-.ov-reading-word { font: var(--t-micro)/var(--lh-micro) var(--mono); }
 
 /* A figure that is REAL but not CURRENT: its window reset, or the poll is past
    the staleness window. Grey, never the red or amber that says a ceiling is
    being approached now, and the tilde beside it is the same mark that cs
    status and the Accounts screen use for the same two cases. */
-.ov-card .ctl-util-fill.ov-projected { background: var(--ctl-absent); }
+.ctl-util-fill.ov-projected { background: var(--ctl-absent); }
 .ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
+
+/* ---- attention ---------------------------------------------------------- */
+
+.ov-problems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s2); }
+.ov-problem {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) max-content;
+  gap: var(--ctl-s2);
+  align-items: baseline;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+.ov-problem > b { color: var(--text); font-weight: 500; min-width: 0; }
 
 /* The problems that did not fit. A disclosure rather than a link out, because
    there is no board to link to. */
@@ -2369,14 +2660,17 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   list-style: none;
 }
 .ov-more > summary::-webkit-details-marker { display: none; }
-.ov-more > summary::before { content: '▸ '; }
-.ov-more[open] > summary::before { content: '▾ '; }
+.ov-more > summary::before { content: '\\25B8  '; }
+.ov-more[open] > summary::before { content: '\\25BE  '; }
 .ov-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
-.ov-more > .ov-list { margin-top: var(--ctl-s2); }
+.ov-more > .ov-problems { margin-top: var(--ctl-s2); }
 
-.ov-broken { color: var(--bad); }
-/* An admin gate is information, not breakage -- so the line that reports only
-   admin gates is blue and calm, never the amber used for a real failure. */
+/* ---- tones in the provenance strip -------------------------------------- */
+
+/* An admin gate is information, not breakage, so the figure that reports only
+   admin gates is the accent and never the amber used for a real failure. */
 .ov-info { color: var(--info); }
+.ov-warn { color: var(--warn); }
+.ov-bad { color: var(--bad); }
 .ov-checks:empty { display: none; }
 `
