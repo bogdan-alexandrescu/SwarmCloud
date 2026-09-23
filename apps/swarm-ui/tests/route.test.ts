@@ -43,11 +43,41 @@ test('the bare #help route reaches the Help section', () => {
   assert.equal(r.tab, '')
 })
 
+/**
+ * A CANONICAL ROUTE IS UNCHANGED BY `canonical`; AN ALIAS IS NOT, AND MUST NOT BE.
+ *
+ * This list held `agents/running` and asserted it round-tripped untouched. That
+ * was true when it was written and stopped being true when the nav rename made
+ * `agents` an alias of `work` -- so the assertion has been failing on this
+ * branch since the rename, pinning a SPELLING that the rename deliberately
+ * retired rather than the RULE the spelling was an example of.
+ *
+ * The rule has two halves and they are opposite, which is why one list could
+ * not hold both. A canonical route must survive `canonical` untouched, or the
+ * address bar drifts from the address people paste. An ALIAS must NOT: the
+ * whole point of SECTION_ALIASES is that a link someone saved before the rename
+ * still lands, and that the address bar then teaches them the new spelling. An
+ * alias that round-tripped would be a second permanent name for one screen,
+ * which is the two-spellings defect the rename existed to remove.
+ */
 test('a route round-trips through its canonical spelling', () => {
-  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'agents/running']) {
+  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)
   }
+})
+
+test('an alias resolves, and is rewritten to the name that replaced it', () => {
+  // The tail is carried through untouched: a rename moves the section, never
+  // the pane, so a saved deep link lands on the pane it named.
+  at('#agents/running')
+  const rewritten = canonical(fromHash())
+  assert.notEqual(rewritten, 'agents/running', 'the alias is still a canonical spelling')
+  assert.ok(rewritten.endsWith('/running'), `the alias lost its tail: ${rewritten}`)
+  // ...and the rewritten form is itself canonical, so following it settles
+  // rather than bouncing between two names.
+  at(`#${rewritten}`)
+  assert.equal(canonical(fromHash()), rewritten, `#${rewritten} is rewritten again`)
 })
 
 test('an unknown topic is carried to the screen, not rewritten away', () => {
