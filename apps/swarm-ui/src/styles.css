@@ -1301,17 +1301,12 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 }
 .conjunction strong { color: var(--text); }
 
-.view-toggle { display: flex; gap: 6px; margin-bottom: 12px; }
-.view-toggle button {
-  padding: 5px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-dim);
-  font-size: var(--t-body);
-  cursor: pointer;
-}
-.view-toggle button.on { border-color: var(--info); color: var(--info); }
+/* `.view-toggle` LIVED HERE AND IS GONE (B4.5). It was Pools' private pair of
+   pill buttons for Table/Cards, and it was one of the three tab bars the audit
+   counted. It is now `.ctl-seg`, the one segmented control -- which also moves
+   the selection off `--info`: a selected view drawn in the same blue as a live
+   agent is how a reader learns to stop trusting colour as a state channel
+   (§1.3). Nothing else in the app referenced it. */
 
 /* Scope is declared on the group, never left to be inferred -- a tenant number
    beside a platform number is a scope error dressed as a comparison. */
@@ -2862,8 +2857,23 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    child, centred by the grid rather than by absolute positioning, so the box
    is measurable. */
 .ctl-dial {
+  /* EVERY READ OF THESE TWO CARRIES A FALLBACK, and it is not defensive
+     styling -- it is what makes the sheet parseable by its own gate.
+     `spaceprobe.ts:156 resolveVars` resolves `var()` against the token table
+     it built from `:root` ALONE, and throws `--pct is used and never declared`
+     on anything it cannot find there. `--pct` and `--measured` are declared
+     HERE, on the component, because they are per-instance values a screen sets
+     inline -- which is the whole design of the dial and is not going to change.
+     A fallback is the one form the probe accepts for a property that is
+     legitimately not global, and `--dial-size` below already used it.
+
+     This was red on arrival: `spacing.test.tsx` failed at the commit that
+     introduced this block (354b7f9), which reported running no tests. The
+     failure is a thrown parse error rather than a finding, so it took the
+     ENTIRE sweep down -- both themes, every route -- and no other spacing
+     regression could have been seen underneath it. */
   --pct: 0;
-  --measured: var(--pct);
+  --measured: var(--pct, 0);
   position: relative;
   display: grid;
   place-items: center;
@@ -2877,8 +2887,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   inset: 0;
   border-radius: var(--ctl-radius-pill);
   background: conic-gradient(
-    var(--info) 0 calc(var(--pct) * 1%),
-    var(--surface-2) calc(var(--pct) * 1%) 100%
+    var(--info) 0 calc(var(--pct, 0) * 1%),
+    var(--surface-2) calc(var(--pct, 0) * 1%) 100%
   );
   /* The ring, not the disc: a 10px band cut out of the middle. Two masks
      composited, which is the only way to do this without a second element. */
@@ -2894,8 +2904,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dial.is-partial::before {
   background:
     conic-gradient(
-      var(--info) 0 calc(var(--measured) * 1%),
-      transparent calc(var(--measured) * 1%) 100%
+      var(--info) 0 calc(var(--measured, 0) * 1%),
+      transparent calc(var(--measured, 0) * 1%) 100%
     ),
     var(--ctl-hatch);
 }
@@ -2948,18 +2958,44 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    already carries seven jobs in this file, and a selected segment drawn in the
    same blue as a live agent teaches the reader to stop trusting colour as a
    state channel. */
+/* B4.5 — THE INTERNAL DIVIDER IS A 4px GUTTER, NOT A HAIRLINE, and the reason
+   is a gate rather than a taste.
+
+   This primitive was specified with `button + button { border-left: 1px }` and
+   no gap. Pools is the first screen to render it, and `spaceprobe.ts:1036`
+   reported it immediately: `surfaces-touch div.ctl-seg.is-end [column] 0 < 4`.
+   The probe is right and the finding is not a false positive. Its rule is that
+   two SURFACES may not touch, and inside this control both children qualify --
+   the pressed one by its `--surface-2` fill, the one after it by that left
+   border -- so the group really did draw two filled boxes edge to edge, which
+   is the shape the floor exists to stop.
+
+   The fix keeps every decision §6.11 made and changes only the mechanism of the
+   separation: still ONE bordered group rather than N pills, still an active
+   segment marked by a surface step and weight rather than by a filled pill,
+   still hueless. A 4px gutter separates the segments instead of a hairline,
+   which is `--ctl-s1` -- the smallest step this sheet's rhythm declares, and
+   exactly the floor. `padding: 2px` keeps the segments off the group's own
+   border by the same rule the probe applies to ink.
+
+   IT WAS NOT FIXED BY HIDING THE RULE. A `box-shadow` divider would have
+   passed both this check and the divider-contrast check while drawing the
+   identical pixels, because the probe reads borders and not shadows -- which
+   is the "guard that is strongest when it is broken" failure this whole suite
+   was written against. A gutter is a real change to a real geometry. */
 .ctl-seg {
   display: inline-flex;
   align-items: stretch;
+  gap: var(--ctl-s1);
+  padding: 2px;
   border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm);
-  overflow: hidden;
 }
 .ctl-seg > button {
-  min-height: 30px;
+  min-height: 26px;
   padding: 4px 10px;
   border: 0;
-  border-radius: 0;
+  border-radius: 2px;
   background: none;
   color: var(--text-dim);
   font: 500 var(--t-body)/var(--lh-body) var(--font);
@@ -2967,7 +3003,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   cursor: pointer;
   transition: color var(--ctl-dur) ease, background-color var(--ctl-dur) ease;
 }
-.ctl-seg > button + button { border-left: 1px solid var(--line); }
 .ctl-seg > button:hover { color: var(--text); }
 .ctl-seg > button[aria-pressed='true'],
 .ctl-seg > button[aria-selected='true'] {
@@ -4448,15 +4483,14 @@ table.pools tbody tr.unmeasured {
 .cf-row.is-pointless .cf-action,
 .cf-row.is-pointless .cf-effect { color: var(--text-faint); }
 
-.admission-details {
-  margin-top: 10px; padding: 8px 10px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); background: var(--surface);
-}
-.admission-details > summary {
-  cursor: pointer; font-size: var(--t-body); color: var(--text-dim);
-}
-.admission-details > summary .mono { color: var(--text); }
-.admission-details[open] > summary { margin-bottom: 8px; }
+/* `.admission-details` LIVED HERE AND IS GONE (B4.5). It was Pools' per-profile
+   `<details>`, holding `IncompleteNote` and `Counterfactuals` -- roughly 90
+   words per profile, behind a disclosure triangle nobody opens. The
+   counterfactual is real data and is NOT lost: `Profiles.tsx` renders the same
+   two components through `ProfileAdmissionPanel`, which is where a reader who
+   wants one profile's admission arithmetic already goes. What Pools carried was
+   a second copy of it, collapsed. The incompleteness itself stayed on Pools, as
+   `.ctl-mark.is-unread` in the row it belongs to. */
 
 @media (max-width: 640px) {
   /* One column: at 390pt the effect wraps to two words per line beside a
@@ -4785,4 +4819,177 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   /* Log lines are wrapped by the writer, not by us: re-wrapping a column of
      timestamps makes a continuation line indistinguishable from a new entry. */
   white-space: pre;
+}
+
+/* ==========================================================================
+   §B4.5 — THE CAPACITY GROUP: Pools, Runtimes, Capacity holders, Accounts
+   ==========================================================================
+
+   Four number-dense screens, rebuilt on the §B4.4 primitives. This block adds
+   NO new colour, NO new type step, NO new corner and NO new spacing value: it
+   is layout and nothing else, which is the test of whether the foundation was
+   actually sufficient. Every rule here either arranges `ctl-` primitives or
+   gives a screen-private box the surface step the design system already owns.
+
+   FOUR CONSTRAINTS THIS BLOCK WAS WRITTEN AGAINST, each of which would
+   otherwise have been found by a gate rather than by reading:
+
+   1. NO BORDER IS DRAWN THAT HAS NO TWIN. `spaceprobe.ts:1156` grades a lone
+      border as a component boundary at 3:1, and `--line-soft` measures
+      1.58–2.05. Every grouping below is therefore a SURFACE STEP or padding —
+      `.cap-pool` and `.acct-open` both sit on `--surface-2` and draw no rule —
+      and the only borders here are the ones the primitives already own.
+   2. NOTHING SITS WITHIN 4px OF AN EDGE. The probe measures text against the
+      border box it is inside, so every private box uses `--ctl-s2` or more.
+   3. NO RAW PIXEL FONT SIZE, including in a `font:` shorthand.
+      `typescale.test.ts` scans this file as text.
+   4. CORNERS ARE 0 / 2 / 6 / 10 / 14 / 999 AND NOTHING ELSE.
+
+   AND ONE THAT IS NOT A GATE: no media query is used where `auto-fit` will do.
+   Every grid below reflows from many columns to one with nothing written, so
+   there is no width at which these screens have a layout nobody tested. */
+
+/* -- shared by all four ---------------------------------------------------- */
+
+/* A row of marks and chips in a table cell or under a figure. Wraps, because
+   a profile can be refused by several pools at once and the cell must show
+   every one of them (that is the bug `HeldBackBy` exists to have fixed). */
+.cap-marks,
+.rt-marks,
+.hold-mark {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s2);
+  min-width: 0;
+}
+.hold-mark { margin-top: var(--ctl-s2); }
+
+/* An eyebrow used as a toolbar's left-hand label rather than as a block
+   heading: the primitive's bottom margin would push it off the toolbar's
+   baseline. */
+.cap-eyebrow,
+.rt-eyebrow { margin: 0; }
+
+/* Consecutive top-level cards on these screens. `.ctl-cards` owns the gap
+   inside a grid; a card that is its own region owns the gap after itself. */
+.cap-headroom,
+.rt-backends,
+.rt-sizing,
+.hold-top { margin-bottom: var(--ctl-s3); }
+
+/* -- Pools ----------------------------------------------------------------- */
+
+.cap-families {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ctl-s3);
+}
+
+/* The configured hard limit, beside the effective one. Chrome, not a second
+   figure: it is the same quantity measured before a cap was applied. */
+.cap-was {
+  margin-left: 2px;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+
+/* THE CARDS VIEW. `auto-fit` at a 200px floor gives six across a wide display
+   and one at 390px with no breakpoint; `min(100%, 200px)` is what stops a
+   200px tile overflowing a 358px column minus the card's own 32px of chrome. */
+.cap-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: var(--ctl-s2);
+}
+/* GROUPING IS A SURFACE STEP, NOT A RULE (§5.1). A bordered tile inside a
+   bordered card is two boundaries a reader has to tell apart, and the inner
+   one has no twin so it grades at 3:1. The step says "these belong together"
+   with nothing to measure. */
+.cap-pool {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ctl-s1);
+  min-width: 0;
+  padding: var(--ctl-s3);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+}
+.cap-pool-name {
+  font: 500 var(--t-body)/var(--lh-body) var(--mono);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* One figure per tile, and the pool's occupancy is it. The track underneath is
+   the same fact as a proportion rather than a second figure, which is why it
+   is a track and not a second number. */
+.cap-pool-figure { margin: 2px 0; }
+
+/* -- Runtimes -------------------------------------------------------------- */
+
+/* The unread-counters row. Inside the card, above the table whose columns it
+   is about — not a banner above the card, which a reader can scroll away from
+   the figures it qualifies. No rule: the padding is the separation. */
+.rt-unread {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  padding: 0 var(--ctl-pad-chrome) var(--ctl-s2);
+}
+.rt-unread-detail {
+  min-width: 0;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The declared backend, when the platform resolved it to a different one. The
+   arrow is the whole explanation: "← AUTO" reads as "resolved from", and the
+   long form is on the `?`. */
+.rt-declared {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+/* An image reference is long, opaque and the one string on the card a reader
+   copies. It gets its own line and is allowed to break, which is the single
+   exception to the facts strip's one-line rule. */
+.rt-fact-wide { flex-basis: 100%; }
+.rt-image {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rt-apart { margin-top: var(--ctl-s3); }
+.rt-apart-facts { padding-bottom: 0; }
+
+/* -- Capacity holders ------------------------------------------------------ */
+
+/* Nothing of its own: Holders is `.ctl-cards` + `.ctl-card` + `.ctl-table`
+   throughout, which is the result this block was trying to reach. The two
+   class names it does carry (`.hold-top`, `.hold-mark`) are both declared
+   above, beside the screens that share them. */
+
+/* -- Accounts -------------------------------------------------------------- */
+
+/* Accounts keeps `cs status`'s five columns verbatim -- same order, same
+   headings, same five-cell bar -- because an operator already reads that line
+   on their laptop and a second vocabulary for the same five facts costs them a
+   translation every time they look. So this screen gains no new layout: what
+   changed is that the paragraphs AROUND the table became marks IN it, and a
+   mark needs no rule of its own.
+
+   `.acct-flags` is the one addition: the strip of marks that replaced the
+   `<ul class="acct-warnings">` under the table. It sits in the row it is about
+   rather than in a list below, which is the whole point -- a warning list
+   under a table is a set of claims a reader has to pair back up with the rows
+   they came from, and pairing them wrongly is worse than not reading them. */
+.acct-flags {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s2);
+  min-width: 0;
 }

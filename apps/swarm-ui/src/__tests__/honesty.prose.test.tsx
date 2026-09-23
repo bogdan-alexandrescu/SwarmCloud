@@ -428,11 +428,38 @@ describe('Accounts, with every help card closed', () => {
     expect(measured[0]!.querySelector('.acct-bar'), 'a measured cell drew no bar').not.toBeNull()
   })
 
-  it('says the pool is a real zero rather than leaving an empty table', async () => {
+  it('marks the empty pool as a real zero rather than leaving an empty table', async () => {
+    // B4.5 RE-POINT. WHAT MOVED: the sentence "The read succeeded and returned
+    // nothing -- a real zero, not a failed query" is gone. WHERE THE WORDS
+    // LIVE NOW: `.ctl-mark.is-zero` renders the two-word phrase `real zero`
+    // from §6.10's fixed six-word vocabulary, and what a zero here COSTS --
+    // that work parks rather than fails -- is the topic
+    // `park-on-missing-credential`, on the `?` in the heading.
+    //
+    // WHY THIS IS THE STRONGER ASSERTION. The old one searched the WHOLE
+    // screen's text for a substring, so it passed if that sentence appeared
+    // anywhere at all -- including, on this codebase's house style, inside a
+    // comment that got rendered, or beside a different absence. This one pins
+    // the mark to the empty state it describes, pins the modifier that says
+    // WHICH kind of nothing it is, and pins that no digit is drawn: a real
+    // zero and a failed read must not converge, and `.is-zero` versus
+    // `.is-unread` is the distinction the class carries.
     renderAccounts([])
-    expect(await screen.findByText('No accounts registered', undefined, WAIT)).toBeTruthy()
+    const heading = await screen.findByText('No accounts registered', undefined, WAIT)
     expectAllCardsClosed()
-    expect(visibleText()).toContain('a real zero, not a')
+
+    const panel = heading.closest('.state')
+    expect(panel, 'the empty state is not a panel').not.toBeNull()
+    const mark = panel!.querySelector('.ctl-mark')
+    expect(mark, 'the empty pool carries no absence mark').not.toBeNull()
+    expect(mark!.className).toContain('is-zero')
+    expect(mark!.className).not.toContain('is-unread')
+    expect(textOf(mark)).toBe('real zero')
+    // A measured zero may print a 0; it may never print a figure that was not
+    // measured. Nothing here counted anything, so nothing here is a digit.
+    expect(textOf(panel)).not.toMatch(/\d/)
+    // The route to the sentence is focusable and in the heading.
+    expect(panel!.querySelector('button[aria-label^="What "]')).not.toBeNull()
   })
 
   it('carries the marks the deleted legend used to index', async () => {
@@ -458,16 +485,49 @@ function renderRuntimes(over: Partial<RuntimeTopology> = {}) {
 
 describe('Runtimes, with every help card closed', () => {
   it('draws unread pool counters as dashes and says so, rather than as zeros', async () => {
+    // B4.5 RE-POINT. WHAT MOVED: the banner heading "Pool counters could not
+    // be read" and its paragraph ending "Those columns are dashes, not zeros."
+    // WHERE THE WORDS LIVE NOW: `.ctl-mark.is-unread` renders `not read`
+    // INSIDE the card that holds the affected columns, the server's own detail
+    // sits beside it in `.rt-unread-detail`, and the argument is
+    // `#help/absent-vs-zero` on the `?` in that same row.
+    //
+    // WHY THIS IS THE STRONGER ASSERTION. "Those columns are dashes, not
+    // zeros" is a sentence ABOUT the cells, and a banner can be scrolled away
+    // from the cells while they stay on screen -- a reader who lands on row
+    // nine of a backend table has the claim nowhere in view. So the test no
+    // longer looks for the sentence anywhere on the page. It pins the mark to
+    // the card that contains the table, and then pins the thing the sentence
+    // was asserting: every unread cell is an em dash, carries `.ctl-em`, and
+    // contains NO DIGIT. That last check is the whole invariant and it is
+    // unchanged.
     renderRuntimes({ pools: null, poolsDetail: 'the capacity read did not complete.' })
-    expect(await screen.findByText('Pool counters could not be read', undefined, WAIT)).toBeTruthy()
+    // `findAllBy`, because the mark is drawn TWICE on purpose: once on the
+    // card, for the columns as a whole, and once per affected row's status
+    // cell. A reader scrolled past the card head still has it in view.
+    expect((await screen.findAllByText('not read', undefined, WAIT)).length).toBeGreaterThan(0)
     expectAllCardsClosed()
 
-    // The claim stays on the surface, in the panel, unhovered.
-    expect(visibleText()).toContain('Those columns are dashes, not zeros.')
+    // The mark is in the same card as the columns it is about.
+    const card = document.querySelector('.rt-backends')
+    expect(card, 'no backends card was drawn').not.toBeNull()
+    const mark = card!.querySelector('.ctl-mark')
+    expect(mark, 'the unread counters carry no mark').not.toBeNull()
+    expect(mark!.className).toContain('is-unread')
+    expect(textOf(mark)).toBe('not read')
+    // A failed read is NOT an absence of data and NOT a measured zero: the
+    // three marks must not converge.
+    expect(mark!.className).not.toContain('is-zero')
+    expect(mark!.className).not.toContain('is-absent')
+    // The server's own reason is on the surface beside it, unhovered.
+    expect(textOf(card!.querySelector('.rt-unread-detail'))).toContain(
+      'the capacity read did not complete',
+    )
+    expect(card!.querySelector('button[aria-label^="What "]')).not.toBeNull()
 
-    const row = document.querySelector('table.pools tbody tr')
+    const row = card!.querySelector('.ctl-table tbody tr')
     expect(row, 'no backend row was drawn').not.toBeNull()
-    const cells = [...row!.querySelectorAll('td.n')]
+    const cells = [...row!.querySelectorAll('td.is-num')]
     // The first is the number of runtimes -- a measured count. The three after
     // it are the pool figures, and none of them may be a digit.
     expect(textOf(cells[0])).toBe('1')
@@ -475,7 +535,10 @@ describe('Runtimes, with every help card closed', () => {
       expect(textOf(cell)).toBe('—')
       expect(cell.querySelector('.ctl-em'), 'an unread cell is not marked absent').not.toBeNull()
     }
-    expect(screen.getByText('not read')).toBeTruthy()
+    // The row itself is marked too, not only the card: the status cell of a
+    // backend whose counters are unread carries the same mark, so a reader
+    // scanning rows rather than headers still cannot read the dash as a zero.
+    expect(textOf(row!.querySelector('.ctl-mark.is-unread'))).toBe('not read')
   })
 
   it('draws a MEASURED zero in the same columns as a digit', async () => {
@@ -483,11 +546,17 @@ describe('Runtimes, with every help card closed', () => {
     expect((await screen.findAllByText('claude-code', undefined, WAIT)).length).toBeGreaterThan(0)
     expectAllCardsClosed()
 
-    const cells = [...document.querySelectorAll('table.pools tbody tr td.n')]
+    // B4.5 RE-POINT -- SELECTOR ONLY. `table.pools` became `.ctl-table`, the
+    // design system's one table (§6.7), and `td.n` became `td.is-num`. The
+    // claim is untouched and is the other half of the test above: a MEASURED
+    // zero is a digit, in the same columns where an unread one is an em dash,
+    // and the two are told apart by which of them draws `.ctl-em`. Asserting
+    // either one alone keeps the rule by accident.
+    const cells = [...document.querySelectorAll('.ctl-table tbody tr td.is-num')]
     expect(textOf(cells[1])).toBe('0')
     expect(textOf(cells[2])).toBe('0')
     expect(textOf(cells[3])).toBe('0')
-    expect(document.querySelectorAll('table.pools .ctl-em').length).toBe(0)
+    expect(document.querySelectorAll('.ctl-table .ctl-em').length).toBe(0)
     // A ceiling of zero admits nothing however empty it looks, and that is a
     // measured fact rather than an absence.
     expect(screen.getByText('admits nothing')).toBeTruthy()

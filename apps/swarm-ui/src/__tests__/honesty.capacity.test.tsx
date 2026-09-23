@@ -140,9 +140,17 @@ describe('held back by', () => {
       }),
     )
 
+    // B4.5 RE-POINT. The blocker list moved from `.tag` to `.ctl-chip`, the
+    // design system's one status chip (§6.6) -- four different chip classes
+    // were the audit's finding and `.tag` was one of them. NOTHING ABOUT THE
+    // CLAIM CHANGED: this still asserts that EVERY refusing pool is named, by
+    // counting the chips in the cell, because naming one of two sends an
+    // operator to raise a ceiling and watch nothing move. The words are
+    // unchanged and still on the surface; only the class they are drawn with
+    // moved.
     const row = (await screen.findByRole('rowheader', { name: 'claude-code' })).closest('tr')
-    const tags = row?.querySelectorAll('.tag') ?? []
-    const labels = Array.from(tags).map((t) => t.textContent ?? '')
+    const chips = row?.querySelectorAll('.ctl-chip') ?? []
+    const labels = Array.from(chips).map((t) => t.textContent ?? '')
     expect(labels).toHaveLength(2)
     expect(labels.join(' ')).toContain('large')
     expect(labels.join(' ')).toContain('anthropic')
@@ -164,11 +172,17 @@ describe('held back by', () => {
         },
       }),
     )
+    // B4.5 RE-POINT. `.tag.paused` became `.ctl-chip.is-paused`, and the chip
+    // carries a SHAPE as well as a hue -- §6.6 gives `is-paused` the two-bar
+    // pause glyph, so the two remedies stay apart in greyscale and for a
+    // colour-blind reader, which the old tag's colour alone did not. The
+    // assertion is the same one and is now slightly stronger: the word, the
+    // modifier, and the absence of the opposite modifier.
     const row = (await screen.findByRole('rowheader', { name: 'claude-code' })).closest('tr')
-    const tag = row?.querySelector('.tag')
-    expect(tag?.className).toContain('paused')
-    expect(tag?.className).not.toContain('full')
-    expect(tag?.textContent).toContain('paused')
+    const chip = row?.querySelector('.ctl-chip')
+    expect(chip?.className).toContain('is-paused')
+    expect(chip?.className).not.toContain('is-bad')
+    expect(chip?.textContent).toContain('paused')
   })
 })
 
@@ -287,24 +301,78 @@ describe('the counterfactual', () => {
 // ---------------------------------------------------------------------------
 
 describe('the capacity board as a whole', () => {
-  it('states the conjunction, because the common misreading is to add pools up', async () => {
-    renderCapacity(capacity({}))
-    const line = await screen.findByText(/must clear/)
-    expect(line.textContent).toContain('minimum')
-    expect(line.textContent).toContain('never a sum')
+  it('states the conjunction on the column whose figure it governs', async () => {
+    // B4.5 RE-POINT -- AND THE CLAIM GOT STRONGER, WHICH IS THE POINT OF THE
+    // MEDIUM BEING FREE.
+    //
+    // WHAT MOVED. `<Conjunction/>` was a paragraph above the table: "A task
+    // must clear EVERY pool in its list at the same moment. Capacity is the
+    // MINIMUM across them, never a sum." It is deleted as a paragraph and is
+    // now the name of the column it is about -- `Could start (min across
+    // pools)` -- with the argument at `#help/pools-all-at-once`, reachable
+    // from the `?` in that same header cell.
+    //
+    // WHY THAT IS NOT A WEAKENING. The paragraph sat above a table and a
+    // reader who scrolled past it read every figure with no qualifier at all;
+    // worse, it could be read as qualifying the wrong column, since it named
+    // none. A parenthetical in the column head cannot be separated from the
+    // numbers under it and cannot be applied to another column. The old
+    // assertion proved a sentence existed SOMEWHERE on the screen. This one
+    // proves the qualifier is attached to the figure.
+    renderCapacity(
+      capacity({ runner_profiles: { 'claude-code': profile({ admission: admission({}) }) } }),
+    )
+    await screen.findByRole('rowheader', { name: 'claude-code' })
+
+    const head = screen.getByRole('columnheader', { name: /Could start/ })
+    expect(head.textContent).toContain('min across pools')
+    // The figure the qualifier governs is in this column and no other.
+    const heads = [...document.querySelectorAll('thead th')]
+    expect(heads.indexOf(head)).toBe(1)
+    // And the argument is one focusable click away, in the same cell.
+    expect(head.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    // The paragraph is gone from the surface entirely.
+    expect(document.querySelector('.conjunction')).toBeNull()
   })
 
   it('declares the tenant beside the headroom figures, every time', async () => {
     // Trap D: the pool list is the CALLING tenant's, including for an admin.
     // An unlabelled figure here reads as the platform's capacity.
+    // B4.5 RE-POINT. The scope badge `<span class="scope tenant">for tenant
+    // eng</span>` beside an `<h2>` became `.ctl-card-note` in the card head --
+    // §6.1's qualifier slot, which exists for exactly this: a fact ABOUT the
+    // card's figures, right-aligned, mono, muted, one line, no verb. The word
+    // "for" went; the tenant did not, and the tenant is the whole assertion.
+    // An unlabelled figure here reads as the platform's capacity, and the pool
+    // list is the CALLING tenant's even for an admin.
     renderCapacity(capacity({ tenant_id: 'eng', runner_profiles: { 'claude-code': profile({ admission: admission({}) }) } }))
-    expect((await screen.findByText(/for tenant eng/)).className).toContain('scope')
+    await screen.findByRole('rowheader', { name: 'claude-code' })
+
+    const card = document.querySelector('.ctl-card')
+    const note = card?.querySelector('.ctl-card-note')
+    expect(note, 'the headroom card declares no scope at all').not.toBeNull()
+    expect(note?.textContent).toContain('eng')
+    // It is in the same card as the figures it scopes, not a banner above them.
+    expect(card?.querySelector('table')).not.toBeNull()
   })
 
   it('declares scope on every pool family, so two figures are never silently compared', async () => {
+    // B4.5 RE-POINT. Same claim, same words, new slot: every pool family is a
+    // `.ctl-card` and its scope is that card's `.ctl-card-note`. Trap E is
+    // that a number may only sit beside a number of the same scope, so the
+    // declaration has to be on the CONTAINER of the figures rather than on a
+    // heading that a scrolled table has left behind -- which is what the note
+    // slot is and what an `<h2>` badge was not.
     renderCapacity(capacity({ pools: [pool({ name: 'global' }), pool({ name: 'tenant:eng' }), pool({ name: 'provider:anthropic:tenant:eng' })] }))
     await screen.findByText('Global')
-    const scopes = Array.from(document.querySelectorAll('h2 .scope')).map((s) => s.textContent)
+
+    // One card per family, and every one of them declares a scope.
+    const families = [...document.querySelectorAll('.cap-families > .ctl-card')]
+    expect(families.length).toBe(3)
+    for (const f of families) {
+      expect(f.querySelector('.ctl-card-note'), 'a pool family declares no scope').not.toBeNull()
+    }
+    const scopes = families.map((f) => f.querySelector('.ctl-card-note')?.textContent)
     expect(scopes).toContain('platform-wide')
     expect(scopes).toContain('this tenant')
     // The per-tenant slice of a provider pool is tenant scope, not platform.
