@@ -105,9 +105,29 @@ die_if_auth_failure() {
 assert_env_file_is_trustworthy() {
   local env_file="$1" perms owner
   [[ -f "${env_file}" ]] || return 0
-  # BSD stat (macOS) and GNU stat (CI) spell this differently.
-  perms="$(stat -f '%Lp' "${env_file}" 2>/dev/null || stat -c '%a' "${env_file}" 2>/dev/null || echo "")"
-  owner="$(stat -f '%u' "${env_file}" 2>/dev/null || stat -c '%u' "${env_file}" 2>/dev/null || echo "")"
+  # BSD stat (macOS) and GNU stat (Linux, and every CI runner) spell this
+  # differently, and the ORDER matters for a reason that cost this check its
+  # entire purpose on Linux for as long as it has existed.
+  #
+  # `-f` is not an unknown option to GNU stat. It means --file-system, it takes
+  # a format, and it SUCCEEDS -- printing filesystem fields and a `  File:
+  # "..."` line rather than the mode or the uid. So `stat -f ... || stat -c
+  # ...` never reaches the fallback on Linux: the first branch exits 0, `owner`
+  # is filled with that text, it does not equal EUID, and the check refuses
+  # every env file it is handed. CI showed it as twenty-odd integration
+  # failures all reading `is owned by uid   File: "..."` -- the uid missing
+  # because there never was one.
+  #
+  # GNU FIRST, because `stat -c` on BSD is a genuine unknown option and exits
+  # non-zero, so that fallback is the one that actually falls back. Then both
+  # values are required to look like what they are: a stat that succeeds and
+  # answers something else must read as "could not tell", which is the
+  # permissive branch, rather than as a mode of `?p` that some future
+  # comparison treats as meaningful.
+  perms="$(stat -c '%a' "${env_file}" 2>/dev/null || stat -f '%Lp' "${env_file}" 2>/dev/null || echo "")"
+  owner="$(stat -c '%u' "${env_file}" 2>/dev/null || stat -f '%u' "${env_file}" 2>/dev/null || echo "")"
+  [[ "${perms}" =~ ^[0-7]+$ ]] || perms=""
+  [[ "${owner}" =~ ^[0-9]+$ ]] || owner=""
   if [[ -n "${owner}" && -n "${EUID:-}" && "${owner}" != "${EUID}" ]]; then
     printf 'error: %s is owned by uid %s, not by you (%s). It is sourced as shell; refusing.\n' \
       "${env_file}" "${owner}" "${EUID}" >&2
