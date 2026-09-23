@@ -2861,6 +2861,19 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    from one declaration, and no `color` on any of it. The figure goes in a
    child, centred by the grid rather than by absolute positioning, so the box
    is measurable. */
+/* EVERY USE OF THESE TWO CARRIES A FALLBACK, and that is not defensive style.
+   `--pct` and `--measured` are PARAMETERS of this component -- a caller sets
+   them inline -- so they are deliberately not `:root` tokens. But
+   `spaceprobe.ts` resolves the shipped sheet as flat text against the `:root`
+   table alone and THROWS on a `var()` that is neither declared there nor given
+   a fallback (spaceprobe.ts:157). Written without one, this block took the
+   whole spacing sweep down with `--pct is used and never declared` before it
+   measured a single element -- a gate that fails at parse time reports nothing
+   about the app, which is the worst way for one to be red.
+
+   The fallback is also the correct CSS on its own terms: a `.ctl-dial` that
+   renders before its caller has a figure computes 0% rather than dropping the
+   declaration and inheriting whatever `--pct` some ancestor happened to set. */
 .ctl-dial {
   /* Declared here rather than on :root because they are PER INSTANCE -- a
      dial's fill is its own. Every use carries `, 0` for the same reason: a
