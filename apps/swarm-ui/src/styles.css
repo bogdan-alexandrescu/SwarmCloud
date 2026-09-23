@@ -2155,6 +2155,19 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .row .agent {
   display: flex; align-items: baseline; gap: var(--ctl-s2);
   min-width: 0; overflow: hidden; white-space: nowrap;
+  /* THE CONTAINER'S OWN CUT MUST ALSO SIGNAL — F3 of the 2026-09-23 overflow
+     inventory named this element by its computed value: `overflow: hidden;
+     text-overflow: clip`. The two column stages above and the `min-width: 3ch`
+     on `.id` mean the children now ellipse before this box ever clips, so this
+     is the backstop rather than the normal case — and it is worth declaring
+     precisely because the case that reaches it is the unbounded one. The
+     inspector's width is DRAGGABLE (`.ctl-inspector-grip` writes
+     `--inspector-w`), so a reader can make the list arbitrarily narrow at any
+     viewport, past any breakpoint, and past `.id`'s floor. When that happens
+     the line has to say it was shortened: a task id cut with no ellipsis is
+     not an unreadable id, it is a different and equally plausible one, which
+     is the single truncation this console may not ship. */
+  text-overflow: ellipsis;
 }
 .row .agent b {
   font-size: var(--t-body); font-weight: 600;
@@ -2411,6 +2424,34 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    by shrinking, so it keeps enough width to show hatch-versus-fill, which is
    the one thing it carries that the figures do not. */
 .drawer .ctl-util {
+  /* `display: grid` IS DECLARED HERE AND THAT IS NOT REDUNDANT — without it
+     every line below this one is inert, and it was inert on this branch.
+     ---------------------------------------------------------------------
+     This rule was written when `.ctl-util` was `display: grid`, so it only
+     had to restate the template. The merge described at `.ctl-util` (§B6.2)
+     then made the primitive `display: flex; flex-wrap: wrap`, and a
+     `grid-template-areas` on a flex container does nothing at all: the two
+     lines never happened, the four `grid-area`s below never happened, and the
+     row fell back to the primitive's wrapping flex line with
+     `.ctl-util-by`'s 128px basis — which is F2 of the inventory, unfixed,
+     under a comment saying it was fixed.
+
+     THE SAME MUTATION AS THE ONE 70ee4f5 CAUGHT, RUN BACKWARDS. That commit
+     removed a `display: grid` the browser was ignoring because `display: flex`
+     won later in the rule; this is a `grid-template-*` the browser was
+     ignoring because no `display: grid` was ever there. Both are a stylesheet
+     describing a layout the browser is not using, and neither is visible to a
+     test that greps the declaration — which is why `shell.test.tsx` now
+     asserts the `display` beside the template rather than the template alone.
+
+     A LOCAL OVERRIDE OF THE PRIMITIVE, deliberately. The primitive wraps
+     because at 348px on Overview a second LINE is the only way the name keeps
+     its characters. The drawer has a different constraint — four fields that
+     need 431px in a 413px row, listed above — and answers it with a fixed
+     two-line template so that every row in the panel breaks at the same place
+     and the bar stays aligned down the column. Wrapping would break each row
+     wherever its own content ran out. */
+  display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;
   grid-template-areas:
     'name figure'
@@ -2558,24 +2599,94 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    broken. */
 
 .drawer {
+  /* THE HEADER'S TWO MEASUREMENTS, AS TOKENS RATHER THAN AS THREE NUMBERS THAT
+     HAVE TO AGREE. `.drawer::before` below is a sticky band that must be
+     exactly the top padding plus the close button tall, and must give both back
+     as negative margin so that it occupies no space in flow. Written as literal
+     18 / 32 / 50 / -18 / -32 those are five numbers, four of which silently
+     become wrong the day somebody changes the padding. Derived from these two,
+     the sum is zero by construction. */
+  --drawer-pad-t: 18px;
+  --drawer-close-h: 32px;
   position: fixed;
   top: 0; right: 0; bottom: 0;
   width: min(560px, 100vw);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 18px var(--gutter) 40px;
+  padding: var(--drawer-pad-t) var(--gutter) 40px;
   background: var(--bg);
   border-left: 1px solid var(--line);
   box-shadow: -16px 0 40px rgb(0 0 0 / .35);
   z-index: 40;
 }
+/* F4 OF THE 2026-09-23 OVERFLOW INVENTORY: THE ✕ NEEDED A HEADER TO SIT ON, NOT
+   A HIGHER z-index.
+   ---------------------------------------------------------------------------
+   The button is `position: sticky` inside a scroll container 5155px taller than
+   its viewport, so it parks at the top and the drawer's content runs under it.
+   With `z-index: auto` and an opaque `--surface` fill it painted over whatever
+   was passing: the inventory caught it on `None of the 3 attempts reported a
+   value, so there is no | axis and no line to draw`, on `Recorded on the task
+   and returned by the API, but no wo…` and on `8.7 MiB in 1 object`, at three
+   different scroll positions in one session. A 32px square landing mid-sentence
+   does not read as a control over content; it reads as a rendering fault.
+
+   RAISING THE z-index ALONE WOULD HAVE MADE IT WORSE, and that is the point
+   worth recording: the defect is not that the square loses the stacking
+   contest, it is that there is no gutter reserved for it and no background
+   under it, so whichever wins, a sentence has a hole in it. `float: right`
+   reserves a gutter only on the lines beside the float's STATIC position —
+   nothing below it, which is every line once the panel is scrolled.
+
+   SO THE DRAWER GETS A STICKY HEADER BAND and the button sits in it. The band
+   is the drawer's own `--bg`, bled to the panel's border-box edges, exactly the
+   top padding plus the button tall, and it takes NO SPACE in flow: a negative
+   top margin lifts it onto the padding and a negative bottom margin gives its
+   height back, so nothing in the panel moves. Content scrolls under a header,
+   which is a pattern with a name, instead of under a floating square. The inset
+   hairline rather than a `border-bottom` keeps the box at exactly that height,
+   so the arithmetic above stays true.
+
+   `float: right` IS GONE, and dropping it is what makes the band the right
+   height. Floated, the button shared its line with `.ctl-subnav` — the Detail /
+   Attempts tabs sit beside it — so a band tall enough to cover the button also
+   covered most of the tab strip. As a block with `margin-left: auto` the button
+   takes a line of its own, the tabs start below it, and the band covers exactly
+   one row of chrome and nothing else. It costs the strip 32px of vertical
+   position, which is what a header row costs everywhere.
+
+   WHY `--bg` AND NOT `--surface`. The band has to be indistinguishable from the
+   drawer behind it at rest — a strip of a second fill across the top of the
+   panel would read as a toolbar that is not one. The button keeps `--surface`
+   because the button IS a control and the one-step lift is how every other
+   control in this sheet says so. */
+.drawer::before {
+  content: '';
+  position: sticky;
+  top: 0;
+  /* Above the scrolling content, below the button that sits on it. */
+  z-index: 1;
+  display: block;
+  height: calc(var(--drawer-pad-t) + var(--drawer-close-h));
+  margin:
+    calc(var(--drawer-pad-t) * -1)
+    calc(var(--gutter) * -1)
+    calc(var(--drawer-close-h) * -1);
+  background: var(--bg);
+  box-shadow: inset 0 -1px 0 var(--ctl-hairline);
+}
 .drawer-close {
-  position: sticky; top: 0; float: right;
-  width: 32px; height: 32px;
+  position: sticky; top: 0;
+  /* A LINE OF ITS OWN, not a float sharing one with the pane tabs — see the
+     band above, whose height is only correct because of this. */
+  display: block; margin-left: auto;
+  /* ON the band, not merely above the parent's other children. */
+  z-index: 2;
+  width: 32px; height: var(--drawer-close-h);
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text-dim);
-  /* --lh-flush: the box is the 32px square above. A glyph centred in a fixed
-     square takes no leading. */
+  /* --lh-flush: the box is the square above. A glyph centred in a fixed square
+     takes no leading. */
   cursor: pointer; font-size: var(--t-body); line-height: var(--lh-flush);
 }
 .drawer-close:hover { color: var(--text); border-color: var(--text-faint); }
@@ -2662,13 +2773,34 @@ ol.timeline li::before {
    are unchanged and are not deleted: they moved into the dock, behind one line
    and one click. What went is the 200px of cards stapled to the bottom of all
    fifteen routes, saying the same thing on every one of them. */
+/* 260, NOT 210 — F5 OF THE 2026-09-23 OVERFLOW INVENTORY, AND THE NUMBER IS
+   DERIVED FROM THE LONGEST ROUTE THIS REGISTRY HOLDS.
+   ---------------------------------------------------------------------------
+   At 210 the track fitted six cells across 1440 and each path got about 93px:
+   `/v1/admin/dispatch` and `/v1/admin/tenants` both rendered `/v1/a…`, in the
+   same panel, both `403 · admin only`, and the three per-task routes -- the
+   checkpoints, attempts and logs ones -- all rendered `/v1/tasks/…` with three
+   different latencies beside them. A panel whose whole job is to say WHICH
+   route did what had four pairs of cells a reader cannot tell apart.
+
+   The longest path is the checkpoints one at 26 characters of `--mono` at
+   `--t-body`, which the F1 measurement puts at 8.42px each = 219px, plus the
+   8px `.ctl-dot` and its 6px gap and the cell's 2x10px padding = 253. 260 is
+   that rounded up to the nearest 10. It is a MINIMUM, so at 1440 the cells
+   still share the row out to five across and the paths render whole in all of
+   them; the dock the inventory screenshotted had its lower half empty, so the
+   truncation was never buying space for anything.
+
+   (The route strings are described rather than spelled here on purpose: a
+   literal `/v1/tasks/{id}/checkpoints` puts a closing brace inside this comment
+   and `shell.test.tsx` reads a rule by slicing to the first one.) */
 .source-cells {
   display: grid;
-  /* `min(100%, 210px)`, not a bare 210px: at 390px the dock's content column is
+  /* `min(100%, 260px)`, not a bare 260px: at 390px the dock's content column is
      narrower than the track and a bare minimum overflows it rather than
      reflowing. The `min()` is what lets this grid go 1-up on a phone with no
      media query, which is the construction the design system standardises. */
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: 6px;
   margin-top: 10px;
 }
@@ -2695,17 +2827,43 @@ ol.timeline li::before {
    dead route were the same cell. `.ctl-dot` is the product's shared state
    vocabulary as a SILHOUETTE, so the two are told apart by shape first.
 
-   The truncation moved to `.s-path-t`: `text-overflow` does not apply to an
-   anonymous flex item, so the path needs its own box once the dot is a sibling
-   inside this cell. */
-.s-path   { display: flex; align-items: center; gap: 6px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); }
-.s-path-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); text-align: right; }
+   `.s-path-t` exists because the path needs its own box once the dot is a
+   sibling inside this cell -- originally so that `text-overflow` had something
+   to apply to, and now so that the wrap below does.
+
+   THE PATH OWNS ITS OWN LINE, AND THE STATUS MOVED OFF IT — the second half of
+   F5. Widening the track alone could not fix this: the status column is `auto`
+   and its longest label is `503 · tenant unresolved`, 23 characters of 600
+   weight `--mono` at `--t-meta` = about 180px, and a grid gives an `auto` track
+   its max-content BEFORE a `1fr` track gets anything at all. So every pixel
+   added to the cell was going to the status first and the path stayed short.
+   Spanning the path across both columns costs no height -- the cell was already
+   two rows, `path | status` over a full-width age, and is still two rows,
+   `path` over `status | age` -- and hands the path the whole 260px track. */
+.s-path   { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); }
+/* NO ELLIPSIS, AND THAT IS THE SAME DECISION `.ctl-util-name` TOOK IN §B6.2.
+   `/v1/admin/dispatch` cut to `/v1/a…` is not an unreadable route, it is a
+   different and equally plausible one, and this panel's entire content is
+   identifiers. With the line to itself the common case does not wrap at all; on
+   a narrower dock than this registry's longest path the string takes a second
+   line instead of losing its tail. `overflow-wrap: anywhere` because a URL path
+   has no spaces to break at, so the alternative to breaking mid-token is
+   overflowing the cell. */
+.s-path-t { min-width: 0; overflow-wrap: anywhere; }
+.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .source.ok   .s-status { color: var(--ok); }
 .source.warn .s-status { color: var(--warn); }
 .source.bad  .s-status { color: var(--bad); }
 .source.info .s-status { color: var(--info); }
-.s-age { grid-column: 1 / -1; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+/* `grid-column: 1 / -1` IS GONE, which is the other half of F5's regrouping.
+   The age used to be a full-width third line under `path | status`; the path
+   has taken the first line to itself, so the age moves up beside the status and
+   the cell stays exactly two rows tall. It lands in the `auto` track and the
+   status's `1fr` absorbs the slack, so the age sits at the cell's right edge
+   with no alignment declaration needed -- each `.source` is its own grid, so
+   there is no column here to align ACROSS cells and a `text-align` would be
+   claiming one. */
+.s-age { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 
 .reauth {
   display: block; width: 100%;
@@ -5728,6 +5886,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   top: 0;
   bottom: 0;
   width: 6px;
+  /* ABOVE THE HEADER BAND (F4, at `.drawer::before`). The band bleeds to the
+     drawer's border-box edges so that no content can show through beside it,
+     which means it also covers the inner half of this 6px handle for the top
+     50px of the panel. The handle is the full height of the drawer, so losing
+     its top 50px is survivable — but the one thing this control cannot afford
+     is a dead band at the top, because that is where a pointer arriving from
+     the list above first crosses the edge. `z-index: auto` also put it under
+     any positioned content painted later. */
+  z-index: 3;
   cursor: col-resize;
   touch-action: none;
 }
@@ -5760,7 +5927,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   gap: var(--ctl-s2);
   width: 100%;
   min-height: 28px;
-  padding: 0 var(--app-pad);
+  /* 4px OF VERTICAL AIR, WHICH IS FREE AT ONE LINE AND LOAD-BEARING AT TWO.
+     `min-height: 28px` still decides the collapsed bar's height wherever the
+     strip fits on one line, so this changes nothing at 1440. Where the strip
+     wraps (F10, at `.ctl-dock-facts`) the two lines come to about 32px and
+     without padding the second one sits on the dock's own top hairline. */
+  padding: var(--ctl-s1) var(--app-pad);
   border: none;
   background: none;
   color: var(--text-dim);
@@ -5788,7 +5960,31 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
 }
-.ctl-dock-facts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* F10 OF THE 2026-09-23 OVERFLOW INVENTORY: THE STRIP WRAPS, IT DOES NOT
+   ELLIPSE, AND WHICH HALF IT USED TO KEEP IS THE WHOLE ARGUMENT.
+   ---------------------------------------------------------------------------
+   `13 routes · p95 400ms · 0 failed · 2 admin-only · newest just now` is 64
+   characters and got 279.6px at 390pt, so it rendered `… · 0 failed · 2 …` and
+   lost 40%. What fell off the end was the admin-only count and the read age --
+   the two facts that tell a console that is fine from one that is stale or
+   half-blind -- and what survived was `0 failed`, which is the reassuring half.
+   A summary that drops its caveats and keeps its reassurance under pressure is
+   worse than no summary, because it is confidently wrong at exactly the width
+   where somebody is checking on a phone.
+
+   So the line wraps. `.ctl-dock-fact` holds each fact together (`Dock.tsx`
+   wraps them) and the breaks land on the ` · ` separators between them, so a
+   fact is never cut in half -- the failure the ellipsis version had, where
+   `2 admin-only` became `2 …`.
+
+   THE ONE-LINE PROMISE THIS DOES NOT BREAK. `.ctl-dock-line`'s own comment says
+   the collapsed bar is always the same height so the page below it never
+   reflows when the dock opens. That promise is about the OPEN/SHUT transition,
+   and it still holds: the strip's height depends on the viewport, not on the
+   disclosure, so at any given width the bar is the same height either way.
+   `min-height` rather than `height` on the line is what lets it grow. */
+.ctl-dock-facts { min-width: 0; }
+.ctl-dock-fact { white-space: nowrap; }
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
 
@@ -5939,6 +6135,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: transparent;
 }
 .ctl-drawer > .drawer > .drawer-close { display: none; }
+/* AND ITS HEADER BAND WITH IT. The band (F4, beside `.drawer-close`) is sized
+   against `.drawer`'s own 18px of top padding and sticks inside `.drawer`'s own
+   scroller; the flattened inner one has neither, so a second band would be a
+   50px strip of `--bg` with a hairline under it, parked in the middle of the
+   outer panel's content with nothing to stick to. One drawer, one header. */
+.ctl-drawer > .drawer::before { display: none; }
 
 /* THE PANE STRIP, and it is now the inspector's alone.
    It used to draw the SECTION's tabs as well, above every screen; those moved

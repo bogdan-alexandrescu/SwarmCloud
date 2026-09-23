@@ -1132,23 +1132,31 @@ function ReferenceScreen() {
       ) : (
         <section className="section">
           <h2>Routes called in this tab</h2>
-          <div className="ctl-table">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Route</th>
-                  <th scope="col">Last attempt</th>
+          {/* `is-stacked` — F6 of `docs/audits/2026-09-23/overflow-inventory.md`.
+              This route is off the main nav, so the inventory's 15-route sweep
+              did not measure it; it is the same five-column table in the same
+              `overflow-x: auto` that paints no scrollbar here, and its widest
+              column is a heading with a parenthetical in it. Stacked below
+              900px on the same terms as the seven screens §B6.3 lists, rather
+              than left as the one table that still scrolls sideways because
+              nobody photographed it. */}
+          <div className="ctl-table is-stacked">
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Route</th>
+                  <th role="columnheader" scope="col">Last attempt</th>
                   {/* THE PARENTHETICAL CARRIES THE CAVEAT (§8.4.3). The
                       caption used to spend 24 words saying a 403 on an admin
                       route is the expected answer for a non-admin; the column
                       it is about says so instead, and `describeProbe` already
                       draws that row in `--info` rather than in `--bad`. */}
-                  <th scope="col">Outcome (403 on /v1/admin is expected)</th>
-                  <th scope="col" className="is-num">Took</th>
-                  <th scope="col">Newest payload</th>
+                  <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
+                  <th role="columnheader" scope="col" className="is-num">Took</th>
+                  <th role="columnheader" scope="col">Newest payload</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {probes.map((p) => (
                   <RouteRow key={p.path} probe={p} />
                 ))}
@@ -1168,19 +1176,19 @@ function ReferenceScreen() {
 function RouteRow({ probe }: { probe: ProbeRecord }) {
   const outcome = describeProbe(probe)
   return (
-    <tr className={outcome.row}>
-      <th scope="row" className="ctl-ref-path">
+    <tr role="row" className={outcome.row}>
+      <th role="rowheader" scope="row" className="ctl-ref-path">
         {probe.path}
       </th>
-      <td>{timeAgo(probe.lastAttemptAt)}</td>
-      <td>
+      <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt)}</td>
+      <td role="cell" data-label="Outcome">
         <span className={`ctl-chip ${outcome.tone}`}>
           <i aria-hidden />
           {outcome.label}
         </span>
       </td>
-      <td className="is-num ctl-ref-ms">{probe.lastLatencyMs}ms</td>
-      <td>
+      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{probe.lastLatencyMs}ms</td>
+      <td role="cell" data-label="Newest payload">
         {/* THE COLUMN THAT MATTERS. A panel showing a figure from four minutes
             ago while its route has been failing for three of them looks
             healthy unless this says otherwise. "never" is a fact about this

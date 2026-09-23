@@ -176,20 +176,35 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
         </dd>
       </dl>
 
-      <div className="table-wrap">
-        <table className="pools">
-          <thead>
-            <tr>
-              <th scope="col">Pool it must clear</th>
-              <th scope="col">Scope</th>
+      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`.
+          At 390pt this table measured `clientWidth: 358` against a
+          `scrollWidth` of 543-615 across its five instances: 34-42% of the
+          columns were behind an `overflow-x: auto` that paints no scrollbar on
+          this platform, so `Units free`, `Fits` and `Status` were simply not
+          there and nothing said they existed. Below 900px each row becomes a
+          stacked record with its own key column (§B6.3 in `styles.css`), which
+          is what `data-label` supplies — as an attribute rather than a second
+          element per cell, so that the rendered-word budgets count the same
+          screen they always did.
+
+          The explicit `role`s are not decoration either: changing `display` on
+          a table element drops its implicit ARIA role in every browser, so
+          without them a stacked table is a pile of anonymous blocks to a screen
+          reader. They are the roles these elements already have. */}
+      <div className="table-wrap is-stacked">
+        <table className="pools" role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader" scope="col">Pool it must clear</th>
+              <th role="columnheader" scope="col">Scope</th>
               {/* "units", never "agents": admission increments by the class's
                   weight, so 8 in use may be four browser agents. */}
-              <th scope="col" className="n">Units free</th>
-              <th scope="col" className="n">Fits</th>
-              <th scope="col">Status</th>
+              <th role="columnheader" scope="col" className="n">Units free</th>
+              <th role="columnheader" scope="col" className="n">Fits</th>
+              <th role="columnheader" scope="col">Status</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {rows.map(({ pool, row }) => {
               const paused = row !== null && isPaused(row)
               // Every refusing pool is marked, not just the tightest one.
@@ -198,19 +213,19 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
               const notRead = unread.has(pool)
               const scope = poolScope(pool)
               return (
-                <tr key={pool} className={paused ? 'paused' : blocking ? 'full' : undefined}>
-                  <th scope="row" className="pool-name" title={pool}>
+                <tr role="row" key={pool} className={paused ? 'paused' : blocking ? 'full' : undefined}>
+                  <th role="rowheader" scope="row" className="pool-name" title={pool}>
                     {poolLabel(pool)}
                     <span className="raw">{pool}</span>
                   </th>
-                  <td>
+                  <td role="cell" data-label="Scope">
                     <span className={`scope ${scope}`}>{scope === 'platform' ? 'platform-wide' : 'this tenant'}</span>
                   </td>
-                  <td className="n">{row === null ? '—' : row.available}</td>
+                  <td role="cell" data-label="Units free" className="n">{row === null ? '—' : row.available}</td>
                   {/* A paused pool fits 0 however much headroom it reports &mdash; that is
                       a fact admission enforces, not a missing value coalesced to zero. */}
-                  <td className="n">{row === null ? '—' : paused ? 0 : Math.floor(Math.max(0, row.available) / weight)}</td>
-                  <td>
+                  <td role="cell" data-label="Fits" className="n">{row === null ? '—' : paused ? 0 : Math.floor(Math.max(0, row.available) / weight)}</td>
+                  <td role="cell" data-label="Status">
                     <span className="tags">
                       {notRead && (
                         <span className="tag unknown" title="This pool could not be read. It is not uncapped and it is not empty: nothing is known about it, and it may be the one refusing.">not read</span>
