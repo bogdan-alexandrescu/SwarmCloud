@@ -514,10 +514,14 @@ function StepCard({ step, steps, profiles, required, removable, onChange, onRemo
       </div>
       {/* UNITS, never "agents": admission increments every pool this step needs
           by its resource class's weight, so one large step costs four. */}
+      {/* AND NO `?` (B7.4). The line below prints the class, then the weight
+          with the word `unit` on it, then the backend -- all three read from
+          the response. The word on the figure is the whole of what
+          `units-not-agents` was here to say about a step's cost, so the glyph
+          repeated the line it sat under. No example is spelled out in this
+          comment: the class names are the frozen catalogue's and this screen
+          restates none of them. */}
       {chosen && (
-        {/* NO `?` (B7.4). The line reads `standard · 1 unit · cloudrun`: the
-            word `unit` is printed on the figure, which is the whole of what
-            `units-not-agents` was here to say about a step's cost. */}
         <p className="wfb-cost">
           {chosen[1].resource_class} · {chosen[1].units} unit{chosen[1].units === 1 ? '' : 's'} · {chosen[1].backend}
         </p>

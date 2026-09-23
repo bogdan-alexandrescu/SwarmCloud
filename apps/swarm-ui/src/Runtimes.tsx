@@ -791,8 +791,14 @@ function Sizing({
                     dimension and the `?` that supplied the dimension is gone
                     (B7.4). The cells read `2u`, so the unit is on the figure
                     too; what the header adds is that the unit is what the POOLS
-                    count -- four standard agents and one large one are the same
-                    4 units. `#help/units-not-agents` is in the footer index. */}
+                    count, so two agents of different classes can cost the same
+                    and two of the same class can cost double one of another.
+                    NO CLASS IS NAMED IN THIS COMMENT, and that is not style:
+                    `tests/unit/control_plane/test_runtimes_screen.py` greps this
+                    file for the frozen catalogue's entries and fails on one,
+                    because every value on this screen has to come from the
+                    response or a resized class renders its old figure forever.
+                    `#help/units-not-agents` is in the footer index. */}
                 <th role="columnheader" scope="col" className="is-num">Weight (units)</th>
                 <th role="columnheader" scope="col">Resolves from</th>
               </tr>
