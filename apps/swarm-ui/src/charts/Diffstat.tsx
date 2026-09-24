@@ -113,7 +113,7 @@ export function DiffstatChart({
         width={W}
         height={height}
         viewBox={`0 0 ${W} ${height}`}
-        role="img"
+        role="group"
         aria-label="Lines deleted and inserted by each commit"
       >
         <HatchDef id={hatchId} />

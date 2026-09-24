@@ -130,7 +130,7 @@ export function PeakMemoryChart({
           width={W}
           height={H}
           viewBox={`0 0 ${W} ${H}`}
-          role="img"
+          role="group"
           aria-label="Peak resident memory reached by each heartbeat, from the start of this attempt"
         >
           <HatchDef id={hatchId} />

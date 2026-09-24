@@ -101,7 +101,7 @@ export function CheckpointStrip({
         width={W}
         height={H}
         viewBox={`0 0 ${W} ${H}`}
-        role="img"
+        role="group"
         aria-label="When each checkpoint of this attempt completed, from the start of the attempt, sized by bytes"
       >
         <g transform={`translate(${M.left},${M.top})`}>

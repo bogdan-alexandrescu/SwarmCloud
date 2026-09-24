@@ -124,7 +124,12 @@ function PhaseBars({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatchId:
       width={W}
       height={height}
       viewBox={`0 0 ${W} ${height}`}
-      role="img"
+      // A GROUP, NOT AN IMAGE. `role="img"` makes every child presentational,
+      // which would hide each segment's own sentence -- the accessible name
+      // that says "open, at least 5m" or "not measured, and why" -- behind
+      // one label for the whole chart. The sentences are the reason the
+      // segments carry `aria-label` at all.
+      role="group"
       aria-label="Queue, cold start and run for each attempt, measured from admission"
     >
       <HatchDef id={hatchId} />
@@ -337,7 +342,7 @@ function RetryLollipop({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatc
         width={W}
         height={LH}
         viewBox={`0 0 ${W} ${LH}`}
-        role="img"
+        role="group"
         aria-label="Run time of each attempt"
       >
         <g transform={`translate(${L.left},${L.top})`}>
