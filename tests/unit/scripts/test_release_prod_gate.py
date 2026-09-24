@@ -29,9 +29,18 @@ succeeded. A test that only checked `needs:` would pass that workflow.
 THE MODEL, AND WHICH WAY IT ERRS. GitHub's job-level `success()` is false when
 any job upstream failed, was cancelled or was skipped; the model reads it over
 the DIRECT needs only, which lets more jobs run than GitHub would. So a job
-the model says cannot run cannot run on GitHub either. `failure()` and
-`cancelled()` are not modelled: a job-level `if:` using either fails here with
-a request to extend the model, rather than being guessed at.
+the model says cannot run cannot run on GitHub either. `cancelled()` is
+whether the RUN was cancelled: false in the schedules above, true in the
+cancellation test below, where `success()` is false too, as GitHub has it.
+`failure()` is not modelled: a job-level `if:` using it fails here with a
+request to extend the model, rather than being guessed at.
+
+CANCELLING IS THE OTHER WAY TO SAY NO. A reviewer who approves and then sees
+the wrong commit cancels the run. GitHub still starts, after a cancel, any job
+whose `if:` holds -- `always()` does, by definition -- so a prod-facing job
+conditioned on `always()` survives the cancel that was meant to stop it. The
+cancellation test holds every prod-facing job to not starting in a cancelled
+run, whatever the jobs before it did.
 
 WHAT THIS CANNOT PROVE: that the `prod` environment in repository settings has
 a required reviewer. Measured 2026-09-24 with `gh api .../environments`:
@@ -44,6 +53,7 @@ after this lands is the proof.
 
 from __future__ import annotations
 
+import itertools
 import re
 
 import pytest
@@ -132,10 +142,13 @@ def _order(jobs: dict) -> list[str]:
     return order
 
 
-def _runs(job_id: str, job: dict, results: dict, ctx: dict) -> bool:
-    """Whether GitHub would start `job_id`, given how the jobs it needs ended."""
+def _runs(job_id: str, job: dict, results: dict, ctx: dict, *, cancelled: bool = False) -> bool:
+    """Whether GitHub would start `job_id`, given how the jobs it needs ended
+    and whether the run has been cancelled."""
     needs = _needs(job)
-    succeeded = all(results[n] == "success" for n in needs)
+    # A cancelled run is not a successful one: GitHub's success() is false
+    # once the run is cancelled, whatever the jobs before this one did.
+    succeeded = all(results[n] == "success" for n in needs) and not cancelled
     condition = job.get("if")
     if condition is None:
         return succeeded
@@ -144,15 +157,16 @@ def _runs(job_id: str, job: dict, results: dict, ctx: dict) -> bool:
     body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(condition), re.S)
     text = body.group(1) if body else str(condition)
     used = set(_STATUS_CALL.findall(text))
-    assert used <= {"always", "success"}, (
-        f"release.yml's {job_id} job conditions on {sorted(used - {'always', 'success'})}(), which this "
+    modelled = {"always", "success", "cancelled"}
+    assert used <= modelled, (
+        f"release.yml's {job_id} job conditions on {sorted(used - modelled)}(), which this "
         "model does not evaluate; extend _runs before relying on it"
     )
     if not used:
         # GitHub's rule: a condition with no status function runs only if
         # everything it needs succeeded, as if it began `success() &&`.
         text = f"success() && ({text})"
-    values = {**ctx, "always()": True, "success()": succeeded}
+    values = {**ctx, "always()": True, "success()": succeeded, "cancelled()": cancelled}
     values.update({f"needs.{n}.result": results[n] for n in needs})
     return bool(_evaluate("${{ " + text + " }}", **values))
 
@@ -222,6 +236,40 @@ def test_nothing_prod_facing_runs_before_the_prod_approval(release, what):
                 f"is not approved -- its condition does not require the approval to have succeeded. "
                 f"One such run: {leak}"
             )
+
+
+@pytest.mark.parametrize("what", sorted(PROD_FACING))
+@pytest.mark.parametrize("release", sorted(PROD_RELEASES))
+def test_cancelling_a_prod_release_starts_nothing_prod_facing(release, what):
+    """A cancel must stop a prod release after its approval as well as before.
+
+    The window this closes: on a `skip_build` redeploy `promote` is skipped
+    the moment `approval` succeeds, so the apply is the very next job. A
+    reviewer who approved and cancelled a second later still got an apply if
+    the apply's condition was `always() && ...`: GitHub evaluates a job's
+    `if:` after a cancel and starts it when it holds. `!cancelled()` gives the
+    same "run past a skipped job" that the apply needs and stops on a cancel.
+
+    Every combination of how the jobs a prod-facing job needs ended is tried,
+    not only the combinations a real run can reach -- the permissive reading
+    again -- so "does not start" here means it cannot start on GitHub."""
+    ctx = PROD_RELEASES[release]
+    jobs = _workflow("release.yml")["jobs"]
+    holders = _holders(jobs, what)
+    assert holders, f"no step of release.yml {what}; this test would pass without checking anything"
+
+    tried = 0
+    for job_id, steps in sorted(holders.items()):
+        needs = _needs(jobs[job_id])
+        for ended in itertools.product(("success", "failure", "cancelled", "skipped"), repeat=len(needs)):
+            results = dict(zip(needs, ended))
+            tried += 1
+            assert not _runs(job_id, jobs[job_id], results, ctx, cancelled=True), (
+                f"release.yml's {job_id!r} job {what} for prod ({'; '.join(steps)}) and still starts after "
+                f"the run is CANCELLED, when the jobs it needs ended {results}: its `if:` holds on a "
+                "cancelled run (`always()` does). Condition it on `!cancelled()` instead"
+            )
+    assert tried, "no combination was tried, so this checked nothing"
 
 
 @pytest.mark.parametrize("release", sorted(PROD_RELEASES))
