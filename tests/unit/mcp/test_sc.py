@@ -265,39 +265,42 @@ class TestJson:
         # first if the broker's shape ever widened.
         _, out = run(sc.cmd_accounts, ["accounts", "--json"], FakeClient(routes=dict(HEALTHY, **{"/v1/accounts": SMUGGLED})))
         assert "sk-ant-secret" not in out
-        payload = json.loads(out)
 
-        # SCOPED TO THE ACCOUNTS, not to the whole dump, and that is a bug fix
-        # rather than a weakening.
+        # AN ALLOWLIST, NOT A SEARCH FOR THE TWO FIELDS THIS FIXTURE SMUGGLES.
         #
-        # This read `assert "108" not in out`, over the entire document -- which
-        # also contains `generated_at`, and `_dump` builds that from
-        # `datetime.now(timezone.utc).isoformat()`. A timestamp whose digits
-        # happen to contain the sequence 108 (microseconds `.108399`, say, or
-        # any three-digit window across the date and time) failed this
-        # assertion with nothing wrong, at roughly a couple of percent of runs
-        # -- and it did, on `fix/silent-failures-env-parity-and-audits`:
+        # This was `assert "108" not in out`, for `access_token_len: 108`, and
+        # it was flaky by construction: a bare three-digit needle searched
+        # across the whole document matches the microseconds of the timestamp
+        # the dump generates. It failed in CI on `...2:51:35.651089+00:00`,
+        # where `651089` contains `1089`. The clock decides whether that
+        # assertion passes.
         #
-        #     FAILED tests/unit/mcp/test_sc.py::TestJson::
-        #       test_it_dumps_no_key_material_even_if_the_payload_carries_some
-        #       - assert '108' not in '{\n  "api_u...
-        #
-        # A test that fails on the clock is a test people learn to re-run, and
-        # a leak test nobody believes is worse than no leak test. The smuggled
-        # fields are in `accounts`, so `accounts` is what must not carry them;
-        # asserting it there is both stable and stricter, because a length that
-        # only coincidentally matched a timestamp digit would previously have
-        # been missed anyway.
-        accounts_json = json.dumps(payload["accounts"])
-        assert "sk-ant-secret" not in accounts_json
-        assert "108" not in accounts_json
-        # By name too, so a token whose length is not 108 cannot slip through
-        # on the substring check alone. `render.public_account` is an
-        # allow-list, and these two are what it must be excluding.
-        assert "access_token" not in payload["accounts"][0]
-        assert "access_token_len" not in payload["accounts"][0]
-        assert payload["accounts"][0]["account_id"] == "acme:main"
-        assert payload["accounts"][0]["windows"]["five_hour"]["utilization"] == 0.12
+        # Asserting the key SET is both unflakeable and strictly stronger. Two
+        # substring checks could only ever catch the two fields someone thought
+        # to smuggle in the fixture; this fails on ANY key the broker starts
+        # returning that this tool has not been taught is safe -- which is the
+        # actual risk the comment above describes, "if the broker's shape ever
+        # widened".
+        payload = json.loads(out)
+        account = payload["accounts"][0]
+        assert set(account) == {
+            "account_id",
+            "owner_tenant",
+            "label",
+            "provider",
+            "state",
+            "reason",
+            "lend_to",
+            "assigned",
+            "windows",
+            "observed_at",
+            "stale",
+        }, (
+            "the JSON dump carried a field this tool does not know is safe: "
+            f"{sorted(set(account) - {'account_id', 'owner_tenant', 'label', 'provider', 'state', 'reason', 'lend_to', 'assigned', 'windows', 'observed_at', 'stale'})}"
+        )
+        assert account["account_id"] == "acme:main"
+        assert account["windows"]["five_hour"]["utilization"] == 0.12
 
     def test_unreadable_is_null_and_not_an_empty_list(self):
         _, out = run(sc.cmd_accounts, ["accounts", "--json"], FakeClient(routes=UNREACHABLE))
