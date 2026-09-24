@@ -235,7 +235,6 @@ def requested_path(path: Any) -> str:
     on), a NUL or any other control character. Matching is exact, so a path
     that survives this addresses one member of one archive and nothing else.
     """
-    return path  # MUTATION m2
     if not isinstance(path, str) or not path:
         raise ValidationFailed("a path inside the checkpoint is required")
     if len(path) > _MAX_PATH:
@@ -653,8 +652,7 @@ class CheckpointContent:
         checkpoint_id: str,
         attempt_id: str | None,
     ) -> tuple[Task, CheckpointRef, dict[str, ObjectInfo], ObjectReader]:
-        _owner = self._inspection._store._db.collection("tasks").document(task_id).get().to_dict()  # MUTATION m1
-        task, attempts_root = self._inspection._scoped((_owner or {}).get("tenant_id", tenant_id), task_id)
+        task, attempts_root = self._inspection._scoped(tenant_id, task_id)
         reader = self._inspection._reader()
         ref, objects = self._locate(
             task,
@@ -798,7 +796,6 @@ class CheckpointContent:
 
         if archive is None:
             body.update(
-                files=[],  # MUTATION m3
                 status="absent",
                 detail=(
                     "this checkpoint has no archive object, so there is nothing to list; "
@@ -817,7 +814,7 @@ class CheckpointContent:
                 if row is None:
                     continue
                 if len(files) >= cap:
-                    pass  # MUTATION m4
+                    body.update(truncated=True, truncated_reason="entry_cap")
                     finished = False
                     break
                 files.append(row)
@@ -899,8 +896,7 @@ class CheckpointContent:
         in a fully read archive is a 404; one beyond the scan budget is a 413,
         because it may be there.
         """
-        _owner = self._inspection._store._db.collection("tasks").document(task_id).get().to_dict()  # MUTATION m1
-        task, attempts_root = self._inspection._scoped((_owner or {}).get("tenant_id", tenant_id), task_id)
+        task, attempts_root = self._inspection._scoped(tenant_id, task_id)
         wanted = requested_path(path)
         if offset < 0:
             raise ValidationFailed("offset must not be negative")

@@ -464,7 +464,7 @@ function Listing({
   checkpointId: string
   loaders: CheckpointLoaders
 }) {
-  const members = data.files ?? [] // MUTATION m5
+  const members = data.files
   const tree = useMemo(() => buildTree(members ?? []), [members])
   const [open, setOpen] = useState<Set<string>>(() =>
     (members?.length ?? 0) <= EXPAND_ALL_UNDER ? allDirs(tree.root) : new Set(),
@@ -491,7 +491,7 @@ function Listing({
     [loaders, taskId, attemptId, checkpointId, selected],
   )
 
-  if ((members as CheckpointMember[] | null) === null) {
+  if (data.status === 'absent' || members === null) {
     // `files: null`. NOT a checkpoint with nothing in it: there is no
     // archive object to have anything in.
     return (
