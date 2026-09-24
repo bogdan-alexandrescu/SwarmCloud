@@ -152,14 +152,42 @@ def test_the_screen_is_reachable_by_a_hash_that_resolves_to_it():
     assert case, f"App.tsx has no `case '<section>/<tab>'` returning <{screen} />"
     section_id, tab_id = case.group(1), case.group(2)
 
-    section = re.search(rf"id: '{section_id}',\s*\n\s*label: '([^']+)'", app)
-    assert section, (
+    # PARSED WITH test_nav_headings_agree's PARSER RATHER THAN A SECOND REGEX
+    # OF THIS FILE'S OWN, and the regex that used to be here is why.
+    #
+    # It was `id: '<section>',\s*\n\s*label: '...'` -- it required the id and
+    # the label to be on adjacent lines. The house style in App.tsx is a
+    # paragraph of argument between values, so that regex only ever matched a
+    # section whose entry happened to have no comment in that gap. It matched
+    # `runtimes` for as long as Runtimes was a one-pane section with a short
+    # entry, and stopped matching the day this screen became a pane of Capacity
+    # -- whose `id: 'capacity',` carries a trailing comment and thirteen lines
+    # of note before its label. The failure read "SECTIONS declares no section
+    # with id 'capacity'" about an array that declares exactly that, which is
+    # the worst kind of red: it accuses the code of the parser's defect.
+    #
+    # `_sections` strips whole-line comments and walks each entry to its
+    # `tabs: [...]`, so it is immune to that. Importing it also keeps ONE
+    # parser for SECTIONS instead of two that agree until they do not -- the
+    # defect ux-plan.md §1.5 names as this repository's most expensive. If a
+    # third reader ever needs it, move it to a helper module in this package
+    # rather than copying it a third time.
+    from .test_nav_headings_agree import _sections
+
+    sections = {sid: tabs for sid, _label, tabs in _sections(app)}
+    assert section_id in sections, (
         f"SectionBody routes '{section_id}/{tab_id}' and SECTIONS declares no "
-        f"section with id '{section_id}'. Nothing in the nav leads there."
+        f"section with id '{section_id}'. Nothing in the nav leads there. "
+        f"Declared: {sorted(sections)}"
     )
-    assert f"id: '{tab_id}'" in app, (
-        f"SECTIONS declares section '{section_id}' and no tab '{tab_id}'; the "
-        "section would open on a pane that renders the 'No such pane' state."
+    # STRONGER THAN THE LINE IT REPLACES, which asked whether `id: '<tab>'`
+    # appeared ANYWHERE in App.tsx -- including under a different section, or
+    # in LEGACY, or in a comment. The tab has to belong to the section the
+    # case names, because that pair is what `${sectionId}/${tab}` is built from.
+    assert any(tid == tab_id for tid, _label in sections[section_id]), (
+        f"SECTIONS declares section '{section_id}' and no tab '{tab_id}' in it "
+        f"(it has {[tid for tid, _ in sections[section_id]]}); the section "
+        "would open on a pane that renders the 'No such pane' state."
     )
 
 
