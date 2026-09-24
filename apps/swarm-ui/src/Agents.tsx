@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
@@ -167,7 +167,7 @@ function AgentsBody({
   onOpen: (taskId: string) => void
   page: TaskPage
   tab: Tab | null
-  setTab: (t: Tab) => void
+  setTab: Dispatch<SetStateAction<Tab | null>>
   profile: string
   setProfile: (p: string) => void
   grouped: boolean
@@ -190,9 +190,11 @@ function AgentsBody({
   // LAND ONCE, THEN STAY. The first page decides the tab; after that it is
   // pinned, so a refresh that brings a live agent does not pull the reader off
   // the Waiting row they were reading. A click is always the reader's.
+  // A FUNCTIONAL update, so an effect scheduled by the first render can never
+  // overwrite a click that landed before it ran.
   const shown: Tab = tab ?? landingTab(counts)
   useEffect(() => {
-    if (tab === null) setTab(shown)
+    if (tab === null) setTab((current) => current ?? shown)
   }, [tab, shown, setTab])
 
   const profiles = useMemo(

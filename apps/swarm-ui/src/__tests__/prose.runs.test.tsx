@@ -375,10 +375,11 @@ describe('Agents, with every help card closed', () => {
       fetchedAt: Date.now(),
     })
     render(<AgentsScreen onOpen={() => {}} />)
-    await screen.findByText('claude-code')
     // The screen LANDS on Recent now -- the first tab with rows -- so the empty
     // Live tab is the one a reader asks for. Asked for, it still says so.
-    fireEvent.click(screen.getByRole('tab', { name: /^Live/ }))
+    // (It waited on the text `claude-code` before, which was unique only
+    // because the Live landing drew no row; the Recent row draws it too.)
+    fireEvent.click(await screen.findByRole('tab', { name: /^Live/ }))
     // The `live` tab holds nothing, and its emptiness is a MEASURED zero.
     // WHAT MOVED: "No agent is holding a pool slot right now -- a real zero
     // from a successful read" was a sentence in the middle of the screen. The
