@@ -185,7 +185,7 @@ survey() {
       | [ (.id | tostring), (.status // "-"), (.conclusion // "-"), (.html_url // "-") ]
       | @tsv' "${WORK}/runs.json" >"${WORK}/runs.tsv" || return 1
   if [[ ! -s "${WORK}/runs.tsv" ]]; then
-    VERDICT=none
+    VERDICT="none"
     return 0
   fi
 
@@ -216,7 +216,7 @@ survey() {
         if ! found="$(artifact_state "${run_id}")"; then return 1; fi
         if [[ "${found}" == present ]]; then
           fetch "${run_id}" "${url}" || return 1
-          VERDICT=reuse; V_URL="${url}"
+          VERDICT="reuse"; V_URL="${url}"
           return 0
         fi
         state=unbuilt
@@ -250,7 +250,7 @@ survey() {
   done <"${WORK}/runs.tsv"
 
   if [[ "${pending}" -eq 1 ]]; then
-    VERDICT=wait; V_URL="${pending_url}"; V_WHY="${pending_why}"
+    VERDICT="wait"; V_URL="${pending_url}"; V_WHY="${pending_why}"
   else
     VERDICT="${first}"; V_URL="${first_url}"; V_WHY="${first_why}"
   fi
