@@ -38,9 +38,10 @@ request to extend the model, rather than being guessed at.
 CANCELLING IS THE OTHER WAY TO SAY NO. A reviewer who approves and then sees
 the wrong commit cancels the run. GitHub still starts, after a cancel, any job
 whose `if:` holds -- `always()` does, by definition -- so a prod-facing job
-conditioned on `always()` survives the cancel that was meant to stop it. The
-cancellation test holds every prod-facing job to not starting in a cancelled
-run, whatever the jobs before it did.
+conditioned on `always()` survives the cancel that was meant to stop it, and
+so does an `always()` step after the one a cancel lands on. The two
+cancellation tests hold every prod-facing job, and every prod-facing step, to
+not starting in a cancelled run, whatever ran before it.
 
 WHAT THIS CANNOT PROVE: that the `prod` environment in repository settings has
 a required reviewer. Measured 2026-09-24 with `gh api .../environments`:
@@ -142,6 +143,30 @@ def _order(jobs: dict) -> list[str]:
     return order
 
 
+def _condition(owner: str, condition) -> str:
+    """An `if:` as the expression GitHub evaluates, status function included.
+    `owner` names the job or step, for the failure message."""
+    if condition is None:
+        return "success()"
+    if isinstance(condition, bool):
+        # YAML read `if: true` as a bool. Python's literal, because this text
+        # is only ever handed to _evaluate.
+        return f"success() && {condition!r}"
+    body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(condition), re.S)
+    text = body.group(1) if body else str(condition)
+    used = set(_STATUS_CALL.findall(text))
+    modelled = {"always", "success", "cancelled"}
+    assert used <= modelled, (
+        f"release.yml's {owner} conditions on {sorted(used - modelled)}(), which this "
+        "model does not evaluate; extend the model before relying on it"
+    )
+    if not used:
+        # GitHub's rule: a condition with no status function runs only if
+        # everything before it succeeded, as if it began `success() &&`.
+        text = f"success() && ({text})"
+    return text
+
+
 def _runs(job_id: str, job: dict, results: dict, ctx: dict, *, cancelled: bool = False) -> bool:
     """Whether GitHub would start `job_id`, given how the jobs it needs ended
     and whether the run has been cancelled."""
@@ -149,23 +174,7 @@ def _runs(job_id: str, job: dict, results: dict, ctx: dict, *, cancelled: bool =
     # A cancelled run is not a successful one: GitHub's success() is false
     # once the run is cancelled, whatever the jobs before this one did.
     succeeded = all(results[n] == "success" for n in needs) and not cancelled
-    condition = job.get("if")
-    if condition is None:
-        return succeeded
-    if isinstance(condition, bool):
-        return succeeded and condition
-    body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(condition), re.S)
-    text = body.group(1) if body else str(condition)
-    used = set(_STATUS_CALL.findall(text))
-    modelled = {"always", "success", "cancelled"}
-    assert used <= modelled, (
-        f"release.yml's {job_id} job conditions on {sorted(used - modelled)}(), which this "
-        "model does not evaluate; extend _runs before relying on it"
-    )
-    if not used:
-        # GitHub's rule: a condition with no status function runs only if
-        # everything it needs succeeded, as if it began `success() &&`.
-        text = f"success() && ({text})"
+    text = _condition(f"{job_id} job", job.get("if"))
     values = {**ctx, "always()": True, "success()": succeeded, "cancelled()": cancelled}
     values.update({f"needs.{n}.result": results[n] for n in needs})
     return bool(_evaluate("${{ " + text + " }}", **values))
@@ -270,6 +279,46 @@ def test_cancelling_a_prod_release_starts_nothing_prod_facing(release, what):
                 "cancelled run (`always()` does). Condition it on `!cancelled()` instead"
             )
     assert tried, "no combination was tried, so this checked nothing"
+
+
+_STEP_RESULT = re.compile(r"\bsteps\.([\w-]+)\.(outcome|conclusion)\b")
+
+
+@pytest.mark.parametrize("what", sorted(PROD_FACING))
+@pytest.mark.parametrize("release", sorted(PROD_RELEASES))
+def test_cancelling_a_prod_release_mid_job_starts_no_prod_facing_step(release, what):
+    """The same, one level down. A cancel that lands while a job is running
+    stops the step it lands on, and GitHub then still runs every later step
+    of that job whose `if:` holds on a cancelled run -- `always()` does. So a
+    step that promotes, applies or deploys must not be conditioned on
+    `always()`: `deploy and smoke`'s GKE proof, which dispatches a browser
+    task into the environment, ran after a cancel that landed on the smoke
+    test. A step with no `if:` is `success()`, false once the run is
+    cancelled.
+
+    Every combination of how the steps a condition reads ended is tried."""
+    ctx = PROD_RELEASES[release]
+    jobs = _workflow("release.yml")["jobs"]
+    visited = tried = 0
+    for job_id, job in sorted(jobs.items()):
+        for index, step in enumerate(job.get("steps") or []):
+            if not PROD_FACING[what](_shell(step)):
+                continue
+            visited += 1
+            label = step.get("name") or f"steps[{index}]"
+            text = _condition(f"{job_id} job's step {label!r}", step.get("if"))
+            read = sorted(set(_STEP_RESULT.findall(text)))
+            for ended in itertools.product(("success", "failure", "cancelled", "skipped"), repeat=len(read)):
+                values = {**ctx, "always()": True, "success()": False, "cancelled()": True}
+                values.update({f"steps.{s}.{field}": e for (s, field), e in zip(read, ended)})
+                tried += 1
+                assert not _evaluate("${{ " + text + " }}", **values), (
+                    f"release.yml's {job_id!r} job's step {label!r} {what} for prod and still runs after the "
+                    f"run is CANCELLED part-way through the job (earlier steps ended {dict(zip(read, ended))}): "
+                    f"`if: {step.get('if')}` holds on a cancelled run. Condition it on `!cancelled()` instead"
+                )
+    assert visited, f"no step of release.yml {what}; this test would pass without checking anything"
+    assert tried, "no condition was evaluated, so this checked nothing"
 
 
 @pytest.mark.parametrize("release", sorted(PROD_RELEASES))
