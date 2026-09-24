@@ -33,7 +33,7 @@ const ROW = 16
 const BAR = 10
 
 function count(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
 }
 
 /** One commit's counts, each checked rather than trusted. */
@@ -218,7 +218,7 @@ function DiffRowMark({
           <title>{`${r.sha.slice(0, 10)} · +${r.ins}`}</title>
         </rect>
       )}
-      {zeroLines && (
+      {zeroLines && !binary && (
         // A MEASURED ZERO: git counted the commit and it changed no lines (an
         // empty or mode-only commit). The product's zero mark, on the zero rule.
         <circle className="ctl-chart-dot is-zero" data-testid="diff-zero" cx={zeroX} cy={y + BAR / 2} r={3.5}>

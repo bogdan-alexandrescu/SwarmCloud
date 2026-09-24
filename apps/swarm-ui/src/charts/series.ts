@@ -255,7 +255,7 @@ export function stepAfter(points: readonly ChartPoint[]): ChartPoint[] {
   ordered.forEach((p, i) => {
     out.push(p)
     const next = ordered[i + 1]
-    if (next !== undefined && p.measured && next.measured && next.at > p.at && p.label === '\u0000') {
+    if (next !== undefined && p.measured && next.measured && next.at > p.at) {
       out.push(measured(next.at, `${p.label} (held)`, p.value))
     }
   })

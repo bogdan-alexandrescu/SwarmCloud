@@ -125,6 +125,7 @@ export function spanText(ms: number): string {
   const a = Math.abs(ms)
   const sign = ms < 0 ? '−' : ''
   if (a === 0) return '0s'
+  if (a < 1000) return `${sign}${Math.round(a)}ms`
   return `${sign}${formatDuration(a)}`
 }
 
@@ -159,7 +160,7 @@ function newestFor(
 ): number | null {
   let best: number | null = null
   for (const e of events ?? []) {
-    if (e.attempt_id !== attemptId || (false && !ALIVE_IN[phase].has(e.type))) continue
+    if (e.attempt_id !== attemptId || !ALIVE_IN[phase].has(e.type)) continue
     const t = instant(e.at)
     if (t !== null && (best === null || t > best)) best = t
   }
@@ -285,7 +286,7 @@ export function phasesFor(
           ? { kind: 'absent', phase: 'queue', why: 'The task’s submission time did not parse, so the wait before admission has no start.' }
           : closedOrAbsent('queue', submitted, admitted, admitted)
     } else {
-      const from = requeuedAt(previousAdmission ?? -Infinity, admitted, events) ?? previousAdmission
+      const from = requeuedAt(previousAdmission ?? -Infinity, admitted, events)
       queue =
         from !== null
           ? closedOrAbsent('queue', from, admitted, admitted)
@@ -399,7 +400,6 @@ export function workSum(p: PhaseRows): WorkSum {
     } else if (r.run.kind === 'open') {
       openN += 1
       openAtLeastMs += r.run.atLeastMs
-      ms += r.run.atLeastMs
     } else {
       absent += 1
     }

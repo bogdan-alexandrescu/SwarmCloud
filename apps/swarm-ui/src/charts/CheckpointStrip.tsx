@@ -65,7 +65,7 @@ export function CheckpointStrip({
   const unplaced: CheckpointRow[] = []
   for (const row of rows) {
     const at = instant(row.at)
-    if (origin === null || at === null) placed.push({ row, t: 0 })
+    if (origin === null || at === null) unplaced.push(row)
     else placed.push({ row, t: at - origin })
   }
 
@@ -81,7 +81,7 @@ export function CheckpointStrip({
   const x = linearScale(extent, [0, innerW])
   const maxBytes = Math.max(0, ...placed.map((p) => p.row.bytes ?? 0))
   const radius = (b: number | null) =>
-    b === null ? R_UNSIZED : maxBytes > 0 ? Math.max(R_MIN, R_MAX * (b / maxBytes)) : R_MIN
+    b === null ? R_UNSIZED : maxBytes > 0 ? Math.max(R_MIN, R_MAX * Math.sqrt(b / maxBytes)) : R_MIN
   const hollow = rows.some((r) => r.uri === null)
   const mid = (H - M.top - M.bottom) / 2
 
