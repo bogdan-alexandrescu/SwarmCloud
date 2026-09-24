@@ -166,7 +166,7 @@ locals {
   # terraform/infra/verify.tf gives google_cloud_run_v2_job.verify; the
   # integration test above builds its log entries from that name, so a filter
   # naming any other job shows the deployer nothing.
-  verify_log_view_filter = "resource.type=\"cloud_run_job\""
+  verify_log_view_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-verify\""
 }
 
 # No labels: google_logging_log_view has none in the pinned provider (6.50.0,
@@ -195,7 +195,7 @@ resource "google_project_iam_member" "deployer_reads_verify_logs" {
   condition {
     title       = "swarm-verify log view only"
     description = "The swarm-verify view on _Default, which selects only the verification job's logs. Owner decision 2026-09-24."
-    expression  = "resource.name == \"${local.verify_log_bucket}/views/_AllLogs\""
+    expression  = "resource.name == \"${local.verify_log_view}\""
   }
 
   # A grant naming a view that does not exist yet reads nothing; created in

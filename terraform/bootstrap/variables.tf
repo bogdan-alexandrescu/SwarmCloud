@@ -225,6 +225,28 @@ variable "deployer_roles" {
     ]) == 0
     error_message = "no role granting secretmanager.versions.access may be given to CI: terraform creates secrets and sets their IAM policy, it never reads a payload. The custom swarmSecretProvisioner role covers what it does need."
   }
+
+  # OWNER DECISION 2026-09-24: CI reads the swarm-verify job's logs and no
+  # others, through one view granted with a condition in verify_logs.tf. Every
+  # role here reads log entries project-wide -- each carries
+  # logging.logEntries.list or logging.views.access, per `gcloud iam roles
+  # describe` on 2026-09-24 -- and this project's logs include the other
+  # team's. roles/owner and roles/editor carry the same and are refused above.
+  # roles/logging.viewAccessor is listed because granted HERE it has no
+  # condition, and reads every view in the project.
+  validation {
+    condition = length([
+      for r in var.deployer_roles : r
+      if contains([
+        "roles/logging.admin",
+        "roles/logging.privateLogViewer",
+        "roles/logging.viewAccessor",
+        "roles/logging.viewer",
+        "roles/viewer",
+      ], r)
+    ]) == 0
+    error_message = "no role that reads log entries project-wide may be given to CI: it reads the swarm-verify job's logs through one view, granted with a condition in verify_logs.tf, and nothing else (owner decision 2026-09-24)."
+  }
 }
 
 variable "deployer_secret_permissions" {
