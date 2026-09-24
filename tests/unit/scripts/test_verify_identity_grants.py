@@ -53,6 +53,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
 DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
 #: Where the IAP accessor list lives since #23; scripts/lib/common.sh's IAP
@@ -181,39 +183,84 @@ def test_the_verify_identity_is_not_a_platform_admin_in_dev() -> None:
     )
 
 
-def _live_lines(path: Path) -> list[str]:
-    return [line for line in _strip_comments(path.read_text()).splitlines() if line.strip()]
+#: Every list that decides who reaches the admin surface, by its ApiSettings
+#: field -- which is also the name of the terraform variable that carries it.
+#: ADMIN_GROUPS and ADMIN_USERS each make a caller a FULL admin, so they matter
+#: to the gate as much as ADMIN_POOL_USERS does: the dev.tfvars check above
+#: covers one environment, and a locals.tf that appended the gate to either
+#: would make it a full admin in every environment with that check still green.
+ADMIN_LISTS = ("admin_groups", "admin_users", "admin_pool_users")
+
+#: A reference to anything terraform can evaluate: a variable, a local, a
+#: module output, a data source or a resource (every resource here is google_*).
+_TF_REFERENCE = re.compile(r"\b(?:var|local|module|data|google_[a-z0-9_]+)\.[A-Za-z0-9_-]+")
 
 
-def test_admin_pool_users_reaches_swarm_api_under_the_name_it_reads() -> None:
-    """The tfvars list is only a grant if it arrives as the variable swarm-api
-    reads. The name is DERIVED from settings.py rather than restated here, so a
-    rename on either side fails this test instead of the list silently reaching
-    nobody -- the WAKE_TOPIC/DISPATCH_TOPIC class of defect
+def _env_name_for(field: str) -> str:
+    """The environment variable `ApiSettings.from_env` reads `field` from."""
+    m = re.search(
+        rf"\b{re.escape(field)}\s*=\s*_csv\(\s*\"([A-Z0-9_]+)\"\s*\)", API_SETTINGS.read_text()
+    )
+    assert m, f"ApiSettings.from_env does not read {field} from the environment"
+    return m.group(1)
+
+
+def _balance(text: str) -> int:
+    return sum(text.count(c) for c in "([{") - sum(text.count(c) for c in ")]}")
+
+
+def _setters(env_name: str) -> list[str]:
+    """The right-hand side of every live `env_name = ...` in locals.tf, read to
+    the end of the expression (brackets balanced), so a setter split over
+    several lines is read whole rather than as its first line."""
+    lines = _strip_comments(LOCALS_TF.read_text()).splitlines()
+    found: list[str] = []
+    for index, line in enumerate(lines):
+        if not re.match(rf"^\s*{re.escape(env_name)}\s*=", line):
+            continue
+        expression = line.split("=", 1)[1]
+        depth = _balance(expression)
+        cursor = index
+        while depth > 0 and cursor + 1 < len(lines):
+            cursor += 1
+            expression += "\n" + lines[cursor]
+            depth += _balance(lines[cursor])
+        found.append(expression.strip())
+    return found
+
+
+@pytest.mark.parametrize("field", ADMIN_LISTS)
+def test_each_admin_list_reaches_swarm_api_from_its_own_variable_alone(field: str) -> None:
+    """Each list is only a grant if it arrives as the variable swarm-api reads,
+    carrying that environment's tfvars AS IS.
+
+    The env var name is DERIVED from settings.py rather than restated here, so
+    a rename on either side fails this test instead of the list silently
+    reaching nobody -- the WAKE_TOPIC/DISPATCH_TOPIC class of defect
     (scripts/lib/check-env-parity.sh catches a read nobody sets; this catches a
     set that carries the wrong list).
-    """
-    m = re.search(
-        r"admin_pool_users\s*=\s*_csv\(\s*\"([A-Z0-9_]+)\"\s*\)", API_SETTINGS.read_text()
-    )
-    assert m, "ApiSettings.from_env does not read admin_pool_users from the environment"
-    env_name = m.group(1)
 
-    setters = [
-        line for line in _live_lines(LOCALS_TF)
-        if re.match(rf"^\s*{re.escape(env_name)}\s*=", line)
-    ]
+    And each setter may reference its own `var.<field>` and nothing else: no
+    `google_service_account.verify.email` appended the way ALLOWED_USERS is
+    derived, no local, no second variable, and no literal address. Appending
+    the gate to ADMIN_USERS or ADMIN_GROUPS here would make it a full admin in
+    every environment at once; appending it to ADMIN_POOL_USERS would grant the
+    capability where no environment decided to.
+    """
+    env_name = _env_name_for(field)
+    setters = _setters(env_name)
     assert setters, f"terraform/infra/locals.tf never sets {env_name}"
-    for line in setters:
-        assert "var.admin_pool_users" in line, (
-            f"{env_name} is set from something other than var.admin_pool_users: {line.strip()}"
+    for expression in setters:
+        references = sorted(set(_TF_REFERENCE.findall(expression)))
+        assert references == [f"var.{field}"], (
+            f"{env_name} must be set from var.{field} alone; it references "
+            f"{references}: {expression}"
         )
-        # Derived the way ADMIN_USERS is -- from the environment's tfvars AS IS
-        # -- and never by appending google_service_account.verify here, which
-        # would hand the capability to the gate in every environment at once.
-        assert "google_service_account" not in line, (
-            f"{env_name} appends a service account in locals.tf: {line.strip()}"
+        literals = set(re.findall(r'"([^"]*)"', expression)) - {","}
+        assert not literals, (
+            f"{env_name} adds literal value(s) {sorted(literals)} to var.{field} in "
+            f"locals.tf: {expression}"
         )
     assert re.search(
-        r'^variable\s+"admin_pool_users"', VARIABLES_TF.read_text(), re.M
-    ), "terraform/infra/variables.tf declares no admin_pool_users"
+        rf'^variable\s+"{re.escape(field)}"', VARIABLES_TF.read_text(), re.M
+    ), f"terraform/infra/variables.tf declares no {field}"

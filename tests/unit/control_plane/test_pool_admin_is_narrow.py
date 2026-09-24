@@ -31,6 +31,13 @@ anywhere in its dependency tree. So a new admin route -- in admin.py or in any
 other router -- is in these parametrised cases the moment it exists, with no
 list here to update. The sweep has a floor derived from the source (every
 `Depends(admin_auth)` in the routers), so an empty sweep cannot pass by silence.
+
+WHAT THE SWEEP CANNOT SEE, AND WHAT COVERS IT. The routes are read from each
+router module, so a route defined on the app itself, in a nested sub-router,
+or under an `include_router(prefix=...)` is not in them -- and the path the
+gate compares is the one in the router that DECLARES the route, not the public
+URL. `test_the_templates_the_gate_compares_are_the_published_urls` ties the
+swept set to the OpenAPI document the app publishes, in both directions.
 """
 
 from __future__ import annotations
@@ -39,23 +46,23 @@ import importlib
 import pkgutil
 import re
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import swarm_api.routes as routes_package
-from swarm_api.auth import AuthContext, StaticTokenVerifier
+from swarm_api.auth import POOL_ADMIN_ROUTES, AuthContext, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
-from swarm_api.deps import admin_auth, build_context
-from swarm_api.groups import StaticGroups
+from swarm_api.deps import AppContext, admin_auth, build_context, current_auth
+from swarm_api.groups import GroupLookupError, MembershipResolver, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
-from .conftest import api_settings, seed_pool, seed_tenant
+from .conftest import ADMIN_GROUP, api_settings, seed_pool, seed_tenant
 
 #: The gate's identity in these tests. A service-account address on purpose: it
 #: is outside the allowed domain (saga.xyz) and is admitted through
@@ -181,12 +188,74 @@ def test_every_route_under_v1_admin_is_admin_gated() -> None:
     assert not ungated, f"these /v1/admin routes are not behind admin_auth: {ungated}"
 
 
+def _published(ctx: AppContext) -> set[tuple[str, str]]:
+    """(METHOD, path) for every operation the app publishes in its OpenAPI
+    document -- the public URLs, whatever router or prefix produced them.
+
+    The document rather than `app.routes`: on the pinned FastAPI that is a tree
+    of `_IncludedRouter` wrappers whose `path` is None (see
+    tests/unit/mcp/test_against_the_real_api.py). A route declared with
+    `include_in_schema=False` is invisible here; none on the admin surface is.
+    """
+    spec = create_app(ctx).openapi()["paths"]
+    return {
+        (method.upper(), path) for path, operations in spec.items() for method in operations
+    }
+
+
+def test_the_templates_the_gate_compares_are_the_published_urls(gate_context) -> None:
+    """The allow-list and this sweep are keyed on the DECLARING router's path.
+
+    On the pinned FastAPI (0.141.1) `include_router` keeps the original route and
+    puts IT in `scope["route"]`, so the template `admin_auth` compares is that
+    route's path in its own router: `APIRouter(prefix="/v1/admin")` is part of
+    it, an `include_router(prefix=...)` or a parent router's prefix is not.
+    main.py includes every router bare, which is the only reason the allow-list
+    reads like a URL today. Three things tie the two together here:
+
+    * every POOL_ADMIN_ROUTES entry is a published URL -- otherwise the entry
+      names a string no request can produce, and the gate is refused the route
+      race-test needs;
+    * every swept admin-gated route is published under the path it was swept
+      at -- otherwise a prefix was added somewhere, and every template in the
+      allow-list and in this file is now a local path, not a URL;
+    * every published /v1/admin operation is a swept admin-gated route --
+      otherwise it is defined outside `swarm_api.routes.*.router` (on the app
+      in main.py, or in a nested sub-router), where neither this sweep nor
+      `test_every_route_under_v1_admin_is_admin_gated` can see it, or it is
+      not behind `admin_auth` at all.
+    """
+    published = _published(gate_context)
+    assert ("GET", "/v1/stats") in published, "the published set was not built"
+
+    unpublished_grant = sorted(set(POOL_ADMIN_ROUTES) - published)
+    assert not unpublished_grant, (
+        f"POOL_ADMIN_ROUTES names {unpublished_grant}, which the app does not "
+        "publish: the template the gate compares is no longer the public URL"
+    )
+    local_only = sorted(set(ADMIN_ROUTES) - published)
+    assert not local_only, (
+        f"these admin-gated routes are not published under the path they are "
+        f"declared at, so a router prefix now sits outside the template the gate "
+        f"compares: {local_only}"
+    )
+    public_admin = {
+        (method, path)
+        for method, path in published
+        if path == "/v1/admin" or path.startswith("/v1/admin/")
+    }
+    unswept = sorted(public_admin - set(ADMIN_ROUTES))
+    assert not unswept, (
+        f"the app publishes these /v1/admin operations and the sweep does not "
+        f"see them as admin-gated routes of swarm_api.routes: {unswept}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures: the real app, with the gate on ADMIN_POOL_USERS
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def gate_context(db, tokens, group_map, objects):
+def _gate_context(db, tokens, groups: MembershipResolver, objects) -> AppContext:
     tokens = dict(tokens)
     tokens["token-gate"] = {
         "email": GATE,
@@ -200,12 +269,17 @@ def gate_context(db, tokens, group_map, objects):
         settings=api_settings(allowed_users=(GATE,), admin_pool_users=(GATE,)),
         db=db,
         verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups(group_map),
+        groups=groups,
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         metrics=ApiMetrics(),
         objects=objects,
     )
+
+
+@pytest.fixture
+def gate_context(db, tokens, group_map, objects):
+    return _gate_context(db, tokens, StaticGroups(group_map), objects)
 
 
 @pytest.fixture
@@ -235,6 +309,77 @@ def _send(client: TestClient, method: str, path: str, headers: dict[str, str]):
     if method == "GET":
         return client.request(method, _fill(path), headers=headers)
     return client.request(method, _fill(path), headers=headers, json={})
+
+
+class AdminGroupsDoNotAnswer:
+    """Tenant groups answer from the map; any lookup that asks about an ADMIN
+    group raises, as Cloud Identity does when it 403s or times out.
+
+    This is the likely production case for the gate, not a contrived one. The
+    gate is not on `admin_users`, so for every request the Authenticator asks
+    Cloud Identity whether it is in each ADMIN_GROUPS entry -- about a
+    service-account address, in a project whose audit already records Groups
+    API 403s. When that lookup fails the context carries `admin_unresolved`.
+    `StaticGroups`, which every other gate fixture here uses, always answers.
+    """
+
+    def __init__(self, mapping: dict[str, tuple[str, ...]], admin_groups: tuple[str, ...]):
+        self._answers = StaticGroups(mapping)
+        self._admin = {g.lower() for g in admin_groups}
+        self.failed_for: list[str] = []
+
+    def groups_for(self, member_email: str, candidate_groups: tuple[str, ...]) -> tuple[str, ...]:
+        if any(g.lower() in self._admin for g in candidate_groups):
+            self.failed_for.append(member_email.lower())
+            raise GroupLookupError("cloud identity did not answer (test double)")
+        return self._answers.groups_for(member_email, candidate_groups)
+
+
+@pytest.fixture
+def unresolved_groups(group_map) -> AdminGroupsDoNotAnswer:
+    return AdminGroupsDoNotAnswer(group_map, (ADMIN_GROUP,))
+
+
+@pytest.fixture
+def unresolved_gate_client(db, tokens, objects, unresolved_groups) -> TestClient:
+    ctx = _gate_context(db, tokens, unresolved_groups, objects)
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+def _recording_gate(
+    passed: list[tuple[str, str | None, str]],
+) -> Callable[..., AuthContext]:
+    """`admin_auth`, unchanged, plus a note of every caller it let through.
+
+    Installed with `app.dependency_overrides`, which FastAPI resolves per
+    request: each admin-gated route then calls this, this calls the REAL
+    `admin_auth`, and a refusal or a crash propagates exactly as it would
+    without the override. The only addition is the record, and the record is
+    the thing a status code cannot say on its own -- a 500 from a crash inside
+    the gate, a 404 from a route that no longer matches, or a 405 all read as
+    "not refused" to a check that only excludes 401, 403 and 503.
+    """
+
+    def recorded_admin_auth(
+        request: Request, auth: AuthContext = Depends(current_auth)
+    ) -> AuthContext:
+        granted = admin_auth(request, auth)
+        passed.append(
+            (
+                request.method.upper(),
+                getattr(request.scope.get("route"), "path", None),
+                granted.email,
+            )
+        )
+        return granted
+
+    return recorded_admin_auth
+
+
+def _recorded_client(ctx: AppContext, passed: list) -> TestClient:
+    app = create_app(ctx)
+    app.dependency_overrides[admin_auth] = _recording_gate(passed)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +504,6 @@ def test_the_allow_list_is_the_decided_one_and_names_real_routes() -> None:
     route became admin-only and race-test is back to a 403 -- the sweep above
     would not notice, because it only ever expects refusals.
     """
-    from swarm_api.auth import POOL_ADMIN_ROUTES
-
     assert set(POOL_ADMIN_ROUTES) == set(DECIDED), (
         f"the pool-admin allow-list is {sorted(POOL_ADMIN_ROUTES)}; the owner "
         f"decided {sorted(DECIDED)} on 2026-09-24. Widening it is a new decision."
@@ -372,21 +515,122 @@ def test_the_allow_list_is_the_decided_one_and_names_real_routes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The order of the checks in require_admin: the directory did not answer
+# ---------------------------------------------------------------------------
+
+def test_a_pool_admin_whose_admin_lookup_failed_can_still_narrow_the_pool(
+    unresolved_gate_client, unresolved_groups, db
+) -> None:
+    """THE ORDER IN `require_admin`, pinned.
+
+    The pool-admin pass is checked BEFORE the `admin_unresolved` 503, and that
+    order is load-bearing: the gate's admin-group lookup is the one most likely
+    to fail (see AdminGroupsDoNotAnswer). If the two checks are swapped,
+    race-test gets a 503 at step 1 whenever the directory does not answer for
+    swarm-verify -- and every other test in this file stays green, because
+    their resolver always answers.
+
+    The pass is safe to give first: the allow-list is keyed on the caller's
+    verified email and the route, and neither depends on the unanswered
+    question "is this caller in an admin group".
+    """
+    seed_pool(db, "runner:mock", hard_limit=20, active=2)
+
+    # The context really is unresolved -- otherwise this is the ordinary case
+    # again and proves nothing about the order.
+    me = unresolved_gate_client.get("/v1/tenants/me", headers=GATE_HEADERS)
+    assert me.status_code == 200, me.text
+    assert me.json()["principal"]["is_admin_unresolved"] is True, me.json()
+    assert GATE in unresolved_groups.failed_for, (
+        "the admin-group lookup was never asked about the gate"
+    )
+
+    narrowed = unresolved_gate_client.put(
+        "/v1/admin/limits/runner/mock", headers=GATE_HEADERS, json={"limit": 1}
+    )
+    assert narrowed.status_code == 200, (
+        f"a pool admin whose admin-group lookup failed was answered "
+        f"{narrowed.status_code} on its own route: {narrowed.text}"
+    )
+    assert db.docs["pools/runner:mock"]["hard_limit"] == 1
+    assert db.docs["pools/runner:mock"].get("admin_changed_by") == GATE
+
+
+@pytest.mark.parametrize(("method", "path"), NOT_DECIDED, ids=_ids(NOT_DECIDED))
+def test_a_pool_admin_whose_admin_lookup_failed_is_still_refused_everything_else(
+    unresolved_gate_client, db, method: str, path: str
+) -> None:
+    """The other half of the order: letting the pool admin through first must
+    not let it through anywhere else. 503 is an acceptable refusal here -- the
+    directory really did not answer, so "you are not an admin" would be a claim
+    nobody checked -- and anything past the gate is not."""
+    _seed_everything(db)
+    before = db.dump()
+
+    response = _send(unresolved_gate_client, method, path, GATE_HEADERS)
+
+    assert response.status_code in (403, 503), (
+        f"{method} {path} answered {response.status_code} to a pool admin whose "
+        f"admin-group lookup failed: {response.text}"
+    )
+    assert db.dump() == before, f"a refused {method} {path} still changed Firestore"
+
+
+# ---------------------------------------------------------------------------
 # A full admin is unchanged
 # ---------------------------------------------------------------------------
 
+def test_the_recording_gate_is_the_real_gate(gate_context, db) -> None:
+    """Control for the sweep below: the override records a pass and nothing
+    else. It refuses what `admin_auth` refuses -- nothing recorded -- and on a
+    route it admits it records the caller and the template it compared."""
+    seed_tenant(db, "eng")
+    seed_pool(db, "runner:mock", hard_limit=20, active=2)
+    passed: list[tuple[str, str | None, str]] = []
+    client = _recorded_client(gate_context, passed)
+
+    refused = client.put(
+        "/v1/admin/tenants/eng/limits", headers=GATE_HEADERS, json={"enabled": False}
+    )
+    assert refused.status_code == 403, refused.text
+    assert passed == [], f"a refused caller was recorded as passing the gate: {passed}"
+
+    granted = client.put(
+        "/v1/admin/limits/runner/mock", headers=GATE_HEADERS, json={"limit": 20}
+    )
+    assert granted.status_code == 200, granted.text
+    assert passed == [("PUT", "/v1/admin/limits/runner/{runner_profile}", GATE)], passed
+
+
 @pytest.mark.parametrize(("method", "path"), ADMIN_ROUTES, ids=_ids(ADMIN_ROUTES))
 def test_a_full_admin_still_passes_the_gate_everywhere(
-    gate_client, db, method: str, path: str
+    gate_context, db, method: str, path: str
 ) -> None:
     """Every admin-gated route, including the decided one, still admits a full
-    admin. 403 and 503 are the only answers the gate gives; anything else
-    (200, or a 422 on the empty body sent here) was decided past it."""
+    admin -- shown by the gate itself recording the pass, not inferred from the
+    status code.
+
+    A status check alone ("not 401, 403 or 503") passed on a 500 from a crash
+    inside `admin_auth`, and on a 404 or 405 from a request that never reached
+    the route. What a full admin legitimately gets past the gate here is 200,
+    or a 4xx the handler or body validation chose on the empty body sent (422
+    today); nothing at or above 500."""
     _seed_everything(db)
+    passed: list[tuple[str, str | None, str]] = []
+    client = _recorded_client(gate_context, passed)
 
-    response = _send(gate_client, method, path, ROOT_HEADERS)
+    response = _send(client, method, path, ROOT_HEADERS)
 
-    assert response.status_code not in (401, 403, 503), (
+    assert passed == [(method, path, ROOT)], (
+        f"{method} {path}: the gate did not record exactly one pass for the full "
+        f"admin (recorded {passed}); the request answered {response.status_code}: "
+        f"{response.text}"
+    )
+    assert response.status_code < 500, (
+        f"{method} {path} failed for a full admin with {response.status_code}: "
+        f"{response.text}"
+    )
+    assert response.status_code not in (401, 403), (
         f"{method} {path} refused a full admin with {response.status_code}: "
         f"{response.text}"
     )
