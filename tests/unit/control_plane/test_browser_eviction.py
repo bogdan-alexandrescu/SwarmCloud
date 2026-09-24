@@ -14,9 +14,12 @@ lease is the frozen `release_lease_in_transaction` returning units to every
 pool (invariant 2):
 
   S-1  STUCK: a RUNNING browser attempt whose lease heartbeats but which shows
-       no progress for longer than the threshold is fenced (invariant 5), its
-       Job deleted, its lease released -- in that order -- and the task goes
-       back to READY with events that name the reason.
+       no progress for longer than the threshold is fenced (invariant 5), with
+       an event that names the reason -- and NOT killed in that pass, because
+       SIGTERM sends a live worker down a path that parks the task without
+       checking the fence. The worker stops itself; the next pass releases the
+       lease and requeues the task, killing the Job first if it outlived its
+       fence.
   S-2  HEARTBEATING IS NOT PROGRESS, BUT PROGRESS IS NOT ONLY THE WORK TREE: an
        attempt spending CPU, or changing its work tree, is left alone, and so
        is one whose quiet cannot be PROVEN because nothing measured it.
@@ -25,7 +28,7 @@ pool (invariant 2):
   L-2  its lease, if it still holds one, is released only after the kill is
        confirmed. The orphan-lease rule used to release it regardless.
   G-1  a Job of a NEWER generation is never touched, even when the task moves
-       on to it in the middle of the pass that evicts the old one.
+       on to it in the middle of the pass that finds the old one stuck.
 
 "Progress" is what `reconciler/progress.py` says it is, and why: CPU across the
 heartbeat events, and the work tree across checkpoints. The event shapes below
@@ -176,22 +179,87 @@ def job_name(ids: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_a_browser_job_stuck_without_progress_is_fenced_terminated_and_released():
+def _silent_since(db: FakeFirestore, ids: dict[str, str], seconds: int) -> None:
+    """The worker's last heartbeat was `seconds` ago: it has stopped beating."""
+    last = utcnow() - timedelta(seconds=seconds)
+    lease = db.docs[f"leases/{ids['lease']}"]
+    lease["heartbeat_at"] = last
+    lease["expires_at"] = last + timedelta(seconds=120)
+
+
+def _fenced_and_nothing_else(db: FakeFirestore, ids: dict[str, str], batch: RbacBatchApi,
+                             report: Any) -> None:
+    """What the pass that finds a stuck attempt must leave behind."""
+    assert [o.kind for o in report.outcomes] == ["stuck_no_progress"], (
+        f"{[o.as_dict() for o in report.outcomes]}"
+    )
+    task = db.docs[f"tasks/{ids['task']}"]
+    assert task["current_generation"] == 2, "the stuck generation must be fenced"
+    # NOT deleted in the same pass. Deleting the Job SIGTERMs a worker that is
+    # alive, and its SIGTERM path parks the task SCHEDULED_RETRY without
+    # checking the fence -- a park nothing ever promotes. The fence alone makes
+    # the worker stop the agent and exit at its next poll, touching nothing.
+    assert batch.deleted == [], "a live worker was SIGTERMed in the pass that fenced it"
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None
+    assert set(pool_actives(db).values()) == {2}, pool_actives(db)
+    fenced = reconciler_events(db, ids["task"], "generation_fenced")
+    assert fenced and fenced[-1]["detail"]["finding"] == "stuck_no_progress"
+    assert "no progress" in fenced[-1]["detail"]["reason"]
+
+
+def test_a_browser_job_stuck_without_progress_is_fenced_then_released_and_requeued():
     """49 minutes of heartbeats, and nothing else: CPU flat, work tree unchanged.
 
     The worker is alive -- its lease heartbeated ten seconds ago, which is
     exactly why no existing rule touches it -- and the agent under it has done
     nothing for three quarters of an hour. 0.002 cores is the worker's own
     polling; a page load costs whole CPU-seconds.
+
+    Pass 1 fences. The worker sees the fence at its next poll, stops the agent
+    and exits 70 (`lifecycle._apply_control_signals`), so its Job fails and its
+    lease goes quiet. Pass 2 releases that lease through the frozen release
+    and requeues the task: one attempt of three spent, so READY.
     """
     db = FakeFirestore()
     ids = running_browser_task(db, "task_stuck0000000000001")
     now = utcnow()
     seed_run(db, ids, began=now - QUIET, until=now, cpu_cores=0.002)
+    job = k8s_job(task_id=ids["task"])
+    batch = RbacBatchApi(jobs=[job], listable={ENG_NS})
+    rec, _ = reconciler(db, gke(batch))
+
+    first = rec.run_once()
+
+    _fenced_and_nothing_else(db, ids, batch, first)
+
+    # The worker's fenced exit: the Job fails on its own, the heartbeats stop.
+    job.status.conditions = [SimpleNamespace(type="Failed", status="True")]
+    _silent_since(db, ids, 300)
+
+    second = rec.run_once()
+
+    task = db.docs[f"tasks/{ids['task']}"]
+    assert task["state"] == "READY", (
+        f"one attempt of three spent: retryable. {[o.as_dict() for o in second.outcomes]}"
+    )
+    assert task["current_lease_id"] is None
+    assert task["current_generation"] == 2, "fenced once, not twice"
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is not None
+    assert set(pool_actives(db).values()) == {0}, pool_actives(db)
+    assert batch.deleted == [], "the Job ended itself; there was nothing to kill"
+
+
+def test_a_stuck_job_that_outlives_its_fence_is_terminated_before_its_lease_is_released():
+    """The worker did NOT stop at its fence -- its loop is wedged too, so it has
+    also stopped heartbeating -- and its Job is still active on the next pass.
+    The Job is killed first, and the lease comes back only after the kill."""
+    db = FakeFirestore()
+    ids = running_browser_task(db, "task_wedge0000000000001")
+    now = utcnow()
+    seed_run(db, ids, began=now - QUIET, until=now, cpu_cores=0.002)
     at_kill: dict[str, Any] = {}
 
     def on_delete(namespace: str, name: str) -> None:
-        # The order is the invariant: fenced BEFORE the kill, released AFTER it.
         at_kill["generation"] = db.docs[f"tasks/{ids['task']}"]["current_generation"]
         at_kill["released_at"] = db.docs[f"leases/{ids['lease']}"]["released_at"]
 
@@ -200,29 +268,20 @@ def test_a_browser_job_stuck_without_progress_is_fenced_terminated_and_released(
     )
     rec, _ = reconciler(db, gke(batch))
 
-    report = rec.run_once()
+    first = rec.run_once()
+    _fenced_and_nothing_else(db, ids, batch, first)
+    _silent_since(db, ids, 300)
 
-    assert batch.deleted == [job_name(ids)], (
-        f"a heartbeating browser Job with no progress for {QUIET} must be deleted; "
-        f"outcomes={[o.as_dict() for o in report.outcomes]}"
-    )
+    second = rec.run_once()
+
+    assert batch.deleted == [job_name(ids)], f"{[o.as_dict() for o in second.outcomes]}"
     assert at_kill == {"generation": 2, "released_at": None}, (
-        "the generation must be fenced before the Job is deleted, and the lease "
-        f"released only after: {at_kill}"
+        f"fenced before the kill, released only after it: {at_kill}"
     )
-    assert [o.kind for o in report.outcomes] == ["stuck_no_progress"]
     task = db.docs[f"tasks/{ids['task']}"]
-    assert task["current_generation"] == 2
-    assert task["state"] == "READY", "one attempt of three spent: retryable"
-    assert task["current_lease_id"] is None
+    assert task["state"] == "READY"
     assert db.docs[f"leases/{ids['lease']}"]["released_at"] is not None
     assert set(pool_actives(db).values()) == {0}, pool_actives(db)
-
-    fenced = reconciler_events(db, ids["task"], "generation_fenced")
-    assert fenced and fenced[-1]["detail"]["finding"] == "stuck_no_progress"
-    assert "no progress" in fenced[-1]["detail"]["reason"]
-    ready = reconciler_events(db, ids["task"], "ready")
-    assert ready and ready[-1]["detail"]["reason"] == "stuck_no_progress"
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +470,10 @@ def test_a_job_of_a_newer_generation_is_never_touched():
     reconciler instance fences and releases it, and the scheduler admits
     generation 2: a new lease, a new attempt, a new Job.
 
-    This pass still evicts what it found -- generation 1's Job -- and must not
-    lay a finger on generation 2: not its Job, not its lease, not the task's
-    generation, not the task's pointer to its lease.
+    This pass must not lay a finger on generation 2 -- not its Job, not its
+    lease, not the task's generation, not the task's pointer to its lease --
+    and the next pass still gets rid of generation 1's Job, which is still
+    running under a generation nobody holds any more.
     """
     db = FakeFirestore()
     ids = running_browser_task(db, "task_race0000000000001")
@@ -427,7 +487,12 @@ def test_a_job_of_a_newer_generation_is_never_touched():
     }
     new_job = _as_attempt(k8s_job(task_id=ids["task"], generation=2), newer["attempt"])
 
+    readmitted: list[bool] = []
+
     def readmit() -> None:
+        if readmitted:
+            return  # the race happens once; a later pass sees its result
+        readmitted.append(True)
         task = db.docs[f"tasks/{ids['task']}"]
         old_lease = db.docs[f"leases/{ids['lease']}"]
         # Another instance fenced and released generation 1 ...
@@ -459,21 +524,34 @@ def test_a_job_of_a_newer_generation_is_never_touched():
 
     rec, _ = reconciler(db, gke(batch), store_class=ReadmittedMidPass)
 
-    report = rec.run_once()
+    def generation_two_untouched(report: Any) -> None:
+        outcomes = [o.as_dict() for o in report.outcomes]
+        assert new_job in batch.jobs, f"generation 2's Job was deleted: {outcomes}"
+        task = db.docs[f"tasks/{ids['task']}"]
+        assert task["current_generation"] == 2, f"generation 2 was fenced: {outcomes}"
+        assert task["state"] == "RUNNING", outcomes
+        assert task["current_lease_id"] == newer["lease"], (
+            f"generation 2's lease was unhooked: {outcomes}"
+        )
+        assert db.docs[f"leases/{newer['lease']}"]["released_at"] is None, outcomes
+        # Generation 1's units came back once (by the other instance),
+        # generation 2's are held: net, one browser lease's worth everywhere.
+        assert set(pool_actives(db).values()) == {2}, pool_actives(db)
 
-    assert batch.deleted == [job_name(ids)], (
-        f"generation 1's Job is still the one found stuck: "
-        f"{[o.as_dict() for o in report.outcomes]}"
+    first = rec.run_once()
+
+    assert [o.kind for o in first.outcomes] == ["stuck_no_progress"], (
+        "the stuck finding must have been made -- or this test proves nothing"
     )
-    assert new_job in batch.jobs, "generation 2's Job was deleted"
-    task = db.docs[f"tasks/{ids['task']}"]
-    assert task["current_generation"] == 2, "generation 2 was fenced"
-    assert task["state"] == "RUNNING"
-    assert task["current_lease_id"] == newer["lease"], "generation 2's lease was unhooked"
-    assert db.docs[f"leases/{newer['lease']}"]["released_at"] is None
-    # Generation 1's units came back once (by the other instance), generation
-    # 2's are held: net, one browser lease's worth on every pool.
-    assert set(pool_actives(db).values()) == {2}, pool_actives(db)
+    generation_two_untouched(first)
+
+    second = rec.run_once()
+
+    generation_two_untouched(second)
+    assert batch.deleted == [job_name(ids)], (
+        f"generation 1's Job outlived its generation and must go: "
+        f"{[o.as_dict() for o in second.outcomes]}"
+    )
 
 
 def test_the_stuck_threshold_that_ships_is_the_one_these_tests_exercise():
