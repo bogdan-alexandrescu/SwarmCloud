@@ -8,11 +8,17 @@
 //    channels (solid bar, hatched band, dashed tile) survive greyscale; this
 //    is the colour channel, for everyone reading in colour.
 //
-// 2. THE TOKEN MIX IS READABLE IN GREYSCALE. Overview's `.ov-mix` drew four
-//    token counts in `--series-1..4`, and the series block says of itself that
-//    those five sit in a band 1.36:1 from end to end and are NOT separable in
-//    greyscale. The keyed legend (§12.1) told a colour reader which swatch was
-//    which; nothing told a greyscale one.
+// 2. THE TOKEN MIX IS READABLE IN GREYSCALE, AND STILL VISIBLE ON THE CARD.
+//    Overview's `.ov-mix` drew four token counts in `--series-1..4`, and the
+//    series block says of itself that those five sit in a band 1.36:1 from end
+//    to end and are NOT separable in greyscale. The keyed legend (§12.1) told a
+//    colour reader which swatch was which; nothing told a greyscale one.
+//    Separating the four may not be bought by fading them into the card: the
+//    series block's promise is that every series fill clears 3:1 against
+//    `--bg`, `--surface` and `--surface-2` in both themes (WCAG 1.4.11, a
+//    graphical object), and a tone derived from a series inherits that floor.
+//    The first one-hue ramp stepped toward `--surface` and left c-wr's 8px
+//    swatch at 1.35:1 on white -- this file's old floor of 1.2 held it there.
 //
 // Everything is resolved from the source the app ships, through the same
 // `tokenTables` / `resolveVars` / `colour` the spacing probe uses, so a token
@@ -122,15 +128,20 @@ describe("the token mix's four segments are separable in greyscale", () => {
       // not just neighbours: an absent count drops its segment, so any two can
       // end up side by side, and the legend puts all four in one row.
       const fills = [1, 2, 3, 4].map((n) => resolved(declared(CSS, `.ov-s${n}`, 'background'), theme))
-      const surface = resolved('var(--surface)', theme)
       for (let i = 0; i < fills.length; i++) {
-        // 1.2:1 is the floor test_state_colour_discriminability.py gives PARKED
-        // against the severity triad, for the reason it gives: at or under
-        // about 1.2 a step is not visible.
-        expect(
-          contrast(fills[i]!, surface),
-          `.ov-s${i + 1} vanishes into the card in ${theme}`,
-        ).toBeGreaterThanOrEqual(1.2)
+        // 3:1 on every ground a series may be drawn on, which is the series
+        // block's own claim (styles.css, THE SERIES PALETTE) and WCAG 1.4.11's
+        // floor for a graphical object. The swatch is an 8px square and the
+        // segment an 8px rule: a key nobody can find keys nothing.
+        for (const ground of ['--bg', '--surface', '--surface-2']) {
+          expect(
+            contrast(fills[i]!, resolved(`var(${ground})`, theme)),
+            `.ov-s${i + 1} on ${ground} in ${theme} is under the 3:1 a series fill promises`,
+          ).toBeGreaterThanOrEqual(3)
+        }
+        // 1.2:1 between tones is the floor test_state_colour_discriminability.py
+        // gives PARKED against the severity triad, for the reason it gives: at
+        // or under about 1.2 a step is not visible.
         for (let j = i + 1; j < fills.length; j++) {
           expect(
             contrast(fills[i]!, fills[j]!),
