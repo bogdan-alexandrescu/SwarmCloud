@@ -678,3 +678,141 @@ def test_the_terminal_command_fails_when_a_task_did(swarm, world, capsys):
 
     assert cli.cmd_follow(swarm, _follow_args()) == cli.EXIT_FAIL
     assert "it went wrong" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# A cancel that is only requested is narrated as a request
+# --------------------------------------------------------------------------
+# Contract request 17, accepted by the owner 2026-09-24. Before it, the API's
+# flag-only cancel wrote `type: cancelled` with `detail.phase:
+# cancel_requested`, and `swarm_follow` narrated that row as "cancelled" while
+# the task stayed DISPATCHED with its lease held -- the reading behind incident
+# wf_ebb3ab2d65664707a559. History written then is still stored that way.
+
+
+def _legacy_request(world: World, task_id: str) -> None:
+    """The row exactly as the pre-2026-09-24 API stored it."""
+    world.db.docs[f"tasks/{task_id}/events/ev_legacy_request"] = {
+        "event_id": "ev_legacy_request",
+        "task_id": task_id,
+        "tenant_id": TENANT,
+        "type": "cancelled",
+        "at": NOW,
+        "attempt_id": None,
+        "lease_id": None,
+        "generation": None,
+        "detail": {"requested_by": "alice@saga.xyz", "from_state": "DISPATCHED",
+                   "phase": "cancel_requested"},
+    }
+
+
+def test_a_stored_flag_only_cancel_is_followed_as_a_request(swarm, world):
+    """Through the real API: the model reads `cancel_requested`, not `cancelled`."""
+    world.task("task_a", state="DISPATCHED")
+    _legacy_request(world, "task_a")
+
+    report = follow(swarm, ["task_a"])
+
+    kinds = [e["type"] for e in report["tasks"][0]["events"]["new"]]
+    assert kinds == ["cancel_requested"], (
+        f"a cancel that was only requested was narrated as {kinds} on a task that "
+        "is still DISPATCHED"
+    )
+    assert report["tasks"][0]["terminal"] is False
+
+
+def test_the_follow_rule_holds_against_an_api_that_still_serves_the_old_shape():
+    """The plugin runs against whatever API is deployed, which can be older than it.
+
+    So the reading is also applied on this side, to the raw row -- and only to
+    the flag-only shape: an immediate cancel, and the scheduler's cascade
+    cancel (which has never carried a phase), stay `cancelled`.
+    """
+    from swarm_mcp.follow import event_type
+
+    legacy = {"type": "cancelled", "detail": {"phase": "cancel_requested"}}
+    assert event_type(legacy) == "cancel_requested"
+    assert event_type({"type": "cancel_requested", "detail": {"phase": "cancel_requested"}}) == (
+        "cancel_requested"
+    )
+    assert event_type({"type": "cancelled", "detail": {"phase": "cancelled"}}) == "cancelled"
+    assert event_type({"type": "cancelled", "detail": {"reason": "upstream"}}) == "cancelled"
+    assert event_type({"type": "cancelled", "detail": None}) == "cancelled"
+    assert event_type({"type": "heartbeat"}) == "heartbeat"
+    # Anything else passes through exactly as served, absence included.
+    assert event_type({}) is None
+
+
+def test_swarm_tail_prints_a_stored_request_as_a_request(swarm, world, capsys):
+    """`swarm tail` prints each event's type on its own line; the same reading applies."""
+    world.task("task_a", state="CANCELLED")
+    _legacy_request(world, "task_a")
+
+    cli.cmd_tail(swarm, _follow_args())
+
+    printed = capsys.readouterr().out
+    assert "· cancel_requested" in printed, printed
+    assert "· cancelled" not in printed, (
+        f"`swarm tail` printed a cancel request as a cancel:\n{printed}"
+    )
+
+
+# --------------------------------------------------------------------------
+# ... and against an API OLDER than the plugin, which is why the plugin reads it
+# --------------------------------------------------------------------------
+# The two tests above go through the CURRENT API, which already serves a
+# stored request as `cancel_requested` (`swarm_api.codec.stored_event_type`).
+# Through it, the plugin's own reading is never exercised: take `event_type`
+# out of `_event_row` or out of `cmd_tail` and both stay green. The plugin's
+# copy exists for an API that does NOT read the legacy shape -- one deployed
+# before contract request 17 -- so these two run against exactly that API.
+
+
+def _an_api_from_before_request_17(monkeypatch) -> None:
+    """The real application, decoding stored events as it did before 2026-09-24.
+
+    `event_from_dict` then set `type=EventType(data["type"])`: the raw field,
+    no legacy reading. `stored_event_type` is looked up at call time, so
+    replacing it with that expression is the old decoder.
+    """
+    from swarm_api import codec
+
+    monkeypatch.setattr(codec, "stored_event_type", lambda data: EventType(data["type"]))
+
+
+def _served_types(world: World, task_id: str) -> list[str]:
+    response = world.api.get(f"/v1/tasks/{task_id}/events", headers=AUTH)
+    assert response.status_code == 200, response.text
+    return [e["type"] for e in response.json()["events"]]
+
+
+def test_follow_reads_a_request_from_an_api_older_than_itself(swarm, world, monkeypatch):
+    world.task("task_a", state="DISPATCHED")
+    _legacy_request(world, "task_a")
+    _an_api_from_before_request_17(monkeypatch)
+    # The premise: this API really is the old one, and serves the row as stored.
+    assert _served_types(world, "task_a") == ["cancelled"]
+
+    report = follow(swarm, ["task_a"])
+
+    kinds = [e["type"] for e in report["tasks"][0]["events"]["new"]]
+    assert kinds == ["cancel_requested"], (
+        f"an API older than the plugin served a cancel request, and `swarm_follow` "
+        f"narrated it as {kinds} on a task that is still DISPATCHED"
+    )
+
+
+def test_swarm_tail_reads_a_request_from_an_api_older_than_itself(swarm, world, monkeypatch, capsys):
+    world.task("task_a", state="CANCELLED")
+    _legacy_request(world, "task_a")
+    _an_api_from_before_request_17(monkeypatch)
+    assert _served_types(world, "task_a") == ["cancelled"]
+
+    cli.cmd_tail(swarm, _follow_args())
+
+    printed = capsys.readouterr().out
+    assert "· cancel_requested" in printed, printed
+    assert "· cancelled" not in printed, (
+        f"an API older than the plugin served a cancel request, and `swarm tail` "
+        f"printed it as a cancel:\n{printed}"
+    )

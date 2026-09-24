@@ -227,6 +227,14 @@ returns 49 under `run.googleapis.com`, so it is an answer and not a failed read.
 The 2026-09-19 expectation that the metric would appear "within ten minutes" of
 the ticks running has not held in five days of ticks.
 
+**Corrected 2026-09-24: it never will.** Google publishes no Cloud Scheduler
+metric of any name, so this one could never become queryable. The alert now
+watches a logs-based metric built from Cloud Scheduler's attempt logs
+(`terraform/modules/monitoring/metrics.tf`, `safety_tick_attempts`), created in
+the same apply as the policy, and `enable_safety_tick_alert` is back to `true`
+in `dev.tfvars`. The measurement above stays the live state until a release
+applies that.
+
 ## In the project, not in terraform
 
 **`swarm-authprobe`**, a Cloud Run service created 2026-09-20 14:46 UTC from
@@ -256,7 +264,7 @@ deleting it is the owner's call.
 | 2026-09-19 said | now |
 |---|---|
 | the DNS A record | **done** -- resolves; certificate `ACTIVE` |
-| `enable_safety_tick_alert = false` until the metric exists | **still true**; the metric still does not exist |
+| `enable_safety_tick_alert = false` until the metric exists | **still true** when measured; the metric never will exist, so the alert now watches a logs-based one (see the correction above) -- outstanding until a release applies it |
 | `register-tenant.sh` keeps its three sweep findings | **fixed** in PR #25 (`a1239b5`) |
 | `destroy.sh:340` reports the other team's cluster missing on an expired session | **fixed** in `f9eee2f` |
 

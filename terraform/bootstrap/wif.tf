@@ -147,8 +147,13 @@ resource "google_service_account_iam_member" "deployer_wif" {
   member             = each.value
 }
 
+# Project-wide, unconditioned -- except for any role named in
+# deployer_scoped_roles, which moves to its conditioned block in
+# deployer_conditions.tf in the same plan. Subtracting it here and creating it
+# there is one switch on purpose: a conditioned binding beside an unconditioned
+# one for the same role grants exactly what the unconditioned one does.
 resource "google_project_iam_member" "deployer_roles" {
-  for_each = var.enable_github_wif ? toset(var.deployer_roles) : toset([])
+  for_each = var.enable_github_wif ? setsubtract(toset(var.deployer_roles), var.deployer_scoped_roles) : toset([])
 
   project = var.project_id
   role    = each.value
@@ -177,8 +182,10 @@ resource "google_project_iam_custom_role" "secret_provisioner" {
   permissions = var.deployer_secret_permissions
 }
 
+# Replaced by deployer_secrets_scoped (deployer_conditions.tf) once
+# "swarmSecretProvisioner" is in deployer_scoped_roles.
 resource "google_project_iam_member" "deployer_secrets" {
-  count = local.wif_enabled
+  count = var.enable_github_wif && !contains(var.deployer_scoped_roles, "swarmSecretProvisioner") ? 1 : 0
 
   project = var.project_id
   role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.secret_provisioner[0].role_id}"
@@ -217,6 +224,18 @@ resource "google_project_iam_member" "deployer_secrets" {
 # `projects/_/buckets/<b>/objects/<o>`, so a `startsWith` on the bucket path
 # admits every object in it and nothing in a bucket outside it.
 #
+# BUT NOT BY AN EXACT MATCH, and the Cloud Build bucket was an exact match. IAM's
+# own documentation of this very pattern: "Because the condition looks at the
+# start of the resource name, it matches a bucket as well as the objects in that
+# bucket. If it checked for equality, it would only match the bucket"
+# (docs.cloud.google.com/iam/docs/conditions-attribute-reference). The source
+# tarball `gcloud builds submit` uploads is an OBJECT --
+# `saga-agents-staging_cloudbuild/source/<stamp>-<uuid>.tgz` -- so
+# `resource.name == ".../buckets/saga-agents-staging_cloudbuild"` admitted the
+# bucket and refused the upload. Each exact bucket is therefore admitted twice:
+# itself by equality, and its objects by a prefix that ends in `/objects/`, so
+# a bucket merely STARTING with the same name is still refused.
+#
 # NOT APPLIED YET. The plan is written and reviewable; the apply waits until the
 # in-flight release has deployed. Applying an IAM condition to the role the build
 # depends on, while that build is running, is the mistake this comment exists to
@@ -225,8 +244,10 @@ locals {
   deployer_storage_condition = join(" || ", concat(
     [for b in var.deployer_storage_bucket_prefixes :
     "resource.name.startsWith(\"projects/_/buckets/${b}\")"],
-    [for b in var.deployer_storage_buckets_exact :
-    "resource.name == \"projects/_/buckets/${b}\""],
+    flatten([for b in var.deployer_storage_buckets_exact : [
+      "resource.name == \"projects/_/buckets/${b}\"",
+      "resource.name.startsWith(\"projects/_/buckets/${b}/objects/\")",
+    ]]),
   ))
 }
 
@@ -242,6 +263,59 @@ resource "google_project_iam_member" "deployer_storage" {
     description = "Refuses every bucket this platform does not own. Three buckets in this project belong to another team, one of them their terraform state."
     expression  = local.deployer_storage_condition
   }
+}
+
+# THE TWO STORAGE PERMISSIONS NO BUCKET NAME CAN ADMIT.
+#
+# storage.buckets.list and storage.buckets.create are checked on the PROJECT,
+# not on a bucket -- IAM calls these parent-only permissions -- and "you cannot
+# use the resource.name attribute in a condition at the project level, because
+# Resource Manager ... does not recognize the resource.name attribute"
+# (docs.cloud.google.com/iam/docs/configuring-resource-based-access). So the
+# condition above, which tests nothing BUT resource.name, refuses both.
+#
+# THE BUILD NEEDS `list`. Read in the Cloud SDK this repository's scripts run
+# (googlecloudsdk/api_lib/storage/storage_api.py, CreateBucketIfNotExists):
+# with no --gcs-source-staging-dir, `gcloud builds submit` passes
+# check_ownership=True, gets the default bucket, and then -- "to prevent bucket
+# squatting" -- calls buckets.list(project=..., prefix=<bucket>) and fails
+# unless the bucket is in the list. build-images.sh passes no staging dir. So
+# with storage.admin conditioned and nothing else, every image build 403s at
+# that list, before a byte is uploaded. `create` is the same shape for
+# terraform/infra adding a new swarm- bucket.
+#
+# Hence a separate grant of exactly those two, unconditioned. Neither reaches
+# into a bucket: list returns names and metadata, and a bucket CI creates is one
+# it still cannot administer unless it is swarm-prefixed. What it deliberately
+# does NOT carry is the rest of what is checked at the project level --
+# storage.hmacKeys.* above all, which would let CI mint an HMAC key for another
+# team's service account and read their buckets as them.
+#
+# NOT VERIFIED LIVE: neither half of the storage change has been applied, and
+# the evidence for both defects is the SDK source and IAM's documentation, not a
+# failed run.
+resource "google_project_iam_custom_role" "deployer_project_buckets" {
+  count = local.wif_enabled
+
+  project = var.project_id
+  role_id = "swarmDeployerProjectBuckets"
+  title   = "Swarm Deployer Project-level Bucket Permissions"
+
+  description = "The two Cloud Storage permissions checked on the project rather than a bucket, which the conditioned storage.admin cannot admit."
+  stage       = "GA"
+
+  permissions = [
+    "storage.buckets.create",
+    "storage.buckets.list",
+  ]
+}
+
+resource "google_project_iam_member" "deployer_project_buckets" {
+  count = local.wif_enabled
+
+  project = var.project_id
+  role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.deployer_project_buckets[0].role_id}"
+  member  = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
 # WHO MAY PASS IAP, managed here rather than by CI -- and the deployer holds NO

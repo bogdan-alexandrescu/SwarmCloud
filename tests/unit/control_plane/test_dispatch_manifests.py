@@ -212,6 +212,7 @@ def test_cloud_run_job_is_sized_from_the_catalogue_with_requests_equal_to_limits
     # `list(container.command) == list(profile.command)` -- it pinned the very
     # override that replaced the image ENTRYPOINT (the worker lifecycle) with
     # the bare runner. See test_no_backend_overrides_the_image_entrypoint below.
+    # (`RunnerProfile.command` is `runner_argv` since contract request 18.)
     assert list(container.command) == []
     assert list(container.args) == []
     assert container.image.endswith(f"/{profile.image}:{settings.worker_image_tag}")
@@ -406,8 +407,10 @@ def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
 # traceback, never wrote to the control plane, and left five leases holding
 # every browser slot on the platform.
 #
-# `RunnerProfile.command` is the lifecycle's CHILD argv (`lifecycle._runner_argv`),
-# never a container command. The lifecycle learns which runner to start from
+# `RunnerProfile.runner_argv` -- called `command` until contract request 18
+# renamed it on 2026-09-24, precisely because the old name read as a container
+# command -- is the lifecycle's CHILD argv (`lifecycle._runner_argv`), never a
+# container command. The lifecycle learns which runner to start from
 # RUNNER_PROFILE in its environment, which both dispatchers set.
 #
 # `kubernetes/worker-templates/worker-job.yaml` already said this in its header,
@@ -424,7 +427,7 @@ ALL_PROFILES = sorted(RUNNER_PROFILES)
 def test_the_gke_manifest_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
     """THE ONE THAT WOULD HAVE CAUGHT IT: `GkeJobDispatcher._manifest` itself.
 
-    MUTATION: put `"command": list(profile.command)` back into the container
+    MUTATION: put `"command": list(profile.runner_argv)` back into the container
     dict in `GkeJobDispatcher._manifest` and this fails for every profile.
     """
     dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
@@ -467,7 +470,7 @@ def test_the_cloud_run_job_never_overrides_the_image_entrypoint(settings, tenant
     per-execution override it sends with `run_job`. A ContainerOverride can
     carry `args`, which would be appended to the ENTRYPOINT.
 
-    MUTATION: put `command=list(profile.command)` back into `_build_job`.
+    MUTATION: put `command=list(profile.runner_argv)` back into `_build_job`.
     """
     client = FakeJobsClient()
     dispatcher = CloudRunJobDispatcher(settings, client=client)
@@ -523,8 +526,8 @@ def test_the_lifecycle_resolves_its_runner_from_the_environment_the_dispatcher_s
     config = WorkerConfig.from_env()
     assert config.runner_profile == profile_name
     argv = _runner_argv(config)
-    assert argv[1:] == list(profile.command[1:])
-    assert argv[0] in (profile.command[0], sys.executable)
+    assert argv[1:] == list(profile.runner_argv[1:])
+    assert argv[0] in (profile.runner_argv[0], sys.executable)
 
 
 # -- the backend's deadline is a backstop; the lifecycle's own must fire first --
@@ -653,10 +656,10 @@ def _job_with_the_old_override(settings, tenant, profile_name, *, command=True, 
     job.name = builder.job_name(job_id_for(tenant.tenant_id, profile_name))
     container = job.template.template.containers[0]
     if command:
-        container.command = list(profile.command)
+        container.command = list(profile.runner_argv)
     if args:
         container.args = ["--verbose"]
-    assert list(container.command) == (list(profile.command) if command else [])
+    assert list(container.command) == (list(profile.runner_argv) if command else [])
     return job
 
 

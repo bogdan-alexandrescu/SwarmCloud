@@ -176,6 +176,25 @@ class EventType(str, Enum):
     RETRYING = "retrying"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    #: A cancel was REQUESTED and nothing has been cancelled yet. NOT TERMINAL.
+    #:
+    #: Written by the API's `request_cancel` when the task holds capacity
+    #: (LEASED, DISPATCHED, STARTING, RUNNING): it sets `cancel_requested` and
+    #: nothing else, because only the worker, which knows its container has
+    #: stopped, or the reconciler, which fences the generation first, may
+    #: release the lease (invariant 1). The terminal CANCELLED that follows is
+    #: written by whichever of them finishes the task.
+    #:
+    #: Added 2026-09-24 by contract request 17, accepted by the owner. Before
+    #: it the API wrote CANCELLED with `detail.phase = "cancel_requested"`, so
+    #: every reader of the TYPE saw a cancelled task that still held its lease
+    #: (incident wf_ebb3ab2d65664707a559: four tasks, over an hour). Events
+    #: stored before then keep that shape; `swarm_api.codec.event_from_dict`
+    #: reads them as this type.
+    CANCEL_REQUESTED = "cancel_requested"
+    #: The task REACHED CANCELLED. Terminal. Written by whoever made the
+    #: transition: the API for a task that held nothing, the worker
+    #: (`control.finish`), the reconciler (F-3) or the scheduler (`cancel`).
     CANCELLED = "cancelled"
     DEAD_LETTERED = "dead_lettered"
     GENERATION_FENCED = "generation_fenced"
