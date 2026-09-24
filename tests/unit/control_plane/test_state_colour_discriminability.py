@@ -83,6 +83,7 @@ from __future__ import annotations
 
 import functools
 import itertools
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,14 +132,18 @@ def relative_luminance(hex_colour: str) -> float:
     reader with no red/green discrimination. Two colours with the same
     luminance are the same mark.
     """
+    linear = _linear_rgb(hex_colour)
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _linear_rgb(hex_colour: str) -> list[float]:
     digits = hex_colour.lstrip("#")
     assert len(digits) == 6, f"expected #rrggbb, got {hex_colour!r}"
     channels = [int(digits[i:i + 2], 16) / 255 for i in (0, 2, 4)]
-    linear = [
+    return [
         c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
         for c in channels
     ]
-    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
 
 
 def contrast_ratio(a: str, b: str) -> float:
@@ -146,6 +151,29 @@ def contrast_ratio(a: str, b: str) -> float:
     la, lb = relative_luminance(a), relative_luminance(b)
     lighter, darker = max(la, lb), min(la, lb)
     return (lighter + 0.05) / (darker + 0.05)
+
+
+def delta_e76(a: str, b: str) -> float:
+    """CIE76 distance between two `#rrggbb` strings, in CIE L*a*b* (D65).
+
+    Luminance is the greyscale channel; this is the COLOUR channel, for
+    everyone reading in colour. It is the same conversion
+    `apps/swarm-ui/src/__tests__/encoding.hues.test.ts` uses to hold
+    `--ctl-absent` apart from CANCELLED, so the two files measure one distance.
+    About 2.3 is the smallest difference a practised eye sees side by side.
+    """
+    def lab(hex_colour: str) -> tuple[float, float, float]:
+        r, g, b = _linear_rgb(hex_colour)
+        x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+        y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+        def f(t: float) -> float:
+            return t ** (1 / 3) if t > 216 / 24389 else (24389 / 27 * t + 16) / 116
+
+        return 116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))
+
+    return math.dist(lab(a), lab(b))
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +632,8 @@ def test_table_row_tones_carry_an_edge_rule(rules):
 #
 # And it could not see the one exemption that already shipped:
 # `.ctl-util-fill.ov-projected { background: var(--ctl-absent) }` in
-# OVERVIEW_CSS. That is now listed BY NAME below as a documented grey.
+# OVERVIEW_CSS. That is now listed BY NAME below as a documented grey (and
+# spelled `var(--text-faint)` since `--ctl-absent` became a warm stone).
 #
 # WHAT THIS VERSION ASKS INSTEAD: for each fill the product renders, which
 # rules can paint it, and does a grey win? Concretely:
@@ -664,10 +693,24 @@ MONOCHROME_FILL = "var(--text-dim)"
 #:
 #: `ov-projected`: Overview draws a PROJECTED utilisation reading (its window
 #: reset, or its poll is past the staleness window) in `--text-faint`, the
-#: fainter of the two text greys, so a figure that is real but not current
-#: sits a step quieter than the live bars in the same card. It is still a grey
-#: and not a hue, and `test_a_documented_grey_is_a_grey` resolves it to a text
-#: grey, so the entry cannot become a hue with a grey name.
+#: fainter of the two text greys, beside live bars in `--text-dim`. It is
+#: still a grey and not a hue, and `test_a_documented_grey_is_a_grey` resolves
+#: it to a text grey, so the entry cannot become a hue with a grey name.
+#: `test_a_documented_grey_is_what_the_sheet_paints` holds that this entry IS
+#: what the sheets paint on a fill carrying the class, so a check of the entry
+#: is a check of the product. `test_a_documented_grey_is_not_the_default_grey`
+#: holds, on the product, that it is a DIFFERENT grey from the live bar's.
+#: (Before both read the sheets, the second compared this literal with
+#: `MONOCHROME_FILL` and nothing else: a change to Overview.tsx alone that
+#: painted the projected bar `var(--text-dim)` passed, CI run 36040434721.)
+#:
+#: DIFFERENT, NOT VISIBLY DIFFERENT. This comment used to say the projected
+#: bar "sits a step quieter than the live bars". Measured: 1.27:1 (dE76 7.2)
+#: in the dark theme and 1.11:1 (dE76 3.1) in the light one, which is under
+#: the 1.2 this file calls "not a visible step". In the light theme the bar
+#: does not tell a projected reading from a live one; the `~` before the
+#: figure does, and `test_a_projected_reading_is_not_drawn_in_the_absence_
+#: colour` keeps that mark out of the absence colour.
 #:
 #: It was spelled `var(--ctl-absent)` when `--ctl-absent` was itself
 #: `var(--text-faint)`. The ui-hygiene lane (PR #26) split `--ctl-absent` off
@@ -1603,6 +1646,10 @@ def test_a_documented_grey_is_a_grey(sheet_scan):
     exception a coloured bar that this file waves through. That is not
     hypothetical: `--ctl-absent`, which this entry used to name, stopped being
     `var(--text-faint)` and became a warm stone.
+
+    This reads the TABLE. It is a check of the product because
+    `test_a_documented_grey_is_what_the_sheet_paints` fails whenever the
+    sheets paint the fill anything but the table's value.
     """
     custom: dict[str, set[str]] = {}
     for _, rules_ in sheet_scan.sheets:
@@ -1617,4 +1664,361 @@ def test_a_documented_grey_is_a_grey(sheet_scan):
     }
     assert not hued, (
         f"a documented grey resolves to something other than {sorted(TEXT_GREYS)}: {hued}"
+    )
+
+
+def _theme_tokens(sheets, light: bool) -> dict[str, str]:
+    """Every custom property in effect for one theme, `var()` values included.
+
+    Dark is every top-level `:root`. Light is that, then every `:root` inside
+    `@media (prefers-color-scheme: light)` on top, in a second pass: that
+    selector is `:root:not([data-theme='dark'])`, which out-specifies a bare
+    `:root` wherever either one sits in the sheet, so order alone would get a
+    token wrong that a later bare `:root` redefines.
+    """
+    tokens: dict[str, str] = {}
+    for light_pass in ((False, True) if light else (False,)):
+        for _, rules_ in sheets:
+            for at_rules, selector, decls in rules_:
+                if not selector.startswith(":root"):
+                    continue
+                in_light = "prefers-color-scheme: light" in at_rules
+                if in_light != light_pass or (at_rules and not in_light):
+                    continue
+                for prop, value in decls.items():
+                    if prop.startswith("--"):
+                        tokens[prop] = value
+    return tokens
+
+
+def _resolve_colour(value: str, tokens: dict[str, str], depth: int = 0) -> str | None:
+    """`value` followed through `var()` to a `#rrggbb`, or None if it is not one."""
+    value = value.strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        return value.lower()
+    match = re.fullmatch(r"var\((--[\w-]+)\)", value)
+    if match is None or depth > 8 or match.group(1) not in tokens:
+        return None
+    return _resolve_colour(tokens[match.group(1)], tokens, depth + 1)
+
+
+# -- what an element is painted, read off the sheets --------------------------
+#
+# The tests from here on ask the PRODUCT one question: for an element the JSX
+# renders, which declarations, in which sheets, can be what it computes for
+# one property? The element is read out of the .tsx exactly as the fill guard
+# reads a fill (tag, classes, attributes, parent), every rule in every sheet
+# is matched against it with the same selector semantics, and the cascade
+# drops a declaration only when one that certainly applies outranks it.
+#
+# THE FIRST VERSIONS OF THESE TESTS ASKED SOMETHING ELSE, and CI showed it.
+# `test_a_documented_grey_is_not_the_default_grey` compared this file's own
+# `DOCUMENTED_GREYS` literal with `MONOCHROME_FILL`, so it tested the table,
+# not the sheet. `test_a_projected_reading_is_not_drawn_in_the_absence_colour`
+# found rules by exact selector text (`sel == ".ov-tilde"`), so a more
+# specific rule painting the tilde was never measured. Commit ca12902 changed
+# ONLY Overview.tsx, painting the projected bar the live bar's own grey and
+# adding `.ctl-util-figure .ov-tilde { color: var(--ctl-absent) }`, and every
+# test in this file passed on it (CI run 36040434721). "Everything here reads
+# the shipped stylesheet", as the module docstring says, had stopped being
+# true of the two tests written to close exactly that gap.
+
+
+def _declared(sheets, longhand: str) -> list[_Paint]:
+    """Every declaration of one longhand in every sheet, in cascade order.
+
+    `background-color` and `background-image` come from `_paints`, which also
+    expands the `background` shorthand into them; any other property is read
+    as written. Both number rules with one counter over the same walk, so they
+    agree about which rule is later.
+    """
+    if longhand in ("background-color", "background-image"):
+        return [p for p in _paints(sheets) if p.longhand == longhand]
+    out: list[_Paint] = []
+    order = 0
+    for name, rules_ in sheets:
+        for at_rules, selector, decls in rules_:
+            order += 1
+            if "@keyframes" in at_rules or "@font-face" in at_rules or longhand not in decls:
+                continue
+            try:
+                spec = _specificity(selector)
+            except ValueError:
+                spec = (9, 9, 9)  # unreadable: nothing may be assumed to outrank it
+            raw = decls[longhand]
+            important = raw.endswith("!important")
+            value = raw[: -len("!important")].strip() if important else raw
+            out.append(_Paint(name, order, at_rules, selector, spec,
+                              longhand, longhand, value, important))
+    return out
+
+
+def _may_win(chain: tuple[_El, ...], declared: list[_Paint]) -> list[tuple[_Paint, int]]:
+    """Every declaration that may be what `chain[0]` computes, with its reach.
+
+    One that can reach the element is ruled out only when another that
+    CERTAINLY applies -- its selector matches for sure, and it is
+    unconditional or inside the same at-rule -- outranks it on importance,
+    then specificity, then order. That is `_unbeaten`'s cascade without its
+    grey filter: the question here is what the element is painted, not
+    whether it is grey.
+    """
+    reach = [(p, m) for p in declared if (m := _match_complex(p.selector, chain)) != NO]
+    return [
+        (p, m) for p, m in reach
+        if not any(
+            qm == YES and q.at_rules in ("", p.at_rules)
+            and (q.important, q.specificity, q.order) > (p.important, p.specificity, p.order)
+            for q, qm in reach
+        )
+    ]
+
+
+@functools.lru_cache(maxsize=None)
+def _carriers(
+    needed: frozenset[str],
+) -> tuple[tuple[tuple[str, tuple[_El, _El]], ...], tuple[str, ...]]:
+    """Every intrinsic JSX element that can carry all of `needed`.
+
+    Returned as (where, (element, parent)), with `needed` made certain on the
+    element, plus the tags naming one of `needed` that could not be read. An
+    element carries a class when its className names it literally, in either
+    arm of a conditional, or through an identifier traced to an assignment or
+    a JSX attribute in its file (`_element`, the fill guard's reader). The
+    other classes it MAY carry are dropped, as `_variants` drops them: the
+    fill's `fillClass` is one of `ov-projected` / `is-paused` / `is-bad` /
+    `is-warn`, never two at once, so a projected fill is not also a warning
+    one. Ancestors above the parent are unknown and match anything.
+    """
+    found: list[tuple[str, tuple[_El, _El]]] = []
+    unreadable: list[str] = []
+    for path in _ui_sources():
+        src = path.read_text(encoding="utf-8")
+        if not all(cls in src for cls in needed):
+            continue
+        code = _blank_comments(src)
+        toks = _jsx_tags(code)
+        for n, tok in enumerate(toks):
+            if tok.kind != "open" or not _is_intrinsic(tok.name):
+                continue
+            where = f"{_rel(path)}:{_line(code, tok.start)}"
+            try:
+                end, _ = _tag_end(code, tok.start)
+            except ValueError:
+                continue
+            tag = code[tok.start:end]
+            try:
+                el, _ = _element(code, tok, tag)
+            except ValueError as exc:
+                if any(cls in tag for cls in needed):
+                    unreadable.append(f"{where}: its tag could not be read ({exc})")
+                continue
+            if not needed <= el.classes | el.maybe:
+                continue
+            carrier = _El(tag=el.tag, classes=el.classes | needed, attrs=el.attrs,
+                          open_classes=el.open_classes, known=True)
+            found.append((where, (carrier, _parent(code, toks[:n]))))
+    return tuple(found), tuple(unreadable)
+
+
+def _decl(paint: _Paint) -> str:
+    inside = f" inside {paint.at_rules}" if paint.at_rules else ""
+    return f"`{paint.selector} {{ {paint.source}: {paint.value} }}` in {paint.sheet}{inside}"
+
+
+def _what_paints(
+    needed: frozenset[str], longhand: str, sheets,
+) -> tuple[list[str], list[tuple[str, _Paint, int]]]:
+    """What the product can paint `longhand` on an element carrying `needed`.
+
+    Returns (problems, paints). `paints` is (element, declaration, reach) for
+    every declaration that may win on every element that can carry the
+    classes. `problems` is what would make that list prove nothing, so a
+    caller fails on it: no element the JSX renders can carry the classes, a
+    tag naming one of them could not be read, or no rule certainly sets the
+    property on an element, which then shows whatever it inherits or its
+    initial value, and this reader computes neither.
+    """
+    name = "." + ".".join(sorted(needed))
+    carriers, unreadable = _carriers(needed)
+    problems = list(unreadable)
+    if not carriers:
+        problems.append(
+            f"no element any .tsx renders can carry `{name}`, so there is nothing "
+            "to measure: the class was renamed or the mark removed, and the test "
+            "has to be pointed at whatever the reading is drawn with now")
+    declared = _declared(sheets, longhand)
+    paints: list[tuple[str, _Paint, int]] = []
+    for where, chain in carriers:
+        el = f"{where} <{chain[0].tag} class=\"{' '.join(sorted(chain[0].classes))}\">"
+        winners = _may_win(chain, declared)
+        if not any(reach == YES for _, reach in winners):
+            problems.append(
+                f"{el}: no rule in any sheet certainly sets `{longhand}` on it, so "
+                "what it is drawn in is not something this test can read")
+        paints += [(el, paint, reach) for paint, reach in winners]
+    return problems, paints
+
+
+def _how(reach: int) -> str:
+    return "paints" if reach == YES else "may paint"
+
+
+def test_a_documented_grey_is_what_the_sheet_paints(sheet_scan):
+    """`DOCUMENTED_GREYS` says what the sheets paint, or every check of it is a check of itself.
+
+    `test_a_documented_grey_is_a_grey` resolves the table's entry, and the
+    cascade guard allows the entry on the fill it names. Both are tests of the
+    product only while the entry IS the product. So for each entry: find every
+    fill the JSX renders that can carry `ctl-util-fill` and the class, take
+    every `background-color` declaration in every sheet that may be what that
+    fill computes (the shorthand included, through the cascade), and require
+    each one to be the value the table names. Pointing the shipped rule
+    anywhere else, or adding a more specific rule that paints the fill, fails
+    here without the table being touched.
+    """
+    problems: list[str] = []
+    for cls, value in DOCUMENTED_GREYS.items():
+        found, paints = _what_paints(frozenset({"ctl-util-fill", cls}),
+                                     "background-color", sheet_scan.sheets)
+        problems += found
+        problems += [
+            f"{el}: {_decl(paint)} {_how(reach)} it, and DOCUMENTED_GREYS says "
+            f"`{cls}` paints {value}"
+            for el, paint, reach in paints if paint.value != value
+        ]
+    assert not problems, (
+        "a documented grey is not what the sheets paint on the fill it names:\n  "
+        + "\n  ".join(problems)
+    )
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_a_documented_grey_is_not_the_default_grey(sheet_scan, theme):
+    """A documented grey is a DIFFERENT grey on the bar it names, or it documents nothing.
+
+    `DOCUMENTED_GREYS` says of itself that its entries are painted "a
+    DIFFERENT grey", and the projected bar exists to look unlike a live one.
+    `test_a_documented_grey_is_a_grey` holds the first half (a grey, never a
+    hue). This holds the second, ON THE PRODUCT: every `background-color`
+    declaration that may win on a fill carrying `ctl-util-fill` and the
+    documented class is resolved through `var()` in the theme, and none may
+    land on the colour `MONOCHROME_FILL` lands on.
+
+    Its first version compared the table's literal with `MONOCHROME_FILL` and
+    never read a sheet. It went red on cbb5146 only because that mutation
+    edited the table as well as the rule; on ca12902, which painted the
+    projected bar `var(--text-dim)` in Overview.tsx alone, it passed (CI run
+    36040434721).
+
+    This asserts DIFFERENT, not VISIBLY different, and says so. The light
+    theme's two text greys are 1.11:1 apart (dE76 3.1), under the 1.2 this
+    file calls "not a visible step", so a floor that held would fail on the
+    shipped palette, and a floor chosen to pass would ratify it. What does
+    separate a projected reading from a measured one is its tilde, which
+    `test_a_projected_reading_is_not_drawn_in_the_absence_colour` holds.
+    """
+    tokens = _theme_tokens(sheet_scan.sheets, light=theme == "light")
+    default = _resolve_colour(MONOCHROME_FILL, tokens)
+    assert default is not None, (
+        f"{MONOCHROME_FILL} does not resolve to a colour in the {theme} theme"
+    )
+    problems: list[str] = []
+    for cls in DOCUMENTED_GREYS:
+        found, paints = _what_paints(frozenset({"ctl-util-fill", cls}),
+                                     "background-color", sheet_scan.sheets)
+        problems += found
+        for el, paint, reach in paints:
+            hex_value = _resolve_colour(paint.value, tokens)
+            if hex_value is None:
+                problems.append(f"{el}: {_decl(paint)} {_how(reach)} it, and does not "
+                                f"resolve to a colour in the {theme} theme")
+            elif hex_value == default:
+                problems.append(
+                    f"{el}: {_decl(paint)} {_how(reach)} it {hex_value}, the default "
+                    f"fill's own colour ({MONOCHROME_FILL}), so the bar `{cls}` names "
+                    "is drawn exactly like a measured one")
+    assert not problems, (
+        f"a documented grey is the default grey in the {theme} theme:\n  "
+        + "\n  ".join(problems)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. A projected reading is OLD information, never NO information.
+# ---------------------------------------------------------------------------
+#
+# Overview.tsx, `accountHeadroom`: "Real figures that are no longer current:
+# stale, or describing a window that has since reset. Kept apart from
+# `unread`, because 'old information' and 'no information' are opposite
+# facts." The account rows draw the same split. A row nobody has read gets a
+# hatched track and an em dash in `--ctl-absent`; a projected row gets a grey
+# bar and a `~` before its figure, in the same column as that em dash.
+#
+# The ui-hygiene lane (PR #26) made `--ctl-absent` its own warm stone, so that
+# "nobody measured this" is a colour of its own rather than the caption grey.
+# The merge fix after it (45b507d) moved the projected BAR back to grey and
+# left the TILDE on `--ctl-absent`, calling it an absence mark. It is not one:
+# it marks a figure that was measured. So the one glyph that tells a projected
+# row from a live one was drawn in the paint reserved for the opposite fact,
+# dE 0 from the em dash beside it. It now paints `--text-faint`, like its bar,
+# which is the pixel both had on main before #26.
+
+#: The marks a projected utilisation reading is drawn with: the classes an
+#: element carries to be that mark, and the property that paints it. A new
+#: mark for the same reading belongs here.
+PROJECTED_MARKS = (
+    (frozenset({"ctl-util-fill", "ov-projected"}), "background-color"),
+    (frozenset({"ov-tilde"}), "color"),
+)
+
+#: The distance a projected mark keeps from `--ctl-absent`. The same floor
+#: `encoding.hues.test.ts` holds between `--ctl-absent` and CANCELLED, and for
+#: the same reason: two facts that must not be confused, read in colour at the
+#: same size. 10 is a difference nobody has to look for.
+MIN_OLD_VS_NO_INFORMATION_DE = 10
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_a_projected_reading_is_not_drawn_in_the_absence_colour(sheet_scan, theme):
+    """Every mark of a projected reading keeps its distance from `--ctl-absent`.
+
+    For each mark, the elements the JSX renders with its classes are found in
+    the .tsx, and every declaration in every sheet that may be what such an
+    element computes (`_what_paints`: matched against the element and its
+    parent, through the cascade) is resolved through every `var()` in the
+    theme and measured as a colour distance. So the tilde fails whichever rule
+    paints it the absence stone: `.ov-tilde` itself, a more specific rule like
+    `.ctl-util-figure .ov-tilde`, or another token that happens to resolve to
+    the same colour.
+
+    The first version looked rules up by exact selector text, so only a rule
+    written `.ov-tilde` was ever measured; ca12902 added
+    `.ctl-util-figure .ov-tilde { color: var(--ctl-absent) }` and it passed
+    (CI run 36040434721).
+    """
+    tokens = _theme_tokens(sheet_scan.sheets, light=theme == "light")
+    absent = _resolve_colour("var(--ctl-absent)", tokens)
+    assert absent is not None, f"--ctl-absent does not resolve in the {theme} theme"
+
+    problems: list[str] = []
+    for needed, longhand in PROJECTED_MARKS:
+        found, paints = _what_paints(needed, longhand, sheet_scan.sheets)
+        problems += found
+        for el, paint, reach in paints:
+            hex_value = _resolve_colour(paint.value, tokens)
+            if hex_value is None:
+                problems.append(f"{el}: {_decl(paint)} {_how(reach)} it, and does not "
+                                f"resolve to a colour in the {theme} theme")
+                continue
+            d = delta_e76(hex_value, absent)
+            if d < MIN_OLD_VS_NO_INFORMATION_DE:
+                problems.append(
+                    f"{el}: {_decl(paint)} {_how(reach)} it {hex_value}, dE76 {d:.1f} "
+                    f"from --ctl-absent ({absent}): a real figure is marked in the "
+                    "colour of a figure nobody measured"
+                )
+    assert not problems, (
+        f"a projected reading is drawn as an absence in the {theme} theme "
+        f"(floor dE76 {MIN_OLD_VS_NO_INFORMATION_DE}):\n  " + "\n  ".join(problems)
     )

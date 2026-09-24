@@ -67,6 +67,29 @@ gcloud run services update swarm-api \
 
 Or revert the commit and let `.github/workflows/application.yml` redeploy.
 
+**Never roll `swarm-api` back to a build from before PR #44 (contract request
+17), and never revert #44.** From that release on, `swarm-api` records a
+cancel that is only requested as a `cancel_requested` event. No `swarm-api`
+image built before it can decode one: `EventType(data["type"])` raises
+`ValueError`, and `GET /v1/tasks/{id}/events` returns 500 for every page that
+holds such an event. That means every task cancelled while it held capacity
+since the deploy. The events are permanent, so this lasts as long as the
+rollback does, not just one rollout. The console Timeline, `swarm_follow` and
+`swarm tail` report that history as unreadable, in the middle of the incident
+you are rolling back for. Roll forward instead: revert the change that broke
+the service, not #44, and let the release deploy it.
+
+Check a rollback target before deploying it. The manifest's `tag` is the commit
+its images were built from:
+
+```bash
+tag="$(jq -r .tag path/to/the/previous/deployed-images-dev.json)"
+git fetch origin
+git grep -q CANCEL_REQUESTED "${tag}" -- apps/common/swarm_common/states.py \
+  && echo "reads cancel_requested: safe to roll back to" \
+  || echo "from before contract request 17, or unknown here: do NOT roll back to it"
+```
+
 While it is broken:
 
 * **the API being down stops submissions, not the fleet** — running tasks keep

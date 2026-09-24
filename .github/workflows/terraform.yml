@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -95,7 +95,7 @@ jobs:
             terraform -chdir="${dir}" validate
           done
 
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: ${{ env.TFLINT_VERSION }}
 
@@ -110,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -216,14 +216,14 @@ jobs:
       - uses: actions/checkout@v5
 
       - id: auth
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -303,6 +303,7 @@ jobs:
       # request has no plan to post -- see "WHY A PULL REQUEST DOES NOT PLAN".
       # tests/unit/scripts/test_workflow_step_reachability.py fails on a step
       # its own job can never reach.
+
       - name: upload the human-readable plan
         # Only the text plan, which Terraform already renders with sensitive
         # attributes masked. The binary plan and plan.json are NOT uploaded:
@@ -310,7 +311,7 @@ jobs:
         # artifact is readable by everyone with repository access. release.yml
         # re-plans immediately before applying rather than trusting an artifact,
         # which is also the only way an apply reflects the state as it is now.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tfplan-text-${{ github.event.inputs.environment || 'dev' }}
           path: terraform/infra/plan.txt

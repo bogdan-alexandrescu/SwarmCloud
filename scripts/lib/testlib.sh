@@ -58,6 +58,27 @@ t_skip() {
     t_fail "$* (not measured, and this run requires it)"
     return 0
   fi
+  _t_record_skip "$*"
+}
+
+# A skip an OPERATOR chose, as opposed to one the evidence forced.
+#
+# t_skip means "could not be measured this time". A pause is different in
+# kind: the owner closed admission to a pool on purpose -- pools/resource:browser
+# at hard_limit 0 until the GKE fixes are proven -- so there is nothing to
+# measure, and a submission would sit QUEUED for the suite's whole timeout.
+#
+# Counted and listed exactly like any other skip, so it is NOT a pass and the
+# summary names it. It is NOT turned into a failure by SUITE_SKIPS_ARE_FAILURES:
+# that switch means "the evidence is guaranteed to exist", and a deliberate
+# pause guarantees that it does not. A suite that uses this must still fail a
+# run made of nothing but pauses -- smoke-test.sh does, in "Every execution
+# backend was exercised".
+t_skip_paused() {
+  _t_record_skip "$* (paused by operator)"
+}
+
+_t_record_skip() {
   TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
   SKIPPED_NAMES+=("$*")
   printf '%s  SKIP%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*" >&2
@@ -349,13 +370,27 @@ validation_rejected() {
 #
 # Prints the HTTP status and a redacted body on failure, so a caller only has to
 # decide what to do about it.
+#
+# The body is indented by awk, not sed, because awk ends every line it prints.
+# swarm-api's JSON error bodies carry no trailing newline, and GNU sed leaves a
+# last line exactly as unterminated as it found it -- so the caller's next line
+# landed on the end of the body:
+#
+#     {"code":"unavailable","message":"..."}  FAIL could not read the runner-...
+#
+# which is a FAIL line that no longer starts with FAIL, in the one place a
+# reader scans for it. Caught by tests/integration/test_smoke_backend_matrix.py.
+_api_error_body() {
+  redact <"$1" | head -n 5 | awk '{ print "       " $0 }' >&2
+}
+
 api_fetch() {
   local path="$1" out="$2"
   if api_get "${path}" >"${out}"; then
     return 0
   fi
   err "GET ${API_PREFIX}${path} -> HTTP ${API_STATUS}"
-  redact <"${out}" | head -n 5 | sed 's/^/       /' >&2
+  _api_error_body "${out}"
   return 1
 }
 
@@ -366,7 +401,7 @@ api_send() {
     return 0
   fi
   err "${method} ${API_PREFIX}${path} -> HTTP ${API_STATUS}"
-  redact <"${out}" | head -n 5 | sed 's/^/       /' >&2
+  _api_error_body "${out}"
   return 1
 }
 

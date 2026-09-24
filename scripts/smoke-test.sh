@@ -250,58 +250,177 @@ t_pass "baseline captured"
 # tasks, seven failures, 403 on every one. `make smoke` passed throughout.
 #
 # The profiles below are therefore chosen to cover the BACKENDS, and the list
-# is derived from the frozen catalogue rather than typed out, so a profile that
-# moves to a new backend is covered the day it moves instead of the day someone
+# is derived from a catalogue rather than typed out, so a profile that moves
+# to a new backend is covered the day it moves instead of the day someone
 # remembers this file exists.
 #
-# Three details in the probe below are the difference between a matrix that
-# covers the backends and one that only looks like it does.
+# THE CATALOGUE IS THE DEPLOYED API'S, NOT THE REPOSITORY'S.
 #
-#   * `resolve_backend(p)`, NOT `p.backend`. AUTO is a real member of the
-#     frozen `Backend` enum and `resolve_backend` is what turns it into the
-#     backend a task actually dispatches to (by resource class). Reading the
-#     raw field would put a row called `AUTO` in this matrix -- a "backend"
-#     with no API behind it -- while the real backend that profile resolves to
-#     went uncovered. That is the same failure this whole section exists to
-#     stop, one level of indirection further in.
-#   * A backend with NO available profile is printed with `-` and FAILS below.
-#     Dropping it silently is how the matrix would quietly shrink back to the
-#     one row it had: flip `browser` to `available=False` and, without this,
-#     GKE_AUTOPILOT simply stops being mentioned and the suite stays green.
-#   * The repository root is passed in rather than assumed from the working
-#     directory. `sys.path.insert(0, "apps/common")` only worked when this was
-#     run from the root; anywhere else the import failed, the probe printed
-#     nothing, and "nothing" is indistinguishable from "no backends".
+# This used to import apps/common/swarm_common with python3. The image this
+# suite runs in, inside the VPC, is images/swarm-verify: alpine with bash, curl
+# and jq, deliberately no python, and only scripts/ and the Makefile copied in
+# -- no apps/ at all. So the first in-VPC run (release 36038727721, execution
+# swarm-verify-m9prt) could not run the probe: "could not read the
+# runner-profile catalogue" and "the backend matrix visited 0 backends", in the
+# same run in which the mock task was submitted, dispatched, SUCCEEDED and
+# released its lease.
+#
+# GET /v1/runtimes serves the catalogue to any authenticated caller
+# (apps/swarm-api/swarm_api/routes/platform.py): EVERY profile, disabled ones
+# included, each with its `available` flag and its `resolved_backend` --
+# computed on the server by the frozen `resolve_backend`, so AUTO has already
+# been turned into the backend a task actually dispatches to. Reading the raw
+# `backend` field would put a row called AUTO in this matrix, a "backend" with
+# no API behind it, while the real one went uncovered; `resolved_backend` is
+# read for exactly the reason the old probe called `resolve_backend(p)`.
+#
+# WHY THE DEPLOYED CATALOGUE IS THE BETTER SOURCE, not merely the available
+# one: it is the catalogue this suite's submissions are validated against. A
+# checkout that is ahead of or behind the deployed revision -- the normal state
+# of a laptop -- would otherwise test a matrix the platform does not have: a
+# profile added locally but not yet deployed is submitted and refused, and one
+# disabled in the deployment but not in the checkout is submitted and refused
+# for a different reason. What the platform serves is what it will dispatch.
+#
+# WHAT IT LOSES against the old walk over the frozen `Backend` enum: that walk
+# printed a row for every concrete backend in the enum, including one NO
+# profile references at all. The served catalogue only knows backends that
+# some profile resolves to, so a backend added to the enum with no profile yet
+# is not mentioned here. That is a narrower loss than it looks: callers pick a
+# profile by name and never a backend (invariant 10), so a backend no profile
+# resolves to is one nothing can dispatch to, and there is no dispatch path for
+# this suite to be silent about. What is KEPT is the case that actually bit: a
+# backend whose profiles are all DISABLED is still served (with available=false)
+# and still gets a row, printed with `-`, and FAILS below. Dropping it silently
+# is how the matrix would quietly shrink back to the one row it had: flip
+# `browser` to `available=False` and, without this, GKE_AUTOPILOT simply stops
+# being mentioned and the suite stays green.
+#
+# WHICH PROFILE STANDS FOR A BACKEND: the suite's own --profile (default mock)
+# if it resolves there, else a profile with no provider -- one a tenant holding
+# no credential can run, which the swarm-verify tenant is -- else by name. That
+# is deterministic, and it reproduces the rows the enum walk chose: mock for
+# CLOUD_RUN_JOB, browser for GKE_AUTOPILOT.
+#
+# Output: one `BACKEND PROFILE RESOURCE_CLASS` line per backend, or
+# `BACKEND - -` when no available profile reaches it. A catalogue with no
+# profiles, or a profile with no resolved backend, is an error rather than an
+# empty matrix -- "nothing" is indistinguishable from "no backends".
+#
+# tests/unit/scripts/test_smoke_covers_every_backend.py runs this program
+# against the production route's own output; keep it free of single quotes.
+# shellcheck disable=SC2016  # a jq program: $r, $b, $rows, $pick are jq's variables
+BACKEND_MATRIX_JQ='
+  (.runtimes // null) as $r
+  | if ($r | type) != "object" or ($r | length) == 0 then
+      error("the response carries no runtimes")
+    else . end
+  | [ $r | to_entries[] | .value + {name: (.value.name // .key)} ] as $profiles
+  | if any($profiles[]; (.resolved_backend // "") as $b | $b == "" or $b == "AUTO") then
+      error("a profile has no resolved backend")
+    else . end
+  | $profiles
+  | group_by(.resolved_backend)
+  | .[]
+  | . as $rows
+  | ($rows
+     | map(select(.available == true))
+     | sort_by([(.name != $prefer), (.provider != null), .name])
+     | first) as $pick
+  | if $pick == null then "\($rows[0].resolved_backend) - -"
+    else "\($pick.resolved_backend) \($pick.name) \($pick.resource_class)"
+    end
+'
 backends_to_cover() {
-  "${PYTHON_BIN:-python3}" - "${REPO_ROOT}" <<'PY'
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
-from swarm_common.profiles import Backend, RUNNER_PROFILES, resolve_backend
-
-seen = {}
-for name, profile in RUNNER_PROFILES.items():
-    if not getattr(profile, "available", True):
-        continue
-    seen.setdefault(resolve_backend(profile).value, name)
-
-# Every concrete backend, whether or not a profile reaches it. AUTO is not one
-# -- it is the instruction to choose, and `resolve_backend` has already run.
-for backend in sorted(b.value for b in Backend if b is not Backend.AUTO):
-    print(f"{backend} {seen.get(backend, '-')}")
-PY
+  jq -r --arg prefer "${PROFILE}" "${BACKEND_MATRIX_JQ}" "$1"
 }
 
+# A DELIBERATELY PAUSED BACKEND IS SKIPPED -- NOT FAILED, NOT PASSED, NOT WAITED ON.
+#
+# The owner has paused browser admission (pools/resource:browser at hard_limit
+# 0) until the GKE fixes are proven. Submitting into that pool tests nothing:
+# admission holds the task QUEUED by design, so this suite would wait out its
+# whole --timeout and then FAIL the platform for obeying its operator. Passing
+# the row would be worse -- a green line for a backend nothing ran on.
+#
+# So before a row submits, the pool its profile's resource class draws from is
+# read from Firestore (swarm-verify holds roles/datastore.viewer,
+# terraform/infra/verify.tf -- the suite reads tasks and leases the same way).
+# `hard_limit == 0` or `enabled == false` -- the second being what
+# scripts/pause-swarm.sh writes -- records the row as SKIPPED (paused by
+# operator). Compared explicitly: `.enabled // true` would read a paused pool
+# as open, the jq trap CLAUDE.md names.
+#
+# A skip is not a pass: it is counted apart and listed in the summary. It does
+# not fail the suite, because a pause is a decision and not a defect -- but a
+# run in which EVERY backend was skipped FAILS below, because it proved no
+# dispatch path at all.
+#
+# What is NOT read: a pause expressed on another of the task's pools (global,
+# tenant, provider, runner, backend). That row still submits, waits out
+# --timeout and FAILS -- bounded and loud, never a pass.
+#
+# A pool with no document is unlimited by construction (admission's
+# evaluate_capacity skips a pool that does not exist), so it is open. A pool
+# that could not be READ is neither open nor paused: that is recorded as a
+# FAIL, and the row then submits as it always did, so an unreadable pool can
+# never turn into a skip.
+#
+# The name is `resource:<class>` because swarm_common.models.pool_names_for
+# says so; tests/unit/scripts/test_smoke_covers_every_backend.py holds this
+# spelling to that function's output.
+resource_pool_for() { printf 'resource:%s' "$1"; }
+
+# pool_pause_reason POOL -> why an operator closed POOL, or nothing if it is
+# open or absent. Fails only when the pool could not be read.
+pool_pause_reason() {
+  local doc
+  doc="$(pool_doc "$1")" || return 1
+  [[ -n "${doc}" ]] || return 1
+  [[ "${doc}" != "null" ]] || return 0
+  jq -r '[ (if .hard_limit == 0 then "hard_limit 0" else empty end),
+           (if .enabled == false then "enabled=false" else empty end) ]
+         | join(", ")' <<<"${doc}"
+}
+
+# row_is_paused WHO RESOURCE_CLASS -> 0 when paused (the skip is recorded
+# here), 1 when the row should submit. A read that failed is recorded as a FAIL
+# and returns 1.
+row_is_paused() {
+  local who="$1" pool reason
+  pool="$(resource_pool_for "$2")"
+  if ! reason="$(pool_pause_reason "${pool}")"; then
+    t_fail "${who}: could not read pools/${pool}, so whether an operator paused it is unknown (a failed read is not evidence either way; submitting anyway)"
+    return 1
+  fi
+  [[ -n "${reason}" ]] || return 1
+  t_skip_paused "${who}: not submitted -- pools/${pool} is closed (${reason})"
+  return 0
+}
+
+RUNTIMES_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-runtimes.XXXXXX")"
 COVER_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-cover.XXXXXX")"
-# A command substitution runs in a subshell, so the exit status has to be taken
-# here rather than read back out of a variable the subshell set (CLAUDE.md).
-if ! backends_to_cover >"${COVER_FILE}" 2>/dev/null || [[ ! -s "${COVER_FILE}" ]]; then
-  t_fail "could not read the runner-profile catalogue; this suite cannot know which backends exist"
+cover_err="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-cover-err.XXXXXX")"
+# api_fetch is called directly with its output redirected, never inside
+# "$(...)": a command substitution is a subshell and would throw away the
+# API_STATUS that api_fetch reports on failure (CLAUDE.md). The exit statuses
+# are taken here for the same reason.
+if ! api_fetch "/runtimes" "${RUNTIMES_FILE}"; then
+  t_fail "could not read the runner-profile catalogue (GET ${API_PREFIX}/runtimes -> HTTP ${API_STATUS}); this suite cannot know which backends exist"
   t_info "without it a green run proves only that SOME backend works, which is what let GKE fail unseen"
+  # Emptied so the main case below never reads an error body as a catalogue.
+  : >"${RUNTIMES_FILE}"
+elif ! backends_to_cover "${RUNTIMES_FILE}" >"${COVER_FILE}" 2>"${cover_err}" || [[ ! -s "${COVER_FILE}" ]]; then
+  t_fail "could not derive the backend matrix from GET ${API_PREFIX}/runtimes: $(redact <"${cover_err}" | head -n 1)"
+  t_info "without it a green run proves only that SOME backend works, which is what let GKE fail unseen"
+  # Both emptied: no partial matrix is walked, and the main case below only
+  # ever consults a catalogue that parsed.
+  : >"${COVER_FILE}"
+  : >"${RUNTIMES_FILE}"
 else
   t_info "backends to cover: $(tr '\n' ' ' <"${COVER_FILE}")"
 fi
+rm -f "${cover_err}"
 
 # Fed from a `while read`, and the count is printed, because an empty or
 # single-iteration loop reporting success is this repository's signature defect
@@ -312,16 +431,22 @@ fi
 # -- a loop that silently covers one backend instead of all of them is exactly
 # the defect being fixed.
 COVERED=0
-while read -r BACKEND BPROFILE <&3; do
+EXERCISED=0
+PAUSED=0
+while read -r BACKEND BPROFILE BCLASS <&3; do
   [[ -n "${BACKEND}" ]] || continue
   COVERED=$(( COVERED + 1 ))
   if [[ "${BPROFILE}" == "-" ]]; then
     t_case "Backend ${BACKEND}: a runner profile exists to exercise it"
-    t_fail "${BACKEND}: no AVAILABLE profile in the frozen catalogue resolves to it"
+    t_fail "${BACKEND}: no AVAILABLE profile in the deployed catalogue resolves to it"
     t_info "${BACKEND} is therefore untested by this suite, and a green run says nothing about it"
     continue
   fi
   t_case "Backend ${BACKEND}: submit a ${BPROFILE} task and run it to completion"
+  if row_is_paused "${BACKEND} (${BPROFILE})" "${BCLASS}"; then
+    PAUSED=$(( PAUSED + 1 ))
+    continue
+  fi
   B_RUN_ID="$(test_run_id)"
   # profile_input, not a generic {message, run_id}: the browser runner refuses
   # an input with neither url nor actions, so this row -- the only GKE one --
@@ -331,6 +456,7 @@ while read -r BACKEND BPROFILE <&3; do
     t_fail "${BACKEND}: submission failed for profile ${BPROFILE}"
     continue
   fi
+  EXERCISED=$(( EXERCISED + 1 ))
   t_info "${BACKEND}: task ${B_TASK_ID}"
   if b_final="$(wait_for_state "${B_TASK_ID}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${TIMEOUT}")"; then
     assert_eq "SUCCEEDED" "${b_final}" "${BACKEND}: terminal state"
@@ -349,18 +475,44 @@ while read -r BACKEND BPROFILE <&3; do
 done 3<"${COVER_FILE}"
 rm -f "${COVER_FILE}"
 
-# The number actually visited, not the number intended. A loop that iterated
-# nothing and a loop that covered every backend print the same absence of
-# failures, and this suite has already shipped one of those.
+# The number actually visited AND the number actually exercised, not the
+# number intended. A loop that iterated nothing, a loop whose every row was
+# skipped and a loop that covered every backend all print the same absence of
+# failures, and this suite has already shipped the first of those.
 t_case "Every execution backend was exercised"
-if [[ "${COVERED}" -gt 0 ]]; then
-  t_pass "${COVERED} backend(s) visited"
-else
+if [[ "${COVERED}" -eq 0 ]]; then
   t_fail "the backend matrix visited 0 backends; nothing below proves any dispatch path works"
+elif [[ "${PAUSED}" -eq "${COVERED}" ]]; then
+  t_fail "all ${COVERED} backend(s) are paused by an operator, so this run exercised no dispatch path at all -- a skip is not a pass, and a run made only of skips proves nothing"
+elif [[ "${EXERCISED}" -eq 0 ]]; then
+  t_fail "${COVERED} backend(s) visited and none had a task submitted (${PAUSED} paused by an operator); nothing proves any dispatch path works"
+elif [[ "${PAUSED}" -gt 0 ]]; then
+  t_pass "${EXERCISED} of ${COVERED} backend(s) exercised; ${PAUSED} paused by an operator and NOT exercised (listed as skipped below)"
+else
+  t_pass "${EXERCISED} of ${COVERED} backend(s) exercised"
 fi
 
 # ---------------------------------------------------------------------------
 t_case "Submit a ${PROFILE} task and run it to completion"
+# The same pause check as the matrix rows above, for the same reason: a
+# submission into a pool an operator closed sits QUEUED for the whole
+# --timeout. Every case after this one is about THIS task -- its events, its
+# lease, its artifacts, its response -- so when it is not submitted none of
+# them can be measured, and the suite ends here with its summary instead of
+# reporting on a task that does not exist. The all-paused case above is what
+# stops a run made only of skips from passing.
+MAIN_CLASS=""
+if [[ -s "${RUNTIMES_FILE}" ]]; then
+  MAIN_CLASS="$(jq -r --arg p "${PROFILE}" '.runtimes[$p].resource_class // empty' "${RUNTIMES_FILE}")"
+fi
+rm -f "${RUNTIMES_FILE}"
+if [[ -z "${MAIN_CLASS}" ]]; then
+  t_info "the served catalogue names no resource class for ${PROFILE}, so whether its pool is paused was not checked"
+elif row_is_paused "${PROFILE}" "${MAIN_CLASS}"; then
+  t_skip_paused "the lifecycle, capacity, artifact and credential checks that follow are all about that task, so none of them was measured"
+  if t_summary; then exit 0; fi
+  exit 1
+fi
 RUN_ID="$(test_run_id)"
 TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}")" \
   '{"priority":10,"metadata":{"source":"smoke-test"}}')" || die "submission failed"

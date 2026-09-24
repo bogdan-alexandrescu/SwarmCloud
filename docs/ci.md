@@ -149,7 +149,7 @@ and hands it to `setup-node`. The step fails unless it finds exactly one such li
 
 The step after `setup-node` checks that the Node on `PATH` has that major, and
 fails if it does not or if the major arrived empty. Without that check, an empty
-value would read as success. `setup-node@v4` treats an empty `node-version` as
+value would read as success. `setup-node@v5` treats an empty `node-version` as
 "no version given". It installs nothing and prints no warning, so the typecheck,
 the tests and the build would all run, and pass, on whatever Node the runner
 image ships. An empty value is what you get if the output name the first step

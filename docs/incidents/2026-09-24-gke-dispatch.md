@@ -356,7 +356,10 @@ That last test also found that the dispatcher put
 autoscaler reads it from the pod, so dispatched pods were evictable in a
 scale-down. It is now on the pod template too. The contract request to document
 `RunnerProfile.command` as child argv is request 18 in
-[contract-change-requests.md](../contract-change-requests.md).
+[contract-change-requests.md](../contract-change-requests.md). The owner
+accepted it on 2026-09-24 in its stronger form: the field is now
+`RunnerProfile.runner_argv` (PR #44). This record keeps the old name where it
+describes what the code did at the time.
 
 *Two things the first version of the fix missed (review of PR #31).*
 

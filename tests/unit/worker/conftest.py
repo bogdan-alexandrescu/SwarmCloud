@@ -171,6 +171,7 @@ def build_worker(
     termination_grace_seconds: int = 2,
     max_in_worker_retry_delay_seconds: int = 45,
     secret_client: Any | None = None,
+    txn_runner: Any | None = None,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
@@ -211,7 +212,10 @@ def build_worker(
         tenant_id=TENANT,
         generation=generation,
         logger=logger,
-        txn_runner=FakeTransactionRunner(db),
+        # Replaceable so a test can model what the default cannot: a
+        # transaction whose commit is refused because a document it read was
+        # changed underneath it (tests/unit/worker/test_fenced_sigterm.py).
+        txn_runner=txn_runner or FakeTransactionRunner(db),
     )
     exporter = RecordingExporter()
     deps = WorkerDeps(
