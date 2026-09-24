@@ -176,7 +176,11 @@ variable "deployer_roles" {
     "roles/resourcemanager.projectIamAdmin",
     "roles/run.admin",
     "roles/serviceusage.serviceUsageAdmin",
-    "roles/storage.admin",
+    # storage.admin is NOT in this list any more; it is granted in wif.tf with an
+    # IAM CONDITION instead, because it is the one role on this list whose blast
+    # radius includes three buckets belonging to another team. See
+    # `deployer_storage_condition` there for the exact expression and for the
+    # bucket that nearly got cut off by it.
   ]
 
   validation {
@@ -253,4 +257,42 @@ variable "extra_labels" {
     condition     = !contains(keys(var.extra_labels), "managed-by")
     error_message = "managed-by is fixed by this configuration."
   }
+}
+
+variable "deployer_storage_bucket_prefixes" {
+  description = <<-EOT
+    Bucket name prefixes the CI deployer may administer. Everything this platform
+    creates is `swarm-`-prefixed, so one entry covers all of it -- and a prefix
+    match also admits every OBJECT in those buckets, because an object's resource
+    name is `projects/_/buckets/<b>/objects/<o>`.
+  EOT
+  type        = list(string)
+  default     = ["swarm-"]
+
+  validation {
+    condition     = length(var.deployer_storage_bucket_prefixes) > 0
+    error_message = "at least one prefix is required, or the deployer can administer no bucket at all and every terraform state write fails."
+  }
+
+  validation {
+    # A one- or two-character prefix is not a scope. "s" would admit
+    # saga-agents-files-staging, which is another team's.
+    condition     = alltrue([for p in var.deployer_storage_bucket_prefixes : length(p) >= 4])
+    error_message = "a prefix shorter than 4 characters is too broad to be a boundary in a shared project; `s` would admit saga-agents-files-staging."
+  }
+}
+
+variable "deployer_storage_buckets_exact" {
+  description = <<-EOT
+    Buckets admitted by EXACT name because they do not carry the platform prefix
+    and cannot be renamed.
+
+    `<project>_cloudbuild` is GCP's own source-staging bucket for
+    `gcloud builds submit`. It is neither ours nor the other team's, it does not
+    match `swarm-`, and omitting it breaks every image build -- which is how a
+    plausible-looking `startsWith("swarm-")` condition would have taken down the
+    release pipeline on the day it first worked.
+  EOT
+  type        = list(string)
+  default     = ["saga-agents-staging_cloudbuild"]
 }
