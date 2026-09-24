@@ -8,7 +8,8 @@ code is the contract with the dispatcher and the reconciler:
 
     0   terminal state persisted, lease released
     1   the attempt failed, terminal state persisted, lease released
-    70  fenced: a newer generation owns this task, the agent never ran
+    70  fenced: a newer generation owns this task; the task and the lease
+        were not written, and the agent was never started or was stopped
     71  cancelled
     75  parked (quota, backpressure, missing credential, interruption)
     76  the runner exceeded its timeout and was killed
