@@ -150,7 +150,7 @@ resource "google_project_iam_custom_role" "secret_lister" {
   # Absent, and deliberately: secretmanager.versions.access. Payload access
   # stays per-secret, granted by the secret_manager module on the specific
   # refresh secrets, so a bug here cannot widen into reading tenant keys.
-  permissions = [
+  permissions = concat([
     "secretmanager.secrets.list",
 
     # PROVISIONING an account's secrets, added when account management moved
@@ -171,7 +171,6 @@ resource "google_project_iam_custom_role" "secret_lister" {
     "secretmanager.secrets.get",
     "secretmanager.secrets.getIamPolicy",
     "secretmanager.secrets.setIamPolicy",
-    "secretmanager.versions.add",
 
     # RETENTION, added 2026-09-22 on the owner's explicit decision.
     #
@@ -206,5 +205,107 @@ resource "google_project_iam_custom_role" "secret_lister" {
     # one without re-reading the other.
     "secretmanager.versions.list",
     "secretmanager.versions.destroy",
+    ],
+    # versions.add, while it is still project-wide. See broker_version_adder
+    # below for where it is going and why it cannot go there in one step.
+    var.secret_lister_project_wide_versions_add ? ["secretmanager.versions.add"] : [],
+  )
+
+  # Create the scoped grant BEFORE this role loses the project-wide permission,
+  # in any apply that does both. Ordering the API calls cannot order IAM's
+  # propagation, which is why the two are also separate releases (below); this
+  # only stops terraform making the window wider than it has to be.
+  depends_on = [google_project_iam_member.broker_version_adder]
+}
+
+# ---------------------------------------------------------------------------
+# secretmanager.versions.add, SCOPED TO THE PLATFORM'S OWN SECRETS.
+#
+# The broker adds versions to two kinds of secret, and they reach it by two
+# different routes:
+#
+#   swarm-tenant-<t>-<provider>[-refresh]   created by terraform; the broker is
+#       bound secretVersionAdder ON EACH ONE by modules/secret_manager
+#       (`version_adder`). Already per-secret.
+#   swarm-account-<t>--<label>[-refresh]    created by the BROKER at
+#       registration, with a name terraform cannot know in advance. These were
+#       reachable only through `versions.add` in the project-wide role above --
+#       and so was every one of the 63 secrets in this project that belong to
+#       another team (live listing, 2026-09-24: 57 agents-*, 6 promptlab-*).
+#
+# A literal per-secret binding cannot cover the second kind without the broker
+# granting itself adder on every secret it creates, which it could only do
+# through the project-wide setIamPolicy -- the larger grant. So the scope is
+# drawn where the platform already draws it: the names
+# `quota_broker.secretstore.owned_by_this_platform` accepts,
+# \Aswarm-(?:tenant|account)-..., as two prefixes IAM evaluates per secret. Of
+# the 77 secrets in the project that admits exactly our 14 and refuses the 63.
+#
+# `projects/<NUMBER>/secrets/`: Secret Manager names secrets by project number
+# in a condition, and the project ID "can't be substituted"
+# (docs.cloud.google.com/iam/docs/conditions-resource-attributes).
+# secretVersionAdder is {versions.add, secrets.rotate,
+# resourcemanager.projects.get/list} (gcloud iam roles describe, 2026-09-24);
+# both secretmanager permissions are checked on the secret, so no type guard is
+# needed -- and none is used, so nothing depends on how IAM types a version.
+#
+# WHY THIS IS TWO RELEASES AND NOT ONE. Every refresh of an account ROTATES its
+# refresh token (76 exchanges, 76 rotations, measured 2026-09-22 in
+# quota_broker.credentials), and the new token is written with versions.add
+# immediately after the exchange that consumed the old one. If that write is
+# refused, the only valid refresh token is lost and the account needs a human.
+# Granting the scoped permission and removing the project-wide one in the same
+# apply leaves a window, as wide as IAM's propagation, in which the removal can
+# land first -- at ~34 exchanges a day across seven accounts, a few minutes of
+# window is a real chance of bricking one. So:
+#
+#   release 1  this grant exists; the role above still carries versions.add
+#   release 2  secret_lister_project_wide_versions_add = false (the default
+#              below, flipped), after release 1 has been live long enough to
+#              propagate -- 7 minutes is IAM's documented worst case
+#
+# NOT VERIFIED LIVE: that IAM evaluates this condition as documented for
+# versions.add. Release 1 proves nothing about it -- the project-wide grant is
+# still there -- so the proof is the first account refresh after release 2,
+# logged as "refresh token rotated and persisted".
+# ---------------------------------------------------------------------------
+
+variable "secret_lister_project_wide_versions_add" {
+  description = <<-EOT
+    Keep secretmanager.versions.add in the project-wide swarmSecretLister role.
+
+    TRUE for exactly one release: the one that creates broker_version_adder, the
+    scoped grant that replaces it. Flip it to false in the next release, once
+    that grant has had time to propagate. Doing both in one apply risks refusing
+    an account's rotated refresh token, which strands the account; see
+    custom_roles.tf for the measurement.
+  EOT
+  type        = bool
+  default     = true
+}
+
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
+locals {
+  # The two name families quota_broker.secretstore.owned_by_this_platform
+  # accepts. Literal "swarm-", like that regex: the broker's names do not follow
+  # a configurable prefix, so neither does this.
+  broker_secret_prefixes = [
+    "projects/${data.google_project.this.number}/secrets/swarm-tenant-",
+    "projects/${data.google_project.this.number}/secrets/swarm-account-",
   ]
+}
+
+resource "google_project_iam_member" "broker_version_adder" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretVersionAdder"
+  member  = local.sa_member["swarm-quota-broker"]
+
+  condition {
+    title       = "swarm tenant and account secrets only"
+    description = "The broker may add versions to secrets this platform owns and to no other. 63 of the 77 secrets in this project belong to another team."
+    expression  = join(" || ", [for p in local.broker_secret_prefixes : "resource.name.startsWith(\"${p}\")"])
+  }
 }
