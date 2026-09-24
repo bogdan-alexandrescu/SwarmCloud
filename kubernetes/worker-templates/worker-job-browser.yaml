@@ -43,7 +43,10 @@ spec:
   backoffLimit: 0
   completions: 1
   parallelism: 1
-  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  # Later than the worker's TASK_TIMEOUT_SECONDS; see worker-job.yaml. On this
+  # template it mattered most: Autopilot provisions a node and pulls the
+  # browser image before the worker starts its own clock.
+  activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
   ttlSecondsAfterFinished: 3600
   template:
     metadata:

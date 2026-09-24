@@ -58,7 +58,13 @@ spec:
   backoffLimit: 0
   completions: 1
   parallelism: 1
-  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  # LATER than the worker's own TASK_TIMEOUT_SECONDS, never equal to it. This
+  # counts from Job creation (node provisioning and image pull included), the
+  # worker's from its own start; when they were the same number the Job always
+  # SIGTERMed the pod first and the worker PARKED the task instead of failing
+  # it. render.py computes it with the dispatcher's own function
+  # (backend_deadline_seconds in apps/scheduler/scheduler/dispatch.py).
+  activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
   # Keep the finished Job around long enough for the reconciler's next pass and
   # for a person to read the logs, then let the cluster clean it up.
   ttlSecondsAfterFinished: 3600

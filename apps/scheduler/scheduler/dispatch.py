@@ -177,6 +177,73 @@ CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
     "seccompProfile": {"type": "RuntimeDefault"},
 }
 
+#: THE BACKEND'S DEADLINE IS A BACKSTOP, AND IT MUST FIRE AFTER THE LIFECYCLE'S.
+#:
+#: The worker lifecycle enforces the task's timeout itself: at
+#: `TASK_TIMEOUT_SECONDS` it stops the runner child, checkpoints, uploads,
+#: writes FAILED ("runner exceeded its timeout") and releases the lease. The
+#: backend's own deadline -- a GKE Job's `activeDeadlineSeconds`, a Cloud Run
+#: execution's `timeout` -- exists only for a lifecycle that has wedged.
+#:
+#: Both used to be `task.timeout_seconds`, and the backend always won. A Job's
+#: deadline counts from Job CREATION, which includes Autopilot provisioning a
+#: node and pulling the image; the lifecycle's counts from `Worker.__init__`,
+#: minutes later. So the Job controller SIGTERMed the pod first, and on SIGTERM
+#: the lifecycle takes its INTERRUPTION path instead (`_handle_interruption`):
+#: it parks the task PARKED/SCHEDULED_RETRY with `next_eligible_at=now`. Nothing
+#: in the platform promotes a SCHEDULED_RETRY park, so a task that simply ran
+#: out of time never became FAILED and its workflow never finished -- the
+#: "workflow stuck" symptom of incident wf_ebb3ab2d65664707a559, reached through
+#: its own fix (review of PR #31). Cloud Run had the same race with a margin of
+#: seconds.
+#:
+#: So the backend's deadline is the task's timeout PLUS:
+#:
+#:   * the latest a lifecycle can START and still be running --
+#:     `dispatch_timeout_seconds` after the lease. The reconciler reclaims any
+#:     attempt with no heartbeat by then (reconciler/detect.py), and the
+#:     lifecycle heartbeats before any slow work, so a lifecycle that started
+#:     later has already been fenced. Read from the scheduler's settings, the
+#:     same value admission writes into `lease.dispatch_deadline`, never restated.
+#:   * WORKER_FINALISE_BUDGET_SECONDS, below.
+#:
+#: The headroom is the BACKEND's, not the agent's: TASK_TIMEOUT_SECONDS in the
+#: worker's environment is still exactly `task.timeout_seconds`.
+#:
+#: The cost of the headroom is that a wedged lifecycle is killed later. It is
+#: small: a wedged lifecycle stops heartbeating, and the reconciler reclaims a
+#: silent lease after `heartbeat_grace_seconds` (90) and terminates the
+#: execution itself, long before either backend deadline.
+#:
+#: tests/unit/control_plane/test_dispatch_manifests.py holds both dispatchers to
+#: it, feeding the worker's own `WorkerConfig.from_env` the environment the
+#: dispatcher built; tests/unit/worker/test_kubernetes_manifests.py holds the
+#: three YAML templates to it, and its parity test holds `render.py`'s value
+#: equal to this one's (render.py imports this function).
+#:
+#: WHAT THE LIFECYCLE DOES AFTER ITS OWN DEADLINE, which the backend must wait
+#: for: stop the runner child (TERMINATION_GRACE_SECONDS, 20 by default), take
+#: the final checkpoint, harvest the git changes (GIT_HARVEST_TIMEOUT_SECONDS,
+#: 120), upload the outputs and write the terminal state. The first two numbers
+#: are bounded by the worker's own config and add up to 140s; the uploads have no
+#: bound of their own, so they get the rest. 300s is a chosen number, not a
+#: measured one. The tests compare it with the worker's actual defaults, so
+#: raising either of those past it fails CI rather than bringing the race back.
+WORKER_FINALISE_BUDGET_SECONDS = 300
+
+
+def backend_deadline_seconds(task_timeout_seconds: int, *, dispatch_timeout_seconds: int) -> int:
+    """The backend's hard deadline for one attempt. See WORKER_FINALISE_BUDGET_SECONDS.
+
+    The ONE place it is computed: both dispatchers call it, and
+    kubernetes/render.py imports it for the YAML templates.
+    """
+    return (
+        int(task_timeout_seconds)
+        + int(dispatch_timeout_seconds)
+        + WORKER_FINALISE_BUDGET_SECONDS
+    )
+
 
 class DispatchError(Exception):
     """Dispatch failed. The caller releases the lease and returns to READY.
@@ -496,7 +563,16 @@ class CloudRunJobDispatcher:
                     # new fencing generation. Cloud Run retrying underneath us
                     # would run the agent twice on one generation.
                     max_retries=0,
-                    timeout=duration_pb2.Duration(seconds=profile.timeout_seconds),
+                    # What an execution started BY HAND (no override) gets. The
+                    # scheduler's own executions override it per task below.
+                    # Later than the lifecycle's deadline; see
+                    # WORKER_FINALISE_BUDGET_SECONDS.
+                    timeout=duration_pb2.Duration(
+                        seconds=backend_deadline_seconds(
+                            profile.timeout_seconds,
+                            dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
+                        )
+                    ),
                     service_account=tenant.service_account,
                     execution_environment=run_v2.ExecutionEnvironment.EXECUTION_ENVIRONMENT_GEN2,
                 ),
@@ -516,16 +592,19 @@ class CloudRunJobDispatcher:
 
         client = self._jobs()
         try:
-            client.get_job(request=run_v2.GetJobRequest(name=name))
-            self._ensured.add(job_id)
-            return name
+            existing = client.get_job(request=run_v2.GetJobRequest(name=name))
         except gexc.NotFound:
-            pass
+            existing = None
         except gexc.GoogleAPICallError as exc:
             raise DispatchError(
                 f"could not read Cloud Run job {job_id}: {exc}",
                 code="cloud_run_get_job_failed",
             ) from exc
+        if existing is not None:
+            # READ, not merely found. See _clear_entrypoint_override.
+            self._clear_entrypoint_override(client, existing, job_id)
+            self._ensured.add(job_id)
+            return name
 
         try:
             operation = client.create_job(
@@ -547,6 +626,68 @@ class CloudRunJobDispatcher:
         self._ensured.add(job_id)
         return name
 
+    def _clear_entrypoint_override(self, client: Any, job: Any, job_id: str) -> None:
+        """Remove a container `command`/`args` from a Job that already exists.
+
+        Taking `command=` out of `_build_job` fixed only the Jobs created from
+        then on. Every Job this dispatcher created BEFORE 2026-09-24 -- any
+        non-default resource class (`swarm-job-<t>-<p>-<class>`), any provider
+        outside a tenant's terraform `providers` -- still carries
+        `command=python -m agent_worker.runners.<x>`, which replaces the image
+        ENTRYPOINT and runs the bare runner: no fencing (invariant 5), no
+        checkpoint (invariant 8), no heartbeat, no lease release (module
+        docstring). `ensure_job` used to return the moment `get_job` succeeded,
+        and a per-execution `ContainerOverride` has `args`, `env` and
+        `clear_args` but NO `command` field, so `run_job` could never clear it.
+        So the Job is corrected in place, once per process, before its first
+        execution here (review of PR #31).
+
+        CLEARED IN PLACE rather than rebuilt from `_build_job`: only the two
+        fields that replace the lifecycle change, so a Job terraform owns keeps
+        terraform's image, environment, secrets, labels and identity -- terraform
+        already leaves both fields null, so this moves it towards its own
+        configuration, never away. The dispatcher holds `run.jobs.update`
+        (terraform/modules/iam/custom_roles.tf). `update_job` sends the Job's
+        etag, so a concurrent writer is refused rather than overwritten.
+
+        REFUSED, never run, if the correction fails. Running the bare runner is
+        not a fallback: the DispatchError returns the lease and the task, and the
+        code names what to fix.
+        """
+        from google.cloud import run_v2
+
+        template = getattr(getattr(job, "template", None), "template", None)
+        containers = list(getattr(template, "containers", None) or [])
+        overriding = [c for c in containers if list(c.command) or list(c.args)]
+        if not overriding:
+            return
+        found = ", ".join(
+            f"{c.name or '<unnamed>'}: command={list(c.command)!r} args={len(c.args)}"
+            for c in overriding
+        )
+        for container in overriding:
+            container.command = []
+            container.args = []
+        log.warning(
+            "Cloud Run job %s overrides the image ENTRYPOINT (%s), so its executions "
+            "would run the bare runner instead of the worker lifecycle; clearing both "
+            "before running it",
+            job_id,
+            found,
+        )
+        try:
+            operation = client.update_job(request=run_v2.UpdateJobRequest(job=job))
+            operation.result(timeout=120)
+        except Exception as exc:  # any failure, a poll timeout included, refuses
+            raise DispatchError(
+                f"Cloud Run job {job_id} overrides the image ENTRYPOINT ({found}) and "
+                f"could not be corrected: {exc}. Its executions would run the bare "
+                "runner with no fencing, checkpoint, heartbeat or lease release, so "
+                "nothing is started on it. Clear the container command and args on the "
+                "Job, or delete it and let the scheduler recreate it.",
+                code="cloud_run_job_overrides_entrypoint",
+            ) from exc
+
     def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant) -> str:
         from google.api_core import exceptions as gexc
         from google.cloud import run_v2
@@ -565,7 +706,14 @@ class CloudRunJobDispatcher:
                 )
             ],
             task_count=1,
-            timeout=duration_pb2.Duration(seconds=task.timeout_seconds),
+            # Later than the lifecycle's own deadline, which is
+            # TASK_TIMEOUT_SECONDS in `env`. See WORKER_FINALISE_BUDGET_SECONDS.
+            timeout=duration_pb2.Duration(
+                seconds=backend_deadline_seconds(
+                    task.timeout_seconds,
+                    dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
+                )
+            ),
         )
         try:
             operation = self._jobs().run_job(
@@ -955,7 +1103,14 @@ class GkeJobDispatcher:
                 "backoffLimit": 0,
                 "completions": 1,
                 "parallelism": 1,
-                "activeDeadlineSeconds": task.timeout_seconds,
+                # Later than the lifecycle's own deadline (TASK_TIMEOUT_SECONDS
+                # in `env`), which it must never pre-empt: the Job controller
+                # SIGTERMs the pod, and a SIGTERMed lifecycle PARKS the task
+                # instead of failing it. See WORKER_FINALISE_BUDGET_SECONDS.
+                "activeDeadlineSeconds": backend_deadline_seconds(
+                    task.timeout_seconds,
+                    dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
+                ),
                 "ttlSecondsAfterFinished": 3600,
                 "template": {
                     "metadata": {

@@ -358,6 +358,32 @@ scale-down. It is now on the pod template too. The contract request to document
 `RunnerProfile.command` as child argv is CR 14 in
 [contract-change-requests.md](../contract-change-requests.md).
 
+*Two things the first version of the fix missed (review of PR #31).*
+
+* **Jobs created before the fix kept the override.** Removing `command=` from
+  `_build_job` changes only Jobs created afterwards. `ensure_job` returned as
+  soon as `get_job` succeeded, and a Cloud Run per-execution `ContainerOverride`
+  has no `command` field, so `run_job` could not clear it. Every Job the
+  scheduler had already created (a non-default resource class, or a provider
+  outside the tenant's Terraform `providers`) would have gone on running the bare
+  runner. `ensure_job` now reads the Job it fetched, clears `command` and `args`
+  with `update_job` before the first execution, and refuses the dispatch
+  (`cloud_run_job_overrides_entrypoint`) if the update fails. Whether any such
+  Job exists in the deployed project was not measured.
+* **Once the lifecycle ran, the backend's deadline pre-empted its timeout.** The
+  Job's `activeDeadlineSeconds` and the Cloud Run execution timeout were both
+  `task.timeout_seconds`. The Job's deadline counts from Job creation, including
+  node provisioning and the image pull. The lifecycle's deadline counts from its
+  own start, minutes later. So the backend always SIGTERMed first. On SIGTERM
+  the lifecycle parks the task as `SCHEDULED_RETRY` rather than failing it, and
+  nothing promotes that park (see §5). A task that ran out of time would have
+  stayed PARKED, and its workflow would have stuck again, this time because of
+  the fix. The backend deadline is now the task timeout plus
+  `dispatch_timeout_seconds` (the latest a lifecycle can start before the
+  reconciler reclaims it) plus a 300s budget for the lifecycle's work after its
+  own deadline. `backend_deadline_seconds` in `dispatch.py` is the only place
+  that computes it, and `render.py` imports it.
+
 *What is still unproven.* The lifecycle has never run on GKE. Workload Identity
 from the pod to Firestore and Secret Manager, egress through the tenant
 NetworkPolicy, and Workload Identity with `automountServiceAccountToken: false`
@@ -575,3 +601,17 @@ someone follows at 3am.
   for Chromium under the workspace rather than `/opt/playwright`. The cheapest
   proof is one task:
   `scripts/smoke-test.sh --profile browser --timeout 900`.
+* **A worker that is SIGTERMed still strands its task.** The lifecycle's SIGTERM
+  path (`_handle_interruption`) parks the task `PARKED/SCHEDULED_RETRY` with
+  `next_eligible_at=now` and releases the lease. Nothing in the platform moves a
+  `SCHEDULED_RETRY` park back to READY. The scheduler sweeps only
+  `DEPENDENCY_INCOMPLETE`, `CREDENTIAL_MISSING` and the three `PROVIDER_*`
+  reasons, `ready_tasks` selects READY only, and the reconciler has no
+  promoter. [quota-management.md](../quota-management.md) §4 says this reason is
+  "unparked by `next_eligible_at`", and no code does that. The deadline fix in
+  cause 8 removes the one trigger that was certain to hit. Any other SIGTERM (an
+  instance or node going away) still leaves the task PARKED for ever. That
+  promoter is not in this change. The frozen state machine allows PARKED to go
+  only to READY, CANCELLED or DEAD_LETTERED, and admission does not check the
+  retry cap, so whoever builds it has to decide what an interrupted last attempt
+  becomes.
