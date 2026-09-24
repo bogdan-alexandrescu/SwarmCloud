@@ -73,6 +73,26 @@ move.
   (`gap: 14px`, `align-items: center`, `font-size`, `color`). The later one
   wins wherever the two conflict.
 
+**Since `b0fff1b`: three of the open items above have shipped on main**
+
+Added when this block was merged with main at `56a5cab`. The rows above are
+left as they were checked at `b0fff1b`; this list is what changed after.
+
+- **Events paging** (§6 S1), in #19. `GET /v1/tasks/{id}/events` now takes
+  `page_token` and `order=asc|desc` and returns `next_page_token`
+  (`routes/tasks.py:138`). With neither parameter it returns what it always
+  did. The route is paged; no screen asks for `order=desc` yet, so the UI's
+  event lists still read the oldest page.
+- **Cross-task attempts** (§6 S4), in #19. `GET /v1/attempts`
+  (`routes/attempts.py:36`) lists every attempt of the caller's tenant, newest
+  first, paged, with a per-page `coverage` count of rows that carry a reported
+  cost. No screen calls it yet.
+- **Checkpoint content** (§6 S3, the checkpoint half), in #29. A listing, one
+  member as text, and the whole archive: `routes/checkpoints.py:53`, `:83` and
+  `:114`. The UI is `CheckpointBrowser.tsx:297`, opened from each checkpoint
+  row in `RunFiles.tsx:222`. The constraints behind that shape are recorded
+  under §6 S3 below ("S3 decision — owner, 2026-09-24").
+
 **The six questions in §8: five answered, Q2 half answered**
 
 - **Q4, the chart library: visx.** The owner decided it on 2026-09-22 (the
@@ -103,8 +123,10 @@ move.
   fact itself stays on the surface.
 - **Q6: both themes survive** (design-system.md §1.1).
 - **S3 checkpoint content: the owner decided on 2026-09-24 that it is a
-  listing, per-file content, and a whole-checkpoint download.** The listing is
-  built. Per-file content and the whole download are not yet.
+  listing, per-file content, and a whole-checkpoint download.** At `b0fff1b`
+  only the list of checkpoints existed (`GET /v1/tasks/{id}/checkpoints`),
+  which names each checkpoint and says nothing of what is inside it. All three
+  parts of the decision shipped in #29 (see "Since `b0fff1b`" above).
 
 ---
 
