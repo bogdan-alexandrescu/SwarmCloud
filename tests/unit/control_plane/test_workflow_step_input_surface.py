@@ -452,14 +452,14 @@ def test_every_profile_in_the_catalogue_gets_an_input_contract(client, db):
 def test_the_contract_is_keyed_off_the_frozen_catalogue_and_not_a_name_list():
     """A new profile pointed at an existing runner must inherit its requirement.
 
-    `runner_module` reads `RunnerProfile.command`, so the profile->module half of
+    `runner_module` reads `RunnerProfile.runner_argv`, so the profile->module half of
     the answer comes from the frozen catalogue itself. A table of profile NAMES
     would have to be revisited whenever the catalogue grew one, and that revisit
     is the step that gets missed.
     """
     for name, profile in RUNNER_PROFILES.items():
-        assert runner_module(profile) == profile.command[-1], name
-        assert profile.command[:2] == ("python", "-m"), (
+        assert runner_module(profile) == profile.runner_argv[-1], name
+        assert profile.runner_argv[:2] == ("python", "-m"), (
             f"{name} is not started as `python -m <module>`; runner_module would "
             "return None and its requirements would silently become empty"
         )

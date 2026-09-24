@@ -228,23 +228,39 @@ jobs:
       - name: sync
         run: uv sync --frozen --all-extras --dev
 
-      - name: the frozen contract is unchanged
+      - name: the frozen contract is unchanged, or its change is recorded as accepted
         # apps/common/swarm_common is frozen by CONTRACT.md. Every other
         # component was written against those exact types, so a change there
         # breaks all of them at once and must be a deliberate, discussed act.
-        run: |
-          set -euo pipefail
-          base="${{ github.event.pull_request.base.sha }}"
-          if [ -n "${base}" ]; then
-            git fetch --no-tags --depth=1 origin "${base}" || true
-            if git diff --name-only "${base}"...HEAD -- apps/common/swarm_common | grep -q .; then
-              echo "::error::apps/common/swarm_common/ is FROZEN (see CONTRACT.md)."
-              echo "If it genuinely must change, say so in the PR description and get it agreed first."
-              git diff --stat "${base}"...HEAD -- apps/common/swarm_common
-              exit 1
-            fi
-          fi
-          echo "frozen contract untouched"
+        #
+        # THIS STEP COULD NOT FAIL UNTIL 2026-09-24. It diffed `base...HEAD`
+        # -- three dots, which needs a merge base -- in a depth-1 checkout of
+        # the PR's merge commit, which has none. git exited 128 ("no merge
+        # base"), the pipe into `grep -q` failed, the `if` read that as "no
+        # change", and the step printed "frozen contract untouched" on every
+        # PR, including #1, which edited models.py and profiles.py. Measured
+        # in run 36036034784, job 107756241218.
+        #
+        # AND THEN IT COMPARED THE WRONG COMMITS. The first repair diffed
+        # `pull_request.base.sha` against the merge commit. GitHub does not
+        # move base.sha when main moves, so that diff was everything main had
+        # gained since the PR was opened, plus the PR (run 36039462416:
+        # "Merge 9c56167 into d45b1d69" compared against 0fac6d6). The script
+        # now compares the merge commit's FIRST PARENT -- main as this run
+        # merged into it -- with the merge commit, which is exactly the PR's
+        # change as it would merge. It fetches that parent itself, so the
+        # checkout above stays depth 1.
+        #
+        # A CHANGE PASSES ONLY WHEN THE PR RECORDS ITS ACCEPTANCE. Updated
+        # deliberately for contract requests 17 and 18, which the owner
+        # accepted in session on 2026-09-24 (PR #44). The logic lives in the
+        # script so that what it compares against is tested
+        # (tests/unit/scripts/test_frozen_contract_check.py).
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/lib/check-frozen-contract.sh --pr-base "${PR_BASE_SHA}" --pr-head "${PR_HEAD_SHA}"
 
       - name: format check
         run: |

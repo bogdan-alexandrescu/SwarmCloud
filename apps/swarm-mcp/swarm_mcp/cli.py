@@ -37,7 +37,14 @@ from .client import (
     service_name,
     task_id_of,
 )
-from .follow import DEFAULT_LOG_BUDGET, follow, follow_command, render, terminal_command
+from .follow import (
+    DEFAULT_LOG_BUDGET,
+    event_type,
+    follow,
+    follow_command,
+    render,
+    terminal_command,
+)
 from .patches import (
     apply_patch,
     describe_task,
@@ -192,7 +199,9 @@ def cmd_tail(client: SwarmClient, args) -> int:
                 if key in seen_events[task_id]:
                     continue
                 seen_events[task_id].add(key)
-                kind = event.get("type", "?")
+                # `event_type`, not the raw field: an API older than this
+                # plugin serves a stored cancel REQUEST as `cancelled`.
+                kind = event_type(event) or "?"
                 if kind == "heartbeat" and not args.verbose:
                     continue
                 _emit(short, f"· {kind}")

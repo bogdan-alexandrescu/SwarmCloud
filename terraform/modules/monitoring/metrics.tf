@@ -223,6 +223,67 @@ resource "google_logging_metric" "oom_near_miss" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# The safety tick, counted from Cloud Scheduler's own logs.
+#
+# THE METRIC THE ALERT USED TO WATCH DOES NOT EXIST, AND NEVER WILL.
+# `cloudscheduler.googleapis.com/job/attempt_count` was the alert's metric
+# type, and enable_safety_tick_alert was switched off in dev on 2026-09-19 to
+# wait for it to "appear". Checked 2026-09-24:
+#
+#   * Google's published metric list for every cloud* service
+#     (docs.cloud.google.com/monitoring/api/metrics_gcp_c) has sections for
+#     cloudbuild, clouddeploy, cloudfunctions, cloudkms, cloudsql, cloudtasks
+#     and cloudtrace -- and no Cloud Scheduler metric of any name;
+#   * the project's metric descriptors filtered to
+#     starts_with("cloudscheduler.googleapis.com") number ZERO, five days after
+#     the tick job began attempting every minute, against 49 for
+#     run.googleapis.com with the same query.
+#
+# There was nothing to wait for. The alert could never be created.
+#
+# WHAT DOES EXIST is a log line per attempt. Cloud Scheduler writes
+# `cloudscheduler.googleapis.com/executions` entries on the monitored resource
+# `cloud_scheduler_job` (labels project_id, location, job_id), and this job's
+# entries were read the same day:
+#
+#   AttemptStarted   INFO, then
+#   AttemptFinished  INFO, jsonPayload keys {@type, jobName, pubsubTopic,
+#                    targetType: PUB_SUB} -- one pair per minute
+#
+# and a FAILED attempt, from swarm-quota-refresh on 2026-09-20, is
+#
+#   AttemptFinished  ERROR, with jsonPayload.status = "INTERNAL" and debugInfo
+#
+# So this counts finished attempts that carry no `status`: a tick that fired
+# and was delivered. A tick whose publish fails every minute has not reached
+# the scheduler, which is the thing the alert is for, so it must not count.
+#
+# A logs-based metric's series keep the log entry's monitored resource, so the
+# alert can still filter on resource.type = cloud_scheduler_job and the job id.
+# ---------------------------------------------------------------------------
+resource "google_logging_metric" "safety_tick_attempts" {
+  project = var.project_id
+  name    = "${var.name_prefix}/scheduler-tick-delivered"
+
+  description = "A Cloud Scheduler attempt of the one-minute safety tick finished without an error status. Its absence for ten minutes is the safety-tick-stopped alert."
+
+  filter = join(" AND ", [
+    "logName=\"projects/${var.project_id}/logs/cloudscheduler.googleapis.com%2Fexecutions\"",
+    "resource.type=\"cloud_scheduler_job\"",
+    "resource.labels.job_id=\"${var.safety_tick_job}\"",
+    "resource.labels.location=\"${var.region}\"",
+    "jsonPayload.\"@type\"=\"type.googleapis.com/google.cloud.scheduler.logging.AttemptFinished\"",
+    "NOT jsonPayload.status:*",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+  }
+}
+
 # Dispatch failures, per backend, counted from the scheduler's own log line.
 #
 # The alert that watches this (alerts.tf, dispatch_failing_by_backend) used to
