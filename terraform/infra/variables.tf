@@ -381,6 +381,13 @@ variable "admin_users" {
     That entry must survive the emptying above: a service account is not a
     Workspace principal and can never be put in an admin group.
 
+    EVERY ENTRY IS A FULL PLATFORM ADMIN, whatever it was added for. Admin is
+    one boolean: it can pause dispatch, set any ceiling, drain or disable a
+    provider for every tenant, write any tenant's document (max_active,
+    capacity_units and `enabled`, so it can disable a tenant), rewrite any
+    tenant's workflow state, and read every tenant's leases and records. The
+    full list, and what admin cannot reach, is beside the entry in dev.tfvars.
+
     Bare emails, never IAM members: swarm-api compares each entry with the
     email in the verified token, so `serviceAccount:x@y` matches nobody.
   EOT

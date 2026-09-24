@@ -43,10 +43,32 @@
 #     has no parameter that reaches `active`, runs as the verified caller, and
 #     stamps that caller on the pool document as `admin_changed_by`.
 #
-# The cost, stated rather than minimised: admin is ONE boolean. The gate can
-# also pause dispatch, drain a provider for every tenant and set any ceiling.
-# All of those are reversible in one call, and none can touch `active`, a tenant
-# document or a secret. It is granted in dev only.
+# The cost, stated rather than minimised: admin is ONE boolean, and it opens
+# every /v1/admin route, not only this one. Read from routes/admin.py and
+# store.py on 2026-09-24, the gate can also:
+#
+#   * pause dispatch platform-wide, and set ANY ceiling, global to 0 included;
+#   * drain a provider or a resource class for every tenant, and disable a
+#     provider, which also rewrites every tenant's quota document for it
+#     (re-enabling resets each one to AVAILABLE and clears its cooldown and
+#     quota-derived cap; it does not put back what was there);
+#   * WRITE TENANT DOCUMENTS. PUT /v1/admin/tenants/{id}/limits sets
+#     max_active, capacity_units and `enabled` on tenants/<id>, so it can
+#     DISABLE any tenant, which stops every other route for that tenant
+#     (routes/accounts.py); PUT /v1/admin/limits/tenant/{id} sets max_active;
+#   * rewrite the stored state of any tenant's workflows
+#     (POST /v1/admin/workflows/rollup?tenant_id=);
+#   * read every tenant's leases, quota and tenant record (/v1/admin/leases,
+#     /quota, /tenants), which roles/datastore.viewer already lets it read
+#     from Firestore directly.
+#
+# Nothing records a previous value, so undoing any of those needs the old
+# number from somewhere else. What admin CANNOT do: write `active` on an
+# existing pool, touch a tenant's service account, GCS prefix or secret names
+# (set_tenant_limits patches the three fields above and nothing else), create
+# or delete a tenant, delete a lease, or read or write a secret. It is granted
+# in dev only. The first record of this decision said it could not touch a
+# tenant document; that was wrong, and the dated correction is in the audit.
 #
 # FOUR REFUSALS FOLLOW FROM USING THE API, all checked before the first write,
 # because in each case the API could not undo what the suite would do:
@@ -107,7 +129,9 @@ while [[ $# -gt 0 ]]; do
     --timeout)  TIMEOUT="$2"; shift 2 ;;
     # Through the permission section: an operator running --help needs to read
     # HOW this suite is allowed to change a live ceiling, not just its flags.
-    -h|--help)  sed -n '2,79p' "$0"; exit 0 ;;
+    # Up to `set -euo pipefail` rather than a line number: the header has grown
+    # twice, and a fixed range silently cuts off whatever was added last.
+    -h|--help)  sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -189,10 +213,24 @@ fi
 #
 # So: say nothing when nothing was changed, verify the restore by READING the
 # pool back rather than trusting the write's status, and when it did not take,
-# print the exact command that fixes it -- through the same admin route, so the
-# repair is as bounded and as attributed as the change it undoes.
+# print the exact commands that fix it: the same admin route, which is as
+# bounded and as attributed as the change it undoes, and the operator fallback
+# for when that route cannot be reached (see TWO REPAIRS in `restore`).
+#
+# AND A RESTORE THAT DID NOT TAKE FAILS THE RUN. It used to be reported and then
+# forgotten: `restore` ran from `trap restore EXIT`, printed COULD NOT RESTORE
+# and returned, and an EXIT trap that does not call `exit` leaves the status
+# alone (the PR #21 review measured `trap f EXIT; true` exiting 0 on /bin/bash
+# 3.2.57; tests/integration/test_race_test_refuses_an_unnarrowed_pool.py's
+# complete-run cases prove the consequence in CI). The last
+# command was a green t_summary, so a run with every race case passing and the
+# restoring PUT refused exited 0 -- and `make verify-remote` printed
+# `ok race-test` and ran e2e-test against a single mock slot, where the failure
+# surfaced as someone else's timeout. A live pool left narrowed is the one thing
+# this suite promised not to do; the run that does it is a failed run.
 NARROWED=0
 RESTORED=0
+RESTORE_RC=0
 
 # THREE ANSWERS, NOT TWO: the current ceiling, `absent`, or `unreadable`.
 #
@@ -223,10 +261,14 @@ _set_limit() {
 }
 
 restore() {
-  # Idempotent: the INT and TERM handlers below call this and then exit, which
-  # fires the EXIT trap and would otherwise run the whole thing a second time --
-  # re-cancelling tasks and re-reporting a restore that already happened.
-  [[ "${RESTORED}" -eq 1 ]] && return 0
+  # Idempotent: the final case, the INT and TERM handlers call this, and every
+  # one of them is followed by the EXIT trap, which would otherwise run the
+  # whole thing a second time -- re-cancelling tasks and re-reporting a restore
+  # that already happened. The SECOND call answers with the first call's
+  # verdict, so the trap still learns that the pool was left narrowed.
+  if [[ "${RESTORED}" -eq 1 ]]; then
+    return "${RESTORE_RC}"
+  fi
   RESTORED=1
 
   # THE VERDICT COMES FROM THE POOL, NOT FROM THE WRITE. Whether this suite is
@@ -240,7 +282,10 @@ restore() {
   if [[ "${NARROWED}" -eq 1 ]]; then
     before="$(_pool_hard_limit)"
     if [[ "${before}" != "${ORIGINAL_LIMIT}" ]]; then
-      out="$(mktemp "${TMPDIR:-/tmp}/swarm-race-restore.XXXXXX")"
+      # /dev/null rather than no file: this runs in a condition (`if restore`,
+      # `restore || ...`), where set -e is off, so a failed mktemp would
+      # otherwise hand api_send an empty path and lose the write altogether.
+      out="$(mktemp "${TMPDIR:-/tmp}/swarm-race-restore.XXXXXX")" || out=/dev/null
       # The status is KEPT, not discarded: it is the second line of the report
       # below when the readback disagrees. api_send has already printed the
       # redacted body of a refusal.
@@ -249,21 +294,38 @@ restore() {
       else
         answered="HTTP ${API_STATUS}, error above"
       fi
-      rm -f "${out}"
+      [[ "${out}" == /dev/null ]] || rm -f "${out}"
       after="$(_pool_hard_limit)"
       if [[ "${after}" == "${ORIGINAL_LIMIT}" ]]; then
         info "restored ${POOL_NAME} hard_limit to ${ORIGINAL_LIMIT} (confirmed by readback)"
       else
+        RESTORE_RC=1
+        # TWO REPAIRS, because the one that matches this suite's own write
+        # cannot be run from a workstation today. The front door refuses every
+        # user credential (scripts/api.sh: SWARM_IMPERSONATE_SA is REQUIRED
+        # there), so the admin route only works as an identity that is BOTH an
+        # admin and admitted by IAP. pool-limit.sh works now, as an operator,
+        # through a Firestore updateMask that names hard_limit alone. Printing
+        # only the first sent whoever read this to a 403 with nothing else on
+        # screen, while every mock task serialised.
         err "COULD NOT RESTORE ${POOL_NAME}. It is still narrowed, and every ${PROFILE} task"
         err "on this deployment will serialise behind ${SLOT_LIMIT} slot(s) until it is put back."
         err "  the restoring PUT ${API_PREFIX}${LIMIT_ROUTE} answered ${answered}"
         err "  hard_limit now reads: ${after}    it should be: ${ORIGINAL_LIMIT}"
-        err "  fix with:  scripts/api.sh PUT ${LIMIT_ROUTE} '{\"limit\":${ORIGINAL_LIMIT}}'"
-        err "  (as a platform admin; through the front door that means SWARM_IMPERSONATE_SA)"
+        err "  fix with either of these:"
+        err "    scripts/pool-limit.sh --pool ${POOL_NAME} --limit ${ORIGINAL_LIMIT}"
+        err "      as an operator who can write Firestore, from a workstation. It writes"
+        err "      hard_limit alone (an updateMask), so it cannot touch active."
+        err "    scripts/api.sh PUT ${LIMIT_ROUTE} '{\"limit\":${ORIGINAL_LIMIT}}'"
+        err "      the admin route this suite used, which records who made the change."
+        err "      Through the front door it needs SWARM_IMPERSONATE_SA naming an identity"
+        err "      that is in admin_users AND admitted by IAP (frontend_iap_members);"
+        err "      a user credential is refused there."
       fi
     fi
   fi
   [[ "${#TASK_IDS[@]}" -eq 0 ]] || cancel_all ${TASK_IDS[@]+"${TASK_IDS[@]}"}
+  return "${RESTORE_RC}"
 }
 
 # INT and TERM RE-RAISE rather than returning into the suite.
@@ -274,9 +336,22 @@ restore() {
 # narrowed pool is never over its limit" against a pool that was no longer
 # narrowed and had no work left in it. An interrupted run could finish green.
 # Exiting from the handler is what makes a mid-suite die a failure.
-trap restore EXIT
-trap 'restore; exit 130' INT
-trap 'restore; exit 143' TERM
+#
+# The EXIT trap keeps a failing status and turns a passing one into a failure
+# when the pool was left narrowed. It never turns 130/143 or a t_fatal's 1 into
+# something else: the earlier cause is the better diagnosis. The signal
+# handlers ignore restore's verdict for the same reason -- an interrupted run
+# already exits non-zero -- and the EXIT trap after them re-reads it anyway.
+_on_exit() {
+  local rc=$?
+  if ! restore && [[ "${rc}" -eq 0 ]]; then
+    rc=1
+  fi
+  exit "${rc}"
+}
+trap _on_exit EXIT
+trap 'restore || true; exit 130' INT
+trap 'restore || true; exit 143' TERM
 
 # ---------------------------------------------------------------------------
 t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s) through the admin API"
@@ -505,6 +580,22 @@ if [[ "${BROKEN}" == '""' || -z "${BROKEN//\"/}" ]]; then
   t_pass "every pool is within [0, effective_limit]"
 else
   t_fail "pools with impossible accounting: ${BROKEN}"
+fi
+
+# ---------------------------------------------------------------------------
+t_case "${POOL_NAME} is back at its original ceiling"
+#
+# A CASE, NOT ONLY A TRAP. The EXIT trap now fails a run that left the pool
+# narrowed, but by then t_summary has already printed its verdict, and a green
+# `race: N/N passed` followed by COULD NOT RESTORE is two answers to one
+# question. Restoring here puts the failure IN the summary -- the line people
+# quote and the one `make verify-remote`'s 40-line tail keeps. The trap stays for
+# every path that never gets this far; `restore` is idempotent, so on this path
+# it only repeats this verdict.
+if restore; then
+  t_pass "${POOL_NAME} hard_limit reads ${ORIGINAL_LIMIT} again"
+else
+  t_fail "${POOL_NAME} was NOT restored to hard_limit ${ORIGINAL_LIMIT}: it is still narrowed, and the repair is printed above"
 fi
 
 t_summary

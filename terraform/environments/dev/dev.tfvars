@@ -403,11 +403,22 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # verified caller on the pool (admin_changed_by). The full comparison is in
 # docs/audits/2026-09-22/race-test-needs-a-write.md.
 #
-# What this ALSO grants, stated rather than minimised: admin is one boolean, so
-# this identity can pause dispatch, drain a provider for every tenant, and set
-# any ceiling -- all reversible in one call, none able to touch `active`, a
-# tenant document or a secret. It is granted in dev only; there is no reason
-# for the gate to be an admin in prod.
+# What this ALSO grants, stated rather than minimised: admin is one boolean and
+# opens every /v1/admin route. This identity can pause dispatch platform-wide,
+# set any ceiling, drain or disable a provider for every tenant (disabling also
+# rewrites each tenant's quota document for it), WRITE ANY TENANT'S DOCUMENT --
+# PUT /v1/admin/tenants/{id}/limits sets max_active, capacity_units and
+# `enabled`, so it can disable a tenant outright -- rewrite any tenant's
+# workflow state (POST /v1/admin/workflows/rollup), and read every tenant's
+# leases, quota and tenant record. Nothing records the previous values. It
+# cannot write `active` on an existing pool, a tenant's service account, GCS
+# prefix or secret names, or any secret. It is granted in dev only; there is no
+# reason for the gate to be an admin in prod.
+#
+# CORRECTED 2026-09-24: the first wording of this comment said the grant could
+# not touch a tenant document. It can, as above. The dated correction, and the
+# note that it changes a premise of the owner's decision, are in
+# docs/audits/2026-09-22/race-test-needs-a-write.md.
 #
 # BARE EMAIL, not `serviceAccount:<email>`: swarm-api compares this list against
 # the email in the verified token, so a prefixed entry would plan, apply, and

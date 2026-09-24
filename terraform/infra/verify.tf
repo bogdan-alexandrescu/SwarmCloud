@@ -33,8 +33,11 @@ resource "google_service_account" "verify" {
   account_id   = "swarm-verify"
   display_name = "SwarmCloud verification job"
   # 256 characters at most -- the provider refuses a longer description at
-  # plan time, which is how the first wording of this line failed CI.
-  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: its own tenant's tasks, and the runner:mock ceiling where admin_users names it."
+  # plan time, which is how the first wording of this line failed CI. This one
+  # is 227. It says "full platform admin" rather than naming the one ceiling
+  # race-test changes: the previous wording described what the suite DOES, and
+  # an identity's description is read as what it CAN do.
+  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: as its own tenant, and as a full platform admin where admin_users names it (for race-test)."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -53,11 +56,13 @@ resource "google_service_account" "verify" {
 # writes through swarm-api, which is the property the original comment was
 # protecting and which still holds.
 #
-# ONE WRITE IS NOT AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
+# NOT EVERY WRITE IS AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
 # this identity is also in `admin_users`, because race-test narrows runner:mock
 # with PUT /v1/admin/limits/runner/mock rather than through a Firestore write
-# role. That grant is an application-level admin flag in tfvars, not IAM, and it
-# is deliberately not made here -- this file is the same in every environment,
+# role. That is the one admin write the suites make, but the flag permits every
+# /v1/admin write, tenant disable included; dev.tfvars lists them beside the
+# entry. It is an application-level admin flag in tfvars, not IAM, and it is
+# deliberately not granted here -- this file is the same in every environment,
 # and the gate has no reason to be an admin in prod.
 # docs/audits/2026-09-22/race-test-needs-a-write.md has the comparison.
 #

@@ -9,6 +9,12 @@ Nothing in `terraform/` was changed by this note.**
 > IAP on the front door. What was changed, what CI proved and what is still
 > unverified are recorded there, not by editing the analysis below — the analysis
 > is the reason for the decision and stays as it was written.
+>
+> **Two sentences below are wrong about what the admin grant reaches** — it
+> *can* write a tenant document, and disable a tenant. Each carries a pointer to
+> the [dated correction](#correction-to-decision-2s-premise-2026-09-24) and is
+> otherwise left as written, because it is part of the record of why decision 2
+> was taken.
 
 `make verify-remote` runs the verification suites as a Cloud Run job inside the
 VPC, because swarm-api's ingress refuses a laptop
@@ -139,6 +145,11 @@ also cannot invent a pool: `PUT /limits/runner/{rp}` validates `rp` against the
 frozen `RUNNER_PROFILES` and 400s otherwise. There is no route that deletes a
 lease, writes a tenant document, creates a tenant or reads a secret.
 
+> **Corrected 2026-09-24: "writes a tenant document" is false.**
+> `PUT /v1/admin/tenants/{id}/limits` and `PUT /v1/admin/limits/tenant/{id}`
+> both write `tenants/<id>`, and the first can set `enabled=false`. See the
+> [correction](#correction-to-decision-2s-premise-2026-09-24).
+
 What it *does* grant that is genuinely new, and should not be glossed:
 
 * `POST /v1/admin/dispatch/pause` stops dispatch **platform-wide**.
@@ -181,6 +192,10 @@ the *shape* of the dangerous bug is unreachable: no admin route writes `active`,
 no admin route touches a tenant document, and a typo in a pool name is a 400
 rather than a new document. Under (a) — either variant — a one-character mistake
 in a field mask is a silent write to live capacity accounting.
+
+> **Corrected 2026-09-24: "no admin route touches a tenant document" is false**,
+> for the same two routes. The `active` half of this asymmetry still holds. See
+> the [correction](#correction-to-decision-2s-premise-2026-09-24).
 
 The honest cost of (b) is that a buggy suite could pause dispatch or drain a
 provider for every tenant. That is loud, immediately visible on the operator
@@ -397,10 +412,20 @@ through `ALLOWED_USERS` (`terraform/infra/locals.tf`), not `allowed_domains`.
 
 **Status: decided, NOT yet in the branch.** The `dev.tfvars` edit was refused
 by the authoring session's permission classifier as a permission grant, and it
-was not retried by any other route. The test that requires it,
+was not retried by any other route. The fix-up session tried the same direct
+edit once; the classifier refused the follow-up as a permission grant, and the
+uncommitted edit was reverted rather than pursued. It needs the owner to make
+the edit or to authorise it directly.
+
+The test that requires it,
 `tests/unit/scripts/test_verify_identity_grants.py::test_the_verify_identity_can_pass_iap_on_the_front_door`,
-is committed and stays red until the member is added. That is the one assertion
-on PR #21 that is meant to fail.
+is committed as `xfail(strict=True)`. It was plain red on PR #21's first
+version, and that was wrong for a branch that can merge: `release.yml`'s
+`verify` job runs `tests/unit`, and build, infrastructure and deploy all need
+it, so main's release pipeline would have gone red on merge and blocked every
+later release, including the one that applies decision 2. Strict means it
+turns red the moment the member is added, so the marker has to come off in
+that change.
 
 ### 2. `swarm-verify` is a platform admin in dev, and race-test narrows through the admin API
 
@@ -421,10 +446,18 @@ was "not optional".
   can never be put in a Workspace admin group.
 * `scripts/race-test.sh` — narrows and restores with
   `PUT /v1/admin/limits/runner/mock` and makes **no Firestore write of any
-  kind**. The restore runs from the EXIT trap on every path (INT and TERM
-  re-raise), and its verdict comes from reading the pool back. When it fails,
-  the fix it prints goes through the same route:
-  `scripts/api.sh PUT /admin/limits/runner/mock '{"limit":N}'`. Four refusals
+  kind**. The restore is the suite's last case and also runs from the EXIT trap
+  on every other path (INT and TERM re-raise), and its verdict comes from
+  reading the pool back. **A restore that did not take fails the run**: it is a
+  failed case in the summary, and the EXIT trap turns a passing exit status into
+  1. On PR #21's first version it was only reported, and a run with every race
+  case green exited 0 with `runner:mock` still at one slot. It prints two
+  repairs: `scripts/pool-limit.sh --pool runner:mock --limit N`, which works
+  from a workstation today as an operator, and the admin route
+  `scripts/api.sh PUT /admin/limits/runner/mock '{"limit":N}'`, which through
+  the front door needs an identity that is both an admin and admitted by IAP.
+  The first version printed only the second, which nobody outside the VPC could
+  run until decision 1 lands. Four refusals
   run before the first write, each covering a change the API could not undo:
   * any `--profile` but `mock`, because narrowing a provider-backed runner
     serialises every tenant's real agents;
@@ -473,3 +506,53 @@ not repeated here, where they would be a second copy of a fact.
 * `runner:mock` read `hard_limit=20, enabled=true, active=0` on 2026-09-24,
   which clears all four refusals. That was a single read, not a guarantee about
   the day the suite runs.
+
+### Correction to decision 2's premise, 2026-09-24
+
+**What was said.** The analysis above, and every copy of it on PR #21's first
+version (`dev.tfvars`, `terraform/infra/variables.tf`, `terraform/infra/verify.tf`,
+the header of `scripts/race-test.sh`), said the admin grant cannot touch a
+tenant document: "no route that … writes a tenant document", "no admin route
+touches a tenant document", "none able to touch `active`, a tenant document or a
+secret". **That is false.** Found in review of PR #21, and confirmed by reading
+`apps/swarm-api/swarm_api/routes/admin.py` and `store.py` on the branch:
+
+* `PUT /v1/admin/tenants/{tenant_id}/limits` calls `Store.set_tenant_limits`,
+  which runs `ref.update(patch)` on `tenants/<id>` with any of `max_active`,
+  `capacity_units` and `enabled`. `enabled=false` **disables the tenant**, and
+  `routes/accounts.py` records that a disabled tenant is refused by every other
+  route. `PUT /v1/admin/limits/tenant/{id}` writes `max_active` through the same
+  call. Both routes are in the table above, under **limits**: the route list was
+  right and the reading of what they write was not.
+* `POST /v1/admin/workflows/rollup?tenant_id=` writes the derived `state` onto
+  any tenant's drifted workflow documents (`WorkflowRollups._persist` →
+  `Store.set_workflow_state`). It is **missing** from the table, so "these
+  nineteen routes and nothing else" is twenty.
+* `POST /v1/admin/providers/{p}/enabled` also rewrites every tenant's quota
+  document for that provider (`Store.set_provider_quota_state`). Re-enabling
+  resets each one to `AVAILABLE` and clears its cooldown and quota-derived cap,
+  so "reversible in one call" holds for the switch and not for the per-tenant
+  state it overwrote.
+* The cross-tenant reads (`/v1/admin/leases`, `/quota`, `/tenants`) were in the
+  table. The point that `roles/datastore.viewer` already reads the same
+  documents still stands.
+* Nothing records a previous value. `admin_changed_by` names the last admin to
+  change a pool, not what it was before, and a tenant document carries no
+  attribution at all.
+
+**What still holds.** No admin route writes `active` on an existing pool:
+`upsert_pool` has no parameter for it, and writes `active: 0` only when creating
+a pool that did not exist. `set_tenant_limits` builds its patch from the three
+keys above and nothing else, so no admin route can write a tenant's service
+account, GCS prefix or secret names, and CONTRACT invariant 9 stays out of
+reach. No admin route creates or deletes a tenant, deletes a lease, or reads or
+writes a secret. So the asymmetry the recommendation rested on survives: the
+`active` clobber is unreachable under (b) and one field mask away under (a).
+**The cost side of (b) is larger than was stated**: a buggy suite, or anyone who
+can impersonate `swarm-verify`, can disable any tenant or change its limits, and
+putting it back needs the old value from somewhere else.
+
+**Status: returned to the owner.** This changes a stated premise of decision 2,
+so re-confirming it is the owner's call, not this lane's. PR #21 keeps the
+grant exactly as decided and corrects every copy of the claim: the four files
+named above.
