@@ -1670,3 +1670,161 @@ def test_every_rendered_deadline_lets_the_lifecycle_time_out_on_its_own():
         checked += 1
     # Every profile plus the gvisor shape: all three templates were visited.
     assert checked == len(RUNNER_PROFILES) + 1
+
+
+# ---------------------------------------------------------------------------
+# A variable the browser image sets is set there and nowhere else
+# ---------------------------------------------------------------------------
+#
+# Lane review, 2026-09-24. `worker-job-browser.yaml` carried its own
+# `PLAYWRIGHT_BROWSERS_PATH` although `images/agent-runtime-browser/Dockerfile`
+# already sets it with `ENV`, in the same file whose `RUN playwright install`
+# puts the browser there. Two copies of one value is the shape
+# docs/mirrored-values.md records as this repository's most expensive defect:
+# the namespace prefix, the RBAC subject and SWARM_ARTIFACTS_DIR each drifted
+# that way. This copy had in fact ALREADY diverged from the Job that runs --
+# `GkeJobDispatcher._manifest` never set it, so the YAML an operator reads said
+# something the dispatched pod did not.
+#
+# The image is the right single home: the path is only correct when stated next
+# to the command that installs into it. Nothing a Job spec can say makes it more
+# true, and a Job spec that says a different path makes it false.
+
+_BROWSER_DOCKERFILE = REPO / "images" / "agent-runtime-browser" / "Dockerfile"
+
+
+def _dockerfile_env(path: Path) -> dict[str, str]:
+    """What the FINAL stage of `path` sets with `ENV`, as the image carries it.
+
+    Continuation lines are joined, comments dropped, and heredoc bodies skipped
+    -- the browser Dockerfile's launch check is a `RUN python - <<'PY'` whose
+    body starts `from playwright...`, which a case-insensitive reader would
+    otherwise take for a new `FROM` stage and reset on. Only this file's own
+    stage is read; what the base image sets is not followed.
+    """
+    import shlex  # noqa: PLC0415
+
+    env: dict[str, str] = {}
+    lines = path.read_text().splitlines()
+    index = 0
+    pending = ""
+    while index < len(lines):
+        line = lines[index].strip()
+        index += 1
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1] + " "
+            continue
+        instruction = pending + line
+        pending = ""
+        heredoc = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", instruction)
+        if heredoc:
+            while index < len(lines) and lines[index].strip() != heredoc.group(1):
+                index += 1
+            index += 1
+        keyword, _, rest = instruction.partition(" ")
+        keyword = keyword.upper()
+        if keyword == "FROM":
+            env = {}
+        elif keyword == "ENV":
+            tokens = shlex.split(rest)
+            if tokens and "=" not in tokens[0]:
+                env[tokens[0]] = " ".join(tokens[1:])
+            else:
+                for token in tokens:
+                    key, _, value = token.partition("=")
+                    env[key] = value
+    return env
+
+
+def _every_worker_job() -> list[tuple[str, dict[str, Any]]]:
+    """Every worker Job either producer writes, for every profile.
+
+    Every profile rather than the GKE ones: a profile on Cloud Run today is one
+    catalogue edit from GKE, and render.py renders a Job for all of them.
+    """
+    jobs = [(f"{name} (render.py)", _rendered_job(name)) for name in sorted(RUNNER_PROFILES)]
+    jobs.append(("claude-code (render.py --runtime gvisor)", _render_v2_job()))
+    jobs += [
+        (f"{name} (GkeJobDispatcher._manifest)", _dispatcher_job(name))
+        for name in sorted(RUNNER_PROFILES)
+    ]
+    return jobs
+
+
+def test_the_browser_image_sets_where_its_browser_lives():
+    """The anchor for the two tests below: if the image stopped setting it, they
+    would pass by checking for a variable nothing defines."""
+    env = _dockerfile_env(_BROWSER_DOCKERFILE)
+    assert env.get("PLAYWRIGHT_BROWSERS_PATH"), (
+        f"{_BROWSER_DOCKERFILE.relative_to(REPO)} no longer sets "
+        f"PLAYWRIGHT_BROWSERS_PATH with ENV (read: {sorted(env)}). It is the one "
+        "place the browser bundle's path is stated, next to the `playwright "
+        "install` that puts it there."
+    )
+
+
+def test_no_worker_job_restates_a_variable_the_browser_image_sets():
+    """MUTATION: add `PLAYWRIGHT_BROWSERS_PATH` (or `PLAYWRIGHT_SKIP_BROWSER_GC`)
+    to the `env:` of any container in any of the three templates, or to
+    `worker_env` in dispatch.py. This fails naming the Job and the container."""
+    image_env = _dockerfile_env(_BROWSER_DOCKERFILE)
+    assert image_env, f"read no ENV at all from {_BROWSER_DOCKERFILE}"
+
+    jobs = _every_worker_job()
+    restated: dict[str, list[str]] = {}
+    containers_seen = 0
+    for where, job in jobs:
+        pod = job["spec"]["template"]["spec"]
+        for container in [*(pod.get("initContainers") or []), *pod["containers"]]:
+            containers_seen += 1
+            names = {entry["name"] for entry in container.get("env") or []}
+            clash = sorted(names & image_env.keys())
+            if clash:
+                restated[f"{where}, container {container['name']!r}"] = clash
+    # Two producers for every profile, plus the gvisor shape.
+    assert len(jobs) == 2 * len(RUNNER_PROFILES) + 1
+    assert containers_seen >= len(jobs)
+    assert not restated, (
+        f"these Jobs set variables images/agent-runtime-browser/Dockerfile "
+        f"already sets with ENV: {restated}. The image is the only place they "
+        "are stated -- the path is where its own `playwright install` put the "
+        "browser -- and a second copy is a value that can disagree with the "
+        "first (docs/mirrored-values.md). Whether the runner child sees it is "
+        "decided by the lifecycle's env allowlist, not by the Job."
+    )
+
+
+def test_the_browser_bundle_path_is_written_down_once():
+    """The VALUE, not just the name: a Job that stopped naming the variable but a
+    lifecycle that hard-coded the path into the child's environment would be the
+    same second copy under a different spelling.
+
+    Read from the Dockerfile rather than restated here, so this file is not a
+    third copy. MUTATION: write the path into any Python module under apps/, any
+    file under kubernetes/ or any Terraform file.
+    """
+    value = _dockerfile_env(_BROWSER_DOCKERFILE)["PLAYWRIGHT_BROWSERS_PATH"]
+    skip = {"node_modules", ".terraform", "__pycache__", ".venv", "dist"}
+    scanned = 0
+    hits: list[str] = []
+    for root, patterns in (
+        (REPO / "apps", ("*.py",)),
+        (KUBERNETES, ("*.yaml", "*.yml", "*.py", "*.sh", "*.rego")),
+        (REPO / "terraform", ("*.tf", "*.tfvars")),
+    ):
+        for pattern in patterns:
+            for path in sorted(root.rglob(pattern)):
+                if skip.intersection(path.parts):
+                    continue
+                scanned += 1
+                for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                    if value in line:
+                        hits.append(f"{path.relative_to(REPO)}:{number}: {line.strip()}")
+    assert scanned > 50, f"scanned only {scanned} files; the walk is not reaching the tree"
+    assert not hits, (
+        f"{value!r} is stated outside images/agent-runtime-browser/Dockerfile:\n  "
+        + "\n  ".join(hits)
+        + "\nRefer to the image's PLAYWRIGHT_BROWSERS_PATH instead of copying the path."
+    )
