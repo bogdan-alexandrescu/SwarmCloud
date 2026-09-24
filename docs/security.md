@@ -25,8 +25,32 @@ Tokens never appear in logs, exception messages or error responses. The only
 loggable form is a non-reversible fingerprint (`tok:` + 12 hex chars of SHA-256)
 for correlating requests.
 
-Admin routes are gated on membership in `ADMIN_GROUPS`, separate from
-`TENANT_GROUPS` so an admin still has a normal tenant for their own work.
+Admin routes are gated on admin: membership in an `ADMIN_GROUPS` group, or an
+address on `ADMIN_USERS`, the by-email escape hatch for a deployment whose
+service account cannot read groups (`ApiSettings.admin_users`). Both are kept
+separate from `TENANT_GROUPS` so an admin still has a normal tenant for their
+own work. Either makes the caller a **full** admin: every `/v1/admin/*` route,
+including disabling any tenant (`PUT /v1/admin/tenants/{id}/limits`) and
+rewriting any tenant's workflow state (`POST /v1/admin/workflows/rollup`).
+
+There is one narrower way onto the admin surface, and it is not admin.
+A caller on **`ADMIN_POOL_USERS`** may call the routes in
+`swarm_api.auth.POOL_ADMIN_ROUTES` and nothing else: today only
+`PUT /v1/admin/limits/runner/{runner_profile}`, for any runner profile. Every
+other admin route answers it 403, and `is_admin` stays false for it, so no
+operator screen and no cross-tenant field on `/v1/stats` or `/v1/capacity`
+opens. It exists for the verification gate (`swarm-verify`), which narrows
+`runner:mock` for race-test and puts it back.
+
+It is an **allow-list** of (method, route template), not a deny-list of the
+dangerous routes, because a deny-list is silently wrong the day an admin route
+is added: the new route would be open to the gate until somebody thought to
+deny it. With the allow-list a new admin route is admin-only until it is
+deliberately added, in a diff a reviewer sees. Two things would undo it
+without touching that list: putting the gate on `ADMIN_USERS`, or in an
+`ADMIN_GROUPS` group (a Google group can hold a service account as a member).
+Either makes it a full admin. The decision, dated 2026-09-24, is recorded in
+[`docs/audits/2026-09-22/race-test-needs-a-write.md`](audits/2026-09-22/race-test-needs-a-write.md).
 
 ### Handling an ID token on the operator side
 

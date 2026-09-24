@@ -89,7 +89,7 @@ gets you an HTTP 404 on `/readyz`, not a result.
 |---|---|---|---|
 | `smoke` | `scripts/verify-remote.sh smoke-test` | A mock task runs and releases capacity | Anything about a real agent |
 | `concurrency` | `scripts/verify-remote.sh concurrency-test` | No pool is ever over its effective limit, at any sample | The moment *between* samples |
-| `race` | `scripts/verify-remote.sh race-test` | The last free slot goes to exactly one task | — (see the permission note below) |
+| `race` | `scripts/verify-remote.sh race-test` | The last free slot goes to exactly one task | Any runner profile but `mock` (refused by design, see below) |
 | `failure` | `scripts/failure-test.sh` | Failure, cancellation and malformed input leak no capacity | — |
 | `e2e` | `scripts/verify-remote.sh e2e-test` | **The seams**: workflow handoff on the BYTES, artifact provenance, spend through the API, sign-in, state agreement across Firestore/API/Cloud Run | The `mock` profile's runner **is** its own workload, so it cannot distinguish a file written by an agent child process from one the runner wrote. That exact distinction is proved offline in `tests/unit/worker/test_agent_seam_end_to_end.py` |
 | `load`, `quota` | `scripts/load-test.sh`, `scripts/quota-test.sh` | Sustained-load percentiles; provider exhaustion parks rather than pays to wait | — |
@@ -97,11 +97,21 @@ gets you an HTTP 404 on `/readyz`, not a result.
 `make e2e-test` and the rest run directly **from inside** the VPC or the verify
 job. From a laptop, use `verify-remote`.
 
-**`race-test` currently fails on permissions, not on the platform.** The verify
-service account holds `roles/datastore.viewer` and the suite needs to narrow a
-pool. `scripts/race-test.sh` states the options and the recommendation in its own
-header, next to the code that needs them. A failing `race-test` is therefore not
-yet evidence of a race.
+**`race-test` narrows `runner:mock` through one admin route, and is not an admin.**
+It has to narrow a pool to create contention, and that is a write. By owner
+decision on 2026-09-24 the suite uses `PUT /v1/admin/limits/runner/mock` — never
+a Firestore write — to narrow and to restore, so the change is bounded, cannot
+touch `active`, and is stamped on the pool as `admin_changed_by`. The verify
+service account reaches that route through `admin_pool_users` in dev: swarm-api
+lets that list call an allow-list of admin routes holding the runner ceiling
+alone, and answers every other admin route 403. It is deliberately **not** in
+`admin_users` — the first form of the decision put it there, and the owner
+reversed that the same day, because full admin can disable any tenant. The
+suite refuses any profile but `mock`, a pool that does not exist, a drained
+pool, and a ceiling the API could not put back. Until a release has applied the
+grant, the suite fails at its first step with a 403 that names
+`admin_pool_users` — a permissions result, not evidence about a race. The
+reasoning is in `docs/audits/2026-09-22/race-test-needs-a-write.md`.
 
 Nothing in `e2e-test` writes to Firestore. Everything it creates is a task or a
 workflow submitted through the API, and every one is cancelled on the way out.

@@ -393,7 +393,44 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # screen 403s for everyone. See the variable's description and
 # docs/audits/2026-09-20/session-handover.md. Empty this the moment the
 # Workspace Group Reader role lands.
+#
+# Every entry here is a FULL platform admin: it can pause dispatch, set any
+# ceiling, drain or disable a provider for every tenant, disable any tenant
+# (PUT /v1/admin/tenants/{id}/limits) and rewrite any tenant's workflow state.
+# swarm-verify was added here on 2026-09-24 for race-test and the owner
+# reversed that the same day for exactly that reach -- it is on
+# admin_pool_users below instead. Do not put it back.
 admin_users = ["bogdan@saga.xyz"]
+
+# The verification gate's ONE admin route, by owner decision on 2026-09-24.
+#
+# scripts/race-test.sh narrows runner:mock to one slot to force contention, and
+# restores it, through PUT /v1/admin/limits/runner/mock. The alternative was a
+# Firestore write role, which cannot be scoped below the database and would
+# have left `pools/*.active` -- the counter a wider field mask once clobbered on
+# this deployment -- one typo away. The route cannot write `active`, refuses a
+# pool name outside the frozen catalogue, bounds the value, and records the
+# verified caller on the pool (admin_changed_by).
+#
+# swarm-api lets this list call an ALLOW-LIST of admin routes
+# (swarm_api.auth.POOL_ADMIN_ROUTES), which holds that one route. Every other
+# /v1/admin route answers it 403 -- tenant limits, provider switches, drains,
+# dispatch pause, the workflow rollup and every admin read -- and so does any
+# admin route added later until it is deliberately allow-listed. It does not
+# set is_admin, so no operator screen treats the gate as an admin. What it can
+# still do: set the ceiling of ANY runner profile's pool, because the route
+# takes the profile as a parameter. race-test itself refuses every profile but
+# mock. Granted in dev only; there is no reason for the gate to hold it in
+# prod.
+#
+# BARE EMAIL, not `serviceAccount:<email>`: swarm-api compares this list against
+# the email in the verified token, so a prefixed entry would plan, apply, and
+# match nobody (variables.tf now refuses that shape). The key it must agree
+# with is ALLOWED_USERS, which locals.tf derives from
+# google_service_account.verify.email.
+admin_pool_users = [
+  "swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+]
 
 # Domain-wide delegation was authorised in the Admin console on 2026-09-20 for
 # this service account's OAuth client id, scoped to
