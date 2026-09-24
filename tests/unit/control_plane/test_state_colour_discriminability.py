@@ -632,7 +632,8 @@ def test_table_row_tones_carry_an_edge_rule(rules):
 #
 # And it could not see the one exemption that already shipped:
 # `.ctl-util-fill.ov-projected { background: var(--ctl-absent) }` in
-# OVERVIEW_CSS. That is now listed BY NAME below as a documented grey.
+# OVERVIEW_CSS. That is now listed BY NAME below as a documented grey (and
+# spelled `var(--text-faint)` since `--ctl-absent` became a warm stone).
 #
 # WHAT THIS VERSION ASKS INSTEAD: for each fill the product renders, which
 # rules can paint it, and does a grey win? Concretely:
@@ -692,10 +693,19 @@ MONOCHROME_FILL = "var(--text-dim)"
 #:
 #: `ov-projected`: Overview draws a PROJECTED utilisation reading (its window
 #: reset, or its poll is past the staleness window) in `--text-faint`, the
-#: fainter of the two text greys, so a figure that is real but not current
-#: sits a step quieter than the live bars in the same card. It is still a grey
-#: and not a hue, and `test_a_documented_grey_is_a_grey` resolves it to a text
-#: grey, so the entry cannot become a hue with a grey name.
+#: fainter of the two text greys, beside live bars in `--text-dim`. It is
+#: still a grey and not a hue, and `test_a_documented_grey_is_a_grey` resolves
+#: it to a text grey, so the entry cannot become a hue with a grey name.
+#: `test_a_documented_grey_is_not_the_default_grey` holds that it is a
+#: DIFFERENT grey from the live bar's.
+#:
+#: DIFFERENT, NOT VISIBLY DIFFERENT. This comment used to say the projected
+#: bar "sits a step quieter than the live bars". Measured: 1.27:1 (dE76 7.2)
+#: in the dark theme and 1.11:1 (dE76 3.1) in the light one, which is under
+#: the 1.2 this file calls "not a visible step". In the light theme the bar
+#: does not tell a projected reading from a live one; the `~` before the
+#: figure does, and `test_a_projected_reading_is_not_drawn_in_the_absence_
+#: colour` keeps that mark out of the absence colour.
 #:
 #: It was spelled `var(--ctl-absent)` when `--ctl-absent` was itself
 #: `var(--text-faint)`. The ui-hygiene lane (PR #26) split `--ctl-absent` off
@@ -704,7 +714,7 @@ MONOCHROME_FILL = "var(--text-dim)"
 #: on `--ctl-absent`, this bar would have turned warm, and this entry would
 #: have waved it through under a grey name; `test_a_documented_grey_is_a_grey`
 #: is what failed on that merge. So the bar names the grey it always painted.
-DOCUMENTED_GREYS = {"ov-projected": "var(--text-dim)"}
+DOCUMENTED_GREYS = {"ov-projected": "var(--text-faint)"}
 
 #: What a documented grey has to resolve to: the two text greys.
 TEXT_GREYS = frozenset({"--text-dim", "--text-faint"})
@@ -1734,7 +1744,8 @@ def test_a_documented_grey_is_not_the_default_grey(sheet_scan, theme):
 # left the TILDE on `--ctl-absent`, calling it an absence mark. It is not one:
 # it marks a figure that was measured. So the one glyph that tells a projected
 # row from a live one was drawn in the paint reserved for the opposite fact,
-# dE 0 from the em dash beside it.
+# dE 0 from the em dash beside it. It now paints `--text-faint`, like its bar,
+# which is the pixel both had on main before #26.
 
 #: The marks a projected utilisation reading is drawn with, and the property
 #: each one paints. A new mark for the same reading belongs here.
