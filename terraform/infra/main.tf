@@ -206,10 +206,16 @@ module "tenancy" {
   tenants = var.tenants
 
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
-  dispatcher_members = {
-    scheduler  = module.iam.service_account_members["swarm-scheduler"]
-    reconciler = module.iam.service_account_members["swarm-reconciler"]
-  }
+  # The deployer is here because it DEPLOYS the tenant jobs that run as these
+  # accounts, which needs actAs on each (see deployer.tf). Static key, so a new
+  # tenant gets the grant in the same apply that creates its account.
+  dispatcher_members = merge(
+    {
+      scheduler  = module.iam.service_account_members["swarm-scheduler"]
+      reconciler = module.iam.service_account_members["swarm-reconciler"]
+    },
+    var.deployer_service_account == "" ? {} : { deployer = local.deployer_member },
+  )
 
   labels = local.labels
 }

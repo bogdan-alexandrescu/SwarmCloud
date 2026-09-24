@@ -439,3 +439,9 @@ admin_users = [
 # group membership, because a service account is not a Workspace principal and
 # the Groups API does not authorize through GCP IAM at all.
 groups_impersonate_user = "bogdan@saga.xyz"
+
+# The release's CI identity (terraform/bootstrap). It is granted actAs on each of
+# our service accounts it deploys as -- terraform/infra/deployer.tf. The same
+# email is the GitHub repository variable GCP_DEPLOY_SA; both are written by the
+# bootstrap output github_deployer_service_account.
+deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
