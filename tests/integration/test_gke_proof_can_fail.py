@@ -15,7 +15,19 @@ FALSE, with everything else healthy:
   * it started and died (cause 7, the read-only root filesystem);
   * it succeeded and left no artifact under the tenant's own prefix;
   * it never reached a terminal state;
-  * it finished and its lease still holds capacity.
+  * it finished and its lease still holds capacity;
+  * its events record no lease at all.
+
+THE FAKE HOLDS ONLY STATES THE PLATFORM PRODUCES. It used not to. The task
+document kept `current_lease_id` after SUCCEEDED, and the proof read the lease
+from there. The worker clears that field in the same write that makes a task
+terminal or PARKED (apps/agent-worker/agent_worker/control.py, finish() and
+park()), so against the real platform the lease check failed on every
+successful run while this suite stayed green. The fake now clears it as the
+worker does, and records the lease where the scheduler does: a top-level
+`lease_id` on the `lease_acquired` and `dispatched` events. It can also hold a
+lease unreleased for the first few reads, because finish() writes the terminal
+state BEFORE it releases the lease.
 
 AND ONE PROPERTY OF WHAT IT SUBMITS. The browser runner refuses an input with
 neither `url` nor `actions` ("browser runner needs input.url or at least one
@@ -53,6 +65,12 @@ HEALTHY = {
     "last_error": None,
     "artifacts": 2,
     "lease_released": True,
+    # How many reads of the lease document still see it held before it reads
+    # as released: the gap between control.finish()'s terminal write and its
+    # release_lease(), which a read can land in.
+    "lease_release_lag": 0,
+    # False is a task whose events carry no lease id at all.
+    "lease_recorded": True,
 }
 
 CURL_SHIM = r'''#!/usr/bin/env python3
@@ -160,34 +178,63 @@ def verdict():
     return SCENARIO["final_state"], SCENARIO["last_error"]
 
 
+# The states in which a task holds a lease. The worker clears current_lease_id
+# as it leaves them -- finish() for a terminal state, park() for PARKED -- so a
+# finished task NEVER carries one.
+HOLDING = ("LEASED", "DISPATCHED", "STARTING", "RUNNING")
+
+
 def task_document():
     state, error = verdict()
     return {
         "id": TASK_ID, "tenant_id": TENANT, "state": state,
         "runner_profile": submitted().get("runner_profile"),
-        "current_lease_id": LEASE_ID, "attempt_count": 1,
+        "current_lease_id": LEASE_ID if state in HOLDING else None,
+        "attempt_count": 1,
         "last_error": error,
         "park_reason": SCENARIO["park_reason"] if state == "PARKED" else None,
     }
 
 
 def event_documents():
+    """The task's events, shaped as scheduler/store.py append_event writes them.
+
+    The lease is a TOP-LEVEL `lease_id` on `lease_acquired` (scheduler/loop.py)
+    and on `dispatched` (store.mark_dispatched), not inside `detail`.
+    """
     state, error = verdict()
-    rows = [("ev_1", "submitted", {}), ("ev_2", "lease_acquired", {})]
+    held = ({"lease_id": LEASE_ID, "attempt_id": ATTEMPT_ID, "generation": 1}
+            if SCENARIO["lease_recorded"] else {})
+    rows = [("ev_1", "submitted", {}, {}),
+            ("ev_2", "lease_acquired", {"pools": ["runner:browser"], "units": 1}, held)]
     chosen = backend()
     if chosen and state != "PARKED":
-        rows.append(("ev_3", "dispatched", {"execution_name": "swarm-gkeproof-1", "backend": chosen}))
+        rows.append(("ev_3", "dispatched",
+                     {"execution_name": "swarm-gkeproof-1", "backend": chosen}, held))
     if state == "PARKED":
-        rows.append(("ev_4", "parked", {"reason": SCENARIO["park_reason"]}))
+        rows.append(("ev_4", "parked", {"reason": SCENARIO["park_reason"]}, {}))
     elif state == "SUCCEEDED":
-        rows.append(("ev_4", "succeeded", {}))
+        rows.append(("ev_4", "succeeded", {}, {}))
     elif state in ("FAILED", "DEAD_LETTERED"):
-        rows.append(("ev_4", "failed", {"error": error}))
+        rows.append(("ev_4", "failed", {"error": error}, {}))
     return [
         firestore_document("tasks/%s/events" % TASK_ID, ev_id,
-                           {"type": kind, "task_id": TASK_ID, "detail": detail})
-        for ev_id, kind, detail in rows
+                           {"type": kind, "task_id": TASK_ID, "detail": detail, **top})
+        for ev_id, kind, detail, top in rows
     ]
+
+
+def lease_document():
+    """The lease, read as released only after `lease_release_lag` reads saw it held."""
+    state = load_state()
+    reads = state.get("lease_reads", 0) + 1
+    state["lease_reads"] = reads
+    save_state(state)
+    released = SCENARIO["lease_released"] and reads > SCENARIO["lease_release_lag"]
+    return firestore_document("leases", LEASE_ID, {
+        "lease_id": LEASE_ID, "task_id": TASK_ID,
+        "released_at": "2026-09-24T00:05:00Z" if released else None,
+    })
 
 
 def attempt_documents():
@@ -224,10 +271,7 @@ if "firestore.googleapis.com" in url and "/documents/" in url:
     if path == "tasks/%s" % TASK_ID and submitted():
         respond(200, firestore_document("tasks", TASK_ID, task_document()))
     if path == "leases/%s" % LEASE_ID:
-        released = "2026-09-24T00:05:00Z" if SCENARIO["lease_released"] else None
-        respond(200, firestore_document("leases", LEASE_ID, {
-            "lease_id": LEASE_ID, "task_id": TASK_ID, "released_at": released,
-        }))
+        respond(200, lease_document())
     respond(404, {"error": {"code": 404, "message": "not found: " + path}})
 
 if url.startswith("https://storage.googleapis.com/storage/v1/b/"):
@@ -321,7 +365,7 @@ def test_a_browser_task_that_runs_on_gke_is_proven(tmp_path):
     assert passed_on(out, "dispatched to GKE_AUTOPILOT"), out
     assert passed_on(out, "SUCCEEDED"), out
     assert passed_on(out, "object(s) under"), out
-    assert passed_on(out, "released"), out
+    assert passed_on(out, "lease_gkeproof", "released"), out
 
     sent = state.get("submitted") or {}
     assert sent.get("runner_profile") == "browser", sent
@@ -408,7 +452,33 @@ def test_a_task_that_never_finishes_fails_at_the_timeout(tmp_path):
 
 
 def test_a_lease_that_is_never_released_fails(tmp_path):
-    code, out, _ = run_proof(tmp_path, lease_released=False)
+    code, out, state = run_proof(tmp_path, "--timeout", "60", "--lease-wait", "3",
+                                 lease_released=False)
     assert code != 0, out
-    assert failed_on(out, "still holding capacity"), out
+    assert failed_on(out, "lease_gkeproof", "still holding capacity"), out
+    assert len(verdicts(out, "FAIL")) == 1, out
+    # It WAITED for the release rather than judging a single read: the lease
+    # was read more than once inside the 3s it was given.
+    assert state.get("lease_reads", 0) > 1, state
+
+
+def test_a_lease_released_a_moment_after_the_task_ends_is_not_a_leak(tmp_path):
+    # control.finish() writes SUCCEEDED, then records the attempt's end, then
+    # emits an event, and only then releases the lease. A proof that reads the
+    # lease once, the instant the task reads SUCCEEDED, can land in that gap
+    # and report a leak that is not one: a red release over a healthy platform.
+    code, out, state = run_proof(tmp_path, lease_release_lag=2)
+    assert code == 0, out
+    assert not verdicts(out, "FAIL"), out
+    assert passed_on(out, "lease_gkeproof", "released"), out
+    assert state.get("lease_reads") == 3, state
+
+
+def test_a_task_whose_events_record_no_lease_fails(tmp_path):
+    # A SUCCEEDED task was admitted, and admission is what writes the lease id
+    # onto its events. None there means capacity cannot be shown returned, and
+    # "cannot be shown" is not a pass.
+    code, out, _ = run_proof(tmp_path, lease_recorded=False)
+    assert code != 0, out
+    assert failed_on(out, "record no lease"), out
     assert len(verdicts(out, "FAIL")) == 1, out

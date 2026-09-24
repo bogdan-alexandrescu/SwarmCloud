@@ -9,6 +9,15 @@ channel" (a fresh project, exit 3) apart from "the registry could not be read"
 (exit 1) -- an unreadable registry is not an empty one, and reading it as empty
 is how a plan against a fresh-project path gets run on a live one.
 
+WHETHER A PROJECT IS FRESH IS TERRAFORM STATE'S ANSWER, NOT THE REGISTRY'S.
+On a fresh project the registry does not exist yet -- this same root creates
+it -- so asking it for tags is a NOT_FOUND, which is (rightly) exit 1, and
+`scripts/plan.sh` refused to plan the very bootstrap it documents. The
+`--applied` cases below run in a sandbox copy of the repository with a fake
+`terraform` whose state is the scenario, and cover both sides: a state with no
+registry in it is fresh even though the registry cannot be read, and a state
+that HAS the registry is not fresh, however the registry answers.
+
 `scripts/lib/deploy.sh --verify-only` is the release's post-apply check, and it
 is the one that answers the question the 2026-09-20 audit found nothing could:
 "is the code I just built the code that is running". A service serving an older
@@ -31,6 +40,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -102,8 +112,41 @@ if words[:4] == ["artifacts", "docker", "tags", "list"]:
     if scenario.get("tags_error"):
         sys.stderr.write(scenario["tags_error"] + "\n")
         sys.exit(1)
+    # What the command RETURNS, per docker_util.ListDockerTags: `tag` and
+    # `version` are full resource names (`tag.name`, `tag.version`), and only
+    # `image` is the docker string. The bare `dev` and `sha256:...` that
+    # `gcloud artifacts docker tags list` shows come from its default TABLE
+    # format, `tag.basename()` and `version.basename()`.
+    #
+    # A --format is projected exactly as written: `tag` prints the resource
+    # name, `tag.basename()` the tag. gcloud 483.0.0 was measured to carry the
+    # default table's basename() over to a bare `value(tag)` as well, but that
+    # is inheritance nothing documents, and the release runs whatever gcloud
+    # setup-gcloud@v2 installs that day. So the fake prints what was asked
+    # for, and a caller that wants the basename has to say so.
+    fmt = flag("--format") or ""
+    if not (fmt.startswith("value(") and fmt.endswith(")")):
+        sys.stderr.write("fake gcloud: tags list is modelled for --format=value(...) only\n")
+        sys.exit(2)
+    keys = [k.strip() for k in fmt[len("value("):-1].split(",")]
+    prefix = "projects/%s/locations/%s/repositories/swarm-images/packages/" % (
+        scenario["project"], scenario["region"])
     for tag, image, version in scenario.get("tags", []):
-        sys.stdout.write("%s\t%s\t%s\n" % (tag, image, version))
+        package = image.rsplit("/", 1)[-1]
+        record = {
+            "tag": prefix + package + "/tags/" + tag,
+            "image": image,
+            "version": prefix + package + "/versions/" + version,
+        }
+        cells = []
+        for key in keys:
+            field, _, transform = key.partition(".")
+            if field not in record or transform not in ("", "basename()"):
+                sys.stderr.write("fake gcloud: no model for the projection %r\n" % key)
+                sys.exit(2)
+            value = record[field]
+            cells.append(value.rsplit("/", 1)[-1] if transform else value)
+        sys.stdout.write("\t".join(cells) + "\n")
     sys.exit(0)
 
 if words[:3] == ["run", "services", "describe"]:
@@ -188,7 +231,7 @@ def environment(tmp_path: Path, scenario: dict) -> dict[str, str]:
     gcloud.chmod(0o755)
 
     scenario_path = tmp_path / "gcloud-scenario.json"
-    scenario_path.write_text(json.dumps(scenario))
+    scenario_path.write_text(json.dumps({"project": PROJECT, "region": REGION, **scenario}))
 
     env_file = tmp_path / "env"
     env_file.write_text(f"PROJECT_ID={PROJECT}\nREGION={REGION}\nENVIRONMENT=dev\n")
@@ -282,6 +325,215 @@ def test_an_unreadable_registry_is_not_an_empty_one(tmp_path):
                      "--channel", "dev", "--out", str(tmp_path / "o.json"))
     assert code not in (0, 3), text
     assert "PERMISSION_DENIED" in text, text
+
+
+# ---------------------------------------------------------------------------
+# image-refs.sh --applied, and plan.sh: fresh is decided by terraform state
+# ---------------------------------------------------------------------------
+
+TERRAFORM_SHIM = r'''#!/usr/bin/env python3
+"""A terraform whose state is FAKE_TERRAFORM_SCENARIO. Unknown calls FAIL.
+
+Error texts are terraform 1.16.2's own, measured with no state present.
+"""
+import json, os, sys
+
+scenario = json.loads(open(os.environ["FAKE_TERRAFORM_SCENARIO"]).read())
+with open(os.environ["FAKE_TERRAFORM_LOG"], "a") as fh:
+    fh.write(" ".join(sys.argv[1:]) + "\n")
+
+args = [a for a in sys.argv[1:] if not a.startswith("-chdir=")]
+
+if args[:3] == ["output", "-json", "image_refs"]:
+    if scenario.get("output_error"):
+        sys.stderr.write(scenario["output_error"] + "\n")
+        sys.exit(1)
+    outputs = scenario.get("outputs") or {}
+    if "image_refs" not in outputs:
+        sys.stderr.write('Error: Output "image_refs" not found\n\nThe output variable '
+                         "requested could not be found in the state file.\n")
+        sys.exit(1)
+    sys.stdout.write(json.dumps(outputs["image_refs"]) + "\n")
+    sys.exit(0)
+
+if args[:2] == ["state", "list"]:
+    if scenario.get("state_error"):
+        sys.stderr.write(scenario["state_error"] + "\n")
+        sys.exit(1)
+    if scenario.get("state") is None:
+        # What a backend with no state object at all says. A GCS backend
+        # creates an empty state at init instead, and lists nothing.
+        sys.stderr.write("No state file was found!\n\nState management commands "
+                         "require a state file.\n")
+        sys.exit(1)
+    for address in scenario["state"]:
+        sys.stdout.write(address + "\n")
+    sys.exit(0)
+
+if args[:1] == ["plan"]:
+    sys.exit(0)
+
+sys.stderr.write("fake terraform: no model for: %s\n" % " ".join(sys.argv[1:]))
+sys.exit(2)
+'''
+
+REGISTRY = "module.artifact_registry.google_artifact_registry_repository.this"
+LIVE_STATE = [
+    'module.project_services[0].google_project_service.this["artifactregistry.googleapis.com"]',
+    REGISTRY,
+    'module.services.google_cloud_run_v2_service.this["swarm-api"]',
+]
+# The only thing on a project the first targeted apply has not reached yet:
+# project_services alone, before the registry exists.
+SERVICES_ONLY = [LIVE_STATE[0]]
+
+NOT_FOUND = ("ERROR: (gcloud.artifacts.docker.tags.list) NOT_FOUND: Requested entity was "
+             "not found.")
+
+
+def dev_channel() -> list:
+    return [["dev", f"{REPO_PATH}/{n}", digest(c)] for n, c in NAMES.items()]
+
+
+def sandbox(tmp_path: Path, state: dict, registry: dict) -> tuple[Path, dict[str, str]]:
+    """A copy of the repository whose terraform is the fake above.
+
+    A COPY, because common.sh derives REPO_ROOT from its own path and
+    image-refs.sh insists on `terraform/infra/.terraform`: running the real
+    scripts would need an initialised root in the working tree.
+    """
+    root = tmp_path / "repo"
+    shutil.copytree(REPO / "scripts", root / "scripts")
+    (root / "terraform" / "infra" / ".terraform").mkdir(parents=True)
+    tfvars = root / "terraform" / "environments" / "dev"
+    tfvars.mkdir(parents=True)
+    (tfvars / "dev.tfvars").write_text("")
+
+    env = environment(tmp_path, registry)
+    terraform = tmp_path / "bin" / "terraform"
+    terraform.write_text(TERRAFORM_SHIM)
+    terraform.chmod(0o755)
+    # plan.sh compares what swarm-api serves with what it pins, over REST.
+    # Offline here: that comparison is advisory and tolerates a failed read,
+    # and nothing in this file may reach a real API.
+    curl = tmp_path / "bin" / "curl"
+    curl.write_text("#!/bin/sh\necho 'fake curl: offline' >&2\nexit 7\n")
+    curl.chmod(0o755)
+    scenario = tmp_path / "terraform-scenario.json"
+    scenario.write_text(json.dumps(state))
+    env["SWARM_TERRAFORM"] = str(terraform)
+    env["FAKE_TERRAFORM_SCENARIO"] = str(scenario)
+    env["FAKE_TERRAFORM_LOG"] = str(tmp_path / "terraform.log")
+    return root, env
+
+
+def applied(tmp_path: Path, state: dict, registry: dict) -> tuple[int, str, Path]:
+    root, env = sandbox(tmp_path, state, registry)
+    out = tmp_path / "refs.tfvars.json"
+    proc = subprocess.run(
+        ["bash", str(root / "scripts" / "lib" / "image-refs.sh"), "--applied", "--out", str(out)],
+        cwd=root, env=env, capture_output=True, text=True, timeout=180,
+    )
+    return proc.returncode, proc.stdout + proc.stderr, out
+
+
+def plan(tmp_path: Path, state: dict, registry: dict) -> tuple[int, str, list[str]]:
+    root, env = sandbox(tmp_path, state, registry)
+    proc = subprocess.run(
+        ["bash", str(root / "scripts" / "plan.sh")],
+        cwd=root, env=env, capture_output=True, text=True, timeout=180,
+    )
+    log = tmp_path / "terraform.log"
+    calls = log.read_text().splitlines() if log.exists() else []
+    return proc.returncode, proc.stdout + proc.stderr, [c for c in calls if " plan " in f" {c} "]
+
+
+def gcloud_calls(tmp_path: Path) -> str:
+    log = tmp_path / "gcloud.log"
+    return log.read_text() if log.exists() else ""
+
+
+def test_what_terraform_applied_is_pinned_without_asking_the_registry(tmp_path):
+    code, text, out = applied(
+        tmp_path,
+        {"outputs": {"image_refs": {n: ref(n) for n in NAMES}}, "state": LIVE_STATE},
+        {"tags_error": NOT_FOUND},
+    )
+    assert code == 0, text
+    assert json.loads(out.read_text()) == {"image_refs": {n: ref(n) for n in NAMES}}
+    assert "tags list" not in gcloud_calls(tmp_path), "state answered; the registry is not the source"
+
+
+def test_a_state_that_predates_the_output_pins_what_the_channel_points_at(tmp_path):
+    # The live project on the first plan after this change: every resource
+    # applied, the registry among them, but no `image_refs` output yet. This is
+    # the first plan-on-main after merge, and the release's skip_build path
+    # reads the channel the same way.
+    code, text, out = applied(tmp_path, {"outputs": {}, "state": LIVE_STATE}, {"tags": dev_channel()})
+    assert code == 0, text
+    assert json.loads(out.read_text()) == {"image_refs": {n: ref(n) for n in NAMES}}
+
+
+def test_an_empty_state_is_a_fresh_project_although_the_registry_does_not_exist(tmp_path):
+    code, text, _ = applied(tmp_path, {"outputs": {}, "state": []}, {"tags_error": NOT_FOUND})
+    assert code == 3, text
+
+
+def test_no_state_at_all_is_a_fresh_project(tmp_path):
+    code, text, _ = applied(tmp_path, {"outputs": {}, "state": None}, {"tags_error": NOT_FOUND})
+    assert code == 3, text
+
+
+def test_a_state_without_the_registry_is_a_fresh_project(tmp_path):
+    # project_services applied, the registry not yet: nothing this root
+    # deploys can have been pushed anywhere it would pin from.
+    code, text, _ = applied(tmp_path, {"outputs": {}, "state": SERVICES_ONLY}, {"tags_error": NOT_FOUND})
+    assert code == 3, text
+
+
+def test_a_registry_terraform_created_that_cannot_be_read_is_not_fresh(tmp_path):
+    # State says the registry exists. A NOT_FOUND now is drift or a wrong
+    # project, and reading it as "fresh" would plan a bootstrap onto a live
+    # project -- the case exit 1 exists for.
+    code, text, _ = applied(tmp_path, {"outputs": {}, "state": LIVE_STATE}, {"tags_error": NOT_FOUND})
+    assert code not in (0, 3), text
+    assert "NOT_FOUND" in text, text
+
+
+def test_an_unreadable_state_is_not_an_empty_one(tmp_path):
+    # The registry is healthy and on channel, so a script that skipped past
+    # the state error to the channel would exit 0 here.
+    code, text, _ = applied(
+        tmp_path,
+        {"outputs": {}, "state_error": "Error: Failed to load state: googleapi: Error 403: "
+                                       "swarm-deploy does not have storage.objects.get access"},
+        {"tags": dev_channel()},
+    )
+    assert code not in (0, 3), text
+    assert "403" in text, text
+
+
+def test_plan_on_a_fresh_project_plans_the_registry_alone(tmp_path):
+    code, text, plans = plan(tmp_path, {"outputs": {}, "state": []}, {"tags_error": NOT_FOUND})
+    assert code == 0, text
+    assert len(plans) == 1, (plans, text)
+    assert "-target=module.project_services" in plans[0], plans
+    assert "-target=module.artifact_registry" in plans[0], plans
+    assert "image-refs" not in plans[0], "a fresh project has no digests to pass"
+
+
+def test_plan_on_a_live_project_pins_digests_and_targets_nothing(tmp_path):
+    code, text, plans = plan(tmp_path, {"outputs": {}, "state": LIVE_STATE}, {"tags": dev_channel()})
+    assert code == 0, text
+    assert len(plans) == 1, (plans, text)
+    assert "-target=" not in plans[0], plans
+    assert "image-refs-dev.tfvars.json" in plans[0], plans
+
+
+def test_plan_refuses_when_the_registry_it_created_cannot_be_read(tmp_path):
+    code, text, plans = plan(tmp_path, {"outputs": {}, "state": LIVE_STATE}, {"tags_error": NOT_FOUND})
+    assert code != 0, text
+    assert plans == [], "nothing may be planned without knowing which images are deployed"
 
 
 # ---------------------------------------------------------------------------
