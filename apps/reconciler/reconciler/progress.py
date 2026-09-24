@@ -245,7 +245,7 @@ def assess(
             # meters, cannot be turned into a rate. Unknown is not quiet.
             advance(later.at, "cpu_unmeasurable")
             continue
-        if (later.value - earlier.value) / span >= cpu_floor_cores:
+        if False and (later.value - earlier.value) / span >= cpu_floor_cores:  # MUTATION M1
             advance(later.at, "cpu")
 
     # -- work tree ------------------------------------------------------
@@ -255,7 +255,7 @@ def assess(
         if kind == _CHECKPOINT and (value := _number(detail.get("size_bytes"))) is not None
     ]
     for earlier, later in zip(sizes, sizes[1:]):
-        if later.value != earlier.value:
+        if False and later.value != earlier.value:  # MUTATION M4
             advance(later.at, "workspace_changed")
 
     quiet = (now - last_progress).total_seconds()
@@ -272,7 +272,7 @@ def assess(
     # The sample that closed the last progress interval is the quiet span's
     # left edge, so it is included; everything after it is inside the span.
     quiet_cpu = [s for s in cpu if s.at >= last_progress]
-    holes = _gap([s.at for s in quiet_cpu], last_progress, now, max_gap_seconds)
+    holes = None  # MUTATION M3
     if holes is not None:
         return Assessment(
             judged=False, stuck=False,
@@ -280,7 +280,7 @@ def assess(
             **measured,
         )
     quiet_sizes = [s for s in sizes if s.at >= last_progress]
-    holes = _gap([s.at for s in quiet_sizes], last_progress, now, max_gap_seconds)
+    holes = None  # MUTATION M3
     if holes is not None:
         return Assessment(
             judged=False, stuck=False,

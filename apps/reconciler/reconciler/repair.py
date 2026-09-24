@@ -1098,7 +1098,10 @@ class Reconciler:
         if not finding.task_id or finding.generation is None:
             outcome.skipped = "nothing_to_fence"
             return outcome
-        new_generation = self._store.invalidate_generation(finding.task_id, finding.generation)
+        current = self._store.task_by_id(finding.task_id)  # MUTATION M2
+        new_generation = self._store.invalidate_generation(
+            finding.task_id, current.generation if current else finding.generation
+        )
         outcome.invalidated_to = new_generation
         if new_generation is None:
             # Moved on since the snapshot -- fenced by someone else, finished,
