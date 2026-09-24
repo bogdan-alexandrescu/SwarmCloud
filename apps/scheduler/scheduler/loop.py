@@ -40,7 +40,7 @@ from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
-from .store import SchedulerStore
+from .store import GuardedWrite, SchedulerStore
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,12 @@ class DrainReport:
     promoted_dependencies: int = 0
     promoted_credentials: int = 0
     promoted_prewarm: int = 0
+    #: Transitions this drain decided and did NOT write, because the task had
+    #: moved on since it was read -- a cancel, another scheduler, the reconciler
+    #: or the worker got there first. Each one used to be a blind overwrite
+    #: (incident wf_ebb3ab2d65664707a559, F-9). The breakdown by write and
+    #: reason is `swarm_scheduler_stale_writes_total{write, reason}`.
+    stale_writes: int = 0
     tenants_seen: int = 0
     topped_up_tenants: int = 0
     stop_reason: str = "not_started"
@@ -143,9 +149,9 @@ class Scheduler:
         self._metrics.paused.set(0)
 
         report.promoted_dependencies = self._promote_dependencies(report)
-        report.promoted_credentials = self._promote_credentials()
+        report.promoted_credentials = self._promote_credentials(report)
         if self._settings.enable_prewarm:
-            report.promoted_prewarm = self._prewarm()
+            report.promoted_prewarm = self._prewarm(report)
 
         while True:
             if report.passes >= self._settings.max_passes_per_run:
@@ -269,8 +275,9 @@ class Scheduler:
 
         if task.cancel_requested:
             # It holds no capacity in READY, so it can be finished here.
-            self._store.cancel(task, "cancellation requested before admission")
-            self._count_cancel(report, reason="cancel_requested")
+            self._cancel(
+                task, "cancellation requested before admission", report, why="cancel_requested"
+            )
             return False
 
         if task.next_eligible_at is not None and task.next_eligible_at > now:
@@ -281,30 +288,31 @@ class Scheduler:
         if profile is None:
             # The catalogue no longer has this profile. Parking rather than
             # failing keeps the work recoverable if an admin restores it.
-            self._store.park(
+            self._park(
                 task,
                 ParkReason.MANUAL_PAUSE,
+                report,
                 detail={"error": f"runner_profile {task.runner_profile!r} is not in the catalogue"},
             )
-            self._metrics.parked.labels(reason=ParkReason.MANUAL_PAUSE.value).inc()
-            report.parked += 1
             return False
 
         if task.depends_on:
             states = self._store.task_states(task.depends_on)
             failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
             if failed:
-                self._store.cancel(
+                self._cancel(
                     task,
                     "an upstream workflow step did not succeed",
-                    {"failed_parents": failed},
+                    report,
+                    why="failed_parent",
+                    detail={"failed_parents": failed},
                 )
-                self._count_cancel(report, reason="failed_parent")
                 return False
             if any(states.get(tid) is not TaskState.SUCCEEDED for tid in task.depends_on):
-                self._store.park(
+                self._park(
                     task,
                     ParkReason.DEPENDENCY_INCOMPLETE,
+                    report,
                     detail={
                         "waiting_on": [
                             tid
@@ -313,33 +321,27 @@ class Scheduler:
                         ]
                     },
                 )
-                self._metrics.parked.labels(
-                    reason=ParkReason.DEPENDENCY_INCOMPLETE.value
-                ).inc()
-                report.parked += 1
                 return False
 
         tenant = self._tenant(task.tenant_id)
         if tenant is None or not tenant.enabled:
-            self._store.park(
+            self._park(
                 task,
                 ParkReason.MANUAL_PAUSE,
+                report,
                 detail={"error": "tenant is missing or disabled"},
             )
-            self._metrics.parked.labels(reason=ParkReason.MANUAL_PAUSE.value).inc()
-            report.parked += 1
             return False
 
         if profile.provider and profile.provider not in tenant.credentials:
             # Admitting this would start a container that can only fail, and it
             # would hold a slot while doing so.
-            self._store.park(
+            self._park(
                 task,
                 ParkReason.CREDENTIAL_MISSING,
+                report,
                 detail={"provider": profile.provider},
             )
-            self._metrics.parked.labels(reason=ParkReason.CREDENTIAL_MISSING.value).inc()
-            report.parked += 1
             return False
 
         backend = resolve_backend(profile)
@@ -350,7 +352,10 @@ class Scheduler:
                 task, units=units, backend=backend.value, config=self._admission
             )
         except AdmissionDenied as denied:
-            self._store.record_blockers(task, denied.reasons)
+            recorded = self._store.record_blockers(task, denied.reasons)
+            if not recorded.applied:
+                # A `not_ready` denial: another scheduler admitted it first.
+                self._count_stale(recorded, report)
             report.denied += 1
             first = denied.reasons[0] if denied.reasons else {}
             reason = str(first.get("reason", "unknown"))
@@ -402,9 +407,11 @@ class Scheduler:
             # errors routinely echo the resource they were handed -- the tenant
             # service account, the job name, the secret names -- and
             # `task.last_error` is returned to the caller verbatim.
-            self._store.return_to_ready_after_failed_dispatch(
+            returned = self._store.return_to_ready_after_failed_dispatch(
                 task, lease, exc.code, correlation_id=lease.attempt_id
             )
+            if not returned.applied:
+                self._count_stale(returned, report)
             report.dispatch_failures += 1
             self._metrics.dispatch_failures.labels(backend=backend.value).inc()
             log.warning(
@@ -428,7 +435,12 @@ class Scheduler:
             self._rollback_admission(task, lease, exc)
             raise
 
-        self._store.mark_dispatched(task, lease, execution, backend.value)
+        marked = self._store.mark_dispatched(task, lease, execution, backend.value)
+        if not marked.applied:
+            # Usually its worker started first and already walked the task past
+            # DISPATCHED. The dispatch itself succeeded -- the execution exists
+            # -- so it is still counted below; only the state write was not made.
+            self._count_stale(marked, report)
         report.dispatched += 1
         self._metrics.dispatched.labels(backend=backend.value).inc()
         # A SUCCESS LINE, because the absence of one is what hid a total outage.
@@ -460,9 +472,11 @@ class Scheduler:
 
         Best effort, and it must never replace `cause` with its own failure: the
         operator needs the fault that started this, not the second one it caused.
-        `return_to_ready_after_failed_dispatch` releases the lease BEFORE it
-        writes the task and the event, so even a Firestore that is refusing
-        writes usually gets the pools back -- the ordering that matters here.
+        `return_to_ready_after_failed_dispatch` releases the lease and returns
+        the task in ONE transaction and writes the event only after it commits,
+        so a failing event write never keeps the pools -- and a lease whose task
+        has since moved on is still released, while one a running worker holds,
+        or one the reconciler has fenced and not yet released, is not.
 
         `scheduler_internal_error` is a stable code, not the exception text:
         `task.last_error` is returned to the tenant verbatim by
@@ -478,9 +492,11 @@ class Scheduler:
             cause,
         )
         try:
-            self._store.return_to_ready_after_failed_dispatch(
+            returned = self._store.return_to_ready_after_failed_dispatch(
                 task, lease, "scheduler_internal_error", correlation_id=lease.attempt_id
             )
+            if not returned.applied:
+                self._count_stale(returned, None)
         except Exception:
             log.exception(
                 "could not return the capacity for task=%s lease=%s; the reconciler's "
@@ -499,6 +515,59 @@ class Scheduler:
         report.cancelled += 1
         self._metrics.cancelled.labels(reason=reason).inc()
 
+    def _count_stale(self, outcome: GuardedWrite, report: DrainReport | None) -> None:
+        """One place that counts a write the store refused to force.
+
+        `report` is None only on the rollback path, which has none; the metric
+        still counts it there.
+        """
+        if report is not None:
+            report.stale_writes += 1
+        self._metrics.stale_writes.labels(
+            write=outcome.write, reason=outcome.reason or "unknown"
+        ).inc()
+
+    def _park(
+        self,
+        task: Task,
+        reason: ParkReason,
+        report: DrainReport,
+        *,
+        detail: dict[str, Any],
+    ) -> None:
+        outcome = self._store.park(task, reason, detail=detail)
+        if outcome.applied:
+            self._metrics.parked.labels(reason=reason.value).inc()
+            report.parked += 1
+        else:
+            self._count_stale(outcome, report)
+
+    def _cancel(
+        self,
+        task: Task,
+        text: str,
+        report: DrainReport,
+        *,
+        why: str,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        outcome = self._store.cancel(task, text, detail)
+        if outcome.applied:
+            self._count_cancel(report, reason=why)
+        else:
+            self._count_stale(outcome, report)
+
+    def _promote(
+        self, task: Task, *, kind: str, detail: dict[str, Any], report: DrainReport | None
+    ) -> bool:
+        """Promote one PARKED task; True only if the promotion was written."""
+        outcome = self._store.promote_to_ready(task, detail=detail)
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return False
+        self._metrics.promoted.labels(kind=kind).inc()
+        return True
+
     # -- promotion sweeps -------------------------------------------------
 
     def _promote_dependencies(self, report: DrainReport) -> int:
@@ -511,39 +580,46 @@ class Scheduler:
 
         A dependent whose parent did NOT succeed is cancelled here, and counted
         in `report.cancelled` (and `swarm_scheduler_cancelled_total`) exactly as
-        `_admit_one` counts the same cancel. Returns the number PROMOTED.
+        `_admit_one` counts the same cancel. Returns the number PROMOTED -- a
+        promotion the store refused to force (the task had moved on since this
+        sweep listed it) is counted in `report.stale_writes` instead.
         """
         promoted = 0
         for task in self._store.parked_tasks(
             ParkReason.DEPENDENCY_INCOMPLETE, self._settings.dependency_sweep_size
         ):
             if not task.depends_on:
-                self._store.promote_to_ready(task, detail={"reason": "no_dependencies"})
                 # Counted in the metric as well as the report. Incrementing only
                 # the report here made `swarm_scheduler_promoted{kind=
                 # "dependency"}` disagree with DrainReport.promoted_dependencies,
                 # so a dashboard built on the metric under-counted promotions.
-                self._metrics.promoted.labels(kind="dependency").inc()
-                promoted += 1
+                if self._promote(
+                    task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
+                ):
+                    promoted += 1
                 continue
             states = self._store.task_states(task.depends_on)
             failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
             if failed:
-                self._store.cancel(
-                    task, "an upstream workflow step did not succeed",
-                    {"failed_parents": failed},
+                self._cancel(
+                    task,
+                    "an upstream workflow step did not succeed",
+                    report,
+                    why="failed_parent",
+                    detail={"failed_parents": failed},
                 )
-                self._count_cancel(report, reason="failed_parent")
                 continue
             if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
-                self._store.promote_to_ready(
-                    task, detail={"reason": "dependencies_satisfied"}
-                )
-                self._metrics.promoted.labels(kind="dependency").inc()
-                promoted += 1
+                if self._promote(
+                    task,
+                    kind="dependency",
+                    detail={"reason": "dependencies_satisfied"},
+                    report=report,
+                ):
+                    promoted += 1
         return promoted
 
-    def _promote_credentials(self) -> int:
+    def _promote_credentials(self, report: DrainReport | None = None) -> int:
         """Re-ready tasks whose tenant has since registered the missing key."""
         promoted = 0
         for task in self._store.parked_tasks(
@@ -556,15 +632,16 @@ class Scheduler:
             if profile is None:
                 continue
             if not profile.provider or profile.provider in tenant.credentials:
-                self._store.promote_to_ready(
-                    task, detail={"reason": "credential_registered",
-                                  "provider": profile.provider}
-                )
-                self._metrics.promoted.labels(kind="credential").inc()
-                promoted += 1
+                if self._promote(
+                    task,
+                    kind="credential",
+                    detail={"reason": "credential_registered", "provider": profile.provider},
+                    report=report,
+                ):
+                    promoted += 1
         return promoted
 
-    def _prewarm(self) -> int:
+    def _prewarm(self, report: DrainReport | None = None) -> int:
         """Promote quota-parked work just before its window reopens.
 
         BOUNDED by `prewarm_max_agents`, and safe by construction: the only
@@ -597,11 +674,12 @@ class Scheduler:
                     # admitted BEFORE the window reopens -- a container started
                     # on a guess. Leave it parked for the reconciler.
                     continue
-                self._store.promote_to_ready(
+                if self._promote(
                     task,
+                    kind="prewarm",
                     detail={"reason": "prewarm", "park_reason": reason.value,
                             "was_eligible_at": eligible_at.isoformat() if eligible_at else None},
-                )
-                self._metrics.promoted.labels(kind="prewarm").inc()
-                promoted += 1
+                    report=report,
+                ):
+                    promoted += 1
         return promoted
