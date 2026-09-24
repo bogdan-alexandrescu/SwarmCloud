@@ -55,7 +55,8 @@ the same grey, exactly -- so it gets the floor the band can actually carry, and
 the shape cues carry the rest.
 
 `--info` is deliberately NOT in the triad. It is the link and neutral accent
-(`.sub button`, `.ov-link`, the default `.ctl-util-fill`), not a severity, and
+(`.sub button`, `.ov-link`), not a severity -- and no longer the default
+`.ctl-util-fill`, which is `--text-dim` (design-system.md §6.4) -- and
 re-toning it would move every link on every screen. It is held to the AA text
 floor and to a distinct chip silhouette, and nothing more.
 
@@ -507,6 +508,72 @@ def test_utilisation_fills_differ_by_texture_not_only_hue(rules):
     assert "background-image" not in default, (
         "the default fill has a texture of its own, which leaves nothing for "
         "the toned fills to contrast against"
+    )
+
+
+#: The fills that carry a verdict, and so the only ones a hue is allowed on.
+VERDICT_FILLS = frozenset({"is-warn", "is-bad", "is-paused"})
+
+#: What a fill with nothing to report is painted in. design-system.md §6.4.
+MONOCHROME_FILL = "var(--text-dim)"
+
+
+def _subject_classes(selector: str) -> set[str]:
+    """The classes on the element a selector actually paints.
+
+    The last compound, after any descendant or child combinator: in
+    `.pool .ctl-util-fill.x` that is `{"ctl-util-fill", "x"}`, and `.pool` is
+    only where it is.
+    """
+    subject = re.split(r"\s*[>+~]\s*|\s+", selector.strip())[-1]
+    return set(re.findall(r"\.([A-Za-z0-9_-]+)", subject))
+
+
+def test_a_proportion_fill_takes_a_hue_only_from_a_verdict(rules):
+    """One rule for every proportion fill: grey, unless it is saying something.
+
+    OWNER DECISION, 2026-09-24 (design-system.md §6.4). `.ctl-util-fill`
+    defaults to `--text-dim`, and `.is-warn` / `.is-bad` / `.is-paused` keep
+    their hue and their texture because those three are a verdict. The
+    Workflows meter carries `ctl-util-fill wf-meter-fill` and was exempted back
+    to `--info` by one line, held open as a question because Workflows had
+    been frozen. The answer: it goes grey like every other proportion. Colour
+    on a bar is a verdict, and "three of five steps done" is not one.
+
+    THE PROPERTY, NOT THE SELECTOR. This does not look for `wf-meter-fill` by
+    name. Any rule whose subject is a `.ctl-util-fill` -- whatever screen class
+    rides along with it, under whatever ancestor, at whatever breakpoint --
+    and which carries no verdict class may not paint a background other than
+    the monochrome default. A second exemption under a new name fails here
+    exactly as the old one does.
+    """
+    default = None
+    for at_rules, selector, decls in rules:
+        if at_rules or selector != ".ctl-util-fill":
+            continue
+        for prop in ("background", "background-color"):
+            if prop in decls:
+                default = decls[prop]
+    assert default == MONOCHROME_FILL, (
+        f"the bare `.ctl-util-fill` resolves to {default!r}, not "
+        f"{MONOCHROME_FILL}: a bar with nothing to report is hued again"
+    )
+
+    exemptions = []
+    for at_rules, selector, decls in rules:
+        classes = _subject_classes(selector)
+        if "ctl-util-fill" not in classes or classes & VERDICT_FILLS:
+            continue
+        if not at_rules and selector == ".ctl-util-fill":
+            continue  # the default itself, cascaded above
+        for prop in ("background", "background-color"):
+            if prop in decls and decls[prop] != MONOCHROME_FILL:
+                where = f" inside {at_rules}" if at_rules else ""
+                exemptions.append(f"`{selector} {{ {prop}: {decls[prop]} }}`{where}")
+    assert not exemptions, (
+        "a proportion fill that carries no verdict is painted a hue, so one "
+        "bar in the product is coloured for being a bar (design-system.md "
+        "§6.4, decided 2026-09-24):\n  " + "\n  ".join(exemptions)
     )
 
 

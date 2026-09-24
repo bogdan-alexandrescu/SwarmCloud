@@ -255,6 +255,110 @@ describe('which environment this console is pointed at', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The badge's casing -- an owner decision, 2026-09-24 (design-system.md §13.6)
+// ---------------------------------------------------------------------------
+
+/** Every cased letter is a capital, and there is at least one. */
+function isCapitals(s: string): boolean {
+  return s === s.toUpperCase() && s !== s.toLowerCase()
+}
+
+/**
+ * A capital first letter and nothing shouted after it. The first letter has to
+ * be a real capital (`toLowerCase` changes it), so an empty label -- a badge
+ * that printed nothing -- is not sentence case by default.
+ */
+function isSentenceCase(s: string): boolean {
+  const head = s.charAt(0)
+  const rest = s.slice(1)
+  return (
+    head !== head.toLowerCase() &&
+    head === head.toUpperCase() &&
+    rest === rest.toLowerCase() &&
+    !isCapitals(s)
+  )
+}
+
+/** What the badge actually PRINTS, read off a render rather than off `envTreatment`. */
+function printed(env: Environment): string {
+  const { container, unmount } = render(<EnvironmentBadge env={env} />)
+  const text = container.querySelector('.brand-env-name')?.textContent ?? ''
+  unmount()
+  return text
+}
+
+describe('the badge shouts only where shouting is a safety signal', () => {
+  // THE DECISION. §13.2 bans emphasis on any string this console authors, and
+  // the badge was the one place still doing it -- `env.name.toUpperCase()` for
+  // every declared environment and a literal `'LOCAL'`. The owner's ruling:
+  // `dev` and `local` render in sentence case like everything else; the
+  // PRODUCTION banner and ENVIRONMENT UNKNOWN keep their capitals, because
+  // those two are safety signals and not typography.
+  //
+  // PINNED AS A PROPERTY OVER CLASSIFIED INPUTS, NOT AS A LIST OF STRINGS.
+  // Every environment below goes through `classifyEnvironment` first, so a
+  // new name that classifies as production is held to capitals and a new
+  // quiet one to sentence case without anyone editing this file.
+
+  const loud: Environment[] = [
+    classifyEnvironment('prod', 'x'),
+    classifyEnvironment('production', 'x'),
+    classifyEnvironment('prod-eu', 'x'),
+    classifyEnvironment('live', 'x'),
+    classifyEnvironment(undefined, 'swarm.saga.xyz'),
+    classifyEnvironment(undefined, ''),
+  ]
+  const quiet: Environment[] = [
+    classifyEnvironment('dev', 'x'),
+    classifyEnvironment('DEV', 'x'),
+    classifyEnvironment('staging', 'x'),
+    classifyEnvironment('qa-2', 'x'),
+    classifyEnvironment(undefined, 'localhost'),
+    classifyEnvironment(undefined, 'swarm.local'),
+  ]
+
+  it('keeps production and unknown in capitals', () => {
+    for (const env of loud) {
+      const label = printed(env)
+      expect(isCapitals(label), `${env.kind} printed "${label}", which is not a safety signal`).toBe(
+        true,
+      )
+    }
+  })
+
+  it('writes every other environment in sentence case', () => {
+    for (const env of quiet) {
+      const label = printed(env)
+      expect(isCapitals(label), `${env.kind} printed "${label}" in capitals`).toBe(false)
+      expect(isSentenceCase(label), `${env.kind} printed "${label}", not sentence case`).toBe(true)
+    }
+  })
+
+  it('spends capitals exactly where the header draws the bar', () => {
+    // The two safety channels have to agree: a badge that shouts without the
+    // bar, or draws the bar in a whisper, is one of them saying the wrong
+    // thing. `bar` is already pinned to production and unknown above.
+    for (const env of [...loud, ...quiet]) {
+      const t = envTreatment(env)
+      expect(isCapitals(printed(env)), `${env.kind}: capitals and bar disagree`).toBe(t.bar)
+    }
+  })
+
+  it('and no stylesheet rule shouts it back', () => {
+    // The casing is decided in the source, so a `text-transform` on the badge
+    // would silently undo the decision above. §13.2 already bans `uppercase`
+    // sheet-wide; this reads the badge's own computed value so the claim does
+    // not lean on a different test's grep.
+    const style = withStyles()
+    const { container } = render(<EnvironmentBadge env={classifyEnvironment('dev', 'x')} />)
+    expect(getComputedStyle(container.querySelector('.brand-env-name')!).textTransform).not.toBe(
+      'uppercase',
+    )
+    style.remove()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The header
 // ---------------------------------------------------------------------------
 
@@ -269,7 +373,14 @@ describe('the product header', () => {
     )
     expect(document.querySelector('.brand-mark')).toBeTruthy()
     expect(document.querySelector('.brand-word')?.textContent).toBe('SwarmCloud')
-    expect(document.querySelector('.brand-env-name')?.textContent).toBe('DEV')
+    // WHAT MOVED: this pinned the literal 'DEV'. The owner decided on
+    // 2026-09-24 (design-system.md §13.6) that a quiet environment is written
+    // in sentence case like every other string this console authors, so what
+    // is pinned now is that the badge NAMES dev and does not SHOUT it -- the
+    // casing rule itself is the describe block below.
+    const name = document.querySelector('.brand-env-name')?.textContent ?? ''
+    expect(name.toLowerCase()).toBe('dev')
+    expect(name, 'a non-production badge is shouting').not.toBe(name.toUpperCase())
     expect(await screen.findByText('u-bogdan')).toBeTruthy()
     expect(screen.getByText('someone@saga.xyz')).toBeTruthy()
   })
