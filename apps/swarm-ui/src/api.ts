@@ -131,6 +131,50 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
 }
 
 /**
+ * HOW MANY EVENTS A RUN SCREEN ASKS FOR, and why it has to ask at all.
+ *
+ * `GET /v1/tasks/{id}/events` with no `limit` answers with the API's DEFAULT
+ * page, `default_page_size = 50` (swarm_api/settings.py), not its maximum.
+ * Every comment in this client -- and redesign-v2 §4 -- reasons about "the
+ * 200-event page", and every run screen was in fact reading 50: at one
+ * heartbeat event per 150s plus a checkpoint event per 120s, that page ends
+ * around the half-hour mark of an attempt, so the peak-memory line, the
+ * checkpoint strip and the checkpoint table's locations all stopped there.
+ *
+ * 200 is `max_page_size`, the server's own cap (`paged_limit` clamps to it,
+ * silently). Asking for more would be clamped to the same 200 and would make
+ * a full page look like one that asked for less. The route still returns no
+ * page token, so a page that comes back FULL is a window, and the charts say
+ * so; that is seam S1, and it belongs to the API, not to this constant.
+ *
+ * WHAT THIS CANNOT SEE. `MAX_PAGE_SIZE` is environment-overridable and set
+ * nowhere in this repository today. A deployment that lowered it would clamp
+ * this request below 200, and a full page would then arrive SHORT of this
+ * number and not be flagged as full. Nothing here ever reads a short page as
+ * complete in the other direction either: an interval with no recorded end
+ * stays open whatever the page length (duration.ts).
+ */
+export const EVENT_PAGE_LIMIT = 200
+
+/**
+ * HOW MANY ATTEMPT DOCUMENTS A RUN SCREEN ASKS FOR: the same cap, for the
+ * same reason.
+ *
+ * `GET /v1/tasks/{id}/attempts` goes through the same `paged_limit`
+ * (routes/tasks.py), so with no `limit` it returned 50 attempts, NEWEST
+ * first. task_d18d8d8b044d469cb43c reached 83 attempts on 2026-09-23 before
+ * the retry cap was enforced on the dispatch-failure path; the inspector
+ * would have shown 50 of them and the phase chart's sum would have said
+ * "over 50 of 50". The sum now counts against `task.attempt_count`, which
+ * catches a short read whatever its cause; this constant makes the read
+ * short less often.
+ *
+ * Stated as its own constant, not as `EVENT_PAGE_LIMIT`, because the two
+ * routes happen to share a cap today and nothing makes them share one.
+ */
+export const ATTEMPT_PAGE_LIMIT = 200
+
+/**
  * One agent, with its event timeline.
  *
  * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is not called because
@@ -157,7 +201,7 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
   const path = `/v1/tasks/${encodeURIComponent(taskId)}`
   const [task, events] = await Promise.all([
     read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events`, () => false),
+    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
   ])
 
   if (task.status === 'loading' || task.status === 'error') return task
@@ -979,8 +1023,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   const path = `/v1/tasks/${encodeURIComponent(taskId)}`
   const [task, events, attempts, classes] = await Promise.all([
     read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events`, () => false),
-    read<{ attempts: AttemptRow[] }>(`${path}/attempts`, (d) => d.attempts.length === 0),
+    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
+    read<{ attempts: AttemptRow[] }>(`${path}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, (d) => d.attempts.length === 0),
     loadResourceClasses(),
   ])
 
@@ -1321,7 +1365,7 @@ export async function loadLeases(): Promise<Result<LeasePage>> {
 export async function loadAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   if (USE_FIXTURES) return fixtureAttempts(taskId)
   return read<{ attempts: AttemptRow[] }>(
-    `/v1/tasks/${encodeURIComponent(taskId)}/attempts`,
+    `/v1/tasks/${encodeURIComponent(taskId)}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`,
     (d) => d.attempts.length === 0,
   )
 }
@@ -1405,7 +1449,12 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
     lease_id: `lease_${n}`,
     backend: 'CLOUD_RUN_JOB',
     execution_name: `swarm-job-u-bogdan-claude-code-${n}`,
-    created_at: iso(40 - n * 10),
+    // PRODUCTION SHAPE: a started attempt's `created_at` IS its start. The
+    // worker's `record_attempt_start` rewrites the scheduler's document with a
+    // non-merge `.set()` (control.py), so admission survives only as the
+    // `lease_acquired` event. The never-started attempt below overrides this
+    // with its admission, because its document was never rewritten.
+    created_at: iso(39 - n * 10),
     started_at: iso(39 - n * 10),
     completed_at: exit === null ? null : iso(35 - n * 10),
     exit_code: exit,
@@ -1433,6 +1482,12 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
         // size and no uri is the ordinary paging case, not a defect.
         mk(3, live ? null : 0, {
           checkpoints: ['ckpt-00001', 'ckpt-00002'],
+          // THE NEWEST ATTEMPT HOLDS THE TASK'S LEASE when the task holds one.
+          // `attemptEnd` reads an attempt as over once the task stops holding
+          // its lease (a park, a failed dispatch, a reclaim), so a fixture
+          // whose lease ids never matched would show every live agent in
+          // development as ended.
+          lease_id: task?.current_lease_id ?? 'lease_3',
           // A live attempt has written NO final measurement and no spend: both
           // are written when it ends. The screen falls back to the heartbeat
           // for memory and says five different things about the rest.
@@ -1454,6 +1509,7 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
         // measurement at all. It must not read as "exit 0" or as 0 bytes.
         mk(1, null, {
           peak_rss_bytes: null,
+          created_at: iso(30),
           started_at: null,
           completed_at: null,
           execution_name: null,
