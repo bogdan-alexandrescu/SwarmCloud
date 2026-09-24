@@ -449,8 +449,10 @@ variable "admin_pool_users" {
     tenant, a provider switch or dispatch.
 
     Unaffected by emptying `admin_users` for a Group Reader role: there is no
-    group form of this capability, and a service account cannot be put in a
-    Workspace group anyway.
+    group form of this capability. Membership of an ADMIN_GROUPS group would
+    make an identity a FULL admin, so the gate must not be added to any admin
+    group -- a Google group can hold a service account as a member, where the
+    group allows external members.
 
     Taken from the environment's tfvars as is; locals.tf appends nothing, so
     an identity holds this only where an environment names it.

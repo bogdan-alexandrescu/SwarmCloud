@@ -460,9 +460,18 @@ class Authenticator:
 
 
 #: Every admin route a POOL ADMIN (`ApiSettings.admin_pool_users`) may call, as
-#: (HTTP method, route template) -- the template exactly as FastAPI holds it on
-#: the matched route, router prefix included. Nothing else on the admin surface
-#: is reachable by that caller.
+#: (HTTP method, route template). Nothing else on the admin surface is
+#: reachable by that caller.
+#:
+#: The template is the route's path IN THE ROUTER THAT DECLARES IT: an
+#: `APIRouter(prefix=...)` is part of it, an `include_router(prefix=...)` or a
+#: parent router's prefix is not. On the pinned FastAPI (0.141.1)
+#: `include_router` keeps the original route and puts that route in
+#: `scope["route"]`, which is what `deps.admin_auth` reads. main.py includes
+#: every router without a prefix, so today these strings are also the public
+#: URLs; test_pool_admin_is_narrow.py holds every entry, and every admin-gated
+#: route, equal to a path the app publishes in its OpenAPI document, so a
+#: prefix added later fails there rather than closing the gate's route.
 #:
 #: AN ALLOW-LIST, AND THAT IS THE DESIGN. The owner decided on 2026-09-24 that
 #: the verification gate gets the runner ceiling and is NOT an admin: full
@@ -508,21 +517,28 @@ def require_admin(
     """
     if ctx.is_admin:
         return ctx
-    # MUTATION M1 (reverted in the next commit): the unresolved 503 moved above
-    # the pool-admin pass, so a failed admin-group lookup 503s the gate's route.
+    # BEFORE the unresolved 503, deliberately. The pass depends only on the
+    # verified email and the route, not on the question Cloud Identity failed
+    # to answer -- and for the gate that lookup is the likely one to fail: it
+    # is not on admin_users, so every request asks the directory about a
+    # service-account address. Swapped, race-test 503s at step 1 whenever the
+    # directory does not answer. Pinned in test_pool_admin_is_narrow.py by
+    # test_a_pool_admin_whose_admin_lookup_failed_can_still_narrow_the_pool.
+    if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
+        return ctx
     if ctx.admin_unresolved:
         raise UpstreamUnavailable(
             "admin group membership could not be resolved; retry shortly. This is "
             "NOT a refusal -- Cloud Identity did not answer, so whether you are an "
             "admin is unknown"
         )
-    if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
-        return ctx
     if ctx.is_pool_admin:
         # Said plainly, so the gate's operator does not go looking for a
-        # broken grant: the grant works, and this route is not in it.
+        # broken grant: the grant works, and this route is not in it. Built
+        # from the allow-list so it cannot go stale when the list changes.
+        granted = ", ".join(f"{method} {path}" for method, path in sorted(POOL_ADMIN_ROUTES))
         raise Forbidden(
-            "this caller may change runner ceilings only (ADMIN_POOL_USERS); "
-            "every other admin route needs admin group membership"
+            "this route is not in the ADMIN_POOL_USERS allow-list "
+            f"({granted}); it needs an admin (ADMIN_GROUPS membership or ADMIN_USERS)"
         )
     raise Forbidden("admin group membership is required for this operation")

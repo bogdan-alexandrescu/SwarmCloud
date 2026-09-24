@@ -278,17 +278,16 @@ def admin_auth(
     concrete path: `/v1/admin/limits/runner/{runner_profile}`, so a profile
     name in the URL can never be spelled to look like some other route.
 
+    The template is the path in the router that DECLARES the route, not the
+    public URL: an `include_router(prefix=...)` is not part of it on the pinned
+    FastAPI (see the comment on `auth.POOL_ADMIN_ROUTES`).
+
     No matched route (which FastAPI does not produce for a route that declared
     this dependency) means no route to allow, and the full-admin rule applies.
     """
     path = getattr(request.scope.get("route"), "path", None)
     route = (request.method.upper(), path) if path else None
-    granted = require_admin(auth, route)
-    # MUTATION M4 (reverted in the next commit): the gate crashes for a caller
-    # it has just admitted, on one route no other unit test calls.
-    if route == ("GET", "/v1/admin/pools"):
-        raise RuntimeError("mutation M4: the gate crashed after admitting the caller")
-    return granted
+    return require_admin(auth, route)
 
 
 def paged_limit(ctx: AppContext, requested: int | None) -> int:

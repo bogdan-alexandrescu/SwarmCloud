@@ -682,6 +682,34 @@ before the code, and a deliberate mutation — pool admins made full admins —
 was pushed and shown red before the allow-list replaced it. The run ids are in
 PR #21's description, not here.
 
+**Hardened on review, same day.** A second review found four ways the
+decision could be undone with every test green, and each now has a test that a
+deliberate mutation showed red in CI:
+
+* **The order of the checks in `require_admin`.** The pool-admin pass comes
+  *before* the "admin membership could not be resolved" 503. That matters for
+  the gate more than for anyone: it is not on `admin_users`, so every request
+  asks Cloud Identity whether a service-account address is in each admin
+  group, which is the lookup this project has already seen 403. Swapped, the
+  gate's own route 503s whenever the directory does not answer.
+* **The other two ways to full admin.** Only `dev.tfvars` was checked for the
+  gate on `admin_users`. `locals.tf` appending
+  `google_service_account.verify.email` to `ADMIN_USERS` or `ADMIN_GROUPS` would
+  have made it a full admin in every environment. Each of the three lists must
+  now reach swarm-api from its own variable and nothing else. The third way,
+  putting the gate in an `ADMIN_GROUPS` group, is live directory state no test
+  here can read, so it is written down instead, in `variables.tf` and
+  `docs/security.md`: a Google group can hold a service account, and the gate
+  must not be added to one.
+* **What "a full admin still passes" means.** The check accepted a 500. The
+  sweep now records the gate's own pass through a `dependency_overrides`
+  wrapper around the real `admin_auth`.
+* **Which path the allow-list names.** On FastAPI 0.141.1 the template
+  `admin_auth` compares is the route's path in the router that declares it,
+  without any `include_router` prefix. It equals the public URL only because
+  `main.py` includes every router bare. The allow-list and the sweep are now
+  tied to the app's published OpenAPI paths in both directions.
+
 **Not verified:**
 
 * Nothing was applied or run against the live platform. The release applies
