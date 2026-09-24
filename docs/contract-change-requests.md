@@ -25,6 +25,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
+| 13 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | open |
+| 14 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | open |
 
 ---
 
@@ -1195,3 +1197,156 @@ bug.
 A task sent to FAILED by this path was getting a `next_eligible_at`, which
 promises a retry that is not coming and renders in the console as a scheduled
 attempt. It now gets a `completed_at` and no eligibility time.
+
+### Correction, 2026-09-24: the shared predicate was right and the scheduler still fed it the wrong number
+
+The predicate is correct and unchanged. The scheduler's caller was wrong. It
+passed `task.attempt_count` from the READY snapshot the drain loop had read.
+`acquire_lease_in_transaction` increments the count in the **document** and
+never in that object, so every check was one attempt behind, and
+`max_attempts` 3 bought four attempts. `task_b568a623be8645eb87c6` ended FAILED
+at 4/3 on 2026-09-24.
+
+"Proved by" above did not catch this because the tests handed the store a Task
+already carrying the post-increment count, which is a number the production
+caller never has. `return_to_ready_after_failed_dispatch` now reads the count
+from the document inside a transaction, as the reconciler always did. Its tests
+now feed it what the loop feeds it, and one drives the real drain loop from
+zero. Nothing in `swarm_common` changed; this note exists so the "Proved by"
+section above is not read as covering the caller.
+
+---
+
+## 13. `states.py`: a cancel that is only requested is recorded as `cancelled`
+
+**Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
+(where it was filed as CR-1). Found while the incident's stuck tasks were read
+event by event. It did not cause that incident.
+
+### The claim that is false
+
+`EventType.CANCELLED` (`states.py`, value `"cancelled"`) is read as "this task
+is cancelled". The UI treats it as one of the four terminal events
+(`AgentDetail.tsx`, `TERMINAL_EVENTS`: "a terminal task has one by
+construction"). It is also written when nothing has been cancelled.
+
+`swarm_api.store.request_cancel` handles a task that holds capacity (LEASED,
+DISPATCHED, STARTING, RUNNING) by setting `cancel_requested = true` and nothing
+else, because the worker or the reconciler has to release the lease. It still
+appends an event of type `CANCELLED`, and only a detail field,
+`phase: "cancel_requested"`, distinguishes it from a real cancel.
+
+### Measured
+
+check-2, check-3, check-4 and check-5 of `wf_ebb3ab2d65664707a559` each carry a
+`cancelled` event from the cancel POSTs at 07:40:20–07:40:31Z, with
+`from_state: DISPATCHED` and `phase: cancel_requested`. At 08:55:11Z all four
+were still `DISPATCHED`, with leases unreleased. For more than an hour, every
+consumer that reads the event type saw four cancelled tasks, and the task
+documents said otherwise.
+
+### The requested change
+
+Add `EventType.CANCEL_REQUESTED = "cancel_requested"`. `request_cancel` emits it
+when it only sets the flag, and keeps `CANCELLED` for the immediate transition
+it makes itself (SUBMITTED, QUEUED, READY, PARKED to CANCELLED). The terminal
+`cancelled` for a task that held capacity then comes from whoever actually
+finishes it:
+
+* the worker (`control.py`, state-to-event map);
+* the scheduler (`SchedulerStore.cancel`);
+* the reconciler, once incident item F-3 lands.
+
+### What it would break if accepted
+
+* **It is additive to the enum.** Every writer of existing values is unchanged.
+* **An old reader crashes on the new value.** `swarm_api.codec.event_from_dict`
+  decodes a stored event with `EventType(data["type"])`. An API instance on the
+  previous image that lists the events of a task holding a `cancel_requested`
+  event raises `ValueError` for that page. `swarm-api` is both the only writer
+  and a reader, so the exposure is one rolling deploy. It is still a window in
+  which a task's event page can fail.
+* **History keeps the old shape.** Events already written stay
+  `type: cancelled, phase: cancel_requested`. A reader that wants the truth
+  about old tasks must keep reading `detail.phase`, unless a one-off migration
+  rewrites them. Nothing here proposes that migration.
+* The UI's `TERMINAL_EVENTS` and any timeline grouping need to show the new type
+  as a non-terminal marker. That is a UI change in `apps/swarm-ui`.
+
+### If it is declined
+
+The phase discriminator stays the only signal, so every consumer that treats
+`cancelled` as terminal must also check `detail.phase`. The UI's
+terminal-event check is one such consumer today. A consumer that forgets
+reports a cancelled task that still holds capacity, which is the situation this
+incident's operators were in.
+
+---
+
+## 14. `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command
+
+**Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
+(where it was filed as CR-2). The code defect it describes is fixed outside the
+frozen package, in `apps/scheduler/scheduler/dispatch.py`. This request is about
+the field that made the defect easy to write.
+
+### What happened
+
+`RunnerProfile.command` is `("python", "-m", "agent_worker.runners.<x>")`, the
+argv of the RUNNER. The worker lifecycle starts it as a supervised child
+(`agent_worker.lifecycle._runner_argv`), and `swarm_api.runnerinputs` reads its
+last element to name the runner module. Nothing in `profiles.py` says so. A
+field named `command` on the object that describes what a container runs reads
+as a container command. Both dispatchers used it that way:
+
+* `GkeJobDispatcher._manifest` set `"command": list(profile.command)`;
+* `CloudRunJobDispatcher._build_job` set `command=list(profile.command)`.
+
+A container `command` replaces the image ENTRYPOINT, which is the lifecycle.
+Every GKE pod therefore ran the bare runner, with no fencing (invariant 5), no
+checkpoints (invariant 8), no heartbeat and no lease release. Five leases held
+every browser slot until an operator intervened. The Cloud Run copy was latent
+only because Terraform's Jobs leave `command` unset. The prohibition existed in
+exactly one place, a comment in `kubernetes/worker-templates/worker-job.yaml`
+that the code never read.
+
+### The requested change
+
+The minimum is a comment on the field:
+
+```python
+#: The argv of the RUNNER, which the worker lifecycle starts as a supervised
+#: CHILD (agent_worker.lifecycle._runner_argv). NEVER a container command:
+#: both worker images' ENTRYPOINT is the lifecycle (`tini -- python -m
+#: agent_worker`), and a container `command` replaces it, switching off
+#: fencing, cancel, heartbeat, checkpointing and lease release at once. A
+#: dispatcher names the profile in RUNNER_PROFILE and sets no command.
+command: tuple[str, ...]
+```
+
+The optional, stronger change is to rename the field to `runner_argv`, so that
+`list(profile.command)` cannot be written by someone reaching for a container
+command.
+
+### What it would break if accepted
+
+* **The comment breaks nothing.**
+* **The rename touches every reader:**
+  * `agent_worker/lifecycle.py` (`_runner_argv`);
+  * `swarm_api/runnerinputs.py` (`runner_module`);
+  * `tests/unit/worker/test_runners.py`;
+  * `tests/unit/control_plane/test_workflow_step_input_surface.py`.
+
+  It is not a wire change. The runtimes catalogue
+  (`swarm_api/routes/platform.py`) serialises the profile field by field and
+  does not include `command`. No stored document holds the field either, since
+  profiles are code, so there is no data migration.
+
+### If it is declined
+
+The guard is the tests added with the fix. For every profile, on both backends,
+`tests/unit/control_plane/test_dispatch_manifests.py` asserts that neither
+dispatcher sets `command` or `args`.
+`tests/unit/worker/test_kubernetes_manifests.py` asserts that the dispatcher's
+Job and the rendered YAML agree field by field. Those catch a reintroduction.
+Nothing warns the next reader of `profiles.py` before they write it.
