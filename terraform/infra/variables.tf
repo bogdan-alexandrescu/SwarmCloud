@@ -635,3 +635,23 @@ variable "custom_role_suffix" {
   type        = string
   default     = ""
 }
+
+variable "deployer_service_account" {
+  description = <<-EOT
+    Email of the CI identity that runs this root's applies (the release's
+    swarm-tf-deployer, created by terraform/bootstrap and named to GitHub as the
+    GCP_DEPLOY_SA repository variable). It is granted actAs on each service
+    account this root attaches to a service or job -- deployer.tf explains why and
+    why individually.
+
+    Empty means no such grants: correct for an owner applying from a workstation,
+    who needs none.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.deployer_service_account == "" || can(regex("^[a-z][a-z0-9-]+@[a-z0-9-]+\\.iam\\.gserviceaccount\\.com$", var.deployer_service_account))
+    error_message = "deployer_service_account must be a service account email, or empty."
+  }
+}
