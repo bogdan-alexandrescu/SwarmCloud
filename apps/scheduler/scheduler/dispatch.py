@@ -315,7 +315,7 @@ def image_uri(settings: Any, profile: RunnerProfile) -> str:
     state: terraform always sets the map, and check-env-parity requires it.
     """
     refs = getattr(settings, "worker_image_refs", None) or {}
-    if refs:
+    if profile.image in refs:  # MUTATION: reverted in the next commit
         ref = refs.get(profile.image)
         if not ref:
             raise DispatchError(
@@ -525,7 +525,7 @@ class CloudRunJobDispatcher:
         from google.api_core import exceptions as gexc
         from google.cloud import run_v2
 
-        labels = dict(getattr(existing, "labels", None) or {})
+        labels = {}  # MUTATION: reverted in the next commit
         if labels.get("managed-by") != "swarm-scheduler":
             return
         wanted = image_uri(self._settings, profile)
