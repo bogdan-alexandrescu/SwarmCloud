@@ -728,8 +728,6 @@ class Worker:
 
         runner_result = _read_json(ws.result_path)
         if runner_result:
-            # MUTATION (reverted in the next commit): main's single call site.
-            self._record_spend()
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
             # inside `_upload_outputs` above): the attempt's total across every
             # runner it started, so the summary a human reads and the typed
@@ -2230,7 +2228,7 @@ class Worker:
         # leaving. `_cleanup` records again for the two cases that cannot be
         # here yet: a runner still alive when the worker crashed, and a
         # mid-run fence, which uploads nothing.
-        # MUTATION (reverted in the next commit): no spend recorded here.
+        self._record_spend()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
         # `artifacts/`, and `_redact_before_upload` is what scrubs everything
         # in there. A patch produced afterwards would be the one file in the
@@ -2483,7 +2481,8 @@ class Worker:
         # attempt's spend touches only its OWN attempt document -- never the
         # lease, which is what invariant 5 forbids -- exactly as the resource
         # usage write on that same path already does.
-        # MUTATION (reverted in the next commits): backstop removed.
+        self._collect_spend()
+        self._record_spend()
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and
