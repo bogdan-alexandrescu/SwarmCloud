@@ -41,7 +41,7 @@ Three reasons, in the order they cost the most:
 | `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and promote` (reuses `application.yml`'s build of the commit) · `terraform apply` · `deploy and smoke` — the last two behind a GitHub environment |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -142,18 +142,24 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    `--tag`: the tag is the commit's (`git_sha`), derived in one place. It
    uploads `build/images-dev.json` — each image's digest, the tag, the full
    commit and the environment — as the artifact `images-dev`, kept 30 days.
-2. `release.yml`'s `images and promote` job runs
+2. `release.yml`'s `images and scan` job runs
    `scripts/build-images.sh --reuse-ci only` on a push. That calls
    `scripts/lib/ci-built-images.sh`, which finds `application.yml`'s run for
    the same commit on `main`, **waits** while the build is queued or running
    (up to 45 minutes), downloads the record, and refuses it unless it names
    this commit and this environment.
-3. `scripts/push-images.sh --manifest build/images-dev.json --scan` confirms
-   every recorded digest is in Artifact Registry, trivy-scans every one, and
-   only then moves the channel tags — all or nothing, with the put-back and the
-   `MIXED` report exactly as before. The tag `:<sha>` is not read at all, so a
-   later build of the same commit cannot change what is promoted.
-4. The apply pins those digests and the deploy verifies them, unchanged.
+3. The same job runs `scripts/push-images.sh --manifest
+   build/images-dev.json --scan-only`: every recorded digest confirmed in
+   Artifact Registry and trivy-scanned, one refusal failing the lot, and **no
+   channel tag moved**. It uploads the record it scanned.
+4. After the `approval` job — see
+   [the next section](#a-prod-release-waits-for-approval-before-anything-prod-facing)
+   — the `promote` job fetches that record and runs
+   `push-images.sh --manifest build/images-dev.json --scan`, which scans again
+   and only then moves the channel tags — all or nothing, with the put-back
+   and the `MIXED` report exactly as before. The tag `:<sha>` is not read at
+   all, so a later build of the same commit cannot change what is promoted.
+5. The apply pins those digests and the deploy verifies them, unchanged.
 
 **What the release does when it cannot reuse.** Each ends in a red job whose
 last line (and a run annotation) names the reason and links the job:
@@ -208,8 +214,9 @@ push that starts a release — which is harmless, because that release ships a
 later commit that contains this one.
 
 **Kept, deliberately:** scan before promote; all-or-nothing promotion; every
-deployed image pinned by digest; the `dev`/`prod` environments on the apply
-and the deploy.
+deployed image pinned by digest. (The `dev`/`prod` environments used to sit on
+the apply and the deploy; they now sit on the one `approval` job in front of
+the promotion — see the next section.)
 
 **What a pull request cannot prove about this.** `release.yml` never runs on a
 pull request, and `build images` is skipped there, so PR CI never exercises
@@ -221,6 +228,114 @@ actionlint. It cannot show that the job receives `actions: read`, that
 GitHub's API returns what the fake returns, that `gh run download` fetches the
 artifact across runs, or that a release actually gets faster. The first push
 to `main` after this lands is the first real proof — read its release run.
+
+## A prod release waits for approval before anything prod-facing
+
+**Owner decision, 2026-09-24.** A prod release waits for the owner's approval
+before anything prod-facing happens, and `:prod` image promotion sits behind
+that same approval. Scanning is read-only and may come before it. dev stays
+un-gated.
+
+**Why.** Until this change the approval sat on `terraform apply (prod)`, and
+the `images and promote` job ahead of it had already moved `:prod` to the new
+digests. A prod release that was rejected — or simply left waiting — had
+repointed `:prod` at images prod was not running. `:prod` is not only for
+humans: a `skip_build` redeploy of prod resolves `:prod` and deploys whatever
+it finds, so the next routine redeploy would have shipped the unapproved
+images under an approval given for "redeploy what is there".
+
+**What runs before the approval, and what after.**
+
+| before the approval — reads, and builds images nobody deploys | after it, and only if it succeeded |
+|---|---|
+| `verify` — unit tests, shellcheck, destroy-guard self-test | `promote` — scans again, then moves `:prod`, all or nothing |
+| `images and scan` — reuses CI's build, or for **every prod release** builds one here (Cloud Build, `<sha>` tags in Artifact Registry, **no channel tag**) | `terraform apply` — plan, shared-project guard, apply |
+| `push-images.sh --scan-only` — every digest confirmed and trivy-scanned; nothing moves | `deploy and smoke` — digest verification, the in-VPC smoke suite, the GKE proof |
+| the digests written to the run summary, for the reviewer to read while the run waits | |
+
+A prod release **builds before the approval**: `application.yml` builds for
+dev, and swarm-ui bakes its environment in when it is compiled, so a prod
+release is always built by the release itself (see the table in the previous
+section). That is a consequence of scanning first — there is nothing to scan
+until it is built — and it costs a Cloud Build in the shared project even for
+a release that is then rejected. It changes nothing prod runs.
+
+**One approval, not one per job.** GitHub holds *every* job that names a
+protected environment until a reviewer approves *that* job (GitHub's
+documented behaviour; not observed here, because prod has never been
+released). The apply and the deploy both named `prod`, so a prod release
+would have asked twice — the second time
+after the apply had already changed prod, which made it a question with no
+decision left in it. Adding a third for the promotion would have put
+promotion behind a *different* approval from the apply, not "that same" one.
+So `approval` is the only job in `release.yml` that names an environment;
+`promote`, `terraform apply` and `deploy and smoke` name none and run only
+if it **succeeded**.
+
+That last clause is written out in each job's `if:` and it is load-bearing.
+`terraform apply` has to use `always()`, because a `skip_build` redeploy skips
+`promote` and must still apply; `always()` on its own would run the apply
+straight past a rejected approval. A reviewer who rejects the run fails the
+`approval` job; a timeout or a cancel cancels it; either way nothing after it
+starts.
+
+**What that changes about the other jobs.** Measured 2026-09-24 with
+`gh api`:
+
+* No environment holds a secret or a variable. `GCP_DEPLOY_SA`,
+  `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WIF_PROVIDER` and `TF_STATE_BUCKET`
+  are repository variables, so the apply and the deploy lose nothing by not
+  naming an environment. **If one is ever added to `prod`, only the
+  `approval` job can read it** — a job that needs it must name the
+  environment, and GitHub will then ask again for that job.
+* The workload identity pool does not pin the token's `sub`
+  (`terraform/bootstrap/wif.tf` says why), so the apply and the deploy
+  minting `repo:…:ref:refs/heads/main` instead of `repo:…:environment:prod`
+  is admitted exactly as before. `assertion.ref` is `refs/heads/main` either
+  way.
+
+**dev.** A dev release runs the same jobs. `approval (dev)` names `dev`, which
+has no protection rule, so it passes straight on. What that costs every dev
+release, estimated from release 36059484794 (not yet measured on this
+workflow): one more job start for `approval`, one for `promote` (checkout,
+authentication, trivy), and the second scan — that run's scan and promotion of
+all eight images took 75 seconds, 21:29:50–21:31:05.
+
+**Why scan twice.** The first scan lets a reviewer approve a set that has
+already passed, instead of one the promotion refuses a minute after the
+approval. The second is the promotion's own gate, kept because the approval
+may come hours later against a vulnerability database that has learned
+something since.
+
+**What the repository setting must hold** — and this workflow cannot check.
+GitHub creates an environment a workflow names if it does not exist, with no
+protection at all, so the approval is exactly as real as the `prod`
+environment's settings. Measured 2026-09-24:
+
+| environment | protection |
+|---|---|
+| `prod` | required reviewer `bogdan-alexandrescu` (self-review allowed); deployment branch policy: branch `main` only; `can_admins_bypass: true` |
+| `dev` | none |
+
+`can_admins_bypass: true` means a repository admin can deploy to prod
+without an approval by choosing to bypass the rule. That is GitHub's default,
+and it was left as measured.
+
+**What a pull request proves about this, and what it cannot.**
+`tests/unit/scripts/test_release_prod_gate.py` reads `release.yml` and
+schedules it: for a prod dispatch, with and without `skip_build`, it walks
+the job graph, evaluates every job-level `if:` against how the jobs it needs
+ended, makes the job that names `prod` be rejected, cancelled or never
+reached, and asserts that no job that promotes, applies or deploys can start
+in any of those runs — and that, approved, every one of them still can. It
+also asserts that exactly one job names `prod`, and that no dev release names
+it. `test_push_images_scan_only.py` holds `--scan-only` to moving nothing,
+which is what exempts the pre-approval scan. It cannot show that the `prod`
+environment still has its reviewer, that GitHub's scheduler agrees with the
+model (the model reads a job's `success()` over its direct needs only, the
+more permissive reading, so "cannot start" in the model means cannot start on
+GitHub), or that a real prod release waits. The first prod dispatch after
+this lands is that proof.
 
 ## The finishing sequence
 

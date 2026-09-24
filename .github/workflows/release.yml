@@ -4,9 +4,11 @@
 #
 #   the digests application.yml BUILT for this commit (or, dispatched by hand
 #   for a commit CI never built, a build here through the same script)
-#         -> scan every one -> promote those DIGESTS, all or nothing
-#         -> dev: plan, apply, deploy, smoke
-#         -> prod: MANUAL APPROVAL, then plan, apply, deploy, smoke
+#         -> scan every one, moving nothing
+#         -> APPROVAL: the one job that names an environment. prod waits here
+#            for its required reviewer; dev has none and passes straight on
+#         -> promote those DIGESTS, all or nothing (scanning them again)
+#         -> plan, apply, deploy, smoke
 #
 # ONE BUILD PER COMMIT (owner decision, 2026-09-24; docs/ci.md). This workflow
 # used to build all eight images itself while application.yml built them too,
@@ -25,11 +27,29 @@
 #      The one place a tag is read is a redeploy without a build, which
 #      resolves `:<channel>` ONCE, writes the digests down, and deploys and
 #      verifies exactly those -- so "what is running" is always answerable.
-#   2. A production apply requires a human. saga-agents-staging is shared with
-#      other teams, so an unattended apply is an unattended change to somebody
-#      else's blast radius. The gate is a GitHub Environment with required
-#      reviewers -- configure it in repository settings; this file only asks for
-#      it, and a missing environment means the job waits rather than proceeds.
+#   2. NOTHING PROD-FACING HAPPENS BEFORE A HUMAN APPROVES IT (owner decision,
+#      2026-09-24; docs/ci.md). saga-agents-staging is shared with other teams,
+#      so an unattended apply is an unattended change to somebody else's blast
+#      radius -- and moving :prod is prod-facing too: a `skip_build` redeploy
+#      of prod deploys whatever :prod points at. This workflow used to move
+#      :prod in the images job and ask for approval only at the apply, so a
+#      rejected or abandoned prod release had already repointed :prod.
+#
+#      The gate is the `approval` job, the ONLY job that names an environment.
+#      `promote`, `infrastructure` and `deploy` need it and run only if it
+#      SUCCEEDED -- which has to be said in their `if:`, because `always()`
+#      would otherwise run them past a rejected approval. Before it, a prod
+#      release only reads: it obtains (for prod, builds) the images and scans
+#      them. ONE approval, not one per job: GitHub holds every job that names
+#      a protected environment for its own approval, so naming prod on the
+#      apply and the deploy as well would ask the reviewer three times.
+#
+#      The approval is a repository setting this file cannot check. GitHub
+#      CREATES an environment a workflow names if it does not exist, with no
+#      protection at all, so a missing `prod` would mean no wait. Measured
+#      2026-09-24: `prod` has required reviewer bogdan-alexandrescu and a
+#      deployment branch policy allowing only main; `dev` has no rule.
+#      tests/unit/scripts/test_release_prod_gate.py holds the ordering.
 
 name: release
 
@@ -102,13 +122,15 @@ jobs:
         run: ./scripts/destroy.sh --self-test
 
   # -------------------------------------------------------------------------
-  # The images, and their promotion. application.yml's `build images` job
-  # builds every image once per commit on main and uploads the digests it
-  # built; this job waits for that job, fetches that record, scans every digest
-  # in it and attaches the channel tag to exactly those digests.
+  # The images, and their scan. application.yml's `build images` job builds
+  # every image once per commit on main and uploads the digests it built; this
+  # job waits for that job, fetches that record and scans every digest in it.
+  # It MOVES NOTHING: it runs before the approval, so everything it does is
+  # read-only toward the environment. The promotion is the `promote` job,
+  # after the approval.
   # -------------------------------------------------------------------------
   build:
-    name: images and promote (${{ github.event.inputs.environment || 'dev' }})
+    name: images and scan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify]
     if: github.event.inputs.skip_build != 'true'
@@ -191,12 +213,134 @@ jobs:
             | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
           trivy --version
 
+      - name: scan the recorded digests (nothing is promoted yet)
+        # BEFORE THE APPROVAL, AND ONLY READING. `--scan-only` makes every
+        # check the promotion makes -- each recorded digest confirmed in
+        # Artifact Registry, a record built for another environment refused,
+        # every digest trivy-scanned, one refusal failing the lot -- and then
+        # stops: no channel tag moves and no deploy manifest is written
+        # (tests/unit/scripts/test_push_images_scan_only.py). So a prod
+        # reviewer approves a set that has already passed, instead of one the
+        # promotion refuses a minute after the approval.
+        run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan-only
+
+      - name: hand the scanned record to the promotion
+        # The record the step above scanned, uploaded only once it passed, so
+        # the promotion after the approval promotes exactly these digests and
+        # not a second reading of anything.
+        uses: actions/upload-artifact@v6
+        with:
+          name: scanned-images-${{ github.event.inputs.environment || 'dev' }}
+          path: build/images-${{ github.event.inputs.environment || 'dev' }}.json
+          retention-days: 30
+
+      - name: what the approval would release
+        # Written BEFORE the approval, so a prod reviewer can read it on the
+        # run's summary page while the run waits.
+        run: |
+          set -euo pipefail
+          record="build/images-${ENVIRONMENT}.json"
+          {
+            echo "### Scanned, not promoted: $(jq -r '.tag' "${record}") for ${ENVIRONMENT}"
+            echo
+            echo "Nothing has moved yet. Once \`approval (${ENVIRONMENT})\` succeeds -- for prod, once its"
+            echo "required reviewer approves -- \`promote\` scans these digests again and moves"
+            echo "\`:${ENVIRONMENT}\` to exactly them, then \`terraform apply\` deploys them."
+            echo
+            echo "| image | digest |"
+            echo "|---|---|"
+            jq -r '.images[] | "| \(.name) | `\(.digest)` |"' "${record}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # THE APPROVAL. The only job in this workflow that names an environment,
+  # so the only place a release waits for a human (see the header). For prod
+  # that is the required reviewer, and nothing that promotes, applies or
+  # deploys runs until this job has SUCCEEDED: a rejected approval fails it,
+  # and every later job's `if:` asks for success, not just for completion.
+  # For dev the environment has no protection rule and this passes straight
+  # on (owner: keep dev un-gated).
+  #
+  # A `skip_build` redeploy skips `build` and still comes through here: a
+  # prod redeploy of what :prod already holds is still a prod change.
+  # -------------------------------------------------------------------------
+  approval:
+    name: approval (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-24.04
+    needs: [verify, build]
+    if: always() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true'))
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: record what was cleared
+        # Nothing to do but exist: GitHub held this job, before this step,
+        # until the environment's protection rules were satisfied. Who
+        # approved is on the run's page; this records what they cleared.
+        run: |
+          {
+            echo "### ${ENVIRONMENT}: cleared to promote, apply and deploy"
+            echo
+            echo "Images: ${RELEASE_TAG:-none built -- a redeploy of the digests :${ENVIRONMENT} holds}."
+            echo "Commit \`${GITHUB_SHA}\`, started by ${GITHUB_TRIGGERING_ACTOR}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # The promotion, after the approval. Fetches the record `build` scanned and
+  # attaches the channel tag to exactly those digests.
+  # -------------------------------------------------------------------------
+  promote:
+    name: promote (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-24.04
+    needs: [build, approval]
+    # No status function, so GitHub also requires every job upstream to have
+    # succeeded; the explicit test is what a reader checks. A `skip_build`
+    # redeploy skips `build`, and with it this job: it promotes nothing.
+    if: needs.build.result == 'success' && needs.approval.result == 'success'
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: fetch the record `build` scanned
+        uses: actions/download-artifact@v7
+        with:
+          name: scanned-images-${{ github.event.inputs.environment || 'dev' }}
+          path: build/
+
+      # The promotion scans again, so it needs trivy here too -- see `build`'s
+      # install step for why it is installed this way and pinned.
+      - name: install trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
+
       - name: scan and promote the recorded digests
         # THOSE DIGESTS, NOT A TAG. `--manifest` promotes the digest each image
-        # was built as, from the record the step above obtained; each is
+        # was built as, from the record `build` obtained and scanned; each is
         # confirmed in Artifact Registry first, and a record built for another
         # environment is refused. `:<tag>` is not read at all, so a later build
         # of the same commit cannot change what this release promotes.
+        #
+        # SCANNED AGAIN, deliberately. `--scan` is the promotion's own gate,
+        # and the approval may come hours after `build`'s scan, against a
+        # vulnerability database that has learned something since. Measured on
+        # release 36059484794: scanning and promoting all eight images took
+        # 75 seconds (21:29:50-21:31:05), so the second scan costs about a
+        # minute.
         #
         # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
         # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
@@ -224,11 +368,16 @@ jobs:
   infrastructure:
     name: terraform apply (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
-    needs: [verify, build]
-    if: always() && needs.verify.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
-    # Required reviewers on this environment are what make a production apply
-    # a deliberate act. Configure them in Settings -> Environments.
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    needs: [verify, approval, promote]
+    # always() because a `skip_build` redeploy skips `promote` and must still
+    # apply. That is exactly why `needs.approval.result == 'success'` is
+    # spelled out: always() alone would run this apply past a REJECTED
+    # approval. `promote` may be skipped only on a skip_build run -- skipped
+    # for any other reason, nothing new was promoted and nothing is applied.
+    #
+    # NO `environment:` HERE, deliberately: `approval` holds this release's
+    # one approval, and naming prod again would make GitHub ask again.
+    if: always() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true'))
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -263,7 +412,7 @@ jobs:
       # every worker job planned onto a tag that does not exist. It never got
       # that far only because no release had yet passed its build.
       - name: fetch the promotion manifest
-        if: needs.build.result == 'success'
+        if: needs.promote.result == 'success'
         uses: actions/download-artifact@v7
         with:
           name: deployed-images-${{ github.event.inputs.environment || 'dev' }}
@@ -333,8 +482,12 @@ jobs:
     name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [build, infrastructure]
+    # Runs only after the apply succeeded, and the apply runs only after the
+    # approval succeeded -- so this is behind the same one approval. No
+    # `environment:` of its own, for the reason given on `infrastructure`: it
+    # used to name prod as well, which asked the reviewer a second time AFTER
+    # the apply had already changed prod.
     if: always() && needs.infrastructure.result == 'success'
-    environment: ${{ github.event.inputs.environment || 'dev' }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
