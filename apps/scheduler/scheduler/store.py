@@ -27,6 +27,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import (
     AdmissionConfig,
+    _snapshot,
     acquire_lease_in_transaction,
     release_lease_in_transaction,
 )
@@ -293,23 +294,54 @@ class SchedulerStore:
         # this one cannot disagree again -- they are separate images and cannot
         # import each other, so a shared predicate is the only home that is not
         # a restatement.
-        exhausted = retries_exhausted(task.attempt_count, task.max_attempts)
-        target = TaskState.FAILED if exhausted else TaskState.READY
-        assert_transition(TaskState.LEASED, target)
-        payload: dict[str, Any] = {
-            "state": target.value,
-            "current_lease_id": None,
-            "last_error": public[:1000],
-            "updated_at": now,
-        }
-        if exhausted:
-            # A terminal task needs a completion time; it will never be
-            # eligible again, so a next_eligible_at would be a lie about a
-            # retry that is not coming.
-            payload["completed_at"] = now
-        else:
-            payload["next_eligible_at"] = now + timedelta(seconds=max(0, retry_delay_seconds))
-        self._db.collection(TASKS).document(task.id).update(payload)
+        #
+        # AND THE COUNT IS READ FROM THE DOCUMENT, inside a transaction, never
+        # from `task`. `task` is the snapshot the drain loop read while the task
+        # was still READY; `acquire_lease_in_transaction` then incremented
+        # `attempt_count` in Firestore and nowhere else. Checking the cap
+        # against `task.attempt_count` was therefore always one attempt behind:
+        # the third failed dispatch of three read 2, returned the task to
+        # READY, and the next drain leased it a FOURTH time.
+        # `task_b568a623be8645eb87c6` ended FAILED at attempt_count 4 against a
+        # cap of 3 on 2026-09-24 exactly this way. The reconciler's repair path
+        # has always read the document (reconciler/store.py); this one now does
+        # too, and the unit tests that fed it the post-increment count -- and so
+        # agreed with the bug -- feed it what the loop actually holds.
+        task_ref = self._db.collection(TASKS).document(task.id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _settle(txn: Any) -> tuple[bool, int, int]:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else {}
+            attempt_count = int(stored.get("attempt_count", 0))
+            max_attempts = int(stored.get("max_attempts", task.max_attempts))
+            exhausted = retries_exhausted(attempt_count, max_attempts)
+            target = TaskState.FAILED if exhausted else TaskState.READY
+            assert_transition(TaskState.LEASED, target)
+            payload: dict[str, Any] = {
+                "state": target.value,
+                "current_lease_id": None,
+                "last_error": public[:1000],
+                "updated_at": now,
+            }
+            if exhausted:
+                # A terminal task needs a completion time; it will never be
+                # eligible again, so a next_eligible_at would be a lie about a
+                # retry that is not coming. CLEARED, not merely omitted: every
+                # task that reaches its last attempt through this path carries
+                # the retry time the PREVIOUS failure wrote, and an update that
+                # leaves the field alone leaves that promise on a FAILED task.
+                payload["completed_at"] = now
+                payload["next_eligible_at"] = None
+            else:
+                payload["next_eligible_at"] = now + timedelta(
+                    seconds=max(0, retry_delay_seconds)
+                )
+            txn.update(task_ref, payload)
+            return exhausted, attempt_count, max_attempts
+
+        exhausted, attempt_count, max_attempts = _settle(transaction)
         self.append_event(
             task,
             EventType.LEASE_RELEASED,
@@ -317,6 +349,11 @@ class SchedulerStore:
                 "reason": "dispatch_failed",
                 "error_code": error_code,
                 "correlation_id": reference,
+                # The numbers the cap was decided on, so a task that went FAILED
+                # here says why in its own timeline.
+                "attempt_count": attempt_count,
+                "max_attempts": max_attempts,
+                "retries_exhausted": exhausted,
             },
             lease_id=lease.lease_id,
             generation=lease.generation,

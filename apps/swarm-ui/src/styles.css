@@ -133,10 +133,16 @@
 
   --radius: 10px;
   --gutter: 16px;
-  /* The comfortable reading measure. 45-90 characters is the range; 78ch sits
+  /* The comfortable reading measure. 45-90 characters is the range; 74ch sits
      inside it and leaves room for the monospaced ids that run through this
-     product's prose. Nothing in the sheet constrained a line before this. */
-  --measure: 78ch;
+     product's prose. Nothing in the sheet constrained a line before this.
+     74, NOT 78, AND THAT IS NOT A CHANGE. This line said 78ch while a second
+     `:root { --measure: 74ch }` beside the frame rules overrode it, so 74ch is
+     what every page has shipped with since the frame pass; the value moved up
+     here and the override went, so the number a reader finds is the number
+     that renders. `stylesheet.gate.test.ts` fails on a token declared in two
+     `:root` blocks. */
+  --measure: 74ch;
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
@@ -561,19 +567,35 @@ body {
   overflow: auto;
   scroll-padding-bottom: var(--ctl-s3);
 }
-/* The dock is the other grid item and shrinks for the same reason: its facts
-   line ellipsises at 390px, which it cannot do from a min-content floor. */
-.ctl-dock { min-width: 0; }
+/* The dock is the other grid item and shrinks for the same reason -- its own
+   `min-width: 0` is in the `.ctl-dock` rule in the dock section, the one
+   place that element is declared. */
 
-.app { max-width: var(--app-max); margin: 0 auto; padding: 0 var(--app-pad) 48px; }
+/* ONE `.app` RULE. The frame's two halves -- the column the product header
+   lines up with (max-width, gutter) and the rail/work grid (§B3, argued at
+   "THE REGIONS" further down) -- were two `.app` rules 5,300 lines apart, so a
+   reader of either saw half of what the element is. They are one rule HERE,
+   not down there, because the phone block below sets `.app { padding-top }`
+   and has to come after the padding it adjusts. */
+.app {
+  max-width: var(--app-max);
+  margin: 0 auto;
+  padding: 0 var(--app-pad) 48px;
+  display: grid;
+  grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr);
+  align-items: start;
+  /* §B5.1: the gutter, and the whole of it is between the two regions. */
+  gap: 0 var(--ctl-gutter);
+}
 
 /* --measure: the width a SENTENCE is allowed, now that the page is not one.
    Removing the cap above makes tables, charts and graphs full-bleed, which is
    the point; it would also make a paragraph 1800px long, which nobody can read
    -- the eye loses the line on the way back. Prose in the frame is clamped
    here. It is applied to the shell's own prose only: a screen's paragraph is
-   that screen's to clamp. */
-:root { --measure: 74ch; }
+   that screen's to clamp. The token is declared once, in the first `:root`
+   (74ch); it used to be restated here, overriding a 78ch that nothing
+   rendered. */
 
 /* WHAT THE MEASURE IS ACTUALLY APPLIED TO.
    The cap above is gone rather than raised, so every paragraph on the page is
@@ -953,8 +975,15 @@ body {
 }
 .retry:hover { border-color: var(--text-faint); }
 
-.skeleton { background: var(--surface-2); border-radius: var(--track-radius); animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
+/* A PLACEHOLDER BREATHES; IT DOES NOT BLINK. This keyframes was called
+   `pulse`, and so was the liveness dot's, declared ~2,500 lines further down.
+   `@keyframes` names share one document-wide namespace and the later one
+   wins, so every skeleton in the product animated at the dot's 1 -> .35 --
+   a loading row flashing as hard as a live agent -- instead of the .5 <-> .85
+   written here. Two names now, one per job, and `stylesheet.gate.test.ts`
+   fails on any name declared twice. */
+.skeleton { background: var(--surface-2); border-radius: var(--track-radius); animation: ctl-placeholder-pulse 1.4s ease-in-out infinite; }
+@keyframes ctl-placeholder-pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
 
 /* THE PENDING ROW'S GEOMETRY, out of a React inline style and into the sheet.
    `Shell.tsx` wrote `{ height: 38, marginBottom: 6, borderRadius: 8 }` inline,
@@ -1018,15 +1047,7 @@ body {
 .nav button:hover { color: var(--text); }
 .nav button.on { color: var(--text); border-bottom-color: var(--info); }
 
-/* ---- filters ---- */
-.filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-.filters button {
-  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
-  color: var(--text-dim); font: 500 var(--t-body)/var(--lh-body) var(--font);
-  padding: 3px 11px; cursor: pointer; text-transform: capitalize;
-}
-.filters button.on { color: var(--text); border-color: var(--text-faint); background: var(--surface-2); }
-.filters .n { color: var(--text-faint); font-family: var(--mono); font-size: var(--t-micro); margin-left: 4px; }
+/* ---- filters: deleted; see the note beside `.tabs` in the Agents block ---- */
 
 /* ---- task rows ---- */
 /* SIX ROWS WERE SIX FLOATING CARDS. NOW THEY ARE ONE LIST.
@@ -1382,9 +1403,10 @@ body {
      * `.is-unknown` -- hatched, no fill, NO AXIS, because there is no scale to
        start. That is the untrusted-rollup case, which used to draw no track at
        all and lean on amber words that vanish at 560px;
-     * the fill in `--info` rather than `--ok`. Nothing is coloured for being
-       healthy (§6.7): a board of green bars spends the eye's whole severity
-       budget on the workflows that are fine. */
+     * the fill in the monochrome `--text-dim` rather than `--ok`. Nothing is
+       coloured for being healthy (§6.7): a board of green bars spends the
+       eye's whole severity budget on the workflows that are fine. (It was
+       `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
 .wf-meter { flex: none; width: 54px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
@@ -1966,7 +1988,10 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node-reading {
   display: block; width: 44px; height: 9px; border-radius: 999px;
   background: var(--surface-2);
-  animation: pulse 1.4s ease-in-out infinite;
+  /* The skeleton's own breath, not the live dot's: a read in flight is a
+     placeholder, and it was flashing at the live pulse's depth for the same
+     reason the skeleton was (see `.skeleton`). */
+  animation: ctl-placeholder-pulse 1.4s ease-in-out infinite;
 }
 /* `.node-why` IS GONE, AND THAT IS THE POINT OF THIS PASS.
    It rendered `measure.ts`'s absence NOTE -- 12 to 24 words -- under the four
@@ -2365,16 +2390,12 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 .tabs button.on .badge { background: color-mix(in srgb, var(--info) 22%, transparent); color: var(--info-ink); }
 
-.filters {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  margin-bottom: 12px; font-size: var(--t-body); color: var(--text-dim);
-}
-.filters label { display: inline-flex; align-items: center; gap: 6px; }
-.filters select {
-  padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--surface); color: var(--text); font-size: var(--t-body);
-}
-.filters .check { gap: 6px; }
+/* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
+   rule families 1,300 lines apart -- pill buttons up there, a label-and-select
+   row here -- that merged in the cascade into one element nobody ever drew:
+   nothing in src/ renders `className="filters"`. The Agents toolbar's profile
+   select and group toggle are `.ag-filter`. `stylesheet.gate.test.ts` is the
+   duplicate-selector gate that found it. */
 
 /* Anything computed over the loaded page only says so, every time. A count
    that looks server-side but is not is the same lie as an error rendered as
@@ -3413,7 +3434,7 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    screenshot pasted into an incident channel. */
 .liveness { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-meta); }
 .liveness > i { width: 8px; height: 8px; border-radius: 999px; background: var(--text-faint); flex: none; }
-.liveness.live > i { background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+.liveness.live > i { background: var(--ok); animation: ctl-live-pulse 2s ease-in-out infinite; }
 .liveness.quiet > i { background: var(--warn); }
 .liveness.silent > i { background: var(--bad); }
 .liveness.finished > i { background: var(--text-faint); }
@@ -3423,7 +3444,10 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .liveness.quiet .lv-word { color: var(--warn); }
 .liveness.silent .lv-word { color: var(--bad); }
 .lv-copy { color: var(--text-faint); font-size: var(--t-micro); }
-@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+/* THE LIVE PULSE, under its own name. It was a second `@keyframes pulse`,
+   which silently replaced the skeleton's (see `.skeleton`); every live mark --
+   this dot, `.ctl-dot.is-live`, `.ctl-chip.is-live > i` -- names it here. */
+@keyframes ctl-live-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 
 /* ---- header bars ---- */
 .bar {
@@ -3801,8 +3825,29 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   --ctl-radius-sm: 6px;
   --ctl-radius-lg: 14px;
 
-  /* Derived, so they flip with the theme without a second definition. */
-  --ctl-absent: var(--text-faint);
+  /* THE COLOUR OF "NOBODY MEASURED THIS", AND IT IS ITS OWN COLOUR NOW.
+     It was `var(--text-faint)` -- the colour the Activity chart paints
+     CANCELLED with (`.stackcol > i.cancelled`), and the colour of every
+     caption and section label on the screen. So an outcome and an absence
+     were the same paint exactly, which design-system.md §5.5 and the audit
+     both name as the one collapse this product exists to prevent.
+
+     WHY A WARM STONE AND NOT ANOTHER GREY. The greyscale band cannot carry
+     it: this token is drawn as TEXT ("not measured", "not reported"), so AA
+     pins it at or above --text-faint's luminance, and --text-dim sits only
+     1.27:1 above that. Any grey far enough from --text-faint would be as
+     bright as body copy -- an absence louder than the facts. So it keeps
+     --text-faint's luminance (greyscale is carried by the SHAPE channels:
+     dashed tile, hatched band, hollow swatch) and moves in hue: warm where
+     every neutral in this sheet is cool.
+
+       dark   #9b8f7f  L* 60   ΔE76 19 from --text-faint   >= 5.14:1 on bg/surface/surface-2
+       light  #736654  L* 44   ΔE76 21 from --text-faint   >= 5.01:1 on the same
+
+     Light's value is in the light block below. `encoding.hues.test.ts` holds
+     both floors in both themes. */
+  --ctl-absent: #9b8f7f;
+  /* Derived, so it flips with the theme without a second definition. */
   --ctl-hairline: var(--line);
 
   /* THE HATCH. One definition, used by every "this is not a measurement"
@@ -3829,9 +3874,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
-    /* The only token that cannot be derived: a 30%-black shadow that reads as
-       depth on #0b0d10 reads as dirt on #f6f8fa. */
+    /* A 30%-black shadow that reads as depth on #0b0d10 reads as dirt on
+       #f6f8fa. */
     --ctl-shadow: 0 1px 2px rgb(31 35 40 / .08);
+    /* The absence colour for this theme; the argument is at the dark value
+       above. */
+    --ctl-absent: #736654;
   }
 }
 
@@ -3984,6 +4032,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      index, the name is the identity — and never relies on the line's colour to
      say which line it is. A single-series chart uses series 1 and needs no
      legend, because the panel title already said what it is.
+
+     A TONE DERIVED FROM A SERIES INHERITS THE 3:1. Overview's token mix draws
+     --series-1 at four tones; mixing toward --surface would fade the lighter
+     ones into the card (1.35:1 was measured), so it mixes toward --text, and
+     encoding.hues.test.ts asks 3:1 of every tone on all three grounds.
 
      STROKE AND FILL ONLY. These are never a text colour and never a surface
      under text: they are not in test_ui_contrast.py's ACCENTS list because
@@ -4585,7 +4638,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: var(--info);
   border-color: var(--info);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 35%, transparent);
-  animation: pulse 2s ease-in-out infinite;
+  animation: ctl-live-pulse 2s ease-in-out infinite;
 }
 .ctl-dot.is-underived {
   border-color: var(--text-faint);
@@ -5372,25 +5425,33 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    beside a number -- keeps `--info`; `.ctl-util-fill` -- the bar that is a
    row of its own -- does not. */
 .ctl-util-fill { background: var(--text-dim); }
-/* WORKFLOWS IS FROZEN, AND THIS IS THE ONE LINE THAT PROVES IT WAS CHECKED
-   RATHER THAN ASSUMED.
+/* THE WORKFLOWS METER IS GREY TOO, AND THERE IS NO LINE HERE SAYING OTHERWISE.
    ---------------------------------------------------------------------------
-   `.wf-meter`'s fill carries `ctl-util-fill wf-meter-fill` -- deliberately, so
-   the drawing is the shared primitive's -- which means the monochrome default
-   above reached straight into the one screen the owner named as ALREADY
-   CORRECT and turned its 54px meter grey. That was found by screenshotting
-   Workflows after the change, not by reasoning about selectors, and it is
-   exactly the kind of blast radius a token pass is supposed to have and a
-   token pass is supposed to check.
+   `.wf-meter`'s fill carries `ctl-util-fill wf-meter-fill`, so the default
+   above reaches it. It used to be exempted back to `--info` by one rule,
+   `.ctl-util-fill.wf-meter-fill`, held open as a question because Workflows
+   had been frozen. OWNER DECISION, 2026-09-24 (design-system.md sec 6.4): the
+   meter goes grey like every other proportion. One rule, and colour on a bar
+   is a verdict -- "three of five steps done" is not one. The verdict fills
+   below keep their hue and texture.
 
-   So the meter keeps `--info` and Workflows renders pixel-identically to the
-   version the owner approved. THIS IS AN EXEMPTION, NOT A SECOND RULE: it
-   leaves the product with one blue proportion and every other proportion grey,
-   which is an inconsistency held open ON PURPOSE because resolving it means
-   changing a screen that was explicitly frozen. design-system.md sec 6.4
-   records it as a question for the owner rather than a decision this pass
-   made. */
-.ctl-util-fill.wf-meter-fill { background: var(--info); }
+   Do not add an exemption back, here or in a screen's own CSS.
+   `test_state_colour_discriminability.py::test_a_proportion_fill_takes_a_hue_only_from_a_verdict`
+   finds every `.ctl-util-fill` the .tsx renders and tries each class it can
+   carry. It also reads its parent, this sheet, and every sheet a screen
+   injects through a `style` element. It fails on any rule that could paint
+   an un-verdicted fill something other than grey and that no certain grey
+   rule outranks. That covers a rule through the fill's other class, through
+   its parent, via `:not()`, later in the sheet, or in Overview's
+   OVERVIEW_CSS.
+
+   What it does NOT see: a class that reaches a fill through a helper
+   function or a prop set in another file. The one un-verdicted fill that is
+   allowed a different grey is named in the test's `DOCUMENTED_GREYS`:
+   `.ov-projected`, which paints `--text-faint`, and the test checks that this
+   resolves to a text grey. (It painted `--ctl-absent` while that token was
+   `var(--text-faint)`; `--ctl-absent` is now a warm stone, so the bar names
+   the grey itself.) */
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,
@@ -5638,7 +5699,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-chip.is-live > i {
   width: 8px; height: 8px;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--chip-tone, var(--text-faint)) 35%, transparent);
-  animation: pulse 2s ease-in-out infinite;
+  animation: ctl-live-pulse 2s ease-in-out infinite;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -5897,15 +5958,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    two are what line the content column up with the product header, which sits
    outside `.app` so its environment bar can reach both viewport edges. Losing
    either would drift the wordmark away from the rail at the first breakpoint,
-   and `src/__tests__/brand.test.tsx` fails if they go. */
+   and `src/__tests__/brand.test.tsx` fails if they go.
 
-.app {
-  display: grid;
-  grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr);
-  align-items: start;
-  /* §B5.1: the gutter, and the whole of it is between the two regions. */
-  gap: 0 var(--ctl-gutter);
-}
+   THE GRID ITSELF IS DECLARED ONCE, in the `.app` rule beside `.ctl-frame` at
+   the top of this sheet, together with that max-width and gutter. It used to
+   be a second `.app` rule here; `stylesheet.gate.test.ts` holds it to one. */
+
 :root { --rail-w: 200px; }
 /* Below 1280px the rail narrows rather than becoming a 56px icon column: this
    product has no icon set, and a letter is not an icon -- it is a label with
@@ -6298,6 +6356,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dock {
   display: flex;
   flex-direction: column;
+  /* The OTHER grid item of `.ctl-frame`, and it shrinks for the same reason
+     `.ctl-scroll` does: its facts line has to wrap at 390px, which it cannot
+     do from a min-content floor. This was a one-line `.ctl-dock` rule of its
+     own beside the frame, 5,700 lines from the rest of the element. */
+  min-width: 0;
   border-top: 1px solid var(--line);
   background: var(--surface);
 }
@@ -6427,25 +6490,25 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     padding: 0 0 var(--ctl-s2);
     border-right: none;
     border-bottom: 1px solid var(--ctl-hairline);
-  }
-  .ctl-rail::-webkit-scrollbar { display: none; }
-  /* AN EDGE THAT SAYS THERE IS MORE.
-     The rail becomes a horizontal strip here and scrolls, and its scrollbar is
-     hidden on purpose -- a native bar under a row of tabs is heavier than the
-     tabs. Hidden, though, the strip renders a tab sliced clean in half at the
-     viewport edge with nothing to say it continues: at 390px "Pools" is cut
-     mid-word and the four items after it are simply not there, which reads as
-     a clipping bug rather than as a scroller.
-     A mask fading the last 24px restores the signal the scrollbar carried. It
-     applies only while there is something to scroll to, because a permanent
-     fade on a strip that fits would dim a tab for no reason -- `animation` on
-     a scroll-driven timeline is not available here, so the fade is
-     unconditional in the fallback and the strip is short enough that the cost
-     is one faded tab-edge at most. */
-  .ctl-rail {
+    /* AN EDGE THAT SAYS THERE IS MORE.
+       The rail becomes a horizontal strip here and scrolls, and its scrollbar
+       is hidden on purpose -- a native bar under a row of tabs is heavier than
+       the tabs. Hidden, though, the strip renders a tab sliced clean in half at
+       the viewport edge with nothing to say it continues: at 390px "Pools" is
+       cut mid-word and the four items after it are simply not there, which
+       reads as a clipping bug rather than as a scroller.
+       A mask fading the last 24px restores the signal the scrollbar carried. It
+       applies only while there is something to scroll to, because a permanent
+       fade on a strip that fits would dim a tab for no reason -- `animation` on
+       a scroll-driven timeline is not available here, so the fade is
+       unconditional in the fallback and the strip is short enough that the
+       cost is one faded tab-edge at most.
+       (This was a second `.ctl-rail` rule two rules further down this block;
+       one element, one rule.) */
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
     mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
   }
+  .ctl-rail::-webkit-scrollbar { display: none; }
   .ctl-rail-sections { flex-direction: row; align-items: center; gap: var(--ctl-s2); }
   .ctl-rail-group { flex-direction: row; align-items: center; }
   .ctl-nav-link {
@@ -6529,30 +6592,25 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    into the rail (§B3), where they keep a fixed position instead of reflowing
    with the section. What is left is the two panes of one agent -- Detail and
    Attempts -- which are views of one object rather than destinations, and a
-   strip is the right shape for that. */
+   strip is the right shape for that.
+
+   THE STRIP IS `.ctl-seg` NOW, and this rule is only its place in the drawer.
+   It drew its two buttons as 999px pills, a filled and bordered one for the
+   selection -- "N pills" where §6.11 of design-system.md settles on one
+   bordered group with the selection marked by a surface step and weight. The
+   button rules that drew the pills are deleted, not overridden: this rule
+   sits after `.ctl-seg` in the sheet, so at equal specificity any of them would
+   have out-ranked the primitive and drawn the pills again. No `gap`, padding
+   or border here either: the primitive's own are what make it one group.
+   `display: flex` + `fit-content` is the one thing it changes, and only
+   because the strip stands alone on its line in the drawer: the primitive's
+   `inline-flex` would sit on a text baseline there and take a descender's
+   worth of air under it. It still shrinks to its two segments. */
 .ctl-subnav {
   display: flex;
-  gap: var(--ctl-s1);
-  flex-wrap: wrap;
+  width: fit-content;
   margin: var(--ctl-s2) 0 var(--ctl-s3);
 }
-.ctl-subnav button {
-  min-height: 28px;
-  padding: 5px 11px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: none;
-  color: var(--text-dim);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  cursor: pointer;
-}
-.ctl-subnav button:hover { color: var(--text); background: var(--surface); }
-.ctl-subnav button[aria-selected='true'] {
-  color: var(--text);
-  background: var(--surface-2);
-  border-color: var(--line);
-}
-.ctl-subnav button:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 /* -------------------------------------------------------------------------- */
 /* Dispatch: choosing how work gets merged, and reading back what was chosen    */
@@ -7298,15 +7356,19 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    rather than top-level cards, so they take `.section`'s own `--ctl-s5` and
    the hairline `.section + .section` draws — which is what §13.3 says a change
    of subject is separated by. Only `.hold-top`, still a `.ctl-cards` grid, is
-   left here. */
-.hold-top { margin-bottom: var(--ctl-s3); }
-/* TWO SUMMARY CARDS OF DIFFERENT HEIGHTS ARE TWO CARDS OF DIFFERENT HEIGHTS.
+   left here.
+
+   TWO SUMMARY CARDS OF DIFFERENT HEIGHTS ARE TWO CARDS OF DIFFERENT HEIGHTS.
    `.ctl-cards` is a grid, so its default `align-items: stretch` grew `Class
    mix` — whose body on a clean board is one `real zero` mark — to the height
    of the drift table beside it: a 110px empty box, which is exactly the
    "everything is a bordered rounded box" reading. A card is as tall as what
-   is in it. */
-.hold-top { align-items: start; }
+   is in it. (The Capacity-holders block further down said this a second
+   time, in a third `.hold-top` rule; this is now the only one.) */
+.hold-top {
+  margin-bottom: var(--ctl-s3);
+  align-items: start;
+}
 
 /* -- Pools ----------------------------------------------------------------- */
 
@@ -7535,15 +7597,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    Two of its three class names (`.hold-top`, `.hold-mark`) are declared above,
    beside the screens that share them.
 
-   B4.6: A SHORT CARD STOPS BEING STRETCHED TO A TALL ONE'S HEIGHT.
-   `.ctl-cards` is a grid, and a grid item's default `align-self` is `stretch`.
+   B4.6: A SHORT CARD STOPS BEING STRETCHED TO A TALL ONE'S HEIGHT -- and that
+   is `.hold-top { align-items: start }` in the one `.hold-top` rule above.
    Accounting drift carries a four-row table; Class mix carries one two-word
-   mark. Side by side, the mark sat alone in 200px of empty card -- which reads
-   as a panel that failed to load, not as a panel with little to say, and is
-   the same confusion §8.7.2 names between a measured nothing and a broken
-   render. `start` lets each card be its own height. Nothing else changes: the
-   columns, the gap and the reflow to 1-up are all `.ctl-cards`' own. */
-.hold-top { align-items: start; }
+   mark, and stretched to the table's height the mark sat alone in 200px of
+   empty card, which reads as a panel that failed to load (§8.7.2). This block
+   used to restate that declaration in a rule of its own. */
 
 /* -- Accounts -------------------------------------------------------------- */
 
@@ -7917,6 +7976,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wfb-stage-from { margin-top: var(--ctl-s2); }
 .wfb-from { display: grid; gap: 2px; margin-top: var(--ctl-s1); font-size: var(--t-micro); color: var(--text-dim); }
 
+/* ==========================================================================
+   THIS OPENER WAS MISSING, AND IT COST THE WHOLE PHONE LAYOUT BELOW. Without
+   it the seventeen lines of prose under this line were not a comment: they
+   were the SELECTOR of the `@media (max-width: 899px)` block further down,
+   and a browser drops a rule whose selector does not parse -- block and all.
+   So §B6.3 (a table stops being a table below 900px) never reached a phone.
+   jsdom recovers from the same text and parsed the block anyway, which is why
+   no test here saw it; `stylesheet.gate.test.ts` now parses the sheet the way
+   the CSS Syntax spec does and fails on a selector that is not one.
+   ==========================================================================
    §B6 — THE DENSE AND OPERATOR SCREENS, RESTRUCTURED
    ==========================================================================
    Runtimes, Pools, Capacity holders, Accounts, Provider quota, Pool limits and
@@ -8499,7 +8568,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    light band sweeping along the bar, on `ctl-sweep` -- the keyframes the
    pending surface already runs on -- and NOT on `pulse`: that name was
    declared twice in this sheet with two different depths, and the stylesheet
-   gate in flight on the ui-hygiene lane renames both, so an animation naming
+   gate the ui-hygiene lane landed (#26) renamed both, so an animation naming
    it would be naming nothing. */
 .wf-tl-span.is-running {
   background-color: var(--info);
@@ -8657,3 +8726,215 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-scrub-strip li.is-here { border-color: var(--text); }
 /* The attempt's figures take a line of their own under its controls. */
 .wf-inspect-facts { flex-basis: 100%; }
+
+/* -------------------------------------------------------------------------- */
+/* 14b. The inspector charts  (charts/AttemptPhases, PeakMemory,               */
+/*      CheckpointStrip, Diffstat)                                             */
+/* -------------------------------------------------------------------------- */
+/* APPENDED, NOT EDITED IN. Every rule below is new and scoped to a class only
+   these four charts draw, so nothing earlier in the sheet changes value.
+
+   THE COLOUR JOB OF EACH MARK. The series palette (`--series-*`, declared
+   with its reasoning beside it) is IDENTITY: queue, cold start and run are
+   three phases, not three verdicts, so none of them borrows `--ok`, `--warn`
+   or `--bad`. Those five hues are NOT separable in greyscale, so every chart
+   here carries a legend that names each one, and position carries it too:
+   the queue is always left of admission, deletions always left of zero.
+
+   THE THREE STATES A MARK CAN BE IN, and they never share a treatment:
+     recorded   a solid fill between two recorded instants
+     open       a 28% wash of the same hue, a dashed outline with no closing
+                edge drawn past the lower bound, and a chevron where the end
+                cap would be
+     absent     the hatch (`.ctl-chart-absent`, section 14), no fill at all
+
+   STROKE AND FILL ONLY for the series hues, never text: labels, figures and
+   legends wear `--text-dim` / `--text` beside a swatch that carries the hue,
+   which is the rule the palette comment states. */
+
+.ctl-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s3);
+  margin: 0 0 var(--ctl-s1);
+  padding: 0;
+  list-style: none;
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-dim);
+}
+.ctl-chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ctl-s1);
+}
+
+/* A swatch is a 10px square, the size of `.ctl-chart-key`, so the hatch key
+   and the hue keys line up in one legend. */
+.ctl-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+}
+.ctl-swatch.is-queue { background: var(--series-5); }
+.ctl-swatch.is-cold { background: var(--series-4); }
+.ctl-swatch.is-run { background: var(--series-1); }
+.ctl-swatch.is-del { background: var(--series-4); }
+.ctl-swatch.is-ins { background: var(--series-1); }
+.ctl-swatch.is-binary {
+  background: var(--series-3);
+  transform: rotate(45deg) scale(.8);
+}
+/* The open key is drawn the way an open segment is: dashed, and no closing
+   edge on the right. */
+.ctl-swatch.is-open {
+  border: 1px dashed var(--text-dim);
+  border-right: 0;
+}
+/* The checkpoint strip's hollow ring. */
+.ctl-swatch.is-ring {
+  border: 1.5px solid var(--series-2);
+  border-radius: 50%;
+}
+
+.ctl-chart-rowlabel {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+}
+.ctl-chart-rowlabel.is-figure { fill: var(--text); }
+
+/* --- Phase bars ----------------------------------------------------------- */
+.ctl-phase.is-queue { fill: var(--series-5); }
+.ctl-phase.is-cold { fill: var(--series-4); }
+.ctl-phase.is-run { fill: var(--series-1); }
+.ctl-phase.is-open {
+  fill-opacity: .28;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+.ctl-phase.is-open.is-cold { stroke: var(--series-4); }
+.ctl-phase.is-open.is-run { stroke: var(--series-1); }
+.ctl-phase-chevron.is-queue { fill: var(--series-5); }
+.ctl-phase-chevron.is-cold { fill: var(--series-4); }
+.ctl-phase-chevron.is-run { fill: var(--series-1); }
+/* The `dispatched` instant inside a cold start: a cut in the surface colour,
+   so it reads as a boundary within one segment, not as a fourth segment. */
+.ctl-phase-cut {
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+/* --- Retry lollipop --------------------------------------------------------- */
+.ctl-lolly-stem {
+  stroke: var(--series-1);
+  stroke-width: 2;
+}
+.ctl-lolly-stem.is-open { stroke-dasharray: 3 2; }
+.ctl-lolly-open {
+  fill: none;
+  stroke: var(--series-1);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+/* --- Peak memory ------------------------------------------------------------ */
+/* The final figure written at exit: a diamond, hollow, so it is never read as
+   one more heartbeat on the step line it deliberately does not join. */
+.ctl-chart-exit {
+  fill: var(--surface);
+  stroke: var(--info);
+  stroke-width: 1.5;
+}
+/* "page full": a partial read, marked the way `.ctl-mark.is-partial` marks one
+   -- dashed on the side the missing part would be on. */
+.ctl-chart-flag {
+  padding: 0 var(--ctl-s1);
+  border: 1px solid currentColor;
+  border-right-style: dashed;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+/* --- Checkpoint strip ------------------------------------------------------- */
+.ctl-ckpt-track,
+.ctl-ckpt-divider {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+}
+.ctl-ckpt-divider { stroke-dasharray: 2 3; }
+.ctl-ckpt-dot {
+  fill: var(--series-2);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+/* LOCATION NOT ON THIS PAGE: hollow. Not a broken checkpoint. */
+.ctl-ckpt-dot.is-hollow {
+  fill: var(--surface);
+  stroke: var(--series-2);
+}
+/* NO RECORDED SIZE: a fixed small ring, dashed, because it has no area to
+   draw. */
+.ctl-ckpt-dot.is-unsized {
+  stroke: var(--series-2);
+  stroke-dasharray: 2 1.5;
+}
+
+/* --- Diffstat --------------------------------------------------------------- */
+.ctl-diff.is-del { fill: var(--series-4); }
+.ctl-diff.is-ins { fill: var(--series-1); }
+.ctl-diff-binary { fill: var(--series-3); }
+
+/* ---------------------------------------------------------------------------
+   A3 -- the checkpoint browser (CheckpointBrowser.tsx)
+
+   Opened from a checkpoint row in RunFiles.tsx. Append-only: every selector
+   below is new, and the surface reuses `.art-*` (the viewer it opens is the
+   artifact viewer itself), `.ctl-facts` and `.ctl-empty` rather than drawing
+   a third version of either. The box matches `.art-viewer` so the two read as
+   the same kind of inset when one is opened inside the other.
+   --------------------------------------------------------------------------- */
+
+.ckb {
+  margin-top: var(--ctl-s2);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); padding: var(--ctl-s3);
+}
+.ckb-head { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; }
+.ckb-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.ckb-facts { margin: var(--ctl-s2) 0; }
+.ckb-cut { color: var(--text-dim); }
+
+/* THE LINK TO THE WHOLE ARCHIVE, drawn as `button.copy` is so the controls on
+   this row read as one kind of thing. The same pair of tokens, so the
+   contrast it has is the contrast `button.copy` already clears. */
+.ckb-download {
+  padding: 1px 7px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); color: var(--text-dim);
+  font: var(--t-meta)/var(--lh-meta) var(--mono); text-decoration: none;
+}
+.ckb-download:hover { color: var(--text); border-color: var(--text-faint); }
+
+/* The tree. Mono because every label in it is a path; bounded in height so a
+   5000-entry listing scrolls inside the panel instead of pushing the logs
+   below it off the page. */
+.ckb-tree {
+  list-style: none; margin: var(--ctl-s2) 0 0; padding: 0;
+  max-height: 50vh; overflow: auto;
+}
+.ckb-group { list-style: none; margin: 0; padding: 0 0 0 var(--ctl-s3); }
+.ckb-node {
+  display: flex; align-items: baseline; gap: var(--ctl-s2);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.ckb-open {
+  font: inherit; color: var(--text); background: none; border: 0; padding: 0;
+  cursor: pointer; text-align: left;
+  border-bottom: 1px dotted var(--line);
+}
+.ckb-open:hover { border-bottom-color: var(--text-dim); }
+.ckb-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ckb-node.is-open > .ckb-open { border-bottom-style: solid; }
+.ckb-name { color: var(--text-dim); }
+.ckb-meta { color: var(--text-faint); font: var(--t-meta)/var(--lh-meta) var(--mono); }
+.ckb-unsafe { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; }

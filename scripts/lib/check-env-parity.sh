@@ -91,6 +91,11 @@ REQUIRED = {
                      "is passed, so a token minted for any other service is "
                      "accepted",
     "BROKER_AUDIENCE": "same as PUSH_AUDIENCE, for the quota broker",
+    "WORKER_IMAGE_REFS": "without it scheduler.dispatch.image_uri falls back to "
+                         "<image>:<WORKER_IMAGE_TAG>, so every GKE Job and every "
+                         "job the dispatcher creates runs whatever a tag points "
+                         "at when it is pulled -- the mutable-tag path the "
+                         "digest map closes",
 }
 
 # ---------------------------------------------------------------------------

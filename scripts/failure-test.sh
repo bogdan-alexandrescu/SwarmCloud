@@ -60,19 +60,19 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "The failed task released its lease"
+# Every lease it held (max_attempts=2, so up to two), named by its events. This
+# read `current_lease_id`, which the worker clears as the task ends, so it was
+# always empty and this printed PASS "nothing to release" without looking at a
+# lease (task_lease_ids in testlib.sh has the detail).
 if [[ -n "${FAIL_ID:-}" ]]; then
-  LEASE_ID="$(task_field "${FAIL_ID}" '.current_lease_id // ""')"
-  if [[ -n "${LEASE_ID}" && "${LEASE_ID}" != "null" ]]; then
-    RELEASED="$(fs_get "leases/${LEASE_ID}" | jq -r "${FS_JQ} if .fields then (doc.released_at // \"null\") else \"missing\" end")"
-    if [[ "${RELEASED}" != "null" && "${RELEASED}" != "missing" ]]; then
-      t_pass "lease released (${RELEASED})"
-    else
-      t_fail "lease ${LEASE_ID} still holds capacity after the task failed"
-    fi
-  else
-    t_info "no lease recorded (the task may have failed before admission)"
-    t_pass "nothing to release"
-  fi
+  case "${final:-}" in
+    FAILED|DEAD_LETTERED|SUCCEEDED)
+      t_check_leases_released "${FAIL_ID}" 60 pass || true
+      ;;
+    *)
+      t_skip "the task did not finish (at ${final:-unknown}), so its leases cannot be expected back yet"
+      ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------
@@ -108,15 +108,16 @@ declare -a BAD_BODIES=(
 )
 REJECTED=0
 # A non-2xx from api_post is not proof the body was validated and rejected --
-# an expired session (401), a missing run.invoker binding (403), a cold-start
-# 503 or a curl-level timeout/DNS failure land in the same branch as a genuine
-# 400 unless the status is actually inspected. Only a 4xx means the request
-# reached validation and was turned away; anything else must not count.
+# an expired session (401), a missing run.invoker binding (403), the wrong
+# address (404), a cold-start 503 or a curl-level timeout/DNS failure land in
+# the same branch as a genuine 422 unless the status is actually inspected.
+# This used to accept any 4xx, which let the first three through; only what
+# `validation_rejected` accepts means the request reached validation.
 BAD_BODY_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-failtest.XXXXXX")"
 for body in "${BAD_BODIES[@]}"; do
   if api_post "/tasks" "${body}" >"${BAD_BODY_OUT}" 2>&1; then
     t_fail "accepted a malformed body: ${body}"
-  elif [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
+  elif validation_rejected "${API_STATUS}"; then
     REJECTED=$(( REJECTED + 1 ))
   else
     detail="$(cat "${BAD_BODY_OUT}")"
@@ -135,13 +136,14 @@ BIG="$(jq -nc --arg s "$(head -c 400000 /dev/zero | tr '\0' 'x')" '{blob:$s}')"
 BIG_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-failtest.XXXXXX")"
 # API_STATUS=0 means curl itself never got an answer -- a ~400 KB body against
 # HTTP_TIMEOUT is exactly the request most likely to time out or have its
-# connection reset. That is not evidence max_input_bytes was enforced; only an
-# actual 4xx from the API is.
+# connection reset. That is not evidence max_input_bytes was enforced; only the
+# validator's own refusal is -- `validate_input_size` raises ValidationFailed,
+# a 422. A 413 would be an edge refusing the body before the API saw it.
 if api_post "/tasks" "$(jq -nc --argjson i "${BIG}" '{runner_profile:"mock", input:$i}')" \
      >"${BIG_OUT}" 2>&1; then
   rm -f "${BIG_OUT}"
   t_fail "accepted an input larger than max_input_bytes (256 KiB)"
-elif [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
+elif validation_rejected "${API_STATUS}"; then
   rm -f "${BIG_OUT}"
   t_pass "oversized input rejected with HTTP ${API_STATUS}"
 else

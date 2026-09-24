@@ -244,58 +244,61 @@ resource "google_project_iam_member" "deployer_storage" {
   }
 }
 
-# iap.admin, SCOPED — and this one is not optional scoping.
+# WHO MAY PASS IAP, managed here rather than by CI -- and the deployer holds NO
+# IAP role.
 #
-# `terraform apply` failed with
+# terraform/infra's frontend module used to manage these accessor bindings, which
+# meant CI's deployer had to read and write IAP policy. Three ways of granting it,
+# all on 2026-09-24:
 #
-#     Error 403: Permission 'iap.webServices.getIamPolicy' denied on resource
-#     '//iap.googleapis.com/projects/saga-agents-staging/iap_web/compute/
-#      services/swarm-ui-backend'
+#   1. project-level roles/iap.admin -- admin over all TEN backends in this
+#      project, nine of them the other team's GKE gateway routes including
+#      keycloak (their identity provider) and argocd (their deployment admin);
+#   2. the same with a condition on resource.name startsWith ".../services/swarm"
+#      -- matched nothing; release 35972131246 failed "The caller does not have
+#      permission". IAP names a backend by project NUMBER and numeric id, and a
+#      prefix on that form admits every backend, theirs included;
+#   3. roles/iap.admin bound in each of OUR two backends' own IAP policy --
+#      verified present with `gcloud iap web get-iam-policy`, and the release
+#      still got 403 on iap.webServices.getIamPolicy at 9.5 minutes, past IAM
+#      propagation (attempts 2-5 of the same run). Why is not established.
 #
-# because `modules/frontend` manages `google_iap_web_backend_service_iam_member`
-# on our UI backend and the deployer held no IAP role at all.
+# Membership changes rarely and is the owner's decision, so it lives here, in the
+# root only the owner applies. The deployer needs no IAP permission at all, and
+# the release never reads an IAP policy.
 #
-# WHY THIS ONE IS CONDITIONED FROM THE START, unlike the seventeen roles granted
-# unconditioned before it. `gcloud compute backend-services list` on this project
-# returns TEN services. One is ours. The other nine are the other team's GKE
-# gateway routes:
+# THE NAMES ARE LOOKED UP, NOT TRUSTED. They follow modules/frontend/main.tf
+# (`${local.name}-backend` and `${local.name}-ui-backend`, local.name =
+# "${name_prefix}-ui"). The data source turns that restated rule into a check: if
+# the module renames a backend, this plan fails "not found" instead of silently
+# admitting nobody.
 #
-#     keycloak            their identity provider
-#     argocd              their deployment admin
-#     promptlab-api       their product
-#     promptlab-web       their product
-#     crawling-service    their product
-#     browser-engine      their product
-#     api-service         their product
-#     gw-serve404/500     their gateway
-#
-# Project-level `roles/iap.admin` would let any CI run on an allowed ref add or
-# remove members on their KEYCLOAK and their ARGOCD — that is, grant itself or
-# anyone else access to another team's identity provider and deployment console,
-# or lock them out of both. There is no version of this platform's work that
-# needs that, and no review that would catch it after the fact.
-#
-# THE CONDITION, AND WHAT IS UNKNOWN ABOUT IT. IAP web resources are named
-# `projects/<p>/iap_web/compute/services/<backend>`, so the prefix match admits
-# `swarm-ui-backend` and `swarm-ui-ui-backend` (terraform manages both) and
-# refuses all nine of theirs by construction.
-#
-# What is NOT established is whether IAP evaluates `resource.name` conditions at
-# all. If it does not, the apply fails again with the same 403 — loudly, on our
-# own resource, and reverting is deleting this block. That is a better failure
-# than the alternative, which is silent authority over another team's auth.
-resource "google_project_iam_member" "deployer_iap" {
-  count = local.wif_enabled
+# FRESH PROJECT ORDER. The backends are created by terraform/infra. On a new
+# project: apply bootstrap with frontend_iap_backends = [], let the release create
+# the backends (IAP is ON with no members, so nobody gets in yet), then apply
+# bootstrap with the default to admit people.
+data "google_compute_backend_service" "frontend_iap" {
+  for_each = toset(var.frontend_iap_backends)
 
   project = var.project_id
-  role    = "roles/iap.admin"
-  member  = "serviceAccount:${google_service_account.deployer[0].email}"
+  name    = each.value
+}
 
-  condition {
-    title       = "swarm IAP backends only"
-    description = "Nine of the ten IAP-capable backend services in this project belong to another team, including their Keycloak and ArgoCD. This admits only ours."
-    expression  = "resource.name.startsWith(\"projects/${var.project_id}/iap_web/compute/services/${var.name_prefix}\")"
+locals {
+  # One binding per (backend, member). The key is readable in plan output.
+  frontend_iap_bindings = {
+    for pair in setproduct(keys(data.google_compute_backend_service.frontend_iap), var.frontend_iap_members) :
+    "${pair[0]} ${pair[1]}" => { backend = pair[0], member = pair[1] }
   }
+}
+
+resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
+  for_each = local.frontend_iap_bindings
+
+  project             = var.project_id
+  web_backend_service = data.google_compute_backend_service.frontend_iap[each.value.backend].name
+  role                = "roles/iap.httpsResourceAccessor"
+  member              = each.value.member
 }
 
 # ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.

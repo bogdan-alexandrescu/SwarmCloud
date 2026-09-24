@@ -149,11 +149,10 @@ resource "google_cloud_run_v2_service" "this" {
       # service (gcloud, the console, Cloud Deploy). They are metadata about the
       # writer, not about the workload, and a permanent diff on them is noise.
       #
-      # The image is deliberately NOT ignored. scripts/lib/deploy.sh detects the
-      # `image_tag` variable in terraform/infra and deploys by running
-      # `terraform apply -var image_tag=<promoted tag>`, so terraform IS the
-      # deploy mechanism here: ignoring the image would make every deploy a
-      # no-op. It also means an image changed out of band -- by anything holding
+      # The image is deliberately NOT ignored. scripts/lib/deploy.sh deploys by
+      # applying terraform/infra with `image_refs` -- one digest per image,
+      # from the promotion manifest -- so terraform IS the deploy mechanism
+      # here: ignoring the image would make every deploy a no-op. It also means an image changed out of band -- by anything holding
       # run.services.update or run.jobs.update -- shows up as drift on the next
       # plan instead of running unnoticed.
       client,

@@ -69,7 +69,8 @@ spec:
   backoffLimit: 0
   completions: 1
   parallelism: 1
-  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  # Later than the worker's TASK_TIMEOUT_SECONDS; see worker-job.yaml.
+  activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
@@ -204,42 +205,29 @@ spec:
               value: __ARTIFACT_BUCKET__
             - name: WORKSPACE_ROOT
               value: /workspace
-            # WHERE THE RUNNER MAY WRITE, WHICH ON THIS BACKEND IS NOT THE DEFAULT.
+            # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
             #
-            # `runners/base.py` defaults `artifacts_dir` to `work.parent /
-            # "artifacts"`. The work dir is the cwd, `/workspace`, so the default
-            # resolves to `/artifacts`, and `runners/base.py` then mkdirs it.
+            # CORRECTED 2026-09-24 (incident wf_ebb3ab2d65664707a559). This note
+            # used to say that without this variable the agent writes its
+            # artifact tree to `/artifacts` on the writable layer here, outside
+            # the `workspace` emptyDir, and gets evicted for ephemeral-storage.
+            # That is only true of a runner started DIRECTLY. This template sets
+            # no `command` on this container (the header's "UNCHANGED FROM v1"),
+            # so the image ENTRYPOINT -- the worker lifecycle -- runs, and the
+            # lifecycle gives its runner child SWARM_ARTIFACTS_DIR itself, per
+            # attempt, under WORKSPACE_ROOT, from an allowlist that never passes
+            # this value through. The `/artifacts` crash on v1 was a symptom of
+            # the scheduler's GKE Job overriding `command` and replacing the
+            # lifecycle, not of this variable being absent.
             #
-            # THE FAILURE HERE IS NOT v1's. `worker-job.yaml` and
-            # `worker-job-browser.yaml` set `readOnlyRootFilesystem: true`, so
-            # `/artifacts` was an immediate `OSError: [Errno 30] Read-only file
-            # system` and every browser task died on its first line -- loud, and
-            # fixed. This container deliberately sets it FALSE (root inside a
-            # gVisor sandbox is the point of v2), so `mkdir /artifacts`
-            # SUCCEEDS and nothing fails. The agent then writes its whole
-            # artifact tree onto the container's writable layer instead of into
-            # the `workspace` emptyDir, which is the volume that carries
-            # `sizeLimit: __DISK__`. Nothing is charged, nothing is bounded, and
-            # the first agent that produces a large artifact set exceeds the
-            # pod's ephemeral-storage allowance and is EVICTED mid-attempt with
-            # a message about node disk pressure. The same defect as v1, made
-            # invisible by the hardening that made v1 loud.
+            # What this entry still does: a runner started BY HAND in this
+            # container, during an incident, writes inside the `workspace`
+            # volume -- which carries `sizeLimit: __DISK__` -- rather than on
+            # the container's writable layer.
             #
-            # THIS VARIABLE WAS ON THE INIT CONTAINER, NOT THIS ONE, from the
-            # commit that fixed v1 until this one. See the note at
-            # `install-credential`: the env was added to the container that does
-            # not write artifacts, and the suite did not notice because it
-            # scanned each template as one document rather than per container.
-            #
-            # POINTED INSIDE THE WORKSPACE VOLUME RATHER THAN GIVEN ITS OWN.
-            # A dedicated emptyDir at /artifacts would honour the documented
-            # default, and would also need a `sizeLimit` -- a second disk number
-            # to invent and keep in step, when `workspace` already derives its
-            # limit from the resource class's `__DISK__`. Artifacts are produced
-            # from the workspace and are uploaded to ARTIFACT_BUCKET when the
-            # attempt ends, so charging them to the same budget is the honest
-            # accounting. `SWARM_ARTIFACTS_DIR` exists precisely so this is a
-            # configuration rather than a code change.
+            # It belongs on THIS container, not on `install-credential`, where
+            # it once sat by mistake (see the note there): a variable that
+            # decides where a process writes is set on the process that writes.
             - name: SWARM_ARTIFACTS_DIR
               value: /workspace/artifacts
             # Points Claude Code at a directory this pod owns. Verified against

@@ -212,6 +212,23 @@ class ApiSettings:
     #: `namespace_prefix` default.
     tenant_namespace_prefix: str = "swarm-tenant-"
 
+    #: Whether the deployment actually SAID which environment this is.
+    #:
+    #: The frozen `Settings.from_env` defaults ENVIRONMENT to "dev" when the
+    #: variable is unset, so `core.environment == "dev"` is two different
+    #: facts: a deployment that declared dev, and one that declared nothing.
+    #: `GET /v1/tenants/me` serves both the name and this flag, because the web
+    #: UI's environment badge (Brand.tsx) is only allowed to draw what was
+    #: measured -- and a defaulted "dev" on a production console is the exact
+    #: badge it exists not to draw.
+    #:
+    #: FALSE BY DEFAULT, on purpose: a caller that builds ApiSettings by hand
+    #: and forgets it gets "not declared", which the UI renders as its loud
+    #: unknown-environment case, never as a quiet dev. `from_env` sets it from
+    #: the variable; terraform sets ENVIRONMENT on every service through
+    #: `common_env` (terraform/infra/locals.tf).
+    environment_declared: bool = False
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -265,4 +282,8 @@ class ApiSettings:
                 "TENANT_NAMESPACE_PREFIX", "swarm-tenant-"
             ).strip()
             or "swarm-tenant-",
+            # Read beside `Settings.from_env`, which reads the same variable and
+            # substitutes "dev" when it is absent. Blank counts as absent: a
+            # variable that exists and says nothing has declared nothing.
+            environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
         )
