@@ -64,7 +64,10 @@ firestore_database      = "swarm"
 artifact_retention_days = 14
 
 # --- images ----------------------------------------------------------------
-image_tag            = "bootstrap"
+# No image is named here. Every image is deployed by digest through
+# `image_refs`, which scripts/lib/image-refs.sh writes from the promotion
+# manifest at plan and deploy time; a tfvars value would be a digest nobody
+# updates.
 immutable_image_tags = false
 
 # --- capacity --------------------------------------------------------------
