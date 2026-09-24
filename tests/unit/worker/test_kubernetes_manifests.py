@@ -1610,3 +1610,63 @@ def test_neither_copy_of_the_job_overrides_the_image_entrypoint(profile):
                 f"for {profile!r}, replacing the worker lifecycle"
             )
             assert "args" not in container, f"{source} sets args on {container['name']!r}"
+
+
+# ---------------------------------------------------------------------------
+# The Job's deadline is a backstop, and it must fire AFTER the lifecycle's own
+# ---------------------------------------------------------------------------
+#
+# Review of PR #31, 2026-09-24. Every template set `activeDeadlineSeconds` and
+# the worker's TASK_TIMEOUT_SECONDS from the same `__TIMEOUT_SECONDS__`. The
+# Job's deadline counts from Job creation -- node provisioning and the image
+# pull included -- and the lifecycle's from its own start, minutes later, so the
+# Job controller always SIGTERMed the pod first. The lifecycle's SIGTERM path
+# parks the task as SCHEDULED_RETRY, which nothing promotes; its timeout path,
+# which would have FAILED the task, never ran. The dispatcher's copy is held to
+# the same property in tests/unit/control_plane/test_dispatch_manifests.py, and
+# the parity test above holds the two copies equal.
+
+
+def _rendered_jobs_for_the_deadline() -> list[tuple[str, dict[str, Any]]]:
+    jobs = [(f"{name} (render.py)", render_job(name)) for name in sorted(RUNNER_PROFILES)]
+    jobs.append(("claude-code (render.py --runtime gvisor)", _render_v2_job()))
+    return jobs
+
+
+def test_every_rendered_deadline_lets_the_lifecycle_time_out_on_its_own():
+    """MUTATION: point `activeDeadlineSeconds` back at `__TIMEOUT_SECONDS__` in
+    any one of the three templates."""
+    import dataclasses  # noqa: PLC0415
+
+    from agent_worker.config import WorkerConfig  # noqa: PLC0415
+    from swarm_common.config import Settings  # noqa: PLC0415
+
+    # The worker's own defaults, read from the dataclass rather than restated:
+    # the part of its timeout path that runs AFTER its deadline.
+    defaults = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}
+    after_deadline = (
+        defaults["termination_grace_seconds"] + defaults["git_harvest_timeout_seconds"]
+    )
+    # The latest a lifecycle can start and still be running: the reconciler
+    # reclaims any attempt with no heartbeat by the dispatch deadline.
+    latest_start = Settings(project_id=PROJECT).dispatch_timeout_seconds
+
+    checked = 0
+    for where, job in _rendered_jobs_for_the_deadline():
+        pod = job["spec"]["template"]["spec"]
+        worker = next(c for c in pod["containers"] if c["name"] == "worker")
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        task_timeout = int(env["TASK_TIMEOUT_SECONDS"])
+        deadline = int(job["spec"]["activeDeadlineSeconds"])
+        needed = task_timeout + latest_start + after_deadline
+        assert deadline > task_timeout + int(pod["terminationGracePeriodSeconds"]), where
+        assert deadline > needed, (
+            f"{where}: activeDeadlineSeconds is {deadline}s, and the lifecycle's own "
+            f"timeout path needs more than {needed}s from Job creation "
+            f"({task_timeout}s + {latest_start}s latest start + {after_deadline}s to "
+            "stop the child and harvest). The Job controller would SIGTERM it first "
+            "and the task would PARK instead of failing."
+        )
+        checked += 1
+    # Every profile plus the gvisor shape: all three templates were visited.
+    assert checked == len(RUNNER_PROFILES) + 1
