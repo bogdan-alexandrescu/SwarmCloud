@@ -224,13 +224,13 @@ export function UtilTrack({
   if (pct === null) {
     return (
       <span
-        className="ctl-util-track"
+        className="ctl-util-track is-unknown"
         role={meter === undefined ? undefined : 'meter'}
         aria-label={meter?.label}
       />
     )
   }
-  if (pct === -1) {
+  if (pct === 0) {
     return (
       <span
         className="ctl-util-track is-zero"

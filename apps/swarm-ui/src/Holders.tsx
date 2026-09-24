@@ -49,7 +49,7 @@ export function leaseCoverage(page: LeasePage): LeaseCoverage {
     return { kind: 'cut', beyond: null }
   }
   if (beyond !== null) return { kind: 'complete' }
-  return { kind: 'complete' }
+  return { kind: 'unreported' }
 }
 
 /** "3 of 5", or "3+" when more exist and nobody said how many. */

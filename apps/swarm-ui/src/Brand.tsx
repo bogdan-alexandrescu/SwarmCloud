@@ -234,7 +234,7 @@ export function classifyEnvironment(
   // THE API'S OWN ANSWER FIRST, and only a DECLARED one: a defaulted "dev" is
   // an absence wearing a name. See the header of this file for why it
   // outranks the build and the host.
-  const api = served !== null ? served.name.trim().toLowerCase() : ''
+  const api = served !== null && served.declared ? served.name.trim().toLowerCase() : ''
   if (api !== '') {
     const env = named(api, 'api')
     // A build that said something else is kept, for the tooltip. It does not
