@@ -2,19 +2,23 @@
 
 THE DEFECT THIS PINS. Release run 35969538707 promoted seven images to `:dev`
 and then refused the eighth: trivy found a fixable HIGH in swarm-ui's libexpat.
-The script scanned and tagged ONE IMAGE AT A TIME, so by the time swarm-ui was
-refused, agent-runtime-base, agent-runtime-browser, swarm-api,
-swarm-scheduler, swarm-quota-broker, swarm-reconciler and (after it) swarm-verify
-already pointed `:dev` at the new build, while swarm-ui's `:dev` still pointed
-at the old one. The channel then described a release that was never built as a
-release -- and deploy.sh's completeness guard reads the channel to decide what
-"every image" means.
+The script scanned and tagged ONE IMAGE AT A TIME, so six images were already
+on the new build when swarm-ui was refused, and swarm-verify was moved after
+it; swarm-ui's `:dev` stayed on the old one. The channel then described a
+release that was never built as a release -- and deploy.sh's completeness
+guard reads the channel to decide what "every image" means.
+
+The next release, run 35972131246, mixed the channel a second way: the
+digest lookup's `tags:<sha>` filter is a word match, so it also found
+application.yml's `pr-<run>-<sha>` build of the same commit, and the script
+took whichever came first -- five images from one build, three from the other.
 
 The properties asserted here, against the REAL script with a fake `gcloud` and
 a fake `trivy` on PATH, both of which keep their state in files so the test can
 read what the registry ended up saying:
 
-  * every image is resolved and scanned before ANY channel tag moves;
+  * every image is resolved and scanned before ANY channel tag moves, and
+    resolved to the build carrying EXACTLY the release's tag;
   * one refused scan, or one image that cannot be resolved, moves NO channel
     tag, writes NO promotion manifest, and names every image that failed;
   * a tag that fails to move part-way through (an API error, a lost session)
@@ -52,7 +56,7 @@ pytestmark = pytest.mark.skipif(
 
 # A registry in a JSON file: {"<image basename>": {"<digest>": ["tag", ...]}}.
 FAKE_GCLOUD = r'''#!{python}
-import json, os, sys
+import json, os, re, sys
 
 args = sys.argv[1:]
 state_path = os.environ["FAKE_REGISTRY"]
@@ -91,10 +95,13 @@ if args[:4] == ["artifacts", "docker", "images", "list"]:
     if image in set(filter(None, os.environ.get("FAKE_LIST_ERROR", "").split(","))):
         print("ERROR: (gcloud.artifacts.docker.images.list) PERMISSION_DENIED: fake", file=sys.stderr)
         sys.exit(1)
+    # gcloud's `tags:X` is a WORD match, not equality: `tags:<sha>` also finds
+    # `pr-<run>-<sha>`, and `tags:dev` finds `dev-old`. The fake matches the
+    # same way, so a script that trusts the filter is caught here.
     rows = [
         {"package": args[4], "version": digest, "tags": tags}
         for digest, tags in registry.get(image, {}).items()
-        if wanted in tags
+        if any(wanted in re.split(r"[^A-Za-z0-9]+", tag) for tag in tags)
     ]
     if fmt == "json":
         print(json.dumps(rows))
@@ -155,12 +162,18 @@ def _old(image: str) -> str:
     return f"sha256:{'0' * 56}{image[:8]:0<8}".replace("-", "0")
 
 
+def _pr_build(image: str) -> str:
+    return f"sha256:{'2' * 56}{image[:8]:0<8}".replace("-", "0")
+
+
 def _registry(no_previous: tuple[str, ...] = (), unbuilt: tuple[str, ...] = ()) -> dict:
     """Every image built at TAG; every image's :dev on an older digest, except
-    those that have never been promoted."""
+    those that have never been promoted. And, as on every push to main, a
+    SECOND build of the same commit from application.yml, tagged
+    `pr-<run>-<sha>` -- listed first, so a word-matched lookup finds it first."""
     registry: dict[str, dict[str, list[str]]] = {}
     for image in IMAGES:
-        registry[image] = {}
+        registry[image] = {_pr_build(image): [f"pr-99-{TAG}"]}
         if image not in unbuilt:
             registry[image][_new(image)] = [TAG]
         if image not in no_previous:
@@ -243,7 +256,14 @@ def test_every_image_is_scanned_before_any_channel_tag_moves(tmp_path):
         "a refusal later in the loop then leaves the channel half-promoted"
     )
 
-    assert _channel(registry) == {i: _new(i) for i in IMAGES}
+    # The build tagged exactly :TAG, not the pr-99-TAG build of the same commit
+    # that a word-matched lookup finds first. On 2026-09-24 :dev held five
+    # images from application.yml's build and three from the release's.
+    wrong = {i: d for i, d in _channel(registry).items() if d != _new(i)}
+    assert not wrong, (
+        f":{CHANNEL} points at something other than the :{TAG} build for {sorted(wrong)}"
+        f"{' -- the pr-99 build of the same commit' if any(d == _pr_build(i) for i, d in wrong.items()) else ''}"
+    )
     manifest = json.loads((root / "build" / "deployed-images-dev.json").read_text())
     assert {e["name"]: e["digest"] for e in manifest["images"]} == {i: _new(i) for i in IMAGES}
 

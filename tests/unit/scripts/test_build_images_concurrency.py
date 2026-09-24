@@ -26,7 +26,10 @@ uses), so what is tested is the scheduler that ships rather than a copy of it:
   * every image is attempted even after one fails, and the failure names every
     image that failed, plus every image that was not submitted because what it
     is built FROM failed;
-  * each build's output is attributable to its image when builds interleave.
+  * each build's output is attributable to its image when builds interleave;
+  * the manifest records the ONE digest carrying exactly this run's tag, not
+    the `pr-<run>-<sha>` build of the same commit that a word-matched lookup
+    also returns (release run 35972131246 wrote both, glued together).
 
 WHAT THIS CANNOT PROVE: that real `gcloud` processes run side by side without
 contending for their shared credential cache, or that the release job actually
@@ -35,6 +38,7 @@ gets faster. Only a release run on main shows that.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -98,8 +102,28 @@ if args[:2] == ["builds", "submit"]:
     sys.exit(0)
 
 if args[:4] == ["artifacts", "docker", "tags", "list"]:
+    # Shaped like the live registry on 2026-09-24. application.yml's `build`
+    # job ALSO builds every image on a push to main, tagged
+    # `pr-<run>-<sha>`, so a release's `tag:<sha>` filter -- a WORD match in
+    # gcloud -- finds that build as well as its own. The PR build is listed
+    # first, so "take the first line" is caught as surely as "glue them".
     image = args[4]
-    print("sha256:" + hashlib.sha256(image.encode()).hexdigest())
+    name = image.rsplit("/", 1)[-1]
+    wanted = next(a for a in args if a.startswith("--filter=")).split(":", 1)[1]
+    fmt = next((a for a in args if a.startswith("--format=")), "--format=").split("=", 1)[1]
+    rows = [
+        (f"pr-99-{wanted}", "sha256:" + hashlib.sha256(f"{image}@pr".encode()).hexdigest()),
+        (wanted, "sha256:" + hashlib.sha256(f"{image}@{wanted}".encode()).hexdigest()),
+    ]
+    if fmt == "json":
+        base = f"projects/p/locations/r/repositories/swarm-images/packages/{name}"
+        print(json.dumps([
+            {"image": image, "tag": f"{base}/tags/{t}", "version": f"{base}/versions/{d}"}
+            for t, d in rows
+        ]))
+    else:
+        for _, digest in rows:
+            print(digest)
     sys.exit(0)
 
 print("fake gcloud: unhandled " + " ".join(args), file=sys.stderr)
@@ -371,6 +395,33 @@ def test_every_image_a_recipe_is_built_from_is_declared_as_its_prerequisite():
         "no recipe pulls another target any more; if agent-runtime-browser stopped "
         "being built FROM agent-runtime-base, drop the ordering and this assertion"
     )
+
+
+def test_the_manifest_records_the_build_this_run_made_and_nothing_else(tmp_path):
+    """DIGEST READ-BACK, and the mixed release it caused.
+
+    Release run 35972131246 (b0fff1b, a push to main) wrote a build manifest in
+    which EVERY entry was two digests glued together -- `sha256:8448...sha256:
+    5f3a...` for swarm-api -- because `tags list --filter=tag:<sha>` is a word
+    match that also finds application.yml's `pr-<run>-<sha>` build of the same
+    commit, and `tr -d '[:space:]'` joined the two lines. push-images.sh then
+    took whichever version was listed first, and on 2026-09-24 :dev held five
+    images from one build and three from the other."""
+    root, proc, _ = _run(tmp_path, ["swarm-api", "swarm-ui"], parallel=2, seconds=0.2)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    manifest = json.loads((root / "build" / "images-dev.json").read_text())
+    repo = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
+    for entry in manifest["images"]:
+        image = f"{repo}/{entry['name']}"
+        own = "sha256:" + hashlib.sha256(f"{image}@{TAG}".encode()).hexdigest()
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", entry["digest"]), (
+            f"{entry['name']}: the manifest digest is not one digest: {entry['digest']!r}"
+        )
+        assert entry["digest"] == own, (
+            f"{entry['name']}: the manifest names {entry['digest']}, not the build "
+            f"tagged :{TAG} ({own}) -- it picked up the pr-99-{TAG} build of the same commit"
+        )
+        assert entry["ref"] == f"{image}@{own}", entry["ref"]
 
 
 BASH4_ONLY = {
