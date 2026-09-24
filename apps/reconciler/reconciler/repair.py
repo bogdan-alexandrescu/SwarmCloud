@@ -66,14 +66,26 @@ from .store import ControlStore
 BACKEND_UNAVAILABLE = "backend unavailable; skipping its findings"
 NOT_REPAIRING = "not repairing: the backend that would hold this execution was unreadable"
 
-#: The line written once per GKE Job the two eviction rules terminate, so an
-#: operator can find every eviction with one filter (docs/runbooks/
-#: browser-eviction.md). The persisted pass carries the same outcome.
+#: The line written once per eviction -- a stuck attempt fenced, or a Job left
+#: running terminated -- so an operator can find every one with a single
+#: filter (docs/runbooks/browser-eviction.md). The persisted pass carries the
+#: same outcome.
 EVICTED = "evicted a GKE job"
 
 #: Findings repaired by terminating a Job and never by fencing it.
 _TERMINATE_ONLY = (FindingKind.LEFT_RUNNING,)
-_EVICTIONS = (FindingKind.STUCK_NO_PROGRESS, FindingKind.LEFT_RUNNING)
+#: Findings repaired by fencing alone in the pass that finds them. See
+#: `_repair_stuck` for why the kill waits for the next pass.
+_FENCE_ONLY = (FindingKind.STUCK_NO_PROGRESS,)
+
+#: What happens after a stuck attempt is fenced, written onto its event so the
+#: task's timeline says what to expect next.
+_AFTER_THE_FENCE = (
+    "the worker stops the agent at its next control poll and exits without "
+    "touching the lease or the task; a later pass releases the lease once the "
+    "Job has ended, terminating it first if it has not, and requeues or fails "
+    "the task by the retry rules"
+)
 
 #: The event each repaired state is announced with.
 _EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
@@ -909,6 +921,8 @@ class Reconciler:
         )
         if finding.kind in _TERMINATE_ONLY:
             return self._repair_left_running(finding, outcome, handles)
+        if finding.kind in _FENCE_ONLY:
+            return self._repair_stuck(finding, outcome)
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append("would invalidate, terminate, release and repair")
@@ -1007,8 +1021,6 @@ class Reconciler:
                         attempt_id=finding.attempt_id,
                         lease_id=finding.lease_id,
                     )
-        if finding.kind in _EVICTIONS:
-            self._log_eviction(finding, outcome)
         return outcome
 
     def _terminate(
@@ -1044,6 +1056,78 @@ class Reconciler:
             return False
         outcome.actions.append(f"terminated {finding.execution.name}")
         return True
+
+    def _repair_stuck(self, finding: Finding, outcome: RepairOutcome) -> RepairOutcome:
+        """Fence a stuck attempt, and leave the rest to the worker and the next pass.
+
+        The worker under a stuck browser is ALIVE -- that is what makes it
+        stuck rather than dead -- and a live worker handles the two ways of
+        being stopped very differently:
+
+        * **It notices the fence** at its next control poll (every 10s):
+          `lifecycle._apply_control_signals` stops the runner child, emits
+          `generation_fenced` and exits 70, writing nothing to the task or the
+          lease (invariant 5). The Job then ends on its own (`backoffLimit: 0`).
+        * **It receives SIGTERM** -- which is what deleting its Job sends it:
+          `lifecycle._handle_interruption` checkpoints and PARKS the task
+          `SCHEDULED_RETRY` without checking whether it was fenced, and nothing
+          in the platform promotes that park (scheduler/dispatch.py says so at
+          WORKER_FINALISE_BUDGET_SECONDS). Racing the reconciler's own READY, it
+          would turn an evicted task into one parked for ever, or -- when the
+          scheduler had already leased it again, so PARKED is illegal -- into
+          FAILED through `_safe_finish`. Read from the code, not observed: no
+          browser attempt has reached RUNNING on this platform yet.
+
+        So this pass only fences, and names the reason on the task's timeline.
+        What the owner asked for still happens, in the order that cannot race:
+        the worker ends the agent itself; then, on a later pass, the lease is
+        superseded and silent, so the existing rules take it -- the
+        obsolete-generation rule terminates the Job first if it is somehow
+        still active, the partial-repair rule in `detect_stale_leases` releases
+        through the frozen `release_lease_in_transaction`, and
+        `repair_task_state` requeues it or fails it once its attempts are spent.
+        Nothing here can re-find it meanwhile: the stuck rule only judges an
+        attempt on its task's CURRENT generation.
+        """
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would fence generation {finding.generation}; then {_AFTER_THE_FENCE}"
+            )
+            return outcome
+        if not finding.task_id or finding.generation is None:
+            outcome.skipped = "nothing_to_fence"
+            return outcome
+        new_generation = self._store.invalidate_generation(finding.task_id, finding.generation)
+        outcome.invalidated_to = new_generation
+        if new_generation is None:
+            # Moved on since the snapshot -- fenced by someone else, finished,
+            # or re-admitted. The attempt this finding is about has already
+            # been superseded, and nothing of the newer one is touched.
+            outcome.skipped = "already_superseded"
+            outcome.actions.append(
+                f"did not fence: the task is no longer at generation {finding.generation}"
+            )
+            return outcome
+        outcome.actions.append(f"generation {finding.generation} -> {new_generation}")
+        self._store.emit(
+            task_id=finding.task_id,
+            tenant_id=finding.tenant_id,
+            event_type=EventType.GENERATION_FENCED,
+            detail={
+                "reason": finding.reason,
+                "finding": finding.kind.value,
+                "invalidated_generation": finding.generation,
+                "new_generation": new_generation,
+                "then": _AFTER_THE_FENCE,
+            },
+            attempt_id=finding.attempt_id,
+            lease_id=finding.lease_id,
+            generation=finding.generation,
+        )
+        outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
+        self._log_eviction(finding, outcome)
+        return outcome
 
     def _repair_left_running(
         self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
@@ -1090,7 +1174,7 @@ class Reconciler:
             # frozen EventType has no "execution evicted"; GENERATION_FENCED is
             # the nearest -- the reconciler stopped an execution of this
             # generation that had no right to run -- and `phase` says which
-            # kind of stop it was. Contract request 17 asks for a type of its own.
+            # kind of stop it was. Contract request 19 asks for a type of its own.
             self._store.emit(
                 task_id=finding.task_id,
                 tenant_id=finding.tenant_id,

@@ -28,8 +28,24 @@ the `browser` profile is the only profile that runs on GKE.
 
 | Rule | Finding | What the reconciler does |
 |---|---|---|
-| Stuck | `stuck_no_progress` | Fences the generation, deletes the Job, releases the lease, and sets the task to READY. The task goes to FAILED instead once its attempts are spent, or to CANCELLED if a cancel was requested. |
+| Stuck | `stuck_no_progress` | Fences the generation and records why, in that pass and nothing more. The worker stops the agent at its next control poll, about 10s later, and exits. On a later pass, the lease is superseded and silent, and the existing rules release it: they delete the Job first if it is still active, then set the task to READY. The task goes to FAILED instead once its attempts are spent, or to CANCELLED if a cancel was requested. |
 | Left running | `left_running` | Deletes the Job. Releases a lease only if the Job's own lease (same attempt, same generation) was never released. The task stays in the terminal state it had. |
+
+**Why the stuck rule does not delete the Job in the pass that fences it.** The
+worker under a stuck browser is alive, and deleting its Job sends it SIGTERM.
+The worker's SIGTERM path (`lifecycle._handle_interruption`) checkpoints and
+parks the task `SCHEDULED_RETRY` without checking whether it was fenced.
+Nothing in the platform promotes that park. Racing the reconciler's own READY,
+it would leave the task parked forever, or FAILED if the scheduler had already
+leased it again. The fence has no such race: the worker's fenced exit writes
+only its own attempt document. This comes from reading the code. It has not
+been observed, because no browser attempt has run here yet.
+
+The outer bound on every browser pod is unchanged: the Job's
+`activeDeadlineSeconds`, which is the task timeout plus the dispatch timeout
+plus the finalise budget (`backend_deadline_seconds` in
+`apps/scheduler/scheduler/dispatch.py`), counted from Job creation. These rules
+exist to end a pod long before that.
 
 The code is in `apps/reconciler/reconciler/`: `progress.py` (what progress
 means), `detect.py` (`detect_stuck_executions`, `detect_left_running`) and
@@ -134,14 +150,18 @@ document lists it under `outcomes`, with `kind` set to `stuck_no_progress` or
 The task's own events also say what happened:
 
 - **Stuck:**
-  - `generation_fenced` with `detail.finding: stuck_no_progress`. Its
-    `detail.reason` gives the quiet span, the mean CPU, how many checkpoints
-    were unchanged, and the last progress seen.
-  - `lease_released`.
-  - `ready`, `failed` or `cancelled`, whose `detail.reason` repeats the finding.
+  - From the reconciler: `generation_fenced` with `detail.finding:
+    stuck_no_progress`. Its `detail.reason` gives the quiet span, the mean CPU,
+    how many checkpoints were unchanged, and the last progress seen.
+    `detail.then` says what happens next.
+  - From the worker, seconds later: `generation_fenced` with `phase: running`.
+  - On a later pass, from the rule that finishes the job: `lease_released`,
+    then `ready`, `failed` or `cancelled`. Their `detail.reason` is
+    `orphan_lease` or `missing_execution` if the worker stopped itself, or
+    `obsolete_generation` if the Job had to be deleted.
 - **Left running:** `generation_fenced` with `detail.finding: left_running` and
   `detail.phase: left_running`. There is no `EventType` for "execution evicted"
-  yet: [contract request 17](../contract-change-requests.md) asks for one.
+  yet: [contract request 19](../contract-change-requests.md) asks for one.
   `generation_fenced` is the nearest existing type.
 
 ---

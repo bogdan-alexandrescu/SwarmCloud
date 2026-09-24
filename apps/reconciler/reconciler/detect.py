@@ -24,8 +24,9 @@ Two more apply to GKE Jobs only, because browser pods carry
 
     stuck, no progress the worker is alive and heartbeating, but the attempt
                        has shown no progress (`progress.py`) for longer than
-                       `stuck_after_seconds` -> fence, terminate, release,
-                       requeue or fail by the ordinary retry rule
+                       `stuck_after_seconds` -> fence now; the worker stops
+                       itself, and a later pass terminates if need be,
+                       releases, and requeues or fails by the retry rule
     left running       the task is already terminal and its Job is still
                        active -> terminate; release only that Job's own lease
 """
@@ -697,11 +698,13 @@ def detect_stuck_executions(
     """GKE attempts that are alive, current, and making no progress.
 
     Only on EVIDENCE: an attempt with no assessment in `snapshot.progress`, or
-    one whose assessment could not be judged, produces nothing. The finding
-    carries the lease and the live execution, so `repair._repair` runs the
-    ordinary order -- fence the generation, terminate the Job, release through
-    the frozen `release_lease_in_transaction`, then READY, or FAILED once the
-    attempts are spent, or CANCELLED if a cancel was asked for.
+    one whose assessment could not be judged, produces nothing. The repair
+    (`repair.Reconciler._repair_stuck`) FENCES in this pass and nothing more:
+    the live worker stops its agent at its next poll, and a later pass finds a
+    superseded, silent lease that the existing rules release -- terminating
+    the Job first if it is still active -- through the frozen
+    `release_lease_in_transaction`, then READY, or FAILED once the attempts
+    are spent, or CANCELLED if a cancel was asked for.
     """
     if not config.enable_gke_eviction:
         return []

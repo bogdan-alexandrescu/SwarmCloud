@@ -83,9 +83,10 @@ class ReconcilerConfig:
     #: is the `browser` profile, the one profile pinned to Autopilot.
     enable_gke_eviction: bool = True
 
-    #: How long a RUNNING GKE attempt may show no progress before it is fenced,
-    #: terminated and released. Progress is defined in `progress.py`, and
-    #: heartbeating is deliberately not part of it: a hung browser heartbeats.
+    #: How long a RUNNING GKE attempt may show no progress before it is fenced
+    #: (and, from the next pass, terminated if still active, and released).
+    #: Progress is defined in `progress.py`, and heartbeating is deliberately
+    #: not part of it: a hung browser heartbeats.
     #:
     #: Thirty minutes. The window has to be far longer than any legitimate
     #: quiet stretch in a browser run -- one Playwright action waits at most
