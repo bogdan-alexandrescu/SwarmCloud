@@ -29,11 +29,20 @@ uses), so what is tested is the scheduler that ships rather than a copy of it:
   * each build's output is attributable to its image when builds interleave;
   * the manifest records the ONE digest carrying exactly this run's tag, not
     the `pr-<run>-<sha>` build of the same commit that a word-matched lookup
-    also returns (release run 35972131246 wrote both, glued together).
+    also returns (release run 35972131246 wrote both, glued together);
+  * the credential file google-github-actions/auth writes into the checkout
+    (`gha-creds-<16 hex>.json`) never goes up with the build source, and a run
+    that cannot establish that submits nothing.
 
 WHAT THIS CANNOT PROVE: that real `gcloud` processes run side by side without
 contending for their shared credential cache, or that the release job actually
-gets faster. Only a release run on main shows that.
+gets faster. Only a release run on main shows that. Nor that the fake's
+reading of `.gcloudignore` is gcloud's: it models the subset this repository
+uses (comments, `#!include:`, a trailing-slash directory, `*`, a pattern with
+and without a slash, `!`). The real thing was measured on 2026-09-24 with
+`gcloud meta list-files-for-upload` (SDK 483.0.0) over an export of the
+commit with two planted creds files: 699 files listed without the rule, 697
+with it, and the two missing were exactly the planted files.
 """
 
 from __future__ import annotations
@@ -63,7 +72,7 @@ pytestmark = pytest.mark.skipif(
 # and on stderr (so attribution is tested on both streams), sleeps for as long
 # as a build is supposed to take, and fails for any image named in FAKE_FAIL.
 FAKE_GCLOUD = r'''#!{python}
-import hashlib, json, os, re, sys, time, uuid
+import fnmatch, hashlib, json, os, re, sys, time, uuid
 
 args = sys.argv[1:]
 
@@ -72,6 +81,62 @@ def record(**event):
     event["t"] = time.time()
     with open(os.environ["FAKE_EVENTS"], "a") as fh:
         fh.write(json.dumps(event) + "\n")
+
+
+# WHAT `gcloud builds submit DIR` UPLOADS: every file under DIR that the
+# .gcloudignore at DIR's top level does not exclude -- or, when there is none,
+# the one gcloud generates (`gcloud topic gcloudignore`): .gcloudignore, .git,
+# .gitignore, and whatever .gitignore lists.
+def _rules(root, lines):
+    out = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("#!include:"):
+            with open(os.path.join(root, line.split(":", 1)[1])) as fh:
+                out += _rules(root, fh.read().splitlines())
+        elif line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
+def upload_set(root):
+    own = os.path.join(root, ".gcloudignore")
+    if os.path.exists(own):
+        with open(own) as fh:
+            rules = _rules(root, fh.read().splitlines())
+    else:
+        generated = [".gcloudignore", ".git", ".gitignore"]
+        if os.path.exists(os.path.join(root, ".gitignore")):
+            generated.append("#!include:.gitignore")
+        rules = _rules(root, generated)
+    files = []
+    for dirpath, _, names in os.walk(root):
+        for name in names:
+            rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+            parts = rel.split("/")
+            ignored = False
+            for rule in rules:
+                negated = rule.startswith("!")
+                pattern = rule.lstrip("!").strip("/")
+                candidates = (
+                    ["/".join(parts[:k]) for k in range(1, len(parts) + 1)]
+                    if "/" in pattern else parts
+                )
+                if any(fnmatch.fnmatchcase(c, pattern) for c in candidates):
+                    ignored = not negated
+            if not ignored:
+                files.append(rel)
+    return sorted(files)
+
+
+if args[:2] == ["meta", "list-files-for-upload"]:
+    record(event="list-files")
+    if os.environ.get("FAKE_LIST_FILES_FAIL"):
+        print("ERROR: (gcloud.meta) Invalid choice: 'list-files-for-upload'.", file=sys.stderr)
+        sys.exit(2)
+    for rel in upload_set(args[2]):
+        print(rel)
+    sys.exit(0)
 
 
 if args[:3] == ["artifacts", "repositories", "describe"]:
@@ -85,7 +150,10 @@ if args[:2] == ["builds", "submit"]:
     )
     target = match.group(1)
     build_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, target))
-    record(event="start", target=target)
+    uploaded_creds = [
+        rel for rel in upload_set(args[2]) if rel.rsplit("/", 1)[-1].startswith("gha-creds-")
+    ]
+    record(event="start", target=target, uploaded_creds=uploaded_creds)
     print(f"fake-build-stdout target={target}", flush=True)
     print(
         "Created [https://cloudbuild.googleapis.com/v1/projects/p/locations/r/"
@@ -133,11 +201,22 @@ sys.exit(2)
 
 def _sandbox(tmp_path: Path) -> Path:
     """A copy of the scripts and recipes, so the run writes nothing into the
-    checkout and REPO_ROOT (derived from the script's own location) is here."""
+    checkout and REPO_ROOT (derived from the script's own location) is here --
+    with the checkout's own ignore files, which decide what a submit uploads."""
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     shutil.copytree(REPO / "images", root / "images")
+    for name in (".gitignore", ".gcloudignore"):
+        if (REPO / name).exists():
+            shutil.copy2(REPO / name, root / name)
     return root
+
+
+# What google-github-actions/auth@v2 leaves in $GITHUB_WORKSPACE before the
+# build step runs: `gha-creds-` + 16 hex + `.json` (src/utils.ts,
+# generateCredentialsFilename). The real one is a live credential; this one
+# carries nothing.
+CREDS = "gha-creds-0123456789abcdef.json"
 
 
 def _run(
@@ -147,8 +226,15 @@ def _run(
     parallel: int,
     fail: tuple[str, ...] = (),
     seconds: float = 1.5,
+    plant_creds: bool = False,
+    gcloudignore: str | None = None,
+    **fakes: str,
 ):
     root = _sandbox(tmp_path)
+    if plant_creds:
+        (root / CREDS).write_text('{"type": "external_account", "note": "fake"}\n')
+    if gcloudignore is not None:
+        (root / ".gcloudignore").write_text(gcloudignore)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     gcloud = bindir / "gcloud"
@@ -178,6 +264,7 @@ def _run(
         "BUILD_PARALLELISM": str(parallel),
         "BUILD_POLL_INTERVAL": "0.1",
         "BUILD_SUBMIT_STAGGER": "0",
+        **fakes,
     }
     env.pop("GITHUB_ACTIONS", None)
     proc = subprocess.run(
@@ -422,6 +509,53 @@ def test_the_manifest_records_the_build_this_run_made_and_nothing_else(tmp_path)
             f"tagged :{TAG} ({own}) -- it picked up the pr-99-{TAG} build of the same commit"
         )
         assert entry["ref"] == f"{image}@{own}", entry["ref"]
+
+
+def _submitted(events: list[dict]) -> list[dict]:
+    return [e for e in events if e["event"] == "start"]
+
+
+def test_the_workflow_credential_file_never_goes_up_with_the_source(tmp_path):
+    """`gcloud builds submit "${REPO_ROOT}"` uploads the checkout, and in
+    release.yml and application.yml the checkout holds the file auth@v2 wrote a
+    step earlier. With no .gcloudignore, gcloud's generated one is `.gitignore`
+    plus .git -- and .gitignore did not list it -- so the credential went up
+    with every build's source."""
+    _, proc, events = _run(
+        tmp_path, ["swarm-api", "swarm-ui"], parallel=2, seconds=0.2, plant_creds=True
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    submits = _submitted(events)
+    assert sorted(e["target"] for e in submits) == ["swarm-api", "swarm-ui"], submits
+    leaked = {e["target"]: e["uploaded_creds"] for e in submits if e["uploaded_creds"]}
+    assert not leaked, (
+        f"the build source uploaded the workflow's credential file: {leaked}"
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # The ignore rule is gone: the run must refuse rather than leak.
+        {"gcloudignore": ".gcloudignore\n.git\n.gitignore\nbuild/\n"},
+        # gcloud cannot say what it would upload -- `meta list-files-for-upload`
+        # is documented as internal and may disappear. Unknown is not safe.
+        {"FAKE_LIST_FILES_FAIL": "1"},
+    ],
+    ids=["rule-missing", "listing-unavailable"],
+)
+def test_a_run_that_cannot_keep_the_credential_file_out_submits_nothing(tmp_path, kwargs):
+    _, proc, events = _run(
+        tmp_path, ["swarm-api", "swarm-ui"], parallel=2, seconds=0.2, plant_creds=True, **kwargs
+    )
+    assert proc.returncode != 0, "the run exited 0"
+    submits = _submitted(events)
+    assert not submits, (
+        f"{[e['target'] for e in submits]} submitted although nothing established "
+        f"that {CREDS} stays out of the upload"
+    )
+    summary = _failure_summary(proc)
+    assert CREDS in summary, f"the last line does not name the credential file: {summary!r}"
 
 
 BASH4_ONLY = {

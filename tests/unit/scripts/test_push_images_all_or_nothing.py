@@ -24,7 +24,12 @@ read what the registry ended up saying:
   * a tag that fails to move part-way through (an API error, a lost session)
     is not left as a half-promoted channel: the tags already moved are put back
     to the digest they held before the run, and a tag that did not exist before
-    the run is removed again.
+    the run is removed again;
+  * when that put-back ITSELF fails -- an expired session fails the undo too,
+    because the undo uses the same credential -- the red job's last line says
+    the channel is MIXED and names the images left on the new build. It used
+    to say "nothing promoted" while :dev held two new images and six old ones;
+  * a move that failed because the session is dead is named as authentication.
 
 WHAT THIS CANNOT PROVE: that Artifact Registry's real `images list` returns the
 JSON shape the fake does. The shape was read from the live registry on
@@ -78,6 +83,28 @@ def base(ref):
     return ref.rsplit("/", 1)[-1]
 
 
+# FAKE_SESSION_EXPIRES_AFTER=N: the first N tag writes succeed and every one
+# after them fails as an expired session does -- the promotion's next move AND
+# every put-back, because the undo uses the same credential. Counted from the
+# event log, so it holds across the separate processes the script starts.
+def session_expired():
+    limit = os.environ.get("FAKE_SESSION_EXPIRES_AFTER")
+    if limit is None:
+        return False
+    done = 0
+    if os.path.exists(os.environ["FAKE_EVENTS"]):
+        with open(os.environ["FAKE_EVENTS"]) as fh:
+            done = sum(1 for line in fh if json.loads(line)["event"] in ("tag", "untag"))
+    return done >= int(limit)
+
+
+AUTH_ERROR = (
+    "ERROR: (gcloud.artifacts.docker.tags.{verb}) There was a problem refreshing "
+    "your current auth tokens: ('invalid_grant: Bad Request'). Request had invalid "
+    "authentication credentials. UNAUTHENTICATED"
+)
+
+
 def flag(name):
     for i, arg in enumerate(args):
         if arg == name:
@@ -115,9 +142,16 @@ if args[:4] == ["artifacts", "docker", "tags", "add"]:
     image, digest = base(src).split("@", 1)
     image_dst, tag = base(dst).split(":", 1)
     assert image == image_dst, (src, dst)
+    if session_expired():
+        record(event="tag-failed", image=image, tag=tag, digest=digest)
+        print(AUTH_ERROR.format(verb="add"), file=sys.stderr)
+        sys.exit(1)
     if image in set(filter(None, os.environ.get("FAKE_TAG_FAIL", "").split(","))):
         record(event="tag-failed", image=image, tag=tag, digest=digest)
-        print(f"ERROR: (gcloud.artifacts.docker.tags.add) fake failure for {image}", file=sys.stderr)
+        if os.environ.get("FAKE_TAG_FAIL_AUTH"):
+            print(AUTH_ERROR.format(verb="add"), file=sys.stderr)
+        else:
+            print(f"ERROR: (gcloud.artifacts.docker.tags.add) fake failure for {image}", file=sys.stderr)
         sys.exit(1)
     for tags in registry[image].values():
         if tag in tags:
@@ -129,6 +163,10 @@ if args[:4] == ["artifacts", "docker", "tags", "add"]:
 
 if args[:4] == ["artifacts", "docker", "tags", "delete"]:
     image, tag = base(args[4]).split(":", 1)
+    if session_expired():
+        record(event="untag-failed", image=image, tag=tag)
+        print(AUTH_ERROR.format(verb="delete"), file=sys.stderr)
+        sys.exit(1)
     for tags in registry[image].values():
         if tag in tags:
             tags.remove(tag)
@@ -320,3 +358,75 @@ def test_a_tag_that_fails_to_move_puts_back_the_ones_that_did(tmp_path):
     )
     assert not (root / "build" / "deployed-images-dev.json").exists()
     assert "swarm-reconciler" in _summary(proc)
+
+
+def test_an_undo_that_fails_says_the_channel_is_mixed_not_that_nothing_was_promoted(tmp_path):
+    """The case the undo path exists for, carried one step further: the session
+    expires between the swarm-scheduler and swarm-reconciler moves. The
+    reconciler's move fails -- and so does every put-back, because the undo
+    uses the same dead credential. :dev now holds two images from the new
+    build and the rest from the old one.
+
+    The job's last line used to read "...failed at swarm-reconciler; nothing
+    promoted" regardless. A human reading the red job, or a `skip_build`
+    redeploy that rebuilds its manifest from :dev, then trusts a mixed
+    channel."""
+    # swarm-scheduler has never been on :dev, so its put-back is a DELETE: both
+    # undo paths meet the dead session.
+    before = _registry(no_previous=("swarm-scheduler",))
+    root, proc, registry, log = _run(tmp_path, before, FAKE_SESSION_EXPIRES_AFTER="2")
+    assert proc.returncode != 0
+
+    moved = [e["image"] for e in log if e["event"] == "tag"]
+    assert moved == ["swarm-api", "swarm-scheduler"], (
+        f"the fake did not produce the scenario (moved {moved}); the test is not exercising anything"
+    )
+    after = _channel(registry)
+    stuck = sorted(i for i in IMAGES if after[i] != _channel(before)[i])
+    assert stuck == ["swarm-api", "swarm-scheduler"], (
+        f"expected the undo to fail for both moved images, the channel differs for {stuck}"
+    )
+    assert not (root / "build" / "deployed-images-dev.json").exists()
+
+    summary = _summary(proc)
+    assert "nothing promoted" not in summary, (
+        f"the last line says nothing was promoted while :{CHANNEL} holds {stuck} "
+        f"on the new build: {summary!r}"
+    )
+    assert "MIXED" in summary, f"the last line does not say :{CHANNEL} is mixed: {summary!r}"
+    for image in stuck:
+        assert image in summary, f"{image} is left on the new build but the last line omits it: {summary!r}"
+    # On the LAST line, not anywhere in stderr: gcloud's own error text already
+    # contains the word, and that is not the script naming the cause.
+    assert "authentication" in summary, (
+        f"every failure here was UNAUTHENTICATED and the last line does not say so: {summary!r}"
+    )
+
+    # The way back, for exactly the images that are stuck.
+    repo = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
+    assert (
+        f"gcloud artifacts docker tags add {repo}/swarm-api@{_old('swarm-api')} "
+        f"{repo}/swarm-api:{CHANNEL}"
+    ) in proc.stderr
+    assert f"gcloud artifacts docker tags delete {repo}/swarm-scheduler:{CHANNEL}" in proc.stderr
+
+
+def test_a_move_refused_by_a_dead_session_is_named_as_authentication(tmp_path):
+    """The move fails UNAUTHENTICATED, the put-back succeeds (a session can come
+    back -- or the undo is what finally refreshes it). "Nothing promoted" is
+    then TRUE and must stay; what was missing is the reason. Phase 3 never
+    looked at whether the failure was authentication, so a dead session read
+    as a registry fault."""
+    before = _registry()
+    _, proc, registry, log = _run(
+        tmp_path, before, FAKE_TAG_FAIL="swarm-reconciler", FAKE_TAG_FAIL_AUTH="1"
+    )
+    assert proc.returncode != 0
+    assert [e["image"] for e in log if e["event"] == "tag-failed"] == ["swarm-reconciler"]
+    assert _channel(registry) == _channel(before)
+
+    summary = _summary(proc)
+    assert "nothing promoted" in summary, summary
+    assert "authentication" in summary, (
+        f"the move failed UNAUTHENTICATED and the last line does not say so: {summary!r}"
+    )
