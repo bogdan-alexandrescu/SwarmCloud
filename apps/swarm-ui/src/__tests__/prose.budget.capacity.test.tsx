@@ -216,6 +216,13 @@ const HOLDERS: HoldersBoard = {
     leases: LEASES,
     units_held: 7,
     tenant_id: 'eng',
+    // What the route serves for a fleet smaller than its window: every live
+    // lease is a row. Without these the screen draws its "coverage
+    // unreported" state, and this budget would be measuring the rarer page.
+    active_only: true,
+    active_beyond_window: 0,
+    truncated: false,
+    examined: 3,
   } as unknown as LeasePage,
   pools: [
     pool({ name: 'global:agents', active: 9 }),

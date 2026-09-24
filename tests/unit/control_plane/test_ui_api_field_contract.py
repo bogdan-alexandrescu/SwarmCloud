@@ -293,22 +293,13 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
     },
     "LeasePage": {
         "leases": "declared as LeaseRow[], checked as LeaseRow",
-        # Served by the api-seams lane (data-gaps audit 2026-09-20 section 1)
-        # ahead of the client. The Holders screen's drift check is what reads
-        # them, and declaring them in types.ts is the UI lane's change; delete
-        # these three lines in that change. `active_beyond_window` is the one
-        # the drift check needs: a delta is evidence only when it is 0.
-        "truncated": "served ahead of the UI lane; types.ts declares it there",
-        "examined": "served ahead of the UI lane; types.ts declares it there",
-        "active_beyond_window": "served ahead of the UI lane; types.ts declares it there",
+        # `truncated`, `examined` and `active_beyond_window` were excused here
+        # while the API served them ahead of the client. types.ts declares all
+        # three now and Holders.tsx reads the first and the last, so they are
+        # held by the two directions below like every other field.
     },
-    "Me": {
-        # ui-audit §B9.S5, served by the api-seams lane for Brand.tsx's badge.
-        # Declaring them in types.ts is the UI lane's change; delete these two
-        # lines in that change.
-        "environment": "served ahead of the UI lane; types.ts declares it there",
-        "environment_declared": "served ahead of the UI lane; types.ts declares it there",
-    },
+    # `Me.environment` and `Me.environment_declared` were excused the same way
+    # and are declared the same way; Brand.tsx's badge reads both.
     "TaskPage": {"tasks": "declared as Task[], checked as Task"},
     "ProvidersPage": {"providers": "declared as ProviderEntry[], checked as ProviderEntry"},
 }
