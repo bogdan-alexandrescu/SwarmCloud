@@ -179,10 +179,20 @@ jobs:
         # PR, including #1, which edited models.py and profiles.py. Measured
         # in run 36036034784, job 107756241218.
         #
+        # AND THEN IT COMPARED THE WRONG COMMITS. The first repair diffed
+        # `pull_request.base.sha` against the merge commit. GitHub does not
+        # move base.sha when main moves, so that diff was everything main had
+        # gained since the PR was opened, plus the PR (run 36039462416:
+        # "Merge 9c56167 into d45b1d69" compared against 0fac6d6). The script
+        # now compares the merge commit's FIRST PARENT -- main as this run
+        # merged into it -- with the merge commit, which is exactly the PR's
+        # change as it would merge. It fetches that parent itself, so the
+        # checkout above stays depth 1.
+        #
         # A CHANGE PASSES ONLY WHEN THE PR RECORDS ITS ACCEPTANCE. Updated
         # deliberately for contract requests 17 and 18, which the owner
         # accepted in session on 2026-09-24 (PR #44). The logic lives in the
-        # script so that what it compares against can be tested
+        # script so that what it compares against is tested
         # (tests/unit/scripts/test_frozen_contract_check.py).
         if: github.event_name == 'pull_request'
         env:
