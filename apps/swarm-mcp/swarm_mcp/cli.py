@@ -652,7 +652,20 @@ def cmd_doctor(_client, args) -> int:
 
     host = front_door_host()
     if host:
-        print(f"front door  https://{host}  (IAP; takes an OAuth ACCESS token)")
+        # WHICH CREDENTIAL, not "the credential". A deployment that configured
+        # its own OAuth client takes an ID token minted for that client id, and
+        # printing "ACCESS token" at someone on that tier would send them to
+        # debug the one thing that was already right.
+        presents = (
+            "an ID token for the IAP client id"
+            if detection.tier is Tier.IAP
+            else "an OAuth ACCESS token"
+        )
+        # TWO LINES, because one was 83 columns with a hostname of ordinary
+        # length and this command is read in a terminal. `test_doctor_...`
+        # asserts nothing here exceeds 80 for exactly that reason.
+        print(f"front door  https://{host}  (IAP)")
+        print(f"            this tier presents {presents}")
         if detection.tier is Tier.PROXY:
             print(
                 textwrap.fill(

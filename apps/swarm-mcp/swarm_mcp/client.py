@@ -583,8 +583,27 @@ class SwarmClient:
         Authorization header of its own and swarm-api authenticates the caller
         from `X-Goog-IAP-JWT-Assertion` instead
         (apps/swarm-api/swarm_api/deps.py, `current_auth`).
+
+        ONE EXCEPTION, AND WITHOUT IT `Tier.IAP` BECOMES DEAD CODE. That tier
+        exists for the other shape of IAP deployment: one that configured its
+        OWN OAuth client, where `oauth2_client_id` is set on the backend service
+        and an ID token minted for that client id is the documented programmatic
+        path. `detect()` finds the tier, `swarm doctor` prints it, and
+        `id_token_for` already mints with `--audiences=<client id>` -- so
+        sending an access token there regardless would detect a tier, announce
+        it, and then never use it, which is exactly the "declared but not
+        implemented" shape this bridge is supposed to catch rather than commit.
+
+        `scripts/lib/common.sh::api_credential` has no equivalent branch because
+        it was written for THIS deployment, which has no client id. That is a
+        deliberate divergence and not drift: the shell serves one cluster, and
+        this package is what someone else deploys.
         """
+        from . import auth as _auth
+
         if self.front_door:
+            if self.tier is _auth.Tier.IAP:
+                return self._id_token()
             return self.access_token()
         return self._id_token()
 

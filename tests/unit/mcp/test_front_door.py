@@ -261,6 +261,39 @@ def test_the_front_door_takes_an_access_token_and_cloud_run_takes_an_id_token(
     assert direct.credential() == "IDTOKEN"
 
 
+def test_a_deployment_with_its_own_oauth_client_still_gets_an_id_token(
+    monkeypatch, tmp_path
+):
+    """THE MUTATION THIS CATCHES: make `credential()` return `access_token()`
+    for every front door. `Tier.IAP` is then detected, printed by `swarm
+    doctor`, and never used -- a tier that exists, is announced, and does
+    nothing, which is the shape this lane was sent to find rather than to add.
+
+    That tier is for the OTHER shape of IAP deployment: one whose backend
+    service sets `oauth2_client_id`, where an ID token minted for that client id
+    is the documented programmatic path and `auth.id_token_for` already mints
+    it. This deployment is not that shape; somebody else's will be.
+    """
+    _tfvars(tmp_path, 'frontend_hostname = "swarm.example.com"\n')
+    monkeypatch.setenv("SWARM_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("SWARM_IAP_CLIENT_ID", "123.apps.googleusercontent.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setattr(
+        SwarmClient,
+        "access_token",
+        lambda self: (_ for _ in ()).throw(AssertionError("an access token was minted")),
+    )
+    monkeypatch.setattr(SwarmClient, "_id_token", lambda self: "IDTOKEN")
+
+    c = SwarmClient()
+    assert c.tier is Tier.IAP
+    assert c.front_door is True
+    # The audience is the client id, never the service url -- getting that
+    # backwards is the `Invalid JWT audience` this whole module is about.
+    assert c._audience == "123.apps.googleusercontent.com"
+    assert c.credential() == "IDTOKEN"
+
+
 def test_the_header_that_actually_goes_out_at_the_front_door_is_the_access_token(
     monkeypatch, tmp_path
 ):
