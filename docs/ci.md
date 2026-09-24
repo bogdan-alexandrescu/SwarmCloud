@@ -333,9 +333,8 @@ finished.
 for an approval only for a job that names a protected environment. A
 *partial* re-run — "Re-run failed jobs", or "Re-run this job" — starts the
 chosen jobs and every job that depends on them again, and keeps the result
-and outputs of every other job (GitHub's REST reference: "Re-run all of the
-failed jobs and their dependent jobs"; "Re-run a job and its dependent
-jobs"). Re-running a failed `terraform apply (prod)` therefore leaves
+of every other job (GitHub's REST reference: "Re-run all of the failed jobs
+and their dependent jobs"; "Re-run a job and its dependent jobs"). Re-running a failed `terraform apply (prod)` therefore leaves
 `approval` out, and `needs.approval.result` is still the `success` of the
 attempt the reviewer approved. With nothing else in the way, the apply would
 start at once, with nobody asked. GitHub allows a re-run for 30 days, to
@@ -349,7 +348,11 @@ approval to one job made this possible.
 So the approval is tied to the **attempt** it cleared:
 
 * `approval` outputs `attempt: ${{ github.run_attempt }}`. GitHub renders it
-  at the end of the job, so no step can write the wrong number.
+  at the end of the job, so no step can write the wrong number. A partial
+  re-run should carry that output over from the attempt that approved. That
+  has not been observed here. If GitHub drops it instead, the output is
+  empty: the check below then fails closed, and `stale-approval` still
+  reports it.
 * On prod, `promote`, `terraform apply` and `deploy and smoke` each run only
   if `needs.approval.outputs.attempt == github.run_attempt`. Each carries the
   condition itself, because "Re-run this job" on a deploy whose smoke test
