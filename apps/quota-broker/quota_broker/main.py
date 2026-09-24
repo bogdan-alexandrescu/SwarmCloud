@@ -68,6 +68,7 @@ from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
 from .settings import BrokerSettings
+from .sweeplease import LeaseFence, build_sweep_lease, new_holder, txn_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -494,24 +495,11 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
     }
 
 
-def _txn_snapshot(result: Any) -> Any:
-    """One DocumentSnapshot out of a Firestore transactional get.
-
-    `Transaction.get()` returns a GENERATOR in google-cloud-firestore, because
-    the same method takes a Query as well as a DocumentReference. Treating the
-    result as a snapshot raises `AttributeError: 'generator' object has no
-    attribute 'exists'` against the real client while every in-memory double
-    hands back a snapshot directly -- so no unit test can catch it. The frozen
-    `swarm_common.admission` carries the same adapter for the same reason; this
-    is a five-line adapter rather than an import of another module's private
-    name.
-    """
-    if hasattr(result, "exists"):
-        return result
-    try:
-        return next(iter(result))
-    except StopIteration:  # pragma: no cover - a get always yields one result
-        raise RuntimeError("transactional get returned no snapshot") from None
+#: One DocumentSnapshot out of a Firestore transactional get -- see
+#: `sweeplease.txn_snapshot` for why a get can be a generator. Imported under
+#: the name this module has always used, so the broker has ONE copy of the
+#: adapter and not one per module that runs a transaction.
+_txn_snapshot = txn_snapshot
 
 
 def _live_holds(data: dict[str, Any], now: datetime) -> list[Hold]:
@@ -769,7 +757,9 @@ CREDENTIAL_NEEDS_A_HUMAN = ("reauth_required", "unreadable")
 _WROTE_A_VERSION = ("refreshed", "published", "published_unverified")
 
 
-def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, Any]:
+def _sweep_account_pool(
+    refresher: Any, store: Any, now: datetime, *, keep_going: Any = None
+) -> dict[str, Any]:
     """Refresh every registered account, and RECORD what came back.
 
     THE RECORDING IS THE POINT, and its absence was the audit's first finding
@@ -799,11 +789,16 @@ def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, 
     and one unreadable account document must not stall every tenant's quota
     recovery. A failure to WRITE one account is caught per account for the same
     reason -- the other marks are still worth making.
+
+    `keep_going` is the sweep lease's fence (`sweeplease.LeaseFence`): asked
+    before every exchange, here and inside the refresher, and a False ends the
+    pass there -- the lease is somebody else's now.
     """
     try:
         due = due_for_refresh(store.list(), now)
         outcomes = refresher.sweep_accounts(
-            [(store.secret_for(a), a.account_id) for a in due]
+            [(store.secret_for(a), a.account_id) for a in due],
+            keep_going=keep_going,
         )
     except Exception as exc:
         log.error(
@@ -819,6 +814,10 @@ def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, 
     ]
     marked: list[str] = []
     for account_id, reason in needs_human:
+        # The confirmation below is an exchange like any other, so it is
+        # fenced like any other.
+        if keep_going is not None and not keep_going():
+            break
         try:
             account = store.get(account_id)
             if account is None:
@@ -834,11 +833,11 @@ def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, 
             # one costs an operator a sign-in they did not need and the pool an
             # account that was never broken. That is worth one extra call.
             #
-            # The concrete way a false one happens today is finding 3 of
-            # docs/audits/2026-09-18/06-quota-broker-accounts.md, which is not
-            # fixed: nothing serialises this endpoint, Cloud Scheduler retries
-            # a tick it thinks timed out without cancelling the first, and the
-            # service takes 40 concurrent requests. Two sweeps then read the
+            # The concrete way a false one happened is finding 3 of
+            # docs/audits/2026-09-18/06-quota-broker-accounts.md: nothing
+            # serialised this endpoint, Cloud Scheduler retries a tick it
+            # thinks timed out without cancelling the first, and the service
+            # takes many concurrent requests. Two sweeps then read the
             # same refresh token, one exchanges it, and the OTHER is told
             # `invalid_grant` for a token that was merely rotated away from it
             # -- a perfectly healthy account. The second attempt re-reads the
@@ -846,8 +845,10 @@ def _sweep_account_pool(refresher: Any, store: Any, now: datetime) -> dict[str, 
             # answers `still_valid`, so the account is not marked.
             #
             # This is confirmation, not mutual exclusion: it makes the race
-            # harmless HERE while two sweeps still waste each other's exchanges
-            # elsewhere. The fix for that is a lease on the sweep itself.
+            # harmless HERE. The exclusion is now the sweep lease
+            # (`sweeplease`), which stops two sweeps exchanging at once; the
+            # confirmation stays, because a lease taken over from a sweep that
+            # was merely slow still leaves one exchange in flight on each side.
             second = refresher.refresh_secret(
                 store.secret_for(account), label=account_id
             )
@@ -1047,6 +1048,12 @@ def create_app(
         if getattr(app.state.broker, "db", None) is not None
         else InMemoryPublishLedger()
     )
+
+    # ONE CREDENTIAL SWEEP AT A TIME, across every instance -- see
+    # quota_broker.sweeplease. On the broker's own Firestore handle for the
+    # reason the two above are: a lease held in one client's database and read
+    # through another's is no lease at all.
+    app.state.sweep_lease = build_sweep_lease(getattr(app.state.broker, "db", None))
 
     refresher, tenants = credential_refresher, subscription_tenants
     # Bound here rather than only inside the branch below: the usage poller
@@ -2069,53 +2076,116 @@ def create_app(
         # is a no-op.
         refresher = getattr(request.app.state, "credential_refresher", None)
         if refresher is not None:
-            # Credential refresh must never take the quota sweep down with it.
-            # The sweep is what un-parks throttled tenants; if a Secret Manager
-            # permission error could 500 this endpoint, one broken credential
-            # would stall every tenant's quota recovery.
-            # Two sweeps, reported separately. Sharing one try block meant a
-            # bug in either was indistinguishable from a failure of the other,
-            # and the first thing it hid was a missing method on the account
-            # path masking a perfectly good credential result.
-            result["credentials"] = _sweep_block(
-                lambda: refresher.sweep(request.app.state.subscription_tenants()),
-                "subscription credential sweep failed",
-            )
-
-            # Every registered account, whether or not anything is using it.
-            # See quota_broker.accounts.due_for_refresh for why there is no
-            # "in use" filter.
-            #
-            # Its own summariser rather than `_sweep_block`, because this one
-            # WRITES: an account whose refresh token is gone is marked
-            # REAUTH_REQUIRED on its document, which is what stops the retry
-            # loop and what puts the dead account in front of an operator.
-            store = getattr(request.app.state, "account_store", None)
-            if store is not None:
-                result["accounts"] = _sweep_account_pool(
-                    refresher, store, datetime.now(timezone.utc)
+            # THE CREDENTIAL PHASE RUNS UNDER THE SWEEP LEASE, and only this
+            # phase. See quota_broker.sweeplease for the race it closes. The
+            # quota recompute and the hold backstop above stay outside it on
+            # purpose: both are idempotent, and they are what un-parks
+            # throttled tenants, so a stuck credential sweep must never be able
+            # to delay them.
+            lease = request.app.state.sweep_lease
+            holder = new_holder()
+            try:
+                taken = lease.acquire(holder)
+            except Exception as exc:
+                # FAIL CLOSED. No proof of exclusion, no exchange: skipping one
+                # tick costs five minutes on a token refreshed hours before it
+                # expires, and an unexcluded exchange can cost the token.
+                log.error(
+                    "could not take the sweep lease; skipping the credential phase this tick",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
                 )
+                result["sweep_lease"] = {"acquired": False, "error": type(exc).__name__}
+                return result
+            if not taken.acquired:
+                # Not an error: another sweep is doing this work right now --
+                # typically Cloud Scheduler's retry of a tick that is still
+                # running. Answered 200 so the scheduler does not retry this
+                # one as well.
+                log.info(
+                    "another sweep holds the lease; skipping the credential phase this tick",
+                    extra={
+                        "held_by": taken.holder,
+                        "expires_at": taken.expires_at.isoformat() if taken.expires_at else None,
+                    },
+                )
+                result["sweep_lease"] = {
+                    "acquired": False,
+                    "held_by": taken.holder,
+                    "expires_at": taken.expires_at.isoformat() if taken.expires_at else None,
+                }
+                return result
 
-                # Read what each account has LEFT. Separate from the refresh
-                # above and reported separately, for the reason the comment
-                # there gives: sharing a block makes a bug in one
-                # indistinguishable from a failure of the other.
-                #
-                # This is the caller `record_reading` never had. Without it
-                # every account reported full headroom forever, and the assign
-                # floor -- the check that stops an agent starting on an account
-                # with 2% left -- could never fire.
-                #
-                # Budgeted rather than exhaustive: the endpoint allows roughly
-                # five calls per five minutes and shares that with anything else
-                # polling the same accounts. See quota_broker.usagepoll.
-                poller = getattr(request.app.state, "usage_poller", None)
-                if poller is not None:
-                    result["usage"] = _poll_block(
-                        lambda: poller.poll_round(store.list()),
-                        "account usage poll failed",
-                    )
+            fence = LeaseFence(lease, holder)
+            try:
+                _credential_phase(request, refresher, fence, result)
+            finally:
+                released = fence.release()
+            result["sweep_lease"] = {
+                "acquired": True,
+                "holder": holder,
+                "generation": taken.generation,
+                # True when another sweep took the lease over mid-pass. The
+                # pass stopped before its next exchange, and whatever it had
+                # not reached is the next tick's.
+                "lost": fence.lost,
+                "released": released,
+            }
         return result
+
+    def _credential_phase(
+        request: Request, refresher: Any, fence: LeaseFence, result: dict[str, Any]
+    ) -> None:
+        """Refresh credentials and poll usage, with `fence` asked before each exchange."""
+        # Credential refresh must never take the quota sweep down with it.
+        # The sweep is what un-parks throttled tenants; if a Secret Manager
+        # permission error could 500 this endpoint, one broken credential
+        # would stall every tenant's quota recovery.
+        # Two sweeps, reported separately. Sharing one try block meant a
+        # bug in either was indistinguishable from a failure of the other,
+        # and the first thing it hid was a missing method on the account
+        # path masking a perfectly good credential result.
+        result["credentials"] = _sweep_block(
+            lambda: refresher.sweep(
+                request.app.state.subscription_tenants(), keep_going=fence
+            ),
+            "subscription credential sweep failed",
+        )
+
+        # Every registered account, whether or not anything is using it.
+        # See quota_broker.accounts.due_for_refresh for why there is no
+        # "in use" filter.
+        #
+        # Its own summariser rather than `_sweep_block`, because this one
+        # WRITES: an account whose refresh token is gone is marked
+        # REAUTH_REQUIRED on its document, which is what stops the retry
+        # loop and what puts the dead account in front of an operator.
+        store = getattr(request.app.state, "account_store", None)
+        if store is None:
+            return
+        result["accounts"] = _sweep_account_pool(
+            refresher, store, datetime.now(timezone.utc), keep_going=fence
+        )
+
+        # Read what each account has LEFT. Separate from the refresh
+        # above and reported separately, for the reason the comment
+        # there gives: sharing a block makes a bug in one
+        # indistinguishable from a failure of the other.
+        #
+        # This is the caller `record_reading` never had. Without it
+        # every account reported full headroom forever, and the assign
+        # floor -- the check that stops an agent starting on an account
+        # with 2% left -- could never fire.
+        #
+        # Budgeted rather than exhaustive: the endpoint allows roughly
+        # five calls per five minutes and shares that with anything else
+        # polling the same accounts. See quota_broker.usagepoll. Under the
+        # lease too, because two concurrent rounds spend that budget twice.
+        poller = getattr(request.app.state, "usage_poller", None)
+        if poller is not None:
+            result["usage"] = _poll_block(
+                lambda: poller.poll_round(store.list(), keep_going=fence),
+                "account usage poll failed",
+            )
 
     return app
 
