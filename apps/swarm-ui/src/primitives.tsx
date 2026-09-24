@@ -173,9 +173,13 @@ export function Metric({
  * `is-warn`, `is-bad` and `is-paused` are verdicts and keep their hue and
  * texture. `ov-projected` is the one documented grey: a reading that is real
  * but not current (its window reset, or its poll is past the staleness
- * window), drawn a step quieter than a live bar and never in the amber or red
- * that says a ceiling is being approached NOW. It keeps the name it shipped
- * with, because `test_state_colour_discriminability.py` lists it BY NAME in
+ * window), drawn in `--text-faint` beside a live bar's `--text-dim` and never
+ * in the amber or red that says a ceiling is being approached NOW. A
+ * DIFFERENT grey, not a visibly different one: 1.27:1 in the dark theme and
+ * 1.11:1 in the light one (design-system.md §6.4), so in the light theme the
+ * `~` Overview writes before the figure is what tells a projected reading
+ * from a live one, not this fill. It keeps the name it shipped with, because
+ * `test_state_colour_discriminability.py` lists it BY NAME in
  * `DOCUMENTED_GREYS` and resolves it to a text grey. Anything else is the
  * monochrome default.
  *
