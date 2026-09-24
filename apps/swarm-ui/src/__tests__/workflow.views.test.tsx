@@ -495,6 +495,135 @@ describe('U2: the view modes', () => {
 })
 
 // ---------------------------------------------------------------------------
+// One step, one story: the node, the timeline, the table and the inspector
+// ---------------------------------------------------------------------------
+//
+// Four places draw a step's time, and each of these cases was a place where one
+// of them said something the others did not. The worker code behind each:
+//
+//   * `control.park()` transitions to PARKED and releases the lease; it never
+//     calls `record_attempt_end`, so a parked attempt keeps completed_at and
+//     exit_code null for good. Its missing end is NOT "still going".
+//   * `scheduler.store.create_attempt` writes the attempt at dispatch with
+//     started_at null; the worker fills it in `record_attempt_start`. So a
+//     LEASED or DISPATCHED task's newest attempt has no start because it has
+//     not started YET -- not because it was fenced, parked or failed.
+//   * a task cancelled while it was queued gets a completed_at and never a
+//     started_at. Nothing in that span was time run.
+
+function oneStepCard(
+  t: Task,
+  attempts: AttemptRow[],
+  view: 'graph' | 'timeline' | 'table' = 'table',
+  extra: { steps?: WorkflowStep[]; tasks?: Task[] } = {},
+) {
+  const w = workflow('wf_one', 900, [...(extra.steps ?? []), step('work', [], { task_id: t.id })])
+  const tasks = new Map<string, Task>([[t.id, t], ...(extra.tasks ?? []).map((x) => [x.id, x] as [string, Task])])
+  const load = async (): Promise<Result<{ attempts: AttemptRow[] }>> =>
+    attempts.length === 0
+      ? { status: 'empty', fetchedAt: T0 }
+      : { status: 'ok', data: { attempts }, fetchedAt: T0 }
+  return render(
+    <WorkflowCard
+      workflow={w}
+      taskById={tasks}
+      expanded
+      usage={{ kind: 'ready', usage: null }}
+      onToggle={() => {}}
+      openStages={{}}
+      onToggleStage={() => {}}
+      view={view}
+      loadAttempts={load}
+      reload={() => {}}
+    />,
+  )
+}
+
+async function inspectWork(t: Task, attempts: AttemptRow[]): Promise<HTMLElement> {
+  const { container } = oneStepCard(t, attempts)
+  pick(container as HTMLElement, 'work')
+  const i = inspector(container as HTMLElement)
+  await within(i).findByText(`attempt ${attempts.length} of ${attempts.length}`)
+  return i
+}
+
+describe('U2: a step reads the same in every view', () => {
+  it('does not call a parked attempt running in the inspector, where the node and the timeline say waiting', async () => {
+    // PARKED on QUOTA_EXHAUSTED two hours into its run. The node says
+    // `between attempts`, the timeline draws it waiting; the inspector said
+    // `2h 0m so far` (a measured, ticking cell) and `still running`.
+    const parked = task('t_park', 'PARKED', {
+      created_at: iso(-9000),
+      started_at: iso(-7200),
+      park_reason: 'QUOTA_EXHAUSTED',
+      updated_at: iso(-60),
+    })
+    const i = await inspectWork(parked, [
+      attempt(1, { task_id: 't_park', created_at: iso(-7300), started_at: iso(-7200), completed_at: null, exit_code: null }),
+    ])
+    const took = fact(i, 'took')
+    const exit = fact(i, 'exit')
+    expect(took, 'a parked attempt is timed as if it were still running').not.toMatch(/so far/)
+    expect(exit, 'a parked attempt is called running').not.toBe('still running')
+    expect(took).toMatch(/end not written/)
+    // And its figure is an absence, not a measurement.
+    const tookLi = [...i.querySelectorAll('.ctl-fact')].find((el) => el.querySelector('b')?.textContent === 'took')!
+    expect(tookLi.classList.contains('is-absent')).toBe(true)
+  })
+
+  it('says a dispatched attempt has not started YET, not that it never started', async () => {
+    // A GKE cold start: DISPATCHED, and the attempt the scheduler wrote at
+    // dispatch carries started_at null until the container records it.
+    const dispatched = task('t_disp', 'DISPATCHED', { created_at: iso(-120) })
+    const i = await inspectWork(dispatched, [
+      attempt(1, { task_id: 't_disp', created_at: iso(-60), started_at: null, completed_at: null, exit_code: null }),
+    ])
+    expect(fact(i, 'took')).toBe('not started yet')
+    expect(fact(i, 'exit'), 'an attempt that has not started is called running').not.toBe('still running')
+    expect(i.textContent).not.toMatch(/never started/)
+  })
+
+  it('still times a running attempt, and only that one, as "so far"', async () => {
+    const running = task('t_run', 'RUNNING', { created_at: iso(-600), started_at: iso(-300), attempt_count: 2 })
+    const i = await inspectWork(running, [
+      attempt(1, { task_id: 't_run', created_at: iso(-590), started_at: iso(-580), completed_at: null, exit_code: null }),
+      attempt(2, { task_id: 't_run', created_at: iso(-310), started_at: iso(-300), completed_at: null, exit_code: null }),
+    ])
+    expect(fact(i, 'took')).toBe('5m 0s so far')
+    expect(fact(i, 'exit')).toBe('still running')
+    // The EARLIER attempt of the same running task stopped without an end: it
+    // is over, whatever the task is doing now.
+    fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
+    expect(fact(i, 'took')).not.toMatch(/so far/)
+    expect(fact(i, 'exit')).not.toBe('still running')
+  })
+
+  it('says a step cancelled before it started never started, in the graph, the timeline and the table alike', () => {
+    // Cancelled while queued: a completed_at, no started_at. The node said
+    // `ran 3m 0s`; the table said `not started`; the timeline drew no run.
+    const plan = task('t_first', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-590), completed_at: iso(-500) })
+    const dropped = task('t_drop', 'CANCELLED', { created_at: iso(-480), completed_at: iso(-300) })
+    const { container } = oneStepCard(dropped, [], 'graph', {
+      steps: [step('first', [], { task_id: 't_first' })],
+      tasks: [plan],
+    })
+    const root = container as HTMLElement
+    const node = nodeNamed(root, 'work').querySelector('.node-dur')!
+    expect(node.textContent, 'the node claims run time nothing recorded').not.toMatch(/^ran/)
+    expect(node.textContent).toBe('never started')
+
+    const seg = root.querySelector('.wf-viewbar .ctl-seg') as HTMLElement
+    fireEvent.click(within(seg).getByText('Timeline'))
+    const t = track(root, 'work')
+    expect(t.querySelector('.wf-tl-span.is-ran, .wf-tl-span.is-running')).toBeNull()
+    expect(t.textContent).toContain('never started')
+
+    fireEvent.click(within(seg).getByText('Table'))
+    expect(cell(root, 'work', 'ran').textContent).toBe('never started')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The node's own duration line agrees with the timeline
 // ---------------------------------------------------------------------------
 
@@ -629,6 +758,93 @@ describe('U3: an edge that carries a file', () => {
     expect(cell(cardOf('wf_new'), 'scan', 'inputs').textContent).toBe('none')
   })
 
+  it('does not call a file "not reported" when the report holds an entry it could not read', () => {
+    // `build` declared `plan.md` from `plan`, and its result's only staged
+    // entry has no filename -- counted as malformed. That entry may BE plan.md.
+    // The table said `1 unreadable`; the graph said "its result lists no such
+    // file", which the result does not say.
+    const w = workflow('wf_bad', 600, [
+      step('plan', [], { task_id: 'tp' }),
+      step('build', ['plan'], { task_id: 'tb', input_from: { plan: 'plan.md' } }),
+    ])
+    const tasks = new Map<string, Task>([
+      ['tp', task('tp', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      [
+        'tb',
+        task('tb', 'SUCCEEDED', {
+          started_at: iso(-490),
+          completed_at: iso(-300),
+          result_summary: { staged_inputs: [{ task_id: 'tp', path: 'plan.md', bytes: 2048 }] },
+        }),
+      ],
+    ])
+    const { container } = render(<Card w={w} tasks={tasks} />)
+    const file = nodeNamed(container, 'build').querySelector<HTMLElement>('.node-dep-file')!
+    expect(file.getAttribute('title'), 'the graph says the result lists no such file').not.toMatch(/lists no such file/)
+    expect(file.getAttribute('title')).toMatch(/could not read/)
+    // And the count reaches the card in every view, not only the table cell.
+    const mark = container.querySelector<HTMLElement>('.wf-viewbar .wf-unreadable')
+    expect(mark, 'the unreadable entry is counted only in the table').toBeTruthy()
+    expect(mark!.textContent).toBe('1 input unreadable')
+    expect(mark!.getAttribute('aria-label')).toMatch(/build/)
+  })
+
+  it('draws a collapsed stage’s edge as the weakest of the edges it stands for, whichever child is drawn last', () => {
+    // Every edge into a COLLAPSED stage attaches to the band's centre, so all
+    // thirteen share one path, and each group's halo paints over the ones
+    // before it. The band edge used to show the LAST child's kind as the
+    // whole stage's. Four orders of the same thirteen children:
+    type Kid = 'running' | 'staged' | 'order'
+    const fan = (kids: Kid[]) => {
+      const steps: WorkflowStep[] = [step('plan', [], { task_id: 'tp' })]
+      const tasks = new Map<string, Task>([
+        ['tp', task('tp', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      ])
+      kids.forEach((k, n) => {
+        const id = `impl-${n + 1}`
+        steps.push(step(id, ['plan'], { task_id: `t_${id}`, input_from: k === 'order' ? {} : { plan: 'plan.md' } }))
+        tasks.set(
+          `t_${id}`,
+          k === 'running'
+            ? task(`t_${id}`, 'RUNNING', { started_at: iso(-400) })
+            : task(`t_${id}`, 'SUCCEEDED', {
+                started_at: iso(-400),
+                completed_at: iso(-100),
+                result_summary:
+                  k === 'staged'
+                    ? { staged_inputs: [{ task_id: 'tp', filename: 'plan.md', path: 'plan.md', bytes: 10 }] }
+                    : {},
+              }),
+        )
+      })
+      steps.push(step('report', kids.map((_, n) => `impl-${n + 1}`)))
+      return { w: workflow('wf_fan', 600, steps), tasks }
+    }
+    const bandEdges = (kids: Kid[]) => {
+      const { w, tasks } = fan(kids)
+      const { container, unmount } = render(<Card w={w} tasks={tasks} />)
+      expect(container.querySelector('.wf-band'), 'the thirteen-wide stage is not collapsed').toBeTruthy()
+      const into = [...container.querySelectorAll('.wf-link')].filter((g) =>
+        (g.getAttribute('data-edge') ?? '').startsWith('plan->'),
+      )
+      expect(into).toHaveLength(13)
+      const classes = new Set(into.map((g) => g.getAttribute('class')))
+      unmount()
+      return classes
+    }
+    const twelve = (k: Kid): Kid[] => Array.from({ length: 12 }, () => k)
+
+    // Twelve still running, the last one staged: ONE of thirteen reported.
+    expect(bandEdges([...twelve('running'), 'staged'])).toEqual(new Set(['wf-link is-data is-declared']))
+    // Twelve staged, the last still running: still not every one reported.
+    expect(bandEdges([...twelve('staged'), 'running'])).toEqual(new Set(['wf-link is-data is-declared']))
+    // Twelve that take nothing and one that takes a file: it is a data edge,
+    // and not every member of it reported one.
+    expect(bandEdges([...twelve('order'), 'staged'])).toEqual(new Set(['wf-link is-data is-declared']))
+    // All thirteen reported: then, and only then, the stage's edge is solid.
+    expect(bandEdges([...twelve('staged'), 'staged'])).toEqual(new Set(['wf-link is-data is-staged']))
+  })
+
   it('marks, on the open card, a staged input no edge can carry', async () => {
     await landed()
     chooseBoard('Graph')
@@ -675,7 +891,9 @@ describe('U5: scrubbing', () => {
     // Newest attempt first, because that is the one a reader asked about.
     await within(i).findByText('attempt 3 of 3')
     expect(fact(i, 'gen')).toBe('3')
-    expect(within(i).getByRole('button', { name: 'Next attempt' })).toHaveProperty('disabled', true)
+    // AT ITS END, NOT DISABLED: `aria-disabled`, so the control keeps focus and
+    // the arrow keys keep working (see the next test).
+    expect(within(i).getByRole('button', { name: 'Next attempt' }).getAttribute('aria-disabled')).toBe('true')
 
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
     expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
@@ -686,7 +904,10 @@ describe('U5: scrubbing', () => {
     expect(group).toBeTruthy()
     fireEvent.keyDown(group!, { key: 'ArrowLeft' })
     expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
-    expect(within(i).getByRole('button', { name: 'Previous attempt' })).toHaveProperty('disabled', true)
+    expect(within(i).getByRole('button', { name: 'Previous attempt' }).getAttribute('aria-disabled')).toBe('true')
+    // Pressing a control at its end does nothing.
+    fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
+    expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
     // And the unmeasured cost of attempt 1 is a word, not $0.00.
     expect(fact(i, 'cost')).toBe('not reported')
     fireEvent.keyDown(group!, { key: 'ArrowRight' })
@@ -699,10 +920,9 @@ describe('U5: scrubbing', () => {
     pick(cardOf('wf_new'), 'plan')
     const first = inspector(cardOf('wf_new'))
     expect(within(first).getByText('workflow 1 of 3')).toBeTruthy()
-    expect(within(first).getByRole('button', { name: 'Same step, newer workflow' })).toHaveProperty(
-      'disabled',
-      true,
-    )
+    expect(
+      within(first).getByRole('button', { name: 'Same step, newer workflow' }).getAttribute('aria-disabled'),
+    ).toBe('true')
 
     fireEvent.click(within(first).getByRole('button', { name: 'Same step, older workflow' }))
     // The selection MOVED: it is now wf_mid's `plan`, inspected in wf_mid's card.
@@ -720,10 +940,39 @@ describe('U5: scrubbing', () => {
     fireEvent.keyDown(group!, { key: 'ArrowRight' })
     const third = inspector(cardOf('wf_old'))
     expect(within(third).getByText('workflow 3 of 3')).toBeTruthy()
-    expect(within(third).getByRole('button', { name: 'Same step, older workflow' })).toHaveProperty(
-      'disabled',
-      true,
-    )
+    const older = within(third).getByRole('button', { name: 'Same step, older workflow' })
+    expect(older.getAttribute('aria-disabled')).toBe('true')
+    // FOCUS LANDS ON THE CONTROL THE READER WAS PRESSING, even at its end. It
+    // used to fall back to the other button, so a reader holding ArrowRight
+    // found themselves on "newer" with nothing said.
+    expect(document.activeElement).toBe(older)
+    // And from there the other direction still works.
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' })
+    expect(within(inspector(cardOf('wf_mid'))).getByText('workflow 2 of 3')).toBeTruthy()
+  })
+
+  it('keeps focus on a scrub control that reaches its end, so the arrow keys keep working', async () => {
+    await landed()
+    chooseBoard('Table')
+    const c = cardOf('wf_new')
+    pick(c, 'plan')
+    const i = inspector(c)
+    await within(i).findByText('attempt 3 of 3')
+    const prev = within(i).getByRole('button', { name: 'Previous attempt' })
+    prev.focus()
+    expect(document.activeElement).toBe(prev)
+    fireEvent.keyDown(prev, { key: 'ArrowLeft' })
+    fireEvent.keyDown(prev, { key: 'ArrowLeft' })
+    expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
+    // A BROWSER TAKES FOCUS OFF A CONTROL THE MOMENT IT BECOMES `disabled`
+    // (the HTML focus fixup rule), and from <body> no arrow key reaches the
+    // scrubber. jsdom does not run that rule, so this asks the question it can
+    // answer: at its end, can the control hold focus at all?
+    ;(document.activeElement as HTMLElement).blur()
+    prev.focus()
+    expect(document.activeElement, 'the control at its end cannot hold focus').toBe(prev)
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
+    expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
   })
 
   it('says a step with no task has no attempt to scrub, rather than showing none', async () => {
