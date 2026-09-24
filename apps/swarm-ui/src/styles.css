@@ -8351,3 +8351,283 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    another lane has already decided about — it only reaches the ones nobody
    has. */
 :where(.app a[href]):focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* -------------------------------------------------------------------------- */
+/* Workflow views: Timeline, Table, data edges and the inspector               */
+/* -------------------------------------------------------------------------- */
+/* redesign-v2 §2.3, "one object, several view modes": an open workflow is
+   drawn as a Graph, a Timeline or a Table, chosen per card on `.wf-viewbar` or
+   for the whole board on the Rows / Graph / Timeline / Table control. Every
+   block below is new and APPENDED, so nothing earlier in this sheet changes
+   meaning; the one earlier adjacency rule this interacts with
+   (`.wf-dispatch + .wf-zoom`) stops matching because the view strip now sits
+   between the two, and its gap is restated here against the strip. */
+
+/* THE CARD'S OWN VIEW STRIP. Wraps rather than scrolling at 390px, for the
+   reason `.wf-zoom` gives: a chrome row with its own scrollbar above a canvas
+   with one is two scrollbars arguing. */
+.wf-viewbar {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s3);
+  flex-wrap: wrap;
+}
+.wf-view-seg,
+.wf-strays { flex: none; }
+.wf-dispatch + .wf-viewbar { margin-top: var(--ctl-s3); }
+.wf-viewbar + .wf-zoom,
+.wf-viewbar + .wf-canvas-wrap,
+.wf-viewbar + .wf-timeline,
+.wf-viewbar + .wf-table { margin-top: var(--ctl-s3); }
+
+/* DATA EDGES (viz #1, #9). An ORDER edge keeps the canvas's existing 1.5px
+   `--line` stroke. A DATA edge -- the child stages a file out of the parent --
+   is heavier and one step darker, and a data edge whose file nothing has yet
+   REPORTED arriving is dashed: the dash is this sheet's mark for "not a
+   measurement" wherever it appears, and here it is exactly that. Weight and
+   dash, not hue, so a greyscale screenshot keeps all three apart. The halo
+   widens with the stroke so the clearance on each side stays 2px. */
+.wf-link.is-data .wf-edge { stroke: var(--text-dim); stroke-width: 2.5; }
+.wf-link.is-data .wf-edge-halo { stroke-width: 6.5; }
+.wf-link.is-declared .wf-edge { stroke-dasharray: 6 4; }
+
+/* The `(plan.md)` on a node's dependency line. Staged: one step brighter than
+   the line around it, because it is a reported fact. Declared and not yet
+   reported: the dashed underline every absent figure on this canvas wears.
+   Neither adds height -- `heightOf` measured the characters, not the rule. */
+.node-dep-file.is-staged { color: var(--text-dim); }
+.node-dep-file.is-declared {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 2px;
+}
+
+/* The step the inspector is on. Three sides only, so the left accent keeps the
+   state tone it already carries -- the selection is not a state. */
+.node.is-picked {
+  border-top-color: var(--text);
+  border-right-color: var(--text);
+  border-bottom-color: var(--text);
+}
+
+/* SELECTING A STEP. A toggle, not a link: the row's name fills the inspector
+   and the inspector carries the link to the run. Hueless when pressed, like
+   `.ctl-seg` -- a surface step and a border, because a selection is not a
+   state and must not borrow a state's colour. */
+.wf-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  min-height: 26px;
+  padding: 2px var(--ctl-s2);
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  background: none;
+  color: var(--text);
+  font: 600 var(--t-body)/var(--lh-body) var(--mono);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.wf-pick[aria-pressed='true'] { background: var(--surface-2); border-color: var(--line); }
+.wf-pick:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+
+/* THE TIMELINE (viz #2).
+   ---------------------------------------------------------------------------
+   One grid: the step names in a column as wide as the longest of them
+   (`max-content` -- a step id is never ellipsed, for the reason B17 gives: an
+   ellipsed id cannot be pasted anywhere), and the tracks taking the rest.
+   Every position inside a track is a PERCENTAGE of it, computed in
+   `stepviews.ts`, so nothing here is measured and the view reads the same at
+   390px and 1920. */
+.wf-timeline {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--ctl-s3);
+  row-gap: var(--ctl-s1);
+  align-items: center;
+}
+.wf-tl-scale {
+  position: relative;
+  min-height: calc(var(--t-micro) * var(--lh-micro));
+}
+.wf-tl-tick {
+  position: absolute;
+  top: 0;
+  padding-left: var(--ctl-s1);
+  border-left: 1px solid var(--line);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+/* The last label hangs LEFT of its line, so an axis ending at 100% does not
+   push its final label past the card's edge. */
+.wf-tl-tick:last-child:not(:first-child) {
+  transform: translateX(-100%);
+  padding-left: 0;
+  padding-right: var(--ctl-s1);
+  border-left: 0;
+  border-right: 1px solid var(--line);
+}
+.wf-tl-track {
+  position: relative;
+  min-height: var(--row-h);
+  min-width: 0;
+}
+/* A SPAN. `min-width: 2px` because a measured zero -- a step that started and
+   finished inside one second -- is a measurement and must be a mark, not
+   nothing. */
+.wf-tl-span {
+  position: absolute;
+  top: var(--ctl-s2);
+  bottom: var(--ctl-s2);
+  min-width: 2px;
+  box-sizing: border-box;
+  border-radius: var(--track-radius);
+}
+/* TIME WAITED IS AN OUTLINE, in every state: waiting is not a verdict on the
+   step, and a filled bar would read as work. */
+.wf-tl-span.is-waited,
+.wf-tl-span.is-waiting { border: 1px solid var(--warn-ink); }
+/* TIME RUN IS FILLED, and a finished run takes the tone the node's accent
+   takes -- the one place on this view the outcome is coloured. */
+.wf-tl-span.is-ran { background: var(--text-faint); }
+.wf-tl-span.is-ran.is-ok { background: var(--ok); }
+.wf-tl-span.is-ran.is-bad { background: var(--bad); }
+.wf-tl-span.is-running {
+  background: var(--info);
+  animation: pulse 2s ease-in-out infinite;
+}
+/* STILL GOING: no end cap. The right edge is dashed, which is the shape of
+   "no end recorded", and it survives `prefers-reduced-motion` stopping the
+   pulse. */
+.wf-tl-span.is-open { border-right: 2px dashed var(--text); }
+/* NOW, where every open span ends. */
+.wf-tl-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--info);
+}
+/* THE WORD WHERE A BAR WOULD BE: `not started`, `task unread`,
+   `end not recorded`. A word on a dashed rule, like every absent figure on the
+   board -- never an empty track, which would read as "nothing to see". */
+.wf-tl-mark {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding-left: var(--ctl-s1);
+  border-bottom: 1px dashed currentColor;
+  font: italic var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--ctl-absent);
+  white-space: nowrap;
+}
+.wf-tl-mark.is-unread { color: var(--warn); }
+/* Past the middle of the track the word hangs left of where the drawn time
+   ends, so it cannot run off the card. */
+.wf-tl-mark.is-end {
+  transform: translate(-100%, -50%);
+  padding-left: 0;
+  padding-right: var(--ctl-s1);
+}
+
+/* THE TABLE. `.ctl-table` draws it; these are only its column-head controls
+   and its cells' absence treatment, which matches the node's. */
+.wf-sort {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.wf-sort:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.wf-sort-dir { color: var(--text-dim); }
+.wf-cell.is-absent {
+  color: var(--ctl-absent);
+  font-style: italic;
+  border-bottom: 1px dashed currentColor;
+}
+.wf-cell.is-none { color: var(--text-faint); }
+.wf-cell-state { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
+.wf-table .node-reading { display: inline-block; vertical-align: middle; }
+.wf-table .wf-pick { min-height: 0; padding: 0 var(--ctl-s1); }
+
+/* THE INSPECTOR. One panel under the view, in the card of the workflow the
+   picked step belongs to: a head, and the two scrubbers. */
+.wf-inspect {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ctl-s2);
+  margin-top: var(--ctl-s3);
+  padding: var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+}
+.wf-inspect-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  flex-wrap: wrap;
+}
+.wf-inspect-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
+.wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-inspect-run { margin-left: auto; font: var(--t-meta)/var(--lh-meta) var(--font); }
+.wf-inspect-close {
+  min-width: 28px;
+  min-height: 26px;
+  padding: 0 var(--ctl-s2);
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  background: none;
+  color: var(--text-dim);
+  font: var(--t-body)/var(--lh-body) var(--font);
+  cursor: pointer;
+}
+.wf-inspect-close:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-scrub {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  flex-wrap: wrap;
+}
+.wf-scrub-key { min-width: 9ch; }
+.wf-scrub-btn {
+  min-width: 28px;
+  min-height: 26px;
+  padding: 0 var(--ctl-s2);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: none;
+  color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  cursor: pointer;
+}
+.wf-scrub-btn:disabled { cursor: default; opacity: .45; }
+.wf-scrub-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-scrub-pos {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* Every occurrence of the step, in scrub order, in its own state's
+   silhouette; this one ringed. */
+.wf-scrub-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wf-scrub-strip li {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-pill);
+}
+.wf-scrub-strip li.is-here { border-color: var(--text); }
+/* The attempt's figures take a line of their own under its controls. */
+.wf-inspect-facts { flex-basis: 100%; }

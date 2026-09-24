@@ -9,7 +9,10 @@ import {
 } from './api'
 import {
   autoTier,
+  depItems,
   edgePath,
+  edgeProvenance,
+  inputsByStep,
   layoutOf,
   levelsOf,
   profileMix,
@@ -18,13 +21,16 @@ import {
   stepDuration,
   workflowSpend,
   CANVAS_COLUMN,
+  DECLARED_WORDS,
   TIER_DROPS,
   ZOOM_TIERS,
   type DagBand,
   type DagLayout,
   type DagShape,
+  type EdgeProvenance,
   type StageCensus,
   type StepDuration,
+  type StepInputs,
   type WorkflowSpend,
   type ZoomTier,
 } from './dag'
@@ -48,8 +54,19 @@ import {
 import { workflowDispatchOf } from './Dispatch'
 import { HelpCard } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
+import {
+  axisOf,
+  sameStepAcross,
+  stateRankOf,
+  stepOrder,
+  stepTimes,
+  VIEW_LABEL,
+  WORKFLOW_VIEWS,
+  type WorkflowView,
+} from './stepviews'
 import { StopRun } from './StopRun'
 import {
+  bytesLabel,
   consequenceOf,
   dispatchOf,
   stateGlyph,
@@ -58,6 +75,7 @@ import {
   type StepState,
   type Task,
   type TaskDispatch,
+  type TaskState,
   type Tone,
   type Workflow,
   type WorkflowDrift,
@@ -65,6 +83,17 @@ import {
   workflowHeaderState,
   TERMINAL_STATES,
 } from './types'
+import {
+  StepInspector,
+  StrayMark,
+  ViewControl,
+  WorkflowTable,
+  WorkflowTimeline,
+  type AttemptLoader,
+  type ScrubFocus,
+  type SiblingRef,
+  type StepRowModel,
+} from './WorkflowViews'
 
 /**
  * The workflow board. TWO FORMS OF ONE THING, and the collapsed one is the
@@ -98,6 +127,18 @@ import {
  * steps with no state field at all; it only exists on the task a step created.
  * See `stepState` in types.ts for the three ways that join can come up empty
  * and why they must not render alike.
+ *
+ * AND AN OPEN WORKFLOW HAS THREE DRAWINGS NOW, not one (redesign-v2 §2.3, "one
+ * object, several view modes"). The canvas above is the GRAPH; the TIMELINE
+ * puts the same steps on one wall-clock axis with time waited drawn apart from
+ * time run; the TABLE puts them in rows sortable by duration, cost, attempts and
+ * state. The board's control reads Rows / Graph / Timeline / Table, and each
+ * open card has its own Graph / Timeline / Table. Both new views are in
+ * `WorkflowViews.tsx` and their arithmetic in `stepviews.ts`; every row is built
+ * HERE, from the node's own readers, so a step reads the same in all three.
+ * Picking a step in either new view opens the INSPECTOR under it, whose two
+ * scrubbers walk the step's attempts and the same step across the board's
+ * other workflows.
  *
  * WHERE THE SENTENCES WENT (design-system.md §8). This screen carried three
  * paragraphs of standing explanation -- a 44-word partial-read banner, a
@@ -148,18 +189,42 @@ export function WorkflowsScreen() {
   // the chain to pay for the fan.
   const [zooms, setZooms] = useState<Record<string, ZoomChoice>>({})
 
+  // WHICH VIEW EACH OPEN WORKFLOW IS DRAWN IN, keyed by workflow id, and up here
+  // for the reason `zooms` is. An absent entry means "whatever the board says":
+  // the board's own mode when it names a view, and the graph under Rows, which
+  // is what opening a row has always shown.
+  const [views, setViews] = useState<Record<string, WorkflowView>>({})
+
+  // THE PICKED STEP, ONE FOR THE WHOLE BOARD. It is board-wide rather than per
+  // card because the second scrubber MOVES it between cards -- the same step in
+  // an older workflow is a different workflow's step -- and a per-card store
+  // would leave the old card still claiming to inspect something. `focus` says
+  // which scrub control the inspector should take focus on when it arrives in
+  // a new card, so a reader holding the key keeps walking.
+  const [pick, setPick] = useState<PickedStep | null>(null)
+
   // A board-wide instruction overrules the per-card ones. Keeping stale
   // overrides would make "Collapse all" leave three cards open with no way to
-  // tell why.
+  // tell why -- and, since the views arrived, would make "Table" leave two
+  // cards still drawing graphs.
   //
   // IT DOES NOT TOUCH `stages`. Rows/Graph is an instruction about WORKFLOWS;
   // a stage is a thing inside one, and throwing away which stages a reader had
   // opened because they toggled the board's own default would be the same
-  // "it re-collapsed under me" defect arriving by a different route.
+  // "it re-collapsed under me" defect arriving by a different route. Nor does
+  // it put the picked step down: what a reader is inspecting is not a layout.
   const chooseMode = useCallback((m: BoardMode) => {
     setMode(m)
     setOpen({})
+    setViews({})
   }, [])
+
+  const chooseView = useCallback(
+    (id: string, v: WorkflowView) => setViews((s) => ({ ...s, [id]: v })),
+    [],
+  )
+
+  const openCard = useCallback((id: string) => setOpen((o) => ({ ...o, [id]: true })), [])
 
   const toggle = useCallback(
     (id: string, expanded: boolean) => setOpen((o) => ({ ...o, [id]: !expanded })),
@@ -202,11 +267,24 @@ export function WorkflowsScreen() {
           toggleStage={toggleStage}
           zooms={zooms}
           chooseZoom={chooseZoom}
+          views={views}
+          chooseView={chooseView}
+          pick={pick}
+          choosePick={setPick}
+          openCard={openCard}
           reload={reload}
         />
       )}
     </Screen>
   )
+}
+
+/** The step the inspector is on, and how it got there. */
+interface PickedStep {
+  readonly workflowId: string
+  readonly stepId: string
+  /** Set when the selection MOVED into a card, so focus can follow it; cleared once it has. */
+  readonly focus: ScrubFocus
 }
 
 /**
@@ -227,6 +305,11 @@ function Board({
   toggleStage,
   zooms,
   chooseZoom,
+  views,
+  chooseView,
+  pick,
+  choosePick,
+  openCard,
   reload,
 }: {
   board: WorkflowBoard
@@ -238,8 +321,58 @@ function Board({
   toggleStage: (key: string, expanded: boolean) => void
   zooms: Record<string, ZoomChoice>
   chooseZoom: (id: string, choice: ZoomChoice) => void
+  views: Record<string, WorkflowView>
+  chooseView: (id: string, v: WorkflowView) => void
+  pick: PickedStep | null
+  choosePick: (p: PickedStep | null) => void
+  openCard: (id: string) => void
   reload: () => void
 }) {
+  // THE SAME STEP ACROSS THE BOARD, newest workflow first, for the picked
+  // step's id -- the second scrubber's whole order, decided once here because
+  // only the board holds every workflow. Each occurrence carries its own
+  // state's mark, joined through the same `stepState` the nodes use.
+  const siblings = useMemo(() => {
+    if (pick === null) return { refs: [] as SiblingRef[], ids: [] as string[] }
+    const found = sameStepAcross(board.workflows, pick.stepId)
+    return {
+      ids: found.map((f) => f.workflowId),
+      refs: found.map((f) => {
+        const p = present(stepState(f.step, board.taskById))
+        return { workflowId: f.workflowId, dot: dotClass({ tone: p.tone, derived: p.derived }), word: p.word }
+      }),
+    }
+  }, [board.workflows, board.taskById, pick])
+
+  const onPick = useCallback(
+    (workflowId: string, stepId: string) =>
+      choosePick(
+        pick !== null && pick.workflowId === workflowId && pick.stepId === stepId
+          ? null
+          : { workflowId, stepId, focus: null },
+      ),
+    [pick, choosePick],
+  )
+
+  // MOVING THE SELECTION TO ANOTHER WORKFLOW OPENS THAT WORKFLOW. Under Rows its
+  // card may be closed, and an inspector that moved into a closed card would be
+  // a selection nobody can see.
+  const onSibling = useCallback(
+    (delta: -1 | 1) => {
+      if (pick === null) return
+      const at = siblings.ids.indexOf(pick.workflowId)
+      const target = siblings.ids[at + delta]
+      if (at < 0 || target === undefined) return
+      openCard(target)
+      choosePick({ workflowId: target, stepId: pick.stepId, focus: delta < 0 ? 'newer' : 'older' })
+    },
+    [pick, siblings, openCard, choosePick],
+  )
+
+  const onFocused = useCallback(() => {
+    if (pick !== null && pick.focus !== null) choosePick({ ...pick, focus: null })
+  }, [pick, choosePick])
+
   // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
   // and caps; the order decides which steps fall inside the cap, so it is the
   // board's own order rather than a set's iteration order.
@@ -314,27 +447,45 @@ function Board({
         </span>
       </div>
       <div className="wf-board">
-        {board.workflows.map((w) => (
-          <WorkflowCard
-            key={w.workflow_id}
-            workflow={w}
-            taskById={board.taskById}
-            expanded={open[w.workflow_id] ?? mode === 'full'}
-            onToggle={toggle}
-            openStages={openStages}
-            onToggleStage={toggleStage}
-            zoom={zooms[w.workflow_id] ?? 'auto'}
-            onZoom={chooseZoom}
-            reload={reload}
-            usage={usage}
-          />
-        ))}
+        {board.workflows.map((w) => {
+          // The selection, only when it is in THIS workflow. Every other card
+          // gets null and draws no inspector.
+          const mine = pick !== null && pick.workflowId === w.workflow_id ? pick : null
+          return (
+            <WorkflowCard
+              key={w.workflow_id}
+              workflow={w}
+              taskById={board.taskById}
+              expanded={open[w.workflow_id] ?? mode !== 'collapsed'}
+              onToggle={toggle}
+              openStages={openStages}
+              onToggleStage={toggleStage}
+              zoom={zooms[w.workflow_id] ?? 'auto'}
+              onZoom={chooseZoom}
+              view={views[w.workflow_id] ?? (mode === 'collapsed' ? 'graph' : mode)}
+              onView={chooseView}
+              picked={mine === null ? null : mine.stepId}
+              onPick={onPick}
+              siblings={mine === null ? undefined : siblings.refs}
+              onSibling={onSibling}
+              scrubFocus={mine === null ? null : mine.focus}
+              onScrubFocused={onFocused}
+              reload={reload}
+              usage={usage}
+            />
+          )
+        })}
       </div>
     </>
   )
 }
 
-type BoardMode = 'collapsed' | 'full'
+/**
+ * `collapsed` is Rows: every workflow a one-line bar. The other three open every
+ * workflow in that view. It was `'full'` for the graph when there was only one
+ * way to draw an open workflow.
+ */
+type BoardMode = 'collapsed' | WorkflowView
 
 /**
  * The board-wide default, as `.ctl-seg` rather than two standalone pills.
@@ -347,16 +498,21 @@ type BoardMode = 'collapsed' | 'full'
  *
  * The labels are one word each. "Collapsed"/"Full DAG" named the mechanism;
  * `Rows`/`Graph` name what you get, which is the thing being chosen.
+ *
+ * TIMELINE AND TABLE SIT BESIDE THEM (redesign-v2 §2.3, "one object, several
+ * view modes"). Same object, different question: the graph is what depended on
+ * what, the timeline is where the time went, the table is which step is the
+ * outlier. Built from `WORKFLOW_VIEWS` so a view added there gets a segment
+ * here and on every card's own control at once.
  */
 function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardMode) => void }) {
+  const options: ReadonlyArray<readonly [BoardMode, string]> = [
+    ['collapsed', 'Rows'],
+    ...WORKFLOW_VIEWS.map((v) => [v, VIEW_LABEL[v]] as const),
+  ]
   return (
-    <div className="ctl-seg" role="group" aria-label="How much of each workflow to show">
-      {(
-        [
-          ['collapsed', 'Rows'],
-          ['full', 'Graph'],
-        ] as const
-      ).map(([value, label]) => (
+    <div className="ctl-seg" role="group" aria-label="How to show each workflow">
+      {options.map(([value, label]) => (
         <button
           key={value}
           type="button"
@@ -564,6 +720,15 @@ export function WorkflowCard({
   onToggleStage,
   zoom = 'auto',
   onZoom,
+  view: viewProp,
+  onView,
+  picked: pickedProp,
+  onPick,
+  siblings,
+  onSibling,
+  scrubFocus = null,
+  onScrubFocused,
+  loadAttempts,
   reload,
 }: {
   workflow: Workflow
@@ -588,6 +753,26 @@ export function WorkflowCard({
    */
   zoom?: ZoomChoice
   onZoom?: (id: string, choice: ZoomChoice) => void
+  /**
+   * How this workflow is drawn once open. OPTIONAL, and every one of the props
+   * below it is too, for the reason `zoom` is: the card is exported and a caller
+   * with no opinion must not have to state one. A caller that passes no
+   * `onView` (or no `onPick`) gets a card that keeps the choice itself -- NOT a
+   * control that does nothing, which would be a dead button on exactly the
+   * surface that offered it.
+   */
+  view?: WorkflowView
+  onView?: (id: string, v: WorkflowView) => void
+  /** The picked step's id when the board's selection is in this workflow. */
+  picked?: string | null
+  onPick?: (workflowId: string, stepId: string) => void
+  /** The picked step's occurrences across the board, newest first. */
+  siblings?: readonly SiblingRef[]
+  onSibling?: (delta: -1 | 1) => void
+  scrubFocus?: ScrubFocus
+  onScrubFocused?: () => void
+  /** The attempt read the inspector uses. Injectable for the tests; the API's otherwise. */
+  loadAttempts?: AttemptLoader
   reload: () => void
 }) {
   const roll = rollupLine(workflow)
@@ -595,6 +780,18 @@ export function WorkflowCard({
   const spend = workflowSpend(workflow.steps, taskById)
   const header = workflowHeaderState(workflow)
   const bodyId = `wf-body-${workflow.workflow_id}`
+
+  // THE LOCAL FALLBACKS, used only when the caller holds no store. The board
+  // always passes both, so on the real screen these are never read.
+  const [localView, setLocalView] = useState<WorkflowView>(viewProp ?? 'graph')
+  const [localPick, setLocalPick] = useState<string | null>(null)
+  const view: WorkflowView = onView !== undefined ? (viewProp ?? 'graph') : localView
+  const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
+  const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
+  const pickStep = (stepId: string) =>
+    onPick !== undefined
+      ? onPick(workflow.workflow_id, stepId)
+      : setLocalPick((p) => (p === stepId ? null : stepId))
 
   return (
     <section className={`section wf-card${expanded ? ' is-open' : ''}`}>
@@ -682,16 +879,50 @@ export function WorkflowCard({
         <div className="wf-body" id={bodyId}>
           <StateDrift drift={workflow.drift} />
           <WorkflowDispatchLine workflow={workflow} taskById={taskById} />
-          <WorkflowGraph
-            workflow={workflow}
-            taskById={taskById}
-            usage={usage}
-            openStages={openStages}
-            onToggleStage={onToggleStage}
-            zoom={zoom}
-            onZoom={onZoom}
-            reload={reload}
-          />
+          {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
+              and the one mark that belongs to the workflow rather than to any
+              view -- staged files no edge can carry. Chrome, no prose (§6.11). */}
+          <div className="wf-viewbar">
+            <ViewControl view={view} onChoose={chooseView} />
+            <StrayMark strays={straysOf(workflow, taskById)} />
+          </div>
+          {view === 'graph' ? (
+            <WorkflowGraph
+              workflow={workflow}
+              taskById={taskById}
+              usage={usage}
+              openStages={openStages}
+              onToggleStage={onToggleStage}
+              zoom={zoom}
+              onZoom={onZoom}
+              picked={picked}
+              reload={reload}
+            />
+          ) : (
+            <WorkflowSteps
+              workflow={workflow}
+              taskById={taskById}
+              usage={usage}
+              view={view}
+              picked={picked}
+              onPick={pickStep}
+            />
+          )}
+          {picked !== null && (
+            <InspectorSlot
+              key={`${workflow.workflow_id}/${picked}`}
+              workflow={workflow}
+              stepId={picked}
+              taskById={taskById}
+              usage={usage}
+              siblings={siblings}
+              onSibling={onSibling}
+              focus={scrubFocus}
+              onFocused={onScrubFocused}
+              onClose={() => pickStep(picked)}
+              loadAttempts={loadAttempts}
+            />
+          )}
         </div>
       )}
     </section>
@@ -1002,6 +1233,205 @@ function WorkflowDispatch({
           six -- which is the topic's claim computed for THIS workflow rather
           than described in general. */}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The timeline, the table and the inspector: what they are handed
+// ---------------------------------------------------------------------------
+
+/** No inputs declared and none staged -- the answer for a step the input join
+ *  has no entry for, which is none of them, but the map lookup is typed. */
+const NO_INPUTS: StepInputs = { declared: new Map(), stray: [], malformed: 0 }
+
+/** Every staged file in this workflow that no edge can carry, for the card's mark. */
+function straysOf(
+  workflow: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+): { stepId: string; input: StepInputs['stray'][number] }[] {
+  const out: { stepId: string; input: StepInputs['stray'][number] }[] = []
+  for (const [stepId, inputs] of inputsByStep(workflow.steps, taskById)) {
+    for (const input of inputs.stray) out.push({ stepId, input })
+  }
+  return out
+}
+
+/**
+ * Attempts used, as a figure. `0 of 3` is a MEASURED zero -- a task that has
+ * never been admitted -- and prints as a digit; a step with no task, or whose
+ * task was not read, has no count at all.
+ */
+function attemptsCell(state: StepState): Cell {
+  if (state.kind === 'unstarted') return absentCell(NEVER_RAN)
+  if (state.kind === 'unknown') return absentCell(STATE_UNREAD)
+  return measuredCell(
+    `${state.task.attempt_count} of ${state.task.max_attempts}`,
+    'Attempts used, of the attempts this step is allowed.',
+  )
+}
+
+/**
+ * EVERY STEP OF ONE WORKFLOW, BUILT ONCE FOR BOTH VIEWS AND THE INSPECTOR.
+ *
+ * The figures come from `figuresFor` and the state's look from `present` --
+ * the node's own readers -- so a step reads the same in the graph, on the
+ * timeline and in the table. Three views of one object with three spellings of
+ * its state would be three answers to one question, which is the defect the
+ * header derivation was built to end one level up.
+ *
+ * IN THE GRAPH'S ORDER, level by level, so the table opens in the order the
+ * reader just saw on the canvas.
+ */
+function stepRows(
+  workflow: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+  usage: UsageRead,
+  now: number,
+): StepRowModel[] {
+  const order = stepOrder(workflow.steps)
+  const inputs = inputsByStep(workflow.steps, taskById)
+  return workflow.steps
+    .map((step) => {
+      const state = stepState(step, taskById)
+      const p = present(state)
+      const f = figuresFor(state, usage, now)
+      const times = stepTimes(state, now)
+      const taskId = state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
+      // The SORT value of the cost, read off the same usage the cell was built
+      // from. Null wherever the cell is an absence, so an unmeasured cost can
+      // never be ranked as a small one.
+      const u =
+        state.kind === 'state' && usage.kind === 'ready' && usage.usage !== null
+          ? usage.usage.byTaskId.get(state.task.id)
+          : undefined
+      const row: StepRowModel = {
+        step,
+        taskId,
+        look: { tone: p.tone, word: p.word, title: p.title, dot: dotClass({ tone: p.tone, derived: p.derived }) },
+        times,
+        ran: f.ran,
+        attempts: attemptsCell(state),
+        cost: f.cost,
+        tokens: f.tokens,
+        pending: usage.kind === 'reading' && state.kind === 'state',
+        inputs: inputs.get(step.step_id) ?? NO_INPUTS,
+        sort: {
+          order: order.get(step.step_id)?.order ?? Number.MAX_SAFE_INTEGER,
+          stateRank: stateRankOf(state),
+          waitedMs: times.waitedMs,
+          ranMs: times.ranMs,
+          attempts: state.kind === 'state' ? state.task.attempt_count : null,
+          costUsd: u !== undefined && u.attempts > 0 ? u.costUsd : null,
+        },
+      }
+      return row
+    })
+    .sort((a, b) => a.sort.order - b.sort.order)
+}
+
+/**
+ * The timeline or the table for one open workflow.
+ *
+ * Its own component for the reason `WorkflowGraph` is one: it owns a 1Hz clock,
+ * and that clock should tick only while a view that shows moving time is
+ * mounted -- never on the collapsed rows.
+ */
+function WorkflowSteps({
+  workflow,
+  taskById,
+  usage,
+  view,
+  picked,
+  onPick,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  usage: UsageRead
+  view: Exclude<WorkflowView, 'graph'>
+  picked: string | null
+  onPick: (stepId: string) => void
+}) {
+  const now = useNow()
+  const rows = stepRows(workflow, taskById, usage, now)
+  if (rows.length === 0) return <span className="ctl-mark">no steps</span>
+  if (view === 'table') return <WorkflowTable rows={rows} picked={picked} onPick={onPick} />
+  const created = new Date(workflow.created_at).getTime()
+  return (
+    <WorkflowTimeline
+      rows={rows}
+      axis={axisOf(
+        rows.map((r) => r.times),
+        now,
+        Number.isFinite(created) ? created : null,
+      )}
+      picked={picked}
+      onPick={onPick}
+    />
+  )
+}
+
+/**
+ * The inspector for the picked step, with its own clock.
+ *
+ * KEYED BY WORKFLOW AND STEP where it is mounted, so picking a different step
+ * starts a fresh attempt read and a fresh attempt position rather than showing
+ * the last step's third attempt against this step's name.
+ */
+function InspectorSlot({
+  workflow,
+  stepId,
+  taskById,
+  usage,
+  siblings,
+  onSibling,
+  focus,
+  onFocused,
+  onClose,
+  loadAttempts,
+}: {
+  workflow: Workflow
+  stepId: string
+  taskById: ReadonlyMap<string, Task> | null
+  usage: UsageRead
+  siblings: readonly SiblingRef[] | undefined
+  onSibling: ((delta: -1 | 1) => void) | undefined
+  focus: ScrubFocus
+  onFocused: (() => void) | undefined
+  onClose: () => void
+  loadAttempts: AttemptLoader | undefined
+}) {
+  const now = useNow()
+  const row = stepRows(workflow, taskById, usage, now).find((r) => r.step.step_id === stepId)
+  // A picked step that has left the workflow -- the board re-read and it is
+  // gone -- has nothing to inspect. Drawing nothing is right: the selection is
+  // stale, and there is no step whose facts could be shown.
+  if (row === undefined) return null
+  const state = stepState(row.step, taskById)
+  // WITHOUT A BOARD, THE ONLY OCCURRENCE IS THIS ONE: "workflow 1 of 1", with
+  // both directions disabled, rather than a scrubber that pretends to have
+  // somewhere to go.
+  const refs: readonly SiblingRef[] =
+    siblings !== undefined && siblings.length > 0
+      ? siblings
+      : [{ workflowId: workflow.workflow_id, dot: row.look.dot, word: row.look.word }]
+  const index = Math.max(
+    0,
+    refs.findIndex((s) => s.workflowId === workflow.workflow_id),
+  )
+  return (
+    <StepInspector
+      workflowId={workflow.workflow_id}
+      row={row}
+      live={state.kind === 'state' && !TERMINAL_STATES.has(state.state)}
+      siblings={refs}
+      siblingIndex={index}
+      onSibling={onSibling ?? (() => {})}
+      focus={focus}
+      onFocused={onFocused ?? (() => {})}
+      onClose={onClose}
+      now={now}
+      load={loadAttempts}
+    />
   )
 }
 
@@ -1361,6 +1791,7 @@ function WorkflowGraph({
   onToggleStage,
   zoom,
   onZoom,
+  picked,
   reload,
 }: {
   workflow: Workflow
@@ -1370,10 +1801,16 @@ function WorkflowGraph({
   onToggleStage: (key: string, expanded: boolean) => void
   zoom: ZoomChoice
   onZoom?: (id: string, choice: ZoomChoice) => void
+  /** The step the inspector is on, outlined so the canvas says which one it is. */
+  picked: string | null
   reload: () => void
 }) {
   const now = useNow()
   const levels = levelsOf(workflow.steps)
+  // WHAT EACH STEP DECLARED AND WHAT ARRIVED, joined once per render. Every
+  // edge's style and every node's `↑` line read this, so the two cannot
+  // disagree about whether a file landed.
+  const inputs = inputsByStep(workflow.steps, taskById)
   // Built every render rather than memoised: `useNow` re-renders this component
   // once a second anyway, so a memo over a set of at most one entry per level
   // would cost more than it saves and would be one more thing to invalidate.
@@ -1516,19 +1953,33 @@ function WorkflowGraph({
               focusable="false"
             >
               <defs>
+                {/* USER-SPACE UNITS, 10.5px. It was 7 in the default
+                    `strokeWidth` units against the 1.5px edge -- 10.5px -- and a
+                    data edge is drawn heavier, which would have scaled its head
+                    with it. One arrowhead size for every kind of edge; the
+                    stroke is what differs. */}
                 <marker
                   id={`arrow-${workflow.workflow_id}`}
                   viewBox="0 0 8 8"
                   refX="7"
                   refY="4"
-                  markerWidth="7"
-                  markerHeight="7"
+                  markerUnits="userSpaceOnUse"
+                  markerWidth="10.5"
+                  markerHeight="10.5"
                   orient="auto-start-reverse"
                 >
                   <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
                 </marker>
               </defs>
               {layout.edges.map((e) => (
+                // THE EDGE'S KIND IS ON THE GROUP (viz #1, #9). `is-order` is a
+                // dependency that only orders the two steps; `is-data` also
+                // stages a file, and then `is-staged` / `is-declared` says
+                // whether anything has REPORTED the file arriving. Weight and
+                // dash carry it, never hue alone, so a greyscale screenshot keeps
+                // all three apart. Still one group per pair: a data edge is a
+                // kind of edge, not a second one drawn over the first.
+                //
                 // TWO PATHS, ONE EDGE, AND THE FIRST ONE IS WHY THE NODES LOST
                 // THEIR SHADOWS. Fourteen drop shadows on one screen bought one
                 // thing: an edge crossing a card read as passing under it rather
@@ -1540,7 +1991,11 @@ function WorkflowGraph({
                 // first, so the line carries its own clearance. One `<g>` per
                 // (parent, child) pair keyed by that pair, so the guarantee that
                 // one dependency draws one mark is unchanged.
-                <g key={`${e.from}->${e.to}`}>
+                <g
+                  key={`${e.from}->${e.to}`}
+                  className={linkClass(edgeProvenance(e, inputs))}
+                  data-edge={`${e.from}->${e.to}`}
+                >
                   <path className="wf-edge-halo" d={edgePath(e)} />
                   <path
                     className="wf-edge"
@@ -1580,6 +2035,8 @@ function WorkflowGraph({
                     key={n.step.step_id}
                     step={n.step}
                     state={stepState(n.step, taskById)}
+                    inputs={inputs.get(n.step.step_id) ?? NO_INPUTS}
+                    picked={picked === n.step.step_id}
                     workflow={workflow}
                     now={now}
                     usage={usage}
@@ -1767,6 +2224,8 @@ function present(state: StepState): {
 function StepNode({
   step,
   state,
+  inputs,
+  picked,
   workflow,
   now,
   usage,
@@ -1779,6 +2238,10 @@ function StepNode({
 }: {
   step: WorkflowStep
   state: StepState
+  /** What this step declared from each parent and whether it arrived. */
+  inputs: StepInputs
+  /** The inspector is on this step. */
+  picked: boolean
   workflow: Workflow
   now: number
   usage: UsageRead
@@ -1952,9 +2415,27 @@ function StepNode({
           statement of the graph in text and the screen-reader route to it, and
           it names parents this workflow does not contain -- which is exactly
           the case that draws no edge at all. */}
+      {/* A DEPENDENCY THAT STAGES A FILE NAMES IT: `↑ plan (plan.md)`. The
+          text is `depItems`, which is also what `heightOf` wraps, so the line
+          and the box it is measured into are one string. The file carries its
+          own arrival state -- solid when a result reported it staged, a dashed
+          rule when nothing has (the absence mark), with which kind of not-yet
+          on its title. */}
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
-          ↑ {step.depends_on.join(', ')}
+          ↑{' '}
+          {depItems(step).map((d, i) => (
+            <Fragment key={d.parent}>
+              {i > 0 ? ', ' : ''}
+              {d.file === null ? (
+                d.parent
+              ) : (
+                <>
+                  {d.parent} <DepFile file={d.file} provenance={inputs.declared.get(d.parent) ?? null} />
+                </>
+              )}
+            </Fragment>
+          ))}
         </div>
       )}
     </>
@@ -1964,14 +2445,14 @@ function StepNode({
     <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
       {taskId ? (
         <a
-          className={`node ${p.tone} zoom-${tier}`}
+          className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`}
           title={p.title}
           href={`#work/task/${encodeURIComponent(taskId)}`}
         >
           {body}
         </a>
       ) : (
-        <div className={`node ${p.tone} zoom-${tier}`} title={p.title}>
+        <div className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`} title={p.title}>
           {body}
         </div>
       )}
@@ -1998,6 +2479,37 @@ function StepNode({
         </div>
       )}
     </div>
+  )
+}
+
+/** The edge group's classes: its kind, and for a data edge whether it arrived. */
+function linkClass(p: EdgeProvenance): string {
+  return p.kind === 'order' ? 'wf-link is-order' : `wf-link is-data is-${p.kind}`
+}
+
+/**
+ * The `(plan.md)` on a dependency line, carrying whether the file arrived.
+ *
+ * The WORD on the line is the same either way -- the filename, which is what
+ * the step declared and what `heightOf` measured -- and the arrival is the
+ * treatment: solid for a reported staging, the dashed absence rule for every
+ * kind of not-yet. The title is the precise answer, because four different
+ * not-yets send a reader to four different places.
+ */
+function DepFile({ file, provenance }: { file: string; provenance: EdgeProvenance | null }) {
+  if (provenance === null || provenance.kind === 'order') {
+    return <span className="node-dep-file">({file})</span>
+  }
+  const title =
+    provenance.kind === 'staged'
+      ? `Staged into this step's workspace: ${provenance.file}, ${
+          provenance.bytes === null ? 'size not reported' : bytesLabel(provenance.bytes)
+        }${provenance.fromCheckpoint ? ', already in the restored checkpoint' : ''}.`
+      : `${DECLARED_WORDS[provenance.why].text}: ${DECLARED_WORDS[provenance.why].note}`
+  return (
+    <span className={`node-dep-file is-${provenance.kind}`} title={title}>
+      ({file})
+    </span>
   )
 }
 
@@ -2107,8 +2619,24 @@ function ranCell(task: Task, now: number): Cell {
   if (terminal) {
     return absentCell(FINISH_NOT_RECORDED)
   }
+  // A START THAT BELONGS TO AN ATTEMPT THAT IS OVER. `started_at` is written on
+  // DISPATCHED -> STARTING and overwritten per attempt (control.py:410-413); it
+  // is not cleared when an attempt parks or is reclaimed. So a task that is
+  // parked, queued, leased or dispatched AND carries a start time ran once and
+  // is waiting for its next attempt -- and "7m 30s so far" for it said a step
+  // holding nothing had been running for seven minutes. The timeline and the
+  // table draw that span as waiting; this figure agrees with them.
+  if (!RUNNING_NOW.has(task.state)) {
+    return absentCell({
+      text: 'between attempts',
+      note: `This task is ${task.state.toLowerCase()} with ${task.attempt_count} of ${task.max_attempts} attempts used. Its start time belongs to an attempt that is over, so there is no run in progress to time.`,
+    })
+  }
   return measuredCell(`${durationText(now - started)} so far`, 'Still running. This figure moves.')
 }
+
+/** The only two states in which the time since `started_at` is time run. */
+const RUNNING_NOW: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNNING'])
 
 /**
  * The four figures, for one step.
