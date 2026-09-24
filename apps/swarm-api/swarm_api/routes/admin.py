@@ -422,16 +422,27 @@ def list_leases(
     error echoes the tenant service account, the job name and the secret
     names.
 
-    THE WINDOW SAYS WHETHER IT WAS CUT. The store reads the newest `limit`
-    lease documents and every filter here -- `active_only`, `state`,
-    `overdue_only` -- runs over that window afterwards. So an empty page meant
-    either "nothing holds capacity" or "the window filled with released leases
-    before it reached the live ones", and the Holders screen's drift check
-    (`units_held` against `pool.active`) could not tell a leaked lease from a
-    short read. `truncated` is true when older lease documents exist past the
-    window; `examined` is how many documents the filters ran over. When
-    `truncated` is true, `units_held` is a sum over this window, not over the
-    platform, and must not be read as a leak on its own.
+    THE ROWS SAY WHETHER A LIVE LEASE WAS LEFT OUT. The Holders screen's
+    drift check compares `units_held` against `pool.active`, and a delta is
+    evidence of a leak only if no live lease is missing from the rows.
+    `active_beyond_window` is that count: unreleased leases, under the same
+    tenant filter, outside the window. Read it, not `truncated`.
+
+    With `active_only` (the default, and what the Holders screen asks for)
+    the store reads the live set itself and keeps the newest `limit`, so a
+    live lease older than any number of released ones is still a row. It
+    used to read the newest `limit` documents of any state and drop the
+    released ones afterwards. Lease documents are never deleted, so past
+    `limit` admissions a live lease could fall out of that window, and the
+    flag first added to say so, `truncated`, was then true on every call and
+    told nobody anything.
+
+    `truncated` remains: the window was full and more lay behind it (more
+    live leases than `limit` when `active_only`; older documents of any
+    state otherwise). `examined` is how many rows `state` and `overdue_only`
+    ran over. Those two filters narrow the window; they do not change
+    `active_beyond_window`, so with either set `units_held` is a filtered sum
+    and not the drift check's input.
     """
     scan = ctx.store.scan_leases(
         tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
@@ -481,9 +492,13 @@ def list_leases(
         # Weighted UNITS, not agents -- admission increments by the resource
         # class's units, so this and len(leases) are different numbers.
         "units_held": sum(lease.units for lease in leases),
-        # Older lease documents exist past the window these rows came from.
+        # Live leases, under the tenant filter, that are not in these rows.
+        # 0 is what makes a units_held / pool.active delta evidence.
+        "active_beyond_window": scan.active_beyond_window,
+        # The window was full and more lay behind it -- see the docstring for
+        # why this is not the drift check's signal.
         "truncated": scan.truncated,
-        # Lease documents read, BEFORE active_only / state / overdue_only.
+        # Rows state / overdue_only ran over.
         "examined": scan.examined,
     }
 

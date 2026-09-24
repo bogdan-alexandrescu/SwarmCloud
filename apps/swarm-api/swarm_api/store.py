@@ -245,12 +245,23 @@ class Page:
 class LeaseScan:
     """A lease listing plus what the read behind it actually covered.
 
-    `list_leases` reads the newest `limit` lease documents and filters released
-    ones AFTERWARDS, so a short or empty `leases` list is two different facts
-    wearing one shape: few leases hold capacity, or the window filled with
-    released leases before it reached the live ones. `truncated` is what tells
-    them apart, and `examined` is the unfiltered count every filter ran over
+    The question this exists to answer is the accounting-drift check's: is
+    there a LIVE lease that is not in these rows? Only when there is none can
+    `units_held` against `pool.active` be read as evidence of a leak
     (docs/audits/2026-09-20/data-gaps-found-by-fanout.md, section 1).
+
+    `active_beyond_window` is that answer: unreleased leases, under the same
+    tenant filter, that the window left out. It is the field to read.
+
+    `truncated` is only whether the window was full with more behind it. For
+    an active-only read that means more live leases than `limit`; for a
+    history read it means older documents exist, which after an
+    environment's 201st admission is true for ever -- lease documents are
+    never deleted and carry no TTL. It is kept for a pager, not for the
+    drift check.
+
+    `examined` is how many rows the route's `state` and `overdue_only`
+    filters ran over.
 
     Computed HERE, where the query runs, and not inferred by a caller from the
     page length: `len(leases) == limit` is false in exactly the case that
@@ -260,6 +271,7 @@ class LeaseScan:
     leases: list[Lease]
     examined: int
     truncated: bool
+    active_beyond_window: int
 
 
 @dataclass(frozen=True)
@@ -1153,22 +1165,52 @@ class Store:
         "which agents are holding capacity right now" unanswerable -- the
         single highest-value gap in the operator UI.
 
-        `active_only` filters to leases that have not been released. It is a
-        CLIENT-SIDE filter on purpose: `released_at == None` plus an ordered
-        `created_at` would need a third composite index for a predicate that
-        is true of almost every row in the window anyway. If that stops being
-        true, add the index rather than paging blindly.
+        `active_only` returns the newest `limit` UNRELEASED leases. It used to
+        read the newest `limit` documents of any state and drop the released
+        ones afterwards, so a live lease older than `limit` newer released
+        ones never reached the page -- and lease documents are never deleted,
+        so every environment past `limit` admissions was exposed to that. See
+        `scan_leases` for how the live set is read without a new index.
 
         `tenant_id` None means every tenant, which is why the route is
-        admin-gated. Passing a tenant id uses the declared composite index;
-        passing None orders on created_at alone, which a single-field index
-        already covers.
+        admin-gated. The history read (`active_only=False`) orders on
+        `created_at`: with a tenant id the declared `leases-tenant-created`
+        composite index serves it, and without one a single-field index does.
 
-        The listing alone cannot say whether the window was cut; `scan_leases`
-        returns the same rows with that answer, and is what the admin route
-        uses.
+        The listing alone cannot say whether a live lease was left out;
+        `scan_leases` returns the same rows with that answer, and is what the
+        admin route uses.
         """
         return self.scan_leases(tenant_id, active_only=active_only, limit=limit).leases
+
+    def _live_leases(self, tenant_id: str | None) -> list[Lease]:
+        """Every unreleased lease, under the tenant filter, newest first.
+
+        `released_at == None` is the query the reconciler already runs in full
+        on every pass (reconciler/store.py, `snapshot`), and
+        `acquire_lease_in_transaction` (swarm_common/admission.py) writes the
+        field as an explicit null, so a live lease matches. With the tenant
+        equality added it is two equality filters and no ordering, which
+        Firestore serves by merging single-field indexes -- no composite index.
+        Ordering on `created_at` in the query would need one
+        (`released_at`, `created_at DESC`), and the set is small enough not
+        to: it is what holds capacity NOW, not history. Every unreleased lease
+        holds units of the `global` pool until it is released or the
+        reconciler reclaims it, so its size follows that pool's limit rather
+        than the number of admissions ever made -- and the reconciler already
+        pays for reading all of it once a pass.
+
+        Sorted here instead. `lease_id` breaks ties so two leases admitted in
+        the same microsecond keep a stable order between calls.
+        """
+        query: Any = self._db.collection(LEASES).where(
+            filter=FieldFilter("released_at", "==", None)
+        )
+        if tenant_id is not None:
+            query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        live = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
+        live.sort(key=lambda lease: (lease.created_at, lease.lease_id), reverse=True)
+        return live
 
     def scan_leases(
         self,
@@ -1177,11 +1219,34 @@ class Store:
         active_only: bool = True,
         limit: int = 200,
     ) -> LeaseScan:
-        """`list_leases`, plus whether older lease documents lay past the window.
+        """`list_leases`, plus how many live leases the rows left out.
 
-        One document past `limit` is read to answer that, and then dropped: the
-        rows are exactly the ones `limit` alone would have returned.
+        ACTIVE ONLY reads the live set itself (`_live_leases`) and keeps the
+        newest `limit`. One read, so the rows and the count come from the same
+        snapshot; a live lease is outside the rows only when more live leases
+        exist than `limit`.
+
+        HISTORY (`active_only=False`) reads the newest `limit` documents of
+        any state -- one past `limit` to say whether older ones exist, then
+        dropped -- and then the live set, and counts the live leases whose id
+        is not in the window. Window FIRST, and by id rather than by
+        subtracting two counts: a lease admitted between the reads is counted
+        as beyond (true, and the safe direction), and a lease released
+        between them is counted nowhere. Subtracting a count from the
+        window's live rows would instead undercount whenever a lease in the
+        window was released between the reads -- turning a real cut into
+        "nothing was cut", the one wrong answer the drift check cannot absorb.
         """
+        if active_only:
+            live = self._live_leases(tenant_id)
+            window = live[:limit]
+            return LeaseScan(
+                leases=window,
+                examined=len(window),
+                truncated=len(live) > limit,
+                active_beyond_window=len(live) - len(window),
+            )
+
         query: Any = self._db.collection(LEASES)
         if tenant_id is not None:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
@@ -1190,12 +1255,16 @@ class Store:
         documents = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
         truncated = len(documents) > limit
         documents = documents[:limit]
-        leases = (
-            [lease for lease in documents if not lease.is_released]
-            if active_only
-            else documents
+        in_window = {lease.lease_id for lease in documents}
+        beyond = sum(
+            1 for lease in self._live_leases(tenant_id) if lease.lease_id not in in_window
         )
-        return LeaseScan(leases=leases, examined=len(documents), truncated=truncated)
+        return LeaseScan(
+            leases=documents,
+            examined=len(documents),
+            truncated=truncated,
+            active_beyond_window=beyond,
+        )
 
     def list_attempts(
         self,
