@@ -295,6 +295,51 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
 done
 
 # ---------------------------------------------------------------------------
+# No credential file goes up with the source.
+# ---------------------------------------------------------------------------
+# `gcloud builds submit "${REPO_ROOT}"` uploads the checkout. In release.yml
+# and application.yml, google-github-actions/auth has already written
+# gha-creds-<16 hex>.json into it (it writes to $GITHUB_WORKSPACE on purpose,
+# so later steps can read it), and that file is a live credential for as long
+# as the job runs. Nothing kept it out: there was no .gcloudignore, and the one
+# gcloud generates follows .gitignore, which did not list it. So it went up
+# with every build's source.
+#
+# .gcloudignore now excludes it. THIS is what makes losing that rule a refused
+# build instead of a leaked credential, and it asks gcloud itself what it would
+# upload -- so it checks the rule gcloud applies, not a restatement of it.
+#
+# It runs only when such a file exists, because `meta list-files-for-upload`
+# is documented as internal ("may change or disappear without notice"). Where
+# there is no credential to leak, a vanished command must not stop a build;
+# where there is one, a listing that cannot be produced is a refusal.
+if [[ "${#T_NAME[@]}" -gt 0 ]]; then
+  CRED_FILES=()
+  while IFS= read -r found; do
+    [[ -n "${found}" ]] && CRED_FILES+=("${found#"${REPO_ROOT}/"}")
+  done < <(find "${REPO_ROOT}" -name .git -prune -o -type f -name 'gha-creds-*.json' -print)
+
+  if [[ "${#CRED_FILES[@]}" -gt 0 ]]; then
+    step "Build source"
+    UPLOAD_ERR="${BUILD_DIR}/upload-check.err"
+    if ! UPLOAD_LIST="$(gcloud meta list-files-for-upload "${REPO_ROOT}" 2>"${UPLOAD_ERR}")"; then
+      err "gcloud could not list what \`builds submit\` would upload:"
+      redact <"${UPLOAD_ERR}" | sed -n '1,3s/^/     /p' >&2
+      die "refusing to submit: cannot establish that ${CRED_FILES[*]} (a workflow credential file) stays out of the build source"
+    fi
+    LEAKED=()
+    for cred in "${CRED_FILES[@]}"; do
+      if grep -qxF -- "${cred}" <<<"${UPLOAD_LIST}"; then LEAKED+=("${cred}"); fi
+    done
+    if [[ "${#LEAKED[@]}" -gt 0 ]]; then
+      err "the build source would include a workflow credential file; see the gha-creds-*.json rule in .gcloudignore"
+      die "refusing to submit: the build source would upload ${LEAKED[*]}"
+    fi
+    ok "credential file ${CRED_FILES[*]} is in the checkout and excluded from the upload"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Submit, at most PARALLELISM at a time.
 # ---------------------------------------------------------------------------
 
