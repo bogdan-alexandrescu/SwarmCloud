@@ -379,7 +379,14 @@ jobs:
         # (docs/audits/2026-09-20/tag-vs-digest.md). --verify-only compares
         # every service's template, every terraform-managed job, and the
         # scheduler's WORKER_IMAGE_REFS against the manifest, digest to digest.
-        run: ./scripts/lib/deploy.sh --verify-only --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
+        #
+        # --no-health: the /readyz probe cannot run from this runner. It needs an
+        # ID token (the auth step no longer mints one -- see its comment) and the
+        # services' ingress refuses a runner anyway, which deploy.sh already
+        # records as "not reachable from here". Release 36036058352 failed right
+        # here with "no ID token available" once #36 dropped the token. Health is
+        # proven by the next step, which runs the smoke suite INSIDE the VPC.
+        run: ./scripts/lib/deploy.sh --verify-only --no-health --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
 
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole

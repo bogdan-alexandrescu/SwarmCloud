@@ -3,6 +3,27 @@
 **2026-09-22. A recommendation for Track C, and the reasoning that produced it.
 Nothing in `terraform/` was changed by this note.**
 
+> **DECIDED 2026-09-24 by the owner — see [Decisions](#decisions-2026-09-24) at
+> the end.** Option (b) was taken, with the attribution this note called "not
+> optional", and a second grant was decided alongside it: `swarm-verify` passes
+> IAP on the front door. What was changed, what CI proved and what is still
+> unverified are recorded there, not by editing the analysis below — the analysis
+> is the reason for the decision and stays as it was written.
+>
+> **Two sentences below are wrong about what the admin grant reaches** — it
+> *can* write a tenant document, and disable a tenant. Each carries a pointer to
+> the [dated correction](#correction-to-decision-2s-premise-2026-09-24) and is
+> otherwise left as written, because it is part of the record of why decision 2
+> was taken.
+>
+> **`swarm-verify` is NOT a platform admin.** The owner re-decided on
+> 2026-09-24, on the corrected premise: the admin *route* stays, the admin
+> *flag* does not. The gate is on a new, narrower list, `admin_pool_users`, which
+> reaches `PUT /v1/admin/limits/runner/{runner_profile}` and no other admin
+> route. Option (b)'s title below, and decision 2's first form, are the record
+> of what was decided before that; the [owner's
+> decision](#owners-decision-2026-09-24-not-a-full-admin) is what is built.
+
 `make verify-remote` runs the verification suites as a Cloud Run job inside the
 VPC, because swarm-api's ingress refuses a laptop
 (`docs/audits/2026-09-20/verification-targets-cannot-run.md`). Two of the three
@@ -132,6 +153,11 @@ also cannot invent a pool: `PUT /limits/runner/{rp}` validates `rp` against the
 frozen `RUNNER_PROFILES` and 400s otherwise. There is no route that deletes a
 lease, writes a tenant document, creates a tenant or reads a secret.
 
+> **Corrected 2026-09-24: "writes a tenant document" is false.**
+> `PUT /v1/admin/tenants/{id}/limits` and `PUT /v1/admin/limits/tenant/{id}`
+> both write `tenants/<id>`, and the first can set `enabled=false`. See the
+> [correction](#correction-to-decision-2s-premise-2026-09-24).
+
 What it *does* grant that is genuinely new, and should not be glossed:
 
 * `POST /v1/admin/dispatch/pause` stops dispatch **platform-wide**.
@@ -174,6 +200,10 @@ the *shape* of the dangerous bug is unreachable: no admin route writes `active`,
 no admin route touches a tenant document, and a typo in a pool name is a 400
 rather than a new document. Under (a) — either variant — a one-character mistake
 in a field mask is a silent write to live capacity accounting.
+
+> **Corrected 2026-09-24: "no admin route touches a tenant document" is false**,
+> for the same two routes. The `active` half of this asymmetry still holds. See
+> the [correction](#correction-to-decision-2s-premise-2026-09-24).
 
 The honest cost of (b) is that a buggy suite could pause dispatch or drain a
 provider for every tenant. That is loud, immediately visible on the operator
@@ -348,3 +378,345 @@ proof rather than a sympathetic edit.
   observed" assertion are new and have never run against a real platform. If
   the second one is wrong, it is wrong in the direction of a false failure, not
   a false pass.
+
+## Decisions, 2026-09-24
+
+The owner took two decisions for
+`swarm-verify@saga-agents-staging.iam.gserviceaccount.com` on 2026-09-24. Both
+were implemented on PR #21 (`lane/verify-identity`). Nothing was applied by
+hand: the release applies `terraform/infra` when the PR merges, and the grants
+below exist only once that has happened.
+
+### 1. `swarm-verify` passes IAP on the front door
+
+**Decision:** add `serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com`
+to `frontend_iap_members` in `terraform/environments/dev/dev.tfvars`.
+
+**Why.** The load balancer answered `403 Access denied. For user
+swarm-verify@…` — IAP accepted the credential, knew who the caller was, and
+found it not on the list (the four measurements are in
+`scripts/lib/common.sh`, above `api_credential`). `domain:saga.xyz` cannot
+cover it: a `*.iam.gserviceaccount.com` identity is not a member of the
+Workspace domain. The measured need is PR #15's end-to-end check and every
+operator script run with `SWARM_IMPERSONATE_SA=swarm-verify@…`, both of which
+reach swarm-api through that door.
+
+**Form.** `terraform/modules/frontend` grants `roles/iap.httpsResourceAccessor`
+to each entry on both backend services (`members` on the API backend,
+`ui_members` on the UI backend), so the member must be a fully qualified IAM
+member, and `serviceAccount:` is the type IAP matches for this identity. It
+lands on both backends. The UI one serves static files, so that costs nothing.
+Nothing on swarm-api changes for it, because swarm-api admits this identity
+through `ALLOWED_USERS` (`terraform/infra/locals.tf`), not `allowed_domains`.
+
+**State before, measured read-only on 2026-09-24:**
+
+    $ gcloud iap web get-iam-policy --resource-type=backend-services \
+        --service=swarm-ui-backend    --project saga-agents-staging
+      roles/iap.httpsResourceAccessor   domain:saga.xyz
+    $ gcloud iap web get-iam-policy --resource-type=backend-services \
+        --service=swarm-ui-ui-backend --project saga-agents-staging
+      roles/iap.httpsResourceAccessor   domain:saga.xyz
+
+**Status: decided, NOT yet in the branch.** The `dev.tfvars` edit was refused
+by the authoring session's permission classifier as a permission grant, and it
+was not retried by any other route. The fix-up session tried the same direct
+edit once; the classifier refused the follow-up as a permission grant, and the
+uncommitted edit was reverted rather than pursued. It needs the owner to make
+the edit or to authorise it directly.
+
+The test that requires it,
+`tests/unit/scripts/test_verify_identity_grants.py::test_the_verify_identity_can_pass_iap_on_the_front_door`,
+is committed as `xfail(strict=True)`. It was plain red on PR #21's first
+version, and that was wrong for a branch that can merge: `release.yml`'s
+`verify` job runs `tests/unit`, and build, infrastructure and deploy all need
+it, so main's release pipeline would have gone red on merge and blocked every
+later release, including the one that applies decision 2. Strict means it
+turns red the moment the member is added, so the marker has to come off in
+that change.
+
+**Update, later on 2026-09-24: landed, through #23 and not in `dev.tfvars`.**
+#23 moved the IAP accessor list out of `terraform/infra` altogether, because
+the release's deployer needed an IAP admin role that could not be scoped to
+this platform's two backends. The list is now `frontend_iap_members` in
+`terraform/bootstrap/terraform.tfvars`, applied by the owner rather than by the
+release, and it holds `domain:saga.xyz` and
+`serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com`. #23
+records the grant as applied and read back through the IAP API on both
+backends. That is #23's measurement; this lane did not repeat it.
+
+The strict xfail above did **not** catch it, and could not have: it read
+`frontend_iap_members` from `dev.tfvars`, the variable left that file, and the
+test went on failing, as expected, for the wrong reason. The merge of main into
+PR #21 points the test at `terraform/bootstrap/terraform.tfvars`, removes the
+marker, and adds a check that the bootstrap root's `project_id` is dev's, so the
+member is on the front door `swarm-verify` actually calls. The race-test repair
+that names the list now names the file too, and the integration test requires
+that file to set it.
+
+### 2. race-test narrows through the admin API (first form: `swarm-verify` as a platform admin, superseded)
+
+> **Superseded the same day.** This is the decision as first taken and built.
+> The owner reversed its grant on 2026-09-24: `swarm-verify` is **not** a
+> platform admin and is not in `admin_users`. It reaches the one route
+> race-test needs through `admin_pool_users`. See the [owner's
+> decision](#owners-decision-2026-09-24-not-a-full-admin). The first bullet
+> below describes a tfvars entry that no longer exists; the race-test and
+> attribution bullets still describe the code.
+
+**Decision:** recommendation (b) above, with the attribution this note said
+was "not optional".
+
+**What changed:**
+
+* `terraform/environments/dev/dev.tfvars` — *(superseded: reverted by the
+  owner's decision below)* `admin_users` gains the **bare**
+  email. swarm-api compares that list with the email in the verified token, so
+  `serviceAccount:<email>` there would plan, apply and match nobody.
+  `terraform/infra/locals.tf` passes the list through to `ADMIN_USERS`
+  unchanged. A comment there records why the gate is **not** derived into
+  `ADMIN_USERS` the way `ALLOWED_USERS` is: that would make it an admin in
+  every environment, and the decision is for dev. `terraform/infra/variables.tf`
+  now says the list is not only operators, and that the gate's entry must
+  survive the day the list is emptied for a Group Reader role. A service account
+  can never be put in a Workspace admin group.
+* `scripts/race-test.sh` — narrows and restores with
+  `PUT /v1/admin/limits/runner/mock` and makes **no Firestore write of any
+  kind**. The restore is the suite's last case and also runs from the EXIT trap
+  on every other path (INT and TERM re-raise), and its verdict comes from
+  reading the pool back. **A restore that did not take fails the run**: it is a
+  failed case in the summary, and the EXIT trap turns a passing exit status into
+  1. On PR #21's first version it was only reported, and a run with every race
+  case green exited 0 with `runner:mock` still at one slot. It prints two
+  repairs: `scripts/pool-limit.sh --pool runner:mock --limit N`, which works
+  from a workstation today as an operator, and the admin route
+  `scripts/api.sh PUT /admin/limits/runner/mock '{"limit":N}'`, which through
+  the front door needs an identity that may call that route (on
+  `admin_pool_users`, or an admin) and is admitted by IAP.
+  The first version printed only the second, which nobody outside the VPC could
+  run until decision 1 lands. Four refusals
+  run before the first write, each covering a change the API could not undo:
+  * any `--profile` but `mock`, because narrowing a provider-backed runner
+    serialises every tenant's real agents;
+  * a pool that does not exist, because `upsert_pool` would create it and no
+    route deletes one;
+  * a drained pool, because the runner route never touches `enabled`, there is
+    no runner undrain, and the old PATCH silently re-enabled it;
+  * a ceiling above `LimitRequest`'s bound of 100000, because the restore would
+    then be a 422. The script holds a copy of that bound as `API_LIMIT_MAX`, and
+    `tests/unit/scripts/test_race_test_limit_bound.py` fails if the copy drifts.
+    This is a new mirrored value. It is listed in `docs/mirrored-values.md`,
+    under "Covered elsewhere", added when PR #16 (which had that file open)
+    merged and main was merged into this branch.
+* **Attribution**, in `apps/swarm-api`. `Store.upsert_pool(…, by=)` writes
+  `admin_changed_by` (the verified caller) and `admin_changed_at` on the pool
+  document. Every admin route that writes a pool now passes `auth.email`: the six
+  limit routes, the two drains, `PUT /limits/tenant/{id}`,
+  `PUT /tenants/{id}/limits` and `POST /providers/{p}/enabled`. The field is not
+  called `updated_by` because admission and release rewrite `updated_at` on
+  every lease, and a name next to it would pair one writer's timestamp with
+  another writer's identity. race-test prints the name it finds on the pool
+  after narrowing, and does not assert on it, because a swarm-api older than
+  this change writes none.
+
+**The premise, corrected a second time.** The decision said the admin route
+makes the write "authorised and attributed by the API". Before this PR only the
+first half was true, as the section above explains. It is true now in a
+specific and limited sense. The pool records **the last** admin to change it
+and when. There is still no append-only history: a later change by someone else
+overwrites the name, and the full record is that field plus Cloud Run's request
+log.
+
+**What CI proves, and the red runs that prove the tests can fail:** see PR #21.
+The run ids are recorded in the PR description and in the commits. They are
+not repeated here, where they would be a second copy of a fact.
+
+**Not verified:**
+
+* Nothing was run against the live platform, and nothing was applied. race-test
+  has not been run in-VPC with the new grant. That needs the merge and the
+  release, then `make verify-remote race-test`.
+* The attribution fields do not exist on any live pool until a release deploys
+  this swarm-api.
+* That the release's apply actually sets `ADMIN_USERS` on swarm-api to both
+  addresses has been read from `locals.tf`, not observed. Live `swarm-api` read
+  `ADMIN_USERS=bogdan@saga.xyz` on 2026-09-24 before the change. *(Superseded:
+  under the owner's decision below `ADMIN_USERS` stays `bogdan@saga.xyz`, and
+  the gate arrives as `ADMIN_POOL_USERS`.)*
+* `runner:mock` read `hard_limit=20, enabled=true, active=0` on 2026-09-24,
+  which clears all four refusals. That was a single read, not a guarantee about
+  the day the suite runs.
+
+### Correction to decision 2's premise, 2026-09-24
+
+**What was said.** The analysis above, and every copy of it on PR #21's first
+version (`dev.tfvars`, `terraform/infra/variables.tf`, `terraform/infra/verify.tf`,
+the header of `scripts/race-test.sh`), said the admin grant cannot touch a
+tenant document: "no route that … writes a tenant document", "no admin route
+touches a tenant document", "none able to touch `active`, a tenant document or a
+secret". **That is false.** Found in review of PR #21, and confirmed by reading
+`apps/swarm-api/swarm_api/routes/admin.py` and `store.py` on the branch:
+
+* `PUT /v1/admin/tenants/{tenant_id}/limits` calls `Store.set_tenant_limits`,
+  which runs `ref.update(patch)` on `tenants/<id>` with any of `max_active`,
+  `capacity_units` and `enabled`. `enabled=false` **disables the tenant**, and
+  `routes/accounts.py` records that a disabled tenant is refused by every other
+  route. `PUT /v1/admin/limits/tenant/{id}` writes `max_active` through the same
+  call. Both routes are in the table above, under **limits**: the route list was
+  right and the reading of what they write was not.
+* `POST /v1/admin/workflows/rollup?tenant_id=` writes the derived `state` onto
+  any tenant's drifted workflow documents (`WorkflowRollups._persist` →
+  `Store.set_workflow_state`). It is **missing** from the table, so "these
+  nineteen routes and nothing else" is twenty.
+* `POST /v1/admin/providers/{p}/enabled` also rewrites every tenant's quota
+  document for that provider (`Store.set_provider_quota_state`). Re-enabling
+  resets each one to `AVAILABLE` and clears its cooldown and quota-derived cap,
+  so "reversible in one call" holds for the switch and not for the per-tenant
+  state it overwrote.
+* The cross-tenant reads (`/v1/admin/leases`, `/quota`, `/tenants`) were in the
+  table. The point that `roles/datastore.viewer` already reads the same
+  documents still stands.
+* Nothing records a previous value. `admin_changed_by` names the last admin to
+  change a pool, not what it was before, and a tenant document carries no
+  attribution at all.
+
+**What still holds.** No admin route writes `active` on an existing pool:
+`upsert_pool` has no parameter for it, and writes `active: 0` only when creating
+a pool that did not exist. `set_tenant_limits` builds its patch from the three
+keys above and nothing else, so no admin route can write a tenant's service
+account, GCS prefix or secret names, and CONTRACT invariant 9 stays out of
+reach. No admin route creates or deletes a tenant, deletes a lease, or reads or
+writes a secret. So the asymmetry the recommendation rested on survives: the
+`active` clobber is unreachable under (b) and one field mask away under (a).
+**The cost side of (b) is larger than was stated**: a buggy suite, or anyone who
+can impersonate `swarm-verify`, can disable any tenant or change its limits, and
+putting it back needs the old value from somewhere else.
+
+**Status: returned to the owner.** This changes a stated premise of decision 2,
+so re-confirming it is the owner's call, not this lane's. PR #21 keeps the
+grant exactly as decided and corrects every copy of the claim: the four files
+named above.
+
+**Answered the same day** — the section below.
+
+### Owner's decision, 2026-09-24: not a full admin
+
+**Decision.** `swarm-verify` must **not** be a full platform admin. On the
+corrected premise above, full admin is too much for the verification gate: it
+can disable any tenant through `PUT /v1/admin/tenants/{id}/limits` and rewrite
+any tenant's workflow state through `POST /v1/admin/workflows/rollup`. This
+replaces decision 2's "make swarm-verify a platform admin". The rest of
+decision 2 stands: race-test narrows and restores through
+`PUT /v1/admin/limits/runner/mock`, never a Firestore write, and the pool
+records who changed it (`admin_changed_by`).
+
+Instead, swarm-api has a second, narrower list, and the gate is on it:
+
+* **`admin_pool_users`** (`ApiSettings.admin_pool_users`, env
+  `ADMIN_POOL_USERS`). A caller on it may call the admin routes in
+  `swarm_api.auth.POOL_ADMIN_ROUTES`, which is
+  `{PUT /v1/admin/limits/runner/{runner_profile}}` and nothing else. Every
+  other `/v1/admin/*` route answers it 403: the other ceilings, both tenant
+  routes, drains, provider switches, dispatch pause/resume, the workflow
+  rollup, and **every admin read**. No GET is granted because race-test reads
+  the pool back from Firestore, not through the API.
+* **An allow-list, not a deny-list.** `admin_auth` hands `require_admin` the
+  method and the *template* of the route FastAPI matched, and a pool admin
+  passes only on an exact entry. A deny-list of the dangerous routes would be
+  silently wrong the day an admin route was added; with the allow-list a new
+  admin route is admin-only until someone decides otherwise and adds it, in a
+  diff a reviewer sees.
+* **It is not a kind of admin.** `is_admin` stays false for a pool admin, so
+  nothing that reads that flag widens: not the operator screens, not the
+  cross-tenant fields on `/v1/stats` and `/v1/capacity`, not
+  `/v1/tenants/me`'s `is_admin`.
+
+**What the gate can still do, stated rather than minimised.** Set the ceiling
+of **any** runner profile's pool, not only `mock`'s: the route takes the
+profile as a path parameter and the allow-list is by route. Setting
+`runner:claude-code` to 0 would stop every tenant's claude-code work being
+admitted until someone put it back. race-test itself refuses every profile but
+`mock`, and every change is stamped with the caller, but the identity can.
+Narrowing the capability to one profile would be a further decision; it was
+not asked for and is not built. It still cannot write `active`, create a pool
+outside the frozen catalogue, or reach a tenant, a provider switch or
+dispatch.
+
+**What changed on PR #21:**
+
+* `apps/swarm-api/swarm_api/settings.py` — `admin_pool_users`, read from
+  `ADMIN_POOL_USERS` the way `admin_users` is read from `ADMIN_USERS`.
+* `apps/swarm-api/swarm_api/auth.py` — `AuthContext.is_pool_admin`,
+  `POOL_ADMIN_ROUTES`, and `require_admin(ctx, route)`; `deps.admin_auth`
+  passes the matched route. A call with no route gets the full-admin rule.
+* `terraform/infra/variables.tf` — `admin_pool_users`, validated as bare
+  emails (a `serviceAccount:` prefix would plan, apply and match nobody).
+  `admin_users`' description now says it is for operators and not the gate.
+* `terraform/infra/locals.tf` — `ADMIN_POOL_USERS` is set from
+  `var.admin_pool_users` exactly as `ADMIN_USERS` is from `var.admin_users`:
+  the tfvars as is, nothing appended, so the gate holds it only where an
+  environment names it.
+* `terraform/environments/dev/dev.tfvars` — `admin_users` is
+  `["bogdan@saga.xyz"]` again; `admin_pool_users` holds the bare
+  `swarm-verify@saga-agents-staging.iam.gserviceaccount.com`.
+* `terraform/infra/verify.tf` — the service account's description says
+  "runner ceilings where admin_pool_users names it" and "Not a platform admin"
+  (245 of the provider's 256 characters).
+* `scripts/race-test.sh` — its header, its 403 message and its failed-restore
+  repair name `admin_pool_users`; the 403 says *not* `admin_users`.
+* Every other statement on the branch that the gate is a platform admin —
+  `docs/testing.md`, the `scripts/verify-remote.sh` header, and the test
+  docstrings — now says it is not.
+
+**What proves it.** `tests/unit/control_plane/test_pool_admin_is_narrow.py`
+sweeps every admin-gated route of every router module in `swarm_api.routes`
+(found by walking each route's dependency tree for `admin_auth`, with a floor
+derived from the source): a pool admin gets 403 on every write and read not
+allow-listed and Firestore is left byte-identical; an admin route added later,
+shaped like the granted one, refuses it with nobody having denied it (the case
+a deny-list fails); the allow-list equals the decided set and names a real
+route; a full admin still passes every one. `test_verify_identity_grants.py`
+requires the gate on `admin_pool_users`, off `admin_users`, and the env var
+name locals.tf sets to be the one settings.py reads. The tests were pushed
+before the code, and a deliberate mutation — pool admins made full admins —
+was pushed and shown red before the allow-list replaced it. The run ids are in
+PR #21's description, not here.
+
+**Hardened on review, same day.** A second review found four ways the
+decision could be undone with every test green, and each now has a test that a
+deliberate mutation showed red in CI:
+
+* **The order of the checks in `require_admin`.** The pool-admin pass comes
+  *before* the "admin membership could not be resolved" 503. That matters for
+  the gate more than for anyone: it is not on `admin_users`, so every request
+  asks Cloud Identity whether a service-account address is in each admin
+  group, which is the lookup this project has already seen 403. Swapped, the
+  gate's own route 503s whenever the directory does not answer.
+* **The other two ways to full admin.** Only `dev.tfvars` was checked for the
+  gate on `admin_users`. `locals.tf` appending
+  `google_service_account.verify.email` to `ADMIN_USERS` or `ADMIN_GROUPS` would
+  have made it a full admin in every environment. Each of the three lists must
+  now reach swarm-api from its own variable and nothing else. The third way,
+  putting the gate in an `ADMIN_GROUPS` group, is live directory state no test
+  here can read, so it is written down instead, in `variables.tf` and
+  `docs/security.md`: a Google group can hold a service account, and the gate
+  must not be added to one.
+* **What "a full admin still passes" means.** The check accepted a 500. The
+  sweep now records the gate's own pass through a `dependency_overrides`
+  wrapper around the real `admin_auth`.
+* **Which path the allow-list names.** On FastAPI 0.141.1 the template
+  `admin_auth` compares is the route's path in the router that declares it,
+  without any `include_router` prefix. It equals the public URL only because
+  `main.py` includes every router bare. The allow-list and the sweep are now
+  tied to the app's published OpenAPI paths in both directions.
+
+**Not verified:**
+
+* Nothing was applied or run against the live platform. The release applies
+  `terraform/infra` on merge; until then live swarm-api has no
+  `ADMIN_POOL_USERS` and race-test in-VPC still answers 403 at step 1.
+* That the release sets `ADMIN_POOL_USERS` on swarm-api has been read from
+  `locals.tf` and checked by `scripts/lib/check-env-parity.sh`, not observed.
+* That FastAPI hands `admin_auth` the matched route's template, rather than the
+  concrete path, is shown by the unit tests on the pinned FastAPI (0.141.1,
+  `uv.lock`), not on the deployed image.

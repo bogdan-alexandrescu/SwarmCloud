@@ -21,6 +21,14 @@ left the symptom completely unchanged — because all seven produce the same
 error. That is the substance of this record and the reason it exists: the story
 is not carelessness, it is a failure mode that makes progress invisible.
 
+**Correction, later on 2026-09-24.** Cause 7 was not a cause. It was the first
+visible symptom of an eighth, found while investigating the stuck workflow
+`wf_ebb3ab2d65664707a559`: the scheduler's GKE Job overrode the container
+`command`, which replaced the worker lifecycle with the bare runner. This record
+originally explained Cloud Run's immunity as "identical image, identical command"
+on a writable root. That sentence was false, and it is what hid cause 8. See
+cause 8 in §2; the cause 7 text below is corrected in place.
+
 **Duration.** Two days of active investigation (2026-09-23 to 2026-09-24), seven
 failed browser tasks, three investigations that went to IAM. Causes 1, 3, 5 and 7
 below had been in the repository since GKE dispatch was written; cause 6 arrived
@@ -259,29 +267,127 @@ OSError: [Errno 30] Read-only file system: '/artifacts'
     ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
 ```
 
-`runners/base.py:116` defaults `artifacts_dir` to `work.parent / "artifacts"`.
-The work dir is the container's cwd, `/workspace`, so the default resolves to
-`/artifacts` — at the root. GKE sets `readOnlyRootFilesystem: true`
-(`dispatch.py:146`), so the runner died on its first line.
+`runners/base.py:116` defaults `artifacts_dir` to `work.parent / "artifacts"`
+when `SWARM_ARTIFACTS_DIR` is unset. The work dir is the container's cwd,
+`/workspace`, so the default resolves to `/artifacts`, at the root. GKE sets
+`readOnlyRootFilesystem: true` (`dispatch.py:146`), so the runner died on its
+first line.
 
-*Why Cloud Run never showed it.* Identical image, identical
-`python -m agent_worker.runners.<x>` command out of the frozen catalogue, and a
-container that does **not** harden the root filesystem — so `mkdir /artifacts`
-simply succeeded. Twenty-two tasks went through that path while the same code
-could not start on GKE. The hardening is right; its absence on Cloud Run is the
-anomaly. What was missing was a writable path to point at.
+*Why Cloud Run never showed it. CORRECTED.* This paragraph originally said:
+"Identical image, identical `python -m agent_worker.runners.<x>` command out of
+the frozen catalogue, and a container that does **not** harden the root
+filesystem". **The commands were not identical.** Terraform's Cloud Run Jobs set
+`command = null` (`terraform/modules/cloud_run_jobs/main.tf`), and
+`gcloud run jobs describe swarm-job-eng-mock` confirms it, so Cloud Run ran the
+image ENTRYPOINT, `tini -- python -m agent_worker`. That is the worker
+lifecycle, and it gives its runner child `SWARM_ARTIFACTS_DIR` itself, set per
+attempt to `<WORKSPACE_ROOT>/<attempt>/artifacts` (`workspace.py:136`), so the
+runner never reaches the default. The GKE Job carried
+`command: ["python", "-m", "agent_worker.runners.browser"]`, which replaced the
+lifecycle, so nothing set the variable. The read-only root is what made the
+missing lifecycle *loud*; it was never what made the two backends differ. See
+cause 8.
 
-*Evidence.* Commit `ffa82e3`. `SWARM_ARTIFACTS_DIR` is now set in `worker_env`
-(`dispatch.py:288`), the builder **both** backends share, to
-`WORKER_ARTIFACTS_DIR` = `/workspace/artifacts` (`dispatch.py:122`) — inside the
-workspace volume, which already takes its size limit from the resource class, so
-no second disk number has to be invented and kept in step. The three worker
-templates carry the same variable, so the copy `make lint` validates and the copy
-that dispatches agree.
+*What `ffa82e3` actually changed.* It set `SWARM_ARTIFACTS_DIR` in `worker_env`
+(`dispatch.py:288`), the builder both backends share, and in the three worker
+templates. On a container that runs the lifecycle, that value is **inert**: the
+lifecycle builds its child's environment from an allowlist and never passes it
+through. On the GKE Job as it then was, it would have got the bare runner past
+`mkdir` and into running with no fencing, no checkpoint, no heartbeat and no
+lease release. It is kept only as a writable fallback for a runner started by
+hand inside a worker container.
 
 *Why it was only reachable now.* Every earlier attempt failed at `jobs.batch is
-forbidden` before a container existed. This defect was in the queue the whole
-time with nothing able to reach it.
+forbidden` before a container existed.
+
+### 8 — The Job replaced the worker lifecycle with the bare runner
+
+Found later on 2026-09-24, while investigating `wf_ebb3ab2d65664707a559`. Four
+of that workflow's browser steps and one standalone task sat in `DISPATCHED`
+with their leases unreleased, holding all 10 `resource:browser` slots, and no
+cancel could finish them.
+
+*What was wrong.* `GkeJobDispatcher._manifest` put
+`"command": list(profile.command)` on the worker container. `RunnerProfile.command`
+is the **runner's** argv, `python -m agent_worker.runners.<x>`. A Kubernetes
+`command` replaces the image ENTRYPOINT, and the ENTRYPOINT of both worker images
+is `tini -- python -m agent_worker`, the worker **lifecycle**. The lifecycle is
+what checks the fencing generation (invariant 5), honours a requested cancel,
+moves the task through STARTING and RUNNING, heartbeats, checkpoints (invariant
+8), starts the runner as a supervised child, writes the terminal state and
+releases the lease. None of it ran on GKE, ever. A pod that dies without the
+lifecycle leaves its lease for the reconciler, and the reconciler could not read
+GKE (a separate defect in the same incident). So the leases stayed.
+
+*Evidence (measured).*
+
+* The `jobs.create` audit request bodies for check-2..5 at 03:55:07Z show
+  `command=['python','-m','agent_worker.runners.browser']` and no `args`.
+* The pods logged seven lines each, all one runner traceback, and not one
+  lifecycle JSON line. Under the lifecycle a child's stderr goes to a workspace
+  file, not to container stdout.
+* The `/artifacts` path itself (cause 7) can only occur without the lifecycle.
+
+*Why nothing caught it.* `kubernetes/worker-templates/worker-job.yaml` had said
+in its header since it was written that `command` is **absent**, and why.
+`tests/unit/worker/test_kubernetes_manifests.py` asserted it, **of the rendered
+YAML**. Nothing dispatches the rendered YAML. The Job that reached the cluster
+was built in Python, and no test looked at it. The same defect sat latent on
+Cloud Run: `CloudRunJobDispatcher._build_job` set the same `command` on any Job
+the scheduler creates itself when `get_job` returns NotFound (a new tenant,
+profile or resource class). Only the Terraform-created Jobs, which leave
+`command` unset, kept Cloud Run working. `test_dispatch_manifests.py:183`
+asserted the override.
+
+*The fix.* Neither dispatcher sets `command` or `args` any more. The lifecycle
+finds its runner by the profile *name* in `RUNNER_PROFILE`, which `worker_env`
+sets, and starts `profile.command` as its child (`lifecycle._runner_argv`). Tests:
+
+* every profile, `_manifest` and `_build_job` (and the Cloud Run execution
+  override), no `command` or `args`;
+* the GKE manifest's own environment fed to `WorkerConfig.from_env` resolves the
+  catalogue's runner argv;
+* `test_the_rendered_job_and_the_dispatched_job_are_the_same_job` renders the
+  YAML and builds the dispatcher's Job from the same inputs and fails on any
+  field that changes what the pod does.
+
+That last test also found that the dispatcher put
+`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` on the Job only. The
+autoscaler reads it from the pod, so dispatched pods were evictable in a
+scale-down. It is now on the pod template too. The contract request to document
+`RunnerProfile.command` as child argv is request 18 in
+[contract-change-requests.md](../contract-change-requests.md).
+
+*Two things the first version of the fix missed (review of PR #31).*
+
+* **Jobs created before the fix kept the override.** Removing `command=` from
+  `_build_job` changes only Jobs created afterwards. `ensure_job` returned as
+  soon as `get_job` succeeded, and a Cloud Run per-execution `ContainerOverride`
+  has no `command` field, so `run_job` could not clear it. Every Job the
+  scheduler had already created (a non-default resource class, or a provider
+  outside the tenant's Terraform `providers`) would have gone on running the bare
+  runner. `ensure_job` now reads the Job it fetched, clears `command` and `args`
+  with `update_job` before the first execution, and refuses the dispatch
+  (`cloud_run_job_overrides_entrypoint`) if the update fails. Whether any such
+  Job exists in the deployed project was not measured.
+* **Once the lifecycle ran, the backend's deadline pre-empted its timeout.** The
+  Job's `activeDeadlineSeconds` and the Cloud Run execution timeout were both
+  `task.timeout_seconds`. The Job's deadline counts from Job creation, including
+  node provisioning and the image pull. The lifecycle's deadline counts from its
+  own start, minutes later. So the backend always SIGTERMed first. On SIGTERM
+  the lifecycle parks the task as `SCHEDULED_RETRY` rather than failing it, and
+  nothing promotes that park (see §5). A task that ran out of time would have
+  stayed PARKED, and its workflow would have stuck again, this time because of
+  the fix. The backend deadline is now the task timeout plus
+  `dispatch_timeout_seconds` (the latest a lifecycle can start before the
+  reconciler reclaims it) plus a 300s budget for the lifecycle's work after its
+  own deadline. `backend_deadline_seconds` in `dispatch.py` is the only place
+  that computes it, and `render.py` imports it.
+
+*What is still unproven.* The lifecycle has never run on GKE. Workload Identity
+from the pod to Firestore and Secret Manager, egress through the tenant
+NetworkPolicy, and Workload Identity with `automountServiceAccountToken: false`
+are all untested there. See §5.
 
 ---
 
@@ -351,6 +457,18 @@ field for field" had been true and had stopped being true, which is the third
 instance of that same defect in this incident, after the namespace prefix and the
 RBAC subject: **a file documented as mirroring another, with no assertion holding
 it there, is a copy waiting to drift.**
+
+**Cause 8: comparing the two copies of the Job, not just their environments.**
+The environment-key assertion above compared one slice of the two Job specs, and
+the defect was in the slice it skipped. The YAML's `command is ABSENT` rule was
+asserted of the YAML alone. What now holds them together is one test that builds
+both from the same inputs and compares everything that changes what the pod does:
+command and args, security contexts, resources, volumes and mounts, retries,
+grace period, service account, and the eviction annotation on the Job and on the
+pod. Had it existed, cause 8 would have failed CI on the day `_manifest` was
+written. The eviction annotation, found missing from the dispatcher's pods by the
+same test, would have failed with it. It is the fourth instance of the mirrored-copy
+defect in this incident.
 
 ---
 
@@ -470,9 +588,18 @@ someone follows at 3am.
   PARKED on `DEPENDENCY_INCOMPLETE` behind `claude-code` steps parked on
   `PROVIDER_QUOTA_EXHAUSTED`, so they never reached a backend at all. A parked
   step proves nothing about dispatch.
-* **Whether cause 7 is the last one.** Every fix in this incident revealed the
+* **Whether cause 8 is the last one.** Every fix in this incident revealed the
   next defect behind it, and there is no reason to believe the sequence is
-  exhausted. The cheapest proof is one task:
+  exhausted. Cause 8's fix means the worker lifecycle runs on GKE for the first
+  time. Everything it depends on is unproven there: Workload Identity from the
+  pod to Firestore and Secret Manager, egress through the tenant
+  NetworkPolicy, and Workload Identity with `automountServiceAccountToken:
+  false`. One further defect is predicted from the code and not yet fixed:
+  `lifecycle._build_child_env` does not pass `PLAYWRIGHT_BROWSERS_PATH` (set
+  only as an image `ENV` in `agent-runtime-browser`) through to the runner
+  child, whose `HOME` is its work directory. Playwright should therefore look
+  for Chromium under the workspace rather than `/opt/playwright`. The cheapest
+  proof is one task:
   `scripts/prove-gke-dispatch.sh --timeout 900`.
 
   *Added 2026-09-24:* that script now exists and the release runs it after
@@ -511,3 +638,17 @@ someone follows at 3am.
   merges is the first real run — and it needs the release identity's tenant to
   hold an anthropic credential, or it will fail on `CREDENTIAL_MISSING`, by
   design.
+* **A worker that is SIGTERMed still strands its task.** The lifecycle's SIGTERM
+  path (`_handle_interruption`) parks the task `PARKED/SCHEDULED_RETRY` with
+  `next_eligible_at=now` and releases the lease. Nothing in the platform moves a
+  `SCHEDULED_RETRY` park back to READY. The scheduler sweeps only
+  `DEPENDENCY_INCOMPLETE`, `CREDENTIAL_MISSING` and the three `PROVIDER_*`
+  reasons, `ready_tasks` selects READY only, and the reconciler has no
+  promoter. [quota-management.md](../quota-management.md) §4 says this reason is
+  "unparked by `next_eligible_at`", and no code does that. The deadline fix in
+  cause 8 removes the one trigger that was certain to hit. Any other SIGTERM (an
+  instance or node going away) still leaves the task PARKED for ever. That
+  promoter is not in this change. The frozen state machine allows PARKED to go
+  only to READY, CANCELLED or DEAD_LETTERED, and admission does not check the
+  retry cap, so whoever builds it has to decide what an interrupted last attempt
+  becomes.

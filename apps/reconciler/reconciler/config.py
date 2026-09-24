@@ -31,6 +31,16 @@ def _bool(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+
+
 @dataclass(frozen=True)
 class ReconcilerConfig:
     project_id: str
@@ -63,6 +73,81 @@ class ReconcilerConfig:
     #: make every list call slower and the console unusable.
     unused_job_ttl_seconds: int = 7 * 24 * 3600
     empty_namespace_ttl_seconds: int = 24 * 3600
+
+    # -- GKE browser eviction (docs/runbooks/browser-eviction.md) -----------
+    #: Browser pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict=false`
+    #: (PR #31), so nothing in the cluster will ever move or reclaim one. These
+    #: settings are how the platform gets that capacity back anyway: from a
+    #: browser Job that stopped making progress, and from one still running
+    #: after its task finished. Both rules act on GKE Jobs only -- today that
+    #: is the `browser` profile, the one profile pinned to Autopilot.
+    #:
+    #: False is the way back to the reconciler as it was before these rules:
+    #: it turns off the two rules AND their input -- the by-id read of tasks
+    #: outside the concurrency states (`Reconciler._read_settled`) and the
+    #: stand-asides that read makes possible (`detect.orphan_rule_defers`). A
+    #: Job left running is then an orphan execution again, killed and only
+    #: then released. What it does NOT turn off is the rule that no repair
+    #: which only releases may return a lease whose own execution is still
+    #: running (`detect.detect_orphan_leases`): that is not part of eviction,
+    #: and turning it off would only bring back a release before the kill.
+    enable_gke_eviction: bool = True
+
+    #: How long a RUNNING GKE attempt may show no progress before it is fenced
+    #: (and, from the next pass, terminated if still active, and released).
+    #: Progress is defined in `progress.py`, and heartbeating is deliberately
+    #: not part of it: a hung browser heartbeats.
+    #:
+    #: Thirty minutes. The window has to be far longer than any legitimate
+    #: quiet stretch in a browser run -- one Playwright action waits at most
+    #: its timeout (30s by default), `wait` is capped at 60s, a launch at 60s --
+    #: and long enough that the verdict rests on a dozen consecutive CPU
+    #: measurements (the worker emits one every fifth 30s heartbeat, so every
+    #: 150s) rather than on one. It must also be well short of the profile's
+    #: own 5400s timeout, or it saves nothing: a browser attempt costs 2
+    #: capacity units and an 8 vCPU / 16 GiB pod that the autoscaler may not
+    #: touch, and at 30 minutes an attempt that wedged early gives back at
+    #: least an hour of it.
+    stuck_after_seconds: int = 1800
+
+    #: Mean CPU, in cores, below which a heartbeat interval counts as quiet.
+    #:
+    #: 0.05 cores -- 7.5 CPU-seconds across one 150s heartbeat-event interval.
+    #: What sits under it: the worker's own overhead with the agent idle (a
+    #: Firestore poll every 10s, a heartbeat every 30s, a checkpoint of the
+    #: browser's small work tree every 120s), which is estimated at 0.003-0.02
+    #: cores, and an idle Chromium tab. What sits over it: loading or
+    #: rendering a page, which costs whole CPU-seconds per action.
+    #:
+    #: NOT MEASURED against a live browser pod. No browser attempt on this
+    #: platform has reached RUNNING yet (every browser task in staging on
+    #: 2026-09-24 failed at dispatch or never started), so there is no
+    #: heartbeat series to calibrate from. The direction of error is chosen:
+    #: set too LOW, a wedged browser whose container still spends CPU reads as
+    #: progressing and is left for the worker's own timeout to end -- the
+    #: behaviour before this rule existed. Only a value too HIGH evicts
+    #: healthy work, which is why this is a small number.
+    stuck_cpu_floor_cores: float = 0.05
+
+    #: The longest gap allowed between two CPU measurements inside a quiet
+    #: span. A span with a larger hole in it is not PROVEN quiet -- the agent
+    #: may have worked through the part nobody measured -- and is not acted on.
+    #:
+    #: 600s: four heartbeat-event intervals. One or two missing events are an
+    #: ordinary transient write failure; four in a row mean the evidence
+    #: stopped arriving, and a reconciler must not treat "stopped hearing" as
+    #: "heard nothing happening".
+    stuck_evidence_max_gap_seconds: int = 600
+
+    #: How long after its task reached a terminal state a GKE Job may still be
+    #: active before it is terminated as left running.
+    #:
+    #: 300s. The worker writes the terminal state first and only then cleans
+    #: up, exports its metrics and exits, after which the Job controller marks
+    #: the Job Complete; that normally takes seconds. Five minutes is far past
+    #: it, and far short of what a pod left open costs -- the node under it
+    #: cannot scale down while it runs, because it may not be evicted.
+    left_running_grace_seconds: int = 300
 
     max_findings_per_pass: int = 200
     dry_run: bool = False
@@ -151,6 +236,11 @@ class ReconcilerConfig:
             orphan_execution_grace_seconds=_int("ORPHAN_EXECUTION_GRACE_SECONDS", 120),
             unused_job_ttl_seconds=_int("UNUSED_JOB_TTL_SECONDS", 7 * 24 * 3600),
             empty_namespace_ttl_seconds=_int("EMPTY_NAMESPACE_TTL_SECONDS", 24 * 3600),
+            enable_gke_eviction=_bool("RECONCILER_ENABLE_GKE_EVICTION", True),
+            stuck_after_seconds=_int("STUCK_AFTER_SECONDS", 1800),
+            stuck_cpu_floor_cores=_float("STUCK_CPU_FLOOR_CORES", 0.05),
+            stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
+            left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),
