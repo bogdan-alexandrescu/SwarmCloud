@@ -36,6 +36,7 @@ import {
   envTreatment,
   type Environment,
 } from '../Brand'
+import { App } from '../App'
 import { Screen } from '../Shell'
 import { WorkflowsScreen } from '../Workflows'
 import type { Me } from '../types'
@@ -255,6 +256,266 @@ describe('which environment this console is pointed at', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The badge's casing -- an owner decision, 2026-09-24 (design-system.md §13.6)
+// ---------------------------------------------------------------------------
+
+/** Every cased letter is a capital, and there is at least one. */
+function isCapitals(s: string): boolean {
+  return s === s.toUpperCase() && s !== s.toLowerCase()
+}
+
+/**
+ * A capital first letter and nothing shouted after it. The first letter has to
+ * be a real capital (`toLowerCase` changes it), so an empty label -- a badge
+ * that printed nothing -- is not sentence case by default.
+ */
+function isSentenceCase(s: string): boolean {
+  const head = s.charAt(0)
+  const rest = s.slice(1)
+  return (
+    head !== head.toLowerCase() &&
+    head === head.toUpperCase() &&
+    rest === rest.toLowerCase() &&
+    !isCapitals(s)
+  )
+}
+
+/**
+ * Declarations that make text shout. Uppercase is the one §13.2 bans outright.
+ * Small caps is the same emphasis drawn smaller, so it counts too.
+ */
+const SHOUTS: ReadonlyArray<readonly [string, RegExp]> = [
+  ['text-transform', /\buppercase\b/i],
+  ['font-variant-caps', /\b(?:all-)?(?:small|petite)-caps\b|\bunicase\b|\btitling-caps\b/i],
+  ['font-variant', /\b(?:all-)?(?:small|petite)-caps\b|\bunicase\b|\btitling-caps\b/i],
+  ['font', /\bsmall-caps\b/i],
+]
+
+/** A pseudo-element that paints a box of its own, not the element's text. */
+const OTHER_BOX = /::?(?:before|after|marker|placeholder|selection|backdrop|file-selector-button|-webkit-[\w-]+|-moz-[\w-]+)\b/i
+/** Pseudo-elements that style the element's own text: they reach it. */
+const OWN_TEXT = /::?(?:first-line|first-letter)\b/gi
+/** State the test cannot be in. A shout on `:hover` is still a shout. */
+const DYNAMIC = /:(?:hover|focus-visible|focus-within|focus|active|visited|target)\b/g
+
+/** A selector list split at top-level commas: `:where(a, b)` is one selector. */
+function splitSelectors(list: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let quote = ''
+  let buf = ''
+  for (const ch of list) {
+    if (quote) {
+      if (ch === quote) quote = ''
+    } else if (ch === '"' || ch === "'") {
+      quote = ch
+    } else if (ch === '(' || ch === '[') {
+      depth += 1
+    } else if (ch === ')' || ch === ']') {
+      depth -= 1
+    } else if (ch === ',' && depth === 0) {
+      out.push(buf.trim())
+      buf = ''
+      continue
+    }
+    buf += ch
+  }
+  if (buf.trim()) out.push(buf.trim())
+  return out
+}
+
+type AnyRule = CSSRule & {
+  selectorText?: string
+  style?: CSSStyleDeclaration
+  cssRules?: CSSRuleList
+  media?: MediaList
+  conditionText?: string
+}
+
+/**
+ * Every rule in every sheet in the document that could make `el` shout,
+ * applied to `el` itself or to any ancestor it inherits casing from.
+ *
+ * NOT `getComputedStyle`, AND WHY. jsdom 25 resolves inheritance only for a
+ * short list of properties (`visibility`, `pointer-events`, the colours), and
+ * `text-transform` is not on it. It applies no `@media` block unless the
+ * block names `screen`. It orders the cascade by source position alone,
+ * ignoring specificity. So the computed value reads `''` under an ancestor
+ * rule or a breakpoint rule that shouts in a browser. This asks each rule
+ * directly, with jsdom's own selector engine (`Element.matches`), inside every
+ * `@media` / `@supports` block. A selector it cannot evaluate is reported
+ * rather than skipped.
+ *
+ * `reached` counts every rule that matched something on the chain, shouting
+ * or not, so an empty result can be told apart from a walk that read nothing.
+ */
+function shoutingRules(el: Element): { hits: string[]; reached: number } {
+  const chain: Element[] = []
+  for (let n: Element | null = el; n !== null; n = n.parentElement) chain.push(n)
+  const nameOf = (n: Element) =>
+    `<${n.tagName.toLowerCase()}${n.className ? ` class="${n.className}"` : ''}>`
+
+  const hits: string[] = []
+  let reached = 0
+  const visit = (list: CSSRuleList, where: string) => {
+    for (const rule of Array.from(list) as AnyRule[]) {
+      if (rule.selectorText === undefined) {
+        if (rule.cssRules) {
+          const cond = rule.media?.mediaText ?? rule.conditionText ?? ''
+          visit(rule.cssRules, `${where} @${cond}`.trim())
+        }
+        continue
+      }
+      const shouts = SHOUTS.flatMap(([prop, re]) => {
+        const value = rule.style?.getPropertyValue(prop) ?? ''
+        return re.test(value) ? [`${prop}: ${value}`] : []
+      })
+      for (const selector of splitSelectors(rule.selectorText)) {
+        if (OTHER_BOX.test(selector)) continue
+        const probe = selector.replace(OWN_TEXT, '').replace(DYNAMIC, '')
+        for (const node of chain) {
+          let matched: boolean
+          try {
+            matched = node.matches(probe)
+          } catch {
+            if (shouts.length > 0) {
+              hits.push(
+                `${selector} { ${shouts.join('; ')} }${where ? ` in ${where}` : ''}: ` +
+                  'could not be evaluated, so cannot be cleared',
+              )
+            }
+            break
+          }
+          if (!matched) continue
+          reached += 1
+          if (shouts.length > 0) {
+            hits.push(
+              `${selector} { ${shouts.join('; ')} }${where ? ` in ${where}` : ''} reaches ${nameOf(node)}`,
+            )
+          }
+        }
+      }
+    }
+  }
+  for (const sheet of Array.from(document.styleSheets)) visit(sheet.cssRules, '')
+  for (const node of chain) {
+    const inline = (node as HTMLElement).style
+    if (!inline) continue
+    for (const [prop, re] of SHOUTS) {
+      const value = inline.getPropertyValue(prop)
+      if (re.test(value)) hits.push(`inline ${prop}: ${value} on ${nameOf(node)}`)
+    }
+  }
+  return { hits, reached }
+}
+
+/** What the badge actually PRINTS, read off a render rather than off `envTreatment`. */
+function printed(env: Environment): string {
+  const { container, unmount } = render(<EnvironmentBadge env={env} />)
+  const text = container.querySelector('.brand-env-name')?.textContent ?? ''
+  unmount()
+  return text
+}
+
+describe('the badge shouts only where shouting is a safety signal', () => {
+  // THE DECISION. §13.2 bans emphasis on any string this console authors, and
+  // the badge was the one place still doing it -- `env.name.toUpperCase()` for
+  // every declared environment and a literal `'LOCAL'`. The owner's ruling:
+  // `dev` and `local` render in sentence case like everything else; the
+  // PRODUCTION banner and ENVIRONMENT UNKNOWN keep their capitals, because
+  // those two are safety signals and not typography.
+  //
+  // PINNED AS A PROPERTY OVER CLASSIFIED INPUTS, NOT AS A LIST OF STRINGS.
+  // Every environment below goes through `classifyEnvironment` first, so a
+  // new name that classifies as production is held to capitals and a new
+  // quiet one to sentence case without anyone editing this file.
+
+  const loud: Environment[] = [
+    classifyEnvironment('prod', 'x'),
+    classifyEnvironment('production', 'x'),
+    classifyEnvironment('prod-eu', 'x'),
+    classifyEnvironment('live', 'x'),
+    classifyEnvironment(undefined, 'swarm.saga.xyz'),
+    classifyEnvironment(undefined, ''),
+  ]
+  const quiet: Environment[] = [
+    classifyEnvironment('dev', 'x'),
+    classifyEnvironment('DEV', 'x'),
+    classifyEnvironment('staging', 'x'),
+    classifyEnvironment('qa-2', 'x'),
+    classifyEnvironment(undefined, 'localhost'),
+    classifyEnvironment(undefined, 'swarm.local'),
+  ]
+
+  it('keeps production and unknown in capitals', () => {
+    for (const env of loud) {
+      const label = printed(env)
+      expect(isCapitals(label), `${env.kind} printed "${label}", which is not a safety signal`).toBe(
+        true,
+      )
+    }
+  })
+
+  it('writes every other environment in sentence case', () => {
+    for (const env of quiet) {
+      const label = printed(env)
+      expect(isCapitals(label), `${env.kind} printed "${label}" in capitals`).toBe(false)
+      expect(isSentenceCase(label), `${env.kind} printed "${label}", not sentence case`).toBe(true)
+    }
+  })
+
+  it('spends capitals exactly where the header draws the bar', () => {
+    // The two safety channels have to agree: a badge that shouts without the
+    // bar, or draws the bar in a whisper, is one of them saying the wrong
+    // thing. `bar` is already pinned to production and unknown above.
+    for (const env of [...loud, ...quiet]) {
+      const t = envTreatment(env)
+      expect(isCapitals(printed(env)), `${env.kind}: capitals and bar disagree`).toBe(t.bar)
+    }
+  })
+
+  it('and no rule in any sheet makes it shout, on the label or on anything it inherits from', () => {
+    // The casing is decided in the source, so CSS that shouts would undo the
+    // decision above without touching Brand.tsx.
+    //
+    // WHAT MOVED, AND WHY. This used to read
+    // `getComputedStyle(label).textTransform` off a badge rendered on its own,
+    // and said that meant it "does not lean on a different test's grep". It
+    // did lean on one. jsdom 25 does not inherit `text-transform`, and it
+    // applies no `@media` block that does not name `screen`. Mutation commit
+    // 232921d added `.brand-row { text-transform: uppercase }` and
+    // `@media (max-width: 560px) { .brand-env-name { text-transform: uppercase } }`.
+    // In CI run 35977623224 this test passed on both, and only
+    // typescale.test.ts's sheet grep went red.
+    //
+    // So this renders the REAL frame (`App`: `.ctl-frame > .ctl-scroll >
+    // header.brand > .brand-row > .brand-env`) and asks every rule in every
+    // sheet in the document, at every breakpoint, whether it reaches the label
+    // or any ancestor and shouts (`shoutingRules`). That includes the shipped
+    // `styles.css` and any sheet a screen has injected by then.
+    //
+    // It is strict: a shouting rule on an ancestor fails even if a nearer
+    // `none` would override it. §13.2 leaves no legal shouting rule to
+    // override, so strict costs nothing.
+    const style = withStyles()
+    render(<App />)
+    const label = document.querySelector('.brand-env-name')
+    expect(label, 'the frame rendered no environment badge').toBeTruthy()
+    // Walking the real frame, not a badge on its own, is what makes the
+    // ancestor half of this claim true.
+    expect(label!.closest('.ctl-frame'), 'the badge was not rendered inside the app frame').toBeTruthy()
+
+    const { hits, reached } = shoutingRules(label!)
+    expect(
+      reached,
+      'no rule in any sheet matched the badge or any ancestor, so the walk read nothing',
+    ).toBeGreaterThan(0)
+    expect(hits, `CSS makes the environment badge shout:\n  ${hits.join('\n  ')}`).toEqual([])
+    style.remove()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The header
 // ---------------------------------------------------------------------------
 
@@ -269,7 +530,14 @@ describe('the product header', () => {
     )
     expect(document.querySelector('.brand-mark')).toBeTruthy()
     expect(document.querySelector('.brand-word')?.textContent).toBe('SwarmCloud')
-    expect(document.querySelector('.brand-env-name')?.textContent).toBe('DEV')
+    // WHAT MOVED: this pinned the literal 'DEV'. The owner decided on
+    // 2026-09-24 (design-system.md §13.6) that a quiet environment is written
+    // in sentence case like every other string this console authors, so what
+    // is pinned now is that the badge NAMES dev and does not SHOUT it -- the
+    // casing rule itself is the describe block below.
+    const name = document.querySelector('.brand-env-name')?.textContent ?? ''
+    expect(name.toLowerCase()).toBe('dev')
+    expect(name, 'a non-production badge is shouting').not.toBe(name.toUpperCase())
     expect(await screen.findByText('u-bogdan')).toBeTruthy()
     expect(screen.getByText('someone@saga.xyz')).toBeTruthy()
   })
