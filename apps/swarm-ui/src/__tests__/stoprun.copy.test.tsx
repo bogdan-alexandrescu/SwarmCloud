@@ -5,8 +5,10 @@
 // the worker acts on the stop "at its next heartbeat". That is true of a
 // worker that is running. It is not true of an attempt no worker has started.
 // `started_at` is written on the DISPATCHED -> STARTING transition
-// (`control.py:412`), so null means nothing has ever heartbeated for this
-// attempt. In the incident, five DISPATCHED tasks whose GKE pods never ran the
+// (`control.py:412`), so null means no worker has ever started this task and
+// nothing has ever heartbeated for it. (A retry still waiting DISPATCHED is
+// the same case with a stale `started_at`; see its own test below.) In the
+// incident, five DISPATCHED tasks whose GKE pods never ran the
 // worker lifecycle were stopped. They were promised a heartbeat that could not
 // come, and they sat DISPATCHED for hours after the button was pressed.
 //
@@ -166,6 +168,20 @@ describe('a stop on an attempt no worker has started (started_at null)', () => {
     const title = pill?.getAttribute('title') ?? ''
     expect(title).not.toMatch(/heartbeat/i)
     expect(title).toMatch(/reconciler/)
+  })
+})
+
+describe('a retry waiting for its worker (DISPATCHED, started_at left by an earlier attempt)', () => {
+  // `started_at` is the TASK's field. Its only writer is the DISPATCHED ->
+  // STARTING transition (`control.py:412`), and nothing clears it on a retry,
+  // so a second attempt waiting DISPATCHED still carries the first attempt's
+  // value. Reading `started_at` alone would promise this attempt a heartbeat
+  // from a worker that has not started either.
+  it('is still an attempt no worker has started', () => {
+    const dialog = openConfirmation(task({ started_at: THEN, attempt_count: 2 }))
+
+    expect(said(dialog)).not.toMatch(/heartbeat/i)
+    expect(fact(dialog, 'takes effect')).toMatch(/reconciler/)
   })
 })
 
