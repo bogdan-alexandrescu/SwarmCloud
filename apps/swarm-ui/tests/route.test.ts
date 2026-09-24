@@ -87,6 +87,33 @@ test('a retired spelling is rewritten to the current one, not merely accepted', 
     ['agents/workflows', 'work/workflows'],
     ['pools/holders', 'capacity/holders'],
     ['capacity/holders', 'capacity/holders'], // the middle spelling, now real again
+    // THE THREE-SECTION COLLAPSE, 2026-09-24. `runtimes` and `history` stopped
+    // being sections: Runtimes became a pane of Capacity, Timeline a pane of
+    // Work, Platform counts a pane of Admin. Every one of these hashes is in a
+    // runbook or an audit file somewhere, and every one of them has a TAIL
+    // that has to survive -- an alias that drops the tail lands the reader on
+    // the section's first pane, which looks like a working link to the wrong
+    // screen.
+    ['runtimes/catalogue', 'capacity/catalogue'],
+    ['history/timeline', 'work/timeline'],
+    // `activity` is the same pane one rename further back and now points two
+    // renames forward: Activity -> History -> Work.
+    ['activity/timeline', 'work/timeline'],
+    // THE ONE A HEAD ALIAS CANNOT DO. History's two panes went to DIFFERENT
+    // sections, so `history` aliases to `work` and this tail has to be
+    // intercepted (App.tsx, MOVED_PANES) before that alias is applied.
+    ['history/counts', 'admin/counts'],
+    ['activity/counts', 'admin/counts'],
+    // The bare top-level hash from the eleven-item nav, which LEGACY owns and
+    // which followed its pane out of History into Admin.
+    ['counts', 'admin/counts'],
+    // The two-pane Settings split, which is the SAME shape as History's and is
+    // asserted here because the collapse replaced its hand-rolled branch with
+    // the shared MOVED_PANES map. Deleting either entry leaves `#settings/...`
+    // resolving through LEGACY to Pool limits, so the accounts one would fail
+    // loudly here and nowhere else.
+    ['settings/accounts', 'capacity/accounts'],
+    ['settings/limits', 'admin/limits'],
   ] as const) {
     at(`#${old}`)
     assert.equal(canonical(fromHash()), current, `#${old} is not rewritten to #${current}`)
@@ -102,7 +129,14 @@ test('a retired spelling is rewritten to the current one, not merely accepted', 
   // effect in App.tsx would rewrite the hash on every resolve, and back/forward
   // would walk a chain of corrections instead of the routes someone visited.
   // (From the help-density lane, which found this file red independently.)
-  for (const old of ['agents/running', 'pools/holders', 'agents/task/task_abc123']) {
+  for (const old of [
+    'agents/running',
+    'pools/holders',
+    'agents/task/task_abc123',
+    'history/timeline',
+    'history/counts',
+    'runtimes/catalogue',
+  ]) {
     at(`#${old}`)
     const once = canonical(fromHash())
     at(`#${once}`)
@@ -134,6 +168,10 @@ test('adding Help did not capture anything that was not Help', () => {
     // screen -- worse than a dead one.
     ['#agents/running', 'work'],
     ['#pools/holders', 'capacity'],
+    // The two sections the 2026-09-24 collapse retired.
+    ['#runtimes/catalogue', 'capacity'],
+    ['#history/timeline', 'work'],
+    ['#history/counts', 'admin'],
   ] as const) {
     at(hash)
     assert.equal(fromHash().sectionId, section, `${hash} no longer resolves as it did`)
@@ -141,6 +179,47 @@ test('adding Help did not capture anything that was not Help', () => {
   for (const hash of ['#capacity/holders', '#pools/holders'] as const) {
     at(hash)
     assert.equal(fromHash().tab, 'holders', `${hash} lost its tail`)
+  }
+  // THE TAILS OF THE RETIRED SECTIONS, named one by one rather than left to
+  // the round-trip test above. A saved `#history/timeline` has to open the
+  // TIMELINE pane; landing on Work's first pane (Agents) would resolve, render
+  // and look deliberate.
+  for (const [hash, tab] of [
+    ['#runtimes/catalogue', 'catalogue'],
+    ['#history/timeline', 'timeline'],
+    ['#activity/timeline', 'timeline'],
+    ['#history/counts', 'counts'],
+  ] as const) {
+    at(hash)
+    assert.equal(fromHash().tab, tab, `${hash} lost its tail`)
+  }
+})
+
+/**
+ * `#history/counts` IS NOT AN AGENT CALLED "counts".
+ *
+ * This is the assertion that catches the collapse's one genuinely dangerous
+ * routing case, and it is worth stating on its own because every other test in
+ * this file would stay green through it.
+ *
+ * `history` aliases to `work`, because Timeline went to Work. `work` is the
+ * section that owns the agent drawer, and `fromHash` reads a Work tail that
+ * matches no tab as a TASK ID -- that fallback is deliberate and is what keeps
+ * `#agents/<id>` from the old nav working. Put the two together and, without
+ * the MOVED_PANES interception, `#history/counts` opens the agent inspector
+ * for a task whose id is "counts": a spinner, then a "not found" panel, on a
+ * hash that used to be a working link to the platform's own ledger.
+ *
+ * MUTATION THIS CATCHES: delete the `'history/counts'` entry from MOVED_PANES,
+ * or move the MOVED_PANES lookup below the drawer branch in `fromHash`.
+ */
+test('a retired pane that moved to a different section is not read as a task id', () => {
+  for (const hash of ['#history/counts', '#activity/counts'] as const) {
+    at(hash)
+    const r = fromHash()
+    assert.equal(r.taskId, null, `${hash} opened the agent drawer`)
+    assert.equal(r.sectionId, 'admin', `${hash} did not reach Admin`)
+    assert.equal(r.tab, 'counts', `${hash} did not reach the Platform counts pane`)
   }
 })
 

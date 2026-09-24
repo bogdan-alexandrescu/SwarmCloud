@@ -188,17 +188,29 @@ limits and Timeline — ten destinations for four questions, organised by
 That is 3 rail entries instead of 21, and every screen the user reaches is the
 screen that answers the question they had.
 
-> **Two of those three names have landed, and the merge has not. Do not read
-> the rename as this proposal shipping.** The sections called Agents and Pools
-> were each named after their own first tab, so the rail and the breadcrumb both
-> drew `Agents > Agents` and `Pools > Pools`. Renaming the parents fixed that,
-> and *Work* and *Capacity* were the right names for the same reason this
-> proposal picked them: each covers all of its children instead of one of them.
-> The section count is unchanged at six. `redesign.md`'s "What was considered
-> and rejected" holds the standing objection to the merge itself — that "what is
-> happening now" and "what happened over the last 500 tasks" are different reads
-> at different costs with different failure modes — and that objection is not
-> answered by this measurement. The rule the rename did establish is in
+> **`LANDED 2026-09-24`, and with the standing objection intact rather than
+> overruled.** The nav is now Overview (the landing screen) plus Work, Capacity
+> and Admin. What collapsed is the SECTIONS; no screen was merged, removed or
+> combined with another. Timeline is a pane of Work beside Agents, with its own
+> route, its own read, its own empty state and its own failure state; Overview
+> is still its own screen. `redesign.md`'s "What was considered and rejected"
+> refused a three-section nav because it read this proposal as merging Activity
+> into Work and Overview into Capacity — "what is happening now" and "what
+> happened over the last 500 tasks" are different reads at different costs with
+> different failure modes — and that objection still stands. Nothing above
+> asked for the merge; the table's "Absorbs" column is about which SECTION a
+> pane sits under.
+>
+> Two details this table does not say, recorded so a reader does not go looking
+> for them. It omits **Runner profiles** from Capacity's absorb list (its ten
+> destinations were the ten a reader hunts through, and that pane was not one
+> of them) — the pane is under Capacity and is now labelled **Profile
+> headroom**, because "Runtimes" and "Runner profiles" as adjacent tabs is how
+> a per-tenant figure gets read as a platform one. And the count of rail
+> entries is **four, not three**: Overview keeps its own, because it is the
+> screen you land on rather than a question you navigate to.
+>
+> The rule the earlier rename established still holds and is in
 > [`redesign.md`](redesign.md#no-section-may-be-named-after-one-of-its-own-tabs):
 > **no section may be named after one of its own tabs.**
 
@@ -278,8 +290,9 @@ density argument the whole header is held to.
 **Then, the larger work:**
 
 4. The three-section IA (§1.4). This is the change that makes the console feel
-   different to use rather than merely look different. **Still a proposal**, and
-   the section rename did not start it — see the note in §1.4.
+   different to use rather than merely look different. `LANDED 2026-09-24` —
+   the nav is Overview plus Work, Capacity and Admin, and no screen was merged
+   to get there. See the note in §1.4 for what that did and did not include.
 5. `IN FLIGHT` — drive the help count under 20 (§1.3) — every one removed is a
    label that started carrying its own weight.
 6. `DONE` — semantic zoom for the canvas (§1.1, option 1). See §1.1 for the

@@ -175,22 +175,33 @@ describe('B3: the rail', () => {
     style.remove()
   })
 
-  it('renders all six sections AND every section tab, at all times', () => {
+  it('renders the three sections under Overview AND every section tab, at all times', () => {
     render(<App />)
     const rail = document.querySelector('.ctl-rail')
     expect(rail, 'no rail').not.toBeNull()
 
-    // Six sections, in one fixed order, so a position means one thing.
+    // Four rail entries, in one fixed order, so a position means one thing.
     const sections = [...rail!.querySelectorAll('.ctl-rail-group > .ctl-nav-link')].map(
       (b) => b.textContent?.trim(),
     )
+    // THREE SECTIONS AND A LANDING SCREEN, not six sections. `Runtimes` became
+    // a pane of Capacity and `History` dissolved -- Timeline into Work,
+    // Platform counts into Admin. The measurement behind it is ux-plan.md
+    // §1.4: fifteen screens grouped by which subsystem owned the data, so four
+    // of a reader's five questions were spread over ten destinations.
+    //
+    // WHAT THIS ASSERTION IS FOR IS THE ORDER AND THE COUNT, not the collapse.
+    // The rail's whole value is that a position means one thing, so a section
+    // appearing, disappearing or moving has to be a decision someone took
+    // rather than a diff nobody read.
+    //
     // `Work` and `Capacity`, not `Agents` and `Pools`. Both of those named the
     // section after its own first tab, and because both sections have more
     // than one tab the rail drew the name twice -- `Agents > Agents`,
     // `Pools > Pools` -- and so did the breadcrumb. The assertion below on
     // `Holders` is the other half: the tab could drop the word `Capacity` only
     // once the section carried it.
-    expect(sections).toEqual(['Overview', 'Work', 'Runtimes', 'Capacity', 'History', 'Admin'])
+    expect(sections).toEqual(['Overview', 'Work', 'Capacity', 'Admin'])
 
     // NO SECTION MAY BE NAMED AFTER ONE OF ITS OWN TABS. The regression this
     // file exists to catch, stated as the rule rather than as one spelling of
@@ -205,21 +216,34 @@ describe('B3: the rail', () => {
     }
 
     // THE PROPERTY THAT MATTERS: the second level does not appear on demand.
-    // Pools' five tabs are in the DOM while Overview is the open section, so
-    // the rail's geometry is a constant rather than something you re-read.
+    // Capacity's six tabs are in the DOM while Overview is the open section,
+    // so the rail's geometry is a constant rather than something you re-read.
     // The first text node, not `textContent`: an admin-gated tab appends the
     // word "admin" as a marker span, and folding that into the label would
     // make this assert on the marker rather than on the name.
     const tabs = [...rail!.querySelectorAll('[role="tab"]')].map((b) =>
       (b.firstChild?.textContent ?? '').trim(),
     )
-    expect(tabs).toContain('Runner profiles')
+    // THE THREE PANES THE COLLAPSE MOVED, each named here rather than left to
+    // the count below: a screen that loses its tab is still reachable by hash
+    // and still passes every routing test, so the only thing that notices is
+    // an assertion that says the tab exists.
+    expect(tabs, 'Runtimes lost its tab when its section dissolved').toContain('Runtimes')
+    expect(tabs, 'Timeline lost its tab when History dissolved').toContain('Timeline')
+    expect(tabs, 'Platform counts lost its tab when History dissolved').toContain('Platform counts')
+    // "Profile headroom", not "Runner profiles". The rename is what pays for
+    // Runtimes and this pane sharing a section: two adjacent tabs with
+    // near-synonymous labels is how a reader takes a per-tenant figure for a
+    // platform one, and the old pair was exactly that. Asserting the NEW name
+    // here is also what stops a revert being silent -- `Runner profiles` would
+    // otherwise route, render and read fine.
+    expect(tabs).toContain('Profile headroom')
+    expect(tabs).not.toContain('Runner profiles')
     expect(tabs).toContain('Holders')
     expect(tabs).toContain('Tenants')
-    // Work(4) + Capacity(5) + History(2) + Admin(2). Overview and Runtimes have
-    // one pane each and draw no second level -- one tab under one section is a
-    // duplicate of the section.
-    expect(tabs.length).toBe(13)
+    // Work(5) + Capacity(6) + Admin(3). Overview has one pane and draws no
+    // second level -- one tab under one section is a duplicate of the section.
+    expect(tabs.length).toBe(14)
   })
 
   it('keeps the utility corner the heading test reads', () => {

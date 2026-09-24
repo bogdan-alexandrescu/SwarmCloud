@@ -47,27 +47,56 @@ import { WorkflowsScreen } from './Workflows'
  * reads well once and then has to be re-read every time: a label that is a
  * paraphrase cannot be predicted from the thing you are looking for. Temporal
  * (Workflows, Schedules, Namespaces) and Nomad (Jobs, Clients, Servers,
- * Variables) both name the noun and let the tabs be the views, and this now
- * does the same:
+ * Variables) both name the noun and let the tabs be the views, and this still
+ * does the same -- with three of them rather than six:
  *
- *   Overview · Agents · Runtimes · Pools · History · Admin
+ *   Overview · Work · Capacity · Admin
  *
- * "Pools" because the section lists pools; "History" because it is what
- * already happened. The QUESTION each section answers is still here, and it is
- * still the test for what belongs in the section rather than a name anyone has
- * to memorise -- but it is no longer PRINTED on every pane. It was rendered
- * under the tab strip on all fifteen routes, which is five copies of the same
- * sentence for Pools alone, costing a line of vertical on every screen to say
- * something nobody re-reads after the first visit. §B2 moves it behind the
- * head's `?` (see `SectionQuestion`): written once, one keystroke from any
- * pane, and unchanged.
+ * THREE SECTIONS, AND OVERVIEW IS THE LANDING SCREEN RATHER THAN A FOURTH
+ * QUESTION. It was six -- Overview, Work, Runtimes, Capacity, History, Admin
+ * -- over the same fifteen screens. The measurement that ended that
+ * arrangement is docs/web-ui/ux-plan.md §1.4: every screen carries 24-67
+ * interactive elements and the rail alone was 21 of them on every single one,
+ * and the fifteen screens were grouped by WHICH SUBSYSTEM OWNS THE DATA rather
+ * than by what anyone wants to know. A reader arrives with five questions --
+ * is anything broken right now, what is running, why is this one stuck, what
+ * has it cost, can I start something -- and Overview answers the first while
+ * the other four were spread across ten destinations.
  *
- * That test is also what lets the list grow again honestly. It was five when
- * the redesign landed; "Runtimes" is the sixth, and the note on that entry
- * argues it against all five questions rather than against the count. A
- * section added because a screen existed would be the eleven-item nav coming
- * back; a section added because no existing question covers the screen is the
- * test working.
+ * WHAT COLLAPSED IS THE SECTIONS, NOT THE SCREENS, and that distinction is the
+ * whole of the answer to the standing objection in docs/web-ui/redesign.md
+ * ("What was considered and rejected"), which refused a three-section nav
+ * because it read the proposal as MERGING Activity into Work and Overview into
+ * Capacity: "what is happening now" and "what happened over the last 500
+ * tasks" are different reads, at different costs, with different failure
+ * modes, and a merged screen would have to explain in prose which numbers were
+ * which. That objection still stands, and nothing here contradicts it. All
+ * fifteen screens keep their own route, their own read, their own empty state
+ * and their own failure state. Timeline is a PANE of Work beside Agents, not a
+ * panel inside the agent list; Overview is still its own screen on its own
+ * route. The two sections that went away -- Runtimes and History -- held one
+ * pane and two panes, and each was spending a permanent rail entry on that.
+ *
+ * The QUESTION each section answers is still here, and it is still the test
+ * for what belongs in the section rather than a name anyone has to memorise --
+ * but it is no longer PRINTED on every pane. It was rendered under the tab
+ * strip on all fifteen routes, which is six copies of the same sentence for
+ * Capacity alone, costing a line of vertical on every screen to say something
+ * nobody re-reads after the first visit. §B2 moves it behind the head's `?`
+ * (see `SectionQuestion`): written once, one keystroke from any pane, and
+ * unchanged.
+ *
+ * THE TEST NOW HAS TO CARRY MORE, WHICH IS THE PRICE OF THREE. A membership
+ * question that six panes pass is a weaker instrument than one that two panes
+ * pass, so the failure to watch for here is a question quietly WIDENED to
+ * admit a screen someone wanted to place -- not a seventh section. Runtimes
+ * was made a section in the first place precisely because it failed all five
+ * of the questions in the file at the time; it is a pane of Capacity now
+ * because Capacity's question was rewritten, deliberately and once, to ask
+ * what can run BEFORE it asks whether there is room for another -- which is
+ * the order those two facts are actually read in. A widening needs that kind
+ * of argument, and the argument belongs in docs/web-ui/redesign.md, not in a
+ * commit message.
  *
  * THERE IS NO PROBLEM SECTION, AT ANY LEVEL. Neither Temporal nor Nomad has
  * one, and this platform has no alerting engine and no incident model, so a
@@ -93,16 +122,24 @@ import { WorkflowsScreen } from './Workflows'
  * neither was honest both were replaced (see REFERENCE_LABEL). Whichever side
  * moved, the reason is written beside the value it changed.
  *
- * THREE OF THOSE TAB LABELS NOW DIVERGE FROM docs/web-ui/redesign.md, whose
- * pane table (lines 69-74) still lists "New agent", "New workflow", "Holders"
- * and "Reference", and from docs/web-ui/ui-audit-and-build-prompt.md, which
- * proposed the opposite trade on two pairs -- shortening the heading to
- * "Holders" rather than lengthening the tab, and heading this section's
- * Timeline pane "History", which is the SECTION's name and so would have left
- * the tab and the heading still disagreeing. Both files are Track D and are
- * not edited from here; the divergence is deliberate and is reported rather
- * than patched. If those recommendations are reinstated, change both sides of
- * the pair -- the test below does not care which name wins, only that one does.
+ * TWO OF THOSE TAB LABELS STILL DIVERGE FROM
+ * docs/web-ui/ui-audit-and-build-prompt.md, which proposed the opposite trade
+ * on two pairs -- shortening the heading to "Holders" rather than lengthening
+ * the tab, and heading the Timeline pane "History", which was the name of a
+ * SECTION and so would have left the tab and the heading still disagreeing.
+ * The first has since landed for a different reason (Capacity now supplies the
+ * noun the tab was carrying); the second has not and should not, and "History"
+ * is not a section at all any more. That file is Track D and is not edited
+ * from here; the divergence is deliberate and is reported rather than patched.
+ * If the recommendation is reinstated, change both sides of the pair -- the
+ * test below does not care which name wins, only that one does.
+ *
+ * (The same paragraph used to say redesign.md's pane table still listed "New
+ * agent", "New workflow", "Holders" and "Reference". It does not: that table
+ * was brought up to date on 2026-09-24 and the note outlived the divergence it
+ * described. A citation that names a line number in another file is a citation
+ * that goes stale silently, which is why this one now names the argument
+ * rather than the lines.)
  *
  * tests/unit/control_plane/test_nav_headings_agree.py reads this array, the
  * SectionBody switch and every screen's `Screen title=` / `<h1>`, and fails on
@@ -209,18 +246,33 @@ export const SECTIONS: SectionDef[] = [
     // tabs.length > 1, and so does the crumb).
     //
     // The section is not the agent list. It holds the agent list, the workflow
-    // list, and the two screens that CREATE one of each -- four screens whose
-    // common noun is the work itself, not one of its two shapes. Naming the
-    // parent after one of its children is what produced the duplicate, and
-    // renaming the child would have been the wrong half: `Work > Agents`,
-    // `Work > Workflows`, `Work > Submit a task` each say something the
-    // section name does not, which is the test a tab has to pass.
+    // list, the timeline of what already ran, and the two screens that CREATE
+    // one of each -- five screens whose common noun is the work itself, not
+    // one of its shapes. Naming the parent after one of its children is what
+    // produced the duplicate, and renaming the child would have been the wrong
+    // half: `Work > Agents`, `Work > Workflows`, `Work > Timeline`,
+    // `Work > Submit a task` each say something the section name does not,
+    // which is the test a tab has to pass.
     label: 'Work',
+    // WIDENED ONCE, TO TAKE THE TIMELINE, and the widening is the argument
+    // rather than a side effect. "What did it produce" and "what did it
+    // already do" are the same reader's next two questions and they were two
+    // rail entries apart: Timeline was the first pane of a section called
+    // History whose only other pane was an admin count. The clause "what has
+    // already run" is what this section now has to answer, and the pane is
+    // still its own route with its own read -- see the note at the top of this
+    // file on collapsing SECTIONS rather than SCREENS.
     question:
-      'What is running, what is waiting, what did it produce — and why has mine not moved?',
+      'What is running, what has already run, what did it produce — and why has mine not moved?',
     tabs: [
       { id: 'running', label: 'Agents' },
       { id: 'workflows', label: 'Workflows' },
+      // TIMELINE, FROM THE SECTION THAT NO LONGER EXISTS. The id is
+      // `timeline`, unchanged, which is what lets `#history/timeline` --
+      // the address in every runbook that ever named this screen -- resolve
+      // with its TAIL INTACT through SECTION_ALIASES rather than landing on
+      // this section's first pane. See SECTION_ALIASES and MOVED_PANES below.
+      { id: 'timeline', label: 'Timeline' },
       // "Submit a task", not "New agent", and the screen's own copy is why.
       // Submit.tsx creates a TASK at READY or PARKED and then says, in the
       // panel it renders on success, "That is not a running agent" -- because
@@ -228,36 +280,11 @@ export const SECTIONS: SectionDef[] = [
       // agent and a page explaining you have not got one is the contradiction,
       // and the tab is the side that was wrong. `task` is also the noun the
       // API uses (`POST /v1/tasks`, `TaskCreate`), the same test that named
-      // the Runtimes section after `/v1/runtimes`.
+      // the Runtimes TAB after `/v1/runtimes` (it was a section of its own
+      // until the collapse to three; the name came from the route either way).
       { id: 'new', label: 'Submit a task' },
       { id: 'new-workflow', label: 'Submit a workflow' },
     ],
-  },
-  {
-    // WHY THIS IS A SECTION AND NOT A TAB, given the redesign above went to
-    // some trouble to get the nav down to five.
-    //
-    // The sections' `question` fields are the membership test, and this screen
-    // fails all five of them. It is not about health (Overview), not about what
-    // is running (Agents), not about room (Pools), not about the past
-    // (History) and changes nothing (Admin). The closest fit was a sixth tab
-    // under Pools beside "Runner profiles" — and those two would then be
-    // adjacent tabs whose labels are near-synonyms while answering different
-    // questions, which is how someone ends up reading per-tenant headroom as a
-    // platform figure. They stay apart, and each names the other in prose.
-    //
-    // It is a noun, like the rest, and it is the noun the API and the caller
-    // already use: the route is `/v1/runtimes` and the field a submission
-    // carries is `runner_profile`. It sits before Pools because "what is this
-    // thing and how big is one" is the question you answer before "how many
-    // fit".
-    //
-    // ONE PANE, so the tab strip does not render.
-    id: 'runtimes',
-    label: 'Runtimes',
-    question:
-      'What kinds of agent can this platform run, where does each one run, and how big is one?',
-    tabs: [{ id: 'catalogue', label: 'Runtimes' }],
   },
   {
     // BACK TO `capacity`, which this section was called before an earlier
@@ -271,15 +298,58 @@ export const SECTIONS: SectionDef[] = [
     // pool table -- `Pools > Pools`.
     //
     // `Capacity` is the section's own `question` in one word, and it is the
-    // word the five tabs have in common: pools, profiles, holders, accounts
-    // and provider quota are five different ceilings on the same thing. The id
-    // stays `pools` for the reason given on Work.
+    // word the tabs have in common: pools, runtimes, profile headroom,
+    // holders, accounts and provider quota are six readings of the same thing
+    // -- what can run, and how much of it. The id stays `capacity` for the
+    // reason given on Work.
     label: 'Capacity',
+    // WIDENED ONCE, TO TAKE THE RUNTIME CATALOGUE. The old question began at
+    // "is there room to run more", which the Runtimes screen does not answer
+    // -- and that is exactly why Runtimes was a section of its own: it failed
+    // all five questions then in the file. The widening is the clause in
+    // front: what CAN run is the question you answer before how many fit, and
+    // a reader who does not know what a runner profile weighs cannot read a
+    // headroom figure at all. This is the one widening the three-section
+    // collapse is allowed; the note at the top of this file says why a second
+    // one is the failure to watch for.
     question:
-      'Is there room to run more, which ceiling is the binding one, and what is holding what there is?',
+      'What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is?',
     tabs: [
       { id: 'pools', label: 'Pools' },
-      { id: 'profiles', label: 'Runner profiles' },
+      // RUNTIMES, WHICH WAS A SECTION UNTIL THE COLLAPSE. The id stays
+      // `catalogue` so that `#runtimes/catalogue` -- the only address this
+      // screen ever had -- resolves through SECTION_ALIASES with its tail
+      // intact rather than landing on Pools.
+      { id: 'catalogue', label: 'Runtimes' },
+      // "Profile headroom", NOT "Runner profiles", AND THIS IS THE RENAME THAT
+      // PAYS FOR PUTTING THE TWO IN ONE SECTION.
+      //
+      // The argument against ever doing this was written on the Runtimes
+      // section entry that used to sit above: "Runtimes" and "Runner profiles"
+      // are near-synonyms answering different questions, and two adjacent tabs
+      // with near-synonymous labels is how someone reads PER-TENANT headroom as
+      // a PLATFORM figure. That hazard is real and it is not answered by
+      // putting a tab between them -- a reader scanning six labels does not
+      // measure distance, they read words.
+      //
+      // So the words changed. `Runtimes.tsx` renders the runtime topology from
+      // `GET /v1/runtimes`: what kinds of agent exist, which backend each one
+      // resolves to, how big one is. Every figure on it is platform-wide and
+      // cannot be otherwise -- the catalogue route reads no tenant document.
+      // `Profiles.tsx` renders `capacity.runner_profiles`, whose pool lists are
+      // built with `pool_names_for(tenant_id=ctx.tenant_id)` UNCONDITIONALLY,
+      // including for an admin (service.py:313-329): every count on it answers
+      // "how many more could I submit". One is a catalogue, the other is a
+      // measurement of one tenant against it, and "headroom" is the word this
+      // product already uses for that measurement everywhere else
+      // (`headroomFor`, `headroomFigure`, the Pools table's own column).
+      //
+      // The id stays `profiles` -- `runner_profile` is the field name in the
+      // contract and invariant 10 is the reason this screen exists, so the
+      // ADDRESS keeps the contract's noun while the LABEL says which of the
+      // two questions it answers. The screen's `<h1>` moved with the tab;
+      // test_nav_headings_agree.py fails the build if it had not.
+      { id: 'profiles', label: 'Profile headroom' },
       // "Holders", and the earlier argument for "Capacity holders" is what
       // makes it right rather than what it overrules. That argument was:
       // "Holders" alone does not say holders of WHAT, and one tab away from
@@ -301,22 +371,34 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    // `activity` was the old id and still resolves; see SECTION_ALIASES.
-    id: 'history',
-    label: 'History',
-    question: 'What has this platform done over time, who used it, and what did it cost?',
-    tabs: [
-      { id: 'timeline', label: 'Timeline' },
-      { id: 'counts', label: 'Platform counts', admin: true },
-    ],
-  },
-  {
+    // HISTORY IS GONE AND ITS TWO PANES WENT TO DIFFERENT PLACES, which is the
+    // fact the routing below has to survive. Timeline is a pane of Work;
+    // Platform counts is here. `#history/timeline` and `#history/counts` both
+    // still resolve, and they cannot do it by one head rewrite -- see
+    // MOVED_PANES.
+    //
+    // WHY COUNTS IS ADMIN AND NOT WORK, given Timeline went to Work and both
+    // count tasks. Timeline counts the rows it loaded and says so in its
+    // header; Platform counts runs one Firestore `count()` per state, twelve
+    // of them, twenty-four for an admin, behind a button that prints the cost
+    // before you press it. It is admin-gated, it is the only screen in the
+    // product that charges for a read, and the person who presses it is the
+    // person changing ceilings -- not the person asking what their agent did.
+    // It is the platform's own ledger, which is what this section is for.
     id: 'admin',
     label: 'Admin',
-    question: 'Change a ceiling, or see who is registered to use this platform.',
+    // The count is named here because Admin is no longer only the things an
+    // operator CHANGES: one of its three panes changes nothing and is a
+    // platform-wide read. That is a widening, said out loud rather than
+    // smuggled in by leaving the old sentence in place.
+    question:
+      'Change a ceiling, see who is registered to use this platform, and count what it has done.',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
+      // The id stays `counts`, so `#counts` (LEGACY) and `#history/counts`
+      // (MOVED_PANES) both land here.
+      { id: 'counts', label: 'Platform counts', admin: true },
     ],
   },
 ]
@@ -325,8 +407,8 @@ export const SECTIONS: SectionDef[] = [
  * The API surface. Reachable, and deliberately NOT one of the sections.
  *
  * It is a thing you look up once, not a thing you work in, and giving it a
- * section would put it beside five questions that people arrive with — which
- * is the mistake the old eleven-item nav made eleven times over.
+ * section would put it beside the three questions that people arrive with —
+ * which is the mistake the old eleven-item nav made eleven times over.
  */
 const REFERENCE = 'reference'
 
@@ -369,10 +451,13 @@ const HELP = HELP_ROUTE
  * and the address bar is rewritten to the new form so the next copy of the
  * link is the current one.
  *
- * `agents`, `pools` and `activity` are NOT here although all three were old
- * top-level hashes: they are section ids that were renamed, and SECTION_ALIASES
- * resolves them first, with their tail intact. An entry here as well would be
- * dead and would read as the place they are handled.
+ * `agents`, `pools`, `activity`, `history` and `runtimes` are NOT here although
+ * all five were old top-level hashes: they are section ids that were renamed or
+ * retired, and SECTION_ALIASES resolves them first, with their tail intact. An
+ * entry here as well would be dead and would read as the place they are
+ * handled. The one tail that an alias cannot carry -- `history/counts`, whose
+ * pane went to a different section from its siblings -- is in MOVED_PANES,
+ * which runs before both.
  */
 const LEGACY: Record<string, { section: string; tab: string }> = {
   home: { section: 'overview', tab: 'now' },
@@ -382,15 +467,57 @@ const LEGACY: Record<string, { section: string; tab: string }> = {
   trouble: { section: 'overview', tab: 'now' },
   holders: { section: CAPACITY, tab: 'holders' },
   quota: { section: CAPACITY, tab: 'quota' },
-  // `agents` and `pools` are NOT here, for the reason given above: they are
-  // section ids that were renamed, SECTION_ALIASES resolves them with their
-  // tail intact, and an entry here would be dead code that reads as the place
-  // they are handled. `workflows` is different -- it was never a section id,
-  // it was a top-level hash for what is now a tab, so it belongs here.
+  // `agents`, `pools`, `history` and `runtimes` are NOT here, for the reason
+  // given above: they are section ids that were renamed or retired,
+  // SECTION_ALIASES resolves them with their tail intact, and an entry here
+  // would be dead code that reads as the place they are handled. `workflows`
+  // is different -- it was never a section id, it was a top-level hash for
+  // what is now a tab, so it belongs here.
   workflows: { section: WORK, tab: 'workflows' },
-  counts: { section: 'history', tab: 'counts' },
+  // `counts` followed its pane out of History and into Admin. It is the bare
+  // top-level hash from the eleven-item nav; `#history/counts`, which has a
+  // tail, is MOVED_PANES' job.
+  counts: { section: 'admin', tab: 'counts' },
   tenants: { section: 'admin', tab: 'tenants' },
   settings: { section: 'admin', tab: 'limits' },
+}
+
+/**
+ * A RETIRED SECTION WHOSE PANES DID NOT ALL GO TO ONE PLACE.
+ *
+ * Keyed on the WHOLE old hash, head and tail together, and consulted before
+ * anything else in `fromHash`. This is the case neither of the two mechanisms
+ * above can express, and the three-section collapse produced two of them:
+ *
+ *   - SECTION_ALIASES rewrites a HEAD and keeps the tail, which is right when
+ *     every pane of the old section landed in one new section. `history` is
+ *     aliased to `work` because Timeline went there -- but Platform counts went
+ *     to Admin, so `#history/counts` would arrive at `work/counts`, match no
+ *     tab, and then be read as a TASK ID by the drawer fallback below. A saved
+ *     link would open an agent inspector for an agent called "counts".
+ *   - LEGACY maps a whole old hash to one destination and DROPS the tail,
+ *     which is right for `#counts` and wrong for `#history/counts`: it would
+ *     land on Work's first pane, which looks like a working link to the wrong
+ *     screen -- worse than a dead one.
+ *
+ * `settings` is here for the same reason and is not new: the two-pane Settings
+ * screen split between Admin and Capacity in the redesign, and this replaces
+ * the hand-rolled `LEGACY_SETTINGS` branch that used to do it. One mechanism,
+ * because two mechanisms for one rule is the defect this repository keeps
+ * paying for -- see ux-plan.md §1.5.
+ *
+ * `#settings/<anything else>` still lands on Pool limits without an entry
+ * here: `settings` is neither a section nor an alias, so it falls through to
+ * `LEGACY['settings']`.
+ */
+const MOVED_PANES: Record<string, { section: string; tab: string }> = {
+  'history/counts': { section: 'admin', tab: 'counts' },
+  // `#activity/counts` is the same pane one rename further back: `activity`
+  // was History's id before it was renamed. It aliases to `work` now, so it
+  // needs the same interception.
+  'activity/counts': { section: 'admin', tab: 'counts' },
+  'settings/limits': { section: 'admin', tab: 'limits' },
+  'settings/accounts': { section: CAPACITY, tab: 'accounts' },
 }
 
 /**
@@ -403,6 +530,13 @@ const LEGACY: Record<string, { section: string; tab: string }> = {
  * head is rewritten and the tail keeps its meaning, so every `#capacity/<tab>`
  * and `#activity/<tab>` link written before the rename still opens the pane it
  * named.
+ *
+ * A HEAD ALIAS IS ONLY HONEST WHEN THE WHOLE OLD SECTION WENT ONE WAY. Where
+ * it did not -- History's two panes went to Work and to Admin -- the tail that
+ * disagrees is intercepted by MOVED_PANES above, which runs first. An alias
+ * without that interception does not fail: it lands the reader somewhere
+ * plausible and wrong, which is the failure mode this whole file is arranged
+ * against.
  */
 const SECTION_ALIASES: Record<string, string> = {
   agents: WORK,
@@ -410,7 +544,20 @@ const SECTION_ALIASES: Record<string, string> = {
   // own in saved links, so it resolves too; what it must never do again is
   // appear in a link this app writes.
   pools: CAPACITY,
-  activity: 'history',
+  // `activity` -> `history` -> `work`. Two renames deep: Activity became the
+  // History section, and History's Timeline pane is now a pane of Work. Both
+  // old heads point at the section Timeline actually lives in, so
+  // `#activity/timeline` and `#history/timeline` each open the Timeline pane
+  // with their tail intact. Their `counts` tails are MOVED_PANES' job.
+  activity: WORK,
+  history: WORK,
+  // `runtimes` was a one-pane section and the pane kept its id, so the head
+  // rewrite is the whole of it: `#runtimes/catalogue` -> `capacity/catalogue`,
+  // which is the Runtimes tab. A bare `#runtimes` lands on Capacity's first
+  // pane, like any unrecognised tail -- `canonical` has always written
+  // `<section>/<tab>`, so a bare section hash is something typed by hand
+  // rather than something this app ever put in an address bar.
+  runtimes: CAPACITY,
 }
 
 /**
@@ -428,12 +575,6 @@ const SECTION_ALIASES: Record<string, string> = {
  * a section or tab that does not exist.
  */
 export const INTERNAL_LINKS_MAY_NOT_USE_ALIASES = Object.keys(SECTION_ALIASES)
-
-/** `#settings/<tail>` from the two-pane Settings screen. */
-const LEGACY_SETTINGS: Record<string, { section: string; tab: string }> = {
-  limits: { section: 'admin', tab: 'limits' },
-  accounts: { section: CAPACITY, tab: 'accounts' },
-}
 
 /** Which pane of one agent is open. */
 type TaskPane = 'detail' | 'attempts'
@@ -481,6 +622,18 @@ export function fromHash(): Route {
   const tail = seg.slice(1)
   const blank: Pick<Route, 'taskId' | 'taskPane'> = { taskId: null, taskPane: 'detail' }
 
+  // MOVED PANES FIRST, AND ON THE UNALIASED HASH, because this is the only
+  // lookup in this function that sees both halves of the address at once.
+  // Every branch after it has already collapsed the head to one spelling,
+  // which is what makes them simple and is exactly why none of them can tell
+  // `#history/timeline` (whose pane went to Work with the head) from
+  // `#history/counts` (whose pane went to Admin instead). Left to the head
+  // alias, the second one resolves to `work/counts`, matches no tab, and is
+  // then read as a TASK ID by the drawer fallback below -- a saved link
+  // opening an agent inspector for an agent called "counts".
+  const moved = MOVED_PANES[seg.join('/')]
+  if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
+
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
 
   // The tail is a topic id and is carried VERBATIM, including one this build
@@ -509,11 +662,6 @@ export function fromHash(): Route {
         taskPane: attempts ? 'attempts' : 'detail',
       }
     }
-  }
-
-  if (head === 'settings') {
-    const to = LEGACY_SETTINGS[tail.join('/')] ?? LEGACY['settings']!
-    return { sectionId: to.section, tab: to.tab, ...blank }
   }
 
   const section = sectionOf(head)
@@ -664,7 +812,7 @@ export function App() {
  *
  * THE UTILITY CORNER stays in the rail, at the bottom, and keeps its
  * `ctl-nav-util` class: the API reads page and Help are things you look up
- * once, not things you work in, and putting them among the six sections is the
+ * once, not things you work in, and putting them among the sections is the
  * mistake the eleven-item nav made eleven times over.
  * `tests/unit/control_plane/test_nav_headings_agree.py` reads that class name
  * to find the utility button, so it is load-bearing rather than decorative.
@@ -677,11 +825,24 @@ export function App() {
  *
  * WHAT WAS NOT BUILT, AND WHY IT IS NOT A 56px ICON RAIL BELOW 1280px. §B3
  * asks for icon-only at 56px. This product has no icon set, and a single
- * letter is not an icon: Agents and Admin both begin with A, so a
- * letter-per-section rail would put two identical marks in a list whose whole
- * value is that a position means one thing. It narrows to 152px instead, which
- * still fits "Runner profiles" at 12px, and the reason is here rather than in
- * a commit message.
+ * letter is not an icon -- it is a label with everything but the first
+ * character deleted, which is a thing you decode rather than recognise.
+ *
+ * THAT ARGUMENT USED TO REST ON A COINCIDENCE, and the collapse to three
+ * sections removed the coincidence: the rail said Agents and Admin, two
+ * identical marks in a list whose whole value is that a position means one
+ * thing. It now says Overview, Work, Capacity, Admin -- four distinct letters
+ * -- so the collision is gone and the argument is NOT. A four-letter rail is
+ * still four things to decode, and the tabs underneath (which is most of the
+ * rail's height and all of its usefulness) have no initials at all. It narrows
+ * to 152px instead.
+ *
+ * THE LONGEST TAB LABEL IS NOW "Profile headroom", one character longer than
+ * the "Runner profiles" the 152px measurement was taken against. Nothing in
+ * this repository measures rendered text at a width -- jsdom implements no
+ * layout -- so that is a reason for someone to LOOK at 1279px, not a claim
+ * that it fits, and it is written here rather than left for the reader who
+ * finds it wrapped.
  */
 function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
   return (
@@ -736,7 +897,8 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
         {/* THE HEAD `?` (§B7.3). The way into Help from anywhere, for the
             reader who has not got a `?` in front of them. A glyph and an
             accessible name, not the word "Help" -- the rail is the product's
-            six questions and a seventh word beside them reads as a seventh. */}
+            three questions over a landing screen, and a fifth word beside them
+            reads as a fifth section. */}
         <button
           className={at.sectionId === HELP ? 'is-on' : ''}
           aria-current={at.sectionId === HELP ? 'page' : undefined}
@@ -948,16 +1110,17 @@ function SectionBody({
       return <AgentsScreen onOpen={openAgent} />
     case 'work/workflows':
       return <WorkflowsScreen />
+    case 'work/timeline':
+      return <ActivityScreen />
     case 'work/new':
       return <SubmitScreen />
     case 'work/new-workflow':
       return <SubmitWorkflowScreen />
 
-    case 'runtimes/catalogue':
-      return <RuntimesScreen />
-
     case 'capacity/pools':
       return <CapacityScreen />
+    case 'capacity/catalogue':
+      return <RuntimesScreen />
     case 'capacity/profiles':
       return <ProfilesScreen />
     case 'capacity/holders':
@@ -967,15 +1130,12 @@ function SectionBody({
     case 'capacity/quota':
       return <QuotaDetailScreen />
 
-    case 'history/timeline':
-      return <ActivityScreen />
-    case 'history/counts':
-      return <PlatformCountsScreen />
-
     case 'admin/limits':
       return <AdminSettingsScreen />
     case 'admin/tenants':
       return <TenantsScreen />
+    case 'admin/counts':
+      return <PlatformCountsScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

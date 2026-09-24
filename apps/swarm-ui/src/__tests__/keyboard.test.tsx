@@ -111,20 +111,29 @@ const POINTERS = pointerSelectors(STYLES)
 /**
  * THE FLOOR, AND WHY IT IS THIS NUMBER.
  *
- * MEASURED: 576, on the run that established this file. The per-route numbers
- * are in the log of every run and range from 24 (`admin/tenants`) to 62
- * (`capacity/accounts`).
+ * MEASURED: 576, on the run that established this file, and 518 on CI run
+ * 35948635897 before the nav collapsed to three sections. The per-route
+ * numbers are in the log of every run and ranged from 24 (`admin/tenants`) to
+ * 62 (`capacity/accounts`).
  *
- * THE SHELL ALONE IS 375, AND THAT IS WHY THE FLOOR IS NOT A PERCENTAGE. The
- * rail draws six section buttons, fourteen tab buttons (Overview's single pane
- * draws no second level) and two utility buttons on EVERY route: 22 tab stops
- * that are there whatever the screen behind them does. The header's home link,
- * the dock's line and the head's `?` add three more. 25 x 15 routes = 375
- * before a single screen has rendered anything at all, so `spacing.test.tsx`'s
- * habit of setting the floor at about 60% of the measurement would put this
- * one BELOW the number a completely blank app still reports.
+ * THE SHELL ALONE IS 345, AND THAT IS WHY THE FLOOR IS NOT A PERCENTAGE. The
+ * rail draws one button per section, one per tab of a section that has more
+ * than one (Overview's single pane draws no second level) and two utility
+ * buttons, on EVERY route: 4 + 14 + 2 = 20 tab stops that are there whatever
+ * the screen behind them does. The header's home link, the dock's line and the
+ * head's `?` add three more. 23 x 15 routes = 345 before a single screen has
+ * rendered anything at all, so `spacing.test.tsx`'s habit of setting the floor
+ * at about 60% of the measurement would put this one BELOW the number a
+ * completely blank app still reports.
  *
- * 480 is the shell plus half of the 201 controls that came from real screens.
+ * THE SHELL GOT ONE STOP CHEAPER PER ROUTE, not fifteen. Six section buttons
+ * and thirteen tab buttons became four and fourteen: the three-section
+ * collapse moved panes between sections, it did not remove any, so the tab
+ * count went UP by one while the section count went down by two. 480 is
+ * unchanged and still has room -- 345 of shell plus half of the ~200 controls
+ * that come from real screens -- and moving it because the shell moved by 15
+ * would be tuning a floor to the number it is meant to be insensitive to.
+ *
  * It fails when the sweep reaches nothing -- the shape this repository keeps
  * producing: a loop that did not word-split, a probe that returned `[]`, a
  * route list that went stale and examined 500 fewer shapes with nothing red --
@@ -165,6 +174,16 @@ const STOP_FLOOR = 480
  * and still fails hard if the sweep stops finding cards, which is the whole
  * job. The message names both numbers so a real drop is diagnosable rather
  * than just red.
+ *
+ * AND THE RATIO IS ALSO NOT 1 BECAUSE ONE CALL SITE IS NOT ONE TRIGGER. The
+ * head's `?` is a SINGLE `<SectionQuestion` in App.tsx and it renders on every
+ * route, so it contributes 1 to the source count and 15 to the sweep. That is
+ * the reason the sweep opened 24 against 19 call sites on run 35948635897, and
+ * it is why the derived floor survived the nav collapsing from six sections to
+ * three: the collapse moved panes between sections without adding or removing a
+ * `<HelpCard>` or a `<SectionQuestion>`, so neither side of the ratio moved.
+ * A floor counted from call sites is insensitive to the nav's shape, which a
+ * floor counted from routes would not have been.
  */
 function helpTriggersInSource(): number {
   // `join(__dirname, '..')`, the way nav.links.test.tsx in this directory does
@@ -387,9 +406,12 @@ describe('keyboard traversal', () => {
       ROUTES.length,
     )
     for (const p of per) {
-      // The rail alone is 22 stops on every route, so this proves the SHELL
-      // rendered rather than the screen. What notices a screen going empty is
-      // the total below and the per-route numbers in the log.
+      // The rail alone is 20 stops on every route -- 4 sections + 14 tabs + 2
+      // utility, where it was 21 (6 + 13 + 2) before the collapse; the comment
+      // on STOP_FLOOR said 22 and was counting a tab strip under Runtimes that
+      // a single-pane section never drew. So this proves the SHELL rendered
+      // rather than the screen. What notices a screen going empty is the
+      // total below and the per-route numbers in the log.
       expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(20)
     }
     expect(stops, 'the sweep reached almost nothing').toBeGreaterThan(STOP_FLOOR)
