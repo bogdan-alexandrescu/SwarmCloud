@@ -57,12 +57,19 @@ belongs to someone else.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Protocol
+
+#: The character class `sanitize_name` below rewrites, IMPORTED from the frozen
+#: contract exactly as `scheduler.dispatch` imports it, so the two copies of the
+#: naming rule cannot disagree about which characters survive.
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 
 from .detect import sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, as_datetime
@@ -867,6 +874,51 @@ def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
     configuration.refresh_api_key_hook = refresh
 
 
+def sanitize_name(*parts: str, max_length: int = 63) -> str:
+    """A Kubernetes-safe name: lowercase alnum and dashes, at most `max_length`.
+
+    THE DISPATCHER'S RULE, NOT A RESEMBLANCE OF IT. `GkeJobDispatcher` names a
+    tenant's namespace `sanitize_name(template.format(tenant=...))`, and the
+    reconciler must read the namespace the dispatcher wrote into. It used to
+    name it with `detect.sanitised`, which reproduces only the character-class
+    half of this function: past 63 characters the dispatcher truncates and
+    appends a hash of the full name, and the reconciler would have gone on
+    reading the untruncated name -- a namespace nothing writes to, listed empty
+    on every pass, and an orphan Job in the real one never found. No tenant id
+    in use today is long enough (`identity._slug` caps them at 11 characters and
+    `scripts/register-tenant.sh` refuses longer), and a live attempt is read at
+    the namespace its own `execution_name` records, so this was a latent
+    divergence rather than an observed one. One rule stated twice has to agree
+    on every input, not only on the short ones.
+
+    This function is duplicated, deliberately, for the reason `gke_api_host` is:
+    the reconciler image copies `apps/common/` and `apps/reconciler/` and
+    nothing else (images/swarm-reconciler/Dockerfile), so it cannot import
+    `scheduler.dispatch`, and the only home both images share is the frozen
+    `swarm_common`. Moving it there is contract request 13 in
+    docs/contract-change-requests.md. Until then
+    `tests/unit/control_plane/test_reconciler_gke_namespaced.py` pins the two
+    copies together over a corpus that reaches every branch -- truncation,
+    hashing, a leading digit -- which the short tenant ids in use today do not.
+
+    Raises ValueError where the dispatcher raises its DispatchError: on input
+    that leaves nothing to name.
+    """
+    joined = "-".join(p for p in parts if p)
+    slug = _NAME_SAFE.sub("-", joined.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        raise ValueError(f"cannot build a resource name from {parts!r}")
+    if len(slug) > max_length:
+        # Truncating alone would collide for two long tenant names sharing a
+        # prefix, so the tail carries a hash of the full name.
+        digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:8]
+        slug = slug[: max_length - 9].rstrip("-") + "-" + digest
+    if not slug[0].isalpha():
+        slug = "s" + slug[: max_length - 1]
+    return slug
+
+
 @dataclass
 class GkeConnection:
     endpoint: str
@@ -1003,25 +1055,27 @@ class GkeBackend:
         """The namespace the dispatcher creates this tenant's Jobs in.
 
         The SAME rule as `scheduler.dispatch.GkeJobDispatcher.namespace_for`,
-        in the same order: the `namespace` the tenant document records wins, and
-        only a tenant with none falls back to prefix + tenant id, sanitised. The
-        precedence is the part that matters -- the dispatcher prefers the
-        recorded value over its own template, so a reconciler that derived the
-        name from the prefix alone would read one namespace while the dispatcher
-        wrote into another, and every task there would look abandoned.
+        in the same order and through the same sanitiser: the `namespace` the
+        tenant document records wins, and only a tenant with none falls back to
+        `sanitize_name(prefix + tenant id)` -- the dispatcher's function, copied
+        above because this image cannot import it, 63-character truncation and
+        hash included. The precedence matters as much as the sanitiser: the
+        dispatcher prefers the recorded value over its own template, so a
+        reconciler that derived the name from the prefix alone would read one
+        namespace while the dispatcher wrote into another, and every task there
+        would look abandoned.
 
         The prefix is not restated here: it is the one this backend was built
         with, `ReconcilerConfig.namespace_prefix`, which
         `scripts/lib/check-contract-parity.sh` section 6 holds to the
-        dispatcher's template. The two services ship as separate images that
-        share only the frozen `swarm_common`, so neither can import the other's
-        copy of this rule; `tests/unit/control_plane/
-        test_reconciler_gke_namespaced.py` pins the two together on the same
-        tenants instead, the way `test_gke_client_host.py` pins `gke_api_host`.
+        dispatcher's template. `tests/unit/control_plane/
+        test_reconciler_gke_namespaced.py` pins this method to the dispatcher's
+        on the same tenants, long ids included, and pins the two sanitisers to
+        each other.
         """
         if recorded:
             return str(recorded)
-        return sanitised(f"{self._prefix}{tenant_id}")
+        return sanitize_name(f"{self._prefix}{tenant_id}")
 
     def namespace_of(self, execution_name: str | None) -> str | None:
         """The namespace part of a GKE attempt's `execution_name`.

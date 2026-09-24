@@ -616,10 +616,11 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
 
 
 #: Tenant ids that exercise EVERY branch of the dispatcher's `sanitize_name`,
-#: not only the short clean ids `identity._slug` produces today. A tenant
-#: document written by `register-tenant.sh` or by hand is not bound by `_slug`'s
-#: budget, and the branches the short ids never reach -- truncation at 63 with a
-#: hash of the full name -- are exactly where a restated copy drifts unseen.
+#: not only the short clean ids in use. `identity._slug` caps a tenant id at 11
+#: characters and `scripts/register-tenant.sh` refuses anything longer, so the
+#: truncation branch is unreachable through either TODAY -- which is exactly
+#: why a restated copy can drift there unseen, and why the pin must reach it: a
+#: tenant document written by hand, or by a future path, is bound by neither.
 NAMING_CORPUS = [
     "eng",
     "u-bogdan",
@@ -640,8 +641,11 @@ def test_the_reconciler_names_a_long_tenant_namespace_exactly_as_the_dispatcher_
     the character-class half of `sanitize_name`. For a tenant id over 50
     characters the dispatcher creates `swarm-tenant-aaaa...-<sha8>` while the
     reconciler read `swarm-tenant-aaaa...` in full: a namespace nobody writes
-    to, listed empty on every pass, and every task in the real one looking
-    abandoned.
+    to, listed empty on every pass, and orphans in the real one never found.
+    Not reachable through today's registration paths (see NAMING_CORPUS), and
+    a live attempt is always read at the namespace its own `execution_name`
+    records -- but one rule stated twice must agree everywhere, not only where
+    the inputs happen to be short.
     """
     backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(), core_api=RbacCoreApi())
     dispatchers = [

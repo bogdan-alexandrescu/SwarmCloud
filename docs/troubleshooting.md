@@ -134,7 +134,16 @@ Kubernetes authorises before it resolves, so these two cases look the same (see
 the reconciler asks for the attempt's Job by name:
 
 * **404** proves the Job is gone, and the lease is released.
-* **An active Job** is killed first, and then the lease is released.
+* **An active Job** gets the verdict a successful list would have given it.
+  If its lease is stale (the worker stopped heartbeating), or the Job runs a
+  superseded generation, the reconciler fences the generation, kills the Job,
+  and only then releases the lease. If its lease is still heartbeating,
+  nothing was wrong: the task was only reported missing because the list
+  failed. The reconciler leaves the Job alone and does not count the lease as
+  suppressed. A failed list must never kill a healthy agent. Lists fail for
+  reasons a single get does not share: API priority and fairness answers 429
+  to a LIST, the API server has a 5xx blip, or a Role grants `get` without
+  `list`.
 * **Another 403** changes nothing.
 
 Fix the namespace or the binding. **Do not add a ClusterRole to make the error

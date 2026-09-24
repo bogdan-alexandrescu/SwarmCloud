@@ -38,10 +38,12 @@ from .detect import (
     FindingKind,
     detect_all,
     detect_empty_namespaces,
+    detect_orphan_executions,
+    detect_stale_leases,
     detect_unused_job_resources,
     sanitised,
 )
-from .model import AttemptView, ControlSnapshot, ExecutionView, JobResourceView
+from .model import AttemptView, ControlSnapshot, ExecutionView, JobResourceView, LeaseView
 from .store import ControlStore
 
 #: The two lines the reconciler writes when it holds back, spelled ONCE.
@@ -65,6 +67,26 @@ _EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
     TaskState.FAILED: EventType.FAILED,
     TaskState.CANCELLED: EventType.CANCELLED,
 }
+
+
+class _Disproved:
+    """`_admit`'s answer when a probe proved a finding WRONG.
+
+    A third answer beside "act on this" and "hold it back", and it has to be
+    distinct from both. Acting is what killed healthy agents: a missing_execution
+    raised only because a LIST failed was turned into a dead_worker by an active
+    Job found by name. Holding it back is wrong too -- it would be counted in
+    `findings_suppressed` and logged as NOT_REPAIRING, which pages after thirty
+    minutes, for an agent that is doing exactly what it should.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "DISPROVED"
+
+
+_DISPROVED = _Disproved()
 
 
 @dataclass
@@ -257,6 +279,9 @@ class Reconciler:
         seen: set[tuple[str, str | None, str | None]] = set()
         for finding in findings:
             admitted = self._admit(finding, snapshot, sight)
+            if isinstance(admitted, _Disproved):
+                # Neither repaired nor held back: nothing is wrong. See _Disproved.
+                continue
             if admitted is None:
                 report.suppressed.append(self._suppressed(finding, snapshot, sight))
                 continue
@@ -544,8 +569,13 @@ class Reconciler:
 
     def _admit(
         self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
-    ) -> Finding | None:
-        """The finding to act on -- possibly re-stated by a probe -- or None."""
+    ) -> Finding | _Disproved | None:
+        """The finding to act on -- possibly re-stated by a probe -- or why not.
+
+        None means held back: logged as NOT_REPAIRING and counted as
+        suppressed. `_DISPROVED` means a probe showed the finding was wrong,
+        and it is dropped without either.
+        """
         if self._is_actionable(finding, snapshot, sight):
             return finding
         probed = self._probe(finding, snapshot, sight)
@@ -564,7 +594,7 @@ class Reconciler:
 
     def _probe(
         self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
-    ) -> Finding | None:
+    ) -> Finding | _Disproved | None:
         """Ask for THIS attempt's execution by name when its list was unreadable.
 
         The list and the name are different questions. The 2026-09-24 leases
@@ -575,9 +605,21 @@ class Reconciler:
         what this does with it:
 
         * absent or finished -- the finding stands as found, and is repaired;
-        * active -- it becomes a DEAD_WORKER carrying the live Job, so `_repair`
-          fences the generation, TERMINATES it and only then releases;
+        * active -- the probe has found what the failed list would have
+          returned, so the verdict is the one the LIST path reaches with this
+          Job in hand (`_listed_verdict`): a DEAD_WORKER carrying the live Job
+          where that path would terminate -- `_repair` then fences, TERMINATES
+          and only then releases -- and `_DISPROVED` where it would do nothing;
         * anything else -- nothing is proven and the lease stays held.
+
+        The active case used to become a DEAD_WORKER unconditionally, and that
+        killed healthy agents. A missing_execution is raised only because the
+        attempt was absent from `by_attempt`; when the list fails, EVERY
+        attempt in that namespace is absent, including ones whose lease
+        heartbeated seconds ago. Listed, such a Job produces no finding at all.
+        Probed, it was fenced, deleted, released and re-queued -- on every pass
+        where a LIST failed and a GET did not (APF 429, a 5xx blip, a timeout,
+        or RBAC granting `get` without `list`).
         """
         if not self._depends_on_absence(finding, snapshot):
             return None
@@ -616,13 +658,77 @@ class Reconciler:
         execution = result.execution
         if execution is None or not self._probe_matches(finding, execution, snapshot):
             return None
+        verdict = self._listed_verdict(finding, execution, snapshot)
+        if verdict is None:
+            # No lease in the snapshot to judge: prove nothing, hold.
+            return None
+        if isinstance(verdict, _Disproved):
+            self._log.info(
+                "probe found the execution alive under a live lease; finding disproved",
+                task_id=finding.task_id,
+                lease_id=finding.lease_id,
+                kind=finding.kind.value,
+                execution=attempt.execution_name,
+                backend=attempt.backend,
+            )
+            return verdict
         return replace(
             finding,
             kind=FindingKind.DEAD_WORKER,
             execution=execution,
-            detail=detail,
+            detail={**detail, "terminates_because": verdict},
             reason=f"{finding.reason}; its job is still active by name: {result.detail}",
         )
+
+    def _listed_verdict(
+        self, finding: Finding, execution: ExecutionView, snapshot: ControlSnapshot
+    ) -> str | _Disproved | None:
+        """What the LIST path concludes about this lease once it holds this Job.
+
+        The probe has found, by name, the active Job a readable list would have
+        returned. Acting on it may go no further than the list path would have
+        gone with that same Job in hand: a probe is a way to SEE past a failed
+        list, never a reason to act more harshly than seeing does. So the list
+        path's own execution rules are re-run -- not restated -- over this one
+        lease with this one Job:
+
+        * `detect_stale_leases`, with the Job in `by_attempt`: a stale lease
+          over a live Job is `dead_worker`, and a live lease is nothing at all.
+        * `detect_orphan_executions`: a Job whose generation is not the task's
+          is `obsolete_generation` (the partial-repair case: fenced, never
+          released); one whose task this snapshot does not hold is an orphan.
+
+        Whichever of those requires termination names the reason, and the
+        caller kills before it releases. If none does -- in practice a
+        missing_execution raised only because the list failed, under a lease
+        that is heartbeating -- the finding is `_DISPROVED`.
+
+        `orphan_lease` is the one kind answered directly, and in the stricter
+        direction. Its task points at a different lease (or its lease is
+        superseded), and the list path's orphan-lease rule releases without
+        looking for compute at all. Releasing capacity while its Job still runs
+        is the thing this module exists to prevent, so here the Job is killed
+        first.
+
+        None when there is no lease in the snapshot to judge.
+        """
+        if finding.kind is FindingKind.ORPHAN_LEASE:
+            return FindingKind.ORPHAN_LEASE.value
+        lease: LeaseView | None = snapshot.leases.get(finding.lease_id or "")
+        if lease is None:
+            return None
+        # The probe read the Job this attempt's own record names, and
+        # `_probe_matches` tied it to the task, tenant and generation: it IS
+        # this lease's execution, whatever spelling its labels gave the ids.
+        held = replace(execution, task_id=lease.task_id, attempt_id=lease.attempt_id)
+        only_this = replace(snapshot, leases={lease.lease_id: lease})
+        now = snapshot.taken_at
+        listed = [
+            *detect_stale_leases(only_this, {lease.attempt_id: held}, self._config, now),
+            *detect_orphan_executions(only_this, [held], self._config, now),
+        ]
+        terminating = sorted({f.kind.value for f in listed if f.requires_termination})
+        return terminating[0] if terminating else _DISPROVED
 
     @staticmethod
     def _probe_matches(
