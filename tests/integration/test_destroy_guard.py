@@ -34,9 +34,12 @@ def _shared_deny_list() -> list[str]:
     DERIVED, NOT RESTATED, and that is a defect fixed rather than a tidy-up.
 
     This file used to carry its own fourteen-entry list of "the real neighbours
-    in the shared project", written by hand. `SHARED_DENY_LIST` has twenty-one
-    entries, so the suite proving `make destroy` refuses to touch another team's
-    resources was proving it for fourteen of them. Missing entirely: the three
+    in the shared project", written by hand. `SHARED_DENY_LIST` has TWENTY
+    entries -- counted on 2026-09-24 by walking the array, after the prose here
+    and in docs/mirrored-values.md had both said twenty-one: one cluster, one
+    VPC, two subnets, the shared default network, three buckets and twelve
+    service accounts. So the suite proving `make destroy` refuses to touch
+    another team's resources was proving it for fourteen of twenty. Missing entirely: the three
     shared buckets (`saga-agents-crawled-media-staging`,
     `saga-agents-files-staging`, `saga-agents-terraform-state-staging`) and the
     other team's Compute Engine default service account. A plan deleting any of
