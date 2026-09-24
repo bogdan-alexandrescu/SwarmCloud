@@ -416,9 +416,17 @@ class Authenticator:
         # groups, `admin_set` is empty and the first test can never be true,
         # so every operator screen 403s for everyone. The email is the one
         # from the verified assertion, not something the caller supplied.
+        # MUTATION, NOT THE FIX: a pool admin is made a full admin -- the first
+        # form of the 2026-09-24 decision, which the owner reversed. Committed
+        # only so CI shows the narrowness tests catch it; the next commit
+        # replaces it with the allow-list.
+        admin_pool_users = {
+            u.lower() for u in getattr(self._settings, "admin_pool_users", ())
+        }
         is_admin = (
             any(g.lower() in admin_set for g in member_groups)
             or email.lower() in admin_users
+            or email.lower() in admin_pool_users
         )
         return AuthContext(
             principal=principal,

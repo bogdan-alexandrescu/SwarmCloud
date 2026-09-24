@@ -33,11 +33,12 @@ resource "google_service_account" "verify" {
   account_id   = "swarm-verify"
   display_name = "SwarmCloud verification job"
   # 256 characters at most -- the provider refuses a longer description at
-  # plan time, which is how the first wording of this line failed CI. This one
-  # is 227. It says "full platform admin" rather than naming the one ceiling
-  # race-test changes: the previous wording described what the suite DOES, and
-  # an identity's description is read as what it CAN do.
-  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: as its own tenant, and as a full platform admin where admin_users names it (for race-test)."
+  # plan time, which is how an earlier wording of this line failed CI. This one
+  # is 245. It names what the identity CAN do (any runner ceiling, through
+  # admin_pool_users) rather than what race-test does with it (mock's), and it
+  # says it is not an admin: the wording before 2026-09-24's correction said it
+  # was one.
+  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -57,13 +58,15 @@ resource "google_service_account" "verify" {
 # protecting and which still holds.
 #
 # NOT EVERY WRITE IS AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
-# this identity is also in `admin_users`, because race-test narrows runner:mock
-# with PUT /v1/admin/limits/runner/mock rather than through a Firestore write
-# role. That is the one admin write the suites make, but the flag permits every
-# /v1/admin write, tenant disable included; dev.tfvars lists them beside the
-# entry. It is an application-level admin flag in tfvars, not IAM, and it is
-# deliberately not granted here -- this file is the same in every environment,
-# and the gate has no reason to be an admin in prod.
+# this identity is also on `admin_pool_users`, because race-test narrows
+# runner:mock with PUT /v1/admin/limits/runner/mock rather than through a
+# Firestore write role. That list reaches an allow-list of admin routes in
+# swarm-api (swarm_api.auth.POOL_ADMIN_ROUTES) holding that one route; every
+# other /v1/admin route, tenant disable included, answers it 403. It is NOT a
+# platform admin: the first form of the decision put it in `admin_users`, and
+# the owner reversed that the same day. It is an application-level list in
+# tfvars, not IAM, and it is deliberately not granted here -- this file is the
+# same in every environment, and the gate has no reason to hold it in prod.
 # docs/audits/2026-09-22/race-test-needs-a-write.md has the comparison.
 #
 # Secret access is deliberately still absent. Nothing in the suites reads a

@@ -394,42 +394,41 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # docs/audits/2026-09-20/session-handover.md. Empty this the moment the
 # Workspace Group Reader role lands.
 #
-# swarm-verify IS HERE BY OWNER DECISION, 2026-09-24, and it is not an
-# operator. scripts/race-test.sh narrows runner:mock to one slot to force
-# contention, and that is a ceiling change. The alternative was a Firestore
-# write role, which cannot be scoped below the database and would have left
-# `pools/*.active` -- the counter a wider field mask once clobbered on this
-# deployment -- one typo away. The admin route cannot write `active`, refuses a
-# pool name outside the frozen catalogue, bounds the value, and now records the
-# verified caller on the pool (admin_changed_by). The full comparison is in
-# docs/audits/2026-09-22/race-test-needs-a-write.md.
+# Every entry here is a FULL platform admin: it can pause dispatch, set any
+# ceiling, drain or disable a provider for every tenant, disable any tenant
+# (PUT /v1/admin/tenants/{id}/limits) and rewrite any tenant's workflow state.
+# swarm-verify was added here on 2026-09-24 for race-test and the owner
+# reversed that the same day for exactly that reach -- it is on
+# admin_pool_users below instead. Do not put it back.
+admin_users = ["bogdan@saga.xyz"]
+
+# The verification gate's ONE admin route, by owner decision on 2026-09-24.
 #
-# What this ALSO grants, stated rather than minimised: admin is one boolean and
-# opens every /v1/admin route. This identity can pause dispatch platform-wide,
-# set any ceiling, drain or disable a provider for every tenant (disabling also
-# rewrites each tenant's quota document for it), WRITE ANY TENANT'S DOCUMENT --
-# PUT /v1/admin/tenants/{id}/limits sets max_active, capacity_units and
-# `enabled`, so it can disable a tenant outright -- rewrite any tenant's
-# workflow state (POST /v1/admin/workflows/rollup), and read every tenant's
-# leases, quota and tenant record. Nothing records the previous values. It
-# cannot write `active` on an existing pool, a tenant's service account, GCS
-# prefix or secret names, or any secret. It is granted in dev only; there is no
-# reason for the gate to be an admin in prod.
+# scripts/race-test.sh narrows runner:mock to one slot to force contention, and
+# restores it, through PUT /v1/admin/limits/runner/mock. The alternative was a
+# Firestore write role, which cannot be scoped below the database and would
+# have left `pools/*.active` -- the counter a wider field mask once clobbered on
+# this deployment -- one typo away. The route cannot write `active`, refuses a
+# pool name outside the frozen catalogue, bounds the value, and records the
+# verified caller on the pool (admin_changed_by).
 #
-# CORRECTED 2026-09-24: the first wording of this comment said the grant could
-# not touch a tenant document. It can, as above. The dated correction, and the
-# note that it changes a premise of the owner's decision, are in
-# docs/audits/2026-09-22/race-test-needs-a-write.md.
+# swarm-api lets this list call an ALLOW-LIST of admin routes
+# (swarm_api.auth.POOL_ADMIN_ROUTES), which holds that one route. Every other
+# /v1/admin route answers it 403 -- tenant limits, provider switches, drains,
+# dispatch pause, the workflow rollup and every admin read -- and so does any
+# admin route added later until it is deliberately allow-listed. It does not
+# set is_admin, so no operator screen treats the gate as an admin. What it can
+# still do: set the ceiling of ANY runner profile's pool, because the route
+# takes the profile as a parameter. race-test itself refuses every profile but
+# mock. Granted in dev only; there is no reason for the gate to hold it in
+# prod.
 #
 # BARE EMAIL, not `serviceAccount:<email>`: swarm-api compares this list against
 # the email in the verified token, so a prefixed entry would plan, apply, and
-# match nobody. The key it must agree with is ALLOWED_USERS, which locals.tf
-# derives from google_service_account.verify.email.
-#
-# EMPTYING THIS LIST when the Group Reader role lands must keep swarm-verify:
-# the gate is not a member of any Workspace group and cannot be made one.
-admin_users = [
-  "bogdan@saga.xyz",
+# match nobody (variables.tf now refuses that shape). The key it must agree
+# with is ALLOWED_USERS, which locals.tf derives from
+# google_service_account.verify.email.
+admin_pool_users = [
   "swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
 ]
 

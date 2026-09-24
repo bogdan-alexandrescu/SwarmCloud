@@ -85,6 +85,28 @@ class ApiSettings:
     #: started from. Delete it in the same change that grants swarm-api a
     #: Workspace Group Reader role.
     admin_users: tuple[str, ...] = ()
+    #: A NARROWER capability than admin, by email: these callers may call the
+    #: admin routes in `auth.POOL_ADMIN_ROUTES` -- today only
+    #: `PUT /v1/admin/limits/runner/{runner_profile}` -- and no other.
+    #:
+    #: WHY IT EXISTS. The verification gate (swarm-verify) has to narrow
+    #: `runner:mock` for race-test, and the owner decided on 2026-09-24 that it
+    #: does so through the admin route rather than a Firestore write role. The
+    #: first form of that decision put the gate in `admin_users`; review showed
+    #: admin is one boolean that also lets it disable any tenant
+    #: (`PUT /v1/admin/tenants/{id}/limits`) and rewrite any tenant's workflow
+    #: state, and the owner reversed it the same day. This list is the
+    #: replacement: the route the gate needs, and nothing else.
+    #:
+    #: It does NOT set `is_admin`, so nothing that reads that flag -- the
+    #: operator screens, the cross-tenant fields on /v1/stats and /v1/capacity
+    #: -- sees a pool admin as an admin. And the route set is an ALLOW-LIST:
+    #: an admin route added later is admin-only until someone decides
+    #: otherwise and adds it there.
+    #:
+    #: Same comparison as `admin_users`: the bare email from the verified
+    #: token, case-insensitive. A `serviceAccount:` prefix matches nobody.
+    admin_pool_users: tuple[str, ...] = ()
     #: Authorise these exact addresses, regardless of their domain.
     #:
     #: WHY THIS EXISTS, and it is not the same idea as `admin_users` above.
@@ -260,6 +282,7 @@ class ApiSettings:
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=_csv("ADMIN_USERS"),
+            admin_pool_users=_csv("ADMIN_POOL_USERS"),
             allowed_users=_csv("ALLOWED_USERS"),
             secret_admin_principals=_csv("SECRET_ADMIN_PRINCIPALS"),
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),

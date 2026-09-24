@@ -25,10 +25,10 @@
 #     PUT /v1/admin/limits/runner/mock   {"limit": N}
 #
 # `swarm-verify` -- the identity the in-VPC gate runs as, because swarm-api's
-# ingress refuses a laptop -- is a platform admin in dev (`admin_users` in
-# terraform/environments/dev/dev.tfvars). Until then it held
-# roles/datastore.viewer alone, the narrowing Firestore PATCH was refused 403,
-# and this was the one target of the gate that could not run. The three
+# ingress refuses a laptop -- may call that one admin route in dev, through
+# `admin_pool_users` in terraform/environments/dev/dev.tfvars. Until then it
+# held roles/datastore.viewer alone, the narrowing Firestore PATCH was refused
+# 403, and this was the one target of the gate that could not run. The three
 # options weighed and why this one won are in
 # docs/audits/2026-09-22/race-test-needs-a-write.md. The part worth keeping
 # next to the code, so nobody drifts back to a direct write:
@@ -43,32 +43,23 @@
 #     has no parameter that reaches `active`, runs as the verified caller, and
 #     stamps that caller on the pool document as `admin_changed_by`.
 #
-# The cost, stated rather than minimised: admin is ONE boolean, and it opens
-# every /v1/admin route, not only this one. Read from routes/admin.py and
-# store.py on 2026-09-24, the gate can also:
+# THE GATE IS NOT A PLATFORM ADMIN. The first form of this decision put it in
+# `admin_users`, and admin is ONE boolean that opens every /v1/admin route:
+# pause dispatch, any ceiling, drain or disable a provider for every tenant,
+# DISABLE ANY TENANT (PUT /v1/admin/tenants/{id}/limits sets `enabled`), and
+# rewrite any tenant's workflow state (POST /v1/admin/workflows/rollup). The
+# owner reversed it the same day, 2026-09-24. `admin_pool_users` is what
+# replaced it: swarm-api lets that list call an ALLOW-LIST of admin routes
+# (swarm_api.auth.POOL_ADMIN_ROUTES) holding the runner-ceiling PUT alone, and
+# answers every other admin route 403 -- including any added later, until
+# someone deliberately allow-lists it. It does not set is_admin anywhere.
 #
-#   * pause dispatch platform-wide, and set ANY ceiling, global to 0 included;
-#   * drain a provider or a resource class for every tenant, and disable a
-#     provider, which also rewrites every tenant's quota document for it
-#     (re-enabling resets each one to AVAILABLE and clears its cooldown and
-#     quota-derived cap; it does not put back what was there);
-#   * WRITE TENANT DOCUMENTS. PUT /v1/admin/tenants/{id}/limits sets
-#     max_active, capacity_units and `enabled` on tenants/<id>, so it can
-#     DISABLE any tenant, which stops every other route for that tenant
-#     (routes/accounts.py); PUT /v1/admin/limits/tenant/{id} sets max_active;
-#   * rewrite the stored state of any tenant's workflows
-#     (POST /v1/admin/workflows/rollup?tenant_id=);
-#   * read every tenant's leases, quota and tenant record (/v1/admin/leases,
-#     /quota, /tenants), which roles/datastore.viewer already lets it read
-#     from Firestore directly.
-#
-# Nothing records a previous value, so undoing any of those needs the old
-# number from somewhere else. What admin CANNOT do: write `active` on an
-# existing pool, touch a tenant's service account, GCS prefix or secret names
-# (set_tenant_limits patches the three fields above and nothing else), create
-# or delete a tenant, delete a lease, or read or write a secret. It is granted
-# in dev only. The first record of this decision said it could not touch a
-# tenant document; that was wrong, and the dated correction is in the audit.
+# What the gate can still do with it, stated rather than minimised: set the
+# ceiling of ANY runner profile's pool, since the route takes the profile as a
+# parameter. This suite refuses every profile but mock (below). It cannot write
+# `active`, create a pool outside the frozen catalogue, or touch a tenant. No
+# admin GET is granted: the readback below goes to Firestore, not the API. It
+# is granted in dev only. The dated record is in the audit above.
 #
 # FOUR REFUSALS FOLLOW FROM USING THE API, all checked before the first write,
 # because in each case the API could not undo what the suite would do:
@@ -303,11 +294,12 @@ restore() {
         # TWO REPAIRS, because the one that matches this suite's own write
         # cannot be run with a person's credential. The front door refuses every
         # user credential (scripts/api.sh: SWARM_IMPERSONATE_SA is REQUIRED
-        # there), so the admin route only works as an identity that is BOTH an
-        # admin and admitted by IAP. In dev that is swarm-verify once both of
-        # its grants are live: IAP through frontend_iap_members in
+        # there), so the admin route only works as an identity that BOTH may
+        # call it and is admitted by IAP. In dev that is swarm-verify once both
+        # of its grants are live: IAP through frontend_iap_members in
         # terraform/bootstrap/terraform.tfvars (#23, applied by the owner, not
-        # the release) and admin through admin_users (applied by the release).
+        # the release) and the route through admin_pool_users (applied by the
+        # release).
         # pool-limit.sh needs neither: it works as an operator, through a
         # Firestore updateMask that names hard_limit alone. Printing only the
         # first sent whoever read this to a 403 with nothing else on screen,
@@ -323,7 +315,7 @@ restore() {
         err "    scripts/api.sh PUT ${LIMIT_ROUTE} '{\"limit\":${ORIGINAL_LIMIT}}'"
         err "      the admin route this suite used, which records who made the change."
         err "      Through the front door it needs SWARM_IMPERSONATE_SA naming an identity"
-        err "      that is in admin_users AND admitted by IAP (frontend_iap_members in"
+        err "      on admin_pool_users (or admin_users) AND admitted by IAP (frontend_iap_members in"
         err "      terraform/bootstrap/terraform.tfvars); a user credential is refused there."
       fi
     fi
@@ -390,11 +382,15 @@ if ! _set_limit "${SLOT_LIMIT}" "${NARROW_OUT}"; then
   rm -f "${NARROW_OUT}"
   if [[ "${API_STATUS}" == "403" ]]; then
     # An IAP refusal has already been explained by api_request. This is the
-    # other 403: swarm-api knew the caller and the caller is not an admin.
-    t_info "A 403 from swarm-api here means the caller is not a platform admin."
-    t_info "The gate's identity is made one through admin_users in"
+    # other 403: swarm-api knew the caller, and the caller may not call this
+    # route. The fix is the NARROW list. Naming admin_users here -- which this
+    # message did until the owner's correction of 2026-09-24 -- sends the reader
+    # to the grant that makes the gate a full admin, able to disable any tenant.
+    t_info "A 403 from swarm-api here means the caller may not change a runner ceiling."
+    t_info "The gate gets that one admin route, and no other, through admin_pool_users in"
     t_info "terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars (bare email, no"
-    t_info "serviceAccount: prefix) and the release that applies it."
+    t_info "serviceAccount: prefix) and the release that applies it. Not admin_users:"
+    t_info "that makes it a full platform admin, which the owner decided against."
   fi
   t_fatal "could not narrow ${POOL_NAME}: PUT ${API_PREFIX}${LIMIT_ROUTE} answered HTTP ${API_STATUS}"
 fi
