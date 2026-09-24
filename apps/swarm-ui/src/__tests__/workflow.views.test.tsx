@@ -967,10 +967,16 @@ describe('U5: scrubbing', () => {
     // A BROWSER TAKES FOCUS OFF A CONTROL THE MOMENT IT BECOMES `disabled`
     // (the HTML focus fixup rule), and from <body> no arrow key reaches the
     // scrubber. jsdom does not run that rule, so this asks the question it can
-    // answer: at its end, can the control hold focus at all?
-    ;(document.activeElement as HTMLElement).blur()
+    // answer: at its end, can the control take focus at all?
+    //
+    // Focus goes to ANOTHER REAL CONTROL first, not through `blur()`. The first
+    // version of this test called `blur()` on the focused button, and jsdom's
+    // `blur()` is a no-op on a disabled element -- so focus never left it, and
+    // the test passed against the very defect it names (CI run 35979486837).
+    within(i).getByRole('button', { name: 'Stop inspecting this step' }).focus()
+    expect(document.activeElement).not.toBe(prev)
     prev.focus()
-    expect(document.activeElement, 'the control at its end cannot hold focus').toBe(prev)
+    expect(document.activeElement, 'the control at its end cannot take focus').toBe(prev)
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
     expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
   })
