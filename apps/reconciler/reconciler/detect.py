@@ -1018,7 +1018,11 @@ def detect_all(
     # judgement owns that execution. A dead_worker kill in the same pass would
     # break the promise (and, for a finished task, SIGTERM a worker that may be
     # finishing its own cleanup), so every rule about its lease waits too.
-    deferred: set[str] = set()  # MUTATION M2
+    deferred = {
+        execution.attempt_id
+        for execution in executions
+        if execution.attempt_id and orphan_rule_defers(snapshot, execution, config)
+    }
     findings = [
         f
         for f in findings

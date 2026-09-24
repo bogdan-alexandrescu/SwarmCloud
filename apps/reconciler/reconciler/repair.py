@@ -522,7 +522,7 @@ class Reconciler:
         orphans, killed first and only then released. A kill switch that left
         the read running would leave its failure modes running with it.
         """
-        if False and not self._config.enable_gke_eviction:  # MUTATION M4
+        if not self._config.enable_gke_eviction:
             return
         wanted = sorted(
             {
