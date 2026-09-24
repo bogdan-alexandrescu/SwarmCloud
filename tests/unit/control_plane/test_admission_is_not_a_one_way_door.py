@@ -98,9 +98,10 @@ def test_the_capacity_comes_back_even_when_the_rollback_cannot_finish(
 ):
     """A broken control plane breaks the cleanup too; the pools still come back.
 
-    `return_to_ready_after_failed_dispatch` releases the lease FIRST and writes
-    the task and the event afterwards, so a Firestore that is refusing writes
-    still returns the slot. The original exception must survive that -- masking
+    `return_to_ready_after_failed_dispatch` releases the lease and returns the
+    task in one transaction and writes the event only after it commits, so an
+    event write that fails still returns the slot. The original exception must
+    survive that -- masking
     it with the cleanup's own failure would send the operator after the wrong
     fault.
     """
