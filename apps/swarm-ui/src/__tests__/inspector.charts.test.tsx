@@ -140,9 +140,18 @@ describe('the sentences on the marks are reachable', () => {
     // would be replaced by one label for the whole chart. Those sentences are
     // the accessible route to the explanation the owner moved off the glass.
     const el = await mount()
+    // THE CHART ROOTS ONLY. visx draws every tick label as its own nested
+    // <svg> (its Text component), so `figure svg` matched 35 elements on this
+    // run and the first version of this test failed on its own count before
+    // it ever read a role -- run 35976830767, a red that proved nothing.
     const svgs = [
       ...el.querySelectorAll(
-        'figure.ctl-phases svg, figure.ctl-peak svg, figure.ctl-ckpt-strip svg, figure.ctl-diffstat svg',
+        [
+          'figure.ctl-phases svg.ctl-chart-svg',
+          'figure.ctl-peak svg.ctl-chart-svg',
+          'figure.ctl-ckpt-strip svg.ctl-chart-svg',
+          'figure.ctl-diffstat svg.ctl-chart-svg',
+        ].join(', '),
       ),
     ]
     // phases + lollipop, one peak, one strip, one diffstat.
