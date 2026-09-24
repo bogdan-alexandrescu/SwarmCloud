@@ -1415,8 +1415,31 @@ body {
 .wf-progress.untrusted { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
 .wf-progress.untrusted .wf-progress-text { color: var(--warn); }
 
-.wf-shape { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
-.wf-shape-text { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+/* INVENTORY F11 -- THE ONE GENUINE ESCAPE IN THE BASELINE SET.
+   `.wf-shape-text` was `white-space: nowrap` with nothing to contain it, inside
+   a grid column that is 56px at 390 and an `fr` above that. The audit measured
+   `1 → 2 → 1 → 1` at 93.9px painting outside a 56px box by 38px -- not clipped,
+   PAINTED, over whatever the next column was drawing. Every other overflow in
+   that inventory is a truncation; this one is ink in the wrong place.
+
+   THE CONTAINMENT IS THE FIX AND THE COLUMN WIDTH IS THE MITIGATION. `overflow:
+   hidden` plus an ellipsis means the string can never leave its column again at
+   any width, whatever shape a workflow turns out to have -- an unbounded figure
+   has no width at which nowrap is safe. Below, the 390 column goes from 56px to
+   72px so the shape that actually occurs (`1 → 5 → 1`, the measured six-step
+   fixture: 9 characters at --t-micro's 7.22px advance = 65px) survives WHOLE
+   rather than being saved from escaping only to be cut. 72 is that 65 rounded
+   up to the spacing grain, so a fractional advance cannot take the last glyph.
+
+   The kind of shape stays reachable either way: `.wf-shape` carries
+   `title={shape.label}` -- "A fan-out and a join: plan opens into 5 running in
+   parallel, and they converge into report" -- which is the sentence, not the
+   widths, and it does not truncate. */
+.wf-shape { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; overflow: hidden; }
+.wf-shape-text {
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 
 .wf-mix { display: flex; gap: var(--ctl-s1); min-width: 0; overflow: hidden; }
 .wf-chip {
@@ -1517,8 +1540,23 @@ body {
    rule declares only what `.ctl-eyebrow` cannot know: that each one is
    positioned against a `top` the layout computed. Font, case and tone come
    from the primitive. */
+/* FOUR LAYERS ON THIS CANVAS AND THEY ARE ALL WRITTEN DOWN HERE, because two
+   of them are `position: relative`/`absolute` with `z-index: auto` and so paint
+   in DOM ORDER -- which is not a thing anybody re-derives correctly while
+   adding a fifth:
+
+     0  the edge SVG and the node cards, in DOM order
+     1  `.wf-band`, which is opaque and has to cover the edges crossing it
+     2  `.node-stop`, so an OPENED stop dialog is not half behind a band
+     3  `.wf-levels`, the sticky rail, which everything passes behind
+
+   The rail was 2. It stayed above the cards only because they are `z-index:
+   auto`; the moment `.wf-band` took a 2 of its own, the band -- later in the
+   document -- began painting over the rail, and a sticky caption that is
+   occluded by the thing it captions is worse than no caption. The numbers are
+   ordered rather than dense on purpose: there is room between them. */
 .wf-levels {
-  position: sticky; left: 0; z-index: 2; flex: none;
+  position: sticky; left: 0; z-index: 3; flex: none;
   width: 72px; margin: 0; padding: 0; list-style: none;
   background: var(--wf-body-bg);
 }
@@ -1542,6 +1580,134 @@ body {
    that two edges converging on one join still touch. */
 .wf-edge-halo { fill: none; stroke: var(--wf-body-bg); stroke-width: 5; }
 .wf-arrowhead { fill: var(--line); }
+
+/* THE COLLAPSED STAGE.
+   ---------------------------------------------------------------------------
+   WHY THERE IS ONE AT ALL. The transpose put the steps of a stage side by side,
+   which is right, and it left the bill: a 13-wide stage is 13 x NODE_W plus
+   twelve gaps -- 3,560px against the 1,054px `.wf-canvas` actually gets at
+   1440. Measured on a live 30-step run, 17 of 30 nodes were clipped, 4 were
+   entirely off-screen and one workflow was 4.6 screen-heights tall. Scaling to
+   fit is still refused for the reason `.wf-canvas-wrap` gives -- a node scaled
+   to fit is texture -- so what gives is how many nodes are DRAWN. `dag.ts`'s
+   `STAGE_FITS` is the threshold and carries the arithmetic; this rule is what
+   the band that replaces them looks like.
+
+   IT IS A BAND ACROSS THE FLOW, NOT A WIDE NODE. Full canvas width,
+   left-aligned, `--radius` like the cards it stands in for, and the same
+   3px state accent on its left edge -- so the eye reads it as one member of the
+   same vertical sequence rather than as a new kind of object.
+
+   ABOVE THE EDGES, ON PURPOSE. A `z-index` and an opaque `--surface`, the
+   same pair `.wf-levels` uses so the cards pass behind the sticky rail (the
+   layer order for this canvas is written out over `.wf-levels`). When a
+   stage is EXPANDED the band stays -- it is the only control that closes it
+   again, and on a 13-wide stage the census is the only thing on screen that
+   says what the part you have scrolled past is doing -- so edges arriving from
+   the stage above cross it. Passing behind an opaque band reads as depth; a
+   line drawn over a control reads as a rendering fault, which is the exact
+   sentence inventory F9 uses about the stop button.
+
+   THE HEIGHT IS DECLARED BY `dag.ts`, NOT BY THIS RULE. `BAND_H` is 45: 24 of
+   padding, 2 of border and one --t-meta/--lh-meta line box at 18.85. The
+   element is given that height inline, `box-sizing: border-box` keeps the
+   padding inside it, and the two must move together -- a band taller than the
+   figure the layout reserved overlaps the stage beneath it, which is the defect
+   `heightOf` exists to prevent, one level up. 45 also clears the 44px touch
+   target (§7.2); `--ctl-s2` of padding would have come in at 37 and missed it,
+   which is why the step here is `--ctl-s3`. */
+.wf-band {
+  position: absolute;
+  /* Layer 1 of the four `.wf-levels` lists. Above the edges and the cards,
+     below the stop dialog and below the sticky rail. */
+  z-index: 1;
+  /* RESTATED, as `.node` restates it, and for the same reason: the height of
+     this box is a number `dag.ts` committed to, and the sheet's global
+     `* { box-sizing: border-box }` is far enough away that a future reset
+     could move it without anyone connecting the two. */
+  box-sizing: border-box;
+  display: flex; align-items: center; gap: var(--ctl-s3);
+  /* `margin: 0` is DECLARED. A `<button>` carries a UA margin in some engines
+     and this one is placed by `left`/`top`, so a margin nobody wrote would
+     move it off the band `layoutOf` reserved -- silently, and only in the
+     browser that has it. */
+  margin: 0;
+  padding: var(--ctl-s3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius);
+  /* The button reset this sheet applies to `.wf-bar` for the same reason: a
+     row that is a control must not inherit a control's centring, casing or
+     tracking. */
+  text-align: left; text-transform: none; letter-spacing: normal;
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--ctl-dur) ease;
+}
+/* HUELESS ON HOVER, exactly as `.wf-bar`: the accent on this screen already
+   carries the link colour, the focus ring and the live state. */
+.wf-band:hover { border-color: var(--text-faint); }
+.wf-band:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* How many steps are behind the band. Set in the row's own weight because it
+   is the datum; the counts that qualify it are one step down. */
+.wf-band-n { flex: none; font-weight: 600; }
+/* NOWRAP AND CLIPPED, AND THAT IS ONLY SAFE BECAUSE OF THE ORDER.
+   A wrapping count list would make the band's height depend on how many states
+   a stage happens to be in -- and `layoutOf` places the stage under it from a
+   constant, so a band that grew by a line would sit on top of its own nodes.
+   So the line clips. `stageCensus` puts FAILED, DEAD_LETTERED and CANCELLED at
+   the FRONT of the list, so the bucket that may never be lost is never the one
+   at the end of it, and the complete census is the band's `aria-label`
+   regardless. */
+.wf-band-counts {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s3);
+  min-width: 0; overflow: hidden;
+}
+.wf-band-count {
+  display: inline-flex; align-items: center; gap: var(--ctl-s1);
+  white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+}
+/* TWO COLOURED BUCKETS AND NO MORE, and the restraint is the point.
+   The TONE of every bucket is on its `.ctl-dot`, which is the vocabulary this
+   screen already has and which survives greyscale; the TEXT stays `--text-dim`
+   except in the two cases where a word has to outrank its neighbours.
+   `succeeded` is deliberately not one of them -- nothing is coloured for being
+   healthy (§6.7), and a band whose thirteen steps all passed would otherwise
+   spend the eye's whole severity budget on the stage that is fine. */
+.wf-band-count.is-bad { color: var(--bad-ink); font-weight: 600; }
+/* The same faint the row's own unknown state takes (`.wf-state.unknown`): an
+   absence of information is not a state, and it may not read as one. */
+.wf-band-count.is-unknown { color: var(--text-faint); }
+.wf-band .wf-caret { margin-left: auto; flex: none; }
+/* A STAGE WHOSE CENSUS IS INCOMPLETE MUST NOT LOOK CLEAN. Dashed and amber --
+   the same treatment `.node.unknown` carries, for the same fact one level up:
+   some of these steps' states were not in the read, so nothing here is evidence
+   that nothing failed. */
+.wf-band.has-unread {
+  border-left-color: var(--warn);
+  border-left-style: dashed;
+}
+/* AND A STAGE WITH SOMETHING BROKEN IN IT IS DISTINGUISHABLE WITHOUT BEING
+   READ. Declared after `.has-unread` so a band that is both keeps the dashed
+   EDGE from that rule and takes the bad COLOUR from this one: two facts, two
+   properties, one border. The 6% tint is `.node.unknown`'s, in the bad hue. */
+.wf-band.has-failure {
+  border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 6%, var(--surface));
+}
+/* THE WRAPPER `aria-controls` POINTS AT, AND IT IS DELIBERATELY SIZELESS.
+   A disclosure control needs something to name, and the nodes of a stage are
+   absolutely positioned siblings on a shared canvas with no container of their
+   own. A zero-size positioned box at the canvas origin gives them one: a
+   `.node-slot` inside it resolves `left`/`top` against this box's padding
+   edge, which is the canvas origin, so every coordinate is the one the layout
+   computed and nothing moves. It must never be given a size or `overflow:
+   hidden` -- either would clip every node in the stage. */
+.wf-stage { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 
 /* THE SLOT THE LAYOUT PLACES, and the reason it exists is valid HTML.
    The card is an `<a>` now -- the whole node is the link -- and a `<button>`
@@ -1763,7 +1929,15 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
                   census failed drew an empty cell.
        [shape]    `1 → 5 → 1`. A row that cannot tell a fan-out from a chain
                   has lost the one field that is not recoverable by squinting
-                  at the others, and it costs 56px.
+                  at the others, and it costs 72px. IT COST 56, WHICH WAS 9px
+                  SHORT OF THE COMMONEST SHAPE ON THE BOARD and 38px short of a
+                  four-level one -- and because the text had no containment it
+                  did not ellipse, it PAINTED over the column beside it
+                  (inventory F11, the only genuine escape in that set). The
+                  containment is on `.wf-shape-text` now; this is the 16px that
+                  keeps `1 → 5 → 1` whole rather than merely inside its box. It
+                  comes out of `[name]`, which already ellipses here and whose
+                  full id is on the row's own `title`.
        [actions]  one action, so a row is never a dead end.
 
      THE STATE WORD DROPS, and that is survivable precisely because the mark
@@ -1775,7 +1949,7 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
       [state] 10px
       [name] minmax(0, 1fr)
       [progress] 54px
-      [shape] 56px
+      [shape] 72px
       [actions] 16px;
     gap: var(--ctl-s2);
     /* 44px touch target (§7.2). The type does not grow with it -- a row that
@@ -6432,8 +6606,53 @@ table.pools tbody tr.unmeasured {
    dependency list, which is where it was found.
    15px rather than 12: the card's left edge is a 3px state accent plus 12px of
    padding, so 15 is where the text column starts. The control lines up with
-   the words above it rather than with the border. */
-.node-stop { position: absolute; left: 15px; bottom: 10px; }
+   the words above it rather than with the border.
+
+   INVENTORY F9, AND WHAT IS ACTUALLY LEFT OF IT. The audit measured a 12px
+   spill -- node bottom 808, button bottom 820 -- against a DOM where
+   `.node-stop` was a `position: static` CHILD of a node at `overflow:
+   visible`, so the card's rounded border ran through the middle of the button.
+   That DOM no longer exists: the node became an `<a>`, the control became an
+   absolutely positioned SIBLING inside `.node-slot`, and `NODE_H` grew the
+   42px strip it sits in. The idle button is inside the card by construction
+   now -- 10px up from the slot's bottom edge, in a strip the layout reserved.
+
+   THE SAME DEFECT SURVIVED IN THE CONTROL'S OTHER THREE STATES, which the
+   audit could not see because it never opened one. `StopRun` replaces the
+   button in place with `.stop-pending`, `.stop-note` or -- on a click --
+   `.stop-confirm`, a real dialog with `max-width: 62ch`. Anchored `bottom:
+   10px` in a box with no right edge, 62ch of it is about 440px against a 248px
+   node: it paints out over the neighbouring step, under the cards the canvas
+   draws after it, with no border of its own to say where it begins.
+
+   SO THE STRIP HAS A RIGHT EDGE AND THE CONTENTS ARE BOUNDED BY IT. `right:
+   12px` matches the card's own padding, so the control's box is exactly the
+   node's text column; `max-width: 100%` on the children holds the dialog
+   inside it. `z-index: 2` -- layer 2 of the four listed over `.wf-levels` --
+   puts an opened dialog above the other cards AND above a stage band, rather
+   than half behind them: an overlay that is partly occluded reads as a
+   rendering fault, which is the sentence F9 uses about the button. The button
+   itself does not stretch: it is an inline-block in a block box. */
+.node-stop { position: absolute; left: 15px; right: 12px; bottom: 10px; z-index: 2; }
+.node-stop > * { max-width: 100%; }
+/* The dialog GROWS UPWARD OVER ITS OWN CARD rather than downward into the next
+   stage: `bottom: 0` against a strip whose height is the control's. It gets a
+   surface and a shadow because at that point it is an overlay and has to say
+   so -- this is the one place on this canvas a shadow is still the right
+   answer, and it is on one element at a time rather than on fourteen. */
+.node-stop .stop-confirm {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  margin-top: 0;
+  /* DECLARED HERE AND NOT LEFT TO `.node-stop > *`. `.stop-confirm` sets
+     `max-width: 62ch` -- a measure, correct in the run detail where the dialog
+     is prose -- and at equal specificity the later rule in this sheet wins,
+     which is that one. An over-constrained absolutely positioned box drops its
+     `right`, so 62ch would have escaped to the right of a 221px strip with the
+     containment apparently in place. Two classes beat one. */
+  max-width: 100%;
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow);
+}
 
 /* "stop requested" is not a button and must not look like one: the request is
    already in, and something that invited a second press would imply the first

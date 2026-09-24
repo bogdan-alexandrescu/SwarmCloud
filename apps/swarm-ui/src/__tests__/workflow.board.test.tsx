@@ -28,7 +28,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
-import { shapeOf, stepDuration } from '../dag'
+import {
+  CANVAS_COLUMN,
+  NODE_W,
+  SIB_GAP,
+  STAGE_FITS,
+  layoutOf,
+  shapeOf,
+  stageCensus,
+  stepDuration,
+} from '../dag'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 
 // ---------------------------------------------------------------------------
@@ -157,10 +166,35 @@ function pinTheClock(): void {
   })
 }
 
-function card(w: Workflow, taskById: Map<string, Task> | null = new Map(), expanded = false) {
-  return render(
+/**
+ * The card, with a real store behind its stage expansion.
+ *
+ * IT IS A HARNESS RATHER THAN A BARE `render`, AND THAT IS THE POINT OF THE
+ * SHAPE IT TESTS. `WorkflowCard` does not own which stages are open --
+ * `WorkflowsScreen` holds that above the `key` a stop-and-reload bumps, so a
+ * stage the reader opened is not closed by the board re-reading itself. A test
+ * that passed a frozen `openStages={{}}` could never click a band open, and a
+ * `WorkflowCard` that quietly took the state back into a `useState` of its own
+ * would still pass it. This harness is the store, and
+ * `test('survives the card being remounted')` below is what proves the
+ * component is not secretly keeping a second copy.
+ */
+function CardHarness({
+  workflow,
+  taskById,
+  expanded,
+  cardKey = 0,
+}: {
+  workflow: Workflow
+  taskById: Map<string, Task> | null
+  expanded: boolean
+  cardKey?: number
+}) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
     <WorkflowCard
-      workflow={w}
+      key={cardKey}
+      workflow={workflow}
       taskById={taskById}
       expanded={expanded}
       // `ready` with a null usage is "the attempt read landed and this board
@@ -169,9 +203,40 @@ function card(w: Workflow, taskById: Map<string, Task> | null = new Map(), expan
       // make the assertions below pass for the wrong reason.
       usage={{ kind: 'ready', usage: null }}
       onToggle={noop}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
       reload={noop}
-    />,
+    />
   )
+}
+
+function card(w: Workflow, taskById: Map<string, Task> | null = new Map(), expanded = false) {
+  return render(<CardHarness workflow={w} taskById={taskById} expanded={expanded} />)
+}
+
+/**
+ * Open every collapsed stage in the rendered graph, and say how many there
+ * were.
+ *
+ * IT RE-QUERIES RATHER THAN ITERATING A SNAPSHOT, and it returns the count so
+ * a caller can assert it actually did something. A loop over a `NodeList`
+ * captured before the first click is the shape that silently visits one element
+ * -- the repository has shipped "clean sweep" reports from exactly that -- and
+ * a helper that expanded nothing would make every assertion after it pass for
+ * the wrong reason.
+ */
+function openEveryBand(root: ParentNode): number {
+  let opened = 0
+  for (;;) {
+    const band = root.querySelector<HTMLButtonElement>('.wf-band[aria-expanded="false"]')
+    if (band === null) return opened
+    fireEvent.click(band)
+    opened += 1
+    // A band that re-renders still collapsed would spin here for ever. Fail
+    // loudly instead: no fixture in this file has more than a handful of
+    // levels.
+    if (opened > 50) throw new Error('clicking a band did not expand it')
+  }
 }
 
 function withStyles(): HTMLStyleElement {
@@ -289,13 +354,16 @@ describe('the collapsed row', () => {
   it('opens on click and closes again', () => {
     function Harness() {
       const [open, setOpen] = useState(false)
+      const [stages, setStages] = useState<Record<string, boolean>>({})
       return (
         <WorkflowCard
           workflow={fanOut()}
           taskById={new Map()}
           expanded={open}
-        usage={{ kind: 'ready', usage: null }}
+          usage={{ kind: 'ready', usage: null }}
           onToggle={(_id, was) => setOpen(!was)}
+          openStages={stages}
+          onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
           reload={noop}
         />
       )
@@ -472,6 +540,11 @@ describe('the expanded canvas', () => {
     )
     tasks.set('task_scan_a', task('task_scan_a', 'RUNNING', { started_at: iso(-92_000) }))
     const { container } = card({ ...w, steps }, tasks, true)
+    // The five parallel steps are one stage over `STAGE_FITS`, so the canvas
+    // lands with that stage as a band. The nodes are what this test is about,
+    // so open it -- and check that there WAS one to open, or every assertion
+    // below would be passing over an empty graph.
+    expect(openEveryBand(container)).toBe(1)
 
     const node = nodeNamed(container, 'scan-a')
     expect(node.querySelector('.node-id')!.textContent).toContain('scan-a')
@@ -490,6 +563,13 @@ describe('the expanded canvas', () => {
   })
 
   it('draws a real edge for every real dependency', () => {
+    // NOT EXPANDED, DELIBERATELY. `fanOut`'s middle stage is five steps, one
+    // over `STAGE_FITS`, so this renders with that stage as a band -- and all
+    // ten dependencies still draw. That is the half of stage collapsing which
+    // is easiest to lose: the first implementation of it found edges by walking
+    // the NODES, and a collapsed stage has none, so every edge into or out of
+    // it vanished. Both endpoints resolve through the step, and a step in a
+    // band attaches to the band.
     const { container } = card(fanOut(), new Map(), true)
     const edges = container.querySelectorAll('.wf-edge')
     expect(edges).toHaveLength(10)
@@ -515,6 +595,7 @@ describe('the expanded canvas', () => {
     const steps = w.steps.map((s, i) => (i === 1 ? { ...s, task_id: 'task_scan_a' } : s))
     const tasks = new Map([['task_scan_a', task('task_scan_a', 'RUNNING')]])
     const { container } = card({ ...w, steps }, tasks, true)
+    expect(openEveryBand(container)).toBe(1)
     const node = nodeNamed(container, 'scan-a')
     expect(node.tagName).toBe('A')
     expect(node.getAttribute('href')).toBe('#work/task/task_scan_a')
@@ -544,6 +625,11 @@ describe('the expanded canvas', () => {
    */
   it('lays the levels out in dependency order, top to bottom', () => {
     const { container } = card(fanOut(), new Map(), true)
+    // Opened, because the property under test is about where the five parallel
+    // steps SIT, and collapsing is not allowed to change that answer: an
+    // expanded stage draws exactly the horizontal row it drew before this
+    // feature existed. The owner's instruction is the layout, not the default.
+    expect(openEveryBand(container)).toBe(1)
     const top = (name: string) => Number.parseFloat(slotOf(container, name).style.top)
     const left = (name: string) => Number.parseFloat(slotOf(container, name).style.left)
     expect(top('plan')).toBeLessThan(top('scan-a'))
@@ -556,6 +642,256 @@ describe('the expanded canvas', () => {
     // And they are in reading order across the band, not merely distinct.
     const lefts = scans.map(left)
     expect([...lefts].sort((a, b) => a - b)).toEqual(lefts)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3b. A stage too wide to draw
+// ---------------------------------------------------------------------------
+//
+// THE SINGLE LARGEST FAILURE THIS SCREEN HAD, measured on a live 30-step run
+// (`wf_7e2ee6c3075d43228e5a`, widest stage 13 steps):
+//
+//   canvas                              1776 x 4134 px
+//   visible wrapper                     1138 px wide
+//   nodes clipped                       17 of 30
+//   nodes fully off-screen              4
+//
+// The transpose is not what fixed it and was never going to: 13 nodes at
+// NODE_W is 3,560px of band on any axis. What fixes it is drawing a stage
+// wider than `STAGE_FITS` as ONE BAND, and the four properties below are the
+// ones that make that safe rather than merely smaller.
+
+/**
+ * A fan of `n` steps between one `plan` and one `report`, with the state of
+ * each fan step given -- `null` for a step the workflow has not reached.
+ *
+ * Shaped after the measured run rather than after the fixture: the point of
+ * this section is the case the development data does not contain.
+ */
+function wideStage(
+  n: number,
+  states: readonly (TaskState | null)[] = [],
+): { w: Workflow; tasks: Map<string, Task> } {
+  const fan = Array.from({ length: n }, (_, i) => `scan-${i}`)
+  const tasks = new Map<string, Task>()
+  const steps: WorkflowStep[] = [step('plan', [])]
+  fan.forEach((id, i) => {
+    const state = states[i] ?? null
+    if (state === null) {
+      steps.push(step(id, ['plan'], { runner_profile: 'codex' }))
+      return
+    }
+    const taskId = `task_${id}`
+    const done = state === 'SUCCEEDED' || state === 'FAILED' || state === 'CANCELLED'
+    tasks.set(
+      taskId,
+      task(taskId, state, {
+        started_at: iso(-90_000),
+        completed_at: done ? iso(-30_000) : null,
+      }),
+    )
+    steps.push(step(id, ['plan'], { runner_profile: 'codex', task_id: taskId }))
+  })
+  steps.push(step('report', fan))
+  return { w: workflow('wf_wide', steps), tasks }
+}
+
+/** Every bucket the band drew, in the order it drew them. */
+function bandCounts(band: Element): string[] {
+  return [...band.querySelectorAll('.wf-band-count')].map((c) => c.textContent ?? '')
+}
+
+describe('a stage too wide to draw', () => {
+  pinTheClock()
+
+  it('never draws a stage wider than the column the canvas has', () => {
+    const { w, tasks } = wideStage(13)
+    const { container } = card(w, tasks, true)
+    const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
+    const drawn = Number.parseFloat(canvas.style.width)
+
+    expect(drawn).toBeGreaterThan(0)
+    expect(
+      drawn,
+      `a 13-step stage drew a ${drawn}px canvas into the ${CANVAS_COLUMN}px column .wf-canvas actually gets at 1440`,
+    ).toBeLessThanOrEqual(CANVAS_COLUMN)
+
+    // AND THE ASSERTION IS NOT VACUOUS, which is the half a width check
+    // usually misses: the SAME fixture with the stage opened draws a 3,580px
+    // canvas -- 3.4 times the column it has. So the line above goes red if the
+    // stage stops being collapsed by default, if `STAGE_FITS` is raised past
+    // what the column holds, or if the band is drawn at the stage's real width
+    // instead of `BAND_MIN_W`.
+    const opened = layoutOf(w.steps, new Set([1]))
+    expect(opened.width).toBe(20 + 13 * NODE_W + 12 * SIB_GAP)
+    expect(opened.width).toBeGreaterThan(CANVAS_COLUMN)
+
+    // Every node that IS drawn is inside the canvas that was drawn for it.
+    // A canvas narrow enough to fit with nodes hanging out of it would satisfy
+    // the line above and be the same defect.
+    const slots = [...container.querySelectorAll<HTMLElement>('.node-slot')]
+    expect(slots.length).toBeGreaterThan(0)
+    for (const slot of slots) {
+      const right = Number.parseFloat(slot.style.left) + Number.parseFloat(slot.style.width)
+      expect(right, `${slot.textContent?.slice(0, 20)} ends at ${right} in a ${drawn}px canvas`)
+        .toBeLessThanOrEqual(drawn)
+    }
+  })
+
+  it('says what is in the band, by state', () => {
+    const states: (TaskState | null)[] = [
+      ...(Array(8).fill('RUNNING') as TaskState[]),
+      ...(Array(3).fill('SUCCEEDED') as TaskState[]),
+      null,
+      null,
+    ]
+    const { w, tasks } = wideStage(13, states)
+    const { container } = card(w, tasks, true)
+    const band = container.querySelector('.wf-band')!
+
+    expect(band.querySelector('.wf-band-n')!.textContent).toBe('13 steps')
+    expect(bandCounts(band)).toEqual(['8 running', '3 succeeded', '2 not started'])
+    // The census the band could not fit is still reachable without a mouse.
+    expect(band.getAttribute('aria-label')).toContain(
+      '13 steps in this stage: 8 running, 3 succeeded, 2 not started.',
+    )
+    // The 13 cards this replaces are NOT in the document. A band that summarised
+    // a stage it had also rendered would be an extra row, not a fix.
+    expect(container.querySelectorAll('.node')).toHaveLength(2)
+  })
+
+  it('never hides a failure, and marks the band that holds one', () => {
+    const states = Array(13).fill('SUCCEEDED') as (TaskState | null)[]
+    states[7] = 'FAILED'
+    states[11] = 'CANCELLED'
+    const { w, tasks } = wideStage(13, states)
+    const { container } = card(w, tasks, true)
+    const band = container.querySelector('.wf-band')!
+
+    // FIRST, not merely present. `.wf-band-counts` clips rather than wraps --
+    // it has to, or the band's height would depend on how many states a stage
+    // happens to be in and `layoutOf` could not place the stage under it -- so
+    // the bucket at the END of the line is the one that can be lost. A failure
+    // is never at the end of the line.
+    expect(bandCounts(band).slice(0, 2)).toEqual(['1 failed', '1 cancelled'])
+    // Visually distinguishable WITHOUT being expanded and without being read:
+    // somebody scanning for what broke must not have to open four bands.
+    expect(band.className).toContain('has-failure')
+    // And not by colour alone.
+    expect(band.querySelector('.wf-band-count.is-bad .ctl-dot.is-bad')).toBeTruthy()
+    expect(band.getAttribute('aria-label')).toContain('1 failed and 1 cancelled.')
+
+    // THE MODIFIER MEANS SOMETHING ONLY IF A CLEAN STAGE DOES NOT CARRY IT.
+    const clean = wideStage(13, Array(13).fill('SUCCEEDED') as TaskState[])
+    const b = card(clean.w, clean.tasks, true)
+    const cleanBand = b.container.querySelector('.wf-band')!
+    expect(cleanBand.className).not.toContain('has-failure')
+    expect(cleanBand.getAttribute('aria-label')).toContain(
+      'No step in this stage has failed or been cancelled.',
+    )
+  })
+
+  it('refuses to call a stage clean when its states were not read', () => {
+    // Every fan step carries a task id and the task read returned nothing for
+    // any of them -- the partial-read case this whole screen is built around.
+    const { w } = wideStage(13, Array(13).fill('SUCCEEDED') as TaskState[])
+    const { container } = card(w, new Map(), true)
+    const band = container.querySelector('.wf-band')!
+    const label = band.getAttribute('aria-label')!
+
+    expect(bandCounts(band)).toEqual(['13 not read'])
+    expect(band.className).toContain('has-unread')
+    expect(band.className).not.toContain('has-failure')
+    expect(label).toContain('cannot be said to be free of failures')
+    // THE WHOLE RULE, IN ONE LINE. An unread census is not a clean one, and a
+    // band that said so would be this console's central defect in its most
+    // compact possible form.
+    expect(label, 'a band with no readable states claimed nothing had failed').not.toContain(
+      'No step in this stage has failed',
+    )
+  })
+
+  it('is a button with aria-expanded, and names what it controls once open', () => {
+    const { w, tasks } = wideStage(13)
+    const { container } = card(w, tasks, true)
+    const band = () => container.querySelector<HTMLButtonElement>('.wf-band')!
+
+    expect(band().tagName).toBe('BUTTON')
+    expect(band().getAttribute('type')).toBe('button')
+    expect(band().getAttribute('aria-expanded')).toBe('false')
+    // Collapsed there is nothing to name: `aria-controls` pointing at an id
+    // that is not in the document tells a screen reader there is somewhere to
+    // go, which is worse than saying nothing.
+    expect(band().hasAttribute('aria-controls')).toBe(false)
+    expect(container.querySelectorAll('.node')).toHaveLength(2)
+
+    fireEvent.click(band())
+    expect(band().getAttribute('aria-expanded')).toBe('true')
+    const controls = band().getAttribute('aria-controls')
+    expect(controls).toBeTruthy()
+    const target = document.getElementById(controls!)
+    expect(target, 'aria-controls named an element that is not in the document').toBeTruthy()
+    expect(target!.querySelectorAll('.node')).toHaveLength(13)
+
+    fireEvent.click(band())
+    expect(band().getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelectorAll('.node')).toHaveLength(2)
+  })
+
+  it('keeps a stage open across a remount of the card', () => {
+    const { w, tasks } = wideStage(13)
+    const { container, rerender } = render(
+      <CardHarness workflow={w} taskById={tasks} expanded cardKey={0} />,
+    )
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.wf-band')!)
+    expect(container.querySelectorAll('.node')).toHaveLength(15)
+
+    // WHAT `reload()` DOES TO THE REAL BOARD. `WorkflowsScreen` bumps a key and
+    // `Screen` remounts, taking everything held inside it with it -- which is
+    // why `open` and the stage store both live ABOVE that key. Changing the
+    // card's own key here remounts exactly the part that remounts in
+    // production. A `WorkflowCard` that had quietly taken the expansion into a
+    // `useState` of its own would close the stage here and nowhere else.
+    rerender(<CardHarness workflow={w} taskById={tasks} expanded cardKey={1} />)
+    expect(container.querySelector('.wf-band')!.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelectorAll('.node')).toHaveLength(15)
+  })
+
+  it('leaves a stage that fits alone, and collapses the one step past it', () => {
+    const fits = wideStage(STAGE_FITS)
+    const a = card(fits.w, fits.tasks, true)
+    expect(a.container.querySelector('.wf-band')).toBeNull()
+    expect(a.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 2)
+
+    // ONE MORE STEP AND IT DOES NOT FIT. The threshold is a property of NODE_W
+    // and the column, not of a fixture: this pins that the boundary is exactly
+    // where `STAGE_FITS` says it is, so moving NODE_W moves the test with it
+    // rather than leaving a stale number behind (which is how
+    // DEP_CHARS_PER_LINE went wrong).
+    const over = wideStage(STAGE_FITS + 1)
+    const b = card(over.w, over.tasks, true)
+    expect(b.container.querySelector('.wf-band')).toBeTruthy()
+    expect(b.container.querySelectorAll('.node')).toHaveLength(2)
+  })
+
+  it('counts a stage without rendering anything', () => {
+    // The census is pure, so the rule it enforces is assertable without a DOM.
+    const { w, tasks } = wideStage(4, ['FAILED', 'RUNNING', 'RUNNING', null])
+    const stage = w.steps.filter((s) => s.step_id.startsWith('scan-'))
+    const c = stageCensus(stage, tasks)
+
+    expect(c.steps).toBe(4)
+    expect(c.failed).toBe(1)
+    expect(c.cancelled).toBe(0)
+    expect(c.unread).toBe(0)
+    expect(c.counts.map((x) => `${x.n} ${x.word}`)).toEqual([
+      '1 failed',
+      '2 running',
+      '1 not started',
+    ])
+    // Two steps in the same state are one bucket, not two rows.
+    expect(c.counts).toHaveLength(3)
   })
 })
 

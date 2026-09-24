@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   loadWorkflowBoard,
@@ -13,10 +13,14 @@ import {
   levelsOf,
   profileMix,
   shapeOf,
+  stageCensus,
+  stageIsWide,
   stepDuration,
   workflowSpend,
   NODE_W,
+  type DagBand,
   type DagShape,
+  type StageCensus,
   type StepDuration,
   type WorkflowSpend,
 } from './dag'
@@ -115,10 +119,27 @@ export function WorkflowsScreen() {
   // open workflow shut the moment you stopped one step would be unusable.
   const [mode, setMode] = useState<BoardMode>('collapsed')
   const [open, setOpen] = useState<Record<string, boolean>>({})
+  // WHICH STAGES THE READER HAS OPENED, and it is up here for a stronger
+  // version of the same reason. A card can be re-opened with one click; a
+  // stage you opened, scrolled sideways through and then lost because the
+  // board re-read itself is the interaction the requirement for this feature
+  // calls out by name -- "a stage that re-collapses under the user every 5
+  // seconds is worse than no collapsing". `useNow` also re-renders every open
+  // canvas once a second, so anything held inside `WorkflowGraph` would have to
+  // survive that too. One store, above everything that remounts.
+  //
+  // Keyed by `stageKey`, so two workflows that both have a wide stage 1 do not
+  // share one flag.
+  const [stages, setStages] = useState<Record<string, boolean>>({})
 
   // A board-wide instruction overrules the per-card ones. Keeping stale
   // overrides would make "Collapse all" leave three cards open with no way to
   // tell why.
+  //
+  // IT DOES NOT TOUCH `stages`. Rows/Graph is an instruction about WORKFLOWS;
+  // a stage is a thing inside one, and throwing away which stages a reader had
+  // opened because they toggled the board's own default would be the same
+  // "it re-collapsed under me" defect arriving by a different route.
   const chooseMode = useCallback((m: BoardMode) => {
     setMode(m)
     setOpen({})
@@ -126,6 +147,11 @@ export function WorkflowsScreen() {
 
   const toggle = useCallback(
     (id: string, expanded: boolean) => setOpen((o) => ({ ...o, [id]: !expanded })),
+    [],
+  )
+
+  const toggleStage = useCallback(
+    (key: string, expanded: boolean) => setStages((s) => ({ ...s, [key]: !expanded })),
     [],
   )
 
@@ -151,6 +177,8 @@ export function WorkflowsScreen() {
           chooseMode={chooseMode}
           open={open}
           toggle={toggle}
+          openStages={stages}
+          toggleStage={toggleStage}
           reload={reload}
         />
       )}
@@ -172,6 +200,8 @@ function Board({
   chooseMode,
   open,
   toggle,
+  openStages,
+  toggleStage,
   reload,
 }: {
   board: WorkflowBoard
@@ -179,6 +209,8 @@ function Board({
   chooseMode: (m: BoardMode) => void
   open: Record<string, boolean>
   toggle: (id: string, expanded: boolean) => void
+  openStages: Record<string, boolean>
+  toggleStage: (key: string, expanded: boolean) => void
   reload: () => void
 }) {
   // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
@@ -262,6 +294,8 @@ function Board({
             taskById={board.taskById}
             expanded={open[w.workflow_id] ?? mode === 'full'}
             onToggle={toggle}
+            openStages={openStages}
+            onToggleStage={toggleStage}
             reload={reload}
             usage={usage}
           />
@@ -497,6 +531,8 @@ export function WorkflowCard({
   expanded,
   usage,
   onToggle,
+  openStages,
+  onToggleStage,
   reload,
 }: {
   workflow: Workflow
@@ -504,6 +540,13 @@ export function WorkflowCard({
   expanded: boolean
   usage: UsageRead
   onToggle: (id: string, expanded: boolean) => void
+  /**
+   * Which stages are open, keyed by `stageKey`. PASSED IN, never owned here:
+   * the store lives above the `key` that a stop-and-reload bumps, so the card
+   * remounting does not close a stage the reader opened.
+   */
+  openStages: Record<string, boolean>
+  onToggleStage: (key: string, expanded: boolean) => void
   reload: () => void
 }) {
   const roll = rollupLine(workflow)
@@ -542,7 +585,14 @@ export function WorkflowCard({
               Firestore, the API, the logs and the `#work/task/<id>` address.
               Printed as WF_BCDC9180… it cannot be pasted anywhere, which is
               the only thing an id is for. */}
-          <Id>{workflow.workflow_id}</Id>
+          {/* THE TITLE IS THE WHOLE ID, and that is inventory F11's last
+              unpaid line on this row. `.wf-bar .id` ellipses at 390px, where
+              `[name]` is the column every other field takes its pixels from --
+              `wf_5e5ad3b6f7da4299a839` loses its tail. An ellipsed id cannot be
+              pasted anywhere, which is the only thing an id is for (B17), so
+              the complete value has to survive somewhere on the row itself
+              rather than only in the open card. */}
+          <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>
           {/* `workflowHeaderState`, NOT `workflow.state`. The same field name
               carries two different meanings depending on which server answered:
               derived from the step tasks on this read, or the Firestore cache
@@ -591,7 +641,14 @@ export function WorkflowCard({
         <div className="wf-body" id={bodyId}>
           <StateDrift drift={workflow.drift} />
           <WorkflowDispatchLine workflow={workflow} taskById={taskById} />
-          <WorkflowGraph workflow={workflow} taskById={taskById} usage={usage} reload={reload} />
+          <WorkflowGraph
+            workflow={workflow}
+            taskById={taskById}
+            usage={usage}
+            openStages={openStages}
+            onToggleStage={onToggleStage}
+            reload={reload}
+          />
         </div>
       )}
     </section>
@@ -924,6 +981,28 @@ function useNow(): number {
 }
 
 /**
+ * One stage's address in the board-wide expansion store.
+ *
+ * THE LEVEL GOES FIRST AND THAT IS THE WHOLE TRICK. `${id}-${level}` collides:
+ * `wf_a` level 12 and `wf_a1` level 2 are both `wf_a1-2`, and the store would
+ * open a stage in the wrong workflow. With the level leading, the separator is
+ * the first non-digit character, so the split is unambiguous whatever the id
+ * turns out to contain -- and it stays printable, which a NUL separator does
+ * not: one of those in a `.tsx` makes git call the whole file binary and stop
+ * showing anyone its diff. (It did.)
+ */
+export function stageKey(workflowId: string, level: number): string {
+  return `${level}|${workflowId}`
+}
+
+/** The DOM id of the element a band's `aria-controls` points at. Not
+ *  `stageKey`: an id may not contain a NUL, and it has to be a valid selector
+ *  for the assistive technology that resolves it. */
+function stageDomId(workflowId: string, level: number): string {
+  return `wf-stage-${workflowId}-${level}`
+}
+
+/**
  * THE CANVAS. Real edges between real node cards, FLOWING TOP TO BOTTOM.
  *
  * The positions come from `layoutOf`, which is pure and tested, so the edges
@@ -932,38 +1011,60 @@ function useNow(): number {
  * anchor, a `title` and a stop button, and those are not things to re-implement
  * inside an `<svg>`.
  *
- * It still scrolls horizontally rather than shrinking, but the case has
- * inverted with the axis. It used to scroll because a graph was DEEP -- six
- * levels left to right was wider than a phone, so the commonest shape in this
- * product, a chain, was also the one that always scrolled. Now it scrolls only
- * because a graph is WIDE: a fan of five at NODE_W each. A chain is one node
- * wide at any depth and fits a 390px screen, which is where someone checking
- * why their agent has not moved actually is.
+ * IT SCROLLS SIDEWAYS ONLY FOR A STAGE THE READER ASKED TO SEE IN FULL.
+ * Scrolling was the whole answer, and on the measured 30-step run it was not an
+ * answer at all: a 13-wide stage is 3,560px, 17 of 30 nodes were clipped, 4
+ * were entirely off-screen and one workflow was 4.6 screen-heights tall. A
+ * stage wider than `STAGE_FITS` is now drawn as one band that says what is in
+ * it by state (`StageBand`), and expands to the full row on click -- so the
+ * canvas shows the SHAPE of the workflow rather than the shape of its widest
+ * moment, and the sideways scroll is something you opt into one stage at a
+ * time. `dag.ts`'s stage-collapsing section holds the threshold and its
+ * derivation.
+ *
+ * WHAT DID NOT CHANGE, and must not: the flow still runs top to bottom with the
+ * steps of one stage side by side across it. That is the owner's explicit
+ * instruction and collapsing is orthogonal to it -- an expanded band draws
+ * exactly the horizontal row it drew before.
  */
 function WorkflowGraph({
   workflow,
   taskById,
   usage,
+  openStages,
+  onToggleStage,
   reload,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
   usage: UsageRead
+  openStages: Record<string, boolean>
+  onToggleStage: (key: string, expanded: boolean) => void
   reload: () => void
 }) {
   const now = useNow()
-  const layout = layoutOf(workflow.steps)
   const levels = levelsOf(workflow.steps)
+  // Built every render rather than memoised: `useNow` re-renders this component
+  // once a second anyway, so a memo over a set of at most one entry per level
+  // would cost more than it saves and would be one more thing to invalidate.
+  const expandedStages = new Set<number>()
+  levels.forEach((_, i) => {
+    if (openStages[stageKey(workflow.workflow_id, i)] === true) expandedStages.add(i)
+  })
+  const layout = layoutOf(workflow.steps, expandedStages)
 
-  if (layout.nodes.length === 0) {
+  // `levels`, NOT `layout.nodes`. A workflow whose every stage is collapsed has
+  // no nodes and is emphatically not empty -- testing the node count would have
+  // put "no steps" over a 30-step run the moment this feature shipped.
+  if (levels.length === 0) {
     return <span className="ctl-mark">no steps</span>
   }
 
-  // The top of each level's band, read back off the nodes the layout placed
-  // rather than recomputed from the constants. It was recomputed, and a caption
-  // that drifts one band off the level it names is worse than no caption; this
-  // way the two cannot disagree even in principle.
-  const levelTop = levels.map((_, i) => layout.nodes.find((n) => n.level === i)?.y ?? 0)
+  // The top of each level's band, taken from the layout that placed them. It
+  // was recovered with `layout.nodes.find((n) => n.level === i)?.y`, which is
+  // wrong twice over now: a collapsed level has no node to find, and an open
+  // wide level's nodes sit a band and a gap below the level's own top.
+  const levelTop = layout.levelTop
 
   return (
     <div className="wf-canvas-wrap">
@@ -1033,23 +1134,153 @@ function WorkflowGraph({
               </g>
             ))}
           </svg>
-          {layout.nodes.map((n) => (
-            <StepNode
-              key={n.step.step_id}
-              step={n.step}
-              state={stepState(n.step, taskById)}
-              workflow={workflow}
-              now={now}
-              usage={usage}
-              x={n.x}
-              y={n.y}
-              h={n.h}
-              reload={reload}
+          {/* THE NODES, GROUPED BY STAGE, and the grouping exists for one
+              reason: a wide stage's band is a disclosure control and a
+              disclosure control needs something to point `aria-controls` at.
+              `.wf-stage` is a zero-size positioned box at the canvas origin, so
+              the slots inside it keep the exact canvas coordinates they had as
+              direct children -- it changes the accessibility tree and nothing
+              about the layout. Stages that are never collapsible are not
+              wrapped at all; a wrapper with no control aimed at it would be a
+              box in the tree with nothing to say. */}
+          {layout.levels.map((level, i) => {
+            const cards = layout.nodes
+              .filter((n) => n.level === i)
+              .map((n) => (
+                <StepNode
+                  key={n.step.step_id}
+                  step={n.step}
+                  state={stepState(n.step, taskById)}
+                  workflow={workflow}
+                  now={now}
+                  usage={usage}
+                  x={n.x}
+                  y={n.y}
+                  h={n.h}
+                  reload={reload}
+                />
+              ))
+            if (cards.length === 0) return null
+            return stageIsWide(level.length) ? (
+              <div key={i} className="wf-stage" id={stageDomId(workflow.workflow_id, i)}>
+                {cards}
+              </div>
+            ) : (
+              <Fragment key={i}>{cards}</Fragment>
+            )
+          })}
+          {/* LAST IN THE DOM AND ABOVE THE EDGES. A band is opaque and spans
+              the canvas, so an edge arriving from the stage above passes behind
+              it exactly as the cards pass behind the sticky level rail. */}
+          {layout.bands.map((b) => (
+            <StageBand
+              key={b.level}
+              band={b}
+              census={stageCensus(b.steps, taskById)}
+              controls={stageDomId(workflow.workflow_id, b.level)}
+              onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
             />
           ))}
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * A STAGE TOO WIDE TO DRAW, DRAWN AS ONE BAND.
+ *
+ * WHAT IT REPLACES. Thirteen node cards, 3,560px of them, of which the 1440px
+ * laptop the audit was taken on could show four. The band is one row: how many
+ * steps, and what they are doing, by state.
+ *
+ * THE ONE THING IT MAY NOT DO IS HIDE A FAILURE. Somebody scanning a workflow
+ * for what broke must not have to open four bands to find it, so three separate
+ * mechanisms carry that and none of them is the word order alone:
+ *
+ *  * `stageCensus` puts FAILED, DEAD_LETTERED and CANCELLED at the FRONT of the
+ *    count list. `.wf-band-counts` clips rather than wraps -- it has to, or the
+ *    band's height would depend on how many states a stage happens to be in and
+ *    `layoutOf` could not place the stage under it -- and putting the failures
+ *    first is what makes that clip safe;
+ *  * `.has-failure` is a modifier on the band itself: a bad-toned left accent
+ *    and a tint, so a stage with something broken in it is distinguishable
+ *    WITHOUT being read, at a glance down a collapsed graph;
+ *  * every count carries a `.ctl-dot` in its own tone, because colour is never
+ *    the only signal (types.ts `stateGlyph` makes the same argument for chips).
+ *
+ * AND THE ABSENCE OF A FAILURE IS NOT THE SAME AS NOT KNOWING. A stage whose
+ * task states were not in the read gets `.has-unread` -- dashed and amber, the
+ * treatment `.node.unknown` already uses -- and its sentence says the census
+ * cannot be called clean. A clean band and an unread band must not look alike;
+ * that is the whole of this console's honesty rule applied to a summary.
+ *
+ * IT SURVIVES EXPANSION. The band stays when the stage is open, because it is
+ * the only control that closes it again (moving the control into the rail would
+ * throw keyboard focus away on every toggle), and because on a 13-wide stage
+ * the census is the only thing on screen that says what the part you have
+ * scrolled past is doing.
+ */
+function StageBand({
+  band,
+  census,
+  controls,
+  onToggle,
+}: {
+  band: DagBand
+  census: StageCensus
+  controls: string
+  onToggle: () => void
+}) {
+  const broken = census.failed + census.cancelled > 0
+  const cls = [
+    'wf-band',
+    // `has-unread` first so that a stage that is BOTH unread and broken keeps
+    // the dashed edge (from this rule) and takes the bad colour (from the one
+    // declared after it). Two facts, two properties, one border.
+    census.unread > 0 ? 'has-unread' : '',
+    broken ? 'has-failure' : '',
+    // NO `is-open` MODIFIER. Open and closed are told apart by the caret, which
+    // is the same glyph in the same slot that `.wf-bar` uses one level up for
+    // the same gesture; a second visual channel for it would be teaching a
+    // reader two answers to one question.
+  ]
+    .filter((c) => c !== '')
+    .join(' ')
+  return (
+    <button
+      type="button"
+      className={cls}
+      style={{ left: band.x, top: band.y, width: band.w, height: band.h }}
+      aria-expanded={band.expanded}
+      // Only when the stage is open, because only then does the element exist.
+      // `aria-controls` pointing at an id that is not in the document is worse
+      // than omitting it: it tells a screen reader there is somewhere to go.
+      aria-controls={band.expanded ? controls : undefined}
+      aria-label={`${census.sentence} ${
+        band.expanded
+          ? 'Activate to collapse this stage back to one band.'
+          : `Activate to draw all ${census.steps} steps.`
+      }`}
+      onClick={onToggle}
+    >
+      <span className="wf-band-n">
+        {census.steps} step{census.steps === 1 ? '' : 's'}
+      </span>
+      <span className="wf-band-counts">
+        {census.counts.map((c) => (
+          <span key={c.word} className={`wf-band-count is-${c.tone}`}>
+            <i className={dotClass({ tone: c.tone, derived: true })} aria-hidden />
+            {c.n} {c.word}
+          </span>
+        ))}
+      </span>
+      {/* The same glyph and the same column as the workflow row's own caret,
+          because it is the same gesture one level down. */}
+      <span className="wf-caret" aria-hidden>
+        {band.expanded ? '▾' : '▸'}
+      </span>
+    </button>
   )
 }
 
