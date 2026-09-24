@@ -1025,7 +1025,15 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
 function SectionQuestion({ section }: { section: SectionDef }) {
   const { state, trigger, hover } = useHelpDisclosure()
   const cardId = `q-${section.id}`
-  const [anchorRef, placement] = useEdgeSafePlacement(state.open)
+  // THE CARD IS MEASURED THROUGH THIS REF, and before it existed this card was
+  // not measured at all. `useEdgeSafePlacement` used to look for the card under
+  // the ANCHOR, and this one is portalled to `document.body` three lines below,
+  // so the vertical placement fell back to its 220px estimate every time. A
+  // section's question is the longest string in `SECTIONS` -- Capacity's runs to
+  // four clauses -- and at 390px it wraps well past 220px, which is exactly the
+  // case the estimate gets wrong and the clamp then cannot correct.
+  const cardRef = useRef<HTMLSpanElement>(null)
+  const [anchorRef, placement] = useEdgeSafePlacement(state.open, cardRef)
 
   const card = (
     <span
@@ -1033,6 +1041,7 @@ function SectionQuestion({ section }: { section: SectionDef }) {
       role={state.pinned ? 'dialog' : 'tooltip'}
       className="ctl-q-card"
       style={placement}
+      ref={cardRef}
     >
       <strong className="ctl-q-title">{section.label} answers</strong>
       <span className="ctl-q-body">{section.question}</span>

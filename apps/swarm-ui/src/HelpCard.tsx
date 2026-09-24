@@ -345,9 +345,32 @@ const CARD: CSSProperties = {
  * Re-measured on scroll and resize because both move the anchor under a card
  * that is already open; a card correct when it opened is not correct after the
  * page moves beneath it.
+ *
+ * THE CARD'S OWN REF IS A PARAMETER, AND IT HAS TO BE.
+ *
+ * This hook used to find the card with
+ * `ref.current.querySelector('[role="tooltip"], [role="note"]')`, where `ref`
+ * is the ANCHOR. Both consumers portal their card to `document.body` -- that
+ * portal is the fix that rescued nine cards from stacking contexts they could
+ * not escape -- so the card is not in the anchor's subtree and that query
+ * returned `null` every single time. The height below was therefore ALWAYS the
+ * 220px fallback, which is precisely the estimate the comment there says was
+ * measured wrong by 16px on Submit. The measurement had been written, wired to
+ * the wrong element, and silently never taken.
+ *
+ * The role list was independently wrong as well: `helpRole` returns `dialog`
+ * or `tooltip` and nothing in this file has ever rendered `role="note"`, so a
+ * PINNED card would have been missed even inside the right subtree. Two faults
+ * on one line, agreeing on the same wrong answer, which is why neither showed.
+ *
+ * Passing the ref in rather than re-querying is what makes it unable to happen
+ * again: a caller that portals its card still hands over the element, and a
+ * caller that forgets gets the documented estimate instead of a silent null.
+ * `cardRef` is optional so that the fallback stays reachable and honest.
  */
 export function useEdgeSafePlacement(
   open: boolean,
+  cardRef?: RefObject<HTMLElement | null>,
 ): [RefObject<HTMLSpanElement>, CSSProperties] {
   const ref = useRef<HTMLSpanElement>(null)
   const [place, setPlace] = useState<CSSProperties>({ visibility: 'hidden' })
@@ -390,7 +413,10 @@ export function useEdgeSafePlacement(
       // estimate is the fallback and the real height replaces it the moment
       // there is one; `measure` re-runs on scroll and resize, so the second
       // pass is never far away.
-      const card = ref.current?.querySelector<HTMLElement>('[role="tooltip"], [role="note"]')
+      //
+      // READ OFF THE CARD'S OWN REF, not looked up under the anchor: see the
+      // note on this hook's signature for why the lookup could never find it.
+      const card = cardRef?.current ?? null
       const cardH = card?.getBoundingClientRect().height || 220
       const roomBelow = window.innerHeight - anchor.bottom - 6
       // CLAMPED, so "below the fold" cannot happen at all: if it fits below it
@@ -414,7 +440,12 @@ export function useEdgeSafePlacement(
       window.removeEventListener('scroll', measure, true)
       window.removeEventListener('resize', measure)
     }
-  }, [open])
+    // `cardRef` is a ref OBJECT: its identity is stable for the component's
+    // life, so listing it re-runs nothing. It is listed because leaving a used
+    // value out of a dep array is how the next edit to this effect gets a stale
+    // one, and because the lint rule that would say so is the only thing
+    // standing between this hook and the bug it just had.
+  }, [open, cardRef])
 
   return [ref, place]
 }
@@ -542,7 +573,11 @@ export function HelpCardView({
 }: HelpCardViewProps) {
   const t = HELP[topic]
   const values = t.values?.() ?? []
-  const [anchorRef, placement] = useEdgeSafePlacement(state.open)
+  // DECLARED BEFORE THE PLACEMENT HOOK because the hook now measures the card
+  // through it. It is the same ref the tab bridge below already used; the card
+  // node carries one ref, not two.
+  const cardRef = useRef<HTMLSpanElement>(null)
+  const [anchorRef, placement] = useEdgeSafePlacement(state.open, cardRef)
 
   /*
    * THE TAB BRIDGE, AND THE DEFECT THAT MADE IT NECESSARY.
@@ -574,7 +609,6 @@ export function HelpCardView({
    */
   const triggerId = `${cardId}-t`
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const cardRef = useRef<HTMLSpanElement>(null)
   /** Focus is inside the card, so a dismissal has somewhere to return it from. */
   const inside = useRef(false)
   /**

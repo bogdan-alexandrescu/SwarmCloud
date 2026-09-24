@@ -5913,11 +5913,50 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    Agents and Admin sharing an initial; the three-section collapse made the
    four rail entries Overview, Work, Capacity and Admin, so the collision is
    gone and the argument is not (the TABS, which are most of this column's
-   height, have no initials at all). The longest tab label is now "Profile
-   headroom", one character longer than the "Runner profiles" the 152px figure
-   was measured against, and nothing offline can measure rendered text at a
-   width -- see the note on `Rail` in App.tsx. */
+   height, have no initials at all).
+
+   MEASURED IN A REAL BROWSER, 2026-09-24 (Chromium/macOS, `500 14px
+   ui-sans-serif` as this sheet resolves it), because nothing offline can do it
+   -- jsdom implements no layout. A 152px rail leaves each tab
+   152 - 12 (`.ctl-rail-tabs` margin-left) - 2 (border-left) - 20 (padding)
+   = 118px of content.
+
+   The label the note on `Rail` in App.tsx asked someone to look at is FINE:
+   "Profile headroom" renders at 113.02px and clears 118px by 4.98px. The worry
+   was that it is one character longer than the "Runner profiles" (100.6px) the
+   152px was taken against; one character was not enough to matter.
+
+   THREE OTHERS DO NOT FIT, and the reason the note missed them is that it
+   reasoned about the longest LABEL STRING while the box is sized by RENDERED
+   WIDTH -- which for two of these includes the inline `admin` badge:
+
+     Platform counts + badge   149.19px   over by 31.19px
+     Provider quota  + badge   141.08px   over by 23.08px
+     Submit a workflow          121.73px   over by  3.73px
+
+   The badge alone costs 44.14px (39.14px of mono `admin` plus its 5px margin),
+   so it is the badge and not the words that breaks the first two: "Platform
+   counts" is 105.05px and "Provider quota" 96.94px, and both clear 118px on
+   their own. "Submit a workflow" is simply longer than "Profile headroom" and
+   was never in the comparison.
+
+   WHY WRAPPING RATHER THAN A WIDER RAIL. `white-space: nowrap` with
+   `text-overflow: ellipsis` does not wrap these, it CLIPS them, and what gets
+   clipped off the two admin tabs is the badge -- the one mark telling a
+   non-admin that the tab opens a gate. That is this file's own argument against
+   a 56px icon rail arriving through overflow instead of through a decision: a
+   label with its tail deleted is a thing you decode rather than recognise.
+   Widening the rail to the 184px that fits every badge would buy back only 16px
+   of the 48px the narrowing exists to reclaim for the tables at these widths
+   (see §B6.3 below), so the rail keeps its width and the labels keep their text.
+   Vertical is the axis this column has most of: it already scrolls, and the
+   three affected tabs cost 21px each in the one band where they render. */
 @media (max-width: 1279px) { :root { --rail-w: 152px; } }
+/* The rule that acts on all of the above is NOT here -- it is immediately after
+   `.ctl-rail-tabs button`, several hundred lines down, because a media query
+   adds no specificity and a block written here would have lost the cascade to
+   the `white-space: nowrap` in that rule. Written here first, and it silently
+   did nothing. */
 
 .work { min-width: 0; }
 
@@ -6010,6 +6049,37 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border-left-color: var(--text-dim);
 }
 .ctl-rail-tabs button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* THE 152px RAIL IS NOT WIDE ENOUGH FOR THREE OF THESE LABELS. MEASURED.
+   The figures and the argument are on `--rail-w` above; the short version is
+   that at 152px a tab has 118px of content, and "Platform counts" with its
+   `admin` badge needs 149.19px, "Provider quota" with its badge 141.08px and
+   "Submit a workflow" 121.73px. `white-space: nowrap` with `text-overflow:
+   ellipsis` does not shrink those, it cuts them -- and what it cuts off the
+   first two is the badge, which is the only warning a non-admin gets that the
+   tab opens a gate.
+
+   IT SITS HERE, AFTER THE BASE RULE, AND THAT IS LOAD-BEARING. A media query
+   contributes nothing to specificity, so this block and
+   `.ctl-rail-tabs button` above are equally specific and the LATER one wins.
+   Placed up beside the `--rail-w` declaration it belongs to -- which is where
+   it was written first -- it lost to the `white-space: nowrap` in that rule and
+   changed nothing at all.
+
+   ONLY 900-1279px. Below 900px the rail becomes a horizontal scroller whose
+   buttons are `width: auto` (see the narrow block below), so they size to their
+   own content and cannot clip; wrapping there would turn a correct row of tabs
+   into a row of tall two-line ones. */
+@media (min-width: 900px) and (max-width: 1279px) {
+  .ctl-rail-tabs button {
+    /* The widest single WORD in the set is "Workflows" at 69.13px against
+       118px, so no word can overflow on its own and wrapping is a complete fix
+       rather than one that merely moves the clip. `text-overflow` is cleared
+       with the `nowrap` that gave it something to do. */
+    white-space: normal;
+    text-overflow: clip;
+  }
+}
 
 /* The admin marker on a tab that will render an admin gate for most people.
    Saying so before the click is cheaper than a blue panel after it.
