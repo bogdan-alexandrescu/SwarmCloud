@@ -115,9 +115,9 @@ bar silently shortens) stands, and nothing here stacks.
 
 | Chart | Viz (redesign-v2 §4) | Where | What it must not imply, and how it is prevented |
 |---|---|---|---|
-| `AttemptPhases.tsx`: phase bars | #3 | Attempts panel | That a missing end is an end. Every segment is drawn between two recorded instants measured from **admission** (`attempt.created_at`), so nothing's position depends on another segment's length. A segment with no recorded end is **open**: a wash up to the newest instant at which the phase was demonstrably still going, then a chevron. It is never closed at "now" and never at a guess. |
+| `AttemptPhases.tsx`: phase bars | #3 | Attempts panel | That a missing end is an end. Every segment is drawn between two recorded instants measured from **admission**, the attempt's `lease_acquired` event, so nothing's position depends on another segment's length. A segment with no recorded end is **open**: a wash up to the newest instant at which the phase was demonstrably still going, then a chevron. It is never closed at "now" and never at a guess. An attempt is over, and its open segment not live, when `completed_at` is set, a later attempt exists, the task is terminal, **or the task no longer holds its lease** (`attemptEnd` in `duration.ts`, shared with the attempt cards). |
 | `AttemptPhases.tsx`: retry lollipop | #15 | same figure | That `task.started_at` is the task's start (it is overwritten per attempt). One stem per attempt, and an open attempt is an arrowhead at its lower bound, not a dot at a value. |
-| `AttemptPhases.tsx`: the sum | #15 | same figure | That a total covers attempts it does not. The line prints the total with `k of n` from the same `WorkSum` object; an open attempt's lower bound is printed after the total and never added into it. |
+| `AttemptPhases.tsx`: the sum | #15 | same figure | That a total covers attempts it does not. The line prints the total with `k of n` from the same `WorkSum` object, where `n` is `task.attempt_count` and not the number of documents the read returned; the shortfall is printed as "not returned". An open attempt's lower bound is printed after the total and never added into it. |
 | `PeakMemory.tsx` | #4 | each attempt's resources | That it is memory in use now. Titled "peak reached by T+n", drawn as a step that holds each reading until the next. The end-of-attempt figure is a separate diamond and the line does not run to it. |
 | `CheckpointStrip.tsx` | #6 | above each attempt's checkpoint table | That a hollow dot is a broken checkpoint, or that a checkpoint with no event has a time. Dot **area** is bytes; hollow is "location not on this page"; a checkpoint whose event is off the page goes in a tray beside the axis, not on it. |
 | `Diffstat.tsx` | #7 | above the commit table | That a binary change is 0/0. A binary-only commit gets a diamond and no zero mark; a non-numeric count is hatched, not zero. |
@@ -125,7 +125,23 @@ bar silently shortens) stands, and nothing here stacks.
 The tables these sit above are unchanged. Each chart adds what its table
 cannot show; each table keeps the facts as text a reader can copy.
 
-**Two measured decisions worth keeping:**
+**Three measured decisions worth keeping:**
+
+* **Admission is the `lease_acquired` event, not `attempt.created_at`.** The
+  scheduler writes admission into `created_at`, and then the worker's
+  `record_attempt_start` (agent-worker `control.py`) replaces the whole
+  attempt document with a non-merge `.set()` that writes `created_at =
+  utcnow()` beside `started_at = utcnow()`. On every attempt whose worker
+  started, `created_at` is the start. Read as admission, it drew §9's run as a
+  recorded 0s cold start and a three-minute "queue". The document's
+  `created_at` is used only for an attempt that never started, the one case
+  in which nothing rewrote it. A started attempt whose `lease_acquired` is off
+  the event page has its queue and cold start hatched, and its run -- still
+  measured -- is not placed on the admission axis at all, because its
+  distance from admission is the unknown cold start. The rewrite is reported
+  to Track B (it also clobbers `execution_name`,
+  `docs/web-ui/04-live-logs.md`); if it becomes a merge that leaves
+  `created_at` alone, the document is admission again.
 
 * **T+ is measured from `attempt.started_at`, not from the heartbeat's
   `elapsed_seconds`.** That field is the *agent child's* clock, and before the
@@ -148,8 +164,9 @@ the glass, so they must stay reachable. `inspector.charts.test.tsx` asserts it
 for all six chart roots, `TimeSeries` included.
 
 The event page these read is now requested at `limit=200` (`api.ts`,
-`EVENT_PAGE_LIMIT`). Before this, the run screens asked for no limit and got
-the API's **default** page of 50, not its maximum of 200.
+`EVENT_PAGE_LIMIT`), and the attempt documents likewise (`ATTEMPT_PAGE_LIMIT`).
+Before this, the run screens asked for no limit and got the API's **default**
+page of 50, not its maximum of 200 -- for attempts, the 50 NEWEST.
 
 ## The tests
 
@@ -166,12 +183,18 @@ the fix restored. The mutations are listed in the commit message.
 
 The inspector charts' tests, each read back off the rendered SVG:
 
-* `src/__tests__/chart.phases.test.tsx` — §9's measured run (3m 09s of cold
-  start drawn about ten times 18s of run); an open run bounded by its newest
+* `src/__tests__/chart.phases.test.tsx` — every fixture in production shape
+  (`created_at == started_at` for a started attempt, admission as its
+  `lease_acquired` event). §9's measured run (3m 09s of cold start drawn about
+  ten times 18s of run, a 2s queue, the `dispatched` cut); a started attempt
+  with no `lease_acquired` on the page drawn with an absent cold start and an
+  unplaced run, never a recorded 0s; an open run bounded by its newest
   heartbeat and unchanged when the clock moves a day; a reclaim event NOT
-  taken as evidence of life; an absent retry queue that moves no other
-  segment; a retry queue started at its `ready` event rather than the
-  previous attempt's end; an open lower bound kept out of the total.
+  taken as evidence of life; a parked attempt, a failed dispatch and a
+  reclaim before its replacement all read as over; an absent retry queue that
+  moves no other segment; a retry queue started at its `ready` event rather
+  than the previous attempt's end; an open lower bound kept out of the total;
+  "over 2 of 3" when the task counts three attempts and two came back.
 * `src/__tests__/chart.peak.test.tsx` — only horizontal and vertical strokes,
   two subpaths around a missing reading, the at-exit figure not joined, and a
   reading placed by its `at` rather than the zeroed child clock.
@@ -180,9 +203,10 @@ The inspector charts' tests, each read back off the rendered SVG:
 * `src/__tests__/chart.diffstat.test.tsx` — a binary-only commit never wears
   the zero mark; a non-numeric count is hatched; both sides share one zero.
 * `src/__tests__/inspector.charts.test.tsx` — each chart is mounted on the
-  real `Run`, above the table it does not replace.
-* `src/__tests__/api.events.test.ts` — the events read asks for `limit=200`
-  on the live path.
+  real `Run`, above the table it does not replace; a parked attempt is not
+  called running on its card or in the phase chart.
+* `src/__tests__/api.events.test.ts` — the events read and the attempts read
+  ask for `limit=200` on the live path.
 
 These were proved the way CLAUDE.md asks: the defect committed on the branch
 and the named tests watched going red in CI, then reverted. The run ids are in

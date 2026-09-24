@@ -7,6 +7,7 @@ import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
+import { attemptEnd } from './duration'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
@@ -1168,11 +1169,12 @@ function AttemptCard({
   const end = attemptEnd(a, run.task, isLatest)
 
   // `attemptOutcome` reads the attempt document ALONE, and on the document
-  // alone a reclaimed attempt is indistinguishable from a running one: both
-  // have a start time and no finish time. This card can see two things the
-  // document cannot -- whether a later attempt exists and what state the task
-  // is in -- so the chip is corrected here rather than left saying "running"
-  // directly above a paragraph that says the attempt is over. The correction
+  // alone a reclaimed or parked attempt is indistinguishable from a running
+  // one: each has a start time and no finish time. This card can see what the
+  // document cannot -- whether a later attempt exists, what state the task is
+  // in and whose lease it holds -- so the chip is corrected here rather than
+  // left saying "running" directly above a paragraph that says the attempt is
+  // over. The correction
   // belongs in `attemptOutcome`; that lives in types.ts, which another track
   // owns, so it is reported rather than edited.
   const chip: { label: string; tone: Tone | 'unknown' } =
@@ -1284,41 +1286,16 @@ function AttemptCard({
   )
 }
 
-/**
- * HAS THIS ATTEMPT ENDED, and on what evidence.
- *
- * `completed_at` is the obvious test and it is not sufficient. It is written
- * in exactly one place -- `control.record_attempt_end`, reachable only from
- * `finish()` -- so the two interruptions this screen most needs to describe
- * never set it. A SIGKILL kills the worker before `finish()` runs, and a
- * reconciler reclaim of a stale generation repairs the TASK document without
- * touching the attempt's at all (`repair_task_state` sets `completed_at` on
- * the task, not on the attempt). An attempt that ended either of those ways
- * keeps `completed_at: null` for ever -- the same shape a RUNNING attempt has
- * -- so a panel keyed on that field alone tells the reader of a reclaimed
- * attempt to wait for a final figure that nothing will ever write.
- *
- * Two further facts on this page settle it, and both are READ rather than
- * inferred:
- *
- *   - A LATER ATTEMPT DOCUMENT EXISTS. Attempts are fenced by generation and
- *     run one at a time, so an attempt that is not the newest is over.
- *   - THE TASK IS TERMINAL. Nothing runs for it again, so nothing writes to
- *     any of its attempts again.
- *
- * `by` is carried because the three read differently to a person and the
- * sentence under the bars names the one that applies. What is NOT claimed
- * anywhere is WHY the attempt stopped: this page cannot see a kill, a reclaim
- * or a crash -- only that it stopped, and that no final figure came with it.
- */
-type AttemptEnd = { over: false } | { over: true; by: 'recorded' | 'superseded' | 'task-ended' }
-
-function attemptEnd(a: AttemptRow, task: Task, isLatest: boolean): AttemptEnd {
-  if (a.completed_at !== null) return { over: true, by: 'recorded' }
-  if (!isLatest) return { over: true, by: 'superseded' }
-  if (TERMINAL_STATES.has(task.state)) return { over: true, by: 'task-ended' }
-  return { over: false }
-}
+// HAS THIS ATTEMPT ENDED, and on what evidence: `attemptEnd` in duration.ts.
+//
+// It lived here until the phase chart needed the same answer and grew its own
+// copy, and the copy is where the defect was: both read `completed_at`, a
+// later attempt and a terminal task, and neither read the task's lease. A
+// quota park, a failed dispatch and a reconciler reclaim each leave the task
+// non-terminal and the attempt's `completed_at` null, so the card called a
+// parked attempt "running" and measured its `ran` against the clock. One
+// predicate now, read by the card, the resources panel and the chart, so
+// they cannot disagree about the same attempt on the same screen.
 
 /**
  * REQUESTED vs UTILISED, for one attempt.
@@ -1365,14 +1342,15 @@ function AttemptResources({
   // for a write that has already not happened.
   //
   // `completed_at` alone does not separate the two -- it is not written on the
-  // paths this distinction exists for. `attemptEnd` above is where the three
-  // pieces of evidence this page actually holds are read.
+  // paths this distinction exists for. `attemptEnd` (duration.ts) is where
+  // the four pieces of evidence this page actually holds are read.
   const end = attemptEnd(a, task, isLatest)
   const ended = end.over
 
   // WHAT IS KNOWN ABOUT THE END, in the words of what was read. This page
-  // cannot see a kill, a reclaim or a crash; it can see a finish time, a later
-  // attempt document and the task's state, so it says those and stops.
+  // cannot see a kill, a reclaim, a park or a crash; it can see a finish
+  // time, a later attempt document, the task's state and whose lease the task
+  // holds, so it says those and stops.
   //
   // IT IS A SENTENCE STILL, AND IT IS NOT ON THE GLASS. Two `<p className=
   // "muted small">` blocks carried it under every attempt's bars -- around
@@ -1387,7 +1365,9 @@ function AttemptResources({
         ? 'Its finish time is recorded, and no peak memory was written with it.'
         : end.by === 'superseded'
           ? 'A later attempt has replaced it, so nothing writes to this document again.'
-          : `The task is ${task.state} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
+          : end.by === 'released'
+            ? `The task is ${task.state} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
+            : `The task is ${task.state} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =

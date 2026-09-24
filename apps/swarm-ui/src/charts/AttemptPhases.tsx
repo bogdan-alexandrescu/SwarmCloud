@@ -26,6 +26,15 @@
 // removes the queue and nothing else; the cold start and run stay exactly
 // where they were measured.
 //
+// ADMISSION IS THE `lease_acquired` EVENT, and a row can lack it. The worker
+// rewrites `attempt.created_at` to its own start time (duration.ts says
+// where), so for a started attempt whose `lease_acquired` is off the page,
+// admission -- the zero of this axis -- is unknown. Its queue and cold start
+// are hatched, and its run, still measured, is NOT drawn on the axis:
+// starting it at the admission rule would be the §B5 defect again, an
+// unknown cold start given zero width. Its length is the figure at the end of
+// the row, and it is in the lollipop and the sum.
+//
 // OPEN IS DRAWN AS OPEN. A segment with no recorded end -- a run still going,
 // a run whose end was never written, a container that never came up -- is a
 // wash of its colour up to the newest instant this page holds for it (a LOWER
@@ -184,9 +193,12 @@ function PhaseRow({
       </text>
       <SegmentMark s={r.queue} ordinal={r.ordinal} y={y} x={x} hatchId={hatchId} anchor={0} />
       <SegmentMark s={r.cold} ordinal={r.ordinal} y={y} x={x} hatchId={hatchId} anchor={0} />
-      {r.run !== null && (
-        <SegmentMark s={r.run} ordinal={r.ordinal} y={y} x={x} hatchId={hatchId} anchor={runStart(r)} />
-      )}
+      {r.run !== null &&
+        (r.placed ? (
+          <SegmentMark s={r.run} ordinal={r.ordinal} y={y} x={x} hatchId={hatchId} anchor={runStart(r)} />
+        ) : (
+          <UnplacedRun s={r.run} ordinal={r.ordinal} />
+        ))}
       {r.dispatchedAt !== null && r.dispatchedAt > 0 && (
         // The `dispatched` event inside the cold start: the backend call
         // returned here, and everything after it is the container coming up
@@ -307,6 +319,35 @@ function SegmentMark({
         className={`ctl-phase-chevron is-${s.phase}`}
         d={`M${xs + 1},${y} L${xs + 6},${y + BAR / 2} L${xs + 1},${y + BAR} Z`}
       />
+    </g>
+  )
+}
+
+/**
+ * A run whose attempt has no known admission: measured, and not positioned.
+ *
+ * No geometry at all, on purpose. Every x on this axis is a distance from
+ * admission, and this run's distance from admission IS the cold start that
+ * is unknown. The mark keeps the phase, the kind and the sentence, so the
+ * figure at the end of the row is still explained and a screen reader still
+ * reaches it.
+ */
+function UnplacedRun({ s, ordinal }: { s: Segment; ordinal: number }) {
+  return (
+    <g
+      role="img"
+      aria-label={`${sentence(s, ordinal)} This attempt’s admission is not on this page, so where its run falls on this axis is unknown and it is not drawn on it; its length is the figure at the end of the row.`}
+      data-phase={s.phase}
+      data-kind={s.kind}
+      data-placed="no"
+      data-testid="phase-unplaced"
+      // React leaves an attribute out when its value is undefined, so each
+      // of these appears only on the kind it describes.
+      data-ms={s.kind === 'closed' ? s.ms : undefined}
+      data-at-least-ms={s.kind === 'open' ? s.atLeastMs : undefined}
+      data-live={s.kind === 'open' ? (s.live ? 'yes' : 'no') : undefined}
+    >
+      <title>{tip(s)}</title>
     </g>
   )
 }
@@ -450,6 +491,9 @@ function Lolly({
  * be shown without its coverage -- `TimeSeries`' coverage rule, applied to a
  * duration. An open attempt's lower bound is stated AFTER the total and is
  * never inside it.
+ *
+ * `n` is the attempts the TASK records, not the documents that came back, so
+ * a read that returned 50 of 83 says "of 83" and names the 33 it did not see.
  */
 function SumLine({ sum }: { sum: WorkSum }) {
   const covered = sum.closed + sum.neverRan
@@ -469,6 +513,7 @@ function SumLine({ sum }: { sum: WorkSum }) {
       {sum.neverRan > 0 && <> · {sum.neverRan} never ran</>}
       {sum.absent > 0 && <> · {sum.absent} unreadable</>}
       {sum.undatable > 0 && <> · {sum.undatable} undated</>}
+      {sum.missing > 0 && <> · {sum.missing} not returned</>}
     </figcaption>
   )
 }
