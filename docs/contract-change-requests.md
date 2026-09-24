@@ -29,6 +29,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
+| 17 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 
 ---
 
@@ -1576,3 +1577,62 @@ section 6 would still hold its prefix.
 Two copies, and three tests that pin them over inputs longer than any id in
 use. If the rule changes, both copies must be edited. If only one is edited,
 the tests fail rather than production.
+
+## 17. `states.py`: no `EventType` says "the reconciler evicted this execution"
+
+**Status:** open, recorded 2026-09-24 by the browser-eviction lane. The owner
+asked for browser pods that are stuck without progress, or left running after
+their task finished, to be evicted "with an event naming the reason". The event
+is written. Its type is borrowed.
+
+### What is there now, without the contract
+
+The reconciler's two GKE eviction rules (`apps/reconciler/reconciler/detect.py`,
+runbook `docs/runbooks/browser-eviction.md`) write these events:
+
+* **`stuck_no_progress`.** The ordinary repair sequence:
+  * `generation_fenced`, with `detail.finding` and `detail.reason`;
+  * `lease_released`;
+  * `ready`, `failed` or `cancelled`.
+
+  Fencing is what actually happens, so every one of those types is accurate.
+* **`left_running`.** The task is already terminal, and nothing is fenced. The
+  event is `generation_fenced` with `detail.phase: "left_running"`. That type is
+  the nearest the frozen `EventType` offers: the reconciler stopped an
+  execution of this generation that had no right to run. It is still a
+  borrowed word. A reader of the task timeline sees "generation fenced" after
+  "succeeded" and must open `detail` to learn it was an eviction.
+
+`EventType` cannot be extended from outside: `swarm_api.codec` parses every
+stored event with `EventType(data["type"])`, so writing an unknown type string
+would break the read path for that task.
+
+### The requested change
+
+Add one member to `swarm_common/states.py`:
+
+```python
+class EventType(str, Enum):
+    ...
+    EXECUTION_EVICTED = "execution_evicted"
+```
+
+The `left_running` rule would write it instead of `generation_fenced`. The
+stuck rule would keep `generation_fenced`, because it does fence, and would add
+an `execution_evicted` event once the Job is deleted.
+
+### What breaks if it is made
+
+Nothing stored. Old events keep their types. Readers that switch on event
+type need a case for the new one:
+
+* the UI timeline in `apps/swarm-ui/src/`, which renders unknown types
+  generically today;
+* any consumer that assumes the list of types is closed. None was found in
+  `apps/`.
+
+### What is left to live with if it is declined
+
+The `generation_fenced` events with `phase: left_running` stay as they are.
+They are accurate about what was stopped, but not about why. The pass report
+and the `evicted a GKE job` log line name the kind exactly either way.
