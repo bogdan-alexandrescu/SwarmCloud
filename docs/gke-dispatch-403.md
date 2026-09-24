@@ -10,6 +10,13 @@ for the commands, `kubernetes/rbac/dispatcher-rbac.yaml` for the RBAC objects
 themselves, and [execution backends](execution-backends.md) for why `browser`
 is on GKE at all.
 
+**This page is the mechanism. The full sequence is the incident record:**
+[2026-09-24, GKE dispatch](incidents/2026-09-24-gke-dispatch.md). It has all
+seven causes in the order they were found, including the two that were still
+undiscovered when this page was written — a RoleBinding subject that named the
+right identity by the wrong one of its two names, and `/artifacts` on a read-only
+root filesystem — and the commands that distinguish them from each other.
+
 ---
 
 ## 1. Kubernetes authorises before it resolves
@@ -80,7 +87,13 @@ one of its attempts failed with the message above. All **seven** browser tasks
 this deployment had ever accepted, over two days, had failed the same way. The
 capability shipped broken; it was never a regression.
 
-There were two causes, stacked, and the second was hidden behind the first.
+There were two causes, stacked, and the second was hidden behind the first. Two
+more were found after this section was written, and they are in the
+[incident record](incidents/2026-09-24-gke-dispatch.md): the RoleBinding below
+turned out to name the scheduler by its email while GKE was naming it by its
+numeric uniqueId, and behind that a container that finally started and died on a
+read-only root filesystem. Four of the seven in that record produce this same
+403, so the count here is the two that were known, not the total.
 
 **Cause 1 — the namespace did not exist.** `kubernetes/render.py` spelled the
 tenant namespace `swarm-` and `apps/scheduler/scheduler/dispatch.py` spelled it
@@ -133,19 +146,31 @@ recorded here because it is the failure that would have come next.
 ## 4. Reading the error next time
 
 The dispatcher now says this itself. A 403 on `jobs.batch` is raised with code
-`gke_create_job_forbidden` and a message that names the namespace it tried and
-states plainly that the namespace may simply not exist. It reaches the log
-through the `dispatch failed` line in `apps/scheduler/scheduler/loop.py`.
+`gke_create_job_forbidden` and a message that names **the namespace it tried and
+the identity it presented**, and states plainly that the namespace may simply not
+exist. It reaches the log through the `dispatch failed` line in
+`apps/scheduler/scheduler/loop.py`.
+
+Those two facts are what separate the four conditions that produce this error, so
+read them first. The identity is there because the API server names a service
+account authenticating with an OAuth access token by its numeric `uniqueId`,
+while every RoleBinding names it by email: the message now carries both the
+address the scheduler authenticated as and, in the upstream text, the digits GKE
+resolved it to. A binding missing either spelling applies cleanly and authorises
+nobody.
 
 When you see it, check existence **before** you touch IAM:
 
 ```bash
 kubectl get namespace swarm-tenant-eng
-kubectl get rolebinding swarm-dispatcher -n swarm-tenant-eng
+kubectl get rolebinding swarm-dispatcher -n swarm-tenant-eng -o yaml
 kubectl get serviceaccount -n swarm-tenant-eng
 ```
 
-Three outcomes, three different problems:
+`-o yaml` on the RoleBinding rather than plain `get`, because the whole question
+is which subjects it names and the default output does not show them.
+
+Four outcomes, four different problems:
 
 * **no namespace** — the tenant was never provisioned on the cluster, or was
   provisioned under another spelling. `kubernetes/apply.sh --tenant <id>
@@ -154,7 +179,14 @@ Three outcomes, three different problems:
   swarm cluster, so "the tenant exists" is not evidence that its namespace does.
 * **namespace, no `swarm-dispatcher` RoleBinding** — the RBAC in this
   repository has not been applied to that namespace. Same command.
-* **both present and still 403** — now it is worth looking at IAM, and the
+* **RoleBinding present, but its `subjects` list holds only one `kind: User`
+  entry for the scheduler** — it must hold two: the email, and the account's
+  15-25 digit `uniqueId`, which is the name GKE uses on the access-token path
+  the dispatcher authenticates with. One alone applies cleanly and authorises
+  nobody. `gcloud iam service-accounts describe <sa> --format='value(uniqueId)'`
+  gives the number to compare against the `User "..."` in the error. Same
+  command to fix it: `apply.sh` resolves both uniqueIds itself.
+* **all present and still 403** — now it is worth looking at IAM, and the
   condition on `swarmGkeDispatcher` is the first thing to read.
 
 The runbook has the full sequence: [gke-dispatch-redispatch](runbooks/gke-dispatch-redispatch.md).

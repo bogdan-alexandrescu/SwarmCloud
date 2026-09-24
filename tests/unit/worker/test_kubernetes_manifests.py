@@ -926,6 +926,13 @@ def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
     of the same spec -- and the two tests stating it two ways is precisely why
     this file could not pass itself for one commit. (Reasoning from the
     mirrored-copy-audit lane, which reached this assertion independently.)
+
+    AND THE SLOT COUNT IS ASSERTED ANYWAY, which is the one thing neither of the
+    two lanes that re-pointed this independently had seen: with no uniqueId
+    supplied, BOTH slots fall back to the email, so the SET of names is
+    `{email}` whether there are two slots or one. A set-based assertion cannot
+    see a DROPPED slot -- the fallback makes it look like a missing duplicate.
+    Only the count can. (From the gke-incident-record lane.)
     """
     for binding_name, account in (
         ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
@@ -960,7 +967,15 @@ def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
         assert not [n for n in names if "__" in n], (
             f"{binding_name} has an unsubstituted placeholder subject: {names}"
         )
-
+        # THE SLOT COUNT, because the set of names cannot carry it. `tenant_docs`
+        # supplies no uniqueIds, so both slots hold the email and a deleted slot
+        # is invisible to any assertion about names. See the docstring.
+        assert len(subjects) == 2, (
+            f"RoleBinding {binding_name} has {len(subjects)} subject(s); it must have "
+            f"one slot per spelling of its account -- the email and the numeric "
+            f"uniqueId -- because GKE names the caller differently depending on how "
+            f"it authenticated. See kubernetes/rbac/dispatcher-rbac.yaml."
+        )
         # `User`, not `ServiceAccount`: the scheduler runs on Cloud Run as a
         # Google identity and has no Kubernetes ServiceAccount of its own.
         assert {s["kind"] for s in subjects} == {"User"}

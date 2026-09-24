@@ -683,6 +683,56 @@ def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
     configuration.refresh_api_key_hook = refresh
 
 
+#: What the dispatch-failure message says instead of an address when this
+#: process cannot name the identity it is authenticating with. It is a sentence
+#: rather than an empty string or a plausible-looking default: a fabricated
+#: address in this message would send the reader to check a RoleBinding against
+#: an account that was never presented, which is the same class of mistake as
+#: the numeric-default this repository refused in `render.py` -- it reads as a
+#: fact and authorises nobody.
+UNNAMED_IDENTITY = "an identity this process could not name"
+
+
+def authenticated_identity(credentials: Any) -> str:
+    """The service account this process presents to the Kubernetes API server.
+
+    WHY THIS IS IN THE ERROR MESSAGE AT ALL. GKE resolves a Google service
+    account that authenticated with an OAuth ACCESS token -- which is how
+    `install_google_bearer_token` reaches the API -- to the account's numeric
+    `uniqueId`, not to its email. So the 403 the API server sends back names a
+    subject like
+
+        User "117405034245659033603" cannot create resource "jobs" ...
+
+    while every RoleBinding in this repository was written naming the EMAIL. On
+    2026-09-24 that made a binding which applied cleanly authorise nobody, and
+    the two spellings were far enough apart that nothing connected the digits in
+    the error to the address in the manifest. Naming the account we authenticated
+    AS, beside the namespace we tried, is what closes that gap: the reader then
+    has the email to look up in the RoleBinding and the digits to compare it to.
+
+    ASKED ONCE, AND NOT REFRESHED HERE. `swarm_api.delegation.service_account_email`
+    does the same lookup in three escalating steps, the second of which is a
+    `credentials.refresh()` -- on Cloud Run the attribute is the literal string
+    "default" until something refreshes it. That step is unnecessary on this path
+    because `install_google_bearer_token` has already minted a token from these
+    credentials before this is called, so the refresh has happened; and the third
+    step, a urllib call to the metadata server, is deliberately NOT copied here
+    because this value is only ever used to decorate a failure message. A network
+    call inside an error path can turn one failed dispatch into a hung one.
+
+    Returns "" when the credentials cannot name themselves (a user credential
+    from `gcloud auth application-default login`, or an unrefreshed compute
+    credential). The caller substitutes UNNAMED_IDENTITY rather than guessing.
+    """
+    email = getattr(credentials, "service_account_email", None)
+    # "default" is what compute and Cloud Run credentials report before a
+    # refresh; it names no account and must not be printed as if it did.
+    if isinstance(email, str) and email and email != "default" and "@" in email:
+        return email
+    return ""
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -719,11 +769,21 @@ class GkeJobDispatcher:
     """
 
     def __init__(self, settings: Any, *, target: GkeTarget | None = None,
-                 batch_api: Any | None = None) -> None:
+                 batch_api: Any | None = None, identity: str = "") -> None:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
         self._ca_file: str | None = None
+        #: WHO THIS DISPATCHER AUTHENTICATES AS, for the failure message. Filled
+        #: in by `_api()` from the credentials it resolves, so in a deployment it
+        #: needs no wiring and cannot disagree with the token actually sent.
+        #:
+        #: `identity` travels with `batch_api` and exists for the same reason:
+        #: a caller that supplies a ready-made Kubernetes client has taken over
+        #: authentication, so this class can no longer learn the identity from
+        #: google.auth and cannot invent it. Supplying the client without the
+        #: identity is honest and costs only the vaguer message.
+        self._identity: str = str(identity or "")
 
     def _ca_cert_file(self, target: GkeTarget) -> str:
         """A path on local disk holding the cluster CA.
@@ -778,6 +838,10 @@ class GkeJobDispatcher:
         # so a token minted here would be the token every subsequent
         # create_namespaced_job carried until the instance died.
         install_google_bearer_token(configuration, credentials)
+        # AFTER the token is installed, not before: minting the token is what
+        # refreshes these credentials, and an unrefreshed compute credential
+        # reports its email as the literal string "default".
+        self._identity = authenticated_identity(credentials)
         self._batch_api = k8s.BatchV1Api(k8s.ApiClient(configuration))
         return self._batch_api
 
@@ -922,6 +986,10 @@ class GkeJobDispatcher:
         text = str(exc)
         return "is forbidden" in text or '"code": 403' in text or "'code': 403" in text
 
+    def presented_identity(self) -> str:
+        """The identity for the failure message, never blank and never invented."""
+        return self._identity or UNNAMED_IDENTITY
+
     def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant) -> str:
         manifest = self._manifest(task=task, lease=lease, profile=profile, tenant=tenant)
         namespace = manifest["metadata"]["namespace"]
@@ -951,23 +1019,41 @@ class GkeJobDispatcher:
             # So the namespace is NAMED and the ambiguity is stated, in the
             # message rather than in a doc nobody reads at 03:00. `loop.py`
             # logs `str(exc)` on its `dispatch failed` line, which is where an
-            # operator meets this. docs/gke-dispatch-403.md has the full
-            # diagnosis and the commands.
+            # operator meets this. docs/gke-dispatch-403.md has the mechanism and
+            # docs/incidents/2026-09-24-gke-dispatch.md the whole sequence.
+            #
+            # AND THE IDENTITY IS NAMED TOO, which it was not until 2026-09-24.
+            # Four of the seven causes behind that outage -- a wrong namespace, a
+            # missing Role, a missing RoleBinding, and a RoleBinding whose subject
+            # named the right account by the wrong one of its two names -- all
+            # produce this one message, and the two facts that separate them are
+            # WHERE we tried and WHO we were. The upstream text supplies the
+            # numeric uniqueId GKE resolved us to; only this process knows which
+            # email that is, and the gap between those two spellings is what hid
+            # the real cause for two days. Both are now in one line.
             if self._is_forbidden(exc):
+                identity = self.presented_identity()
                 raise DispatchError(
-                    f"could not create GKE job in {namespace}: {exc} -- NOTE: a 403 "
-                    f"here does not prove this is a permissions problem. Kubernetes "
-                    f"authorises before it resolves, so a Job created into a "
-                    f"namespace that DOES NOT EXIST is also reported as "
-                    f"`jobs.batch is forbidden`, never as 404. Confirm the namespace "
-                    f"{namespace} exists and carries the swarm-dispatcher RoleBinding "
-                    f"before changing any IAM: kubectl get ns {namespace} && "
-                    f"kubectl get rolebinding swarm-dispatcher -n {namespace}. "
-                    f"See docs/gke-dispatch-403.md.",
+                    f"could not create GKE job in {namespace} as {identity}: {exc} "
+                    f"-- NOTE: a 403 here does not prove this is a permissions "
+                    f"problem. Kubernetes authorises before it resolves, so a Job "
+                    f"created into a namespace that DOES NOT EXIST is also reported "
+                    f"as `jobs.batch is forbidden`, never as 404. Before changing any "
+                    f"IAM, confirm the namespace {namespace} exists and that its "
+                    f"swarm-dispatcher RoleBinding names the account this dispatcher "
+                    f"authenticated as -- {identity} -- BOTH by email and by numeric "
+                    f"uniqueId: kubectl get ns {namespace} && kubectl get rolebinding "
+                    f"swarm-dispatcher -n {namespace} -o yaml. This dispatcher "
+                    f"presents an OAuth access token, and on that path GKE names the "
+                    f"caller by uniqueId -- the `User \"...\"` above -- so a subject "
+                    f"list carrying the email alone applies cleanly and authorises "
+                    f"nobody. See docs/gke-dispatch-403.md and "
+                    f"docs/incidents/2026-09-24-gke-dispatch.md.",
                     code="gke_create_job_forbidden",
                 ) from exc
             raise DispatchError(
-                f"could not create GKE job in {namespace}: {exc}",
+                f"could not create GKE job in {namespace} as "
+                f"{self.presented_identity()}: {exc}",
                 code="gke_create_job_failed",
             ) from exc
         name = getattr(getattr(created, "metadata", None), "name", None)
