@@ -50,6 +50,15 @@ targets += sorted((root / "docs").glob("*.md"))
 # them in would make this check fail on documents nobody is allowed to edit,
 # and a check that has to be ignored is a check that is off.
 targets += sorted((root / "docs" / "runbooks").glob("*.md"))
+# Incident records, for the same reason and NOT for the audits' reason.
+#
+# `docs/incidents/` looks like `docs/audits/` -- dated files named after the day
+# they describe -- but it is read like a runbook: it carries the ordered commands
+# that tell four identical-looking failures apart, and it is reached from a
+# runbook and from `docs/gke-dispatch-403.md`. Unlike an audit it is expected to
+# be updated when a file it cites moves, so sweeping it in fails on a rotted link
+# rather than on a document nobody is allowed to edit.
+targets += sorted((root / "docs" / "incidents").glob("*.md"))
 targets += sorted((root / "kubernetes").glob("*.md"))
 targets += sorted((root / "tests").rglob("*.md"))
 targets = [p for p in targets if p.is_file()]

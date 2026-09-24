@@ -12,6 +12,8 @@ you are landing the GKE dispatch fix for the first time.
 `kubernetes/apply.sh` should already have refused.
 
 Background, and why the error message lies: [docs/gke-dispatch-403.md](../gke-dispatch-403.md).
+The whole sequence of seven causes, and the commands that tell them apart:
+[the incident record](../incidents/2026-09-24-gke-dispatch.md).
 
 Every command below was checked against the script or `Makefile` target it
 names. Where one takes an argument you have to choose, the choice is called
@@ -64,8 +66,9 @@ kubernetes/apply.sh --tenant eng
 
 Without `--confirm` this renders the manifests, validates them client-side, and
 prints a `kubectl diff`. Nothing is written. Read the diff: you should see the
-namespace, the ResourceQuota and LimitRange, two ServiceAccounts
-(`swarm-worker` and `swarm-agent-worker`), the worker Role/RoleBinding, the
+namespace, the ResourceQuota and LimitRange, **three** ServiceAccounts
+(`swarm-worker`, `swarm-agent-worker`, and the namespace's own `default` with
+token automounting disabled), the worker Role/RoleBinding, the
 **`swarm-dispatcher` and `swarm-reaper`** Roles and RoleBindings, and two
 NetworkPolicies.
 
@@ -74,16 +77,48 @@ the diff, you are on an older checkout — it is added by
 `kubernetes/rbac/dispatcher-rbac.yaml`, which is listed in `TENANT_FILES` in
 `kubernetes/render.py`.
 
-Check the subjects in the diff name real service accounts:
+Before the diff appears, the script prints one line you should read:
+
+```
+==> rbac subjects  scheduler=<digits> reconciler=<digits>
+```
+
+(on stderr, like every other `==>` line these scripts print)
+
+Those are the two accounts' numeric `uniqueId`s, resolved with `gcloud iam
+service-accounts describe`. **The lookup is fatal if it fails** — an apply that
+cannot name the identities it is authorising exits rather than rendering, because
+the renderer falls back to the email and an email-only binding authorises nobody.
+If you see `could not resolve the uniqueId of ...`, your own credentials lack
+`iam.serviceAccounts.get` on that account, or the account does not exist in
+`PROJECT_ID`. Fix that; do not work around it.
+
+Check the subjects in the diff. Each RoleBinding must name its account **twice**:
 
 * `swarm-dispatcher` → `swarm-scheduler@<project>.iam.gserviceaccount.com`
+  **and** the scheduler's 15-25 digit uniqueId
 * `swarm-reaper` → `swarm-reconciler@<project>.iam.gserviceaccount.com`
+  **and** the reconciler's uniqueId
+
+Both spellings, because they are used on different paths and only one of them is
+the one that matters here. The control plane reaches the Kubernetes API with a
+Google OAuth access token, and on that path GKE names the caller by uniqueId; the
+email is the subject when a human impersonates the GSA with kubectl, and under
+Workload Identity. A binding carrying only the email applies cleanly and
+authorises nobody, which is precisely how every GKE dispatch this platform ever
+attempted failed — see
+[the incident record, cause 6](../incidents/2026-09-24-gke-dispatch.md).
+
+If a uniqueId subject is missing from the diff while the `rbac subjects` line
+printed numbers, the checkout is older than that fix. If the subject renders as a
+literal `__SCHEDULER_UID__`, stop: the renderer is meant to refuse that, and a
+placeholder as a subject name is a binding to nobody.
 
 A RoleBinding to a subject that does not exist applies cleanly and grants
 nothing, so a typo here fails looking exactly like success. The renderer
-validates both against a pinned pattern and refuses to emit an unsubstituted
-placeholder, but read them anyway — this is the one step where reading is
-cheaper than the failure.
+validates every subject against a pinned pattern and refuses to emit an
+unsubstituted placeholder, but read them anyway — this is the one step where
+reading is cheaper than the failure.
 
 ---
 
@@ -112,8 +147,24 @@ kubectl get rolebinding swarm-dispatcher -n swarm-tenant-eng -o wide
 kubectl get serviceaccount -n swarm-tenant-eng
 ```
 
-Expect the namespace, a `swarm-dispatcher` RoleBinding whose subject is the
-scheduler's service account, and both `swarm-worker` and `swarm-agent-worker`.
+Expect the namespace; a `swarm-dispatcher` RoleBinding whose `USERS` column
+carries **two** entries for the scheduler — its email *and* its numeric
+uniqueId; and `swarm-worker`, `swarm-agent-worker` and `default` in the
+ServiceAccount list.
+
+`-o wide` is what shows the `USERS` column at all; plain `get rolebinding` shows
+only the role and the age, which is how a binding with one subject too few passes
+inspection. If only the email is there, that binding authorises nobody on the
+path the scheduler actually uses. Confirm the number against the account itself:
+
+```bash
+gcloud iam service-accounts describe \
+  swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com \
+  --format='value(uniqueId)'
+```
+
+It must equal the digits in the binding, and it is also the `User "..."` that
+appears in the 403 — that comparison is the one nobody made for two days.
 
 `swarm-agent-worker` is the one the dispatcher's pod spec actually names. If it
 is missing, the Job will be created and no pod will ever appear —
@@ -132,6 +183,20 @@ Expect `yes`. This needs impersonation rights on your own account; if it comes
 back `error: ... cannot impersonate`, that is a limit on **your** credentials
 and says nothing about the binding. Fall back to reading the RoleBinding's
 subjects, and let step 5 be the proof.
+
+**A `yes` here is weaker than it looks.** `--as <email>` asks about the *email*
+subject, which is not the name GKE gives the scheduler when it authenticates with
+an access token. So this can answer `yes` while every real dispatch is refused —
+exactly the state this platform was in on 2026-09-24. `kubectl auth can-i --as`
+takes a uniqueId as a user name too, so ask the question that matters:
+
+```bash
+kubectl auth can-i create jobs --namespace swarm-tenant-eng --as <the uniqueId>
+```
+
+`--as` is a username string as far as RBAC is concerned, so this is the same
+question the API server answers for a real dispatch. The same impersonation
+caveat applies: `cannot impersonate` is about your credentials, not the binding.
 
 Deliberately **not** `kubectl auth can-i --as` against `swarm-reaper`: the
 reconciler's binding is verified the same way, by reading it.
@@ -242,14 +307,22 @@ Look for `dispatch failed ... backend=GKE_AUTOPILOT`, and for `dispatch ok
 ... backend=GKE_AUTOPILOT` — the success line exists precisely so that "has GKE
 ever dispatched?" is answerable from logs instead of by reading task documents.
 
+The failed line names **the namespace it tried and the identity it presented**,
+and both are load-bearing: four of the causes in
+[the incident record](../incidents/2026-09-24-gke-dispatch.md) produce one
+identical 403, and those two facts are all that separate them. Read them off the
+line before running anything.
+
 | what the error says | what it means | what to do |
 |---|---|---|
-| `gke_create_job_forbidden`, message names `swarm-tenant-<id>` | **either** the namespace does not exist **or** the RBAC is missing. Kubernetes authorises before it resolves, so you cannot tell from the message | go back to step 3. `kubectl get ns` first, IAM last |
+| `gke_create_job_forbidden`, message names `swarm-tenant-<id>` | **any** of: the namespace does not exist, the Role is missing, the RoleBinding is missing, or the RoleBinding names the scheduler by only one of its two names. Kubernetes authorises before it resolves, so the message cannot tell you which | go back to step 3, in its order: `kubectl get ns`, then the binding's `USERS` **both** ways, then IAM last |
+| `gke_create_job_forbidden`, and the `User "..."` in the upstream text is digits you cannot find in the RoleBinding | the binding carries the email only. It applied cleanly and authorises nobody | re-run step 2; `apply.sh` resolves both uniqueIds and refuses to render if it cannot |
 | `gke_create_job_failed` with a connection or TLS error | the cluster endpoint or CA in the scheduler's environment is wrong | `GKE_ENDPOINT` / `GKE_CA_CERT_B64` come from terraform; re-run `make deploy` after `make infra` |
 | `backend_disabled` | `ENABLE_GKE_AUTOPILOT` is false on the scheduler | a deployment setting, not a cluster problem |
 | task reaches RUNNING, no pod ever appears | the KSA the pod names does not exist | `kubectl describe job -n swarm-tenant-<id> <job>` and look for `serviceaccount ... not found`; step 3 |
 | pod appears and is `Pending` forever | Autopilot has not admitted it — resource class, or a quota on the namespace | `kubectl describe pod`, then `kubectl get resourcequota -n swarm-tenant-<id>` |
 | `CreateContainerConfigError` | the pod is asking for a Kubernetes Secret that does not exist | nothing in this repository creates one; the tenant key lives in Secret Manager and the worker fetches it itself. Read `kubernetes/render.py`'s header |
+| the container STARTS and dies at once on `[Errno 30] Read-only file system` | a path the runner writes to has no volume behind it. GKE sets `readOnlyRootFilesystem: true`; Cloud Run does not, so this class of defect is invisible on the primary backend | `kubectl logs -n swarm-tenant-<id> job/<job>` for the path in the traceback. Every writable path needs a volume in **both** Job specs — `dispatch.py`'s dict and the matching `kubernetes/worker-templates/` YAML |
 
 If it is none of these, stop and capture the Job's events before deleting
 anything — they are lost when the Job is collected:

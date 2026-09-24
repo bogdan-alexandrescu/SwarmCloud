@@ -60,12 +60,11 @@ TYPES_JSON="${SWARM_LIB_DIR}/unlabelable-types.json"
 # destroy.sh and both workflows are judging by the same list.
 unlabelable_types() { jq -c '.types' "${TYPES_JSON}"; }
 
-# The deny-list, minus the bare "default" token -- that string appears inside too
-# many unrelated ids to compare blindly. The shared default network is matched on
-# the network/subnetwork fields instead, inside destroy-guard.jq.
-deny_json() {
-  printf '%s\n' "${SHARED_DENY_LIST[@]}" | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]'
-}
+# The deny-list in the form destroy-guard.jq takes it. `guard_deny_json` lives in
+# common.sh, once, with the reasoning for both of its transformations; this file
+# and scripts/destroy.sh used to carry that pipeline each, which made the list a
+# guard judges by a thing with two implementations.
+deny_json() { guard_deny_json; }
 
 # judge PLAN_JSON VERDICT_OUT
 judge() {

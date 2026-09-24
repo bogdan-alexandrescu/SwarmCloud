@@ -120,34 +120,14 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            # WHERE THE RUNNER MAY WRITE, WHICH ON THIS BACKEND IS NOT THE DEFAULT.
-            #
-            # `runners/base.py` defaults `artifacts_dir` to `work.parent /
-            # "artifacts"`. The work dir here is the cwd, `/workspace`, so the
-            # default resolves to `/artifacts` -- and this container sets
-            # `readOnlyRootFilesystem: true`, so the runner died on its first
-            # line:
-            #
-            #     OSError: [Errno 30] Read-only file system: '/artifacts'
-            #
-            # WHY CLOUD RUN NEVER SHOWED THIS. The identical image, running the
-            # identical `python -m agent_worker.runners.<x>` command from the
-            # frozen catalogue, works on CLOUD_RUN_JOB -- because that container
-            # does NOT harden the root filesystem, so `mkdir /artifacts`
-            # succeeds. The hardening here is right and Cloud Run's absence of it
-            # is the anomaly; what was missing is a writable path to point at.
-            #
-            # POINTED INSIDE THE WORKSPACE VOLUME RATHER THAN GIVEN ITS OWN.
-            # A dedicated emptyDir at /artifacts would honour the documented
-            # default, and would also need a `sizeLimit` -- a second disk number
-            # to invent and keep in step, when `workspace` already derives its
-            # limit from the resource class's `__DISK__`. Artifacts are produced
-            # from the workspace and are uploaded to ARTIFACT_BUCKET when the
-            # attempt ends, so charging them to the same budget is the honest
-            # accounting. `SWARM_ARTIFACTS_DIR` exists precisely so this is a
-            # configuration rather than a code change.
-            - name: SWARM_ARTIFACTS_DIR
-              value: /workspace/artifacts
+            # SWARM_ARTIFACTS_DIR IS DELIBERATELY NOT HERE. It used to be, and
+            # that was the bug: this init container runs
+            # `swarm-install-credential`, which writes one file under
+            # /work/.claude and never touches an artifacts directory, while the
+            # `worker` container below -- the one that actually runs the agent
+            # and creates the directory -- had no such variable at all. The
+            # variable is set on the worker container, beside WORKSPACE_ROOT,
+            # where the process that reads it lives.
             - name: TENANT_ID
               value: __TENANT_ID__
             - name: ACCOUNT_LABEL
@@ -224,6 +204,44 @@ spec:
               value: __ARTIFACT_BUCKET__
             - name: WORKSPACE_ROOT
               value: /workspace
+            # WHERE THE RUNNER MAY WRITE, WHICH ON THIS BACKEND IS NOT THE DEFAULT.
+            #
+            # `runners/base.py` defaults `artifacts_dir` to `work.parent /
+            # "artifacts"`. The work dir is the cwd, `/workspace`, so the default
+            # resolves to `/artifacts`, and `runners/base.py` then mkdirs it.
+            #
+            # THE FAILURE HERE IS NOT v1's. `worker-job.yaml` and
+            # `worker-job-browser.yaml` set `readOnlyRootFilesystem: true`, so
+            # `/artifacts` was an immediate `OSError: [Errno 30] Read-only file
+            # system` and every browser task died on its first line -- loud, and
+            # fixed. This container deliberately sets it FALSE (root inside a
+            # gVisor sandbox is the point of v2), so `mkdir /artifacts`
+            # SUCCEEDS and nothing fails. The agent then writes its whole
+            # artifact tree onto the container's writable layer instead of into
+            # the `workspace` emptyDir, which is the volume that carries
+            # `sizeLimit: __DISK__`. Nothing is charged, nothing is bounded, and
+            # the first agent that produces a large artifact set exceeds the
+            # pod's ephemeral-storage allowance and is EVICTED mid-attempt with
+            # a message about node disk pressure. The same defect as v1, made
+            # invisible by the hardening that made v1 loud.
+            #
+            # THIS VARIABLE WAS ON THE INIT CONTAINER, NOT THIS ONE, from the
+            # commit that fixed v1 until this one. See the note at
+            # `install-credential`: the env was added to the container that does
+            # not write artifacts, and the suite did not notice because it
+            # scanned each template as one document rather than per container.
+            #
+            # POINTED INSIDE THE WORKSPACE VOLUME RATHER THAN GIVEN ITS OWN.
+            # A dedicated emptyDir at /artifacts would honour the documented
+            # default, and would also need a `sizeLimit` -- a second disk number
+            # to invent and keep in step, when `workspace` already derives its
+            # limit from the resource class's `__DISK__`. Artifacts are produced
+            # from the workspace and are uploaded to ARTIFACT_BUCKET when the
+            # attempt ends, so charging them to the same budget is the honest
+            # accounting. `SWARM_ARTIFACTS_DIR` exists precisely so this is a
+            # configuration rather than a code change.
+            - name: SWARM_ARTIFACTS_DIR
+              value: /workspace/artifacts
             # Points Claude Code at a directory this pod owns. Verified against
             # the Claude Code 2.1.274 binary: on non-macOS the credential is a
             # plaintext JSON file at <config dir>/.credentials.json, mode 0600,
