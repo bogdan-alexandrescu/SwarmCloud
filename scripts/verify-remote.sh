@@ -59,6 +59,144 @@ step "Verification gate, inside the VPC"
 info "job     ${JOB} (${REGION}/${PROJECT_ID})"
 info "targets ${TARGETS[*]}"
 
+# ---------------------------------------------------------------------------
+# A FAILED TARGET PRINTS ITS OWN TRANSCRIPT, NOT ONLY GCLOUD'S VERDICT.
+#
+# `gcloud run jobs execute --wait` streams progress dots and, on failure, one
+# sentence: "Executing job failed ... gcloud run jobs executions describe
+# swarm-verify-m9prt". The suite's own output -- which case failed, and why --
+# goes to Cloud Logging, not to this terminal. So release 36038727721 printed
+# "smoke-test FAILED (exit 1)" and nothing else, and finding out that the two
+# failures were "could not read the runner-profile catalogue" and "the backend
+# matrix visited 0 backends" took a second person, a second tool and the
+# execution name copied out of the log by hand.
+#
+# So on a failed target the execution is named from gcloud's own output and
+# its stdout/stderr (plus the platform's "Container called exit(1)." line) are
+# read back from Cloud Logging, oldest first, through `redact`: they are a test
+# suite's transcript, and a transcript is exactly where a token turns up.
+#
+# The job's audit events share the execution label and are excluded -- they
+# are a JSON blob per state change and say nothing about which case failed.
+#
+# IT IS READ THROUGH ONE LOG VIEW, NOT FROM THE PROJECT. The release runs this
+# script as swarm-tf-deployer, whose only logging role (configWriter) cannot
+# read an entry, and this project is SHARED, so the answer is not a
+# project-wide log read. terraform/bootstrap/verify_logs.tf has a sink copy this
+# job's stdout/stderr into a bucket of its own, and grants the deployer
+# roles/logging.viewAccessor on that bucket's _AllLogs view and nothing else.
+# LOG_BUCKET and LOG_LOCATION are that bucket.
+# tests/integration/test_verify_remote_prints_the_job_log.py reads the grant out
+# of the terraform and lets its fake release identity read that one view, so a
+# rename on either side fails there.
+#
+# The grant is in the bootstrap root, which the OWNER applies (`make
+# bootstrap`), never the release. Until it is applied the read is refused, and
+# an execution older than the sink is not in the bucket at all. Either way what
+# is printed says so, names what grants the read, and gives the project-wide
+# command that reads the same lines for anyone holding roles/logging.viewer.
+# The target's verdict is unchanged: a missing transcript must never turn a
+# failed gate into anything else.
+#
+# The filter below still names the job, the execution and the log. Through the
+# view that is partly redundant, but it is also the filter of the by-hand
+# command, which reads the whole project.
+LOG_BUCKET="swarm-verify-logs"
+LOG_LOCATION="global"
+LOG_VIEW="_AllLogs"
+
+# LOG_TAIL_ENTRIES is how many lines are shown. The smoke suite's whole
+# transcript was 41 lines on 2026-09-24 (swarm-verify-m9prt: 40 stderr, 1
+# varlog/system); 80 holds that with room, and the failure summary is at the
+# END of every suite's transcript, which a tail always includes.
+LOG_TAIL_ENTRIES=80
+# Cloud Logging ingests with a delay of a few seconds, and the job can finish
+# before its last lines are queryable. LOG_READ_ATTEMPTS is the number of READS
+# in all -- the first and then two retries, LOG_READ_WAIT_SECONDS apart -- before
+# an empty answer is reported as empty. The wait is injectable so the offline
+# test does not sleep; the default is what a real deployment needs.
+LOG_READ_ATTEMPTS=3
+LOG_READ_WAIT_SECONDS="${SWARM_VERIFY_LOG_WAIT_SECONDS:-5}"
+
+# execution_name GCLOUD_OUTPUT_FILE -> the execution this run created, or
+# nothing. Read from gcloud's own words ("executions describe <name>", and the
+# console URL ".../executions/details/<region>/<name>") rather than from "the
+# latest execution of the job", which another release running at the same time
+# would make somebody else's.
+#
+# sed, not grep: "no match" is an answer here, and grep reports it as exit 1,
+# which under pipefail is a failure this function would then have to swallow.
+execution_name() {
+  local file="$1" name
+  name="$(sed -nE "s/.*executions describe (${JOB}-[a-z0-9]+).*/\\1/p" "${file}" | sed -n 1p)"
+  if [[ -z "${name}" ]]; then
+    name="$(sed -nE "s|.*/executions/details/${REGION}/(${JOB}-[a-z0-9]+).*|\\1|p" "${file}" | sed -n 1p)"
+  fi
+  printf '%s' "${name}"
+}
+
+# print_execution_log EXECUTION -> the execution's own last lines, or why they
+# could not be read. Never fails: it explains a failure, it does not decide one.
+print_execution_log() {
+  local execution="$1" filter entries read_err attempt=1 n=0 rc
+  filter="resource.type=\"cloud_run_job\""
+  filter+=" AND resource.labels.job_name=\"${JOB}\""
+  filter+=" AND labels.\"run.googleapis.com/execution_name\"=\"${execution}\""
+  filter+=" AND logName:\"run.googleapis.com%2F\""
+  entries="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-log.XXXXXX")"
+  read_err="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-logerr.XXXXXX")"
+  while :; do
+    rc=0
+    gcloud logging read "${filter}" \
+      --project "${PROJECT_ID}" \
+      --bucket "${LOG_BUCKET}" \
+      --location "${LOG_LOCATION}" \
+      --view "${LOG_VIEW}" \
+      --order desc \
+      --limit "${LOG_TAIL_ENTRIES}" \
+      --freshness 1d \
+      --format json \
+      >"${entries}" 2>"${read_err}" || rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
+      err "could not read the log of execution ${execution} (gcloud logging read exit ${rc}):"
+      redact <"${read_err}" | head -n 3 | sed 's/^/     /' >&2
+      err "reading it needs roles/logging.viewAccessor on projects/${PROJECT_ID}/locations/${LOG_LOCATION}/buckets/${LOG_BUCKET}/views/${LOG_VIEW}"
+      err "(terraform/bootstrap/verify_logs.tf grants it to the release's deployer; the owner applies it with make bootstrap)"
+      info "the same lines, by hand, with roles/logging.viewer: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc --limit ${LOG_TAIL_ENTRIES}"
+      rm -f "${entries}" "${read_err}"
+      return 0
+    fi
+    # `length` over an array. Anything else -- gcloud printing nothing, or an
+    # object -- is not an answer and counts as empty rather than as a crash.
+    n="$(jq -r 'if type == "array" then length else 0 end' <"${entries}" 2>/dev/null || printf '0')"
+    if [[ "${n}" -gt 0 || "${attempt}" -ge "${LOG_READ_ATTEMPTS}" ]]; then
+      break
+    fi
+    attempt=$(( attempt + 1 ))
+    sleep "${LOG_READ_WAIT_SECONDS}"
+  done
+  rm -f "${read_err}"
+  if [[ "${n}" -eq 0 ]]; then
+    warn "execution ${execution} has no stdout/stderr in Cloud Logging after ${attempt} read(s)"
+    info "it may not be ingested yet, or it ran before the ${LOG_BUCKET} sink existed: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc"
+    rm -f "${entries}"
+    return 0
+  fi
+  info "execution ${execution}: its last ${n} log line(s), oldest first"
+  # `--order desc --limit N` is the NEWEST N; reversed here so the transcript
+  # reads the way it was written, ending on the suite's summary.
+  # Inside `if !` so that a rendering failure is reported rather than killing
+  # this script under set -e before the remaining targets have run.
+  if ! jq -r 'reverse | .[] | objects
+         | if .textPayload != null then .textPayload
+           elif (.jsonPayload | type) == "object" then (.jsonPayload.message // (.jsonPayload | tojson))
+           else "" end' \
+       <"${entries}" | redact | sed 's/^/   | /' >&2; then
+    warn "the log of execution ${execution} was read but could not be rendered"
+  fi
+  rm -f "${entries}"
+}
+
 FAILED=()
 for target in "${TARGETS[@]}"; do
   step "${target}"
@@ -75,14 +213,22 @@ for target in "${TARGETS[@]}"; do
     > "${out}" 2>&1 || rc=$?
 
   redact < "${out}" | tail -n 40
-  rm -f "${out}"
 
   if [[ "${rc}" -ne 0 ]]; then
     err "${target} FAILED (exit ${rc})"
     FAILED+=("${target}")
+    execution="$(execution_name "${out}")"
+    if [[ -n "${execution}" ]]; then
+      print_execution_log "${execution}"
+    else
+      # No execution named: gcloud refused before creating one (permission,
+      # a missing job), and its own output above is the whole story.
+      warn "gcloud named no execution for ${target}, so there is no job log to read; its output above is all there is"
+    fi
   else
     ok "${target}"
   fi
+  rm -f "${out}"
 done
 
 hr

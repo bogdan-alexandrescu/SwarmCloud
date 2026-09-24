@@ -679,8 +679,41 @@ greyscale.
 > and on merge that would have turned this bar warm: a colour picked to differ
 > from grey by its hue, on a fill this decision says is grey.
 > `test_a_documented_grey_is_a_grey` failed on exactly that. The bar now names
-> `--text-faint`, the pixel it always painted, and the tilde beside it (text,
-> not a fill) keeps `--ctl-absent`.
+> `--text-faint`, the pixel it always painted.
+>
+> **The tilde beside it is `--text-faint` too, corrected after review.** The
+> merge fix (`45b507d`) left `.ov-tilde` on `--ctl-absent`, calling it an
+> absence mark. It is not one: it marks a figure that *was* measured and is no
+> longer current, and `accountHeadroom` in `Overview.tsx` says that "old
+> information" and "no information" are opposite facts. `--ctl-absent` now
+> means only "nobody measured this", so the projection glyph was drawn dE76 0
+> from the em dash on a never-polled row in the same column. The tilde now
+> paints the same grey as its bar, which is the pixel both had before #26.
+> `test_a_projected_reading_is_not_drawn_in_the_absence_colour` holds every
+> mark of a projected reading at least dE76 10 from `--ctl-absent`, in both
+> themes. It finds the marks the way the fill guard finds a fill: the element
+> as the JSX renders it (tag, classes, parent), every rule in every sheet
+> matched against it, through the cascade. Its first version looked rules up
+> by exact selector text, so only a rule written `.ov-tilde` was measured and
+> `.ctl-util-figure .ov-tilde { color: var(--ctl-absent) }` passed (CI run
+> 36040434721, on a mutation of `Overview.tsx` alone).
+>
+> **"A second grey" is only true in the dark theme.** The projected bar's
+> `--text-faint` is 1.27:1 (dE76 7.2) from the live bar's `--text-dim` in the
+> dark theme and 1.11:1 (dE76 3.1) in the light one. The light figure is
+> under the 1.2 that `test_state_colour_discriminability.py` calls "not a
+> visible step", so in the light theme the bar alone does not tell a projected
+> reading from a live one. The `~` does. What
+> `test_a_documented_grey_is_not_the_default_grey` holds is that the two greys
+> are different, not that they are visibly different, and it holds it of what
+> the sheets paint on a fill carrying `ov-projected`, not of the test's own
+> table. Its first version compared `DOCUMENTED_GREYS` with the default and
+> never read a sheet: pointing only the shipped rule at `var(--text-dim)`
+> passed (CI run 36040434721). `test_a_documented_grey_is_what_the_sheet_paints`
+> now also fails whenever the table and the sheet disagree, so the checks that
+> read the table are checks of the product. Separating the two greys visibly
+> without a hue would take a texture or another grey, and that has not been
+> decided.
 >
 > **What this does not cover, found while answering it.** The decision was
 > framed as "grey like every other proportion", and three bar fills outside the

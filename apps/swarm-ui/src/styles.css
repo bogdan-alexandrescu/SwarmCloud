@@ -9407,17 +9407,25 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    the staleness window. Grey, never the red or amber that says a ceiling is
    being approached now, and the tilde beside it is the same mark that cs
    status and the Accounts screen use for the same two cases.
-   THE BAR IS --text-faint, NOT --ctl-absent. It used to be --ctl-absent, which
-   was then var(--text-faint), so the two spellings painted the same pixel.
-   --ctl-absent is now its own warm stone (styles.css, :root), so that
-   an absence stops matching the CANCELLED fill; a proportion fill, though, is
-   grey unless it carries a verdict (design-system.md §6.4, owner decision
-   2026-09-24), and a warm stone chosen to be told apart from grey by its hue
-   is not a grey. So the bar keeps the exact grey it had, by name, and the
-   tilde beside it -- text, not a fill -- takes the absence colour.
-   test_state_colour_discriminability.py lists this value in DOCUMENTED_GREYS. */
+   BOTH ARE --text-faint, AND NEITHER IS --ctl-absent. Both used to be spelled
+   --ctl-absent, which was then var(--text-faint), so each painted the pixel
+   it paints now. --ctl-absent is now its own warm stone (styles.css, :root),
+   and it means one thing: NOBODY MEASURED THIS -- the em dash a never-polled
+   row gets in this same column. A projected figure WAS measured; it is old
+   information, and accountHeadroom in Overview.tsx says old information and
+   no information are opposite facts. So:
+     the bar   a proportion fill is grey unless it carries a verdict
+               (design-system.md §6.4, owner decision 2026-09-24), and a
+               stone told apart from grey by its hue is not a grey;
+     the tilde is the one glyph that says this row is not current, and drawn
+               in --ctl-absent it sat dE76 0 from the em dash that says a row
+               was never read.
+   In the light theme this grey is 1.11:1 from the live bar's --text-dim, so
+   there the tilde carries the difference and the bar barely does.
+   test_state_colour_discriminability.py lists the bar in DOCUMENTED_GREYS and
+   holds both marks away from --ctl-absent. */
 .ctl-util-fill.ov-projected { background: var(--text-faint); }
-.ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
+.ov-tilde { color: var(--text-faint); margin-right: 1px; }
 
 /* ---- attention ---------------------------------------------------------- */
 
