@@ -13,18 +13,36 @@ duplication.
 
 ## The one-screen version
 
+**The gate is the CI run, and it is not on this machine.**
+
+```bash
+git commit && git push
+gh pr create
+gh run list --branch <branch>   # read the run
+gh run view <id> --log-failed   # read the failure
+```
+
+Tests run in GitHub Actions, builds run in GitHub Actions, deployments run in
+GitHub Actions. This repository is authored locally and gated remotely — see
+[where the gates run](ci.md) for which workflow covers what, and why a pull
+request never plans terraform. Report the run's conclusion; there should be no
+local exit code to report.
+
+What the remote gate executes is these two targets, and they are described
+throughout this document in those terms:
+
 ```bash
 make lint        # shellcheck, doc links, terraform fmt/validate, tflint, manifests
 make test        # EVERYTHING OFFLINE: unit, integration, UI components, terraform, guards
 ```
 
-Those two are the gate. They need no credentials, no emulator, no network and no
-browser, they create nothing, and they are the check `CLAUDE.md` names before
-anyone may call a change finished. Run them as their **own step** and read both
-exit codes before committing.
+They need no credentials, no emulator, no network and no browser, and they
+create nothing. That is why they can be the gate at all. **Read the rest of this
+file as "what the gate proves", not as "what to run here".**
 
 Everything below needs something the gate deliberately does not: a deployed
-environment, a browser, or a UI you are already running.
+environment, a browser, or a UI you are already running. Those are operator
+actions against a deployment, not steps in authoring a change.
 
 ```bash
 make ui-test              # headed browser against the production bundle (~8 min)
@@ -123,13 +141,22 @@ which happened — otherwise the baseline stops meaning anything through `make`.
 
 ## The order, and why
 
+This is the order the gate resolves in, and the order to read a failed run in.
+**Steps 1–3 happen in CI on your push; you do not invoke them.** Steps 4–6 are
+operator actions against a deployment or a browser and are invoked by a person
+who has one.
+
 1. **`make lint`** first. It is seconds, and a shellcheck failure or a broken doc
-   anchor invalidates nothing else you are about to read.
-2. **`make test`** second, as its **own step**, with its exit code read. Do not
-   chain it to the commit. Six things have blocked this gate in one session
-   before and five of them were reported as "the last one".
-3. **`make ui-component-test`** is already inside `make test`; run it alone only
-   for a tight loop on `apps/swarm-ui`.
+   anchor invalidates nothing else you are about to read. In CI this is spread
+   across `application.yml`'s `shellcheck` and `kubernetes manifests` jobs and
+   `terraform.yml`'s `fmt / validate / tflint`.
+2. **`make test`** second, as its **own step**, with its exit code read — which
+   is exactly what a workflow job is, and part of why the gate moved there. Six
+   things have blocked this gate in one session before and five of them were
+   reported as "the last one"; a run whose jobs each report separately cannot
+   collapse six failures into one sentence.
+3. **`make ui-component-test`** is already inside `make test`, and is
+   `application.yml`'s `swarm-ui typecheck / component tests` job.
 4. **`make ui-test`** when you touched the UI. It takes minutes and needs a
    browser, which is exactly why it is not in the gate: a cheap gate is one
    nobody is tempted to skip, and the first time Chromium was missing somebody
@@ -137,13 +164,14 @@ which happened — otherwise the baseline stops meaning anything through `make`.
    browser" into a green run is the failure this whole document is about.
 5. **`make verify-remote`** when you touched admission, dispatch or
    reconciliation. This is the only step that proves the seams against a real
-   deployment.
+   deployment, and `release.yml`'s `deploy and smoke` job is where it runs on
+   the way to an environment.
 6. **`make bench`** last, and only when you want numbers. It is read-only and
    creates nothing, but it compares against a baseline that has to be believed
    before it is recorded.
 
 The order is cheapest-and-most-decisive first. Each step's failures make the
-later steps' results meaningless, so running them out of order mostly produces
+later steps' results meaningless, so reading them out of order mostly produces
 confusing evidence.
 
 ---

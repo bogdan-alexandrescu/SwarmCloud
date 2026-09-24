@@ -33,10 +33,25 @@ values.
 
 **AMENDED BY §11 (tokens) AND §12 (the first screens).** §11 moved the token
 layer and restyled no screen; §12 is the first section that restyles any, and
-it covers the four number-dense ones — Pools, Runtimes, Capacity holders,
-Accounts. §12 *applies* §§6.2, 6.4 and 6.6 rather than changing them, and it
+it covers the four number-dense ones — Pools, Runtimes, Holders, Accounts.
+§12 *applies* §§6.2, 6.4 and 6.6 rather than changing them, and it
 adds exactly one rule the system did not have (§12.3). **Read §12.4 with
 §11.3**: together they are the complete list of what is still wrong.
+
+**THE NAV WAS RENAMED ON 2026-09-24 AND THIS FILE USES THE NEW NAMES
+THROUGHOUT**, including in sections whose measurements predate it. `agents`
+became `work` and `pools` became `capacity` — ids and labels together — and the
+`Capacity holders` tab became `Holders`. Two sections had been named after
+their own first tab, so the rail drew `Agents > Agents` and `Pools > Pools`;
+[`redesign.md`](redesign.md#no-section-may-be-named-after-one-of-its-own-tabs)
+holds the argument and the rule that came out of it. The *numbers* in every
+before/after table below are untouched — only the route that reaches the screen
+they were measured on is written in today's spelling, because a route label
+exists so a reader can go and look. Where this file says **Pools** it means the
+screen (`Capacity.tsx`, the `Pools` tab); where it says **Capacity** without a
+qualifier it now means the section that holds five tabs. The dated records in
+`docs/audits/` are *not* rewritten — see
+[`README.md`](README.md#a-note-on-old-route-names-in-the-evidence).
 
 **AMENDED BY §11, THE RESTRAINT PASS.** The owner's read of the shipped console
 was *"the design looks almost cartoonish"*, and the measurement found specific,
@@ -861,8 +876,10 @@ was a rule saying it is *the* destination.
 
 ### 6.13 Eyebrow — `.ctl-eyebrow` and facts strip — `.ctl-facts`
 
-`.ctl-eyebrow` is one mono word where a section intro used to be: `Capacity`,
-`Holders`, `Blockers`, `This attempt`. No rule, no box, no background — the
+`.ctl-eyebrow` is one mono word where a section intro used to be: `Pools by
+family`, `Blockers`, `attempts`, `This attempt`. It names a band *inside* a
+pane, never the pane — `Capacity.tsx:120` is the shipped example. No rule, no
+box, no background — the
 device Northflank and Railway both use as their only in-panel section heading.
 **It is not uppercase and not tracked (§13.2);** the label rank is mono plus
 `--text-faint`, which is two channels on one distinction, and uppercase was a
@@ -943,8 +960,8 @@ media query.
 | Frame | rail → horizontal strip; `--app-pad` 16px; header keeps its height and its environment bar |
 | Overview | one column, five cards stacked; **the metric strip becomes a 2-up grid, not five stacked 30px figures** |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
-| Agents / Holders / Activity | `.ctl-line` on its irreducible template |
-| Capacity / Runtimes / Accounts / AdminSettings | `.ctl-table` scrolls sideways; **Capacity's Cards toggle is promoted to all four**, since a side-scrolling table is the audit's worst mobile finding and four of the five screens have no escape from it |
+| Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
+| Pools / Runtimes / Accounts / AdminSettings | `.ctl-table` scrolls sideways; **Pools' Cards toggle is promoted to all four**, since a side-scrolling table is the audit's worst mobile finding and four of the five screens have no escape from it |
 | AgentDetail | a full-screen `role="dialog"` overlay, as today below 1100px |
 | Dock | 28px collapsed; the page now reserves its actual height (§3.4) |
 
@@ -1229,7 +1246,7 @@ Stated here rather than discovered at 3am.
 
 ### 11.4 What must not be "improved"
 
-**`#agents/workflows` is the internal reference and stays untouched.** Measured,
+**`#work/workflows` is the internal reference and stays untouched.** Measured,
 it is already the target — 13 boxes, 1 shadow, 11 colours, zero type at or above
 24px, state as a plain lowercase word beside an 8px dot, a 37px row carrying ten
 facts. The DAG, the collapsed one-line row and the absence of a mini-map on that
@@ -1496,7 +1513,7 @@ because an ellipsed cell reports its full text width to
 `getBoundingClientRect` and two neighbours that never touch on screen read as
 an overlap if you do not.
 
-| The run list (`.work`, `#agents/running`) | Before | After |
+| The run list (`.work`, `#work/running`) | Before | After |
 |---|---|---|
 | bordered elements | 18 | **11** |
 | uppercase elements | 3 | **2** |
@@ -1516,7 +1533,7 @@ them with their measurements rather than reaching into them.
 
 ### 12.2 The run list is the Workflows row, because that is the one the owner kept
 
-`#agents/workflows` is the internal reference (§11.4) and the thing that makes
+`#work/workflows` is the internal reference (§11.4) and the thing that makes
 it right is measurable: **its rows are one line tall and they stack.**
 `.wf-card + .wf-card` drops the duplicated top border, so ten rows draw one box
 and nine hairlines. The run list drew `gap: var(--ctl-s1)` between bordered,
@@ -1639,7 +1656,7 @@ was deleted or weakened.
   a 560px drawer. **Request, not a change:** `max-content` there is strictly
   safer than a fixed width for all five callers. The rule's track list is read
   verbatim by `shell.test.tsx:696` and the primitive is shared with Overview,
-  Capacity, Holders and Workflows, so this lane scoped the fix to
+  Pools, Holders and Workflows, so this lane scoped the fix to
   `.drawer .ctl-util` instead.
 * **`.ctl-subnav` draws the drawer's two panes as filled pills** (`Detail` /
   `Attempts`), which §6.11 settles as `.ctl-seg`'s job — one bordered group,
@@ -1668,8 +1685,13 @@ in the same pass conflict on nothing.
 
 **§11 was the token layer and said so: "No screen was restyled."** This is the
 first section that restyles screens. It covers the four number-dense ones —
-**Pools (`Capacity.tsx`), Runtimes, Capacity holders, Accounts** — and it
+**Pools (`Capacity.tsx`), Runtimes, Holders, Accounts** — and it
 amends §6.2, §6.4 and §6.6 by *applying* them rather than by changing them.
+
+*(Three of those four now live under the **Capacity** section and Runtimes is a
+section of its own, so "the capacity group" names a lane rather than a place in
+the nav. The grouping is still the right one for a styling pass: they are the
+four screens that draw dense figures, which is what the pass was about.)*
 Nothing in §§1–11 was re-decided. Where §12 needed something the system did not
 have, it is named below as an addition and it is screen-scoped.
 

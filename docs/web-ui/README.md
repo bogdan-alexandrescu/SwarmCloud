@@ -58,6 +58,62 @@ changes wearing a UI costume, and no amount of front-end effort reaches them.
 8. [Operator and admin affordances](08-operator-gaps.md) — grounded in the
    failures recorded in `docs/audits/`.
 
+## Also in this directory
+
+The eight numbered files above are the feature specification — what could be
+built, and what blocks each screen. Three more files answer different questions
+and are read on their own:
+
+* [`redesign.md`](redesign.md) — the information architecture: what the sections
+  are, why there are six of them, and the routing. `App.tsx` names this file as
+  the place to argue with the nav, so it is the one that has to be current.
+* [`design-system.md`](design-system.md) — the visual system: tokens,
+  primitives, the absence vocabulary, and the record of each screen pass.
+* [`ux-plan.md`](ux-plan.md) — the 2026-09-24 measured sweep of the running
+  console: what is wrong in order of what it costs a user, what is already
+  fixed with before/after figures, the sequence, and an explicit list of what
+  was not checked.
+
+`redesign-v2.md`, `ui-audit-and-build-prompt.md` and `prose-migration-table.md`
+are working documents from earlier passes. Where one of them contradicts
+`redesign.md` or `design-system.md`, those two win.
+
+## A note on old route names in the evidence
+
+**The nav was renamed on 2026-09-24 and the evidence files were not.** Two
+section ids changed — `agents` → `work` and `pools` → `capacity` — along with
+their labels (Agents → Work, Pools → Capacity) and one tab label (Capacity
+holders → Holders). The argument is in
+[`redesign.md`](redesign.md#no-section-may-be-named-after-one-of-its-own-tabs):
+both sections were named after their own first tab, so the rail drew
+`Agents > Agents` and `Pools > Pools`.
+
+Everything under `evidence/` and under `docs/audits/` keeps the spelling it was
+captured with, deliberately. Those files are dated records of what was true on
+a date, and a measurement edited to match today is a measurement that has been
+falsified — `audit-agents-running.json` recorded a screen reached at
+`#agents/running`, and at the moment it was recorded that was the address. The
+screenshots are the same: `02-agents-running.png`, `05-pools-pools.png` and
+`07-pools-holders.png` are named for the routes that produced them.
+
+To translate a filename or a route in a report into today's address:
+
+| in the evidence and the audits | today |
+|---|---|
+| `#agents`, `#agents/running`, `#agents/workflows` | `#work`, `#work/running`, `#work/workflows` |
+| `#agents/task/<id>` | `#work/task/<id>` |
+| `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/accounts` |
+| `#activity/timeline` | `#history/timeline` |
+| the "Agents" section | the **Work** section |
+| the "Pools" section | the **Capacity** section |
+| the "Capacity holders" tab | the **Holders** tab |
+
+Every old hash in that left column still resolves in the app, with its tail
+intact, so a link pasted out of a two-day-old report still lands on the pane it
+named. What the app will not do is *write* one: an alias is for a hash someone
+else saved, never a second name this product may emit, and
+`nav.links.test.tsx` fails the build over any internal href that uses one.
+
 ## Buildable today
 
 

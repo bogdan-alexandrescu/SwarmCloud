@@ -9,6 +9,13 @@ rather than re-litigated per screen.
 Files changed: `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/styles.css`,
 this document.
 
+**Amended twice since.** The body below describes the nav as it is *today*, not
+as it was when this was first written; the two notes at the end of the file —
+[Superseded, 2026-09-21](#superseded-2026-09-21) and
+[Changed, 2026-09-24](#changed-2026-09-24--the-two-sections-named-after-their-own-first-tab)
+— record what moved and why. Read them if you followed a citation here and the
+text does not match what you remember.
+
 ---
 
 ## 1. What the eleven screens actually were
@@ -61,26 +68,81 @@ agent's attempt history, because of four missing lines of routing.
 
 ## 2. The new architecture
 
-Five sections. Each is a question someone arrives with, not a route.
+Six sections. Each is a question someone arrives with, not a route. The id in
+the first column is the first hash segment, so it is also the address people
+paste — the two are given together because they have drifted apart twice, and
+both times the drift routed a saved link somewhere the label did not name.
 
-| Section | The question | Panes |
-|---|---|---|
-| **Overview** | Is the platform healthy right now, and if not, what is the first thing to look at? | Now (Control room) · Needs attention (Trouble) |
-| **Agents** | What is running, what is waiting, what did it produce — and why has mine not moved? | Agents · Workflows · New agent · New workflow |
-| **Pools** | Is there room to run more, which ceiling is the binding one, and what is holding what there is? | Pools · Runner profiles · Holders · Accounts · Provider quota |
-| **History** | What has this platform done over time, who used it, and what did it cost? | Timeline · Platform counts |
-| **Admin** | Change a ceiling, or see who is registered to use this platform. | Pool limits · Tenants |
+| Section | id | The question | Panes |
+|---|---|---|---|
+| **Overview** | `overview` | Is the platform healthy right now, and if not, what is the first thing to look at? | Overview |
+| **Work** | `work` | What is running, what is waiting, what did it produce — and why has mine not moved? | Agents · Workflows · Submit a task · Submit a workflow |
+| **Runtimes** | `runtimes` | What kinds of agent can this platform run, where does each one run, and how big is one? | Runtimes |
+| **Capacity** | `capacity` | Is there room to run more, which ceiling is the binding one, and what is holding what there is? | Pools · Runner profiles · Holders · Accounts · Provider quota |
+| **History** | `history` | What has this platform done over time, who used it, and what did it cost? | Timeline · Platform counts |
+| **Admin** | `admin` | Change a ceiling, or see who is registered to use this platform. | Pool limits · Tenants |
 
-Plus **Reference** — the API surface — in the nav's utility corner, not among
-the sections.
+Plus two things in the nav's utility corner rather than among the sections:
+**API reads** (`#reference`) and **Help** (`#help/<topic>`). Both are things
+you look up once, not things you work in. *Why these six* below gives the
+argument for keeping them out of the sections, and why "API reads" is neither
+of the two names that screen shipped with.
 
-The question is printed under each section's tabs. That line is load-bearing:
-it is the test for whether a new screen belongs in a section. A screen that
-does not help answer the printed question does not go there, and if it
-answers a question none of the five ask, that is the argument for a sixth
-section rather than for quietly widening one.
+The question is **not** printed on the pane. It was, on all fifteen routes,
+which is five copies of one sentence for Capacity alone and a line of vertical
+on every screen to say something nobody re-reads after the first visit. It now
+lives behind the head's `?`, written once. What did not change is what the
+question is *for*: it is the membership test for whether a screen belongs in a
+section. A screen that does not help answer it does not go there, and if it
+answers a question none of the six ask, that is the argument for a seventh
+section rather than for quietly widening one. Runtimes is that test working —
+it was added because it failed all five of the others, not because a screen
+existed.
 
-### Why these five
+### NO SECTION MAY BE NAMED AFTER ONE OF ITS OWN TABS
+
+This is the rule the 2026-09-24 rename established, and it is the one thing in
+this section worth reading twice.
+
+Two sections were named after their own first tab. The rail draws the tab strip
+whenever a section has more than one tab (`App.tsx:694`) and the breadcrumb
+draws the tab under the same condition (`App.tsx:793`), so both levels rendered
+and both drew the same word: **`Agents > Agents`** and **`Pools > Pools`**.
+
+Renaming the *tab* would have been the wrong half. `Work > Agents`,
+`Work > Workflows`, `Work > Submit a task` and `Work > Submit a workflow` each
+say something the section name does not — which is the test a tab has to pass.
+The parent was what was wrong: the section is not the agent list, it holds the
+agent list, the workflow list, and the two screens that create one of each. A
+name that covers one of four children is a name that has quietly promoted a
+child. The same argument names Capacity: pools, runner profiles, holders,
+accounts and provider quota are five different ceilings on one thing, and
+`Capacity` is that section's own question in one word.
+
+**The holders tab went back to "Holders" in the same change**, and the earlier
+argument for "Capacity holders" is what makes that right rather than what it
+overrules. That argument was: "Holders" alone does not say holders of *what*,
+and one tab away from "Accounts" it reads as people. True — while the section
+was called Pools. The section is called Capacity now, so the parent supplies
+the noun the tab was carrying for it, and `Capacity > Capacity holders` says it
+twice. The requirement never changed; what changed is which level meets it.
+
+The rule bites only where both levels render, and that is stated deliberately
+rather than generalised. Overview and Runtimes are single-pane sections whose
+one tab carries the section's own label; no tab strip and no crumb tab is drawn
+for them at all, so nothing is said twice. A second pane added to either is the
+moment the rule applies, and the reviewer who adds it should expect to rename
+the section rather than the pane.
+
+**The ids moved with the labels, and that was the argued half.** `SECTION_ALIASES`
+would have kept every `#agents/…` and `#pools/…` href working, and *because* it
+would, nothing would ever have made anyone update one — an alias that internal
+links also use is a spelling nothing can retire. `nav.links.test.tsx` reads
+every `#`-href literal under `apps/swarm-ui/src` and fails the build if one
+starts with an alias key or names a section or tab that does not exist. Aliases
+are for hashes someone else saved, never a second name this app may write.
+
+### Why these six
 
 **Overview merges into one pane.** (Superseded 2026-09-21: see the note below.) The control room's
 value is that it is short — a dispatch pill, four counters, and the pools that
@@ -93,8 +155,17 @@ them as two panes of one section preserves both and costs one click.
 stop shop for all that a user can see that is actionable". Submitting is the
 only genuinely actionable thing most users do, and it was reachable from
 nowhere. It sits beside the list of what is already running, which is also
-where the answer to "will it start" lives — Agents and Capacity are one click
+where the answer to "will it start" lives — Work and Capacity are one click
 apart.
+
+**The two submit tabs are called "Submit a task" and "Submit a workflow", not
+"New agent" and "New workflow".** `Submit.tsx` creates a task at `READY` or
+`PARKED` and then says, in the panel it renders on success, "That is not a
+running agent" — because invariant 1 is that neither state holds capacity. A
+tab promising an agent over a page explaining you have not got one is a
+contradiction, and the tab was the side that was wrong. `task` is also the noun
+the API uses (`POST /v1/tasks`, `TaskCreate`), which is the same test that
+named the Runtimes section after `/v1/runtimes`.
 
 **Accounts moved from Settings to Capacity.** This is the change most likely
 to be argued with, so the reasoning, in full: the Claude subscription pool's
@@ -117,13 +188,41 @@ click rather than explained after it.
 for that, maybe not even a top lvl menu." It is not a section because it is a
 thing you look up once, not a thing you work in.
 
+It is labelled **API reads**, and neither of its two earlier names survived.
+The button said "Reference" and the page it opened was headed "API surface";
+that page's own first paragraph says, in bold, that it is *not* a list of the
+endpoints SwarmCloud offers — it is every route this browser tab has called
+since it loaded. So "Reference" promised documentation the screen does not
+hold, and "API surface" promised completeness the screen disclaims in its own
+first sentence. Copying either onto the other would have made the app agree
+with itself about something untrue. The hash stays `#reference`, because that
+is an address people have saved.
+
+**A tab's label and its screen's heading are one name, and a test holds it
+there.** Seven of the sixteen routes disagreed: "Pools" opened a page headed
+"Capacity", "Timeline" opened "Activity", "Holders" opened "Capacity holders",
+"Pool limits" opened "Admin settings". A reader cannot tell a rename from a
+redirect, so each of those is a question about whether the click went where it
+said — and it breaks every external reference, because a runbook step "go to
+Pools" named nothing on the screen it landed you on. The fix went both ways on
+purpose: where the heading was the better name it became the tab, where the tab
+was better the heading gave way, and where neither was honest both were
+replaced. `tests/unit/control_plane/test_nav_headings_agree.py` reads the
+`SECTIONS` array, the `SectionBody` switch and every screen's `Screen title=` /
+`<h1>`, and fails on any route where the two differ — including a route added
+later, which is the case a one-off audit does not cover.
+
 ### What was considered and rejected
 
 - **Three sections (Work, Capacity, Admin).** Folds Activity into Work and
   Overview into Capacity. Rejected: "what is happening now" and "what
   happened over the last 500 tasks" are different reads at different costs
   with different failure modes, and the merged screen would have to explain
-  which numbers were which in prose.
+  which numbers were which in prose. (The 2026-09-24 UX sweep re-proposes the
+  three-section shape from measurement rather than from taste — see
+  [the UX plan](ux-plan.md) §1.4. The two section *names* it proposes, Work
+  and Capacity, have since landed for an unrelated reason; the merge it
+  proposes has not, and this paragraph is still the standing objection to it.)
 - **A single "Dashboard" with everything on it.** This is what the brief's
   "one stop shop" could be read as asking for. Rejected: every panel on it is
   an independent read that can fail alone, and a page of twelve reads takes
@@ -140,20 +239,42 @@ thing you look up once, not a thing you work in.
 ### Routing
 
 The hash is still the router. Routes are `#<section>/<pane>`, the agent
-drawer is `#agents/task/<id>` with `#agents/task/<id>/attempts` for the
-second pane, and the API surface is `#reference`.
+drawer is `#work/task/<id>` with `#work/task/<id>/attempts` for the
+second pane, the API surface is `#reference` and help is `#help/<topic>`.
 
-**Every old hash still resolves.** `#home`, `#trouble`, `#capacity`,
-`#holders`, `#agents`, `#agents/<task-id>`, `#workflows`, `#activity`,
-`#quota`, `#counts`, `#tenants`, `#settings`, `#settings/accounts` and
+**Every old hash still resolves**, through two mechanisms that are not the
+same and must not be merged.
+
+`LEGACY` maps a whole old hash to one destination, which is right for a
+top-level item that became a *tab*: `#home`, `#trouble`, `#holders`, `#quota`,
+`#workflows`, `#counts`, `#tenants`, `#settings`, `#settings/accounts` and
 `#settings/limits` each land on the pane that answers what the old screen
-answered. Those hashes are in runbooks and in the links people paste at 3am;
-a redesign that sends them all to Home is a redesign that loses the one link
-someone needed. The address bar is rewritten to the new spelling with
+answered.
+
+`SECTION_ALIASES` rewrites a renamed section's **head** and keeps the **tail**:
+`agents → work`, `pools → capacity`, `activity → history`. That distinction is
+load-bearing. `#capacity/holders` has a tail, and folding it through `LEGACY`
+would drop the tail and land on the section's first pane — so every
+`#agents/<tab>`, `#pools/<tab>` and `#activity/<tab>` link written before a
+rename still opens the pane it named. `capacity` is in that map twice over:
+it was the original id, an earlier pass renamed it to `pools`, and the
+2026-09-24 rename put it back, so the middle spelling had a life of its own in
+saved links and resolves too.
+
+Those hashes are in runbooks and in the links people paste at 3am; a redesign
+that sends them all to Home is a redesign that loses the one link someone
+needed. The address bar is rewritten to the new spelling with
 `history.replaceState`, so the next copy of the link is current and Back does
 not walk the user through aliases they never typed.
 
-`#agents/task/<id>` is explicit so that a task whose id happens to spell a
+**The alias is resolved once, before anything else looks at the head.** The
+drawer branch used to test the *unresolved* head against `'agents'`; the moment
+the section was renamed, that test would have been the only place still
+answering to the old name, and `#work/task/<id>` — the address in every
+workflow node and every saved deep link — would have resolved to the section
+and dropped the task id, opening the list instead of the agent.
+
+`#work/task/<id>` is explicit so that a task whose id happens to spell a
 pane name cannot be mistaken for one; the old bare `#agents/<id>` is still
 accepted, after the pane names have had their chance to match.
 
@@ -233,16 +354,19 @@ Present, and now grouped where someone will look for it:
   per-profile "could start", who set the ceiling, and which pool binds:
   Capacity → Pools and Runner profiles.
 - **Current agents and runtimes** — state, elapsed, attempts used, resource
-  class and weight, why it has not moved: Agents. Per attempt: generation,
-  backend, execution name, started/completed, exit code, peak RSS, peak disk,
-  OOM near miss: Agents → the drawer's Attempts pane.
+  class and weight, why it has not moved: Work → Agents. Per attempt:
+  generation, backend, execution name, started/completed, exit code, peak RSS,
+  peak disk, OOM near miss: Work → Agents → the drawer's Attempts pane. What a
+  runner profile *is*, and how big one is, is its own section: Runtimes.
 - **Inputs and outputs** — the input on the agent detail's Input panel;
   artifacts (name, bytes, GCS URI), log URIs, the git outcome (commits,
   patch, pull request, publish reason) on its Output panel.
 - **Metadata** — task metadata, runner profile, provider, model, priority,
   blockers, park reason, fencing generation per event.
 - **Errors** — `last_error`, per-attempt `error`, failures needing a human,
-  parked work by reason: Overview → Needs attention.
+  parked work by reason: Overview. (That was a second pane called "Needs
+  attention" when this was written. It is now a pane at the *top* of the one
+  Overview screen — see the 2026-09-21 note at the end of this file.)
 - **Token cost** — `cost_usd`, `input_tokens`, `output_tokens` and both cache
   counters exist per attempt. See §5 for why they are not yet on a screen.
 
@@ -262,13 +386,14 @@ be worse than no screen. `monthly_budget_usd` is additionally a permanent
 table omits the column rather than leaving it blank.
 
 **Notifications and alerts.** No alert model, no delivery, no storage, no
-acknowledgement, no history. What *is* legitimate, and is what Overview →
-Needs attention already does, is **derived** trouble: overdue leases, silent
-workers, quota `EXHAUSTED`, accounts needing re-auth, failures, parked work,
-and stale readings. That is computed from current state on every load. It is
-not an inbox, it cannot tell you what fired while you were asleep, and it
-must not be labelled "Alerts" — which is why the pane is called "Needs
-attention".
+acknowledgement, no history. What *is* legitimate, and is what the checks pane
+at the top of Overview already does, is **derived** trouble: overdue leases,
+silent workers, quota `EXHAUSTED`, accounts needing re-auth, failures, parked
+work, and stale readings. That is computed from current state on every load. It
+is not an inbox, it cannot tell you what fired while you were asleep, and it
+must not be labelled "Alerts". There is consequently **no problem section at
+any level** — not "Trouble", not "Alerts", not "Incidents", not "Issues" — and
+a failed agent is a row in the agents list like any other row.
 
 **Checkpoint contents.** Only the id, the GCS URI and the byte size are
 recorded. An attempt's `checkpoints` field is a list of strings. Listing what
@@ -348,13 +473,19 @@ here rather than acted on.
 
 ## 7. Verified, and not
 
-Verified:
+Verified, as this pass verified it in 2026-09:
 
 - `cd apps/swarm-ui && npx tsc --noEmit` — clean.
 - `npm run build` — `tsc -b && vite build`, 55 modules, succeeded.
 - Every one of the eleven old nav items resolves to a pane, by reading
   `LEGACY`, `LEGACY_SETTINGS` and `SectionBody` against the old `SCREENS`
   list and the old `#settings/<tab>` handling.
+
+Both of those first two commands are now CI jobs and are **not** run on a
+workstation: `application.yml`'s `ui` job is the typecheck and the component
+suite, and nothing in this repository is called finished on a local exit code.
+See [where the gates run](../ci.md). The line above is left as the dated record
+of what that pass did, not as an instruction.
 
 Not verified, and worth someone's eye before this is called done:
 
@@ -385,6 +516,12 @@ the OBJECT they contain rather than after the question they answer. "Capacity"
 and "Activity" are questions; "Pools" and "History" are things you can click
 expecting to find a list of exactly that.
 
+> **Half of this was undone on 2026-09-24 and half of it stands.** History is
+> still History. Pools went back to Capacity, because naming that section after
+> the object it contains named it after its own first tab and the rail drew
+> `Pools > Pools`. See the 2026-09-24 note below: the object rule is not
+> wrong, it is just outranked when the object it names is already a child.
+
 **There is no problem section, at any level, and nothing is called Trouble.**
 Neither reference console has one: failures surface as FILTERS inside the
 object list. The derived checks are a pane at the top of Overview. The owner's
@@ -399,3 +536,47 @@ so using any of them would claim machinery that does not exist.
 while both were top-level; once the problem surface stopped being a
 destination, two panes on one section was a split with nothing on either side
 of it.
+
+---
+
+## Changed, 2026-09-24 — the two sections named after their own first tab
+
+The body of this document was brought up to date in place rather than left to
+rot behind a note, because `App.tsx` points every reader here ("that file is
+the place to argue with this, not this array") and a pointer into a stale
+description is worse than no pointer. What moved is recorded here so a reader
+who followed a citation can see it.
+
+| | was | is |
+|---|---|---|
+| section id | `agents` | `work` |
+| section label | Agents | **Work** |
+| section id | `pools` | `capacity` |
+| section label | Pools | **Capacity** |
+| tab label | Capacity holders | **Holders** |
+
+Both sections were named after their own first tab, so the rail and the
+breadcrumb each drew the name twice: `Agents > Agents` and `Pools > Pools`. The
+rule that came out of it is in §2 above — **no section may be named after one
+of its own tabs** — along with why renaming the tab would have been the wrong
+half, and why the ids moved with the labels instead of hiding behind an alias.
+
+Three consequences a reader should expect to meet elsewhere:
+
+- **`#agents/…`, `#pools/…` and `#activity/…` all still resolve**, head
+  rewritten and tail kept. The address bar is rewritten to the new spelling, so
+  a link copied after the rename is a current link.
+- **The evidence and audit files keep their old route names.** The filename
+  `audit-agents-running.json`, `#agents/workflows` in the overflow inventory,
+  and the pane names in every dated report are records of what was true on a
+  date; a
+  measurement rewritten to match today is a measurement that has been
+  falsified. [`docs/web-ui/README.md`](README.md#a-note-on-old-route-names-in-the-evidence)
+  carries the translation table once, which is where a reader who opens a
+  filename will look.
+- **`ui-audit-and-build-prompt.md` proposed the opposite trade on two pairs** —
+  shortening the heading to "Holders" rather than lengthening the tab, and
+  heading the Timeline pane "History", which is the *section's* name and would
+  have left tab and heading still disagreeing. The first of those has since
+  landed for a different reason (the parent now supplies the noun); the second
+  has not and should not.
