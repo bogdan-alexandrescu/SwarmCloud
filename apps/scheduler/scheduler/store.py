@@ -66,6 +66,7 @@ from swarm_common.models import (
     utcnow,
 )
 from swarm_common.states import (
+    CONCURRENCY_STATES,
     TERMINAL_STATES,
     EventType,
     ParkReason,
@@ -111,6 +112,21 @@ _WORKER_OWNED = frozenset(
     {TaskState.DISPATCHED.value, TaskState.STARTING.value, TaskState.RUNNING.value}
 )
 _TERMINAL = frozenset(state.value for state in TERMINAL_STATES)
+_HOLDS_CAPACITY = frozenset(state.value for state in CONCURRENCY_STATES)
+
+#: The event a task's return is announced with when this store finishes a
+#: reclaim the reconciler left half done -- the same mapping the reconciler's
+#: own repair announces with (`reconciler/repair.py`, `_EVENT_FOR_REPAIR`).
+_EVENT_FOR_RETURN = {
+    TaskState.READY: EventType.READY,
+    TaskState.FAILED: EventType.FAILED,
+    TaskState.CANCELLED: EventType.CANCELLED,
+}
+
+#: What `return_to_ready_after_failed_dispatch` found when the reconciler had
+#: fenced this attempt and the task still points at its lease.
+_RECLAIM_PENDING = "pending"    # lease unreleased: left for the reconciler
+_RECLAIM_FINISHED = "finished"  # lease released, task not returned: finished here
 
 
 @dataclass(frozen=True)
@@ -143,6 +159,11 @@ class _Settled:
     attempt_count: int = 0
     max_attempts: int = 0
     exhausted: bool = False
+    #: Set only when the reconciler had fenced this attempt and the task still
+    #: points at its lease: `_RECLAIM_PENDING` or `_RECLAIM_FINISHED`.
+    reclaim: str | None = None
+    #: The task's generation as the transaction read it, for the log line.
+    task_generation: int | None = None
 
 
 def _lease_refusal(stored: dict[str, Any] | None, lease: Lease) -> str | None:
@@ -153,6 +174,11 @@ def _lease_refusal(stored: dict[str, Any] | None, lease: Lease) -> str | None:
     generation is checked first because it is what the reconciler moves FIRST
     (`invalidate_generation`, then release, then repair), so a reclaim in
     progress reads as superseded rather than as a state it has not reached yet.
+
+    Superseded is therefore NOT the same as "this lease backs nothing". A task
+    still pointing at the lease at a newer generation is a reclaim that has not
+    finished, and `return_to_ready_after_failed_dispatch` must not release it
+    on this code alone -- see its docstring.
     """
     if stored is None:
         return TASK_MISSING
@@ -580,13 +606,51 @@ class SchedulerStore:
             READY over SUCCEEDED runs finished work again; over CANCELLED it
             un-cancels it.
 
-        AND THE LEASE IS RELEASED IN THE SAME TRANSACTION, decided on the same
-        read. It used to be released first, unconditionally, so the RUNNING case
-        above also handed back a slot a live container occupied (CONTRACT
-        invariants 1 and 3). Now the lease is released unless the task is at
-        DISPATCHED/STARTING/RUNNING on it -- then the worker owns it and
-        releases it itself. In every other case the lease backs nothing
-        (superseded, finished, cancelled, gone) and releasing it is right;
+        AND THE LEASE IS DECIDED IN THE SAME TRANSACTION, on the same read. It
+        used to be released first, unconditionally, so the RUNNING case above
+        also handed back a slot a live container occupied (CONTRACT invariants
+        1 and 3). Now, by what the transaction finds:
+
+          task found                         lease          task
+          ---------------------------------  -------------  ------------------
+          LEASED on this lease, this         released       READY / FAILED /
+            generation                                        CANCELLED
+          DISPATCHED/STARTING/RUNNING on     kept           left: its worker
+            this lease, this generation                       releases it
+          on this lease, generation fenced,  kept           left: the
+            lease unreleased                                  reconciler's
+                                                              reclaim is running
+                                                              or stopped short
+          on this lease, generation fenced,  (released      READY / FAILED /
+            lease released                     already)       CANCELLED
+          anything else: another lease,      released       left
+            none, terminal, gone
+
+        THE TWO FENCED ROWS ARE A RECLAIM THE RECONCILER HAS NOT FINISHED. Only
+        its `invalidate_generation` bumps a generation without also minting a
+        new lease, and only its `repair_task_state` then clears
+        `current_lease_id`, so a task still pointing at this lease at a newer
+        generation is between those two steps -- running, or stopped by an
+        unconfirmed kill or a dead instance. PR #45's first version released
+        here and walked away, and a task in a concurrency state on a released
+        lease is invisible to every reconciler rule: its snapshot reads only
+        unreleased leases. Main recovered from the same interleaving by writing
+        READY blind.
+
+          * lease UNRELEASED: kept, and the task is left. It is the reconciler's
+            evidence -- `detect_stale_leases` reports a superseded, unreleased
+            lease with nothing running under it as ORPHAN_LEASE, and an
+            execution still running under it as OBSOLETE_GENERATION -- and the
+            reconciler releases it only once it has confirmed the kill. This
+            store cannot confirm anything: releasing here is what handed back
+            the slots of a container the reconciler had deliberately kept ("did
+            NOT release: termination was not confirmed").
+          * lease RELEASED: the reconciler got as far as its own release, which
+            it makes only after the kill is confirmed or when nothing was
+            running, and no rule of its will ever bring it back for step 4. So
+            this finishes step 4 with `repair_task_state`'s rule, from whatever
+            concurrency state the task is in.
+
         `release_lease_in_transaction` is idempotent, so a lease the reconciler
         already released is not decremented twice. The event is still written
         after the commit, so an event write that fails cannot keep the pools.
@@ -630,33 +694,21 @@ class SchedulerStore:
         # too, and the unit tests that fed it the post-increment count -- and so
         # agreed with the bug -- feed it what the loop actually holds.
         task_ref = self._db.collection(TASKS).document(task.id)
+        lease_ref = self._db.collection(LEASES).document(lease.lease_id)
         transaction = self._db.transaction()
 
-        @firestore.transactional
-        def _settle(txn: Any) -> _Settled:
-            # The task first: `release_lease_in_transaction` reads the lease and
-            # its pools and then writes, and no read may follow a write.
-            snap = _snapshot(txn.get(task_ref))
-            stored = (snap.to_dict() or {}) if snap.exists else None
-            found = stored.get("state") if stored is not None else None
-            refusal = _lease_refusal(stored, lease)
-            worker_owns_it = (
-                refusal == STATE_CHANGED
-                and found in _WORKER_OWNED
-                and stored is not None
-                and stored.get("current_lease_id") == lease.lease_id
-            )
-            released = False
-            if not worker_owns_it:
-                released = release_lease_in_transaction(
-                    txn, db=self._db, lease_id=lease.lease_id, reason=release_reason, now=now
-                )
-            if refusal is not None or stored is None:
-                return _Settled(
-                    GuardedWrite("return_to_ready", False, TaskState.LEASED.value, found, refusal),
-                    released,
-                )
-
+        def _returned(
+            txn: Any,
+            stored: dict[str, Any],
+            found: str,
+            reclaim: str | None,
+            *,
+            released: bool,
+        ) -> _Settled:
+            """Write the task's way off this lease: READY, or CANCELLED when a
+            cancel was requested, or FAILED when retries are spent. One rule for
+            the ordinary return and for finishing a reclaim, as
+            `repair_task_state` applies one rule to every state it repairs."""
             attempt_count = int(stored.get("attempt_count", 0))
             max_attempts = int(stored.get("max_attempts", task.max_attempts))
             exhausted = retries_exhausted(attempt_count, max_attempts)
@@ -666,7 +718,7 @@ class SchedulerStore:
                 target = TaskState.FAILED
             else:
                 target = TaskState.READY
-            assert_transition(TaskState.LEASED, target)
+            assert_transition(TaskState(found), target)
             payload: dict[str, Any] = {
                 "state": target.value,
                 "current_lease_id": None,
@@ -697,7 +749,58 @@ class SchedulerStore:
                 attempt_count,
                 max_attempts,
                 exhausted,
+                reclaim,
+                int(stored.get("current_generation", 0)),
             )
+
+        @firestore.transactional
+        def _settle(txn: Any) -> _Settled:
+            # Every read before any write: the task, then its lease, then --
+            # inside `release_lease_in_transaction` -- the lease again and its
+            # pools. Firestore refuses a read after a write in one transaction.
+            snap = _snapshot(txn.get(task_ref))
+            lease_snap = _snapshot(txn.get(lease_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            refusal = _lease_refusal(stored, lease)
+            points_here = (
+                stored is not None
+                and (stored.get("current_lease_id") or None) == lease.lease_id
+            )
+
+            if (
+                stored is not None
+                and found in _HOLDS_CAPACITY
+                and refusal == LEASE_SUPERSEDED
+                and points_here
+            ):
+                # Still on this lease, so what superseded it is the GENERATION:
+                # the reconciler fenced this attempt and has not returned the
+                # task. See the docstring's two fenced rows.
+                held = (lease_snap.to_dict() or {}) if lease_snap.exists else None
+                if held is not None and held.get("released_at") is None:
+                    return _Settled(
+                        GuardedWrite(
+                            "return_to_ready", False, TaskState.LEASED.value, found, refusal
+                        ),
+                        False,
+                        reclaim=_RECLAIM_PENDING,
+                        task_generation=int(stored.get("current_generation", 0)),
+                    )
+                return _returned(txn, stored, found, _RECLAIM_FINISHED, released=False)
+
+            worker_owns_it = refusal == STATE_CHANGED and found in _WORKER_OWNED and points_here
+            released = False
+            if not worker_owns_it:
+                released = release_lease_in_transaction(
+                    txn, db=self._db, lease_id=lease.lease_id, reason=release_reason, now=now
+                )
+            if refusal is not None or stored is None or found is None:
+                return _Settled(
+                    GuardedWrite("return_to_ready", False, TaskState.LEASED.value, found, refusal),
+                    released,
+                )
+            return _returned(txn, stored, found, None, released=released)
 
         settled = _settle(transaction)
         outcome = settled.outcome
@@ -706,6 +809,44 @@ class SchedulerStore:
             "error_code": error_code,
             "correlation_id": reference,
         }
+        if settled.reclaim == _RECLAIM_FINISHED:
+            # Not a lease_released event: the reconciler released it, and said
+            # so in this timeline when it did. What nothing has said yet is that
+            # the task came off the lease, which is what its own repair would
+            # have announced.
+            target = TaskState(outcome.target)
+            detail: dict[str, Any] = {
+                **failure,
+                "completed_reclaim": True,
+                "from_state": outcome.found,
+                "fenced_generation": lease.generation,
+                "task_generation": settled.task_generation,
+                "attempt_count": settled.attempt_count,
+                "max_attempts": settled.max_attempts,
+                "retries_exhausted": settled.exhausted,
+            }
+            if target is TaskState.CANCELLED:
+                detail["phase"] = "cancelled"
+            self.append_event(
+                task,
+                _EVENT_FOR_RETURN[target],
+                detail,
+                lease_id=lease.lease_id,
+                generation=lease.generation,
+            )
+            log.warning(
+                "finished a reclaim for task=%s lease=%s generation=%s: the task is at "
+                "generation %s on this lease, which the reconciler released without "
+                "returning the task; %s -> %s",
+                task.id,
+                lease.lease_id,
+                lease.generation,
+                settled.task_generation,
+                outcome.found,
+                outcome.target,
+            )
+            return outcome
+
         if outcome.applied:
             self.append_event(
                 task,
@@ -749,7 +890,14 @@ class SchedulerStore:
                 lease_id=lease.lease_id,
                 generation=lease.generation,
             )
-        if settled.released:
+        if settled.reclaim == _RECLAIM_PENDING:
+            consequence = (
+                f"the reconciler fenced this attempt (the task is at generation "
+                f"{settled.task_generation} on this lease) and has not released it; the "
+                "lease and the task are left for the reconciler, which releases only once "
+                "it has confirmed nothing runs under the lease"
+            )
+        elif settled.released:
             consequence = "its lease was released (it backed nothing); the task was left alone"
         elif outcome.found in _WORKER_OWNED:
             consequence = (

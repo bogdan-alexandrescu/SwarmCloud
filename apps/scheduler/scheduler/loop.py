@@ -475,8 +475,8 @@ class Scheduler:
         `return_to_ready_after_failed_dispatch` releases the lease and returns
         the task in ONE transaction and writes the event only after it commits,
         so a failing event write never keeps the pools -- and a lease whose task
-        has since moved on is still released, while one a running worker holds
-        is not.
+        has since moved on is still released, while one a running worker holds,
+        or one the reconciler has fenced and not yet released, is not.
 
         `scheduler_internal_error` is a stable code, not the exception text:
         `task.last_error` is returned to the tenant verbatim by
