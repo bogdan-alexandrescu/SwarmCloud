@@ -167,7 +167,12 @@ const STOP_FLOOR = 480
  * than just red.
  */
 function helpTriggersInSource(): number {
-  const dir = new URL('..', import.meta.url).pathname
+  // `join(__dirname, '..')`, the way nav.links.test.tsx in this directory does
+  // it. `new URL('..', import.meta.url).pathname` was tried first and resolved
+  // to `/src` under vitest -- not `<repo>/apps/swarm-ui/src` -- so the scandir
+  // threw ENOENT and the whole sweep failed on its own bookkeeping rather than
+  // on anything it was measuring.
+  const dir = join(__dirname, '..')
   let n = 0
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.tsx')) continue
