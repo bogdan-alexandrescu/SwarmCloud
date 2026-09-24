@@ -14,6 +14,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
+import { Absent, Mark, Metric, UtilRow, type TrackTone } from './primitives'
 import { timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
@@ -206,10 +207,14 @@ export function OverviewScreen() {
   // for the figure to be computed and therefore no way for the two to disagree.
   const tenant = dataOf(tasks)?.tenant_id ?? null
 
+  // NO <style> ELEMENT ANY MORE. This screen injected 500 lines of its own CSS
+  // as a template literal after styles.css, which put its rules beyond every
+  // gate that reads the sheet as text and made three test files carry a
+  // second parser for it. They are the last block of styles.css now, appended
+  // so they keep the cascade position the injection gave them
+  // (design-system.md §9.5).
   return (
     <>
-      <style>{OVERVIEW_CSS}</style>
-
       {/* TITLE, THEN PROVENANCE ON ONE LINE UNDER IT.
           -------------------------------------------------------------------
           This used to be a title on the left and a right-aligned cluster on
@@ -638,8 +643,8 @@ function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
  *
  * SCOPE IT TO THE CELL THAT USES IT. This screen is the one the platform
  * expects to be left open all day, and a 1Hz clock held at the top of it
- * re-renders every panel, every tile and the injected <style> element once a
- * second to move one table column. It is called from `Runtime` alone.
+ * re-renders every panel and every tile once a second to move one table
+ * column. It is called from `Runtime` alone.
  */
 function useNow(): number {
   const [now, setNow] = useState(() => Date.now())
@@ -666,46 +671,13 @@ function ageOf(r: Result<unknown>): number | null {
 // ---------------------------------------------------------------------------
 // The absence vocabulary
 // ---------------------------------------------------------------------------
-
-/**
- * SIX KINDS OF NOTHING, SIX WORDS, ONE SET OF SILHOUETTES.
- *
- * These are `measure.ts`'s words and `styles.css` §B4.4's marks, and a screen
- * does not get to invent a seventh phrasing of "we do not know". The border
- * style carries the kind -- solid for a measurement, dashed for a failure,
- * hatched for an absence, dotted for a read in flight -- so the six stay apart
- * in greyscale and in the screenshot that gets pasted into an incident
- * channel, which is where these screens are actually read.
- */
-const MARK_WORD = {
-  zero: 'real zero',
-  absent: 'not measured',
-  unread: 'not read',
-  partial: 'partial',
-  admin: 'admin only',
-  pending: 'reading',
-} as const
-
-type MarkKind = keyof typeof MARK_WORD
-
-/**
- * The mark, and the sentence that used to be a paragraph.
- *
- * `say` is the accessible name. THIS IS THE WHOLE MECHANISM OF THE MIGRATION
- * and it is not a `title=`: a tooltip has no visible anchor and no keyboard
- * route, which is why the previous attempt at this turned the suite red. A
- * mark is visible without hovering anything, is in the tab order of the
- * assistive tree, and is attached to the figure it qualifies -- and a
- * paragraph can sit next to a figure it does not describe while an attribute
- * on the figure cannot.
- */
-function Mark({ kind, say }: { kind: MarkKind; say: string }) {
-  return (
-    <span className={`ctl-mark is-${kind}`} role="img" aria-label={say}>
-      {MARK_WORD[kind]}
-    </span>
-  )
-}
+//
+// `Mark`, `Absent`, `Metric` and the utilisation track are the shared
+// primitives in ./primitives.tsx. This screen used to carry its own copy of
+// each beside AgentDetail's, and the two had already diverged
+// (design-system.md §9.4). What stays here is this screen's POLICY: which read
+// outranks which on the strip, which reading is a verdict, what each figure
+// links to. The six words and their silhouettes are the primitive's.
 
 /**
  * THE DIAL, and the reason the unfilled arc is always painted.
@@ -940,6 +912,12 @@ function staleFoot(r: Result<unknown>, verb: string): string | undefined {
   return Date.now() - at > POLL_MS * 2 ? footFor(r, verb) : undefined
 }
 
+/**
+ * One figure on the strip, and the ORDER its four renderings outrank each
+ * other in. The tile itself is the shared `Metric` (./primitives.tsx); what is
+ * decided here is which state it is in and what goes in the value slot for
+ * each -- a mark on this strip, where the run panel writes a phrase.
+ */
 function Tile({
   href,
   label,
@@ -975,28 +953,20 @@ function Tile({
   // reassuring absence. `reading` comes next and outranks BOTH the figure and
   // the absence.
   const state = unread ? 'unread' : reading ? 'reading' : value === null ? 'absent' : 'value'
-  const cls =
-    state === 'unread'
-      ? 'is-unread'
-      : state === 'reading'
-        ? 'ov-reading'
-        : state === 'absent'
-          ? 'is-absent'
-          : tone === 'alert'
-            ? 'is-alert'
-            : tone === 'good'
-              ? 'is-good'
-              : ''
 
-  // An <a> with no href is not a link and is not focusable, so a tile with
-  // nowhere to go is a plain element rather than an anchor that looks like one.
-  const Box = href === undefined ? 'div' : 'a'
-
+  // `href` undefined renders a plain element: an <a> with no href is not a
+  // link and is not focusable, and `Metric` decides that once for every tile.
   return (
-    <Box className={`ctl-metric ov-tile ${cls}`} href={href} aria-label={`${label}. ${say}`}>
-      <span className="ctl-metric-label">{label}</span>
-      <span className="ctl-metric-value">
-        {state === 'unread' ? (
+    <Metric
+      className="ov-tile"
+      href={href}
+      label={label}
+      say={say}
+      foot={foot}
+      tone={state === 'value' ? tone : state}
+      unit={state === 'value' ? unit : undefined}
+      value={
+        state === 'unread' ? (
           <Mark kind="unread" say={unread ?? 'The read failed.'} />
         ) : state === 'reading' ? (
           // NO WORD AT ALL. A read in flight is the one absence that is
@@ -1008,14 +978,10 @@ function Tile({
         ) : state === 'absent' ? (
           <Mark kind="absent" say={absent ?? 'Nothing recorded this figure.'} />
         ) : (
-          <>
-            {value}
-            {unit && <span className="ctl-metric-unit">{unit}</span>}
-          </>
-        )}
-      </span>
-      {foot && <span className="ctl-metric-foot">{foot}</span>}
-    </Box>
+          value
+        )
+      }
+    />
   )
 }
 
@@ -1088,44 +1054,20 @@ function CardHead({
 /**
  * The four ways a card can have nothing to draw, kept visually distinct.
  *
- * THE MARK IS THE MARKER, and it replaced a paragraph. `is-failed`,
- * `is-partial` and `is-admin` are colour, and colour is not a distinction a
- * screenshot in an incident channel preserves; the mark is two words, a border
- * style and a fill, and it survives both. The heading is the FACT, three or
- * four words of it. The explanation is the mark's accessible name, and it is
- * ALREADY A WHOLE SENTENCE -- `say` is written out at every call site below.
+ * The shared `Absent` (./primitives.tsx), with `ov-empty`: the in-card variant,
+ * which gives up the primitive's own box because the card has already drawn
+ * one. The heading is the FACT, three or four words of it; `say` is ALREADY A
+ * WHOLE SENTENCE at every call site below, and it is the mark's accessible
+ * name.
  *
  * WHICH IS WHY THE `?` HERE IS GONE (B7.4). Nine of this screen's twelve help
  * anchors were on these empty states, each one opening a card beside a mark
- * whose own accessible name said the same thing in more detail. A reader with a
- * screen reader heard it twice; a reader without one saw a glyph that repeated
- * the two words next to it. `explain` keeps the topic's sentence published at
- * the heading for assistive technology and draws nothing.
+ * whose own accessible name said the same thing in more detail. `explain`
+ * keeps the topic's sentence published at the heading for assistive
+ * technology and draws nothing.
  */
-function Absent({
-  kind,
-  heading,
-  say,
-  explain,
-}: {
-  kind: 'zero' | 'failed' | 'partial' | 'admin'
-  heading: string
-  say: string
-  explain?: TopicId
-}) {
-  const cls = kind === 'zero' ? '' : ` is-${kind}`
-  const descId = useId()
-  const mark: MarkKind =
-    kind === 'zero' ? 'zero' : kind === 'failed' ? 'unread' : kind === 'partial' ? 'partial' : 'admin'
-  return (
-    <div className={`ctl-empty ov-empty${cls}`}>
-      <Mark kind={mark} say={say} />
-      <h3 aria-describedby={explain === undefined ? undefined : descId}>
-        {heading}
-        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
-      </h3>
-    </div>
-  )
+function CardAbsent(props: Omit<Parameters<typeof Absent>[0], 'className'>) {
+  return <Absent {...props} className="ov-empty" />
 }
 
 /**
@@ -1175,7 +1117,7 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
     const b = blindness(state.error)
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind={b.admin ? 'admin' : 'failed'}
           heading="Pool state unread"
           say={`${b.why} No figure here is a claim about room.`}
@@ -1187,7 +1129,7 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
   if (state.status === 'empty') {
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind="zero"
           heading="No pools exist"
           say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
@@ -1204,7 +1146,7 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
   if (profiles.length === 0) {
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind="partial"
           heading="No runner profile"
           say={`${cap.pools.length} pools were read and no runner profile came back, so no ceiling is computed here.`}
@@ -1260,52 +1202,14 @@ function bindingLabel(name: string, tenant: string | undefined): string {
 }
 
 /**
- * THE UTILISATION TRACK, and the three things it has to keep apart.
+ * One runner profile as a `.ctl-util` row.
  *
- * `pct === null`  nothing measured it. Hatched, NO fill -- an unfilled plain
- *                 track reads as "0% used", which is a claim.
- * `pct === 0`     MEASURED zero. This used to render as a zero-width fill on a
- *                 near-white track, which is pixel-for-pixel a widget that
- *                 failed to paint. A measured zero gets a visible BASELINE
- *                 TICK at the origin, so "nothing is running" is legible as a
- *                 reading.
- * `pct > 0`       an ordinary fill.
- *
- * The tick is deliberately NOT a minimum width on the fill. A 3px fill would
- * say "a little is in use", which is the absent-as-zero lie inverted: it would
- * make 0 and 0.4% identical instead of making 0 and unmeasured identical.
+ * THE TRACK IS THE SHARED ONE (./primitives.tsx `UtilTrack`), and so are its
+ * four states: unmeasured is hatched with no fill, a measured zero draws the
+ * baseline tick, a pool held over its ceiling draws the excess hatched rather
+ * than clipped, and anything else is a fill. What this row decides is the
+ * VERDICT -- paused, refusing, or approaching -- and which pool it is of.
  */
-function UtilTrack({
-  pct,
-  fillClass,
-  over,
-  zeroTitle,
-}: {
-  /** null when nothing measured it. 0 is a reading. */
-  pct: number | null
-  fillClass: string
-  over: boolean
-  /** What the baseline tick means, for the one case that needs explaining. */
-  zeroTitle: string
-}) {
-  if (pct === null) return <span className="ctl-util-track is-unknown" />
-  if (pct === 0) {
-    return (
-      <span className="ctl-util-track is-zero" title={zeroTitle}>
-        <i className="ctl-util-zero" aria-hidden />
-      </span>
-    )
-  }
-  return (
-    <span className="ctl-util-track">
-      <i className={`ctl-util-fill ${fillClass}`.trimEnd()} style={{ width: `${Math.min(100, pct)}%` }} />
-      {/* Held above the ceiling: hatched rather than clipped at 100%, because a
-          bar pinned full hides the one thing worth seeing. */}
-      {over && <i className="ctl-util-over" style={{ width: '14%' }} />}
-    </span>
-  )
-}
-
 function ProfileRow({
   name,
   profile,
@@ -1332,81 +1236,76 @@ function ProfileRow({
   const paused = binding !== null && isPaused(binding)
   const over = binding !== null && overCeiling(binding)
 
-  const fillClass = paused
+  const tone: TrackTone | undefined = paused
     ? 'is-paused'
     : over || h.agents === 0
       ? 'is-bad'
       : ratio > 0.8
         ? 'is-warn'
-        : ''
+        : undefined
 
   return (
-    <div className="ctl-util">
-      <span className="ctl-util-name" title={`${name} · ${profile.units} unit(s) per agent`}>
-        <b>{name}</b>{' '}
-        {h.agents === null ? (
-          /* An em dash, never a 0. `uncapped` means nothing limits this;
-             `unknown` means a required pool could not be read and the true
-             figure may be anything, including zero. Two different sentences
-             because they have two different remedies. */
-          <span
-            className="ctl-em"
-            title={
-              h.basis === 'uncapped'
-                ? 'No pool in this profile is configured, so nothing caps it.'
-                : `Not measured: ${h.unread.length} required pool(s) could not be read.`
-            }
-          >
-            · &mdash;
-          </span>
-        ) : h.agents === 0 ? (
-          <span className="ov-stop">
-            · 0 can start
-            {/* The count, because more than one pool can refuse at the same
-                moment and a card that implies one sends an operator to raise a
-                ceiling that changes nothing. */}
-            {h.blockers.length > 1 && ` (${h.blockers.length})`}
-          </span>
-        ) : (
-          <>· {h.agents} can start</>
-        )}
-      </span>
-
-      <UtilTrack
-        pct={known ? ratio * 100 : null}
-        fillClass={fillClass}
-        over={over}
-        zeroTitle={
-          binding
-            ? `Measured: 0 of ${binding.effective_limit} in use on ${binding.name}. The bar has a baseline because this zero is a reading.`
-            : 'Measured zero.'
-        }
-      />
-
-      <span className="ctl-util-figure">
-        {binding ? (
+    <UtilRow
+      nameTitle={`${name} · ${profile.units} unit(s) per agent`}
+      name={
+        <>
+          <b>{name}</b>{' '}
+          {h.agents === null ? (
+            /* An em dash, never a 0. `uncapped` means nothing limits this;
+               `unknown` means a required pool could not be read and the true
+               figure may be anything, including zero. Two different sentences
+               because they have two different remedies. */
+            <span
+              className="ctl-em"
+              title={
+                h.basis === 'uncapped'
+                  ? 'No pool in this profile is configured, so nothing caps it.'
+                  : `Not measured: ${h.unread.length} required pool(s) could not be read.`
+              }
+            >
+              · &mdash;
+            </span>
+          ) : h.agents === 0 ? (
+            <span className="ov-stop">
+              · 0 can start
+              {/* The count, because more than one pool can refuse at the same
+                  moment and a card that implies one sends an operator to raise
+                  a ceiling that changes nothing. */}
+              {h.blockers.length > 1 && ` (${h.blockers.length})`}
+            </span>
+          ) : (
+            <>· {h.agents} can start</>
+          )}
+        </>
+      }
+      track={{
+        pct: known ? ratio * 100 : null,
+        tone,
+        zeroTitle: binding
+          ? `Measured: 0 of ${binding.effective_limit} in use on ${binding.name}. The bar has a baseline because this zero is a reading.`
+          : 'Measured zero.',
+      }}
+      figure={
+        binding ? (
           <>
             {binding.active}
             <span className="ctl-util-of"> / {binding.effective_limit}</span>
           </>
         ) : (
           <span className="ctl-em">&mdash;</span>
-        )}
-      </span>
-
-      <span
-        className="ctl-util-by"
-        title={
-          h.blockers.length > 0
-            ? h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit})`).join(', ')
-            : (h.binding ?? undefined)
-        }
-      >
-        {/* More than one pool can be at its ceiling at once. This column has
-            room for one name, so when several refuse it says SO rather than
-            picking one. "refusing", not "full": one of them may be PAUSED,
-            which is a different fact with the opposite remedy. */}
-        {h.blockers.length > 1
+        )
+      }
+      byTitle={
+        h.blockers.length > 0
+          ? h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit})`).join(', ')
+          : (h.binding ?? undefined)
+      }
+      by={
+        // More than one pool can be at its ceiling at once. This column has
+        // room for one name, so when several refuse it says SO rather than
+        // picking one. "refusing", not "full": one of them may be PAUSED,
+        // which is a different fact with the opposite remedy.
+        h.blockers.length > 1
           ? `${h.blockers.length} refusing`
           : paused
             ? 'paused'
@@ -1416,9 +1315,9 @@ function ProfileRow({
                 ? bindingLabel(h.binding, tenant)
                 : h.missing.length > 0
                   ? `${h.missing.length} uncapped`
-                  : '—'}
-      </span>
-    </div>
+                  : '—'
+      }
+    />
   )
 }
 
@@ -1457,7 +1356,7 @@ function RunningBody({
     const b = blindness(tasks.error)
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind={b.admin ? 'admin' : 'failed'}
           heading="Task list unread"
           say={`${b.why} This card is blind; it is not reporting that nothing is running.`}
@@ -1469,7 +1368,7 @@ function RunningBody({
   if (tasks.status === 'empty') {
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind="zero"
           heading="No task exists"
           say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
@@ -1498,7 +1397,7 @@ function RunningBody({
     return (
       <>
         <div className="ctl-card-body">
-          <Absent
+          <CardAbsent
             kind="zero"
             heading="Nothing running"
             say={
@@ -1656,7 +1555,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       const b = blindness(tasks.error)
       return (
         <div className="ctl-card-body">
-          <Absent
+          <CardAbsent
             kind={b.admin ? 'admin' : 'failed'}
             heading="Spend unassembled"
             say={`Spend is summed from the attempts of the most recent tasks, and the task list itself could not be read. ${b.why} No attempt read was made, so nothing here is a statement about spend.`}
@@ -1666,7 +1565,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
     }
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind="failed"
           heading="No attempt read completed"
           say={`${errorHeading(state.error)} — ${state.error.message} No figure is shown.`}
@@ -1682,7 +1581,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
     if (tasks.status === 'empty') {
       return (
         <div className="ctl-card-body">
-          <Absent
+          <CardAbsent
             kind="zero"
             heading="No task exists"
             say="The task read succeeded and returned nothing — a real zero, so there are no attempts to sum."
@@ -1693,7 +1592,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
     }
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind="zero"
           heading="No task has run"
           say="Every task on the page has an attempt count of 0 — a real zero."
@@ -1730,10 +1629,11 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
 
         {/* THE TOKEN MIX, AS A PROPORTION RATHER THAN FOUR NUMBERS IN A LIST.
             Hand-rolled: four `<i>` widths off one total, in four tones of ONE
-            series hue (see `.ov-s1` in OVERVIEW_CSS). A segment whose count is ABSENT
-            is not drawn at all and its fact keeps its slot below with an em
-            dash -- a missing segment and a zero-width segment are the same
-            picture, so the em dash is what tells them apart. */}
+            series hue (see `.ov-s1`, in the Overview block at the end of
+            styles.css). A segment whose count is ABSENT is not drawn at all
+            and its fact keeps its slot below with an em dash -- a missing
+            segment and a zero-width segment are the same picture, so the em
+            dash is what tells them apart. */}
         <TokenMix s={s} />
       </div>
 
@@ -2136,7 +2036,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
     const b = blindness(state.error)
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind={b.admin ? 'admin' : 'failed'}
           heading="Account pool unread"
           say={`${b.why} This says nothing about whether the accounts have room.`}
@@ -2148,7 +2048,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
   if (state.status === 'empty') {
     return (
       <div className="ctl-card-body">
-        <Absent
+        <CardAbsent
           kind="zero"
           heading="No account registered"
           say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
@@ -2215,44 +2115,47 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
               const projected = isProjected(r)
               const windowName = w?.key.replace(/_/g, '-') ?? null
               return (
-                <div className="ctl-util" key={a.account_id}>
-                  <span className="ctl-util-name" title={a.account_id}>
-                    <b>{a.label}</b> <span className="ov-num">· {a.assigned}</span>
-                  </span>
-                  {/* Never observed, or no reading for the binding window:
-                      hatched with no fill. A plain empty track here would
-                      claim 0% used, which for an account nobody has polled is
-                      a number nobody measured. A PROJECTED reading does get a
-                      bar -- the figure is real -- but a grey one, never the
-                      red or amber that says a ceiling is being approached
-                      now. */}
-                  <UtilTrack
-                    pct={pct}
-                    fillClass={
-                      projected
-                        ? 'ov-projected'
-                        : a.state !== 'AVAILABLE'
-                          ? 'is-paused'
-                          : pct !== null && pct > 90
-                            ? 'is-bad'
-                            : pct !== null && pct > 75
-                              ? 'is-warn'
-                              : ''
-                    }
-                    over={false}
-                    zeroTitle={`Measured: this account reported 0% of its binding window used. The bar has a baseline because this zero is a reading, not a missing one.`}
-                  />
-                  <span
-                    className="ctl-util-figure"
-                    title={
-                      r.kind === 'reset' && windowName
-                        ? `The ${windowName} window, the binding one, passed its reset ${timeAgo(r.resetsAt)}. It has cleared; no reading taken since has arrived, so this figure describes the window before it.`
-                        : r.kind === 'stale'
-                          ? `Read ${timeAgo(r.observedAt)}, which is past the broker's staleness window. The figure is real and describes an earlier moment.`
-                          : undefined
-                    }
-                  >
-                    {pct !== null ? (
+                <UtilRow
+                  key={a.account_id}
+                  nameTitle={a.account_id}
+                  name={
+                    <>
+                      <b>{a.label}</b> <span className="ov-num">· {a.assigned}</span>
+                    </>
+                  }
+                  // Never observed, or no reading for the binding window:
+                  // hatched with no fill. A plain empty track here would claim
+                  // 0% used, which for an account nobody has polled is a number
+                  // nobody measured. A PROJECTED reading does get a bar -- the
+                  // figure is real -- but a grey one, never the red or amber
+                  // that says a ceiling is being approached now.
+                  //
+                  // HELD AT 100, as it always was. A provider can report a
+                  // window past 100%; this row has always drawn that as a full
+                  // bar with the true figure beside it, not as an over-ceiling
+                  // segment, and the shared track would draw the segment.
+                  track={{
+                    pct: pct === null ? null : Math.min(100, pct),
+                    tone: projected
+                      ? 'ov-projected'
+                      : a.state !== 'AVAILABLE'
+                        ? 'is-paused'
+                        : pct !== null && pct > 90
+                          ? 'is-bad'
+                          : pct !== null && pct > 75
+                            ? 'is-warn'
+                            : undefined,
+                    zeroTitle: `Measured: this account reported 0% of its binding window used. The bar has a baseline because this zero is a reading, not a missing one.`,
+                  }}
+                  figureTitle={
+                    r.kind === 'reset' && windowName
+                      ? `The ${windowName} window, the binding one, passed its reset ${timeAgo(r.resetsAt)}. It has cleared; no reading taken since has arrived, so this figure describes the window before it.`
+                      : r.kind === 'stale'
+                        ? `Read ${timeAgo(r.observedAt)}, which is past the broker's staleness window. The figure is real and describes an earlier moment.`
+                        : undefined
+                  }
+                  figure={
+                    pct !== null ? (
                       <>
                         {/* The same mark `cs status` and the Accounts screen
                             use for a figure that is real but not current. */}
@@ -2261,15 +2164,15 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                       </>
                     ) : (
                       <span className="ctl-em">&mdash;</span>
-                    )}
-                  </span>
-                  {/* A CURRENT READING CARRIES ITS AGE TOO. `stale` and
-                      `cleared` have said how old they are for as long as this
-                      card has existed; a `live` reading printed only the
-                      window name, so the one row with a confident figure was
-                      the one row that did not say when it was measured. */}
-                  <span className="ctl-util-by">
-                    {needsAHuman(a)
+                    )
+                  }
+                  // A CURRENT READING CARRIES ITS AGE TOO. `stale` and
+                  // `cleared` have said how old they are for as long as this
+                  // card has existed; a `live` reading printed only the window
+                  // name, so the one row with a confident figure was the one
+                  // row that did not say when it was measured.
+                  by={
+                    needsAHuman(a)
                       ? 'sign in again'
                       : // Before every reading word, because it outranks all
                         // of them: whatever this row's figure says, the pool
@@ -2289,9 +2192,9 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                                 ? a.state.toLowerCase()
                                 : r.kind === 'live' && windowName !== null
                                   ? `${windowName} · ${timeAgo(r.observedAt)}`
-                                  : (windowName ?? '—')}
-                  </span>
-                </div>
+                                  : (windowName ?? '—')
+                  }
+                />
               )
             })}
           </div>
@@ -2473,7 +2376,7 @@ function AttentionLead({ checks }: { checks: Check[] }) {
 
       <div className="ov-lead-body">
         {problems.length === 0 && reading.length === 0 && (
-          <Absent
+          <CardAbsent
             kind={blind.length === 0 ? 'zero' : blind.every((c) => c.admin) ? 'admin' : 'partial'}
             heading={blind.length === 0 ? 'Nothing wrong' : `${blind.length} not checked`}
             say={
@@ -2531,540 +2434,3 @@ function ProblemRow({ problem: p }: { problem: Problem }) {
     </li>
   )
 }
-
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-/**
- * WHY THIS IS STILL HERE AND NOT IN styles.css.
- *
- * docs/web-ui/design-system.md §9.5 asks for this block to be folded into the
- * primitive sheet. It is not folded in THIS pass and the reason is specific
- * rather than lazy: `test_ui_contrast.py` and `test_state_colour_discriminability.py`
- * scan `styles.css` as text and grade every `color`/`background` pair in it,
- * and this pass shipped without running the Python suites. Moving 200 lines
- * under a gate nobody ran is how a screen lands red. Everything below uses
- * ONLY tokens that already exist -- no new colour, no new mix, no new spacing
- * step -- so the fold is a move rather than a rewrite when someone does it
- * with the gates in front of them.
- *
- * Every selector is `ov-`-prefixed and can therefore reach nothing outside
- * this file.
- *
- * THE LAYOUT IS TRACK-COUNT-EXPLICIT AND THAT IS DELIBERATE. An auto-fitting
- * grid needs no breakpoints to maintain, and in exchange nothing -- not the
- * stylesheet, not this file -- can know how many tracks it produced. That is
- * exactly what the rules below need in order to stop the page ending with a
- * blank right column under a column that is still going. Two stated
- * breakpoints cost two lines; a page that wastes a third of a 1600px screen
- * costs it every time anyone opens the product.
- *
- * THE BREAKPOINTS ARE THE SYSTEM'S. Overview used to carry a private set at
- * 641, 720 and 1400. Those are retired: the card grid now turns at 900 and
- * 1280, which are two of the five the design system names (§7.1), and the
- * `.ctl-util` override turns at 900 rather than 641.
- */
-const OVERVIEW_CSS = `
-/* ---- page head ---------------------------------------------------------- */
-
-/* TITLE OVER PROVENANCE, WHICH IS WHAT EVERY OTHER SCREEN IN THIS PRODUCT
-   ALREADY DOES. ".ctl-page-head" is a wrapping flex row with an ".is-end"
-   slot on the right; this screen stops using that slot and stacks instead,
-   because a strip pinned 900px from the title it qualifies is not read as
-   belonging to it. "Screen" (Shell.tsx) renders exactly this shape on Agents,
-   Runtimes, Pools and the rest, so the landing page stops being the one
-   screen with a different header. */
-.ov-head { display: block; }
-.ov-prov {
-  padding: 0;
-  margin: 6px 0 0;
-}
-
-/* Every figure that can change is tabular, everywhere. Not optional in a
-   column of them, and the read tally changes on every poll. */
-.ov-num {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-.ov-tally { gap: 6px; }
-
-/* THE BOX CAME OFF THE REFRESH CONTROL. It was the one control on this screen
-   wearing a 1px --line border, a radius and a --surface fill -- a button
-   silhouette for something that re-runs eight reads and changes no state.
-   §1.3's rule for an in-page control is ink plus an underline (.ctl-link), and
-   the three other controls on this screen already use it; a fourth answer to
-   "this is clickable" is what the primitive exists to stop. What is left here
-   is the reset a <button> needs in order to be a link. */
-.ov-refresh {
-  padding: 0;
-  border: 0;
-  background: none;
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
-  cursor: pointer;
-}
-
-/* ---- the panel grid ----------------------------------------------------- */
-
-/* THE PARITY SELECTORS ARE GONE WITH THE GRID THAT NEEDED THEM.
-   ---------------------------------------------------------------------------
-   The old grid was five equal cards in one to three "1fr" tracks, and ten
-   nth-child rules underneath it widening whichever card landed last so the
-   page did not end with a blank right column under a column that was still
-   going. Every one of those rules existed to manage an orphan that only
-   exists because five equal objects never fill a three-track row.
-
-   There are three panels now and the layout is ASYMMETRIC, which removes the
-   orphan by construction: two tracks, and the panel that needs the width takes
-   it. "Running" is a table and takes two thirds; "Spend" is one figure and a
-   bar and takes a third; "Headroom" spans both, because it draws five
-   four-column utilisation rows and a 400px column is what turned
-   "mock · 15 can start" into "mock · 1…" (F1 of the overflow inventory).
-
-   One breakpoint, and it is the system's (§7.1). Below it everything stacks,
-   which is what a phone wants and what the old three-stage grid spent two
-   breakpoints and ten selectors arriving at. */
-.ov-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--ctl-s5);
-  align-items: start;
-}
-@media (min-width: 1280px) {
-  /* TWO EQUAL TRACKS, NOT 2:1. Measured at 1440: the running table has three
-     columns -- a name, a state chip and an elapsed time -- and two thirds of
-     the page put 420px of nothing between the state and the runtime. A track
-     wider than its content is not generosity, it is a gap the eye has to
-     cross. Headroom is the panel that genuinely needs the width (five
-     four-column utilisation rows beside three account rows) and it is the one
-     that spans. */
-  .ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ov-headroom { grid-column: 1 / -1; }
-}
-
-/* ---- the lead ----------------------------------------------------------- */
-
-/* THE REGION'S OWN RHYTHM. ".section" already supplies the large break and the
-   one hairline between the two regions of this page; what is set here is the
-   internal spacing, which is one step down so the lead reads as one block
-   rather than as two. */
-.ov-lead-head {
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s3);
-  flex-wrap: wrap;
-}
-.ov-lead-say { flex: 1 1 260px; min-width: 0; }
-/* --t-title, which is the page's second rank and the rank this fact has. It
-   was --t-lead inside a card head, one step below, competing with four other
-   card heads of exactly the same size. */
-.ov-lead-title {
-  margin: 0;
-  font-size: var(--t-title);
-  line-height: var(--lh-title);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text);
-}
-/* THE COVERAGE, ON THE TITLE'S OWN BLOCK RATHER THAN IN A FOOT AT THE BOTTOM
-   OF A CARD. It is chrome about the list -- mono, micro, faint -- and it is
-   now within one line of the list it qualifies instead of below it. */
-.ov-lead-cover {
-  display: block;
-  margin: 2px 0 0;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  color: var(--text-faint);
-}
-/* The rows sit under the ring rather than beside it. The old two-column
-   ".ov-dialrow" put a 96px ring in a third-width card and gave the problem
-   headlines about 230px, which is why they were the shortest sentences on the
-   screen. Full width, and they are sentences again. */
-.ov-lead-body { margin-top: var(--ctl-s3); }
-/* The lead's ring is smaller than a card's: it is a qualifier on a title, not
-   the subject of a panel. */
-.ov-lead .ov-dial { --dial-size: 64px; }
-/* The all-clear reads at the lead's rank, not at a card body's. */
-.ov-lead-body > .ctl-empty.ov-empty > h3 {
-  font-size: var(--t-lead);
-  line-height: var(--lh-lead);
-}
-
-/* ---- the fact strip ----------------------------------------------------- */
-
-/* THE WHOLE FACT IS THE DOORWAY. The answer to every figure on the strip is on
-   another screen, and making the figure itself the link removes a step.
-
-   THE HOVER IS AN UNDERLINE, NOT A BORDER, because there is no border any
-   more (§B6.1). It is also not a transform: a 1px lift on an unboxed fact
-   moves the text and nothing else, which reads as a rendering glitch rather
-   than as an affordance. */
-a.ov-tile {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-}
-a.ov-tile:hover .ctl-metric-value {
-  text-decoration: underline;
-  text-decoration-color: var(--line-soft);
-  text-underline-offset: 4px;
-}
-a.ov-tile:hover .ctl-metric-label { color: var(--text-dim); }
-a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
-
-/* A MARK IS NOT A FIGURE, so the value slot stops being a figure-sized number
-   the moment it stops holding one. ".ctl-metric.is-absent" already drops the
-   step; this aligns the mark on the same baseline the digit sat on so the
-   strip does not jump between states. */
-.ov-tile .ctl-metric-value { display: flex; align-items: center; min-height: 30px; }
-
-/* READING. The third absence, and it must not look like either of the other
-   two: .ctl-metric.is-absent is hatched and says the platform has no such
-   figure, .ctl-metric.is-unread is dashed and amber and says the read failed.
-   This one is neither -- the request is still out -- so the fact keeps its
-   ordinary unpainted rule and the slot holds a bar that is visibly still
-   moving, at the geometry the figure will occupy. It carries no text: a
-   gradient has no luminance a contrast gate can measure. */
-.ov-pending { display: block; width: 64px; height: 18px; }
-
-/* A read in flight inside a card draws the rules of the table that is coming,
-   so the card does not change height when the rows arrive. */
-.ov-ghost { margin: 2px 0; }
-
-/* THE TABLE GIVES UP ITS OWN EDGES INSIDE A CARD, and that is a geometry fix
-   as much as a visual one. .ctl-table carries a border, a radius and a fill,
-   so a body wearing it is a SURFACE sitting directly on .ctl-card-foot, which
-   is another one -- and .ctl-card is a flex column with no gap, so the two
-   touch. spacing.test.tsx reports exactly that. A gutter is the wrong answer:
-   the card has already drawn this box, and a bordered table inset inside a
-   bordered card is a box in a box. The scroll behaviour is what the primitive
-   is here for and it stays.
-
-   (No backticks in this comment: it lives inside a JS template literal, where
-   one ends the CSS.) */
-.ctl-card-body.ov-rows {
-  border: 0;
-  border-radius: 0;
-  background: none;
-}
-
-/* ---- cards -------------------------------------------------------------- */
-
-/* EIGHTEEN ACCENT PAINTS ON ONE SCREEN, AND NOW NONE.
-   Measured on this view before the change: --info was painted 23 times inside
-   main.work -- 18 of them these links ("open ->", "agents ->", "history ->",
-   "pools ->"), one the "6 more" disclosure, and four the live chips' dots.
-   design-system.md sec 1.3 budgets the accent at once or twice per screen, and
-   sec 11.3 named .ov-link as one of the five screen-private link treatments
-   that .ctl-link exists for them to collapse into. This is that collapse: the
-   three call sites now carry "ctl-link ov-link", the primitive paints it (ink
-   plus a --line-soft underline, accent on hover and focus), and what is left
-   here is the LAYOUT ONLY.
-
-   The colour, the text-decoration, the transparent bottom border and the focus
-   rule all had to go rather than be overridden to match: this block is injected
-   as a <style> AFTER styles.css, so at equal specificity every one of them
-   would have out-ranked the primitive and quietly reinstated the blue.
-
-   The four --info paints that remain are .ctl-chip.is-live > i, which is the
-   state channel and not an affordance. */
-.ov-link {
-  flex: none;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  white-space: nowrap;
-}
-
-/* An empty state INSIDE a card rather than as the page. The card already draws
-   the box and the title, so a second bordered surface inside it is one box too
-   many -- and a tone wash under a mark that already names the kind is
-   redundant twice over. The MARK is the greyscale-safe signal and the h3
-   colour is the second one; the box is the card's. */
-.ctl-empty.ov-empty {
-  border: 0;
-  background: none;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s2);
-  flex-wrap: wrap;
-}
-/* Not --t-title. A card's own title is --t-lead and an empty state inside it
-   cannot be louder than the card it is in. */
-.ctl-empty.ov-empty > h3 {
-  margin: 0;
-  font-size: var(--t-lead);
-  line-height: var(--lh-lead);
-}
-/* The page-level one keeps its box: there is no card around it. */
-.ov-page-empty { display: flex; align-items: flex-start; gap: var(--ctl-s3); flex-wrap: wrap; }
-.ov-page-empty > h3 { margin: 0; flex: 1 1 auto; }
-.ov-page-empty > .retry { margin-top: 0; }
-
-/* ---- the dial row ------------------------------------------------------- */
-
-/* The dial is the card's proportion and the rows are its detail. NO
-   BREAKPOINT: the rows carry a 260px flex basis and the row wraps when the
-   ring and the rows stop fitting beside each other, which at 390px is always.
-   A width that answers for itself is one fewer number to keep in step with
-   the other five. */
-.ov-dialrow {
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s3);
-  flex-wrap: wrap;
-}
-.ov-dialrow-rows { flex: 1 1 260px; min-width: 0; }
-.ov-dial { --dial-size: 96px; flex: none; }
-.ov-dial .ctl-dial-figure {
-  font-size: var(--t-figure);
-  line-height: var(--lh-figure);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-/* A ring nobody could fill holds no figure, so what is in the middle is an em
-   dash and it must not wear the figure step: at 30px a dash reads as a
-   quantity. */
-.ov-dial.is-unknown .ctl-dial-figure {
-  font-size: var(--t-body);
-  line-height: var(--lh-body);
-  font-weight: 500;
-}
-
-/* ---- spend -------------------------------------------------------------- */
-
-.ov-figure { margin: 0 0 var(--ctl-s2); }
-.ov-figure-mark { margin: calc(-1 * var(--ctl-s1)) 0 var(--ctl-s2); }
-
-/* THE TOKEN MIX. Four segments, one total, hand-rolled -- the proportion is
-   the point and four numbers in a list is not one. Height and radius are the
-   track's, because every proportion in this product is drawn at that size. */
-.ov-mix {
-  display: flex;
-  height: var(--track-h);
-  border-radius: var(--track-radius);
-  overflow: hidden;
-  background: var(--surface-2);
-  margin-bottom: var(--ctl-s2);
-}
-.ov-mix-seg { height: 100%; }
-/* NOTHING MEASURED, SO NO SCALE. Hatched rather than left empty: an empty
-   track claims the scale starts somewhere and the value is at the start of
-   it, which is the absent-as-zero lie in bar form. */
-.ov-mix.is-unknown { background: var(--ctl-hatch); }
-/* ONE METRIC, ONE HUE, FOUR TONES. SERIES, NEVER STATE.
-   A segment drawn in --ok is read as a verdict, so these were --series-1..4:
-   blue, teal, violet, amber. That was four saturated hues in one 8px rule --
-   two of them the colours a reader has learned for PARKED (violet) and WARN
-   (amber) -- and the series block itself records that those five sit in a
-   1.36:1 band, NOT separable in greyscale. The keyed legend (design-system.md
-   §12.1) told a colour reader which swatch was which; a greyscale screenshot
-   still showed four identical greys.
-   Tokens are one metric split four ways, so they get ONE series (--series-1,
-   the single-series slot) at four tones.
-   THE TONES STEP TOWARD THE INK, NEVER TOWARD THE CARD. The first ramp mixed
-   toward --surface and bought its greyscale steps by fading three of the four
-   into the card: c-wr's 8px swatch measured 1.35:1 on white and 1.42:1 on the
-   dark card, under the 3:1 every series fill promises (styles.css, THE SERIES
-   PALETTE; WCAG 1.4.11). --series-1 is already the floor of that band -- 3.36
-   on light --surface-2 -- so any step toward the card goes under it, and the
-   only direction with room is toward --text: lighter on the dark card, darker
-   on the light one. At 100/75/50/25% the worst fill is --series-1 itself
-   (3.36, light --surface-2), and every other one is >= 4.77 on --bg, --surface
-   and --surface-2 in both themes; every pair is >= 1.32:1 (dark c-rd/c-wr).
-   Order is the reading order: input is the series hue itself, and each later
-   count sits one step nearer the ink, so c-wr is the heaviest mark. The .ov-sN
-   class names are unchanged, so each swatch still takes its fill from the same
-   class its segment does. encoding.hues.test.ts holds both floors. */
-.ov-s1 { background: var(--series-1); }
-.ov-s2 { background: color-mix(in srgb, var(--series-1) 75%, var(--text)); }
-.ov-s3 { background: color-mix(in srgb, var(--series-1) 50%, var(--text)); }
-.ov-s4 { background: color-mix(in srgb, var(--series-1) 25%, var(--text)); }
-.ov-mix-facts { padding: 0; }
-
-/* THE KEY TO THE FOUR TONES, NEXT TO THE WORD THEY BELONG TO.
-   8px square, --track-radius so it is the same corner the bar it keys is drawn
-   with, and it takes its fill from the SAME .ov-sN class the segment does --
-   one declaration per series, so a segment and its key cannot drift apart.
-   A square rather than a disc on purpose: .ctl-dot's vocabulary is STATE, and a
-   series is an identity, not a verdict (sec 1.6). */
-.ov-swatch {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--track-radius);
-  /* No margin: .ctl-fact is an inline-flex with a 5px gap and adding to it
-     would make this one gap in the row wider than the other two. align-self
-     because the strip aligns on the BASELINE and an empty <i> has none, which
-     would drop the square to the bottom of the line box. */
-  align-self: center;
-}
-/* NOTHING REPORTED, SO NO KEY TO ANYTHING. Hollow, in the absence tone, at the
-   same size: the row keeps its rhythm and the swatch stops claiming a segment
-   that was never drawn. The em dash beside it carries the fact. */
-.ov-swatch.is-absent {
-  background: none;
-  border: 1px solid var(--ctl-absent);
-}
-
-/* ---- headroom: one panel, two groups ------------------------------------ */
-
-/* TWO CARDS BECAME TWO GROUPS INSIDE ONE PANEL, and the padding moved up with
-   them: the panel owns the inset once, and each group draws no edge, no fill
-   and no radius of its own. §13.3 -- a panel is the one box; what repeats
-   inside it is a row, and a row draws nothing. */
-.ov-groups {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--ctl-s5);
-  padding: var(--ctl-pad-chrome);
-}
-@media (min-width: 900px) {
-  /* The two ceilings side by side, which is the whole reason they are one
-     panel: a task clears every pool in its list AND THEN takes a subscription
-     account, so the two are read together or not at all. */
-  .ov-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-.ov-group { min-width: 0; }
-/* THE RING STACKS ABOVE ITS ROWS INSIDE A GROUP, RATHER THAN STANDING BESIDE
-   THEM. ".ov-dialrow" is a two-column flex built for a card whose whole body
-   was one dial and one list; inside a half-width group it indented every
-   account row by the dial's 96px plus the gap, so the two groups in this panel
-   started their rows 120px apart and read as unrelated. Stacked, the ring is
-   the group's own summary figure and the rows below it line up with the
-   profiles on the left. The dial itself is untouched -- it still carries the
-   coverage as a filled-versus-hatched arc, which is the fact the strip's
-   figure above does NOT carry. */
-.ov-group .ov-dialrow { display: block; }
-.ov-group .ov-dial { margin-bottom: var(--ctl-s2); }
-/* THE GROUP LABEL IS A RANK BELOW THE PANEL TITLE AND A RANK ABOVE THE ROWS.
-   --t-meta in the mono/faint label treatment, which is §13.2's label rank --
-   mono plus --text-faint, with no uppercase and no tracking, because those
-   were the third and fourth channels on a distinction that already had two. */
-.ov-grouphead {
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s2);
-  margin: 0 0 var(--ctl-s2);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  color: var(--text-faint);
-}
-/* The group's body and provenance take the panel's inset from .ov-groups, so
-   they set none of their own. */
-.ov-group .ctl-card-body { padding: 0; }
-/* THE FOOT STOPS BEING A FULL-BLEED BAR AND BECOMES A CAPTION, because there
-   are two of them in one panel and two --surface-2 bars stacked inside one box
-   is two boxes with the lines rubbed out. It keeps the mono/micro/faint
-   treatment, which is what said "this is about the reading, not the reading"
-   before the fill did. TWO FEET RATHER THAN ONE, deliberately: these are two
-   independent reads and a single merged foot would have to average two ages. */
-.ov-group .ctl-card-foot {
-  margin: var(--ctl-s3) 0 0;
-  padding: 0;
-  background: none;
-  border-radius: 0;
-}
-
-/* ---- capacity and accounts --------------------------------------------- */
-
-/* The utilisation primitive is sized for a full-width screen; inside the
-   headroom panel it shares the width with the account group, so the name still
-   needs a stated floor rather than whatever four fixed tracks leave it.
-
-   F1 OF THE 2026-09-23 OVERFLOW INVENTORY IS FIXED BY THE PANEL'S NEW WIDTH,
-   NOT BY THIS RULE. The capacity rows were in a 400px third-of-a-grid card,
-   where "mock · 15 can start" (160px of content) got a 79px name column and
-   rendered "mock · 1…" -- a prefix of a number standing where the number was.
-   The panel spans the grid now, so the group is ~550px at 1440 and the same
-   template gives the name about 300. The stated minimum below is what keeps it
-   from happening again when the panel is narrower than that.
-
-   ABOVE 900px ONLY. The primitive deliberately drops the track and the "set
-   by" column on a phone and keeps the name and the figure; an unscoped
-   override here would out-specify that and put four columns back into 358px.
-   It is the primitive's decision to make, not this screen's. */
-@media (min-width: 900px) {
-  .ov-dialrow-rows .ctl-util,
-  .ov-group .ctl-card-body > .ctl-util {
-    grid-template-columns: minmax(14ch, 1fr) minmax(40px, 88px) max-content minmax(0, 96px);
-    gap: var(--ctl-s2);
-    padding: 4px 0;
-  }
-}
-
-/* "0 can start" is the one phrase on this screen that changes what someone
-   does next, so it is not left as ordinary grey text. */
-.ov-stop { color: var(--bad); font-weight: 500; }
-
-/* A figure that is REAL but not CURRENT: its window reset, or the poll is past
-   the staleness window. Grey, never the red or amber that says a ceiling is
-   being approached now, and the tilde beside it is the same mark that cs
-   status and the Accounts screen use for the same two cases.
-   THE BAR IS --text-faint, NOT --ctl-absent. It used to be --ctl-absent, which
-   was then var(--text-faint), so the two spellings painted the same pixel.
-   --ctl-absent is now its own warm stone (styles.css, :root), so that
-   an absence stops matching the CANCELLED fill; a proportion fill, though, is
-   grey unless it carries a verdict (design-system.md §6.4, owner decision
-   2026-09-24), and a warm stone chosen to be told apart from grey by its hue
-   is not a grey. So the bar keeps the exact grey it had, by name, and the
-   tilde beside it -- text, not a fill -- takes the absence colour.
-   test_state_colour_discriminability.py lists this value in DOCUMENTED_GREYS. */
-.ctl-util-fill.ov-projected { background: var(--text-faint); }
-.ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
-
-/* ---- attention ---------------------------------------------------------- */
-
-.ov-problems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s2); }
-/* THE LINK FOLLOWS THE SENTENCE. In a third-width card the third track was
-   pinned to an edge 230px away and that read as a column; out here on the full
-   page the same rule put "open ->" 1,100px from the headline it opens, with a
-   white gap between them that a reader has to cross to connect the two. A row
-   that is a sentence plus its verb keeps the verb next to the sentence, so the
-   track list stops at the content and "justify-content: start" holds the row
-   there rather than stretching it to the region's width. */
-.ov-problem {
-  display: grid;
-  grid-template-columns: 8px minmax(0, auto) max-content;
-  justify-content: start;
-  gap: var(--ctl-s3);
-  align-items: baseline;
-  font-size: var(--t-body);
-  line-height: var(--lh-body);
-  color: var(--text-dim);
-}
-.ov-problem > b { color: var(--text); font-weight: 500; min-width: 0; }
-
-/* The problems that did not fit. A disclosure rather than a link out, because
-   there is no board to link to. */
-.ov-more { margin-top: var(--ctl-s2); }
-.ov-more > summary {
-  cursor: pointer;
-  /* --t-meta, not --t-micro: this is a CONTROL, and the micro step is for
-     things you read, not things you click. */
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
-  /* NOT THE ACCENT. This is the nineteenth --info paint the audit counted, and
-     it is the one control on the card that does not navigate -- it opens the
-     rest of a list that is already on this screen. The disclosure triangle
-     below is the affordance, and it is a SHAPE, which is what sec 1.3 asks a
-     control to lead with; it also rotates on open, so the state is carried
-     without colour at all. */
-  color: var(--text-dim);
-  list-style: none;
-}
-.ov-more > summary:hover { color: var(--text); }
-.ov-more > summary::-webkit-details-marker { display: none; }
-.ov-more > summary::before { content: '\\25B8  '; }
-.ov-more[open] > summary::before { content: '\\25BE  '; }
-.ov-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
-.ov-more > .ov-problems { margin-top: var(--ctl-s2); }
-
-/* ---- tones in the provenance strip -------------------------------------- */
-
-/* An admin gate is information, not breakage, so the figure that reports only
-   admin gates is the accent and never the amber used for a real failure. */
-.ov-info { color: var(--info); }
-.ov-warn { color: var(--warn); }
-.ov-bad { color: var(--bad); }
-.ov-checks:empty { display: none; }
-`

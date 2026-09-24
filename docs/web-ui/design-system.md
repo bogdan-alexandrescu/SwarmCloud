@@ -1207,8 +1207,24 @@ and `test_subscription_headroom_surface.py` (~25 exact code fragments in
    three primitives, and they have already diverged — Overview's track has the
    measured-zero baseline tick and AgentDetail's does not; AgentDetail's absence
    panel has the mark and Overview's has colour only.
+   **Done (U8, ui-followups lane).** `src/primitives.tsx` holds `Mark`,
+   `Metric`, `UtilTrack`, `UtilRow` and `Absent`; Overview, AgentDetail,
+   Capacity and Holders call them, and the six hand-written `.ctl-util-track`s
+   are one. What each screen keeps is its policy — Overview's strip draws a
+   mark in an absent tile's value slot where the run panel writes a phrase.
+   Three states moved, on purpose: AgentDetail's measured zero now draws the
+   baseline tick; Overview's over-ceiling profile bar draws the excess to scale
+   (AgentDetail's geometry) instead of a fixed 14% stub; and Overview's empty
+   states carry the mark inside the heading, with `role="status"` on the
+   non-zero kinds, as AgentDetail's did. `primitives.screens.test.tsx` records
+   every other state as unchanged, and `test_workflow_step_measurements.py`
+   now asserts `.ctl-util-track` is drawn by `primitives.tsx` alone.
 5. **Fold `OVERVIEW_CSS` into `styles.css`** and rewrite
    `test_workflow_step_measurements.py:596` in the same commit.
+   **Done (U8).** The block is the last one in `styles.css`, appended so it
+   keeps the cascade position the injected `<style>` gave it; the two grid
+   tests, `encoding.hues.test.ts` and `stylesheet.gate.test.ts` read it there,
+   and the gate now fails on any screen that injects a `<style>` again.
 
 ---
 
@@ -1228,6 +1244,15 @@ otherwise. The deployed console therefore shows the loudest possible badge on
 every visit. The fix is one flag on the build — `VITE_SWARM_ENV=dev npm run
 build` — and the build lives in `scripts/` and `.github/`, which is Track D.
 Reported, not made.
+
+**Both halves have since landed.** The build passes `VITE_SWARM_ENV`
+(`scripts/build-images.sh`), and PR #19 made `/v1/tenants/me` serve
+`environment` and `environment_declared`. `Brand.tsx` now believes a DECLARED
+API environment first, then the build, then a loopback host: the API is the one
+source that says where the requests go, which is what the badge is for (a
+laptop running the dev proxy against a deployed API used to read `Local`). A
+defaulted `dev` (`environment_declared: false`) is ignored. The casing and bar
+rules of §13.6 are unchanged.
 
 ---
 

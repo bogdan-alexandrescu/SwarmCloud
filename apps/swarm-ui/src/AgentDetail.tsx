@@ -1,4 +1,4 @@
-import { useCallback, useId, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
 import { loadAgentRun, type AgentRun } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { AttemptDurations } from './charts/AttemptPhases'
@@ -10,8 +10,9 @@ import { DispatchFacts } from './Dispatch'
 import { attemptEnd } from './duration'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
-import { HelpCard, HelpNote } from './HelpCard'
+import { HelpCard } from './HelpCard'
 import { LivenessBadge } from './Liveness'
+import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
 import { RunFiles } from './RunFiles'
 import { Screen, timeAgo } from './Shell'
 import { StagedInputs } from './StagedInputs'
@@ -253,127 +254,57 @@ export function Em() {
 /**
  * THE SIX KINDS OF NOTHING, AS A SHAPE RATHER THAN A SENTENCE.
  *
- * This is `ABSENT_MARK` promoted out of this file's empty-state component and
- * on to `.ctl-mark` (design-system.md §6.10, §8.6). It is the encoding the
- * whole prose migration turns on, so it has to be one thing in one place: the
- * six words are `measure.ts`'s own, and a screen does not get to invent a
- * seventh phrasing of "we do not know".
+ * `Mark` lives in ./primitives.tsx with the other primitives this file used to
+ * define (`Metric`, the utilisation track, `Absent`). It is RE-EXPORTED here
+ * because Agents, AttemptTimeline, ArtifactViewer and CheckpointBrowser import
+ * it from this module, and those are other lanes' files: the re-export keeps
+ * one definition without editing four call sites that did nothing wrong.
  *
- * WHAT THE MARK CARRIES AND WHAT `say` CARRIES. The mark is the FACT -- two
- * words, always rendered, greyscale-safe, legible in the screenshot somebody
- * pastes into an incident channel at 3am, and readable with every help card
- * shut. `say` is the same fact as a sentence, published as the mark's
- * accessible name, so the words are on a keyboard and screen-reader route
- * rather than only on a hover. That pairing is the difference between this and
- * the attempt that turned the suite red: a `title=` has no visible anchor and
- * no keyboard route at all.
- *
- * The REASONING -- why this figure can be absent, what would have written it --
- * is neither of those. It is `#help/<topic>`: published at the label by
- * `explain`, indexed in the card foot, and on this screen behind exactly one
- * `?` rather than the twenty-two it had before B7.4.
+ * The REASONING -- why a figure can be absent, what would have written it --
+ * is neither the mark nor its sentence. It is `#help/<topic>`: published at
+ * the label by `explain`, indexed in the card foot, and on this screen behind
+ * exactly one `?` rather than the twenty-two it had before B7.4.
  */
-export type MarkKind = 'zero' | 'absent' | 'unread' | 'partial' | 'admin' | 'pending'
-
-const MARK_WORD: Readonly<Record<MarkKind, string>> = {
-  zero: 'real zero',
-  absent: 'not measured',
-  unread: 'not read',
-  partial: 'partial',
-  admin: 'admin only',
-  pending: 'reading',
-}
-
-export function Mark({ kind, say }: { kind: MarkKind; say: string }) {
-  return (
-    <i className={`ctl-mark is-${kind}`} role="img" aria-label={say}>
-      {MARK_WORD[kind]}
-    </i>
-  )
-}
+export { Mark, type MarkKind } from './primitives'
 
 /**
- * One fact with its units and what it excludes.
+ * THE TILE, THE TRACK AND THE EMPTY STATE ARE THE SHARED PRIMITIVES.
  *
- * `tone` carries the two absences the platform keeps confusing:
- *   absent  the platform did not record it. The value is a SENTENCE.
- *   unread  we failed to read it. The platform may well have the number.
+ * `Metric` and `Absent` are imported from ./primitives.tsx and called here
+ * under the names this file always used. This file defined its own of each,
+ * beside Overview's, and the two had already diverged (design-system.md
+ * §9.4): Overview's track drew the measured-zero baseline tick and this one
+ * did not, so a workspace that peaked at 0 B read here as a widget that
+ * failed to paint. The tick is now drawn on both, by the one track.
  *
- * WHAT `help` IS FOR, AND WHAT IT IS NOT FOR. The `?` carries the EXPLANATION
- * -- why this figure can be absent, what would have written it. It never
- * carries the FACT. `value` and `tone` still say, on the surface and without
- * any interaction, whether there is a number here: an absent tile is dashed,
- * faint, and reads as a phrase where its neighbours read as digits. If this
- * tile needs its `?` opened before absent can be told from zero, the tile is
- * wrong -- see `tests/agentdetail.test.tsx`, which renders this screen with
- * every card CLOSED and asserts exactly that.
+ * WHAT STAYS HERE IS THIS SCREEN'S POLICY, and it is unchanged:
  *
- * B7.4: THE TILE NO LONGER DRAWS A `?`, AND IT STILL PUBLISHES THE SENTENCE.
- * This screen carried twenty-two help anchors, more than any other, and most of
- * them were here -- a glyph on every tile whose value was an absence, which is
- * most tiles on a run that recorded little. The tile ALREADY tells an absence
- * from a zero without any of them: the value is a phrase ("not recorded"), the
- * tone is `is-absent` or `is-unread`, and `tests/agentdetail.test.tsx` renders
- * this screen with every card closed and asserts exactly that. So the glyph was
- * the one part that could go, and `explain` keeps what it was publishing -- the
- * topic's short form, at the label, behind `aria-describedby`, drawn nowhere.
- * The paragraphs are the card foot's link row (`AttemptLegend`) and the rail's
- * Help section.
+ *   - an absent tile's value is a PHRASE ("not recorded", "not reported") on
+ *     the `is-absent` treatment, where the landing strip draws a mark. Both
+ *     are the design system's; `tests/agentdetail.test.tsx` renders this
+ *     screen with every help card CLOSED and asserts the phrase.
+ *   - `explain` publishes a topic's short form at the label and draws no `?`
+ *     (B7.4). The tile already tells an absence from a zero on the surface.
  */
-function Metric({
-  label,
-  value,
-  unit,
-  sub,
-  foot,
-  tone,
-  explain,
-}: {
-  label: string
-  value: ReactNode
-  unit?: string
-  sub?: ReactNode
-  foot?: string
-  tone?: 'absent' | 'unread' | 'alert' | 'good'
-  explain?: TopicId
-}) {
-  const descId = useId()
-  return (
-    <div className={`ctl-metric${tone ? ` is-${tone}` : ''}`}>
-      <span
-        className="ctl-metric-label"
-        aria-describedby={explain === undefined ? undefined : descId}
-      >
-        {label}
-        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
-      </span>
-      <span className="ctl-metric-value">
-        {value}
-        {unit !== undefined && <span className="ctl-metric-unit">{unit}</span>}
-      </span>
-      {sub !== undefined && <span className="ctl-metric-sub">{sub}</span>}
-      {foot !== undefined && <span className="ctl-metric-foot">{foot}</span>}
-    </div>
-  )
-}
 
 /**
- * used / ceiling, as a bar that stays honest when either side is missing.
+ * used / ceiling, as one `.ctl-util` row that stays honest when either side
+ * is missing.
  *
- * THREE TRACK STATES and they must not converge:
- *   known        a fill proportional to used/ceiling
- *   unknown      hatched with NO fill -- because an empty plain track reads as
- *                "0% used", which is a claim about a measurement we do not have
- *   over ceiling the excess is hatched in the failure colour rather than
- *                clipped at 100%, which would hide the only interesting part
+ * The TRACK is the shared `UtilTrack`, so its four states are the product's:
+ * unknown (no measurement, or no ceiling to measure it against) is hatched
+ * with no fill; a measured zero draws the baseline tick; over the ceiling, the
+ * track stands for what was used and the excess is hatched in the failure
+ * colour rather than clipped; anything else is a fill.
  *
- * The warn/bad colouring at 75% and 90% is PRESENTATION. The claim about
- * whether an attempt came dangerously close to its ceiling is
- * `oom_near_miss`, which the worker sets from its own threshold against the
- * cgroup the kernel's OOM killer reads. This bar never contradicts that flag;
- * it just makes a tall bar visible before you get to it.
+ * What this row decides is the VERDICT and the units. The warn/bad colouring
+ * at 75% and 90% is PRESENTATION. The claim about whether an attempt came
+ * dangerously close to its ceiling is `oom_near_miss`, which the worker sets
+ * from its own threshold against the cgroup the kernel's OOM killer reads.
+ * This bar never contradicts that flag; it just makes a tall bar visible
+ * before you get to it.
  */
-function Util({
+function CeilingRow({
   label,
   used,
   ceiling,
@@ -391,94 +322,23 @@ function Util({
 }) {
   const known = used !== null && ceiling !== null && ceiling > 0
   const ratio = known && ceiling !== null && used !== null ? used / ceiling : null
-  const over = ratio !== null && ratio > 1
-  // When over, the track represents `used` and the ceiling sits inside it.
-  const fillPct = ratio === null ? 0 : over ? (1 / ratio) * 100 : ratio * 100
-  const fillTone = ratio === null ? '' : ratio >= 0.9 ? ' is-bad' : ratio >= 0.75 ? ' is-warn' : ''
 
   return (
-    <div className="ctl-util">
-      <span className="ctl-util-name">{label}</span>
-      <span className={`ctl-util-track${known ? '' : ' is-unknown'}`}>
-        {known && <span className={`ctl-util-fill${fillTone}`} style={{ width: `${fillPct}%` }} />}
-        {over && <span className="ctl-util-over" style={{ width: `${100 - fillPct}%` }} />}
-      </span>
-      <span className="ctl-util-figure">
-        {used === null ? <Em /> : fmt(used)}
-        <span className="ctl-util-of"> / {ceiling === null ? '?' : fmt(ceiling)}</span>
-      </span>
-      <span className="ctl-util-by" title={by}>
-        {by}
-      </span>
-    </div>
-  )
-}
-
-/**
- * The four shapes an absent panel can have. They are four different facts and
- * this platform's defining bug was drawing them alike.
- *
- * THE MARK IS NOT DECORATION, AND IT IS WHY THE EXPLANATIONS COULD LEAVE.
- * Until now these four were told apart by a border colour, a background tint
- * and a paragraph. Move the paragraph into a `?` and colour is all that is
- * left -- and colour alone is exactly what this file already refuses for state
- * chips ("a colour-only chip fails in a greyscale incident screenshot"). The
- * same argument applies with more force here, because the thing being told
- * apart is whether a number exists at all.
- *
- * WHAT THIS PASS CHANGED. The mark was an inline-styled span in the corner of
- * this one component; it is now `<Mark>` on `.ctl-mark`, shared by all four
- * screens of this group. And the BODY became optional. `.ctl-empty`'s shape is
- * fixed at mark, heading, AT MOST one sentence, a link out
- * (design-system.md §6.9) -- so a panel whose heading already carries the fact
- * passes no children at all and renders no paragraph, rather than padding one
- * out to fill the slot.
- *
- * `say` is the sentence, on the mark's accessible name. `explain` is the
- * standing reasoning, published at the heading and drawn nowhere.
- */
-const EMPTY_MARK: Readonly<Record<'zero' | 'failed' | 'partial' | 'admin', MarkKind>> = {
-  zero: 'zero',
-  failed: 'unread',
-  partial: 'partial',
-  admin: 'admin',
-}
-
-function Absent({
-  kind,
-  heading,
-  say,
-  children,
-  foot,
-  explain,
-}: {
-  kind: 'zero' | 'failed' | 'partial' | 'admin'
-  heading: string
-  /** The fact as a sentence, published as the mark's accessible name. */
-  say: string
-  /** At most one sentence. Omitted when the heading already carries the fact. */
-  children?: ReactNode
-  foot?: string
-  /**
-   * The topic, published at the heading and drawn nowhere (B7.4). `say` above
-   * is already a full sentence on the mark beside this heading, so a `?` here
-   * opened a shorter, more general version of the words the empty state was
-   * saying -- six times over on one screen.
-   */
-  explain?: TopicId
-}) {
-  const cls = kind === 'zero' ? '' : ` is-${kind}`
-  const descId = useId()
-  return (
-    <div className={`ctl-empty${cls}`} role={kind === 'zero' ? undefined : 'status'}>
-      <h3 aria-describedby={explain === undefined ? undefined : descId}>
-        <Mark kind={EMPTY_MARK[kind]} say={say} />{' '}
-        {heading}
-        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
-      </h3>
-      {children !== undefined && <p>{children}</p>}
-      {foot !== undefined && <span className="ctl-empty-foot">{foot}</span>}
-    </div>
+    <UtilRow
+      name={label}
+      track={{
+        pct: ratio === null ? null : ratio * 100,
+        tone: ratio === null ? undefined : ratio >= 0.9 ? 'is-bad' : ratio >= 0.75 ? 'is-warn' : undefined,
+      }}
+      figure={
+        <>
+          {used === null ? <Em /> : fmt(used)}
+          <span className="ctl-util-of"> / {ceiling === null ? '?' : fmt(ceiling)}</span>
+        </>
+      }
+      byTitle={by}
+      by={by}
+    />
   )
 }
 
@@ -1421,7 +1281,7 @@ function AttemptResources({
         )}
       </div>
 
-      <Util
+      <CeilingRow
         label={
           <>
             <b>memory</b> peak RSS
@@ -1432,7 +1292,7 @@ function AttemptResources({
         fmt={bytesLabel}
         by={rssBy}
       />
-      <Util
+      <CeilingRow
         label={
           <>
             <b>workspace</b> peak
@@ -1448,7 +1308,7 @@ function AttemptResources({
           which is the honest picture and is why it is drawn rather than left
           out: a panel headed "requested vs utilised" that silently omits a
           third of the envelope reads as if cpu were fine. */}
-      <Util
+      <CeilingRow
         label={
           <>
             <b>cpu</b> not sampled

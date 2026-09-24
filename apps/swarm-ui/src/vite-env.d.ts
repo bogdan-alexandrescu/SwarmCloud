@@ -11,8 +11,10 @@ interface ImportMetaEnv {
    */
   readonly VITE_LIVE?: string
   /**
-   * WHICH ENVIRONMENT THIS BUNDLE WAS BUILT FOR. Read by Brand.tsx, and the
-   * only thing allowed to make the product header say `PROD` or `DEV`.
+   * WHICH ENVIRONMENT THIS BUNDLE WAS BUILT FOR. Read by Brand.tsx, and one
+   * of the two things allowed to make the product header say `PROD` or `Dev`.
+   * The other is the API's own declared environment (`/v1/tenants/me`), which
+   * outranks this when it arrives, because it is what the requests reach.
    *
    *   VITE_SWARM_ENV=dev npm run build
    *

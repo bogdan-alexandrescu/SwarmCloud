@@ -299,10 +299,11 @@ describe('keyboard traversal', () => {
       const { container, unmount } = render(<App />)
       await settle()
 
-      // Overview ships its own grid and its own cursors in a `<style>`
-      // element (`OVERVIEW_CSS`). Left out, every control it draws would read
-      // as one the sheet never gave a cursor to -- a gap on the one screen
-      // this product opens on.
+      // A screen's own `<style>` element and the cursors in it. Overview
+      // shipped one (`OVERVIEW_CSS`) until U8 folded it into styles.css, where
+      // POINTERS already reads its cursors; no screen ships one now. Kept so a
+      // sheet that comes back is read rather than reported as controls the
+      // sheet never gave a cursor to.
       const local = [...container.querySelectorAll('style')].flatMap((el) =>
         pointerSelectors(el.textContent ?? ''),
       )
