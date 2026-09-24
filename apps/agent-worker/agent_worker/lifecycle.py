@@ -2481,8 +2481,7 @@ class Worker:
         # attempt's spend touches only its OWN attempt document -- never the
         # lease, which is what invariant 5 forbids -- exactly as the resource
         # usage write on that same path already does.
-        self._collect_spend()
-        self._record_spend()
+        # MUTATION (reverted in the next commits): backstop removed.
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and
