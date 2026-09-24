@@ -352,7 +352,12 @@ export function OverviewScreen() {
           </section>
 
           <section className="ctl-card ov-spend">
-            <CardHead title="Spend" href="#history/timeline" cta="history" explain="token-cost" />
+            {/* `#work/timeline`, and `cta="timeline"` with it. The Timeline
+                pane moved out of a section called History when the nav
+                collapsed to three, so both the address AND the word on the
+                link changed -- a link still reading "history" would name a
+                section this product no longer has. */}
+            <CardHead title="Spend" href="#work/timeline" cta="timeline" explain="token-cost" />
             <SpendBody state={spend} tasks={tasks} />
           </section>
 
@@ -872,7 +877,7 @@ function MetricStrip({
       />
 
       <Tile
-        href="#history/timeline"
+        href="#work/timeline"
         label="Token spend"
         value={sp && sp.costUsd !== null ? money(sp.costUsd) : null}
         // THE AGE IS NOT OPTIONAL ON THIS ONE, which is why it calls `footFor`

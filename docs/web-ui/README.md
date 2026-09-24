@@ -103,10 +103,23 @@ To translate a filename or a route in a report into today's address:
 | `#agents`, `#agents/running`, `#agents/workflows` | `#work`, `#work/running`, `#work/workflows` |
 | `#agents/task/<id>` | `#work/task/<id>` |
 | `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/accounts` |
-| `#activity/timeline` | `#history/timeline` |
+| `#activity/timeline`, `#history/timeline` | `#work/timeline` |
+| `#counts`, `#history/counts`, `#activity/counts` | `#admin/counts` |
+| `#runtimes`, `#runtimes/catalogue` | `#capacity/catalogue` |
+| `#settings/limits`, `#settings/accounts` | `#admin/limits`, `#capacity/accounts` |
 | the "Agents" section | the **Work** section |
 | the "Pools" section | the **Capacity** section |
+| the "Runtimes" section | the **Runtimes** tab of **Capacity** |
+| the "History" section | split: **Timeline** under Work, **Platform counts** under Admin |
 | the "Capacity holders" tab | the **Holders** tab |
+| the "Runner profiles" tab | the **Profile headroom** tab |
+
+The last four rows are the 2026-09-24 collapse from six sections to three
+(Work, Capacity, Admin, with Overview as the landing screen). No screen was
+merged or removed by it — all fifteen keep their own route, their own read and
+their own failure state; what went away is two rail entries. The argument is in
+[redesign.md](redesign.md#changed-2026-09-24--six-sections-to-three), and the
+measurement that prompted it is [ux-plan.md](ux-plan.md) §1.4.
 
 Every old hash in that left column still resolves in the app, with its tail
 intact, so a link pasted out of a two-day-old report still lands on the pane it

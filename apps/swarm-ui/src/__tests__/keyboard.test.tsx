@@ -108,20 +108,29 @@ const POINTERS = pointerSelectors(STYLES)
 /**
  * THE FLOOR, AND WHY IT IS THIS NUMBER.
  *
- * MEASURED: 576, on the run that established this file. The per-route numbers
- * are in the log of every run and range from 24 (`admin/tenants`) to 62
- * (`capacity/accounts`).
+ * MEASURED: 576, on the run that established this file, and 518 on CI run
+ * 35948635897 before the nav collapsed to three sections. The per-route
+ * numbers are in the log of every run and ranged from 24 (`admin/tenants`) to
+ * 62 (`capacity/accounts`).
  *
- * THE SHELL ALONE IS 375, AND THAT IS WHY THE FLOOR IS NOT A PERCENTAGE. The
- * rail draws six section buttons, fourteen tab buttons (Overview's single pane
- * draws no second level) and two utility buttons on EVERY route: 22 tab stops
- * that are there whatever the screen behind them does. The header's home link,
- * the dock's line and the head's `?` add three more. 25 x 15 routes = 375
- * before a single screen has rendered anything at all, so `spacing.test.tsx`'s
- * habit of setting the floor at about 60% of the measurement would put this
- * one BELOW the number a completely blank app still reports.
+ * THE SHELL ALONE IS 345, AND THAT IS WHY THE FLOOR IS NOT A PERCENTAGE. The
+ * rail draws one button per section, one per tab of a section that has more
+ * than one (Overview's single pane draws no second level) and two utility
+ * buttons, on EVERY route: 4 + 14 + 2 = 20 tab stops that are there whatever
+ * the screen behind them does. The header's home link, the dock's line and the
+ * head's `?` add three more. 23 x 15 routes = 345 before a single screen has
+ * rendered anything at all, so `spacing.test.tsx`'s habit of setting the floor
+ * at about 60% of the measurement would put this one BELOW the number a
+ * completely blank app still reports.
  *
- * 480 is the shell plus half of the 201 controls that came from real screens.
+ * THE SHELL GOT ONE STOP CHEAPER PER ROUTE, not fifteen. Six section buttons
+ * and thirteen tab buttons became four and fourteen: the three-section
+ * collapse moved panes between sections, it did not remove any, so the tab
+ * count went UP by one while the section count went down by two. 480 is
+ * unchanged and still has room -- 345 of shell plus half of the ~200 controls
+ * that come from real screens -- and moving it because the shell moved by 15
+ * would be tuning a floor to the number it is meant to be insensitive to.
+ *
  * It fails when the sweep reaches nothing -- the shape this repository keeps
  * producing: a loop that did not word-split, a probe that returned `[]`, a
  * route list that went stale and examined 500 fewer shapes with nothing red --
@@ -131,19 +140,35 @@ const POINTERS = pointerSelectors(STYLES)
 const STOP_FLOOR = 480
 
 /**
- * `?` triggers opened, dismissed, and checked for focus return. MEASURED: 84.
+ * `?` triggers opened, dismissed, and checked for focus return. MEASURED: 24,
+ * on CI run 35948635897 (job 107472129765).
  *
- * Fifteen of those are certain: `SectionQuestion` puts one in the head of
- * every route. The other 69 are `<HelpCard>`s on screens whose fixtures
- * resolve -- and some screens here read `/v1/admin/*`, answer 403 and render
- * an admin panel instead of their content, so the count is a property of the
- * fixtures rather than of the source. The two biggest contributors are
- * `runtimes/catalogue` (19) and `capacity/accounts` (16).
+ * IT WAS 84 AND THE FLOOR WAS 60, AND THAT IS WHY THIS JOB WAS RED. The
+ * help-density lane deleted eighty-two help popovers -- commit ad16b5e, "the
+ * three columns whose headers already said what they explained" -- and the
+ * keyboard lane, which owns this floor, was a different branch merged one
+ * commit earlier. Neither touched the other's file, both were green alone, and
+ * the merge that had them both failed on `expected 24 to be greater than 60`.
+ * A floor is a measurement with a date on it: when the thing measured is
+ * deliberately reduced, the floor is part of that change, and nothing in CI
+ * can tell a deletion someone intended from a screen that stopped rendering.
  *
- * 60 therefore survives either of those screens going to its failure state and
- * still fails if the sweep stops opening cards, which is what it is for.
+ * WHAT THE 24 IS MADE OF, from the per-route table in that run's log. Fifteen
+ * are certain: `SectionQuestion` puts one `?` in the head of every route, and
+ * that one is in the SHELL -- it appears whether or not the screen behind it
+ * renders anything. The other nine are one `<HelpCard>` each on nine screens;
+ * six routes therefore report one card and nine report two.
+ *
+ * 20 IS THE FLOOR AND THE FIFTEEN ARE WHY IT IS NOT LOWER. A sweep whose
+ * screens all failed to render would still report 15, so any floor at or below
+ * 15 is satisfied by an app with no content in it at all -- which is precisely
+ * the failure this guard exists for. 20 fails that case, and survives up to
+ * four of the nine screen-level cards going away: some of these screens read
+ * `/v1/admin/*`, answer 403 and render an admin panel instead of their
+ * content, so the count is a property of the fixtures as well as of the
+ * source.
  */
-const HELP_FLOOR = 60
+const HELP_FLOOR = 20
 
 let sheet: HTMLStyleElement
 
@@ -349,9 +374,12 @@ describe('keyboard traversal', () => {
       ROUTES.length,
     )
     for (const p of per) {
-      // The rail alone is 22 stops on every route, so this proves the SHELL
-      // rendered rather than the screen. What notices a screen going empty is
-      // the total below and the per-route numbers in the log.
+      // The rail alone is 20 stops on every route -- 4 sections + 14 tabs + 2
+      // utility, where it was 21 (6 + 13 + 2) before the collapse; the comment
+      // on STOP_FLOOR said 22 and was counting a tab strip under Runtimes that
+      // a single-pane section never drew. So this proves the SHELL rendered
+      // rather than the screen. What notices a screen going empty is the total below
+      // and the per-route numbers in the log.
       expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(20)
     }
     expect(stops, 'the sweep reached almost nothing').toBeGreaterThan(STOP_FLOOR)

@@ -5797,8 +5797,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 :root { --rail-w: 200px; }
 /* Below 1280px the rail narrows rather than becoming a 56px icon column: this
-   product has no icon set, and a letter is not an icon when two sections begin
-   with the same one (Agents, Admin). 152px still fits "Runner profiles". */
+   product has no icon set, and a letter is not an icon -- it is a label with
+   everything but the first character deleted. That argument used to rest on
+   Agents and Admin sharing an initial; the three-section collapse made the
+   four rail entries Overview, Work, Capacity and Admin, so the collision is
+   gone and the argument is not (the TABS, which are most of this column's
+   height, have no initials at all). The longest tab label is now "Profile
+   headroom", one character longer than the "Runner profiles" the 152px figure
+   was measured against, and nothing offline can measure rendered text at a
+   width -- see the note on `Rail` in App.tsx. */
 @media (max-width: 1279px) { :root { --rail-w: 152px; } }
 
 .work { min-width: 0; }
