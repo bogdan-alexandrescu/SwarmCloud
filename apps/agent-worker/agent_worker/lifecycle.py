@@ -728,6 +728,8 @@ class Worker:
 
         runner_result = _read_json(ws.result_path)
         if runner_result:
+            # MUTATION (reverted in the next commit): main's single call site.
+            self._record_spend()
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
             # inside `_upload_outputs` above): the attempt's total across every
             # runner it started, so the summary a human reads and the typed
@@ -2228,7 +2230,7 @@ class Worker:
         # leaving. `_cleanup` records again for the two cases that cannot be
         # here yet: a runner still alive when the worker crashed, and a
         # mid-run fence, which uploads nothing.
-        self._record_spend()
+        # MUTATION (reverted in the next commit): no spend recorded here.
         # BEFORE the redaction pass, not after: the harvest writes a patch into
         # `artifacts/`, and `_redact_before_upload` is what scrubs everything
         # in there. A patch produced afterwards would be the one file in the
