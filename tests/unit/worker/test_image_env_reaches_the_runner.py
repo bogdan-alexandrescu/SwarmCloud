@@ -60,7 +60,7 @@ TENANT_KEY = "sk-ant-api03-tenant-own-key"
 #: The digest `images/agent-runtime-base/Dockerfile` pins its `PYTHON_IMAGE`
 #: to, as of the reading below. `test_the_recorded_upstream_env_is_for_the_pinned_base`
 #: fails the moment the Dockerfile pins anything else.
-UPSTREAM_PYTHON_DIGEST = "sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84"
+UPSTREAM_PYTHON_DIGEST = "sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf85"
 
 #: The ENV the UPSTREAM image sets -- `python:3.11-slim-bookworm` at the digest
 #: above, which the base's runtime stage is built FROM. The browser image
