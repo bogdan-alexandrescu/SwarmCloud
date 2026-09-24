@@ -755,3 +755,64 @@ def test_swarm_tail_prints_a_stored_request_as_a_request(swarm, world, capsys):
     assert "· cancelled" not in printed, (
         f"`swarm tail` printed a cancel request as a cancel:\n{printed}"
     )
+
+
+# --------------------------------------------------------------------------
+# ... and against an API OLDER than the plugin, which is why the plugin reads it
+# --------------------------------------------------------------------------
+# The two tests above go through the CURRENT API, which already serves a
+# stored request as `cancel_requested` (`swarm_api.codec.stored_event_type`).
+# Through it, the plugin's own reading is never exercised: take `event_type`
+# out of `_event_row` or out of `cmd_tail` and both stay green. The plugin's
+# copy exists for an API that does NOT read the legacy shape -- one deployed
+# before contract request 17 -- so these two run against exactly that API.
+
+
+def _an_api_from_before_request_17(monkeypatch) -> None:
+    """The real application, decoding stored events as it did before 2026-09-24.
+
+    `event_from_dict` then set `type=EventType(data["type"])`: the raw field,
+    no legacy reading. `stored_event_type` is looked up at call time, so
+    replacing it with that expression is the old decoder.
+    """
+    from swarm_api import codec
+
+    monkeypatch.setattr(codec, "stored_event_type", lambda data: EventType(data["type"]))
+
+
+def _served_types(world: World, task_id: str) -> list[str]:
+    response = world.api.get(f"/v1/tasks/{task_id}/events", headers=AUTH)
+    assert response.status_code == 200, response.text
+    return [e["type"] for e in response.json()["events"]]
+
+
+def test_follow_reads_a_request_from_an_api_older_than_itself(swarm, world, monkeypatch):
+    world.task("task_a", state="DISPATCHED")
+    _legacy_request(world, "task_a")
+    _an_api_from_before_request_17(monkeypatch)
+    # The premise: this API really is the old one, and serves the row as stored.
+    assert _served_types(world, "task_a") == ["cancelled"]
+
+    report = follow(swarm, ["task_a"])
+
+    kinds = [e["type"] for e in report["tasks"][0]["events"]["new"]]
+    assert kinds == ["cancel_requested"], (
+        f"an API older than the plugin served a cancel request, and `swarm_follow` "
+        f"narrated it as {kinds} on a task that is still DISPATCHED"
+    )
+
+
+def test_swarm_tail_reads_a_request_from_an_api_older_than_itself(swarm, world, monkeypatch, capsys):
+    world.task("task_a", state="CANCELLED")
+    _legacy_request(world, "task_a")
+    _an_api_from_before_request_17(monkeypatch)
+    assert _served_types(world, "task_a") == ["cancelled"]
+
+    cli.cmd_tail(swarm, _follow_args())
+
+    printed = capsys.readouterr().out
+    assert "· cancel_requested" in printed, printed
+    assert "· cancelled" not in printed, (
+        f"an API older than the plugin served a cancel request, and `swarm tail` "
+        f"printed it as a cancel:\n{printed}"
+    )

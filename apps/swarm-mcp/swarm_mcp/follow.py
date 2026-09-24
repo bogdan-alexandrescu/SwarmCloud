@@ -507,7 +507,7 @@ def event_type(event: dict[str, Any]) -> Any:
 def _event_row(event: dict[str, Any]) -> dict[str, Any]:
     row = {
         "at": event.get("at"),
-        "type": event_type(event),
+        "type": event.get("type"),
         "attempt_id": event.get("attempt_id"),
         "generation": event.get("generation"),
         "detail": event.get("detail"),

@@ -201,7 +201,7 @@ def cmd_tail(client: SwarmClient, args) -> int:
                 seen_events[task_id].add(key)
                 # `event_type`, not the raw field: an API older than this
                 # plugin serves a stored cancel REQUEST as `cancelled`.
-                kind = event_type(event) or "?"
+                kind = event.get("type", "?")
                 if kind == "heartbeat" and not args.verbose:
                     continue
                 _emit(short, f"· {kind}")
