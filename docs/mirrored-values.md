@@ -221,6 +221,18 @@ variables `destroy-guard.jq` declares and requires every caller — comments
 stripped, so prose about the flag cannot stand in for the flag — to pass all of
 them.
 
+**The same outage was also fixed a second way, and the two fixes met in one
+merge.** Main (#17) made the argument optional inside the filter:
+`platform_prefix` reads `$ARGS.named.prefix // "swarm-"`, which compiles whether
+or not a caller passes it. Both fixes stay. The filter's default means the next
+caller to forget the argument still gets a verdict; the callers passing
+`guard_name_prefix` mean nobody is judged by that default. But the default is a
+second spelling of `guard_name_prefix`'s, so
+`test_the_filters_fallback_prefix_is_guard_name_prefix` runs the filter over the
+recorded real plan with and without `--arg prefix` and requires identical
+verdicts — the `reason` of every foreign touch names the prefix, so any drift in
+the value is a difference the comparison sees.
+
 ## Covered elsewhere, deliberately not moved here
 
 These are compared, just not by `check-contract-parity.sh`. Each is listed so

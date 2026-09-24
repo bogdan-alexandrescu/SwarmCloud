@@ -87,10 +87,12 @@ UNLABELABLE_TYPES="$(jq -c '.types' "${SWARM_LIB_DIR}/unlabelable-types.json")"
 DENY_TOKENS="$(guard_deny_json)"
 
 # judge_plan PLAN -> the verdict on stdout, with the FOUR arguments
-# destroy-guard.jq requires. `--arg prefix` is one of them: `is_ours` references
-# it, so jq refuses to compile the filter without it, which is how `make destroy`
-# came to exit 3 on a jq compile error instead of judging a plan. One helper here
-# for the same reason common.sh holds one `guard_name_prefix`.
+# destroy-guard.jq reads. `--arg prefix` is one of them: when `is_ours` first
+# referenced it, jq refused to compile the filter without it, which is how `make
+# destroy` came to exit 3 on a jq compile error instead of judging a plan. The
+# filter now defaults it (`$ARGS.named.prefix`), so it is passed here to judge by
+# common.sh's value rather than that fallback. One helper here for the same
+# reason common.sh holds one `guard_name_prefix`.
 judge_plan() {
   jq -f "${GUARD_JQ}" \
     --argjson deny "${DENY_TOKENS}" \

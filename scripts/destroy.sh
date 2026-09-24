@@ -133,11 +133,12 @@ FIXTURE_JSON
   # other teams in this shared project, and the self-test of the guard that
   # protects it could not exercise that protection, because its own list did not
   # contain it. `theirs.default_db` above exists to exercise it now.
-  # `--arg prefix` is NOT optional, and leaving it out is not a silent default:
-  # destroy-guard.jq's `is_ours` references $prefix, so jq refuses to COMPILE the
-  # filter without it and this step exits 3 before judging anything. That is
-  # exactly what happened when the argument was added to lib/plan-guard.sh and not
-  # here. `guard_name_prefix` is in common.sh so the three call sites cannot drift.
+  # `--arg prefix` is passed on purpose. When `is_ours` first referenced $prefix,
+  # jq refused to COMPILE the filter without it and this step exited 3 before
+  # judging anything -- the argument had been added to lib/plan-guard.sh and not
+  # here. destroy-guard.jq now reads it as `$ARGS.named.prefix` with a default, so
+  # omitting it would compile; passing it means the value is the one in common.sh,
+  # not the filter's fallback. `guard_name_prefix` keeps the call sites from drifting.
   SELF_VERDICT="$(jq -f "${GUARD_JQ}" --argjson deny "$(guard_deny_json)" \
     --argjson allow_types "${UNLABELABLE_TYPES}" --arg project "${PROJECT_ID}" \
     --arg prefix "$(guard_name_prefix)" "${FIXTURE}")"
@@ -365,12 +366,13 @@ step "Safety assertions"
 # why `default` comes out and `(default)` goes in.
 DENY_JSON="$(guard_deny_json)"
 
-# THE ARGUMENT THAT BROKE THIS PATH ENTIRELY. destroy-guard.jq's `is_ours` reads
-# $prefix, and jq refuses to compile a filter with an undefined variable -- so
-# without this line the command below exits 3, `set -e` ends the script, and
-# `make destroy` cannot run at all. It fails closed, which is the right direction,
-# but the operator gets a jq compile error instead of a verdict about another
-# team's resources. Spelled once, in common.sh, for the three callers.
+# THE ARGUMENT THAT BROKE THIS PATH ENTIRELY. When destroy-guard.jq's `is_ours`
+# first read $prefix, jq refused to compile the filter without this line: the
+# command below exited 3, `set -e` ended the script, and `make destroy` could not
+# run at all. The filter now reads `$ARGS.named.prefix` with a default, so it
+# compiles either way -- which makes passing the derived value here the thing
+# that keeps `make destroy` judging by common.sh's prefix rather than the
+# filter's fallback copy. Spelled once, in common.sh, for the three callers.
 jq -f "${GUARD_JQ}" \
    --argjson deny "${DENY_JSON}" \
    --argjson allow_types "${UNLABELABLE_TYPES}" \

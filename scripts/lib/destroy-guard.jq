@@ -162,6 +162,35 @@ def name_of:
   ( (after.name? // before.name? // "") | tostring ) as $n
   | ( ($n | split("/") | last) // "" );
 
+# $ARGS.named, NOT $prefix, AND THIS IS A COMPILE-TIME DISTINCTION.
+#
+# `$prefix` is a compile-time binding: jq refuses to COMPILE a program that
+# references it when no `--arg prefix` was passed. `plan-guard.sh` passes one;
+# `destroy.sh --self-test` does not, and neither does anything else that loads
+# this file. So referencing `$prefix` directly took out three CI jobs at once --
+# the destroy-guard self-test, the integration suite and the policy assertions --
+# and it did so before a single assertion ran, which is why the failure looked
+# nothing like "the new check is wrong".
+#
+# I tested the predicate by invoking jq WITH `--arg prefix`, which is the one
+# way not to see this. The lesson is the session's own: a check has to be
+# exercised the way its callers call it, not the way its author does.
+#
+# `$ARGS.named` is always defined, so the `//` default makes the argument
+# genuinely optional and the program compiles for every caller.
+#
+# EVERY CALLER STILL PASSES IT. The same outage was fixed a second way on the
+# lane that proved this guard against a real plan: `guard_name_prefix` in
+# common.sh is the one spelling of the value, and plan-guard.sh, destroy.sh
+# (twice), verify-destroy-guard.sh and the Python `GUARD_ARGS` all pass it. The
+# two fixes keep each other honest: this default means a NEW caller that forgets
+# the argument still compiles, and the callers passing it mean the literal below
+# is a fallback, not the value anyone is judged by. It is still a second copy of
+# `guard_name_prefix`'s default, so
+# tests/integration/test_destroy_guard_real_plan.py asserts the two are equal.
+def platform_prefix:
+  ( $ARGS.named.prefix // "swarm-" );
+
 def is_ours($prefix):
   . as $r
   | ( ($r | managed_of(label_map_of(before))) == "swarm-terraform" )
@@ -215,10 +244,10 @@ def summarise($deny; $allow_types; $project):
       foreign_touches: [ .resource_changes[]?
         | select((.change.actions // []) | index("no-op") | not)
         | . as $r
-        | select(($r | is_ours($prefix)) | not)
+        | select(($r | is_ours(platform_prefix)) | not)
         | { address: $r.address, type: $r.type, actions: $r.change.actions,
             name: ($r | name_of),
-            reason: "no managed-by=swarm-terraform in either half, not a create, and its name does not begin with \($prefix)" } ],
+            reason: "no managed-by=swarm-terraform in either half, not a create, and its name does not begin with \(platform_prefix)" } ],
 
       wrong_project: [ $deletions[]
         | select((.change.before.project // $project) != $project)

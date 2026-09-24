@@ -310,8 +310,12 @@ guard_deny_json() {
 #     teardown path was simply dead, and the one check that tells an operator
 #     whether a plan touches another team's resources could not reach a verdict.
 #
-# A jq filter with a required argument and three call sites needs one place that
-# says what the argument is. SWARM_NAME_PREFIX stays overridable because a second
+# A jq filter with an argument and three call sites needs one place that says
+# what the argument is. (main fixed the same outage inside the filter as well:
+# it now reads `$ARGS.named.prefix // "swarm-"`, so a caller that forgets the
+# argument compiles. That default is a second copy of the one below, and
+# tests/integration/test_destroy_guard_real_plan.py asserts they judge alike.)
+# SWARM_NAME_PREFIX stays overridable because a second
 # platform in this project would need its own; the default is what
 # terraform/infra names every resource with.
 guard_name_prefix() { printf '%s' "${SWARM_NAME_PREFIX:-swarm-}"; }
@@ -1085,8 +1089,9 @@ _api_explain_iap() {
       ;;
     *"Access denied. For user"*)
       err "that ${status} came from IAP: the credential was accepted and the principal is not authorised."
-      err "It needs roles/iap.httpsResourceAccessor on the backend service -- which Track C"
-      err "sets through frontend_iap_members in terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars."
+      err "It needs roles/iap.httpsResourceAccessor on the backend service. That list is"
+      err "frontend_iap_members in terraform/bootstrap/terraform.tfvars, applied by the owner --"
+      err "not by the release, whose deployer holds no IAP role (see terraform/bootstrap/wif.tf)."
       ;;
   esac
 }

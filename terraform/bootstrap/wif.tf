@@ -244,6 +244,63 @@ resource "google_project_iam_member" "deployer_storage" {
   }
 }
 
+# WHO MAY PASS IAP, managed here rather than by CI -- and the deployer holds NO
+# IAP role.
+#
+# terraform/infra's frontend module used to manage these accessor bindings, which
+# meant CI's deployer had to read and write IAP policy. Three ways of granting it,
+# all on 2026-09-24:
+#
+#   1. project-level roles/iap.admin -- admin over all TEN backends in this
+#      project, nine of them the other team's GKE gateway routes including
+#      keycloak (their identity provider) and argocd (their deployment admin);
+#   2. the same with a condition on resource.name startsWith ".../services/swarm"
+#      -- matched nothing; release 35972131246 failed "The caller does not have
+#      permission". IAP names a backend by project NUMBER and numeric id, and a
+#      prefix on that form admits every backend, theirs included;
+#   3. roles/iap.admin bound in each of OUR two backends' own IAP policy --
+#      verified present with `gcloud iap web get-iam-policy`, and the release
+#      still got 403 on iap.webServices.getIamPolicy at 9.5 minutes, past IAM
+#      propagation (attempts 2-5 of the same run). Why is not established.
+#
+# Membership changes rarely and is the owner's decision, so it lives here, in the
+# root only the owner applies. The deployer needs no IAP permission at all, and
+# the release never reads an IAP policy.
+#
+# THE NAMES ARE LOOKED UP, NOT TRUSTED. They follow modules/frontend/main.tf
+# (`${local.name}-backend` and `${local.name}-ui-backend`, local.name =
+# "${name_prefix}-ui"). The data source turns that restated rule into a check: if
+# the module renames a backend, this plan fails "not found" instead of silently
+# admitting nobody.
+#
+# FRESH PROJECT ORDER. The backends are created by terraform/infra. On a new
+# project: apply bootstrap with frontend_iap_backends = [], let the release create
+# the backends (IAP is ON with no members, so nobody gets in yet), then apply
+# bootstrap with the default to admit people.
+data "google_compute_backend_service" "frontend_iap" {
+  for_each = toset(var.frontend_iap_backends)
+
+  project = var.project_id
+  name    = each.value
+}
+
+locals {
+  # One binding per (backend, member). The key is readable in plan output.
+  frontend_iap_bindings = {
+    for pair in setproduct(keys(data.google_compute_backend_service.frontend_iap), var.frontend_iap_members) :
+    "${pair[0]} ${pair[1]}" => { backend = pair[0], member = pair[1] }
+  }
+}
+
+resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
+  for_each = local.frontend_iap_bindings
+
+  project             = var.project_id
+  web_backend_service = data.google_compute_backend_service.frontend_iap[each.value.backend].name
+  role                = "roles/iap.httpsResourceAccessor"
+  member              = each.value.member
+}
+
 # ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.
 #
 # `gcloud builds submit` runs the build as a service account, so the caller

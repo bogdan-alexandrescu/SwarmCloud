@@ -100,7 +100,10 @@ def _name_prefix() -> str:
 
         jq: error: $prefix is not defined at <top-level>, line 217
 
-    and `make destroy` could not reach a safety assertion at all.
+    and `make destroy` could not reach a safety assertion at all. (main later
+    fixed the same outage inside the filter, reading `$ARGS.named.prefix` with a
+    default; the callers still pass this value so nobody is judged by the
+    fallback, and test_destroy_guard_real_plan.py asserts the two agree.)
 
     Reading the value from the shell function production calls is the point: a
     literal "swarm-" here would keep passing after somebody changed the real
@@ -282,9 +285,12 @@ def test_guard_fails_closed_on_unparseable_plan(tmp_path):
     and a guard that cannot compile refuses a GOOD plan too -- `make destroy`
     was dead for exactly that reason.
 
-    MUTATION: drop `--arg prefix` from GUARD_ARGS and the second assertion
+    MUTATION: drop `--arg project` from GUARD_ARGS and the second assertion
     fails, naming the compile error, instead of this passing for the wrong
-    reason.
+    reason. (It used to say `--arg prefix`; since the merge with main's #17 the
+    filter reads that one as `$ARGS.named.prefix` with a default, so dropping it
+    no longer stops the filter compiling. `$project` is still a compile-time
+    binding.)
     """
     bad = tmp_path / "bad.json"
     bad.write_text("{ not valid json")

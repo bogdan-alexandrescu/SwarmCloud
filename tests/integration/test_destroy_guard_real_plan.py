@@ -709,8 +709,19 @@ def test_every_caller_of_the_guard_passes_every_argument_it_requires():
     MUTATION: delete one `--arg prefix` from destroy.sh or plan-guard.sh and this
     fails, naming the file -- instead of the failure arriving at teardown, in
     front of another team's production.
+
+    SINCE THE MERGE WITH MAIN (#17), `prefix` alone is read as
+    `$ARGS.named.prefix // "swarm-"`, so a caller omitting it compiles and is
+    judged by the filter's own default rather than failing. That is main's fix
+    for the same outage and it stays; this case now asserts the other half --
+    that nobody RELIES on the default -- and the case below it asserts the
+    default still equals `guard_name_prefix`. The pattern accepts both
+    spellings so the argument set is read from how the filter uses it, not
+    from the name of a parameter.
     """
-    required = set(re.findall(r"\$(deny|allow_types|project|prefix)\b", GUARD_JQ.read_text()))
+    required = set(
+        re.findall(r"\$(?:ARGS\.named\.)?(deny|allow_types|project|prefix)\b", GUARD_JQ.read_text())
+    )
     assert required == {"deny", "allow_types", "project", "prefix"}, (
         f"destroy-guard.jq's argument set is now {sorted(required)}; every caller below "
         f"must pass all of them, because jq will not compile the filter otherwise"
@@ -777,6 +788,56 @@ def test_every_caller_of_the_guard_passes_every_argument_it_requires():
             f"but spreads GUARD_ARGS only {source.count('*GUARD_ARGS')} time(s); the "
             f"hand-rolled invocation is the one that will miss the next argument"
         )
+
+
+def test_the_filters_fallback_prefix_is_guard_name_prefix():
+    """Two fixes for one outage, and the copy the pair of them leaves behind.
+
+    The `$prefix is not defined` outage was fixed twice, on two branches that
+    met in one merge: main made the argument optional inside destroy-guard.jq
+    (`$ARGS.named.prefix // "swarm-"`), and this lane made every caller pass it
+    from `guard_name_prefix` in common.sh. Both stay -- a new caller that
+    forgets the argument still compiles -- but the filter's default is now a
+    second spelling of `guard_name_prefix`'s. If they drift, a caller that
+    omits the argument judges ownership by a prefix nobody chose, and nothing
+    fails.
+
+    Asserted on BEHAVIOUR rather than by reading the literal: the verdict with
+    no `--arg prefix` must equal the verdict with `guard_name_prefix`'s default.
+    The recording has foreign touches whose `reason` names the prefix, so any
+    difference in the value is a difference in the verdict.
+
+    MUTATION: change the default in destroy-guard.jq to "swarm" and this fails.
+    """
+    env = {key: value for key, value in os.environ.items() if key != "SWARM_NAME_PREFIX"}
+    proc = subprocess.run(
+        ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert proc.returncode == 0, f"guard_name_prefix is not callable: {proc.stderr}"
+    default = proc.stdout.strip()
+    assert default, "guard_name_prefix printed nothing with SWARM_NAME_PREFIX unset"
+
+    at = GUARD_ARGS.index("prefix") - 1
+    assert GUARD_ARGS[at] == "--arg", GUARD_ARGS
+    omitted = json.loads(
+        _jq(["-f", str(GUARD_JQ), *GUARD_ARGS[:at], *GUARD_ARGS[at + 3:], str(FIXTURE)])
+    )
+    derived = json.loads(
+        _jq(["-f", str(GUARD_JQ), *GUARD_ARGS[:at], "--arg", "prefix", default,
+             *GUARD_ARGS[at + 3:], str(FIXTURE)])
+    )
+    assert omitted["foreign_touches"], (
+        "the recording no longer produces a foreign touch, so this comparison "
+        "cannot see the prefix at all; re-measure before trusting it"
+    )
+    assert omitted == derived, (
+        f"destroy-guard.jq's fallback prefix no longer matches guard_name_prefix "
+        f"({default!r}): a caller that omits --arg prefix is judged differently "
+        f"from one that passes it. First reasons: "
+        f"{[t['reason'] for t in omitted['foreign_touches'][:1]]} vs "
+        f"{[t['reason'] for t in derived['foreign_touches'][:1]]}"
+    )
 
 
 def test_the_ownership_predicate_is_still_warn_only_while_a_real_plan_flags_our_own_resources():

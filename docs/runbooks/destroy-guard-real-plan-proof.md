@@ -60,7 +60,11 @@ not a substitute for running. The prefix now has one spelling,
 `guard_name_prefix` in `scripts/lib/common.sh`, the Python suites build every
 invocation from one `GUARD_ARGS`, and
 `test_every_caller_of_the_guard_passes_every_argument_it_requires` fails if any
-caller falls behind the filter's argument list again.
+caller falls behind the filter's argument list again. Main fixed the same outage
+inside the filter too (`$ARGS.named.prefix // "swarm-"`), so omitting the prefix
+now compiles and uses the filter's default;
+`test_the_filters_fallback_prefix_is_guard_name_prefix` requires that default to
+judge the recorded plan exactly as `guard_name_prefix` does.
 
 ---
 
