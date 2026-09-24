@@ -1208,3 +1208,85 @@ def test_an_unsupplied_unique_id_renders_a_duplicate_and_never_a_placeholder():
         f"bindings (two accounts, each bound twice by the fallback), saw {seen}. "
         f"Fewer means the second subject is not being rendered at all."
     )
+
+
+def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment():
+    """TWO IMPLEMENTATIONS OF ONE JOB SPEC, and they had stopped agreeing.
+
+    `apps/scheduler/scheduler/dispatch.py` builds the GKE Job manifest as a
+    Python dict and says so in its own comment: it "mirrors
+    kubernetes/worker-templates/worker-job-browser.yaml field for field". The
+    YAML is what `render.py` renders, what `make lint` validates and what an
+    operator reads during an incident. The Python is what actually dispatches.
+
+    They disagreed on the one variable that decided whether a browser task could
+    run at all. `SWARM_ARTIFACTS_DIR` was in neither, the runner fell back to
+    `/artifacts`, and `readOnlyRootFilesystem: true` turned that into
+
+        OSError: [Errno 30] Read-only file system: '/artifacts'
+
+    Nothing could have caught it, because nothing compared the two. A template
+    that is documented as mirroring another file, with no assertion holding it
+    there, is a copy waiting to drift -- this repository's most expensive
+    recurring defect, and this is the third instance of it found in two days
+    (the namespace prefix and the RBAC subject were the others).
+
+    ASSERTED AS THE ENV KEY SET, not the values: the values are per-task
+    (TASK_ID, GENERATION) and the templates carry placeholders for them. What
+    must hold is that neither side names a variable the other does not, because
+    that is exactly the shape of the defect.
+
+    MUTATION: delete `SWARM_ARTIFACTS_DIR` from `worker_env` in dispatch.py, or
+    from any one of the three templates. This names the variable and the side it
+    is missing from.
+    """
+    import re as _re
+
+    scheduler = (
+        Path(__file__).resolve().parents[3]
+        / "apps/scheduler/scheduler/dispatch.py"
+    ).read_text()
+
+    # The shared builder, sliced out so a mention elsewhere in the file cannot
+    # satisfy this.
+    start = scheduler.index("    env = {\n")
+    end = scheduler.index("    return env", start)
+    body = scheduler[start:end]
+    from_python = set(_re.findall(r'^\s*"([A-Z][A-Z0-9_]*)":', body, _re.M))
+    assert from_python, "could not read any env key out of dispatch.py's worker_env"
+
+    # Every GKE template's container env, read the same way.
+    templates = sorted((KUBERNETES / "worker-templates").glob("*.yaml"))
+    assert templates, "no worker templates found; this test would check nothing"
+
+    for template in templates:
+        text = template.read_text()
+        names = set(_re.findall(r"^\s*- name: ([A-Z][A-Z0-9_]*)\s*$", text, _re.M))
+        assert names, f"{template.name}: no container env names found"
+
+        # A template may carry variables the scheduler does not set -- ones the
+        # image needs and the scheduler has no opinion about, like
+        # PLAYWRIGHT_BROWSERS_PATH. What it may NOT do is omit one the scheduler
+        # relies on the container having.
+        missing = {
+            key
+            for key in from_python
+            if key in _TEMPLATE_RELEVANT and key not in names
+        }
+        assert not missing, (
+            f"{template.name} does not set {sorted(missing)}, which "
+            f"dispatch.py's worker_env does. The YAML is what `make lint` "
+            f"validates and what an operator reads; the Python is what "
+            f"dispatches. A variable in one and not the other is how "
+            f"SWARM_ARTIFACTS_DIR went missing from both and stopped every "
+            f"browser task from starting."
+        )
+
+
+#: The env keys whose ABSENCE from a template is a defect rather than a
+#: difference. Deliberately narrow: most of `worker_env` is per-task identity
+#: (TASK_ID, GENERATION, LEASE_ID) which the templates carry as `__TOKEN__`
+#: placeholders under the same names, and asserting the whole set would make this
+#: test fail on any placeholder rename rather than on a real divergence. These
+#: are the ones that change where the runner WRITES or what it talks to.
+_TEMPLATE_RELEVANT = frozenset({"SWARM_ARTIFACTS_DIR", "ARTIFACT_BUCKET"})
