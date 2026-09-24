@@ -352,8 +352,9 @@ def _explain(status: int, body: str) -> str:
             "an HTML sign-in page, so IAP rejected this before the API saw it. "
             "The front door takes an OAuth ACCESS token, and a 403 that NAMES the "
             "caller means the credential was accepted and the principal is not on "
-            "the list -- roles/iap.httpsResourceAccessor, which Track C grants "
-            "through frontend_iap_members. A 401 means the token itself was not "
+            "the list -- roles/iap.httpsResourceAccessor, granted through "
+            "frontend_iap_members in terraform/bootstrap/terraform.tfvars, which "
+            "the owner applies and CI does not. A 401 means the token itself was not "
             "accepted: set SWARM_IMPERSONATE_SA, since no OAuth client a user "
             "credential can mint from is one a Google-managed IAP client takes. "
             "SWARM_IAP_CLIENT_ID applies only where the deployment configured its "
@@ -569,7 +570,9 @@ class SwarmClient:
         The 403 is the useful one: it NAMES the caller, which is IAP saying "I
         authenticated you and you are not on the list" -- one
         `roles/iap.httpsResourceAccessor` grant away from working, and that
-        grant is `frontend_iap_members` in Track C's tfvars. The 401 is not:
+        grant is `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
+        (moved out of terraform/infra by #23; the owner applies it, CI does
+        not, and it now lists swarm-verify). The 401 is not:
         no OAuth client this laptop can mint a user token from is one IAP will
         accept, because `iap { enabled = true }` in
         `terraform/modules/frontend/main.tf` deliberately sets no

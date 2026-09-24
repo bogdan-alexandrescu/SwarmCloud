@@ -102,7 +102,10 @@ audience`, which reads like an IAM problem and is not. Measured on 2026-09-24
 against the live front door: a user access token is refused **401, IAP error
 code 900**, and an impersonated service account's access token is refused
 **403 naming that service account** — which is IAP saying "authenticated, not
-authorised", one `roles/iap.httpsResourceAccessor` grant from working. So on a
+authorised", one `roles/iap.httpsResourceAccessor` grant from working. That
+grant is `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars` —
+moved out of `terraform/infra` on 2026-09-24, applied by the owner rather than
+by CI — and `swarm-verify` was added to it the same day. So on a
 team deployment set `SWARM_IMPERSONATE_SA`; `SWARM_IAP_CLIENT_ID` applies only
 where the deployment configured its own OAuth client, and this one deliberately
 does not (a client id means a client secret in Terraform state).
