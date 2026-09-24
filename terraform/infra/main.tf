@@ -492,8 +492,6 @@ module "frontend" {
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname
 
-  iap_members = var.frontend_iap_members
-
   labels = local.labels
 
   depends_on = [module.project_services, module.cloud_run]
