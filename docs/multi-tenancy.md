@@ -31,9 +31,10 @@ the namespace is removed by hand: the reconciler holds no ClusterRole and does
 not collect namespaces (owner decision, 2026-09-24). See
 [the tenant offboarding runbook](runbooks/tenant-offboarding.md), which also
 lists what a tenant accumulates at runtime and this table does not show. All
-of that is deleted at offboarding, not kept (owner decision, 2026-09-24), by
-`scripts/offboard-tenant.sh`
-([step 6](runbooks/tenant-offboarding.md#6-delete-everything-the-tenant-left)).
+of that is deleted at offboarding, not kept (owner decision, 2026-09-24): the
+records and objects by `scripts/offboard-tenant.sh`
+([step 6](runbooks/tenant-offboarding.md#6-delete-everything-the-tenant-left)),
+and the secrets by terraform and by hand in the runbook's later steps.
 A tenant id is derived from its principal and the GCS grant is a prefix
 condition on that id, so anything kept would be readable by the next
 registration that derives the same id.
@@ -318,8 +319,12 @@ described above. See [security.md](security.md#authentication) and
 # live version of each object.
 ./scripts/purge-data.sh --tenant eng --dry-run
 
-# Offboarding a tenant's DATA: every object version under tenants/<id>/, every
-# Firestore record, then the tenant document, with a proof that each is gone.
+# Offboarding a tenant's DATA: every object version under tenants/<id>/ and
+# every Firestore record it holds, then -- only after a proof that each is
+# gone -- the tenant document. For a tenant declared in tfvars, the tenant
+# document and the pools terraform created are LEFT for terraform: deleting
+# them here would let the next release recreate them enabled, so the id is
+# released by the tfvars removal (runbook step 7), not by this script.
 # Dry run by default. Refuses a tenant that is enabled, holds capacity or is
 # still lent an account.
 ./scripts/offboard-tenant.sh --tenant eng

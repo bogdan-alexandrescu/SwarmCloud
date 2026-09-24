@@ -19,13 +19,18 @@
 #      artifacts, logs and CHECKPOINTS. All versions, because the bucket is
 #      versioned and a noncurrent version is as readable as a live one.
 #   2. Firestore, in batches, with a running count:
-#        tasks/<t>/events/*        each task's events BEFORE the task itself, so
-#                                  a run that dies half way leaves no orphaned
-#                                  event that no later listing could find
-#        tasks                     tenant_id == <id>
+#        events, any task          tenant_id == <id>, one collection-group
+#                                  listing across every task -- including a
+#                                  task an earlier run already deleted
+#        tasks/<t>/events/*        each listed task's events, whatever tenant_id
+#                                  they carry, BEFORE the task itself
+#        tasks                     tenant_id == <id>, each one only once its
+#                                  events are recounted at ZERO
 #        attempts, leases, workflows, quota          tenant_id == <id>
 #        accounts, account_auth                       owner_tenant == <id>
-#        credential_publications/<name>  for each secret labelled tenant=<id>
+#        credential_publications/<name>  listed from the ledger itself: see
+#                                  ledger_of_tenant for how an entry is
+#                                  attributed when its id is only a name
 #        pools/tenant:<id>, pools/provider:<p>:tenant:<id>
 #   3. VERIFICATION: every one of the above counted again, server side, by a
 #      different call from the one that listed it, and printed as a table. Any
@@ -33,7 +38,32 @@
 #   4. tenants/<id>, LAST. While it exists the id is held and nobody else can
 #      register it; deleting it before the data is proven gone would open the
 #      exact window the owner decision closes. A failed run therefore leaves
-#      the tenant registered and the script safe to run again.
+#      the tenant registered, and a second run lists everything again from
+#      the records themselves -- never through a parent document the first
+#      run may have deleted -- so it finds what the first one left.
+#
+# WHY EVENTS ARE FOUND TWO WAYS. Firestore does not delete a document's
+# subcollections with it. A task document deleted while an event is still
+# under it leaves that event where no `tenant_id ==` listing of TASKS can ever
+# reach it again, and a proof that counts only under the tasks it listed then
+# prints 0 over it -- on the run after a failed proof, which lists no tasks at
+# all. That is reachable: every event writer (the scheduler's cascade cancel,
+# the API, the worker, the reconciler) appends with a blind set, outside any
+# transaction this script could see, so an event can land between the events
+# delete and the task delete. So:
+#   * a task is deleted only after its events are recounted at zero -- a task
+#     with one left is KEPT, the proof fails, and the next run finds it again;
+#   * every event carrying this tenant's id is also listed and counted with a
+#     collection-group query from the database root, which finds it whether
+#     or not its task document still exists. That query MUST order by `at`
+#     DESCENDING: measured read-only against the live `swarm` database on
+#     2026-09-24, without it a runQuery and a count both answer 400
+#     FAILED_PRECONDITION, because Firestore keeps single-field indexes for
+#     COLLECTION scope only and the one index that serves it is terraform's
+#     `events-tenant-at` (tenant_id ASC, at DESC). Every writer sets `at`.
+#   * an event with NO tenant_id of this tenant (the reconciler writes
+#     `tenant_id or ""`) is found only under its task, which is the reason
+#     the per-task listing and the recount stay.
 #
 # WHAT IT LEAVES FOR TERRAFORM. A tenant document or pool document carrying
 # `managed_by=swarm-terraform` is not deleted here. terraform/modules/firestore
@@ -277,6 +307,74 @@ fs_count_under() {
   printf '%s' "${result}" | jq -r '[.[]?|.result?.aggregateFields?.n?.integerValue//empty]|first // "0"'
 }
 
+# The collection-group query every event carrying this tenant's id answers:
+# `events` at any depth under the database root, tenant_id == <id>, ordered
+# by `at` DESCENDING. The order is not decoration. Without it the database
+# refuses the query (FAILED_PRECONDITION, measured 2026-09-24; the header
+# says why), and a refused count is a failed read, never a zero.
+tenant_events_query() {
+  jq -nc --argjson w "$(eq_filter tenant_id "${TENANT}")" '
+    {from: [{collectionId: "events", allDescendants: true}],
+     where: $w,
+     orderBy: [{field: {fieldPath: "at"}, direction: "DESCENDING"}]}'
+}
+
+# fs_list_tenant_events OUT_FILE -- every event carrying this tenant's id, one
+# `{"name": ..., "fields": {tenant_id, at}}` per line. Paginated like
+# fs_list_where, on an (at, __name__) cursor: `at` alone is not unique, and a
+# cursor on it would skip every event that shares a timestamp with the last
+# one on a page.
+fs_list_tenant_events() {
+  local out="$1" query cursor="null" page_file="${WORK}/events-page.jsonl" n
+  : >"${out}"
+  while :; do
+    fresh_token
+    query="$(jq -nc --argjson q "$(tenant_events_query)" --argjson cursor "${cursor}" --argjson l "${FS_PAGE}" '
+      {structuredQuery: (
+         $q
+         + {select: {fields: [{fieldPath: "__name__"}, {fieldPath: "tenant_id"}, {fieldPath: "at"}]},
+            orderBy: ($q.orderBy + [{field: {fieldPath: "__name__"}, direction: "DESCENDING"}]),
+            limit: $l}
+         + (if $cursor == null then {} else {startAt: {values: $cursor, before: false}} end))}')"
+    fs_request POST "$(fs_base):runQuery" "${query}" >"${WORK}/events-page.json" || return 1
+    jq -c '.[]? | select(.document != null) | .document | {name, fields: (.fields // {})}' \
+      "${WORK}/events-page.json" >"${page_file}" || return 1
+    n="$(grep -c . "${page_file}" || true)"
+    cat "${page_file}" >>"${out}"
+    [[ "${n}" -ge "${FS_PAGE}" ]] || break
+    cursor="$(tail -n 1 "${page_file}" | jq -c '[.fields.at, {referenceValue: .name}]')"
+  done
+}
+
+# fs_count_tenant_events -> integer, server side. Called inside `$(...)`, so
+# the CALLER refreshes the token first.
+fs_count_tenant_events() {
+  local query result
+  query="$(jq -nc --argjson q "$(tenant_events_query)" \
+    '{structuredAggregationQuery: {structuredQuery: $q, aggregations: [{alias: "n", count: {}}]}}')"
+  result="$(fs_request POST "$(fs_base):runAggregationQuery" "${query}")" || return 1
+  printf '%s' "${result}" | jq -r '[.[]?|.result?.aggregateFields?.n?.integerValue//empty]|first // "0"'
+}
+
+# assert_tenant_events LISTING -- the collection-group listing came from a
+# server-side `tenant_id == <id>` filter. Checked again client side, with the
+# shape: every name must be tasks/<task>/events/<event> in this database. An
+# `events` collection anywhere else is not one this script knows how to own.
+assert_tenant_events() {
+  local listing="$1" stray
+  stray="$(jq -r --arg t "${TENANT}" --arg root "${DOCS_ROOT}/" '
+    select(((.fields.tenant_id.stringValue // "") != $t)
+           or ((.name | startswith($root)) | not)
+           or ((.name | ltrimstr($root) | split("/")) as $s
+               | ($s | length) != 4 or $s[0] != "tasks" or $s[2] != "events"))
+    | .name' "${listing}")" || die "could not read the events listing"
+  if [[ -n "${stray}" ]]; then
+    err "the events listing for tenant_id == ${TENANT} returned documents that are not ${TENANT}'s task events:"
+    printf '%s\n' "${stray}" | head -n 5 | sed 's/^/     /' >&2
+    die "refusing to delete anything from a listing that does not say what it was asked"
+  fi
+}
+
 # assert_owned LISTING FIELD COLLECTION
 #
 # The listing came from a server-side `FIELD == <id>` filter. This checks every
@@ -493,44 +591,65 @@ refuse_if_lent_to() {
 ALL_TASKS="${WORK}/all-tasks.names"
 : >"${ALL_TASKS}"
 
-# The secret names labelled tenant=<id>, whose publication-ledger documents
-# are this tenant's. The ledger is keyed by secret name and carries no tenant
-# field, and a name prefix is ambiguous (`swarm-tenant-eng-` also starts every
-# secret of tenant `eng-x`), so the exact label selects and the name is checked
-# as a second guard.
-list_ledger_names() {
-  local out="$1" errf="${WORK}/secrets.err" raw="${WORK}/secrets.raw" name
-  if ! gcloud secrets list --project "${PROJECT_ID}" --filter="labels.tenant=${TENANT}" \
-       --format='value(name.basename())' >"${raw}" 2>"${errf}"; then
+# ledger_of_tenant OUT_FILE -- the full document names of this tenant's
+# publication-ledger entries, listed FROM THE LEDGER ITSELF.
+#
+# `credential_publications/<secret name>` carries no tenant field, so an entry
+# is attributed by its id. This used to start from the secrets labelled
+# tenant=<id> and GET each name -- which finds nothing for an entry whose
+# secret is already gone, and a proof built the same way then printed 0 over
+# it. Now every entry is listed (one per base secret: five in the live
+# database on 2026-09-24) and one is this tenant's when:
+#
+#   * its id is one of this tenant's secret-name forms, `swarm-tenant-<id>-*`
+#     or `swarm-account-<id>--*` -- the shapes the runbook's deny-rule allows;
+#   * and, because a name form is a PREFIX and prefixes collide
+#     (`swarm-tenant-eng-` also starts every secret of tenant `eng-x`):
+#       - if a secret of that name (or its `-refresh` twin) still carries a
+#         `tenant` label, the label decides, exactly;
+#       - if none does, the entry is this tenant's only when no LONGER
+#         registered tenant id also names it. `eng-x`'s entry is `eng-x`'s
+#         while `tenants/eng-x` exists, whether or not its secret does.
+#
+# What that still cannot tell apart: an entry of a tenant that is neither
+# registered nor labelled any more, whose id also starts with this tenant's
+# form. Such an entry belongs to nobody, holds a digest and no credential, and
+# is deleted with this tenant's -- the one direction a wrong guess here costs
+# nothing a live tenant needs.
+ledger_of_tenant() {
+  local out="$1" errf="${WORK}/secrets.err" ids labels
+  fs_list_where "" credential_publications null "" "${WORK}/ledger.jsonl" \
+    || die "could not list credential_publications; a failed read, not none"
+  fs_list_where "" tenants null "" "${WORK}/tenants.jsonl" \
+    || die "could not list tenants; a failed read, not none"
+  if ! gcloud secrets list --project "${PROJECT_ID}" --filter='labels.tenant:*' \
+       --format='value(name.basename(),labels.tenant)' >"${WORK}/secret-tenants.tsv" 2>"${errf}"; then
     die_if_auth_failure "$(cat "${errf}")"
-    err "gcloud secrets list failed; that is NOT proof the tenant has no secrets:"
+    err "gcloud secrets list failed; that is NOT proof no secret is labelled for another tenant:"
     redact <"${errf}" | head -n 3 | sed 's/^/     /' >&2
-    die "cannot list the publication ledger's names for ${TENANT}"
+    die "cannot attribute the publication ledger for ${TENANT}"
   fi
-  : >"${out}"
-  while IFS= read -r name; do
-    [[ -n "${name}" ]] || continue
-    case "${name}" in
-      "swarm-tenant-${TENANT}-"*|"swarm-account-${TENANT}--"*) printf '%s\n' "${name}" >>"${out}" ;;
-      *) warn "skipping secret ${name}: labelled tenant=${TENANT} but not named for it" ;;
-    esac
-  done <"${raw}"
-}
-
-# ledger_present NAMES_FILE OUT_FILE -- which credential_publications/<name>
-# documents exist, as full document names.
-ledger_present() {
-  local names="$1" out="$2" name doc
-  : >"${out}"
-  while IFS= read -r name; do
-    [[ -n "${name}" ]] || continue
-    fresh_token
-    doc="$(fs_get "credential_publications/${name}")" \
-      || die "could not read credential_publications/${name}; a failed read, not an absent record"
-    if jq -e '.fields' <<<"${doc}" >/dev/null; then
-      printf '%s\n' "${DOCS_ROOT}/credential_publications/${name}" >>"${out}"
-    fi
-  done <"${names}"
+  ids="$(jq -c -s '[.[] | .name | split("/") | last]' "${WORK}/tenants.jsonl")" \
+    || die "could not read the tenants listing"
+  labels="$(jq -R -s -c '
+    split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: (.[1] // "")})
+    | from_entries' "${WORK}/secret-tenants.tsv")" \
+    || die "could not read the secrets listing"
+  jq -r --arg t "${TENANT}" --arg root "${DOCS_ROOT}/credential_publications/" \
+      --argjson ids "${ids}" --argjson labels "${labels}" '
+    def named_for($id; $x):
+      ($id | startswith("swarm-tenant-" + $x + "-")) or ($id | startswith("swarm-account-" + $x + "--"));
+    select(.name | startswith($root))
+    | (.name | ltrimstr($root)) as $id
+    | select(($id | contains("/")) | not)
+    | select(named_for($id; $t))
+    | (($labels[$id] // "") as $a | ($labels[$id + "-refresh"] // "") as $b
+       | if $a != "" then $a else $b end) as $owner
+    | select(if $owner != "" then $owner == $t
+             else ([$ids[] | select(. != $t and length > ($t | length) and named_for($id; .))] | length) == 0
+             end)
+    | .name' "${WORK}/ledger.jsonl" >"${out}" \
+    || die "could not attribute the publication ledger for ${TENANT}"
 }
 
 # The pools this run deletes: the tenant's, less any terraform holds.
@@ -543,7 +662,7 @@ pools_for_terraform() {
 
 inventory() {
   local table="${WORK}/inventory.txt" c n events=0 visited=0 task tasks objects bytes
-  local attempts workflows quota auth
+  local attempts workflows quota auth tenant_events
   step "Inventory"
   fresh_token
   gcs_total --all-versions "${GCS_PREFIX_URL}" || die "cannot inventory ${GCS_PREFIX_URL}"
@@ -567,6 +686,9 @@ inventory() {
     fi
   done < <(names_of "${WORK}/tasks.jsonl")
   [[ "${visited}" -eq "${tasks}" ]] || die "counted events under ${visited} of ${tasks} tasks"
+  fresh_token
+  tenant_events="$(fs_count_tenant_events)" \
+    || die "could not count events by tenant_id; a failed read, not zero"
 
   attempts="$(fs_count_where attempts "$(eq_filter tenant_id "${TENANT}")")" \
     || die "could not count attempts; a failed read, not zero"
@@ -577,22 +699,22 @@ inventory() {
   auth="$(fs_count_where account_auth "$(eq_filter owner_tenant "${TENANT}")")" \
     || die "could not count account_auth; a failed read, not zero"
 
-  list_ledger_names "${WORK}/ledger.names"
-  ledger_present "${WORK}/ledger.names" "${WORK}/ledger.present"
+  ledger_of_tenant "${WORK}/ledger.present"
 
   {
     printf '== Inventory: everything tenant %s holds (%s / %s) ==\n' "${TENANT}" "${PROJECT_ID}" "${FIRESTORE_DATABASE}"
     printf '    %-26s %s object version(s), %s byte(s)\n' "${GCS_PREFIX_URL}" "${objects}" "${bytes}"
     printf '    %-26s %s\n' "tasks" "${tasks}"
     printf '    %-26s %s   (under %s task(s))\n' "task events" "${events}" "${visited}"
+    printf '    %-26s %s   (any task, listed or not; overlaps the row above)\n' "events by tenant_id" "${tenant_events}"
     printf '    %-26s %s\n' "attempts" "${attempts}"
     printf '    %-26s %s   (all released)\n' "leases" "$(grep -c . "${WORK}/leases.jsonl" || true)"
     printf '    %-26s %s\n' "workflows" "${workflows}"
     printf '    %-26s %s\n' "quota" "${quota}"
     printf '    %-26s %s\n' "accounts (owned)" "$(grep -c . "${WORK}/accounts.jsonl" || true)"
     printf '    %-26s %s\n' "account_auth" "${auth}"
-    printf '    %-26s %s   (of %s secret name(s) labelled tenant=%s)\n' "credential_publications" \
-      "$(grep -c . "${WORK}/ledger.present" || true)" "$(grep -c . "${WORK}/ledger.names" || true)" "${TENANT}"
+    printf '    %-26s %s   (listed from the ledger, named for %s)\n' "credential_publications" \
+      "$(grep -c . "${WORK}/ledger.present" || true)" "${TENANT}"
     printf '    %-26s %s\n' "pools" "$(pools_to_delete "${WORK}/pools.tsv" | grep -c . || true)"
     while IFS= read -r c; do
       [[ -n "${c}" ]] || continue
@@ -648,17 +770,30 @@ delete_where() {
 }
 
 delete_records() {
-  local task n stray tasks_listing="${WORK}/tasks.del.jsonl" events_listing="${WORK}/events.del.jsonl"
-  local visited=0 total events_deleted=0
+  local task n left stray tasks_listing="${WORK}/tasks.del.jsonl" events_listing="${WORK}/events.del.jsonl"
+  local visited=0 total events_deleted=0 kept=0
   step "Deleting Firestore records"
   fresh_token
 
-  # Tasks: every task's events first, then the tasks.
+  # Events by tenant_id, across every task -- the ones under a task an earlier
+  # run deleted included. First, so the per-task pass below mostly finds
+  # nothing left to do.
+  fs_list_tenant_events "${WORK}/tenant-events.del.jsonl" \
+    || die "could not list events by tenant_id; a failed read, not none"
+  assert_tenant_events "${WORK}/tenant-events.del.jsonl"
+  names_of "${WORK}/tenant-events.del.jsonl" >"${WORK}/tenant-events.del.names"
+  commit_deletes "${WORK}/tenant-events.del.names" "events by tenant_id"
+
+  # Tasks: each task's events (whatever tenant_id they carry), then a recount,
+  # and the task goes only if the recount is zero. A task deleted with an event
+  # under it takes the only way back to that event with it.
   fs_list_where "" tasks "$(eq_filter tenant_id "${TENANT}")" "tenant_id" "${tasks_listing}" \
     || die "could not list tasks; a failed read, not none"
   assert_owned "${tasks_listing}" tenant_id tasks
   names_of "${tasks_listing}" >>"${ALL_TASKS}"
   total="$(grep -c . "${tasks_listing}" || true)"
+  : >"${WORK}/tasks.del.names"
+  : >"${WORK}/tasks.kept.names"
   while IFS= read -r task; do
     [[ -n "${task}" ]] || continue
     fs_list_where "tasks/${task##*/}" events null "" "${events_listing}" \
@@ -673,12 +808,25 @@ delete_records() {
       commit_deletes "${WORK}/events.del.names" "events of ${task##*/}" quiet
       events_deleted=$(( events_deleted + n ))
     fi
+    fresh_token
+    left="$(fs_count_under "tasks/${task##*/}" events)" \
+      || die "could not recount the events of ${task##*/}; a failed read, not zero"
+    if [[ "${left}" -eq 0 ]]; then
+      printf '%s\n' "${task}" >>"${WORK}/tasks.del.names"
+    else
+      printf '%s\t%s\n' "${task##*/}" "${left}" >>"${WORK}/tasks.kept.names"
+      kept=$(( kept + 1 ))
+    fi
     visited=$(( visited + 1 ))
     if [[ $(( visited % 25 )) -eq 0 || "${visited}" -eq "${total}" ]]; then
       printf '    %-26s %s/%s task(s), %s event(s) deleted\n' "task events" "${visited}" "${total}" "${events_deleted}" >&2
     fi
   done < <(names_of "${tasks_listing}")
-  names_of "${tasks_listing}" >"${WORK}/tasks.del.names"
+  [[ "${visited}" -eq "${total}" ]] || die "went through ${visited} of ${total} tasks"
+  if [[ "${kept}" -gt 0 ]]; then
+    warn "keeping ${kept} task document(s): each still has events under it after their delete, and deleting it would leave those events where no task listing reaches them. The proof below fails on them; run again."
+    head -n 5 "${WORK}/tasks.kept.names" | awk -F'\t' '{printf "     tasks/%s  %s event(s) left\n", $1, $2}' >&2
+  fi
   commit_deletes "${WORK}/tasks.del.names" "tasks"
 
   delete_where attempts tenant_id attempts
@@ -709,7 +857,8 @@ delete_records() {
   names_of "${WORK}/accounts.del.jsonl" >"${WORK}/accounts.del.names"
   commit_deletes "${WORK}/accounts.del.names" "accounts"
 
-  commit_deletes "${WORK}/ledger.present" "credential_publications"
+  ledger_of_tenant "${WORK}/ledger.del.names"
+  commit_deletes "${WORK}/ledger.del.names" "credential_publications"
 
   # Pools: the tenant's, with no capacity held, less the ones terraform holds.
   list_tenant_pools "${WORK}/pools.del.tsv"
@@ -736,8 +885,12 @@ proof_row() {
 }
 
 # Every count taken again, server side, by a different call from the listing
-# that fed the delete: an aggregation for a collection, a GET for a named
-# document, a fresh `gcloud storage ls` for the prefix.
+# that fed the delete: an aggregation for a collection, a fresh listing of the
+# ledger, a fresh `gcloud storage ls` for the prefix. Two rows cover events:
+# one under each task any listing of this run saw, which catches an event
+# without this tenant's id; and one by tenant_id across every task, which
+# catches an event whose task is gone -- the one a rerun after a failed proof
+# would otherwise count as zero, having no task left to look under.
 prove_gone() {
   local c n events=0 visited=0 task tasks_seen
   step "Proof"
@@ -765,6 +918,11 @@ prove_gone() {
   done <"${WORK}/all-tasks.sorted"
   [[ "${visited}" -eq "${tasks_seen}" ]] || die "checked events under ${visited} of ${tasks_seen} tasks"
   proof_row "task events" "${events}" "(under each of ${visited} task(s) this run listed)"
+  # The row that does not depend on any task listing: a server-side count of
+  # every event carrying this tenant's id, under any task, existing or not.
+  fresh_token
+  n="$(fs_count_tenant_events)" || die "could not count events by tenant_id; a failed read is not proof"
+  proof_row "events by tenant_id" "${n}" "(collection group: any task, listed or not)"
 
   for c in accounts account_auth; do
     n="$(fs_count_where "${c}" "$(eq_filter owner_tenant "${TENANT}")")" \
@@ -772,9 +930,10 @@ prove_gone() {
     proof_row "${c}" "${n}"
   done
 
-  ledger_present "${WORK}/ledger.names" "${WORK}/ledger.after"
+  # Listed afresh from the ledger, not re-read from the names the delete used.
+  ledger_of_tenant "${WORK}/ledger.after"
   proof_row "credential_publications" "$(grep -c . "${WORK}/ledger.after" || true)" \
-    "(of $(grep -c . "${WORK}/ledger.names" || true) secret name(s))"
+    "(listed from the ledger, named for ${TENANT})"
 
   list_tenant_pools "${WORK}/pools.after.tsv"
   proof_row "pools" "$(pools_to_delete "${WORK}/pools.after.tsv" | grep -c . || true)"

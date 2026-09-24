@@ -911,9 +911,10 @@ def test_apply_deletes_every_record_and_object_of_the_tenant_and_nothing_else(tm
     assert deleted[-1] == f"tenants/{TENANT}", f"the tenant document was not deleted last: {deleted}"
 
     proof = _section(run.stderr, "== Proof:")
-    assert "(11 checks)" in proof, proof
-    for label in (f"gs://{BUCKET}/tenants/{TENANT}/", "tasks", "task events", "attempts", "leases",
-                  "workflows", "quota", "accounts", "account_auth", "credential_publications", "pools"):
+    assert "(12 checks)" in proof, proof
+    for label in (f"gs://{BUCKET}/tenants/{TENANT}/", "tasks", "task events", "events by tenant_id",
+                  "attempts", "leases", "workflows", "quota", "accounts", "account_auth",
+                  "credential_publications", "pools"):
         assert _row(proof, label).startswith("0"), f"proof row {label!r}: {_row(proof, label)!r}"
     assert _row(proof, f"tenants/{TENANT}") == "absent", proof
     # What survives anyway is said, not hidden: the soft-deleted object

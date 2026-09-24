@@ -738,12 +738,41 @@ deletes, for one tenant:
   artifacts, logs, checkpoints and the `.tenant` marker (B6). Every version,
   because the bucket is versioned and a noncurrent version is as readable
   through the tenant's IAM grant as a live one;
-* its Firestore records (B5): each task's `events`, then the `tasks`
-  themselves; `attempts`, `leases`, `workflows` and `quota`; the `accounts`
-  and `account_auth` documents it owns; the `credential_publications` entries
-  for the secrets labelled `tenant=<id>`; and its pools;
+* its Firestore records (B5): every event carrying its `tenant_id`, under
+  any task, including a task that is already gone; then each task's own
+  `events`, then the `tasks` themselves, each task only once a recount finds
+  no event left under it; `attempts`, `leases`, `workflows` and `quota`; the
+  `accounts` and `account_auth` documents it owns; its `credential_publications`
+  entries, listed from the ledger itself (below); and its pools;
 * `tenants/<id>` itself, **last**, and only after a second, independent count
   of everything above has come back zero.
+
+Why events are found two ways. Firestore does not delete a document's
+subcollections with it: a task document deleted while an event is still under
+it leaves that event where no listing of the tenant's *tasks* can reach it
+again. That can happen during this step. Every event writer (the scheduler's
+cascade cancel, the API, the worker and the reconciler) appends events as a
+blind write outside any transaction, so an event can land between the
+script's delete of a task's events and its delete of the task. So the script
+keeps a task that still has an event under it, and the proof then fails on
+it. It also lists and counts events by their own `tenant_id` with a
+collection-group query, which finds an event whether or not its task still
+exists. That query has to order by `at`, newest first. Measured read-only on
+2026-09-24: without that order the database refuses it
+(`FAILED_PRECONDITION`, "requires a COLLECTION_GROUP_ASC index"), because the
+only index that serves it is terraform's `events-tenant-at`
+(`terraform/modules/firestore/indexes.tf`). Deleting that index breaks this
+step; it does not make it report zero.
+
+How the ledger is attributed. `credential_publications/<secret name>`
+carries no tenant field, so an entry is this tenant's when its id has one of
+this tenant's secret-name shapes (`swarm-tenant-<id>-…`, `swarm-account-<id>--…`).
+A name shape is a prefix, and prefixes collide, so two more rules apply. If a
+secret of that name, or its `-refresh` twin, still has a `tenant` label, the
+label decides. If not, the entry is left alone whenever a longer registered
+tenant id also matches it (`eng-x`'s entry, while `tenants/eng-x` exists). This
+finds an entry whose secret is already gone, which the earlier
+label-first listing did not.
 
 It leaves two things alone. Provider secrets belong to step 7 (terraform's) and
 step 10 (the rest). And any tenant or pool document carrying
@@ -795,12 +824,25 @@ For prod, add `--allow-prod`. It then also asks for the project id.
 The script deletes the objects first, then the records in batches of 200 with
 a running count, then prints `== Proof: what is left of tenant <id> ==`. That
 table is a fresh count of every row, taken by a different call from the one
-that listed it: a server-side aggregation per collection, a GET per ledger
-entry, a new `gcloud storage ls --all-versions` for the prefix. **Any non-zero
-row prints `VERIFICATION FAILED`, exits non-zero and does not delete
-`tenants/<id>`**, so the id stays held and you can run the same command again.
-Running it again is always safe: every delete is of something it has just
-listed.
+that listed it: a server-side aggregation per collection, a fresh listing of
+the ledger, a new `gcloud storage ls --all-versions` for the prefix. Events
+have two rows. `task events` counts under every task any listing in this run
+saw. `events by tenant_id` counts every event carrying the tenant's id under
+any task, including one whose task is gone. **Any non-zero row prints
+`VERIFICATION FAILED`, exits non-zero and does not delete `tenants/<id>`**,
+so the id stays held.
+
+Then run the same command again. The second run lists everything afresh from
+the records themselves. A leftover event is found by its `tenant_id`, and a
+task that was kept is found by the task listing. The rerun deletes them and
+proves the result. It never works from a parent document the first run
+deleted. What a rerun cannot reach is an event under a task that is already
+gone *and* that does not carry this tenant's id. The reconciler writes
+`tenant_id` as `""` when it does not know it. The script never deletes a task
+that still has an event under it, which leaves only the moment between a
+task's recount and its delete for that to happen; a rerun cannot recover it
+afterwards. If the same row fails twice, read it before running a third time.
+Something is still writing for this tenant, and step 3 or 4 did not hold.
 
 The inventory and the proof are also written to
 `build/offboard-<id>/offboard-tenant-<timestamp>.txt`, next to step 2's
@@ -809,7 +851,7 @@ record. Put that file in the step-7 PR.
 Its last lines report the soft-deleted object versions, and the 7-day window
 in which they can be restored (see [the inventory](#the-inventory-everything-a-tenant-has)).
 
-**Verify.** The proof ends `(11 checks)`, and every row reads `0` or
+**Verify.** The proof ends `(12 checks)`, and every row reads `0` or
 `left for terraform`. The line after the table reads `tenants/<id>  absent`
 for a tenant terraform never held, or `left for terraform` for one it does.
 The exit code is 0.
@@ -1190,6 +1232,17 @@ for c in tasks attempts leases workflows quota; do
   n="$(fs_count_where "$c" "$(eq tenant_id "$t")")" || die "could not count $c; that is a failed read, not zero"
   row "$c" "$n"
 done
+# Events live under tasks/<task>/events, so they are counted across every task
+# at once. The order by `at` is required: without it the database refuses the
+# query (step 6 says why), and a refusal is not a zero.
+q="$(jq -nc --argjson w "$(eq tenant_id "$t")" '{structuredAggregationQuery:{structuredQuery:{
+      from:[{collectionId:"events",allDescendants:true}], where:$w,
+      orderBy:[{field:{fieldPath:"at"},direction:"DESCENDING"}]},
+    aggregations:[{alias:"n",count:{}}]}}')"
+n="$(fs_request POST "$(fs_base):runAggregationQuery" "$q" \
+      | jq -r '[.[]?|.result?.aggregateFields?.n?.integerValue//empty]|first // "0"')" \
+  || die "could not count events by tenant_id; a failed read, not zero"
+row "events" "$n"
 n="$(fs_count_where accounts "$(eq owner_tenant "$t")")" || die "could not count owned accounts; a failed read, not zero"
 row "accounts owned" "$n"
 n="$(fs_count_where accounts "$(has lend_to "$t")")" || die "could not count lend_to; a failed read, not zero"
@@ -1212,12 +1265,52 @@ printf '(%s checks)\n' "$checks"
 SH
 ```
 
-Expect `tenants/<id> absent`; `0` for every collection; `0` for
+Expect `tenants/<id> absent`; `0` for every collection and for events; `0` for
 accounts owned, accounts lending to it, pending sign-ins and pools;
 `publication ledger 0 (of <k> recorded secret names)`, where `<k>` is the
 number of names in `"$OUT/secrets.txt"` that do not end in `-refresh`; and
-`(10 checks)`, which is there because a loop that ran over nothing prints
+`(11 checks)`, which is there because a loop that ran over nothing prints
 nothing and looks like success.
+
+**A `still present` ledger line for a subscription tenant is expected.** A
+subscription tenant is one with a `swarm-tenant-<id>-<p>-refresh` secret. Its
+ledger entry can come back after step 6, and step 6 did not fail. The broker's
+credential sweep runs every five minutes. It refreshes *every* secret that has
+a refresh credential and a `tenant` label, whether or not the tenant is still
+registered (`subscription_tenants` in
+`apps/quota-broker/quota_broker/secretstore.py`). It then records the token it
+published (`_remember_published` in `quota_broker/credentials.py`). So between
+step 6 and step 7, while terraform still holds the refresh secret, a broker
+process that starts fresh re-creates the entry step 6 deleted. A broker process
+that had already cached the entry's digest does not re-create it. Instead it
+adds one identical version to the base secret on each sweep, because the
+ledger no longer has the entry and its cache stops it writing one. That stops
+when the token rotates, the process restarts, or step 7 deletes the secret.
+Both behaviours are read from the code on 2026-09-24, not measured. Once step 7
+(or step 10, for a secret terraform did not hold) has deleted the refresh
+secret, nothing writes the entry again. Delete what is left then. The command
+checks each name against the secrets step 2 recorded by label:
+
+```bash
+bash -s -- "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}/secrets.txt" <<'SH'
+set -euo pipefail
+source scripts/lib/common.sh
+t="$1"; recorded="$2"
+n=0
+while read -r secret _; do
+  case "$secret" in "swarm-tenant-${t}-"*|"swarm-account-${t}--"*) ;; *) continue ;; esac
+  case "$secret" in *-refresh) continue ;; esac
+  doc="$(fs_get "credential_publications/$secret")" || die "could not read credential_publications/$secret"
+  if jq -e '.fields' <<<"$doc" >/dev/null; then
+    fs_delete "credential_publications/$secret"
+    echo "deleted credential_publications/$secret"; n=$((n + 1))
+  fi
+done < "$recorded"
+echo "$n ledger entr(ies) deleted"
+SH
+```
+
+Then run the check above again: `publication ledger 0`.
 
 Last, the reconciler must have stopped looking for the namespace. Every pass
 logs each namespace it wanted and could not read (`_look_namespaced` in
