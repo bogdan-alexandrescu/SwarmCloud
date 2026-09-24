@@ -1012,14 +1012,20 @@ describe('semantic zoom', () => {
     // `dag.ts` before `MONO_ADVANCE_EM` existed. If this drifts, every width
     // below is measuring a font nobody has looked at.
     expect(MONO_ADVANCE_EM * 14).toBeCloseTo(8.43, 2)
+    // TO THE PIXEL, which is the claim -- `Math.round` rather than
+    // `toBeCloseTo`, because two of these land within 0.47px of the recorded
+    // figure and a tolerance written as "0 digits" is 0.5px by definition. A
+    // guard whose margin is 0.03px is one that goes red on a rounding change
+    // rather than on a wrong font.
+    //
     // `measureText('no attempt yet')` -- 14 characters, 118.0px at 14px.
-    expect(monoW(14, 14)).toBeCloseTo(118, 1)
+    expect(Math.round(monoW(14, 14))).toBe(118)
     // `21.4k in · 3.2k out` -- 19 characters, measured at 160px.
-    expect(monoW(19, 14)).toBeCloseTo(160, 0)
+    expect(Math.round(monoW(19, 14))).toBe(160)
     // `99.9k in · 99.9k out` -- 20 characters, measured at 169px.
-    expect(monoW(20, 14)).toBeCloseTo(169, 0)
+    expect(Math.round(monoW(20, 14))).toBe(169)
     // `claude-code` at --t-micro -- 11 characters, measured at 79px.
-    expect(monoW(11, 12)).toBeCloseTo(79, 0)
+    expect(Math.round(monoW(11, 12))).toBe(79)
     // It is NEAR 0.6em and is not 0.6em, which is the whole reason it is a
     // measurement. A rewrite to the round number would fail this.
     expect(MONO_ADVANCE_EM).not.toBe(0.6)

@@ -735,8 +735,20 @@ def test_a_level_never_wraps_into_a_second_row():
     Both axes are pinned rather than one, because a transpose that only half
     landed would leave the other coordinate constant and every node stacked.
 
+    THE PITCH IS `nodeW` NOW AND NOT `NODE_W`, and the claim is unchanged.
+    Semantic zoom draws nodes at three widths on one canvas -- a node keeps its
+    name and state at every tier and sheds the runner profile, the duration and
+    the four run figures as the column runs out -- so `NODE_W` is only the full
+    tier's value, and a layout that still multiplied by it would place every
+    reduced-tier node 111px apart from where it was drawn. Both halves are
+    pinned: the pitch is the width THIS layout gave its nodes, and that width
+    comes from `nodeWidthAt(tier, steps)`, which derives it from a measured
+    character advance and the workflow's own strings rather than from a literal.
+
     MUTATION: give a node `position: static`; or compute `x` from anything but
-    the position index and the sibling pitch; or leave `y` off the level index,
+    the position index and the sibling pitch; or pin the pitch back to `NODE_W`
+    while the tier is narrower, which overlaps every sibling; or take `nodeW`
+    from a literal instead of `nodeWidthAt`; or leave `y` off the level index,
     which collapses every level onto one band.
     """
     css = _src("styles.css")
@@ -748,9 +760,13 @@ def test_a_level_never_wraps_into_a_second_row():
 
     dag = _src("dag.ts")
     fn = _decl(dag, "export function layoutOf(")
-    assert "pos * (NODE_W + SIB_GAP)" in fn, (
+    assert "pos * (nodeW + SIB_GAP)" in fn, (
         "a node's x is no longer derived from its position within its level and the "
         "sibling pitch, so a level is no longer laid out across the page by arithmetic"
+    )
+    assert "const nodeW = nodeWidthAt(tier, steps)" in fn, (
+        "the pitch's node width is no longer the one `nodeWidthAt` derives for this "
+        "tier and these steps, so a level is spaced by a number nobody measured"
     )
     assert "y: levelTop[lvl]" in fn, (
         "a node's y is no longer its dependency level's band top, so the flow does "

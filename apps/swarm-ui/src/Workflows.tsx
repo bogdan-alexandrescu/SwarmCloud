@@ -1565,7 +1565,14 @@ function WorkflowGraph({
               layout is the thing that knows it -- asking the full tier's
               threshold here would have wrapped a six-step stage that the
               `details` tier draws in full. */}
-            {layout.levels.map((level, i) => {
+            {/* `_level` because the STEPS of a level are no longer read here: the
+                cards come from `layout.nodes` filtered by level, and whether the
+                stage is banded comes from `layout.wide`. It was `level.length`
+                passed to `stageIsWide`, which is the full tier's threshold and
+                would have wrapped a six-step stage the `details` tier draws in
+                full. The map is over the levels so that the index is the level
+                index and nothing has to be recovered. */}
+            {layout.levels.map((_level, i) => {
               const cards = layout.nodes
                 .filter((n) => n.level === i)
                 .map((n) => (
