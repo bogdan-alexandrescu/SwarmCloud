@@ -36,7 +36,9 @@ available       = max(0, effective_limit - active)
 Three separate ceilings, one floor:
 
 * `hard_limit` — the admin's statement of what is allowed. Only an admin changes
-  it (`PUT /v1/admin/limits/...`, or `terraform apply`).
+  it (`PUT /v1/admin/limits/...`, or `terraform apply`), with one exception: a
+  caller on `admin_pool_users` may change a `runner:*` ceiling and nothing else
+  — the verification gate, so race-test can narrow `runner:mock`.
 * `adaptive_target` — what AIMD currently believes the provider tolerates. It may
   only ever go **below** `hard_limit`; see [quota-management.md](quota-management.md).
 * `quota_derived_limit` — derived from what the provider actually reported
@@ -257,4 +259,5 @@ rather than the global pool, so the rest of the platform keeps working while it
 runs, and it restores the original limit on every exit path. Both the narrow and
 the restore go through `PUT /v1/admin/limits/runner/mock`, the same route an
 operator uses, so the suite never writes `active` — the counter only admission
-and release may move.
+and release may move. The gate reaches that route through `admin_pool_users`,
+which allows it and no other admin route; it is not an admin.

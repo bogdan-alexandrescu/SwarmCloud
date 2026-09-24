@@ -97,17 +97,21 @@ gets you an HTTP 404 on `/readyz`, not a result.
 `make e2e-test` and the rest run directly **from inside** the VPC or the verify
 job. From a laptop, use `verify-remote`.
 
-**`race-test` narrows `runner:mock` through the admin API, as a platform admin.**
+**`race-test` narrows `runner:mock` through one admin route, and is not an admin.**
 It has to narrow a pool to create contention, and that is a write. By owner
-decision on 2026-09-24 the verify service account is in `admin_users` in dev and
-the suite uses `PUT /v1/admin/limits/runner/mock` — never a Firestore write —
-to narrow and to restore, so the change is bounded, cannot touch `active`, and
-is stamped on the pool as `admin_changed_by`. It refuses any profile but `mock`,
-a pool that does not exist, a drained pool, and a ceiling the API could not put
-back. Until a release has applied that grant, the suite still fails at its first
-step with a 403 that names `admin_users` — a permissions result, not evidence
-about a race. The reasoning is in
-`docs/audits/2026-09-22/race-test-needs-a-write.md`.
+decision on 2026-09-24 the suite uses `PUT /v1/admin/limits/runner/mock` — never
+a Firestore write — to narrow and to restore, so the change is bounded, cannot
+touch `active`, and is stamped on the pool as `admin_changed_by`. The verify
+service account reaches that route through `admin_pool_users` in dev: swarm-api
+lets that list call an allow-list of admin routes holding the runner ceiling
+alone, and answers every other admin route 403. It is deliberately **not** in
+`admin_users` — the first form of the decision put it there, and the owner
+reversed that the same day, because full admin can disable any tenant. The
+suite refuses any profile but `mock`, a pool that does not exist, a drained
+pool, and a ceiling the API could not put back. Until a release has applied the
+grant, the suite fails at its first step with a 403 that names
+`admin_pool_users` — a permissions result, not evidence about a race. The
+reasoning is in `docs/audits/2026-09-22/race-test-needs-a-write.md`.
 
 Nothing in `e2e-test` writes to Firestore. Everything it creates is a task or a
 workflow submitted through the API, and every one is cancelled on the way out.
