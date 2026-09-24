@@ -764,7 +764,7 @@ function Progress({ roll }: { roll: Rollup }) {
   return (
     <span className="wf-progress">
       <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
-        <span className="ctl-util-fill wf-meter-fill" style={{ width: `${pct}%` }} />
+        <span className="ctl-util-fill wf-meter-fill" style={{ width: `${pct}%`, background: 'var(--info)' }} />
       </span>
       <span className="wf-progress-text">{roll.text}</span>
     </span>
