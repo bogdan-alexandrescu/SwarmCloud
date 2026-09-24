@@ -451,9 +451,42 @@ def test_an_html_sign_in_page_separates_the_401_from_the_403():
     message = client._explain(403, "<!doctype html><html>sign in</html>")
     assert "403" in message and "401" in message
     assert "frontend_iap_members" in message, (
-        "the 403 remedy lives in Track C's tfvars and the reader has to be sent "
-        "to the right file"
+        "the 403 remedy is one variable and the reader has to be told which"
     )
+
+
+# Every place that tells a reader where the IAP accessor grant lives. #23 moved
+# `frontend_iap_members` out of terraform/infra (and environments/<env>/<env>.
+# tfvars) into terraform/bootstrap, applied by the owner rather than CI, and all
+# of these still named the old file after a clean textual merge. Asserting only
+# that the variable's NAME appears is what let that through: the name survived
+# the move, the address did not.
+_IAP_GRANT_REMEDIES = {
+    "client._explain(403, html)": lambda: client._explain(
+        403, "<!doctype html><html>sign in</html>"
+    ),
+    "WHY_NOT[(IMPERSONATE, team)]": lambda: auth.WHY_NOT[(Tier.IMPERSONATE, "team")],
+    "plugin/skills/sc/SKILL.md": lambda: (
+        _REPO / "plugin" / "skills" / "sc" / "SKILL.md"
+    ).read_text(),
+}
+
+
+@pytest.mark.parametrize("where", sorted(_IAP_GRANT_REMEDIES))
+def test_the_iap_grant_remedy_names_the_file_that_actually_sets_it(where):
+    """The property, not the spelling: whatever tfvars file the remedy sends
+    the reader to must exist in this repository and must SET
+    `frontend_iap_members`. A placeholder path (`<env>`) cannot satisfy that,
+    and neither can a file the variable has since left."""
+    text = _IAP_GRANT_REMEDIES[where]()
+    named = re.findall(r"terraform/[\w<>./-]+\.tfvars", text)
+    assert named, f"{where} names no tfvars file for the IAP accessor grant"
+    for relative in named:
+        path = _REPO / relative
+        assert path.is_file(), f"{where} sends the reader to {relative}, which does not exist"
+        assert re.search(
+            r"^\s*frontend_iap_members\s*=", path.read_text(), re.MULTILINE
+        ), f"{where} sends the reader to {relative}, which does not set frontend_iap_members"
 
 
 def test_the_edge_flag_survives_all_of_this(monkeypatch, tmp_path):
