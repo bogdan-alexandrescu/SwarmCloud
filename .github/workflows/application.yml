@@ -300,18 +300,69 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: read the Node major the swarm-ui image builds with
+        id: node
+        # ONE PLACE STATES IT: `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
+        # the Node that compiles the bundle that ships. This job used to pin
+        # `node-version: "20"` on its own -- a second copy, and by 2026-09 a copy
+        # of a line that reached end of life in April 2026 (docs/versions.md).
+        # Reading it from the Dockerfile means the typecheck, the tests and the
+        # build below run on the line the image uses, and a bump there moves
+        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
+        # literal comes back.
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+          echo "swarm-ui builds with Node ${majors} (${dockerfile})"
+
       - uses: actions/setup-node@v5
         with:
-          # 20 is what the reference workstation runs and what vitest 3 and
-          # jsdom 25 both support. `cache: npm` needs the lockfile path because
-          # the package is not at the repository root.
-          node-version: "20"
+          # From the step above, not a literal. vitest 3.2 and jsdom 25 both
+          # support Node 24. `cache: npm` needs the lockfile path because the
+          # package is not at the repository root.
+          node-version: ${{ steps.node.outputs.major }}
           cache: npm
           cache-dependency-path: apps/swarm-ui/package-lock.json
 
+      - name: the Node that runs is the Node the image builds with
+        # setup-node@v5 treats an EMPTY node-version as "no version": its
+        # src/main.ts sets Node up only `if (version)`, so it installs
+        # nothing and says nothing, and every step below would run -- and go
+        # green -- on the runner image's own Node. That is what happens if the
+        # output name the step above writes and the one setup-node reads ever
+        # drift apart. So compare the Node actually on PATH with the major
+        # setup-node was asked for, through the SAME expression, and stop on a
+        # mismatch or an empty value. Passed through env, not spliced into the
+        # script. tests/unit/scripts/test_ui_node_line.py runs this step
+        # against a stand-in `node`; keep it a step of its own for that.
+        env:
+          WANT_NODE_MAJOR: ${{ steps.node.outputs.major }}
+        run: |
+          set -euo pipefail
+          got="$(node -p 'process.versions.node.split(".")[0]')"
+          if [ -z "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::setup-node was given no Node major (steps.node.outputs.major is empty), so it installed nothing; this job would run on the runner's Node ${got}"
+            exit 1
+          fi
+          if [ "${got}" != "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::the ui job runs Node ${got}, but images/swarm-ui/Dockerfile builds with Node ${WANT_NODE_MAJOR}"
+            exit 1
+          fi
+          echo "running Node ${got}, the major images/swarm-ui/Dockerfile builds with"
+
       - name: install
         working-directory: apps/swarm-ui
-        run: npm ci --no-audit --no-fund
+        run: |
+          set -euo pipefail
+          echo "node $(node --version), npm $(npm --version)"
+          npm ci --no-audit --no-fund
 
       - name: typecheck
         # THE FIRST THING IN THIS REPOSITORY THAT EVER COMPILES THE TYPESCRIPT.
@@ -337,6 +388,15 @@ jobs:
         # would receive a flag it never asked for. `vitest run` is already
         # non-watching.
         run: npm test
+
+      - name: production build
+        # `npm run build` -- `tsc -b && vite build`, the command the swarm-ui
+        # image runs. The typecheck above is `tsc -b --noEmit`; this is the half
+        # that EMITS, through vite's bundler and plugins on this Node. Before it
+        # was here, a toolchain change (Node 20 to 24 included) was proven only
+        # by the image build on main, after merge, behind an approval.
+        working-directory: apps/swarm-ui
+        run: npm run build
 
   integration:
     name: integration tests (emulator)
