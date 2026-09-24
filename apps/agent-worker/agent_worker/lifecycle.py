@@ -1042,7 +1042,43 @@ class Worker:
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
         }
-        for passthrough in ("PYTHONPATH", "VIRTUAL_ENV", "NODE_PATH", "NODE_EXTRA_CA_CERTS"):
+        # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
+        # Everything else in the worker's environment stays behind; see
+        # `workspace.child_env` for why this environment is built rather than
+        # inherited. Each name is platform-set -- the image's ENV or the Job
+        # definition, never a caller (invariant 10) -- and each is a path the
+        # runner's interpreter or libraries resolve code or data from.
+        #
+        # PLAYWRIGHT_BROWSERS_PATH is where `agent-runtime-browser` installed
+        # Chromium: /opt/playwright, read-only to uid 10001, outside every
+        # writable path. Without it Playwright looks under
+        # $HOME/.cache/ms-playwright, and HOME here is the attempt's work dir,
+        # which holds no browser -- so a browser attempt started by the
+        # lifecycle cannot launch Chromium. Derived from the code and predicted
+        # in the review of PR #31, not observed: the bare runner the GKE Job
+        # used to start inherited the container's environment whole, and no
+        # browser attempt had run under the lifecycle before that PR made it
+        # the entrypoint there.
+        # Its sibling PLAYWRIGHT_SKIP_BROWSER_GC is deliberately NOT carried:
+        # only Playwright's browser-install path reads it (checked in the 1.63.0
+        # driver), and the runner never installs.
+        #
+        # NEVER A PREFIX. `PLAYWRIGHT_*` would also carry
+        # PLAYWRIGHT_SERVICE_ACCESS_TOKEN, a real Playwright credential.
+        # tests/unit/worker/test_image_env_reaches_the_runner.py takes every ENV
+        # in the browser image -- both Dockerfiles, plus the upstream python
+        # base's, recorded there and pinned by digest -- and holds each one to
+        # either this list or a recorded reason the runner must not have it.
+        # The image's pip/npm settings are among the refused: no runner process
+        # runs pip or npm. Whether the AGENTS the runners start should get them
+        # is an open owner decision, recorded in that file.
+        for passthrough in (
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
+            "NODE_PATH",
+            "NODE_EXTRA_CA_CERTS",
+            "PLAYWRIGHT_BROWSERS_PATH",
+        ):
             value = os.environ.get(passthrough)
             if value:
                 base[passthrough] = value

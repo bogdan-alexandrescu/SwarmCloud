@@ -59,6 +59,10 @@ class TaskView:
     #: checkpoint a future attempt of this task would come back to; the
     #: reconciliation pass itself never looks at it.
     latest_checkpoint: str | None = None
+    #: When the task reached its terminal state. The left-running rule measures
+    #: its grace from here: a Job still active a moment after the worker wrote
+    #: SUCCEEDED is a worker finishing its own cleanup, not one left open.
+    completed_at: datetime | None = None
 
     @property
     def holds_capacity(self) -> bool:
@@ -84,6 +88,7 @@ class TaskView:
             cancel_requested=bool(doc.get("cancel_requested")),
             started_at=as_datetime(doc.get("started_at")),
             latest_checkpoint=doc.get("latest_checkpoint"),
+            completed_at=as_datetime(doc.get("completed_at")),
         )
 
 
@@ -228,6 +233,26 @@ class ControlSnapshot:
     leases: dict[str, LeaseView] = field(default_factory=dict)
     attempts: dict[str, AttemptView] = field(default_factory=dict)
     taken_at: datetime = field(default_factory=utcnow)
+    #: Tasks OUTSIDE the four concurrency states that an active execution
+    #: names, read by id after the backends were listed. `tasks` holds only
+    #: the concurrency states (see `ControlStore.snapshot`), so without this a
+    #: Job still running after its task SUCCEEDED looked like a Job naming a
+    #: task nobody knows -- and so did the old Job of a task re-queued to
+    #: READY. Empty unless something active points outside `tasks`.
+    settled: dict[str, TaskView] = field(default_factory=dict)
+    #: Task ids an active execution names that could NOT be read this pass.
+    #: Nothing is concluded about them: see `detect.detect_orphan_executions`.
+    unreadable_tasks: set[str] = field(default_factory=set)
+    #: attempt id -> the progress evidence read for it (`progress.py`). Only
+    #: attempts the stuck rule could act on are read; absence means "not
+    #: judged", never "no progress".
+    progress: dict[str, Any] = field(default_factory=dict)
+
+    def task_named(self, task_id: str | None) -> TaskView | None:
+        """The task an execution names, whichever read found it."""
+        if not task_id:
+            return None
+        return self.tasks.get(task_id) or self.settled.get(task_id)
 
     def lease_for_task(self, task_id: str) -> LeaseView | None:
         task = self.tasks.get(task_id)
