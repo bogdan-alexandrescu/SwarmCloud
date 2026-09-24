@@ -3,7 +3,8 @@
 Shape, and why it is this shape:
 
     woken by Pub/Sub
-      -> promote what has become runnable (dependencies, credentials, prewarm)
+      -> promote what has become runnable (dependencies, credentials, prewarm),
+         and cancel what a failed `fail_workflow` workflow will never run
       -> while admissible work exists and the run is within budget:
            read a slice of READY work
            interleave it round-robin across tenants
@@ -34,7 +35,7 @@ from typing import Any, Callable
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
-from swarm_common.states import EventType, ParkReason, TaskState
+from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
 
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
@@ -56,6 +57,91 @@ _FAILED_PARENT_STATES = frozenset(
     {TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED}
 )
 
+#: The one `on_step_failure` value the scheduler acts on. Anything else,
+#: `continue` included, leaves only the dependency rule above in force.
+#:
+#: RESTATED, and the restatement is pinned. The vocabulary has no home in the
+#: frozen contract: `Workflow.on_step_failure` is a bare `str`. The API
+#: validates it as `Literal["fail_workflow", "continue"]`
+#: (`swarm_api.schemas.WorkflowCreate`) and the MCP tool advertises it as an
+#: enum. A rename on either side would make this scheduler ignore the setting
+#: again, silently, which is the defect this code fixes.
+#: `test_the_policy_vocabulary_agrees_everywhere_it_is_stated` holds all four
+#: statements together, and contract request 20 asks for one home.
+FAIL_WORKFLOW = "fail_workflow"
+
+#: Step states that fail a workflow under `fail_workflow` (owner, 2026-09-24).
+#:
+#: CANCELLED IS DELIBERATELY ABSENT, although `_FAILED_PARENT_STATES` has it. A
+#: step is CANCELLED because somebody stopped it, or because this sweep did.
+#: If a stop counted as a failure, pressing stop on one agent would end the
+#: whole run under the default setting, and the stop dialog's "the rest of the
+#: run keeps going" would be false. A stop still takes its own dependents, by
+#: the dependency rule.
+_WORKFLOW_FAILING_STATES = (TaskState.FAILED, TaskState.DEAD_LETTERED)
+
+#: "Has not started": SUBMITTED, QUEUED, READY, PARKED, which are exactly the
+#: states that hold no capacity. Derived from the frozen set rather than
+#: listed, and sorted only so that the sweep's query order is stable.
+_NOT_STARTED_STATES = tuple(sorted(PENDING_STATES, key=lambda state: state.value))
+
+#: How many failed steps a cancel event names. Ten is enough to say which ones
+#: without sending one document per failure. A workflow with more failures
+#: than that is no less failed, and the count is not what the reader needs.
+_FAILED_STEPS_NAMED = 10
+
+
+@dataclass(frozen=True)
+class FailedWorkflow:
+    """A `fail_workflow` workflow with at least one FAILED or DEAD_LETTERED step."""
+
+    tenant_id: str
+    workflow_id: str
+    #: [{"step_id", "task_id", "state"}], in a stable order. This is what every
+    #: cancel event carries, so a cancelled step's own record names the failure.
+    failed_steps: tuple[dict[str, Any], ...]
+
+
+def read_workflow_failure(
+    store: SchedulerStore,
+    tenant_id: str,
+    workflow_id: str,
+    *,
+    enforced_since: datetime | None,
+) -> FailedWorkflow | None:
+    """Is this workflow failed under `fail_workflow`? One read of the answer.
+
+    THE ONE STATEMENT OF THE VERDICT. The drain calls it (through its per-drain
+    cache) and so does the read-only `on_step_failure_audit`, so what the audit
+    says the next drain will cancel cannot drift from what the drain cancels.
+
+    Costs one point read for the policy. Only under `fail_workflow` does it
+    also cost one equality query per failing state. A `continue` workflow, and
+    one created before `enforced_since`, is never asked about its failures,
+    because nothing is done with the answer.
+    """
+    policy = store.workflow_on_step_failure(
+        tenant_id, workflow_id, enforced_since=enforced_since
+    )
+    if policy != FAIL_WORKFLOW:
+        return None
+    failed: list[Task] = []
+    for state in _WORKFLOW_FAILING_STATES:
+        failed.extend(
+            store.workflow_steps_in_state(tenant_id, workflow_id, state, _FAILED_STEPS_NAMED)
+        )
+    if not failed:
+        return None
+    failed.sort(key=lambda step: (step.step_id or "", step.id))
+    return FailedWorkflow(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        failed_steps=tuple(
+            {"step_id": step.step_id, "task_id": step.id, "state": step.state.value}
+            for step in failed[:_FAILED_STEPS_NAMED]
+        ),
+    )
+
 
 @dataclass
 class DrainReport:
@@ -71,6 +157,10 @@ class DrainReport:
     promoted_dependencies: int = 0
     promoted_credentials: int = 0
     promoted_prewarm: int = 0
+    #: Workflows this drain found failed under `on_step_failure: fail_workflow`
+    #: and swept. Their cancels are in `cancelled` like every other cancel.
+    #: This field says how many workflows those cancels came from.
+    failed_workflows_swept: int = 0
     #: Transitions this drain decided and did NOT write, because the task had
     #: moved on since it was read -- a cancel, another scheduler, the reconciler
     #: or the worker got there first. Each one used to be a blind overwrite
@@ -112,6 +202,22 @@ class Scheduler:
         # Populated per drain; initialised here so `_admit_one` is callable in
         # isolation (the unit tests exercise it directly).
         self._tenant_cache: dict[str, Tenant | None] = {}
+        # Per drain as well, keyed by (tenant_id, workflow_id). A verdict is at
+        # most one drain old, except that a failure the drain itself writes
+        # evicts it at once (see the DispatchError branch of `_admit_one`). A
+        # failure a WORKER or the reconciler writes mid-drain is not seen until
+        # the next drain, so a sibling admitted in between starts, holds
+        # capacity and runs to completion (docs/workflows.md says so).
+        self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
+        self._swept_workflows: set[tuple[str, str]] = set()
+        cutoff = settings.on_step_failure_enforced_since
+        log.info(
+            "on_step_failure: fail_workflow applies to %s",
+            "every workflow, whenever it was submitted"
+            if cutoff is None
+            else f"workflows created at or after {cutoff.isoformat()} "
+            "(ON_STEP_FAILURE_ENFORCED_SINCE); older ones keep the dependency rule",
+        )
         self._admission = AdmissionConfig(
             dispatch_timeout_seconds=settings.core.dispatch_timeout_seconds,
             lease_timeout_seconds=settings.core.lease_timeout_seconds,
@@ -137,6 +243,8 @@ class Scheduler:
         report = DrainReport()
         self._tenant_cache: dict[str, Tenant | None] = {}
         self._topup_tenant_ids: list[str] | None = None
+        self._workflow_verdicts = {}
+        self._swept_workflows = set()
 
         if self._store.dispatch_paused():
             self._metrics.paused.set(1)
@@ -280,6 +388,14 @@ class Scheduler:
             )
             return False
 
+        # THE ADMISSION GATE for `on_step_failure: fail_workflow`. Every step
+        # that starts passes through here, and an independent READY sibling of
+        # a failed step shares no dependency edge with it, so no dependency
+        # check would ever stop it. It sees failures as of this drain's verdict
+        # (see `_stop_for_failed_workflow` for the window that leaves).
+        if self._stop_for_failed_workflow(task, report):
+            return False
+
         if task.next_eligible_at is not None and task.next_eligible_at > now:
             report.skipped += 1
             return False
@@ -412,6 +528,11 @@ class Scheduler:
             )
             if not returned.applied:
                 self._count_stale(returned, report)
+            elif returned.target == TaskState.FAILED.value and task.workflow_id:
+                # This drain just wrote FAILED on a workflow step. Its siblings
+                # may be next in this very pass, and the verdict cached for the
+                # workflow was read before the failure existed.
+                self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
             report.dispatch_failures += 1
             self._metrics.dispatch_failures.labels(backend=backend.value).inc()
             log.warning(
@@ -568,6 +689,129 @@ class Scheduler:
         self._metrics.promoted.labels(kind=kind).inc()
         return True
 
+    # -- on_step_failure --------------------------------------------------
+
+    def _stop_for_failed_workflow(self, task: Task, report: DrainReport) -> bool:
+        """Apply `on_step_failure: fail_workflow` from a step that has not started.
+
+        Returns True when the caller must leave `task` alone for the rest of
+        this drain. That happens when its workflow has failed and has now been
+        swept, which cancelled `task` along with every other step of the
+        workflow that had not started.
+
+        HOW A FAILED WORKFLOW IS FOUND. From its not-started steps, never from
+        the failure. Every touch point the scheduler already has on waiting
+        work calls this: the dependency sweep, the credential sweep, the
+        prewarm sweep and, above all, admission, which every step passes
+        through before it can start. Asking "which steps failed recently"
+        instead would mean a query over FAILED tasks, which grows with history,
+        re-read on every drain to rediscover workflows that were finished long
+        ago. The price of doing it this way: a workflow whose every
+        remaining step is PARKED on a reason the scheduler never reads
+        (MANUAL_PAUSE, BUDGET_EXHAUSTED, SCHEDULED_RETRY) is swept only when one
+        of those steps is promoted and reaches admission. Until then it holds no
+        capacity, so it costs nothing (invariant 1). Only the derived state
+        lags: it reads PARKED rather than FAILED.
+
+        WHAT IT DOES NOT PROMISE: that nothing starts after the failure. The
+        verdict is cached for the drain, so a failure a worker or the reconciler
+        writes while a drain is running is not seen until the next drain, and
+        no read can close the gap between reading the verdict and taking the
+        lease anyway. A sibling admitted in that window holds capacity, so it
+        is left to run to completion like any other running step. The window
+        is the rest of the drain that was running when the failure was
+        written, which `max_run_seconds` bounds. A failure the drain writes
+        itself is seen at once (the DispatchError branch of `_admit_one`).
+        """
+        if not task.workflow_id:
+            return False
+        key = (task.tenant_id, task.workflow_id)
+        if key in self._swept_workflows:
+            # Swept earlier in this drain. `task` is a snapshot from before the
+            # sweep, so acting on it could cancel twice or admit a step the
+            # sweep has just cancelled.
+            return True
+        failed = self._workflow_failure(task)
+        if failed is None:
+            return False
+        self._sweep_failed_workflow(failed, report)
+        return True
+
+    def _workflow_failure(self, task: Task) -> FailedWorkflow | None:
+        """The workflow's failure verdict (`read_workflow_failure`), read at most once per drain."""
+        workflow_id = task.workflow_id
+        if not workflow_id:
+            return None
+        key = (task.tenant_id, workflow_id)
+        if key not in self._workflow_verdicts:
+            self._workflow_verdicts[key] = read_workflow_failure(
+                self._store,
+                task.tenant_id,
+                workflow_id,
+                enforced_since=self._settings.on_step_failure_enforced_since,
+            )
+        return self._workflow_verdicts[key]
+
+    def _sweep_failed_workflow(self, failed: FailedWorkflow, report: DrainReport) -> None:
+        """Cancel every step of `failed` that has not started, and nothing else.
+
+        "Has not started" is SUBMITTED, QUEUED, READY or PARKED, and each
+        cancel is re-checked inside a transaction
+        (`SchedulerStore.cancel_if_not_started`), so a step leased by a
+        concurrent drain since it was read is left to run. Steps holding
+        capacity are not cancelled, not flagged with `cancel_requested` and not
+        written to. They run to completion, and the workflow derives FAILED once
+        they finish. Killing them would throw away work that checkpointing
+        exists to keep, and releasing their capacity from here would decrement
+        pools that a live container still occupies (invariant 1).
+
+        Each query is bounded by `dependency_sweep_size`. A workflow with more
+        not-started steps than that in one state is finished by the next drain,
+        because the failed step is still FAILED and the verdict is re-read.
+        """
+        key = (failed.tenant_id, failed.workflow_id)
+        self._swept_workflows.add(key)
+        report.failed_workflows_swept += 1
+
+        first = failed.failed_steps[0]
+        label = first["step_id"] or first["task_id"]
+        reason = (
+            f"workflow step {label} is {first['state']} and on_step_failure is "
+            f"{FAIL_WORKFLOW}, so steps that had not started were cancelled"
+        )
+        detail = {
+            "workflow_id": failed.workflow_id,
+            "on_step_failure": FAIL_WORKFLOW,
+            "failed_steps": [dict(step) for step in failed.failed_steps],
+        }
+
+        cancelled = 0
+        for state in _NOT_STARTED_STATES:
+            for step in self._store.workflow_steps_in_state(
+                failed.tenant_id,
+                failed.workflow_id,
+                state,
+                self._settings.dependency_sweep_size,
+            ):
+                outcome = self._store.cancel_if_not_started(step, reason, detail)
+                if outcome.applied:
+                    self._count_cancel(report, reason="workflow_failed")
+                    cancelled += 1
+                else:
+                    # Leased by a concurrent drain, or finished, since the
+                    # query read it: left alone, and counted like every other
+                    # write the store refused to force.
+                    self._count_stale(outcome, report)
+        log.info(
+            "workflow %s failed at %s (%s); on_step_failure=%s cancelled %d step(s) "
+            "that had not started; steps holding capacity were left to finish",
+            failed.workflow_id,
+            label,
+            first["state"],
+            FAIL_WORKFLOW,
+            cancelled,
+        )
+
     # -- promotion sweeps -------------------------------------------------
 
     def _promote_dependencies(self, report: DrainReport) -> int:
@@ -583,11 +827,21 @@ class Scheduler:
         `_admit_one` counts the same cancel. Returns the number PROMOTED -- a
         promotion the store refused to force (the task had moved on since this
         sweep listed it) is counted in `report.stale_writes` instead.
+
+        `on_step_failure` is read here first. Under `fail_workflow` a FAILED or
+        DEAD_LETTERED step anywhere in the workflow cancels every step that has
+        not started, whether or not it depends on the failure
+        (`_stop_for_failed_workflow`). Under `continue`, and for a CANCELLED
+        parent under either setting, only the dependency rule below applies. It
+        is transitive: a cancelled child is itself a "failed parent" to its own
+        children, on this drain or the next.
         """
         promoted = 0
         for task in self._store.parked_tasks(
             ParkReason.DEPENDENCY_INCOMPLETE, self._settings.dependency_sweep_size
         ):
+            if self._stop_for_failed_workflow(task, report):
+                continue
             if not task.depends_on:
                 # Counted in the metric as well as the report. Incrementing only
                 # the report here made `swarm_scheduler_promoted{kind=
@@ -619,12 +873,20 @@ class Scheduler:
                     promoted += 1
         return promoted
 
-    def _promote_credentials(self, report: DrainReport | None = None) -> int:
-        """Re-ready tasks whose tenant has since registered the missing key."""
+    def _promote_credentials(self, report: DrainReport) -> int:
+        """Re-ready tasks whose tenant has since registered the missing key.
+
+        A step of a failed `fail_workflow` workflow is cancelled here instead,
+        which can happen long before its key is registered. `report` is
+        required, not optional: that cancel, and any promotion the store
+        refused to force, is counted in it.
+        """
         promoted = 0
         for task in self._store.parked_tasks(
             ParkReason.CREDENTIAL_MISSING, self._settings.dependency_sweep_size
         ):
+            if self._stop_for_failed_workflow(task, report):
+                continue
             tenant = self._tenant(task.tenant_id)
             if tenant is None or not tenant.enabled:
                 continue
@@ -641,7 +903,7 @@ class Scheduler:
                     promoted += 1
         return promoted
 
-    def _prewarm(self, report: DrainReport | None = None) -> int:
+    def _prewarm(self, report: DrainReport) -> int:
         """Promote quota-parked work just before its window reopens.
 
         BOUNDED by `prewarm_max_agents`, and safe by construction: the only
@@ -650,6 +912,9 @@ class Scheduler:
         refuses and the task stays READY -- which costs nothing (invariant 1).
         No container is started ahead of time; that would be spending money on a
         guess.
+
+        A step of a failed `fail_workflow` workflow met here is cancelled rather
+        than promoted.
         """
         budget = max(0, self._settings.core.prewarm_max_agents)
         if budget == 0:
@@ -664,6 +929,8 @@ class Scheduler:
             for task in self._store.parked_tasks(reason, self._settings.dependency_sweep_size):
                 if promoted >= budget:
                     break
+                if self._stop_for_failed_workflow(task, report):
+                    continue
                 eligible_at = task.next_eligible_at
                 if eligible_at is not None and eligible_at > horizon:
                     continue

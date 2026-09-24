@@ -9,15 +9,18 @@ copy is written from these assertions.
 THE FINDING THIS FILE RECORDS, and it is the answer to "with on_step_failure
 'continue', can one step be cancelled without failing the whole workflow?":
 
-    `on_step_failure` IS NOT READ BY ANYTHING.
+    YES, AND UNDER `fail_workflow` TOO. `on_step_failure` DOES NOT CHANGE WHAT
+    A STOP DOES.
 
-    It is declared on the frozen `Workflow` (models.py:347), accepted by the
-    API (`schemas.py:87`, a `Literal["fail_workflow", "continue"]`), written by
-    `service.py:388` and round-tripped by `codec.py:524`/`:561` -- and a grep
-    across `apps/` finds no reader. The scheduler does not consult it, the
-    reconciler does not consult it, `rollup.py` does not consult it. So the two
-    settings behave identically, and `test_on_step_failure_continue_changes_
-    nothing_today` pins that rather than letting a dialog imply otherwise.
+    When this file was written the field was read by nothing, so the two
+    settings were identical in every respect. Since 2026-09-24 the scheduler
+    reads it. Under `fail_workflow`, a FAILED or DEAD_LETTERED step cancels
+    every step of its workflow that has not started (test_on_step_failure.py).
+    A stop ends in CANCELLED, and neither setting treats CANCELLED as a failure
+    (`scheduler.loop._WORKFLOW_FAILING_STATES`). So for a stop the two settings
+    still behave identically, and `test_on_step_failure_does_not_change_what_a_
+    stop_does` pins that under both of them rather than letting a dialog imply
+    otherwise.
 
 WHAT ACTUALLY HAPPENS, which is what the copy says:
 
@@ -38,8 +41,9 @@ WHAT ACTUALLY HAPPENS, which is what the copy says:
     test_reconciler_gke_namespaced.py;
   * ONLY THEN do its DEPENDENTS fall over, because
     `scheduler.loop._FAILED_PARENT_STATES` contains CANCELLED -- the state, not
-    the flag -- and both the admission path (loop.py:295) and the dependency
-    sweep (loop.py:494) test the parent's STATE. In the window between the
+    the flag -- and both the admission path (`Scheduler._admit_one`) and the
+    dependency sweep (`Scheduler._promote_dependencies`) test the parent's
+    STATE. In the window between the
     button and the worker, nothing downstream has moved at all;
   * a step that does NOT depend on it is untouched and keeps running;
   * the workflow's derived state stays RUNNING while any sibling still holds
@@ -49,6 +53,8 @@ WHAT ACTUALLY HAPPENS, which is what the copy says:
 """
 
 from __future__ import annotations
+
+import pytest
 
 from swarm_api.rollup import derive_for
 from swarm_common.states import TaskState
@@ -178,20 +184,23 @@ def test_a_step_that_does_not_depend_on_it_keeps_running(
     assert db.docs[f"tasks/{wf['steps']['right']}"]["cancel_requested"] is False
 
 
-def test_on_step_failure_continue_changes_nothing_today(
-    client, db, make_scheduler
+@pytest.mark.parametrize("on_step_failure", ["fail_workflow", "continue"])
+def test_on_step_failure_does_not_change_what_a_stop_does(
+    client, db, make_scheduler, on_step_failure
 ) -> None:
-    """THE FINDING, pinned so the dialog cannot imply a setting that is inert.
+    """THE FINDING, pinned so the dialog cannot imply a difference that is not there.
 
-    Same workflow, same cancellation, `on_step_failure: "continue"`. If a
-    reader of this repository ever implements the field, this test fails and
-    the confirmation copy in `Workflows.tsx` and `AgentDetail.tsx` has to be
-    revisited in the same change -- which is the point of pinning it.
+    Same workflow, same cancellation, under each setting. The field is read now,
+    for FAILED and DEAD_LETTERED steps, but a stop ends in CANCELLED. If a
+    change ever makes a stop count as a failure under `fail_workflow`, this
+    fails on that parameter. The confirmation copy in `Workflows.tsx` and
+    `AgentDetail.tsx` ("the rest of the run keeps going") must then be revisited
+    in the same change. That is the point of pinning it.
     """
     seed_pool(db, "global", hard_limit=10)
-    wf = submit_fan_out(client, on_step_failure="continue")
+    wf = submit_fan_out(client, on_step_failure=on_step_failure)
     assert (
-        db.docs[f"workflows/{wf['workflow_id']}"]["on_step_failure"] == "continue"
+        db.docs[f"workflows/{wf['workflow_id']}"]["on_step_failure"] == on_step_failure
     )
     scheduler = make_scheduler()
     scheduler.drain()
@@ -200,7 +209,7 @@ def test_on_step_failure_continue_changes_nothing_today(
     worker_acts_on_the_flag(db, wf["steps"]["left"])
     scheduler.drain()
 
-    # Identical to `fail_workflow`: the dependent dies, the independent lives.
+    # Under both settings: the dependent dies, the independent lives.
     assert db.docs[f"tasks/{wf['steps']['join']}"]["state"] == "CANCELLED"
     assert db.docs[f"tasks/{wf['steps']['right']}"]["state"] == "DISPATCHED"
 

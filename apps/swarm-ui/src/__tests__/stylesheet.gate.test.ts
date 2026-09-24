@@ -23,17 +23,18 @@
 // being read quietly from disk.
 
 import STYLES from '../styles.css?raw'
-import OVERVIEW from '../Overview.tsx?raw'
 import { describe, expect, it } from 'vitest'
 
 import { gate } from './cssgate'
 
-/** The `<style>` Overview injects after `styles.css`, read out of its source. */
-function overviewSheet(): string {
-  const m = /const OVERVIEW_CSS = `([\s\S]*?)`/.exec(OVERVIEW)
-  expect(m, 'Overview.tsx no longer declares OVERVIEW_CSS as a template literal').not.toBeNull()
-  return m![1]!
-}
+// ONE SHEET. Overview used to inject a second one -- `OVERVIEW_CSS`, a
+// template literal rendered as a `<style>` after this sheet -- and this file
+// ran the gate over both. U8 folded it into `styles.css` as the sheet's last
+// block (design-system.md §9.5), so the gate below runs over the only sheet
+// there is, and the test at the foot of this file holds that it stays the only
+// one: a screen that injects CSS again has built its own primitive layer
+// outside every gate that reads this file.
+const SOURCES = import.meta.glob<string>('../*.tsx', { query: '?raw', import: 'default', eager: true })
 
 // ---------------------------------------------------------------------------
 // The gate, run against sheets whose answer is known. A gate that has only
@@ -130,10 +131,7 @@ describe('the gate, against fixtures', () => {
 // ---------------------------------------------------------------------------
 
 describe('the shipped stylesheets', () => {
-  const sheets: ReadonlyArray<readonly [string, () => string]> = [
-    ['styles.css', () => STYLES],
-    ['OVERVIEW_CSS', overviewSheet],
-  ]
+  const sheets: ReadonlyArray<readonly [string, () => string]> = [['styles.css', () => STYLES]]
 
   for (const [label, read] of sheets) {
     describe(label, () => {
@@ -159,8 +157,24 @@ describe('the shipped stylesheets', () => {
 
   it('actually read the sheet it passed', () => {
     // The precondition, so none of the above can pass against a sheet that
-    // failed to load: an empty string has no duplicates either.
+    // failed to load: an empty string has no duplicates either. `.ov-mix` is
+    // the Overview block's own rule, so this also says the fold landed.
     expect(STYLES.length).toBeGreaterThan(100_000)
-    expect(overviewSheet()).toContain('.ov-mix')
+    expect(STYLES).toContain('.ov-mix {')
+  })
+
+  it('is the only sheet: no screen injects a <style> of its own', () => {
+    // Read the way test_state_colour_discriminability.py reads it: a `<style`
+    // tag in a screen's CODE. Comments are blanked first, because the house
+    // style is a comment beside every decision and the comment recording this
+    // one names the element it removed.
+    const code = (text: string) =>
+      text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ')
+    const files = Object.entries(SOURCES)
+    expect(files.length, 'the glob read no screen sources; this check is vacuous').toBeGreaterThan(20)
+    const injecting = files.filter(([, text]) => /<style[\s>{]/.test(code(text))).map(([path]) => path)
+    expect(injecting, `these screens inject CSS outside styles.css: ${injecting.join(', ')}`).toEqual([])
+    const literal = files.filter(([, text]) => /const OVERVIEW_CSS\b/.test(text)).map(([path]) => path)
+    expect(literal, 'OVERVIEW_CSS came back as a template literal').toEqual([])
   })
 })

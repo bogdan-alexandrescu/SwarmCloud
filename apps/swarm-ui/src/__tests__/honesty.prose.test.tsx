@@ -119,8 +119,9 @@ function textOf(el: Element | null | undefined): string {
  * that a marker was present when only its help text was. Both directions are
  * wrong and neither is visible in a diff.
  *
- * `<style>` goes too: `Overview.tsx` injects its stylesheet as a child, and a
- * CSS rule is not something a reader reads.
+ * `<style>` goes too: a CSS rule is not something a reader reads. (Overview
+ * injected its stylesheet as a child until U8 folded it into styles.css; the
+ * exclusion stays so a screen that injects one again is not counted.)
  */
 function visibleText(): string {
   const clone = document.body.cloneNode(true) as HTMLElement

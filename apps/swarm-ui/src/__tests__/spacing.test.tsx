@@ -160,10 +160,11 @@ async function sweep(): Promise<Record<Theme, Report>> {
     await settle()
     const snap = container.cloneNode(true) as HTMLElement
     unmount()
-    // Overview ships its own grid in a `<style>` element (`OVERVIEW_CSS`), and
-    // those declarations carry `var()` exactly as the main sheet does. Left
-    // alone they would read as "no gap declared" -- a false finding on the one
-    // screen that owns the product's most-read layout.
+    // A screen's own `<style>` element, resolved like the main sheet. Overview
+    // shipped one (`OVERVIEW_CSS`) until U8 folded it into styles.css, and no
+    // screen ships one now -- stylesheet.gate.test.ts holds that. The loop
+    // stays so that one which comes back is resolved rather than read as "no
+    // gap declared", a false finding on whatever screen it lands on.
     snapshots.push({
       el: snap,
       local: [...snap.querySelectorAll('style')].map((el) => ({ el, source: el.textContent ?? '' })),

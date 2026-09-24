@@ -34,6 +34,10 @@ on:
       - "CLAUDE.md"
       - "CONTRACT.md"
       - ".github/workflows/application.yml"
+      # tests/unit/scripts/test_release_reuses_ci_images.py reads release.yml
+      # to hold it to reusing this workflow's build. release.yml never runs on
+      # a pull request, so without this a PR touching only it ran nothing.
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -41,8 +45,36 @@ permissions:
   id-token: write
 
 concurrency:
-  group: application-${{ github.ref }}
-  cancel-in-progress: true
+  # ON MAIN, ONE GROUP PER COMMIT. A run on main is the only build of its
+  # commit: release.yml waits for this workflow's `build images` job and
+  # promotes what it built (docs/ci.md). So nothing may stop that run before
+  # it builds -- and turning cancel-in-progress off is not enough on its own.
+  # GitHub keeps ONE pending run per group and cancels the older pending run
+  # when a newer one queues, whatever cancel-in-progress says (measured
+  # 2026-09-24: release run 36035365877 was cancelled that way, with zero
+  # jobs, two seconds after 36036058352 queued). With one group for all of
+  # main, a push made while the previous commit's run was queued cancelled
+  # it; and because this workflow runs on EVERY push to main while release.yml
+  # has a path filter, a docs-, tests- or README-only push started no release
+  # to replace that commit's, which then found its commit never built and
+  # went red.
+  #
+  # The price: runs on main are no longer serialised. A burst of merges builds
+  # every commit, in parallel -- each run bounded to 4 Cloud Builds at once
+  # (BUILD_PARALLELISM, build-images.sh) in a project whose build quota is
+  # shared. Each commit is still built exactly once.
+  #
+  # Everywhere else -- pull requests, other branches -- the group is the ref,
+  # and a newer push cancels the older run as it always did.
+  group: application-${{ github.ref == 'refs/heads/main' && format('{0}@{1}', github.ref, github.sha) || github.ref }}
+  # NOT CANCELLED ON MAIN, even though a per-commit group means no newer push
+  # shares it: a second run of the SAME commit (a workflow_dispatch while main
+  # still points at it) must queue behind the first, not kill a build a
+  # release may be waiting for.
+  # Cancelling part-way never saved the Cloud Build anyway, because stopping
+  # `gcloud builds submit` does not stop the build it submitted
+  # (build-images.sh, on_interrupt).
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   PYTHON_VERSION: "3.11"
@@ -148,6 +180,36 @@ jobs:
         # says must not be softened. A hand-off that silently misses IS a
         # softening, so it is checked rather than proof-read.
         run: ./scripts/lib/check-doc-links.sh
+
+  workflows:
+    name: release workflow wiring (actionlint)
+    runs-on: ubuntu-24.04
+    # release.yml runs only on main, so NOTHING on a pull request ever parses
+    # it: a mistyped `needs.` reference, a step output that does not exist or
+    # an input an action does not take would first fail during a release. Now
+    # that the release depends on this workflow's build job, the two are linted
+    # together. actionlint reads expressions, contexts, needs and outputs; it
+    # runs nothing and needs no credentials.
+    #
+    # Its shellcheck and pyflakes passes are OFF: scripts/ is shellchecked by
+    # the job above, and the inline run: blocks of these two files were never
+    # held to shellcheck -- turning that on is a separate change, not this one.
+    # Pinned, like every other scanner here, so the gate cannot change its mind
+    # between two runs of the same commit.
+    env:
+      ACTIONLINT_VERSION: "1.7.7"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: actionlint release.yml and application.yml
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
+            -o "${RUNNER_TEMP}/download-actionlint.bash"
+          bash "${RUNNER_TEMP}/download-actionlint.bash" "${ACTIONLINT_VERSION}" "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/actionlint" -version
+          "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
+            .github/workflows/release.yml .github/workflows/application.yml
 
   python:
     name: format / unit tests
@@ -495,31 +557,43 @@ jobs:
             echo "as an identity holding \`resourcemanager.projectIamAdmin\` on a shared project."
             echo
             echo "**Checked on this pull request:** every test, lint and manifest job above."
-            echo "**Not checked here:** that the images build. That runs on \`main\`, in"
-            echo "\`release.yml\`, behind an environment approval."
+            echo "**Not checked here:** that the images build. They are built once per commit"
+            echo "on \`main\`, by this workflow's \`build images\` job, and \`release.yml\`"
+            echo "promotes exactly the digests that job recorded."
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: build images
     runs-on: ubuntu-24.04
     needs: [python, shell, manifests]
+    # THE ONE BUILD OF A COMMIT. Owner decision, 2026-09-24 (docs/ci.md): this
+    # job builds every image once per commit on main and uploads the manifest it
+    # writes -- each image's digest, the tag, the commit and the environment --
+    # as the artifact `images-dev`. release.yml waits for THIS job for the same
+    # commit and promotes exactly those digests; it no longer builds its own.
+    # Until then every push to main built all eight images twice, the two
+    # builds competing for Cloud Build in a shared project and the release
+    # waiting behind the duplicate (94ee043: this job 16:33:09-16:41:51, the
+    # release's copy 16:39:24-16:48:17).
+    #
+    # So the job's NAME is part of an interface: scripts/lib/ci-built-images.sh
+    # finds it by name, and tests/unit/scripts/test_ci_built_images.py fails if
+    # the two disagree.
+    #
     # A build costs money and needs cloud credentials, so it runs only after the
     # free checks have passed.
     #
-    # GATED ON A GITHUB ENVIRONMENT WITH REQUIRED REVIEWERS, and that gate is
-    # load-bearing rather than procedural.
+    # THE REF PIN IS THE CONTROL.
     #
     # This job authenticates as vars.GCP_DEPLOY_SA and then runs
-    # ./scripts/build-images.sh from the PULL REQUEST'S OWN CHECKOUT.
-    # build-images.sh executes any checked-in images/<t>/cloudbuild.yaml or
-    # apps/<t>/cloudbuild.yaml as a Cloud Build config, so the PR author chooses
-    # what runs. The deployer holds roles/secretmanager.admin,
-    # roles/datastore.owner, roles/storage.admin and
-    # roles/resourcemanager.projectIamAdmin (terraform/bootstrap/variables.tf) --
-    # enough to read every tenant's provider key, read and write the whole swarm
-    # Firestore database, and self-escalate to owner.
-    #
-    # THE REF PIN IS THE CONTROL, AND IT IS NOT AN ACCIDENT ANY MORE.
+    # ./scripts/build-images.sh from its own checkout. build-images.sh executes
+    # any checked-in images/<t>/cloudbuild.yaml or apps/<t>/cloudbuild.yaml as a
+    # Cloud Build config, so whoever wrote the checkout chooses what runs. The
+    # deployer holds roles/secretmanager.admin, roles/datastore.owner,
+    # roles/storage.admin and roles/resourcemanager.projectIamAdmin
+    # (terraform/bootstrap/variables.tf) -- enough to read every tenant's
+    # provider key, read and write the whole swarm Firestore database, and
+    # self-escalate to owner.
     #
     # `github_allowed_refs` is ['refs/heads/main'], so a pull_request ref --
     # `refs/pull/<n>/merge` -- is rejected by the pool's attribute condition and
@@ -529,26 +603,30 @@ jobs:
     #     attribute condition.
     #
     # Measured on 2026-09-24, the first run after WIF was applied. That is the
-    # boundary doing its job: this job authenticates as vars.GCP_DEPLOY_SA and
-    # then runs ./scripts/build-images.sh from the PULL REQUEST'S OWN CHECKOUT,
-    # and build-images.sh executes any checked-in cloudbuild.yaml, so the PR
-    # author chooses what runs. That identity holds datastore.owner,
-    # storage.admin and resourcemanager.projectIamAdmin on a SHARED project --
-    # enough to read every tenant's Firestore, every bucket, and to self-escalate
-    # to owner. A pull request that could mint it is a pull request that owns
-    # the project, and anyone can open a pull request.
+    # boundary doing its job. A pull request that could mint this identity is a
+    # pull request that owns a SHARED project, and anyone can open a pull
+    # request.
+    #
+    # The `build-pr` environment below is NOT a second control: measured on
+    # 2026-09-24 it has no protection rules and no deployment-branch policy.
+    # The ref pin is the whole of it.
     #
     # SO THE JOB IS SKIPPED ON A PULL REQUEST RATHER THAN LEFT TO FAIL. It could
     # never go green there, and a permanently red required check is precisely the
     # standing pressure to "fix CI" by adding refs/pull/* to github_allowed_refs
     # -- which is the one change that must never be made. Leaving it red does not
     # protect anything; it only makes the protection look like a bug.
-    #
-    # Images are built on main, by release.yml, behind an environment approval.
-    # `build-not-run` below says so in the run summary, so a green pull request
+    # `build-not-run` above says so in the run summary, so a green pull request
     # is not mistaken for a built one.
     if: github.event_name != 'pull_request'
     environment: build-pr
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      # dev, and only dev: swarm-ui bakes its environment into the bundle when
+      # it is compiled, so this build is a DEV build. A prod release finds no
+      # `images-prod` record here and builds its own, through the same script.
+      ENVIRONMENT: dev
     steps:
       - uses: actions/checkout@v5
 
@@ -563,15 +641,26 @@ jobs:
       - name: build with Cloud Build
         # Never a local docker build: the targets are amd64 and Cloud Build is
         # also where the build service account lives.
-        env:
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          REGION: ${{ vars.GCP_REGION }}
-          ENVIRONMENT: dev
-        run: ./scripts/build-images.sh --tag "pr-${{ github.event.pull_request.number || github.run_id }}-$(git rev-parse --short=12 HEAD)"
+        #
+        # NO --tag. The tag is the commit's (git_sha, scripts/lib/common.sh),
+        # derived in one place, so a release that has to build a commit itself
+        # tags it exactly as this job would have. This used to be
+        # `pr-<run>-<sha>` -- a pull-request name for a build that only ever
+        # runs on main.
+        run: ./scripts/build-images.sh
 
-      - name: upload the build manifest
+      - name: record the digests for the release
         uses: actions/upload-artifact@v6
         with:
-          name: images-pr
-          path: build/images-*.json
-          retention-days: 5
+          # scripts/lib/ci-built-images.sh downloads `images-<environment>`
+          # and reads `images-<environment>.json` out of it.
+          name: images-${{ env.ENVIRONMENT }}
+          path: build/images-${{ env.ENVIRONMENT }}.json
+          if-no-files-found: error
+          # A re-run of this job rebuilds the commit; its record must replace
+          # the first one, or a release would promote the older build.
+          overwrite: true
+          # 30 days, as long as the promotion manifests release.yml keeps: a
+          # release dispatched later for this commit can still reuse it. Past
+          # that a dispatched release builds the commit again.
+          retention-days: 30

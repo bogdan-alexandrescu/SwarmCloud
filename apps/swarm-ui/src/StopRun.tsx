@@ -46,12 +46,14 @@ import {
  * attempt as CANCELLED. Stopping an agent costs the rest of that attempt, not
  * what it has already done.
  *
- * WHAT IS DELIBERATELY NOT SAID. `Workflow.on_step_failure` is accepted by the
- * API, stored on the workflow and served back -- and READ BY NOTHING. A grep
- * across `apps/` finds no consumer in the scheduler, the reconciler or the
- * rollup. So `continue` and `fail_workflow` behave identically today, and this
- * dialog describes the behaviour rather than the setting. See the module
- * docstring of the test file for the full finding.
+ * WHAT IS DELIBERATELY NOT SAID. `Workflow.on_step_failure` changes what a
+ * FAILED or DEAD_LETTERED step does. Under `fail_workflow` the scheduler cancels
+ * every step of the workflow that has not started. It does not change what a
+ * STOP does: a stop ends in CANCELLED, and neither setting treats CANCELLED as a
+ * failure (`scheduler.loop._WORKFLOW_FAILING_STATES`). So for this dialog the
+ * two settings behave identically, and it describes the behaviour rather than
+ * the setting. `test_on_step_failure_does_not_change_what_a_stop_does` pins that
+ * under both settings. See that test file's module docstring for the finding.
  */
 
 /** Which steps of this workflow die with the one being stopped. */
