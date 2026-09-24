@@ -370,13 +370,27 @@ validation_rejected() {
 #
 # Prints the HTTP status and a redacted body on failure, so a caller only has to
 # decide what to do about it.
+#
+# The body is indented by awk, not sed, because awk ends every line it prints.
+# swarm-api's JSON error bodies carry no trailing newline, and GNU sed leaves a
+# last line exactly as unterminated as it found it -- so the caller's next line
+# landed on the end of the body:
+#
+#     {"code":"unavailable","message":"..."}  FAIL could not read the runner-...
+#
+# which is a FAIL line that no longer starts with FAIL, in the one place a
+# reader scans for it. Caught by tests/integration/test_smoke_backend_matrix.py.
+_api_error_body() {
+  redact <"$1" | head -n 5 | awk '{ print "       " $0 }' >&2
+}
+
 api_fetch() {
   local path="$1" out="$2"
   if api_get "${path}" >"${out}"; then
     return 0
   fi
   err "GET ${API_PREFIX}${path} -> HTTP ${API_STATUS}"
-  redact <"${out}" | head -n 5 | sed 's/^/       /' >&2
+  _api_error_body "${out}"
   return 1
 }
 
@@ -387,7 +401,7 @@ api_send() {
     return 0
   fi
   err "${method} ${API_PREFIX}${path} -> HTTP ${API_STATUS}"
-  redact <"${out}" | head -n 5 | sed 's/^/       /' >&2
+  _api_error_body "${out}"
   return 1
 }
 
