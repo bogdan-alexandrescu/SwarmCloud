@@ -546,5 +546,7 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 #       Disabling it would take their cluster down; what stops that is
 #       modules/project_services refusing disable_on_destroy, not IAM.
 #
-# storage.admin and iap.admin are handled in wif.tf.
+# storage.admin is handled in wif.tf. iap.admin is not held at all any more:
+# IAP membership is applied from this root by the owner, and the deployer needs
+# no IAP permission (wif.tf, "WHO MAY PASS IAP").
 # ---------------------------------------------------------------------------

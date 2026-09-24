@@ -26,6 +26,11 @@ mock_provider "google" {}
 
 variables {
   project_id = "saga-agents-staging"
+
+  # Required by terraform/bootstrap since IAP membership moved into it (main,
+  # #23). It has no default on purpose, so every bootstrap run here needs one;
+  # the value only has to pass the variable's validations.
+  frontend_iap_members = ["domain:example.com"]
 }
 
 run "merging_the_conditions_changes_no_live_grant" {
@@ -727,6 +732,20 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
   variables {
     environment = "dev"
     tenants     = {}
+
+    # terraform/infra refuses to plan without a digest for every image it
+    # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
+    # The same fixture infra_guards.tftest.hcl uses.
+    image_refs = {
+      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
   }
 
   assert {
