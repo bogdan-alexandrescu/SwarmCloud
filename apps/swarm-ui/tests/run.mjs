@@ -78,5 +78,25 @@ await build({
   outExtension: { '.js': '.mjs' },
 })
 
-const res = spawnSync(process.execPath, ['--test', out], { stdio: 'inherit' })
+// THE BUILT FILES, NAMED ONE BY ONE -- never the directory. `node --test <dir>`
+// ran every test file inside it on Node 20. From Node 21 a positional argument
+// is a glob PATTERN, and a directory matches only itself, so Node 24 tried to
+// load `.test-build` as a module and failed with MODULE_NOT_FOUND (CI run
+// 36045421908, the first run of this suite on Node 24). Listing the files is
+// what both versions agree on.
+const built = readdirSync(out)
+  .filter((f) => f.endsWith('.test.mjs'))
+  .sort()
+  .map((f) => join(out, f))
+
+if (built.length !== entries.length) {
+  console.error(
+    `tests/run.mjs: built ${built.length} test file(s) from ${entries.length} entr${
+      entries.length === 1 ? 'y' : 'ies'
+    }. Refusing to run a partial suite.`,
+  )
+  process.exit(1)
+}
+
+const res = spawnSync(process.execPath, ['--test', ...built], { stdio: 'inherit' })
 process.exit(res.status === null ? 1 : res.status)

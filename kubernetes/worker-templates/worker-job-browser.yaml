@@ -21,7 +21,20 @@
 #
 # `readOnlyRootFilesystem` is true here as well; Chromium writes its profile and
 # crash dumps under $HOME, which is a writable emptyDir, and its browser bundle
-# under /opt/playwright is read at runtime and never written.
+# -- at the path the image's own `ENV PLAYWRIGHT_BROWSERS_PATH` names -- is read
+# at runtime and never written.
+#
+# THAT VARIABLE IS DELIBERATELY NOT IN `env:` BELOW. It used to be, as a second
+# copy of what images/agent-runtime-browser/Dockerfile sets next to the
+# `playwright install` that puts the browser there. The dispatcher's copy of
+# this Job never carried it, so the two already disagreed, and a second copy of
+# one value is the drift docs/mirrored-values.md records. The image is the only
+# place it can be correct. The runner child still gets it: the worker lifecycle
+# carries it BY NAME from its own environment (`lifecycle._build_child_env`,
+# #37), and that environment has it from the image, not from this file.
+# tests/unit/worker/test_kubernetes_manifests.py fails if any worker Job
+# restates a variable that image sets, or if the path appears as a value
+# anywhere under apps/, kubernetes/ or terraform/.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -171,10 +184,6 @@ spec:
             # nothing else), and puts it only into the environment of the single
             # child that needs it. A `secretKeyRef` would also have named a
             # KUBERNETES Secret, and nothing in this repository creates one.
-            # Playwright's browser bundle lives in the image, outside the
-            # writable paths, and must not be re-downloaded into the workspace.
-            - name: PLAYWRIGHT_BROWSERS_PATH
-              value: /opt/playwright
           volumeMounts:
             - name: workspace
               mountPath: /workspace

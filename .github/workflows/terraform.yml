@@ -38,7 +38,9 @@ on:
 permissions:
   contents: read
   id-token: write        # required to mint the WIF token
-  pull-requests: write   # to post the plan summary
+  # No `pull-requests: write`. It was granted "to post the plan summary" by a
+  # step that could never run (see the `plan` job), so every run carried a
+  # write token nothing used.
 
 concurrency:
   # Terraform takes a state lock. Two runs of the same environment would have one
@@ -293,20 +295,14 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: comment on the PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('terraform/infra/plan.txt', 'utf8');
-            const clipped = body.length > 60000 ? body.slice(-60000) : body;
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `### Terraform plan (dev)\n\n<details><summary>plan output</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`,
-            });
+      # NO "COMMENT ON THE PR" STEP, and none should be added back to this job.
+      # One sat here, gated `github.event_name == 'pull_request'` inside a job
+      # gated `!= 'pull_request'`: it could never run, on any event, and it was
+      # the only reason this workflow asked for `pull-requests: write`. The plan
+      # is in the run summary (above) and the text artifact (below). A pull
+      # request has no plan to post -- see "WHY A PULL REQUEST DOES NOT PLAN".
+      # tests/unit/scripts/test_workflow_step_reachability.py fails on a step
+      # its own job can never reach.
 
       - name: upload the human-readable plan
         # Only the text plan, which Terraform already renders with sensitive
