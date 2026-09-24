@@ -107,7 +107,7 @@ at the ref the dispatch names. Everything follows from that:
   still succeeds; `swarm_result` then reports *"this task cloned no repository,
   so there is no code to apply"*, and the work exists only as transcript. The
   `repo` argument is optional in the tool and has no default — the terminal
-  `swarm dispatch --repo` falls back to `$SWARM_REPO`, the MCP tool does not.
+  `uv run swarm dispatch --repo` falls back to `$SWARM_REPO`, the tool does not.
 
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.

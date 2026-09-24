@@ -28,7 +28,7 @@ cancels anything, so it is always safe to run.
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
 for a terminal without the bar glyphs.
 
-`swarm profiles` is the odd one out and is listed here because it is read-only
+`uv run swarm profiles` is the odd one out, listed here because it is read-only
 and because it is the question people ask next. It reads the frozen catalogue
 rather than the cluster, so it makes **no network call** and still answers when
 nothing else does — which is exactly when someone is guessing at a profile name
@@ -115,7 +115,7 @@ always the real answer.
 
 This is the single most likely wrong report from this plugin, so it is worth
 being exact. On a **team** deployment the API is behind IAP at a load balancer,
-and `swarm doctor` prints which door it used and what that door takes:
+and `uv run swarm doctor` prints which door it used and what it presents:
 
 ```
 front door  https://swarm.saga.xyz  (IAP; takes an OAuth ACCESS token)
