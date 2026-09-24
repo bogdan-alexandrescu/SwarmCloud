@@ -18,22 +18,41 @@ export type Liveness = 'live' | 'quiet' | 'silent' | 'finished' | 'not-started'
 const CAPTION =
   'Derived from the newest task event, so resolution is ~150s. This is not the lease heartbeat (30s) — that is not exposed by any route.'
 
+/**
+ * THE WORD, THE FIGURE, AND THE SENTENCE -- three things, in three places.
+ *
+ * `copy` is what sits in the drawer's heading, and it is a FIGURE: `4m ago`,
+ * `events not read`. It used to be the sentence -- "No event for 3m. Heartbeat
+ * events are only every ~150s, so this is not yet alarming." is seventeen
+ * words in an `<h2>`, beside a state chip and a `?` (design-system.md §12.5).
+ * `word` already says whether that age is alarming; the reason it is or is not
+ * is what §8.4 sends behind the `?`, and this badge's accessible name.
+ *
+ * `say` is the sentence, whole, and it is the badge's `aria-label`, so a
+ * keyboard and a screen reader reach it without the hover a `title=` needs.
+ * The `title` stays for the pointer and still carries the resolution caveat.
+ */
 export function livenessOf(
   task: Task,
   events: TaskEvent[] | null,
   now: number,
-): { kind: Liveness; word: string; copy: string } {
+): { kind: Liveness; word: string; copy: string; say: string } {
   if (TERMINAL_STATES.has(task.state)) {
+    const at = task.completed_at ? new Date(task.completed_at).toLocaleTimeString() : null
     return {
       kind: 'finished',
       word: 'done',
-      copy: task.completed_at
-        ? `Finished at ${new Date(task.completed_at).toLocaleTimeString()}`
-        : 'Finished',
+      copy: at ? `at ${at}` : '',
+      say: at ? `Finished at ${at}.` : 'Finished.',
     }
   }
   if (!CONCURRENCY_STATES.has(task.state)) {
-    return { kind: 'not-started', word: 'queued', copy: 'Not dispatched' }
+    return {
+      kind: 'not-started',
+      word: 'queued',
+      copy: 'not dispatched',
+      say: 'Not dispatched yet, so there is no worker to be live or silent.',
+    }
   }
 
   // Newest event. A failed event read must NOT read as silence -- "we could
@@ -43,7 +62,8 @@ export function livenessOf(
     return {
       kind: 'quiet',
       word: 'unknown',
-      copy: 'The event history could not be read, so liveness is unknown. This is not evidence the worker is gone.',
+      copy: 'events not read',
+      say: 'The event history could not be read, so liveness is unknown. This is not evidence the worker is gone.',
     }
   }
   const newest = events.reduce<number>((max, e) => {
@@ -54,7 +74,8 @@ export function livenessOf(
     return {
       kind: 'quiet',
       word: 'unknown',
-      copy: 'No event carried a readable timestamp, so liveness cannot be derived.',
+      copy: 'no timestamp',
+      say: 'No event carried a readable timestamp, so liveness cannot be derived.',
     }
   }
 
@@ -62,19 +83,21 @@ export function livenessOf(
   const mins = Math.round(ageS / 60)
 
   if (ageS < 180) {
-    return { kind: 'live', word: 'live', copy: `Last event ${ageS}s ago` }
+    return { kind: 'live', word: 'live', copy: `${ageS}s ago`, say: `Last event ${ageS}s ago.` }
   }
   if (ageS < 420) {
     return {
       kind: 'quiet',
       word: 'quiet',
-      copy: `No event for ${mins}m. Heartbeat events are only every ~150s, so this is not yet alarming.`,
+      copy: `${mins}m ago`,
+      say: `No event for ${mins}m. Heartbeat events are only every ~150s, so this is not yet alarming.`,
     }
   }
   return {
     kind: 'silent',
     word: 'silent',
-    copy: `No event for ${mins}m. The worker may be gone; the reconciler reclaims a stale lease.`,
+    copy: `${mins}m ago`,
+    say: `No event for ${mins}m. The worker may be gone; the reconciler reclaims a stale lease.`,
   }
 }
 
@@ -89,10 +112,17 @@ export function LivenessBadge({
 }) {
   const l = livenessOf(task, events, now)
   return (
-    <span className={`liveness ${l.kind}`} title={`${l.copy}\n\n${CAPTION}`}>
+    // `role="img"` so the label is the badge's accessible name -- the same
+    // pattern `Mark` uses: the glass carries the fact, the name the sentence.
+    <span
+      className={`liveness ${l.kind}`}
+      role="img"
+      aria-label={`${l.word}: ${l.say} ${CAPTION}`}
+      title={`${l.say}\n\n${CAPTION}`}
+    >
       <i aria-hidden />
       <span className="lv-word">{l.word}</span>
-      <span className="lv-copy">{l.copy}</span>
+      {l.copy !== '' && <span className="lv-copy">{l.copy}</span>}
     </span>
   )
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
@@ -64,13 +64,47 @@ function tabOf(t: Task): Tab {
 }
 
 /**
+ * WHERE THE SCREEN OPENS: the first tab that has rows, in the tabs' own order.
+ *
+ * It opened on `'live'`, always. The audit's screenshot (ui-audit-and-build-
+ * prompt.md §A1.2) is what that costs: "nothing in live" under a screen whose
+ * question is "why has mine not moved?", with the three steps that had not
+ * moved one tab over. Live is the one tab that cannot hold a step that has not
+ * moved. Live still comes first when it has anything -- a held slot is the
+ * costliest fact on the page -- so this changes only the landing that was
+ * guaranteed to be empty.
+ *
+ * `'live'` when every tab is empty, which the screen does not reach: an empty
+ * page renders the Screen's own empty state before this body mounts.
+ */
+function landingTab(counts: Readonly<Record<Tab, number>>): Tab {
+  return TABS.find((t) => counts[t.id] > 0)?.id ?? 'live'
+}
+
+/**
+ * The part of a task id a person can use: the first eight characters AFTER
+ * the prefix. `task_b5dc2568713a40158851` -> `b5dc2568`.
+ *
+ * It was `id.slice(-8)` -- `40158851` -- the TAIL, which is not a prefix of
+ * anything: it cannot be typed into a search, matched against the
+ * `task_b5dc25…` the rest of the product prints, or found in the drawer title.
+ * Ids are `<prefix>_<20 hex>` (swarm_common/models.py `new_id`); one without an
+ * underscore is shown from its start, never from its end.
+ */
+function shortTaskId(id: string): string {
+  const cut = id.indexOf('_')
+  return (cut === -1 ? id : id.slice(cut + 1)).slice(0, 8)
+}
+
+/**
  * Screen A -- Agents. One table, three tabs, no sub-pages.
  *
  * The tab counts come from the ROWS, never from /v1/stats, so the badge and
  * the table can never disagree with each other.
  */
 export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
-  const [tab, setTab] = useState<Tab>('live')
+  // `null` until a page has told the body where to land -- see `landingTab`.
+  const [tab, setTab] = useState<Tab | null>(null)
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
 
@@ -132,8 +166,8 @@ function AgentsBody({
 }: {
   onOpen: (taskId: string) => void
   page: TaskPage
-  tab: Tab
-  setTab: (t: Tab) => void
+  tab: Tab | null
+  setTab: Dispatch<SetStateAction<Tab | null>>
   profile: string
   setProfile: (p: string) => void
   grouped: boolean
@@ -153,6 +187,16 @@ function AgentsBody({
     return c
   }, [page.tasks])
 
+  // LAND ONCE, THEN STAY. The first page decides the tab; after that it is
+  // pinned, so a refresh that brings a live agent does not pull the reader off
+  // the Waiting row they were reading. A click is always the reader's.
+  // A FUNCTIONAL update, so an effect scheduled by the first render can never
+  // overwrite a click that landed before it ran.
+  const shown: Tab = tab ?? landingTab(counts)
+  useEffect(() => {
+    if (tab === null) setTab((current) => current ?? shown)
+  }, [tab, shown, setTab])
+
   const profiles = useMemo(
     () => Array.from(new Set(page.tasks.map((t) => t.runner_profile))).sort(),
     [page.tasks],
@@ -161,10 +205,10 @@ function AgentsBody({
   const rows = useMemo(
     () =>
       page.tasks
-        .filter((t) => tabOf(t) === tab)
+        .filter((t) => tabOf(t) === shown)
         .filter((t) => profile === '' || t.runner_profile === profile)
         .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)),
-    [page.tasks, tab, profile],
+    [page.tasks, shown, profile],
   )
 
   // THE SCOPE OF EVERY FIGURE ABOVE, IN ONE QUALIFIER.
@@ -190,7 +234,7 @@ function AgentsBody({
             <button
               key={t.id}
               role="tab"
-              aria-selected={tab === t.id}
+              aria-selected={shown === t.id}
               aria-label={t.say}
               onClick={() => setTab(t.id)}
             >
@@ -211,7 +255,7 @@ function AgentsBody({
           </select>
         </label>
 
-        {tab !== 'live' && (
+        {shown !== 'live' && (
           <label className="ag-filter check">
             <input
               type="checkbox"
@@ -237,9 +281,9 @@ function AgentsBody({
             <Mark
               kind="zero"
               say={
-                tab === 'live'
+                shown === 'live'
                   ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
-                  : tab === 'waiting'
+                  : shown === 'waiting'
                     ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
                     : 'Nothing has finished in the loaded page.'
               }
@@ -251,11 +295,11 @@ function AgentsBody({
                 invariant 1 rather than anything the row could show. That is
                 the test for a glyph -- a platform rule no label can carry --
                 and `prose.runs.test.tsx` pins it to this empty state. */}
-            nothing in {tab}
+            nothing in {shown}
             <HelpCard topic="capacity" />
           </h3>
         </div>
-      ) : grouped && tab !== 'live' ? (
+      ) : grouped && shown !== 'live' ? (
         <GroupedRows rows={rows} now={now} onOpen={onOpen} />
       ) : (
         <div className="rows">
@@ -401,7 +445,7 @@ function TaskRow({
         <b>{task.runner_profile}</b>
         {task.model && <span className="model">{task.model}</span>}
         <span className="id" title={task.id}>
-          {task.id.slice(-8)}
+          {shortTaskId(task.id)}
         </span>
       </span>
 

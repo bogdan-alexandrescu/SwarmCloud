@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { loadCheckpoints, loadTaskLogs } from './api'
+import { CheckpointBrowser } from './CheckpointBrowser'
 import { FailedPanel } from './Shell'
 import type { Result } from './fetch'
 import {
@@ -147,7 +148,7 @@ function CheckpointsPanel({ task }: { task: Task }) {
       ) : (
         <div className="ckpt-rows">
           {page.checkpoints.map((c) => (
-            <CheckpointRow key={c.checkpoint_id} record={c} />
+            <CheckpointRow key={`${c.attempt_id}/${c.checkpoint_id}`} taskId={task.id} record={c} />
           ))}
         </div>
       )}
@@ -198,14 +199,33 @@ function LatestPointer({ page }: { page: CheckpointsPage }) {
   }
 }
 
-function CheckpointRow({ record }: { record: CheckpointRecord }) {
+function CheckpointRow({ taskId, record }: { taskId: string; record: CheckpointRecord }) {
+  // What is INSIDE the checkpoint (A3): the tree, one file, the archive. See
+  // CheckpointBrowser.tsx; it owns its own reads and its own absent states.
+  const [browsing, setBrowsing] = useState(false)
   return (
     <div className="ckpt">
       <div className="ckpt-head">
         <span className="mono">{record.checkpoint_id}</span>
         {record.is_latest_pointer && <span className="tag ok">latest</span>}
         {record.label !== null && <span className="tag">{record.label}</span>}
+        <button
+          type="button"
+          className="copy"
+          aria-expanded={browsing}
+          onClick={() => setBrowsing((v) => !v)}
+        >
+          files
+        </button>
       </div>
+      {browsing && (
+        <CheckpointBrowser
+          taskId={taskId}
+          attemptId={record.attempt_id}
+          checkpointId={record.checkpoint_id}
+          onClose={() => setBrowsing(false)}
+        />
+      )}
       <dl className="kv">
         <dt>Attempt</dt>
         <dd className="mono">

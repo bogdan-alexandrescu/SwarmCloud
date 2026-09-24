@@ -615,13 +615,87 @@ untouched — they are the one place on a proportion where colour earns its keep
 and `test_state_colour_discriminability.py` holds the textures apart in
 greyscale.
 
-> **An open question for the owner, held open on purpose.** `.wf-meter`'s fill
-> carries `ctl-util-fill wf-meter-fill`, so the monochrome default reached
-> straight into the frozen screen and turned its 54px meter grey. It is exempted
-> back to `--info` by one line, because Workflows was explicitly frozen. That
-> leaves the product with **one blue proportion and every other proportion
-> grey**. Resolving the inconsistency means changing a screen the owner said not
-> to change, so it is recorded here rather than decided.
+> **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
+> held open here was this: `.wf-meter`'s fill carries
+> `ctl-util-fill wf-meter-fill`, so the monochrome default reached straight
+> into the frozen Workflows screen and turned its 54px meter grey, and one line
+> (`.ctl-util-fill.wf-meter-fill { background: var(--info) }`) exempted it
+> back to blue. That left the utilisation fills with one blue member and the
+> rest grey, and resolving it meant changing a screen the owner had frozen.
+>
+> **The decision: the exemption is removed and the meter takes the monochrome
+> default (`--text-dim`) like every other `.ctl-util-fill`.** `.is-warn` /
+> `.is-bad` / `.is-paused` keep their hue and their texture. **Why:** one rule,
+> not a rule and an exception; and **colour on a bar is a verdict.** A
+> workflow's progress ("three of five steps done") is a fact, not a verdict, so
+> painting it blue spent a hue on a bar for being a bar, which is exactly what
+> this section exists to stop. Workflows therefore no longer renders
+> pixel-identically to the version the owner froze; that is the accepted cost
+> of the decision.
+>
+> **How it is held, corrected 2026-09-24.** The first guard for this,
+> `test_state_colour_discriminability.py::
+> test_a_proportion_fill_takes_a_hue_only_from_a_verdict`, went red against the
+> exemption before the exemption was removed. But this paragraph first said it
+> failed on "a second exemption under a new name", and that was false. It read
+> `styles.css` only, and only rules whose subject literally named
+> `.ctl-util-fill`. Mutation commit `232921d` painted the meter blue five ways
+> and left it green (CI run 35977623224): through the fill's other class
+> (`.wf-meter .wf-meter-fill`), later in the sheet at equal specificity
+> (`.wf-meter-fill`), through the parent (`.wf-meter > span`), through
+> `:not(.is-warn)`, and in the CSS Overview injects (`OVERVIEW_CSS`).
+>
+> The guard that replaced it asks what paints each fill the product actually
+> renders. It finds every element in the `.tsx` whose className names
+> `ctl-util-fill`, and tries each class that element can carry: its literals,
+> both arms of its conditionals, the traced values of an identifier it
+> interpolates, and any class a sheet names beside `.ctl-util-fill`. It reads
+> the element's parent from the same JSX. It then matches every `background`
+> rule in `styles.css` and in every sheet a screen injects, at every
+> breakpoint, with real selector semantics, and fails on any rule that could
+> paint an un-verdicted fill something other than grey unless a grey rule that
+> certainly applies outranks it. It also fails on an inline `style`
+> background. A `<style>` it cannot read, an identifier it cannot trace, or a
+> spread on a fill fails a companion test instead of passing unseen.
+>
+> **What it still does not see:** a class that reaches a fill through a helper
+> function or a prop set in another file; a fill whose className does not
+> literally name `ctl-util-fill`; CSS injected by anything other than a
+> `<style>` in a `.tsx`. It reads source text and does not render, so it says
+> what the sheets would paint, not what a browser painted.
+>
+> **One named exception, and it is a grey.** Overview draws a *projected*
+> utilisation reading (real, but its window reset or its poll is stale) with
+> `.ctl-util-fill.ov-projected { background: var(--text-faint) }`. That rule
+> shipped before this decision and the first guard never saw it. It is now
+> listed by name in the test's `DOCUMENTED_GREYS`, and
+> `test_a_documented_grey_is_a_grey` resolves it to a text grey. So "grey like
+> every other proportion" holds for it, in a second grey that means "not
+> current".
+>
+> It was spelled `var(--ctl-absent)` while `--ctl-absent` was
+> `var(--text-faint)`. The ui-hygiene lane (PR #26) then split `--ctl-absent`
+> into its own warm stone so an absence no longer matches the CANCELLED fill,
+> and on merge that would have turned this bar warm: a colour picked to differ
+> from grey by its hue, on a fill this decision says is grey.
+> `test_a_documented_grey_is_a_grey` failed on exactly that. The bar now names
+> `--text-faint`, the pixel it always painted, and the tilde beside it (text,
+> not a fill) keeps `--ctl-absent`.
+>
+> **What this does not cover, found while answering it.** The decision was
+> framed as "grey like every other proportion", and three bar fills outside the
+> `.ctl-util-fill` family were still `--info` at `b0fff1b`: `.sr-bar > i`
+> (the per-state split in `PlatformCounts.tsx` and the runner-profile split in
+> `Activity.tsx`), `.coverage > i` (the usage-coverage strip in
+> `Activity.tsx`), and `.ctl-track > i`, which the comment beside the default
+> rule keeps `--info` on purpose as "the meter beside a number" (no screen
+> currently renders a bare `<i>` inside `.ctl-track`). They share the
+> `background: var(--info)` rule in `styles.css`. Whether the same "colour on a
+> bar is a verdict" rule extends to them is a question for the owner and was
+> not decided here. One consequence of the corrected guard: if a screen ever
+> renders a `.ctl-util-fill` as an `<i>` inside `.ctl-track`, then
+> `.ctl-track > i` (0,1,1) outranks the grey default (0,1,0) and paints it
+> blue. The guard fails on that, because it reads the parent.
 
 
 Four track states, and they must not converge:
@@ -1250,9 +1324,10 @@ Stated here rather than discovered at 3am.
 it is already the target — 13 boxes, 1 shadow, 11 colours, zero type at or above
 24px, state as a plain lowercase word beside an 8px dot, a 37px row carrying ten
 facts. The DAG, the collapsed one-line row and the absence of a mini-map on that
-row are settled owner decisions. The one line in `styles.css` that exempts
-`.wf-meter-fill` from the monochrome default exists to keep that promise, and
-§6.4 records the inconsistency it leaves rather than hiding it.
+row are settled owner decisions. The one line in `styles.css` that exempted
+`.wf-meter-fill` from the monochrome default existed to keep that promise;
+on 2026-09-24 the owner chose consistency over it and the meter went grey
+(§6.4 records the decision and why).
 
 ### 11.5 What no gate can see, and how each claim here was proved
 
@@ -1882,7 +1957,8 @@ same, but the `.ctl-table` inside still draws its own border, so a reader
 toggling between them sees one boundary appear and disappear. Both are
 defensible and the toggle is an owner-facing control, so which one is right is
 a product judgement rather than a system one. Recorded, not decided — the same
-way §6.4 records `.wf-meter`'s blue.
+way §6.4 recorded `.wf-meter`'s blue until the owner answered it on
+2026-09-24.
 
 ---
 
@@ -2124,14 +2200,29 @@ move every neighbour by a pixel at the moment the strip most needs to hold still
   place they could be changed. It is the one edit this pass made outside the
   token and primitive layer, and it is five string literals with no styling
   attached.
-* **`Brand.tsx`'s environment badge still shouts, deliberately not fixed here.**
-  `label: 'ENVIRONMENT UNKNOWN'` and `label: env.name.toUpperCase()` render
-  `LOCAL` and `PRODUCTION` in capitals from the source. Under §13.2 that is
-  emphasis on a string we author and should go — but the prod badge is a
-  **safety** signal with its own full-width bar, `brand.test.tsx` asserts the
-  exact string `'ENVIRONMENT UNKNOWN'` twice, and whether the production banner
-  is allowed to shout is a product judgement rather than a typographic one.
-  Recorded for the owner, not decided here.
+* **`Brand.tsx`'s environment badge still shouted, deliberately not fixed in
+  this pass — and answered by the owner on 2026-09-24.** The question as it
+  was left: `label: 'ENVIRONMENT UNKNOWN'` and `label: env.name.toUpperCase()`
+  rendered `DEV`, `LOCAL` and `PRODUCTION` in capitals from the source. Under
+  §13.2 that is emphasis on a string we author and should go — but the prod
+  badge is a **safety** signal with its own full-width bar, and whether the
+  production banner is allowed to shout is a product judgement rather than a
+  typographic one.
+
+  **The decision (2026-09-24): `dev` and `local` render in sentence case like
+  every other authored string; the PRODUCTION banner and ENVIRONMENT UNKNOWN
+  stay in capitals, because they are safety signals.** In `Brand.tsx`,
+  `envTreatment` upper-cases `env.name` only for `kind: 'production'`, keeps
+  the literal `'ENVIRONMENT UNKNOWN'`, and writes every non-production
+  declared name and the loopback case through `sentenceCase` — so the deployed
+  dev console reads `Dev`, a laptop reads `Local`, and a `staging` build reads
+  `Staging`. The rule that falls out is that **capitals are spent exactly where
+  the header draws its full-width bar**: the two kinds where a mistake is
+  expensive shout in both channels, and nothing else shouts in either.
+  `brand.test.tsx` holds it as a property over `classifyEnvironment`'s inputs
+  (loud kinds print in capitals, quiet kinds in sentence case, capitals
+  coincide with the bar), not as a list of literal strings; it was pushed red
+  against the old casing before `Brand.tsx` changed.
 * **Screen-private boxes are untouched.** `.tile` (`border: 1px solid var(--line)`),
   `.wf-bar`'s row border and the other 38 screen namespaces still draw their own.
   §13.3 is the rule they collapse into; applying it is the build lanes' job, and
