@@ -17,8 +17,11 @@ that decides "reuse only" versus "reuse or build" evaluated for each event:
     on a push that is `only`: no second Cloud Build;
   * the job that reuses can read CI's runs (actions: read, GH_TOKEN) and still
     authenticate to GCP (id-token: write);
-  * it promotes the manifest that step wrote, through push-images.sh
-    --manifest, with the scan on and after trivy is installed;
+  * it scans the manifest that step wrote (push-images.sh --scan-only, before
+    the approval) and hands it on; the one promotion fetches that manifest
+    and promotes it through push-images.sh --manifest, with the scan on and
+    after trivy is installed (test_release_prod_gate.py holds the promotion
+    behind the approval);
   * application.yml builds every commit the release would ship, with no tag of
     its own, and a run on main is neither cancelled nor -- while still queued
     -- replaced by the next push.
@@ -60,6 +63,23 @@ def _steps(workflow: dict, script: str):
         for index, step in enumerate(job.get("steps") or []):
             if re.search(rf"(^|[\s/]){re.escape(script)}(\s|$)", _code(step.get("run", ""))):
                 yield job_id, job, index, step
+
+
+def _needs(job: dict) -> list[str]:
+    needs = job.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _upstream(jobs: dict, job_id: str) -> set[str]:
+    """Every job `job_id` needs, directly or through another job."""
+    seen: set[str] = set()
+    todo = list(_needs(jobs[job_id]))
+    while todo:
+        need = todo.pop()
+        if need not in seen:
+            seen.add(need)
+            todo.extend(_needs(jobs[need]))
+    return seen
 
 
 def _gh_format(template: str, *args) -> str:
@@ -144,24 +164,88 @@ def test_the_job_that_reuses_can_read_ci_and_still_reach_gcp():
         assert "GH_TOKEN" in env, f"release.yml's {job_id} job gives gh no token"
 
 
-def test_the_release_scans_and_promotes_the_manifest_it_obtained():
+# build-images.sh writes build/images-${ENVIRONMENT}.json; the scan and the
+# promotion must both read exactly that file.
+_OBTAINED_MANIFEST = re.compile(r"--manifest\s+\"?build/images-\$\{?ENVIRONMENT\}?\.json\"?")
+
+
+def _trivy_installed_before(steps: list, index: int) -> bool:
+    installs = [
+        i for i, s in enumerate(steps)
+        if "trivy" in _code(s.get("run", "")) and "install" in _code(s.get("run", ""))
+    ]
+    return bool(installs) and min(installs) < index
+
+
+def _uses(step: dict, action: str) -> bool:
+    return str(step.get("uses", "")).startswith(f"actions/{action}@")
+
+
+def test_the_release_scans_before_the_approval_and_promotes_that_manifest_after_it():
+    """Owner decision, 2026-09-24 (docs/ci.md): moving :prod sits behind the
+    prod approval; scanning, which is read-only, may come before it. So the
+    job that obtains the images scans them WITHOUT promoting and hands that
+    exact manifest on, and the one promotion -- in a later job, which
+    test_release_prod_gate.py holds behind the approval -- fetches it, and
+    scans it again as part of promoting it."""
     release = _workflow("release.yml")
-    for job_id, job, build_index, _ in _steps(release, "build-images.sh"):
-        steps = job["steps"]
-        promotes = [(i, s) for i, s in enumerate(steps) if "push-images.sh" in _code(s.get("run", ""))]
-        assert len(promotes) == 1, f"release.yml's {job_id} job promotes {len(promotes)} times, not once"
-        index, step = promotes[0]
-        code = _code(step["run"])
-        assert index > build_index, "the promotion runs before the images are obtained"
-        # build-images.sh writes build/images-${ENVIRONMENT}.json; that file.
-        assert re.search(r"--manifest\s+\"?build/images-\$\{?ENVIRONMENT\}?\.json\"?", code), (
-            f"the promotion does not promote the manifest the step before it wrote: {code!r}"
-        )
-        assert re.search(r"(^|\s)--scan(\s|$)", code) and "--no-scan" not in code, (
-            f"the promotion does not scan: {code!r}"
-        )
-        installs = [i for i, s in enumerate(steps) if "trivy" in _code(s.get("run", "")) and "install" in _code(s.get("run", ""))]
-        assert installs and min(installs) < index, "trivy is not installed before the scan that needs it"
+    jobs = release["jobs"]
+    rendered = {"github.event.inputs.environment": None}  # a push: dev
+
+    obtained = list(_steps(release, "build-images.sh"))
+    assert len(obtained) == 1, f"release.yml obtains its images in {len(obtained)} places"
+    build_id, build, build_index, _ = obtained[0]
+
+    # 1. Before the approval: scan exactly what was obtained, move nothing.
+    scans = [(i, s) for i, s in enumerate(build["steps"]) if "push-images.sh" in _code(s.get("run", ""))]
+    assert len(scans) == 1, (
+        f"release.yml's {build_id} job runs push-images.sh {len(scans)} times; it should scan, once"
+    )
+    index, step = scans[0]
+    code = _code(step["run"])
+    assert index > build_index, "the scan runs before the images are obtained"
+    assert _OBTAINED_MANIFEST.search(code), f"the scan does not read the manifest the step before it wrote: {code!r}"
+    assert re.search(r"(^|\s)--scan-only(\s|$)", code) and "--no-scan" not in code, (
+        f"release.yml's {build_id} job runs before the approval and does more than scan: {code!r}"
+    )
+    assert _trivy_installed_before(build["steps"], index), "trivy is not installed before the scan that needs it"
+    handed = [
+        s for s in build["steps"][index + 1:]
+        if _uses(s, "upload-artifact")
+        and _render((s.get("with") or {}).get("path", ""), **rendered) == "build/images-dev.json"
+    ]
+    assert len(handed) == 1, (
+        f"release.yml's {build_id} job does not hand the manifest it scanned to the promotion "
+        "(one upload-artifact of build/images-<env>.json, after the scan)"
+    )
+    artifact = _render(handed[0]["with"]["name"], **rendered)
+
+    # 2. After it: one promotion, of that manifest, scanned again.
+    promotions = [
+        (job_id, i, s)
+        for job_id, job in jobs.items()
+        for i, s in enumerate(job.get("steps") or [])
+        if "push-images.sh" in _code(s.get("run", "")) and "--scan-only" not in _code(s.get("run", ""))
+    ]
+    assert len(promotions) == 1, f"release.yml promotes in {len(promotions)} places, not one"
+    job_id, index, step = promotions[0]
+    job = jobs[job_id]
+    code = _code(step["run"])
+    assert _OBTAINED_MANIFEST.search(code), f"the promotion does not promote the manifest that was scanned: {code!r}"
+    assert re.search(r"(^|\s)--scan(\s|$)", code) and "--no-scan" not in code, (
+        f"the promotion does not scan: {code!r}"
+    )
+    assert _trivy_installed_before(job["steps"], index), "trivy is not installed before the promotion's scan"
+    fetched = [
+        i for i, s in enumerate(job["steps"][:index])
+        if _uses(s, "download-artifact")
+        and _render((s.get("with") or {}).get("name", ""), **rendered) == artifact
+        and _render((s.get("with") or {}).get("path", ""), **rendered).rstrip("/") == "build"
+    ]
+    assert fetched, f"release.yml's {job_id} job promotes without fetching {artifact!r} into build/ first"
+    assert job_id == build_id or build_id in _upstream(jobs, job_id), (
+        f"release.yml's {job_id} job does not need {build_id}, so the manifest it fetches may not exist yet"
+    )
 
 
 def test_application_builds_every_commit_the_release_would_ship():
