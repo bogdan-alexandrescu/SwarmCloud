@@ -718,7 +718,10 @@ because every other test in that file stays green through it.
   `shell.test.tsx` asserts it for every section in the rail.
 - **Every old hash resolves, with its tail, and the address bar is rewritten**
   to the current spelling. `#agents/…`, `#pools/…`, `#activity/…`,
-  `#history/…`, `#runtimes/…` and `#settings/…` all land.
+  `#history/…`, `#runtimes/…` and `#settings/…` all land. A *bare* retired head
+  (`#runtimes`, `#history`) lands on the new section's first pane, as an
+  unrecognised tail always has — `canonical` has never written a bare section
+  hash, so one exists only where somebody typed it.
 - **An alias is for hashes this app did not write.** `nav.links.test.tsx` fails
   the build if an internal href uses one, which is why the two `#history/timeline`
   links in `Overview.tsx` are now `#work/timeline` and the one that said

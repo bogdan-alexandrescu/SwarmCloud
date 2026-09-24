@@ -105,7 +105,7 @@ To translate a filename or a route in a report into today's address:
 | `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/accounts` |
 | `#activity/timeline`, `#history/timeline` | `#work/timeline` |
 | `#counts`, `#history/counts`, `#activity/counts` | `#admin/counts` |
-| `#runtimes`, `#runtimes/catalogue` | `#capacity/catalogue` |
+| `#runtimes/catalogue` | `#capacity/catalogue` |
 | `#settings/limits`, `#settings/accounts` | `#admin/limits`, `#capacity/accounts` |
 | the "Agents" section | the **Work** section |
 | the "Pools" section | the **Capacity** section |
@@ -123,7 +123,11 @@ measurement that prompted it is [ux-plan.md](ux-plan.md) §1.4.
 
 Every old hash in that left column still resolves in the app, with its tail
 intact, so a link pasted out of a two-day-old report still lands on the pane it
-named. What the app will not do is *write* one: an alias is for a hash someone
+named. A *bare* retired section hash — `#runtimes`, `#history`, `#agents` —
+lands on the new section's first pane rather than on any particular one, which
+is what an unrecognised tail has always done; the app has never written a bare
+section hash into the address bar (`canonical` always emits
+`<section>/<tab>`), so those exist only where someone typed one by hand. What the app will not do is *write* one: an alias is for a hash someone
 else saved, never a second name this product may emit, and
 `nav.links.test.tsx` fails the build over any internal href that uses one.
 
