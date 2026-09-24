@@ -73,6 +73,7 @@ judge() {
     --argjson deny "$(deny_json)" \
     --argjson allow_types "$(unlabelable_types)" \
     --arg project "${PROJECT_ID}" \
+    --arg prefix "${SWARM_NAME_PREFIX:-swarm-}" \
     "${plan}" >"${out}"
 }
 
@@ -106,7 +107,7 @@ require_valid_verdict() {
     die "refusing a plan this guard was unable to evaluate -- unreadable is not the same as clean"
   fi
 
-  for field in denylist_touches offenders wrong_project unlabelled_creations; do
+  for field in denylist_touches offenders wrong_project unlabelled_creations foreign_touches; do
     # `null | length` is 0 in jq, so a missing or renamed field would otherwise
     # read as a clean zero. The type is checked too: a scalar has a length.
     if ! jq -e --arg f "${field}" 'has($f) and (.[$f] | type == "array")' \
@@ -124,6 +125,37 @@ report() {
 
   # Before anything is counted. A verdict that cannot be read is a refusal.
   require_valid_verdict "${verdict}"
+
+  # THE ALLOWLIST HALF, REPORTED AND NOT ENFORCED -- yet.
+  #
+  # The check below refuses a change naming one of 21 resources someone wrote
+  # down. This refuses the inverse: a change to a resource that never says it is
+  # OURS. It closes the hole a blocklist cannot -- anything the other team
+  # creates TOMORROW is on no list, and `offenders` reads deletions only while
+  # unlabelable types (IAM bindings, API enablements) are exempt from the label
+  # rule entirely.
+  #
+  # IT DOES NOT ABORT YET, and that is deliberate rather than timid.
+  # destroy-guard.jq states the reason a few lines from a different rule: "a
+  # guard that is wrong about ordinary applies is one people learn to bypass,
+  # which is worse than not having it." This predicate has never seen a real
+  # `terraform show -json` apply plan, and the deploy pipeline reached a working
+  # state for the first time on 2026-09-24 after six failed attempts. A false
+  # positive here would abort it, and the guard would be what got blamed.
+  #
+  # TO MAKE IT FATAL: once a real plan reports this empty, set `abort=1` in the
+  # branch below. That is the entire change, and this comment is where to come
+  # back to.
+  n="$(jq -r '.foreign_touches | length' "${verdict}")"
+  if [[ "${n}" -gt 0 ]]; then
+    hr
+    warn "${n} change(s) target a resource that does not identify itself as ours:"
+    jq -r '.foreign_touches[] | "    \(.address)  (\(.type))  \(.actions|join("+"))  name: \(.name)"' \
+      "${verdict}" >&2
+    warn "NOT FATAL YET -- see the comment above this check in scripts/lib/plan-guard.sh"
+  else
+    ok "every change targets a resource that identifies itself as ours"
+  fi
 
   n="$(jq -r '.denylist_touches | length' "${verdict}")"
   if [[ "${n}" -gt 0 ]]; then

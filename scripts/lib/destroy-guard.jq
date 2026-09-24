@@ -123,6 +123,67 @@ def data_bearing:
   [ "google_firestore_database", "google_storage_bucket", "google_bigquery_dataset",
     "google_sql_database_instance", "google_redis_instance", "google_filestore_instance" ];
 
+# ---------------------------------------------------------------------------
+# THE ALLOWLIST HALF: is this resource OURS?
+# ---------------------------------------------------------------------------
+#
+# Everything above this point is a BLOCKLIST -- it refuses a change that names
+# one of 21 resources someone wrote down. That leaves two holes, and the second
+# is the one that matters:
+#
+#   1. anything the other team creates TOMORROW is not on the list;
+#   2. `offenders` only reads DELETIONS, and unlabelable types (IAM bindings,
+#      API enablements) are exempt from the label rule entirely -- so an IAM
+#      binding granting something on a service account created next week passes
+#      both checks in a project holding another team's production.
+#
+# So: a resource is OURS if it says so, and the ways it can say so are
+# deliberately few.
+#
+#   * it carries managed-by=swarm-terraform, in either half of the change.
+#     This is the primary signal and the one `make destroy` already depends on.
+#   * it is a CREATE. We are the thing creating it, and `unlabelled_creations`
+#     separately requires the label, so a create that is not ours fails there.
+#   * its own name begins with the platform prefix. This is the fallback for
+#     unlabelable types, which cannot carry the label at all.
+#
+# `name_of` reads the resource's OWN name rather than `tokens_both`, and that
+# distinction is the whole design. `tokens_both` deliberately includes every
+# referenced name -- a network, a secret id, a member -- which is right for the
+# blocklist, where naming a denied resource is the offence. It is wrong here:
+# an IAM member is a *@project.iam.gserviceaccount.com address and a region is
+# `us-central1`, so requiring every token to start with `swarm-` would refuse
+# every plan this repository has ever produced.
+def name_of:
+  ( (after.name? // before.name? // "") | tostring ) as $n
+  | ( ($n | split("/") | last) // "" );
+
+# $ARGS.named, NOT $prefix, AND THIS IS A COMPILE-TIME DISTINCTION.
+#
+# `$prefix` is a compile-time binding: jq refuses to COMPILE a program that
+# references it when no `--arg prefix` was passed. `plan-guard.sh` passes one;
+# `destroy.sh --self-test` does not, and neither does anything else that loads
+# this file. So referencing `$prefix` directly took out three CI jobs at once --
+# the destroy-guard self-test, the integration suite and the policy assertions --
+# and it did so before a single assertion ran, which is why the failure looked
+# nothing like "the new check is wrong".
+#
+# I tested the predicate by invoking jq WITH `--arg prefix`, which is the one
+# way not to see this. The lesson is the session's own: a check has to be
+# exercised the way its callers call it, not the way its author does.
+#
+# `$ARGS.named` is always defined, so the `//` default makes the argument
+# genuinely optional and the program compiles for every caller.
+def platform_prefix:
+  ( $ARGS.named.prefix // "swarm-" );
+
+def is_ours($prefix):
+  . as $r
+  | ( ($r | managed_of(label_map_of(before))) == "swarm-terraform" )
+    or ( ($r | managed_of(label_map_of(after))) == "swarm-terraform" )
+    or ( (($r.change.actions // []) | index("create")) != null )
+    or ( ($r | name_of) | startswith($prefix) );
+
 def summarise($deny; $allow_types; $project):
   [ .resource_changes[]? | select(is_deletion) ] as $deletions
   | [ .resource_changes[]?
@@ -154,6 +215,25 @@ def summarise($deny; $allow_types; $project):
         | select(($hits | length) > 0 or ($r | default_network_hit_both))
         | { address: $r.address, type: $r.type, actions: $r.change.actions,
             matched: (if ($hits|length) > 0 then $hits else ["default-network"] end) } ],
+
+      # WARN-ONLY IN THIS CHANGE. The shell reports it and does not abort on it.
+      #
+      # The reason is written a few lines up in this file, about a different
+      # rule, and applies exactly: "a guard that is wrong about ordinary applies
+      # is one people learn to bypass, which is worse than not having it." This
+      # predicate has never been run against a real `terraform show -json`
+      # apply plan, and the deploy pipeline reached a working state for the
+      # first time on 2026-09-24. A false positive here aborts it.
+      #
+      # It becomes fatal once a real plan has reported it empty. That is one
+      # line in plan-guard.sh and it is named in the report it prints.
+      foreign_touches: [ .resource_changes[]?
+        | select((.change.actions // []) | index("no-op") | not)
+        | . as $r
+        | select(($r | is_ours(platform_prefix)) | not)
+        | { address: $r.address, type: $r.type, actions: $r.change.actions,
+            name: ($r | name_of),
+            reason: "no managed-by=swarm-terraform in either half, not a create, and its name does not begin with \(platform_prefix)" } ],
 
       wrong_project: [ $deletions[]
         | select((.change.before.project // $project) != $project)
