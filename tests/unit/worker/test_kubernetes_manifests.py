@@ -904,14 +904,36 @@ def test_the_reconciler_may_delete_but_never_create(tenant_docs):
 
 def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
     """A RoleBinding to a subject that does not exist applies cleanly and
-    grants nothing, so a typo here fails looking exactly like success."""
+    grants nothing, so a typo here fails looking exactly like success.
+
+    THE SET, NOT THE LIST, and that is this file disagreeing with itself rather
+    than a weakening. The RBAC fix gave each binding a SECOND subject -- the
+    numeric uniqueId GKE actually presents for an access-token caller -- and
+    `render.py` falls back to the email when no `--scheduler-uid` is supplied.
+    `tenant_docs` supplies none, so both subjects are the email, deliberately:
+    `test_an_unsupplied_unique_id_renders_a_duplicate_and_never_a_placeholder`
+    asserts that the duplicate is the correct fallback and that the alternative
+    -- rendering a literal `__SCHEDULER_UID__`, or inventing a number -- is a
+    subject that authorises nobody. This assertion was written against the
+    one-subject shape and kept the list form, so the two tests in this one file
+    stated the same spec two ways and the file could not pass itself.
+
+    So this test owns ONE fact: every subject names the identity we mean, with no
+    typo. How MANY subjects there are, and why, belongs to the test that pins the
+    fallback -- keeping the count here as well would be a third copy of it.
+    """
     for binding_name, expected in (
         ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
         ("swarm-reaper", f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"),
     ):
         binding = one(tenant_docs, "RoleBinding", binding_name)
         subjects = binding["subjects"]
-        assert [s["name"] for s in subjects] == [expected]
+        assert subjects, f"{binding_name} binds nobody at all"
+        assert {s["name"] for s in subjects} == {expected}, (
+            f"{binding_name} names {sorted(s['name'] for s in subjects)}; with no "
+            f"uniqueId supplied every subject must be {expected}, because a "
+            f"binding to any other string applies cleanly and grants nothing"
+        )
         # `User`, not `ServiceAccount`: the scheduler runs on Cloud Run as a
         # Google identity and has no Kubernetes ServiceAccount of its own.
         assert {s["kind"] for s in subjects} == {"User"}
