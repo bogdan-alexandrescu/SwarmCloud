@@ -29,6 +29,16 @@ So the check happens before the workspace exists, before a secret is read, and
 before the runner is started; a fenced worker emits `generation_fenced` and
 exits, and it does NOT touch the lease, because the live lease is not its own.
 
+**The same rule holds on the way out, and step 1 alone did not enforce it.**
+A worker can reach the end of an attempt before it has seen the fence: a
+SIGTERM, a crash, or a runner that finishes before the next control poll. Steps
+10 to 12 used to
+write the checkpoint pointer, the parked or terminal state, and the lease
+release without asking. So every task write now re-checks the fence inside
+its own transaction (`ControlPlane._fenced_task`). A refused write raises
+`FencedWriteRefused`, and the worker stands down (`_stand_down`). From that
+point the only document it writes is its own attempt.
+
 **Step 8's checkpoint is mandatory.** Cloud Run's ephemeral disk is a Preview
 feature that disables live migration. Without a checkpoint, an infrastructure
 event two hours into an agent run costs the whole attempt; with one, it costs
@@ -82,6 +92,7 @@ from .errors import (
     CheckpointError,
     ExitCode,
     FencedError,
+    FencedWriteRefused,
     TenantMismatchError,
     WorkerError,
 )
@@ -292,15 +303,27 @@ class Worker:
             # Cancelled between admission and start: nothing ran, so there is
             # nothing to clean up beyond giving the slot back.
             self.log.warning("task cancelled before the runner started")
-            self.control.finish(
-                state=TaskState.CANCELLED,
-                exit_code=None,
-                error="cancelled before execution started",
-            )
+            try:
+                self.control.finish(
+                    state=TaskState.CANCELLED,
+                    exit_code=None,
+                    error="cancelled before execution started",
+                )
+            except FencedWriteRefused as exc:
+                # Fenced between the gate above and this write.
+                return self._stand_down(exc, where="cancelled before start")
             return ExitCode.CANCELLED
 
         try:
             outcome = self._execute()
+        except FencedWriteRefused as exc:
+            # BEFORE `except FencedError`, of which it is a subclass. A task
+            # write found the attempt superseded, either on the way out (a
+            # park, a terminal state, a checkpoint) or at the transition into
+            # RUNNING. Either way the attempt writes only its own record now.
+            # `_exit_fenced` would emit into a task stream that belongs to
+            # someone else.
+            return self._stand_down(exc, where="leaving")
         except FencedError as exc:
             return self._exit_fenced(exc)
         except TenantMismatchError as exc:
@@ -311,12 +334,12 @@ class Worker:
             return self._exit_tenant_mismatch(exc)
         except WorkerError as exc:
             self.log.exception("worker failed", exc)
-            self._safe_finish(TaskState.FAILED, exit_code=exc.exit_code, error=str(exc))
-            return exc.exit_code
+            fenced = self._safe_finish(TaskState.FAILED, exit_code=exc.exit_code, error=str(exc))
+            return exc.exit_code if fenced is None else fenced
         except Exception as exc:  # never exit without a durable terminal state
             self.log.exception("worker crashed", exc)
-            self._safe_finish(TaskState.FAILED, exit_code=ExitCode.FAILED, error=str(exc))
-            return ExitCode.FAILED
+            fenced = self._safe_finish(TaskState.FAILED, exit_code=ExitCode.FAILED, error=str(exc))
+            return ExitCode.FAILED if fenced is None else fenced
         finally:
             self._cleanup()
         return outcome.exit_code
@@ -596,7 +619,16 @@ class Worker:
                 next_heartbeat = now + cfg.heartbeat_interval_seconds
 
             if now >= next_checkpoint:
-                self._checkpoint("periodic")
+                try:
+                    self._checkpoint("periodic")
+                except FencedError as exc:
+                    # The checkpoint writes the task's pointer, so it is fenced
+                    # like any task write. Meeting the fence here is meeting
+                    # it mid-run, and it ends the same way as when the control
+                    # poll finds it.
+                    return self._exit_fenced_mid_run(
+                        child, observed_generation=exc.actual, reason=str(exc)
+                    )
                 next_checkpoint = now + cfg.checkpoint_interval_seconds
 
             if now >= next_live_log:
@@ -633,25 +665,14 @@ class Worker:
         signals: ControlSignals = self.control.poll(cfg.provider)
 
         if signals.is_fenced(cfg.generation):
-            # Someone else owns this task now. Stop the agent immediately and
-            # leave the lease alone -- it is not ours to release any more.
-            self.log.error(
-                "generation fenced mid-run; stopping the runner",
+            return self._exit_fenced_mid_run(
+                child,
                 observed_generation=signals.generation,
-                expected_generation=cfg.generation,
+                reason=(
+                    f"fenced mid-run: task at generation {signals.generation} in "
+                    f"{signals.state.value}, lease released={signals.lease_released}"
+                ),
             )
-            child.terminate(cfg.termination_grace_seconds, reason="generation fenced")
-            child.finish()
-            self._child_ended()
-            self.control.emit(
-                EventType.GENERATION_FENCED,
-                {
-                    "expected_generation": cfg.generation,
-                    "observed_generation": signals.generation,
-                    "phase": "running",
-                },
-            )
-            return Outcome(exit_code=ExitCode.GENERATION_FENCED, detail={"fenced": True})
 
         if signals.cancel_requested:
             self.log.warning("cancellation requested; stopping the runner")
@@ -688,28 +709,166 @@ class Worker:
         return None
 
     def _handle_interruption(self, child: ChildProcess) -> Outcome:
-        """SIGTERM to the WORKER: the platform is taking the sandbox away.
+        """SIGTERM to the WORKER: something is taking the sandbox away.
 
-        Cloud Run gives a short notice before an instance goes; with ephemeral
-        disk there is no live migration to save us. Checkpoint, hand the slot
-        back and let the task be re-admitted immediately -- PARKED with an
-        already-passed `next_eligible_at` costs nothing and the scheduler picks
-        it up on its next pass.
+        Two senders, and they are not alike.
+
+          * The platform reclaiming an instance, or a backend deadline. This
+            worker still owns its task, so it checkpoints, parks the task and
+            hands the slot back.
+          * The reconciler deleting the Job. That worker has usually been
+            FENCED already: `obsolete_generation` deletes the Job of a
+            superseded attempt, and the browser-eviction repair (PR #41)
+            fences in one pass and deletes in a later one. Such a worker owns
+            nothing. Every write it would make here lands on a task, a lease
+            or pools that now belong to a newer generation. The old code made
+            them all. It parked a task the reconciler had fenced, and it
+            parked or failed a newer attempt the scheduler had already
+            admitted (found by PR #41).
+
+        So the fence is checked first, before the checkpoint uploads anything.
+        Every write after that checks again inside its own transaction
+        (`ControlPlane._fenced_task`), because a fence can land between the
+        check and the write. A fenced worker stands down (`_stand_down`).
+
+        THE PARK IS UNCHANGED FOR A WORKER THAT STILL OWNS ITS TASK, and it
+        has a gap this method does not close. Nothing in the platform promotes
+        a SCHEDULED_RETRY park today. The scheduler's sweeps cover quota,
+        dependency and credential parks only (scheduler/loop.py), and
+        scheduler/dispatch.py says so about this path. This docstring used to
+        claim the scheduler picks the task up on its next pass. That was not
+        true. The gap is reported on the PR that removed the claim.
         """
         cfg = self.cfg
-        self.log.warning("worker received SIGTERM; checkpointing before exit")
+        self.log.warning("worker received SIGTERM; stopping the runner before exit")
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
         self._child_ended()
-        self._checkpoint("interrupted")
-        summary = self._upload_outputs()
-        self._export_metrics()
-        self.control.park(
-            reason=ParkReason.SCHEDULED_RETRY,
-            next_eligible_at=utcnow(),
-            detail={"cause": "worker_interrupted", **summary},
-        )
+        try:
+            self.control.ensure_owner(write="park on SIGTERM")
+            self._checkpoint("interrupted")
+            summary = self._upload_outputs()
+            self._export_metrics()
+            self.control.park(
+                reason=ParkReason.SCHEDULED_RETRY,
+                next_eligible_at=utcnow(),
+                detail={"cause": "worker_interrupted", **summary},
+            )
+        except FencedError as exc:
+            return Outcome(
+                exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    # -- the fenced exits ---------------------------------------------------
+    def _exit_fenced_mid_run(
+        self, child: ChildProcess, *, observed_generation: int, reason: str
+    ) -> Outcome:
+        """Someone else owns this task now: stop the agent and leave the lease alone.
+
+        Reached from the control poll and from a periodic checkpoint that met
+        the fence. Both are the RUNNING phase, so both emit `generation_fenced`
+        with phase `running`, as the poll always has. The lease is not ours to
+        release any more.
+        """
+        cfg = self.cfg
+        self.log.error(
+            "generation fenced mid-run; stopping the runner",
+            observed_generation=observed_generation,
+            expected_generation=cfg.generation,
+            reason=reason,
+        )
+        child.terminate(cfg.termination_grace_seconds, reason="generation fenced")
+        child.finish()
+        self._child_ended()
+        self.control.emit(
+            EventType.GENERATION_FENCED,
+            {
+                "expected_generation": cfg.generation,
+                "observed_generation": observed_generation,
+                "phase": "running",
+            },
+        )
+        self._record_fenced_end(reason)
+        return Outcome(exit_code=ExitCode.GENERATION_FENCED, detail={"fenced": True})
+
+    def _stand_down(self, exc: FencedError, *, where: str) -> int:
+        """Superseded on the way out: stop, record it on OUR attempt, leave.
+
+        Reached when a write that would end or record this attempt was refused
+        because the attempt is fenced. The write may be a SIGTERM park, a quota
+        or credential park, a terminal state (including the crash handler's
+        FAILED), a checkpoint, or the transition into RUNNING. Everything the
+        attempt still meant to write is dropped except its own attempt
+        document. That means no task state, no checkpoint pointer, no lease
+        release, no pool change and no event.
+
+        WHY NOT EVEN AN EVENT, when the startup and mid-run fences emit
+        `generation_fenced`? The event stream belongs to the task, and the task
+        now belongs to a newer generation or to whatever ended it. The
+        component that fenced this attempt has its own record there. The
+        attempt document is the one record that is this worker's own, and the
+        API's attempt view reads it (`swarm_api/codec.py`).
+
+        The reconciler finishes what this does not. A lease that is not
+        released is reclaimed by the rules that release it after the Job is
+        gone (`obsolete_generation`, `stale_lease`, `missing_execution`).
+        """
+        self.log.error(
+            "FENCED on the way out: this attempt has been superseded; exiting "
+            "without writing the task, the lease or an event",
+            where=where,
+            refused=getattr(exc, "write", "") or None,
+            expected_generation=exc.expected,
+            observed_generation=exc.actual,
+            reason=str(exc),
+        )
+        # A runner still alive here (a crash, a fenced checkpoint mid-run) is
+        # stopped before anything is recorded, so the attempt's end is not
+        # written while its agent is still working.
+        self._stop_runner(reason="generation fenced")
+        self._record_fenced_end(str(exc))
+        return ExitCode.GENERATION_FENCED
+
+    def _stop_runner(self, *, reason: str) -> None:
+        """Stop the live runner, if any, and take its usage and spend. Never raises.
+
+        Safe on a runner that has already been reaped: `finish` may be called
+        twice, and `_child_ended` does nothing the second time.
+        """
+        child = self._child
+        if child is None:
+            return
+        try:
+            if child.poll() is None:
+                child.terminate(self.cfg.termination_grace_seconds, reason=reason)
+            child.finish()
+        except Exception as exc:
+            self.log.warning("could not stop the runner cleanly", error=f"{type(exc).__name__}: {exc}")
+        try:
+            self._child_ended()
+        except Exception as exc:
+            self.log.warning(
+                "could not record the runner's usage", error=f"{type(exc).__name__}: {exc}"
+            )
+
+    def _record_fenced_end(self, reason: str) -> None:
+        """Close THIS attempt's own document with the fence as its reason. Never raises.
+
+        The attempt document is the worker's own, so writing it is inside
+        invariant 5. An attempt that never records `completed_at` looks alive
+        forever. The checkpoint collector then holds its checkpoints until the
+        backstop, as `reconciler/checkpoints.py` describes for the same shape.
+        """
+        try:
+            self.control.record_attempt_end(
+                exit_code=ExitCode.GENERATION_FENCED, error=self._scrub(reason[:4000])
+            )
+        except Exception as exc:
+            self.log.warning(
+                "could not record the fenced exit on this attempt's document",
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     # ------------------------------------------------------------------
     # finalisation
@@ -1542,9 +1701,30 @@ class Worker:
         agent is still working, and the correct response to "this checkpoint did
         not upload" is to try again at the next interval, not to throw away the
         run that is currently succeeding.
+
+        A FENCE IS NOT A FAILED CHECKPOINT. The attempt is over, and
+        `FencedWriteRefused` is raised to say so. It is checked twice. The first
+        check comes before anything is uploaded, because a stale archive in the
+        task's prefix is one `find_latest` can later choose. The second is in
+        the pointer's own transaction (`ControlPlane.record_checkpoint`),
+        because a fence can land during the upload.
         """
         if self.ws is None:
             return None
+        try:
+            self.control.ensure_owner(write=f"checkpoint ({label})")
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            # A read that could not be made is not a fence. Carry on, as a
+            # checkpoint always has. The pointer's own transaction is still the
+            # authority, and it re-checks.
+            self.log.warning(
+                "could not confirm this attempt still owns its task before "
+                "checkpointing; the pointer write will check again",
+                label=label,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         try:
             self.control.emit(EventType.CHECKPOINT_STARTED, {"label": label})
             record = self.checkpoints.create(self.ws, label=label)
@@ -2449,7 +2629,14 @@ class Worker:
             except (ValueError, OSError):
                 pass
 
-    def _safe_finish(self, state: TaskState, *, exit_code: int, error: str) -> None:
+    def _safe_finish(self, state: TaskState, *, exit_code: int, error: str) -> int | None:
+        """The crash path's terminal write. Never raises.
+
+        Returns None, or `ExitCode.GENERATION_FENCED` when the write was
+        refused because this attempt is fenced. The old version wrote FAILED
+        over whatever the task was by then, including a newer attempt the
+        scheduler had already admitted.
+        """
         try:
             summary = self._upload_outputs()
             self._export_metrics()
@@ -2459,11 +2646,14 @@ class Worker:
                 error=self._scrub(error[:4000]),
                 result_summary=summary,
             )
+        except FencedError as exc:
+            return self._stand_down(exc, where="crash")
         except Exception as exc:
             # The reconciler is the backstop: a lease with no heartbeat gets
             # reclaimed, so a worker that cannot write its own epitaph still
             # cannot strand a slot.
             self.log.exception("could not persist the terminal state", exc)
+        return None
 
     def _cleanup(self) -> None:
         if self._child is not None:
