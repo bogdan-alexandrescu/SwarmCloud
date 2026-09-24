@@ -79,21 +79,42 @@ info "targets ${TARGETS[*]}"
 # The job's audit events share the execution label and are excluded -- they
 # are a JSON blob per state change and say nothing about which case failed.
 #
-# READING IT NEEDS logging.logEntries.list (roles/logging.viewer, or anything
-# carrying it) on the identity running this script. When the read is refused
-# the refusal is printed, together with the command that reads the same lines,
-# and the target's verdict is unchanged: a missing transcript must never turn a
+# IT IS READ THROUGH ONE LOG VIEW, NOT FROM THE PROJECT. The release runs this
+# script as swarm-tf-deployer, whose only logging role (configWriter) cannot
+# read an entry, and this project is SHARED, so the answer is not a
+# project-wide log read. terraform/bootstrap/verify_logs.tf has a sink copy this
+# job's stdout/stderr into a bucket of its own, and grants the deployer
+# roles/logging.viewAccessor on that bucket's _AllLogs view and nothing else.
+# LOG_BUCKET and LOG_LOCATION are that bucket.
+# tests/integration/test_verify_remote_prints_the_job_log.py reads the grant out
+# of the terraform and lets its fake release identity read that one view, so a
+# rename on either side fails there.
+#
+# The grant is in the bootstrap root, which the OWNER applies (`make
+# bootstrap`), never the release. Until it is applied the read is refused, and
+# an execution older than the sink is not in the bucket at all. Either way what
+# is printed says so, names what grants the read, and gives the project-wide
+# command that reads the same lines for anyone holding roles/logging.viewer.
+# The target's verdict is unchanged: a missing transcript must never turn a
 # failed gate into anything else.
 #
+# The filter below still names the job, the execution and the log. Through the
+# view that is partly redundant, but it is also the filter of the by-hand
+# command, which reads the whole project.
+LOG_BUCKET="swarm-verify-logs"
+LOG_LOCATION="global"
+LOG_VIEW="_AllLogs"
+
 # LOG_TAIL_ENTRIES is how many lines are shown. The smoke suite's whole
-# transcript was 42 entries on 2026-09-24; 80 holds that with room, and the
-# failure summary is at the END of every suite's transcript, which a tail
-# always includes.
+# transcript was 41 lines on 2026-09-24 (swarm-verify-m9prt: 40 stderr, 1
+# varlog/system); 80 holds that with room, and the failure summary is at the
+# END of every suite's transcript, which a tail always includes.
 LOG_TAIL_ENTRIES=80
 # Cloud Logging ingests with a delay of a few seconds, and the job can finish
-# before its last lines are queryable. An empty answer is retried this many
-# times, this far apart, before it is reported as empty. Injectable so the
-# offline test does not sleep; the default is what a real deployment needs.
+# before its last lines are queryable. LOG_READ_ATTEMPTS is the number of READS
+# in all -- the first and then two retries, LOG_READ_WAIT_SECONDS apart -- before
+# an empty answer is reported as empty. The wait is injectable so the offline
+# test does not sleep; the default is what a real deployment needs.
 LOG_READ_ATTEMPTS=3
 LOG_READ_WAIT_SECONDS="${SWARM_VERIFY_LOG_WAIT_SECONDS:-5}"
 
@@ -118,7 +139,9 @@ execution_name() {
 # could not be read. Never fails: it explains a failure, it does not decide one.
 print_execution_log() {
   local execution="$1" filter entries read_err attempt=1 n=0 rc
-  filter="labels.\"run.googleapis.com/execution_name\"=\"${execution}\""
+  filter="resource.type=\"cloud_run_job\""
+  filter+=" AND resource.labels.job_name=\"${JOB}\""
+  filter+=" AND labels.\"run.googleapis.com/execution_name\"=\"${execution}\""
   filter+=" AND logName:\"run.googleapis.com%2F\""
   entries="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-log.XXXXXX")"
   read_err="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-logerr.XXXXXX")"
@@ -126,6 +149,9 @@ print_execution_log() {
     rc=0
     gcloud logging read "${filter}" \
       --project "${PROJECT_ID}" \
+      --bucket "${LOG_BUCKET}" \
+      --location "${LOG_LOCATION}" \
+      --view "${LOG_VIEW}" \
       --order desc \
       --limit "${LOG_TAIL_ENTRIES}" \
       --freshness 1d \
@@ -134,8 +160,9 @@ print_execution_log() {
     if [[ "${rc}" -ne 0 ]]; then
       err "could not read the log of execution ${execution} (gcloud logging read exit ${rc}):"
       redact <"${read_err}" | head -n 3 | sed 's/^/     /' >&2
-      err "reading it needs logging.logEntries.list (roles/logging.viewer) for the identity running this."
-      info "the same lines, by hand: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc --limit ${LOG_TAIL_ENTRIES}"
+      err "reading it needs roles/logging.viewAccessor on projects/${PROJECT_ID}/locations/${LOG_LOCATION}/buckets/${LOG_BUCKET}/views/${LOG_VIEW}"
+      err "(terraform/bootstrap/verify_logs.tf grants it to the release's deployer; the owner applies it with make bootstrap)"
+      info "the same lines, by hand, with roles/logging.viewer: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc --limit ${LOG_TAIL_ENTRIES}"
       rm -f "${entries}" "${read_err}"
       return 0
     fi
@@ -151,7 +178,7 @@ print_execution_log() {
   rm -f "${read_err}"
   if [[ "${n}" -eq 0 ]]; then
     warn "execution ${execution} has no stdout/stderr in Cloud Logging after ${attempt} read(s)"
-    info "it may not be ingested yet: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc"
+    info "it may not be ingested yet, or it ran before the ${LOG_BUCKET} sink existed: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc"
     rm -f "${entries}"
     return 0
   fi
