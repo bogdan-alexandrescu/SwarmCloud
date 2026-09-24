@@ -48,8 +48,35 @@ EXIT_CREDENTIAL_REVOKED = 78
 EXIT_TERMINATED = 143
 
 
+#: The keys of an agent CLI's JSON result that carry what the run SPENT.
+#:
+#: Defined once, here, because two sides read them: the runner lifts exactly
+#: these out of a FAILED run's output (so they survive into result.json), and
+#: `lifecycle._usage_summary` looks for exactly these to decide which level of
+#: a result holds the numbers. A second spelling of this tuple is a runner that
+#: carries a key the worker never reads.
+SPEND_KEYS: tuple[str, ...] = (
+    "usage",
+    "total_cost_usd",
+    "num_turns",
+    "duration_ms",
+    "duration_api_ms",
+    "modelUsage",
+)
+
+
 class RunnerFailure(RuntimeError):
-    """Deterministic failure with a message that belongs in `task.last_error`."""
+    """Deterministic failure with a message that belongs in `task.last_error`.
+
+    `spend` is what the agent reported it had spent before failing -- the
+    `SPEND_KEYS` subset of its own output, if it produced any. A run that
+    failed after an hour of work cost an hour of tokens, and `run_runner` puts
+    this into result.json so the worker can record it.
+    """
+
+    def __init__(self, message: str = "", *, spend: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.spend = dict(spend or {})
 
 
 class QuotaExhaustedSignal(RuntimeError):
@@ -59,12 +86,17 @@ class QuotaExhaustedSignal(RuntimeError):
         retry_after_seconds: int | None = None,
         reset_at: str | None = None,
         detail: str = "",
+        *,
+        spend: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(f"{provider} rate limited: {detail or 'no detail'}")
         self.provider = provider
         self.retry_after_seconds = retry_after_seconds
         self.reset_at = reset_at
         self.detail = detail
+        #: What the run spent before the provider said no. A 429 halfway
+        #: through a long run is the ordinary expensive case, not an edge.
+        self.spend = dict(spend or {})
 
 
 class CredentialRevokedSignal(RuntimeError):
@@ -82,11 +114,30 @@ class CredentialRevokedSignal(RuntimeError):
     pulled out from under it through no fault of its own.
     """
 
-    def __init__(self, provider: str, detail: str = "", marker: str = "") -> None:
+    def __init__(
+        self,
+        provider: str,
+        detail: str = "",
+        marker: str = "",
+        *,
+        spend: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(f"{provider} refused the credential: {detail or 'no detail'}")
         self.provider = provider
         self.detail = detail
         self.marker = marker
+        self.spend = dict(spend or {})
+
+
+def _spend_output(exc: BaseException) -> dict[str, Any]:
+    """The part of a failed run's result.json `output` that carries its spend.
+
+    Under `structured_output`, which is where a successful CLI run's numbers
+    already live (runners/cliagent.py), so the worker reads both with the one
+    extractor rather than learning a second shape.
+    """
+    spend = getattr(exc, "spend", None)
+    return {"structured_output": dict(spend)} if isinstance(spend, dict) and spend else {}
 
 
 def _now() -> str:
@@ -250,7 +301,11 @@ def run_runner(body: Callable[[RunnerContext], dict[str, Any]], *, name: str) ->
             status="quota_exhausted",
             summary=str(exc),
             error=str(exc),
-            output={"provider": exc.provider, "retry_after_seconds": exc.retry_after_seconds},
+            output={
+                "provider": exc.provider,
+                "retry_after_seconds": exc.retry_after_seconds,
+                **_spend_output(exc),
+            },
         )
         print(f"[{name}] provider quota exhausted: {exc}", file=sys.stderr)
         return EXIT_QUOTA_EXHAUSTED
@@ -260,12 +315,14 @@ def run_runner(body: Callable[[RunnerContext], dict[str, Any]], *, name: str) ->
             status="credential_revoked",
             summary=str(exc),
             error=str(exc),
-            output={"provider": exc.provider},
+            output={"provider": exc.provider, **_spend_output(exc)},
         )
         print(f"[{name}] credential refused: {exc}", file=sys.stderr)
         return EXIT_CREDENTIAL_REVOKED
     except RunnerFailure as exc:
-        ctx.write_result(status="failed", summary=str(exc), error=str(exc))
+        ctx.write_result(
+            status="failed", summary=str(exc), error=str(exc), output=_spend_output(exc)
+        )
         print(f"[{name}] failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
     except Exception as exc:  # unexpected: still leave a readable result behind
