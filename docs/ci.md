@@ -163,7 +163,7 @@ last line (and a run annotation) names the reason and links the job:
 | succeeded, recorded for this environment | reused | reused |
 | still queued or running | waited for (45 min cap) | waited for |
 | **failed** | fails: "re-run that job if it was a flake" | fails the same way — rebuilding would repeat the failure behind a second Cloud Build |
-| cancelled, skipped, never ran, or recorded for another environment | fails: "dispatch release.yml for it" | **builds it here**, through the same script and tag |
+| cancelled (before it started, or part-way), skipped, never ran, or recorded for another environment | fails: "re-run CI's run, then this release" — a dispatch would release main's head, not this commit | **builds it here**, through the same script and tag |
 | GitHub API unreadable | fails — an unreadable API is never read as "never built" | fails |
 
 "Recorded for another environment" is every **prod** release:
@@ -172,13 +172,40 @@ bundle when it is compiled (`VITE_SWARM_ENV`), so a dev build is not a prod
 build. A prod release is always dispatched, so it builds — and the build is
 `build-images.sh`, the same path, not a second copy of it.
 
-**`application.yml` is no longer cancelled on `main`.** Its concurrency group
-used to cancel an in-progress run whenever a newer push arrived. Now that a run
-on `main` is the only build of its commit, cancelling it would strand that
-commit's release — and it never saved the Cloud Build anyway, because stopping
-`gcloud builds submit` does not stop the build it submitted. A run still
-*queued* is replaced by a newer push regardless; its release is queued in its
-own group and is replaced the same way.
+**On `main`, every commit's `application.yml` run has a concurrency group of
+its own, and is never cancelled.** Its group used to be the ref, and a newer
+push cancelled the in-progress run. Now that a run on `main` is the only build
+of its commit, nothing may stop it before it builds — and turning
+`cancel-in-progress` off was not enough on its own. GitHub keeps **one pending
+run per group** and cancels the older pending run when a newer one queues,
+whatever `cancel-in-progress` says. Measured on 2026-09-24: release run
+36035365877, pending in `release-dev`, was cancelled at 17:41:28 — two seconds
+after 36036058352 queued — and lists zero jobs.
+
+With one group for all of `main` that cancelled builds releases were waiting
+for. `application.yml` runs on **every** push to `main`; `release.yml` has a
+path filter. So: commit A building, B queued behind it, and a push C that
+touched only docs, tests or the README. C's run cancelled B's; C started no
+release to take the place of B's; B's release, still pending, then found its
+commit never built and went red, and B's change did not reach dev until the
+next push that starts a release. (The group is now
+`application-refs/heads/main@<sha>` on `main` and the ref everywhere else, so
+a pull request's newer push still supersedes its older run.)
+
+**What that costs.** Runs on `main` are no longer serialised. A burst of merges
+builds every commit, in parallel; each run is bounded to four Cloud Builds at
+once (`BUILD_PARALLELISM` in `build-images.sh`), in a project whose build
+quota is shared. An estimate from measured push times, not measured builds:
+on 2026-09-24 `main` took 18 pushes between 15:56:14 and 17:41:26 — one every
+six minutes — and a run that finished took 9–10 minutes, the build its last
+eight. In the densest stretch (five pushes between 16:42 and 16:56) three runs
+would have been building at once: twelve concurrent Cloud Builds. Each commit
+is still built exactly once. Cancelling part-way never saved a build anyway:
+stopping `gcloud builds submit` does not stop the build it submitted.
+
+A release of a commit is still replaced while *it* is pending, by the next
+push that starts a release — which is harmless, because that release ships a
+later commit that contains this one.
 
 **Kept, deliberately:** scan before promote; all-or-nothing promotion; every
 deployed image pinned by digest; the `dev`/`prod` environments on the apply

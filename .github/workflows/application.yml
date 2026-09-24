@@ -45,16 +45,35 @@ permissions:
   id-token: write
 
 concurrency:
-  group: application-${{ github.ref }}
-  # NOT CANCELLED ON MAIN, because a run on main is now the only build of its
+  # ON MAIN, ONE GROUP PER COMMIT. A run on main is the only build of its
   # commit: release.yml waits for this workflow's `build images` job and
-  # promotes what it built (docs/ci.md). Cancelling it part-way strands that
-  # release -- and never saved the Cloud Build anyway, because stopping
+  # promotes what it built (docs/ci.md). So nothing may stop that run before
+  # it builds -- and turning cancel-in-progress off is not enough on its own.
+  # GitHub keeps ONE pending run per group and cancels the older pending run
+  # when a newer one queues, whatever cancel-in-progress says (measured
+  # 2026-09-24: release run 36035365877 was cancelled that way, with zero
+  # jobs, two seconds after 36036058352 queued). With one group for all of
+  # main, a push made while the previous commit's run was queued cancelled
+  # it; and because this workflow runs on EVERY push to main while release.yml
+  # has a path filter, a docs-, tests- or README-only push started no release
+  # to replace that commit's, which then found its commit never built and
+  # went red.
+  #
+  # The price: runs on main are no longer serialised. A burst of merges builds
+  # every commit, in parallel -- each run bounded to 4 Cloud Builds at once
+  # (BUILD_PARALLELISM, build-images.sh) in a project whose build quota is
+  # shared. Each commit is still built exactly once.
+  #
+  # Everywhere else -- pull requests, other branches -- the group is the ref,
+  # and a newer push cancels the older run as it always did.
+  group: application-${{ github.ref == 'refs/heads/main' && format('{0}@{1}', github.ref, github.sha) || github.ref }}
+  # NOT CANCELLED ON MAIN, even though a per-commit group means no newer push
+  # shares it: a second run of the SAME commit (a workflow_dispatch while main
+  # still points at it) must queue behind the first, not kill a build a
+  # release may be waiting for.
+  # Cancelling part-way never saved the Cloud Build anyway, because stopping
   # `gcloud builds submit` does not stop the build it submitted
-  # (build-images.sh, on_interrupt). A run still QUEUED is replaced by a newer
-  # push regardless (GitHub keeps one pending run per group); its commit's
-  # release is pending in its own group and is replaced the same way.
-  # Everywhere else a newer push still cancels the older run.
+  # (build-images.sh, on_interrupt).
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:

@@ -141,9 +141,14 @@ jobs:
         # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for
         # application.yml's `build images` job for this exact commit (up to 45
         # minutes -- it is usually ~11 behind the push) and fetches the manifest
-        # it recorded. If that job FAILED, or never built this commit (a newer
-        # push replaced its run while queued), this step fails and says which,
-        # with the job's URL; it does not quietly build instead.
+        # it recorded. That run exists and is not stopped by later pushes:
+        # application.yml gives each commit on main a concurrency group of its
+        # own, because GitHub cancels a PENDING run when a newer one joins its
+        # group, and this workflow's path filter means the newer push may start
+        # no release to take this one's place. If that job FAILED, or never
+        # built this commit (someone cancelled it), this step fails and says
+        # which, with the URL and the re-runs that would ship THIS commit; it
+        # does not quietly build instead.
         #
         # DISPATCHED BY HAND it is `--reuse-ci or-build`: a commit CI never
         # built for this environment is built here, by the same script with

@@ -37,8 +37,11 @@
 # "NEVER BUILT" means one of:
 #   * no application.yml run for the commit on the branch appeared within
 #     CI_BUILD_APPEAR seconds;
-#   * its build job was cancelled (a newer push replaced the run while it was
-#     still queued) or skipped (the checks it needs failed first);
+#   * its run was cancelled before any job started (GitHub then lists no jobs
+#     at all), or its build job was cancelled part-way or skipped (the checks
+#     it needs failed first). On main a newer push neither cancels nor
+#     replaces the run -- application.yml gives each commit there its own
+#     concurrency group -- so a cancellation is somebody's deliberate act;
 #   * the build succeeded but recorded nothing for THIS environment. That is
 #     every prod release: application.yml builds for dev, and swarm-ui bakes
 #     its environment into the bundle when it is compiled (VITE_SWARM_ENV,
@@ -75,10 +78,11 @@ REPO="${GITHUB_REPOSITORY:-}"
 WORKFLOW="${CI_BUILD_WORKFLOW:-application.yml}"
 JOB="${CI_BUILD_JOB:-build images}"
 BRANCH="${CI_BUILD_BRANCH:-main}"
-# 45 minutes. A build is ~9 minutes behind ~2 of checks, and on main the
-# application run can be queued behind the previous commit's (its concurrency
-# group does not cancel an in-progress run there), so the realistic worst case
-# is ~25. Past 45 something is wrong, and the message says what was pending.
+# 45 minutes. A build is ~9 minutes behind ~2 of checks. On main each commit's
+# application run has a concurrency group of its own, so it starts at the push
+# rather than queueing behind the previous commit's; what can still hold it is
+# a wait for a runner, or Cloud Build slots taken by other commits building in
+# parallel. Past 45 something is wrong, and the message says what was pending.
 WAIT="${CI_BUILD_WAIT:-2700}"
 # The run is created within seconds of the push that also started the release;
 # five minutes is for GitHub having a slow day, not for anything expected.
@@ -198,7 +202,7 @@ survey() {
     IFS=$'\t' read -r state detail url < <(jq -r --arg n "${JOB}" '
         [ (.jobs // [])[] | select(.name == $n or (.name | startswith($n + " / "))) ] as $j
         | [ $j[] | .conclusion // "-" ] as $c
-        | if ($j | length) == 0 then ["missing", "-", "-"]
+        | if ($j | length) == 0 then ["missing", ((.jobs // []) | length | tostring), "-"]
           elif any($j[]; .status != "completed") then
             ["running", ([$j[] | .status] | unique | join(",")), ($j[0].html_url // "-")]
           elif all($c[]; . == "success") then ["success", "success", ($j[0].html_url // "-")]
@@ -238,7 +242,15 @@ survey() {
           continue
         fi
         state=unbuilt; url="${run_url}"
-        detail="run ${run_id} finished (${run_conclusion}) without a job named '${JOB}'"
+        # `detail` is how many jobs the run lists at all. NONE, on a cancelled
+        # run, is a run cancelled before it started -- GitHub creates no jobs
+        # for a run cancelled while pending -- which is a different thing to
+        # fix from a run whose jobs ran and none answered to JOB (a rename).
+        if [[ "${detail}" == 0 && "${run_conclusion}" == cancelled ]]; then
+          detail="run ${run_id} was cancelled before any job started, so it built nothing"
+        else
+          detail="run ${run_id} finished (${run_conclusion}) without a job named '${JOB}'"
+        fi
         ;;
       unbuilt) detail="its '${JOB}' job was ${detail} and recorded no build" ;;
       failed)  detail="its '${JOB}' job concluded ${detail}" ;;
@@ -311,7 +323,12 @@ absent() {
     summary "**Images:** built by this run -- ${WORKFLOW} never built \`${SHA:0:12}\` for ${ENV_NAME} ($1)."
     exit 3
   fi
-  fail_with "CI never built ${SHA} for ${ENV_NAME}: $1. A release on a push promotes the images ${WORKFLOW} built for its commit and never submits a second build of its own. To release this commit anyway, dispatch release.yml for it: a dispatched release builds what CI did not."
+  # THE ADVICE NAMES WHAT A DISPATCH ACTUALLY RELEASES. The deployer trusts
+  # refs/heads/main alone (terraform/bootstrap, github_allowed_refs), so a
+  # dispatched release runs at whatever main points at NOW -- this commit only
+  # if nothing has landed since. What releases THIS commit is a re-run: of
+  # CI's run, which builds it, and then of this release, which reuses it.
+  fail_with "CI never built ${SHA} for ${ENV_NAME}: $1. A release on a push promotes only what ${WORKFLOW} built for its commit and submits no build of its own, so nothing is promoted. To ship this commit: re-run ${WORKFLOW}'s run for it so it builds, then re-run this release. To dispatch release.yml instead: it builds what CI did not, but it releases main's head -- the only ref the deployer trusts -- so it ships this commit together with everything merged after it."
 }
 
 # ---------------------------------------------------------------------------
