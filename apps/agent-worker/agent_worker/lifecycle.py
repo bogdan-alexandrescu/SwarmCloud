@@ -738,7 +738,9 @@ class Worker:
         dependency and credential parks only (scheduler/loop.py), and
         scheduler/dispatch.py says so about this path. This docstring used to
         claim the scheduler picks the task up on its next pass. That was not
-        true. The gap is reported on the PR that removed the claim.
+        true. The gap is recorded as open in
+        docs/incidents/2026-09-24-gke-dispatch.md, which also names the
+        decision a promoter needs: what an interrupted last attempt becomes.
         """
         cfg = self.cfg
         self.log.warning("worker received SIGTERM; stopping the runner before exit")
