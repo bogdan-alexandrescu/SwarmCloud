@@ -486,19 +486,21 @@ class ControlPlane:
         """
         write = f"transition to {to_state.value}"
 
-        def _apply(txn: Any) -> None:
-            task = self._fenced_task(txn, write=write)
-            current = _as_state(task.get("state"))
-            if current is to_state:
-                if fields:
-                    txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
-                return
-            assert_transition(current, to_state)
-            payload: dict[str, Any] = {"state": to_state.value, "updated_at": utcnow()}
-            payload.update(fields or {})
-            txn.update(self._task_ref(), payload)
-
-        self._txn.run(_apply)
+        # MUTATION A, reverted in the next commit: the fence is checked by a
+        # plain read and the write is made blind after it.
+        task = self.fetch_task()
+        fence = _task_fence(task, generation=self.generation)
+        if fence is not None:
+            raise FencedWriteRefused(self.generation, *fence, write=write)
+        current = _as_state(task.get("state"))
+        if current is to_state:
+            if fields:
+                self._task_ref().update({**fields, "updated_at": utcnow()})
+            return
+        assert_transition(current, to_state)
+        payload: dict[str, Any] = {"state": to_state.value, "updated_at": utcnow()}
+        payload.update(fields or {})
+        self._task_ref().update(payload)
 
     def advance_to_running(self) -> None:
         """Walk LEASED -> DISPATCHED -> STARTING -> RUNNING legally.
