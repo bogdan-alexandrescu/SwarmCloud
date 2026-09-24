@@ -37,7 +37,7 @@ from .client import (
     service_name,
     task_id_of,
 )
-from .follow import DEFAULT_LOG_BUDGET, follow, follow_command, render
+from .follow import DEFAULT_LOG_BUDGET, follow, follow_command, render, terminal_command
 from .patches import (
     apply_patch,
     describe_task,
@@ -635,6 +635,41 @@ def cmd_doctor(_client, args) -> int:
         print(f"project     UNKNOWN -- {exc}")
         return EXIT_FAIL
 
+    # WHICH DOOR, PRINTED BEFORE THE READ, and this is the line whose absence
+    # made this command mislead. `doctor` reported a tier, a project and a
+    # service and then "api UNREACHABLE" -- so a reader concluded the API was
+    # down, when the truth was that the bridge had asked Cloud Run for an
+    # address whose ingress refuses everyone outside the VPC while the load
+    # balancer that serves the whole organisation was named in Track C's tfvars
+    # and never read. The address and the kind of credential that address takes
+    # are the two facts that turn "unreachable" into something actionable.
+    from .client import front_door_host
+
+    host = front_door_host()
+    if host:
+        print(f"front door  https://{host}  (IAP; takes an OAuth ACCESS token)")
+        if detection.tier is Tier.PROXY:
+            print(
+                textwrap.fill(
+                    "this deployment is reached through its load balancer, so no "
+                    "local proxy is started -- but a USER access token is not one "
+                    "IAP accepts here: measured 2026-09-24 it answers 401 with IAP "
+                    "error code 900, because terraform/modules/frontend sets no "
+                    "oauth2_client_id and Google manages the OAuth client. Set "
+                    "SWARM_IMPERSONATE_SA to a service account that holds "
+                    "roles/iap.httpsResourceAccessor; without that grant IAP answers "
+                    "403 and NAMES the service account, which is the refusal that "
+                    "tells you the credential itself was accepted.",
+                    width=78,
+                    initial_indent="            ",
+                    subsequent_indent="            ",
+                    break_on_hyphens=False,
+                    break_long_words=False,
+                )
+            )
+    else:
+        print("front door  none configured -- Cloud Run direct (takes a Google ID token)")
+
     # The reachability check is last and is allowed to fail: everything above
     # is still worth printing when the API is down, and is exactly what someone
     # needs in order to say WHY it is down.
@@ -688,7 +723,7 @@ def cmd_init(_client, args) -> int:
             print(f"  ok   {service_name()} found at {url}")
         except SwarmError as exc:
             print(f"  --   {service_name()} not found in {region()}: {exc}")
-            print("       deploy it first, then run `swarm init` again")
+            print(f"       deploy it first, then run `{terminal_command('swarm init')}` again")
             ok = False
 
     detection = detect()
@@ -717,7 +752,7 @@ def cmd_init(_client, args) -> int:
     target.write_text("\n".join(lines) + "\n")
     print(f"  ok   wrote {target}")
     print()
-    print("Try:  swarm dispatch \"say hello\" --profile mock")
+    print(f"Try:  {terminal_command('swarm dispatch')} \"say hello\" --profile mock")
     return EXIT_OK
 
 

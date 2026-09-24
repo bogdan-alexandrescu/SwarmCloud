@@ -36,6 +36,33 @@ uninstallable. It was missing until 2026-09-24 and everything here was in that
 state. `tests/unit/mcp/test_plugin_commands.py` now asserts it exists and points
 at a directory that really holds a `plugin.json`.
 
+### The bridge ships with the plugin — and arrives under two names
+
+`plugin.json` declares the `swarmcloud` MCP server, so installing the plugin
+installs the bridge. That was missing: the only registration was `.mcp.json` at
+the repository root, which a session in any other directory does not have, so
+`delegate` was eighteen tool permissions for a server that existed in one
+directory on one machine.
+
+A plugin's own MCP server is **scoped**. Its tools arrive as
+`mcp__plugin_sc_swarmcloud__*`, not `mcp__swarmcloud__*` — those are the
+project server's. A permission rule is matched and not resolved, so the wrong
+spelling grants nothing, silently, and the session behaves as though delegation
+does not work. `delegate` therefore lists **both** spellings of all eighteen
+tools, and `tests/unit/mcp/test_plugin_skills.py` holds the two lists in
+lockstep and derives the scoped prefix from `plugin.json` itself.
+
+### What is still repository-bound, and why it cannot be fixed here
+
+`${CLAUDE_PLUGIN_ROOT}` is exported to MCP server subprocesses and **not** to
+commands Claude runs through the Bash tool. So the MCP half of this plugin
+works from any working directory and the **shell half does not**: `uv run sc`
+resolves `uv`'s project against the session's own directory, and outside a
+checkout it answers that there is no `pyproject.toml`. That is a real limit,
+stated here rather than papered over, because a model that meets it without
+warning reports the platform as broken. The `delegate` skill calls tools and is
+unaffected; `/sc` and the `sc` skill want the repository.
+
 The CLI is the same surface without the session wrapping, and is what to reach
 for when diagnosing the plugin itself:
 
@@ -48,12 +75,37 @@ uv run swarm profiles
 ## What it needs
 
 `swarm-mcp` from this repository, and a working auth tier —
-`uv run swarm doctor` says which one this machine has and what it reaches.
+`uv run swarm doctor` says which one this machine has, **which door it will
+use**, and what that door takes.
 
-The `delegate` skill additionally needs the MCP server itself registered, since
-it calls tools rather than shelling out: `.mcp.json` at the repository root
-registers it as **`swarmcloud`**, which is where the `mcp__swarmcloud__*` names
-in its `allowed-tools` come from.
+### Where the API actually is
+
+On a **team** deployment the API is behind IAP at a load balancer, and the
+`*.run.app` address is internal-only: its ingress is
+`internal-and-cloud-load-balancing`, so Google's frontend refuses an outside
+caller and renders the refusal as HTTP 404 — the one status a reader takes for
+"missing route on a broken deployment". Until 2026-09-24 the bridge asked Cloud
+Run for the address and therefore called a healthy control plane UNREACHABLE.
+It now reads `frontend_hostname` out of `terraform/environments/<env>/<env>.tfvars`
+(Track C's input, read rather than copied), the same three-source order
+`scripts/lib/common.sh` uses, and `API_HOST` overrides it.
+
+The two doors take **different credentials**, which is the other half:
+
+| Door | Credential |
+|---|---|
+| Cloud Run directly | a Google **ID** token |
+| the IAP load balancer | an OAuth **ACCESS** token |
+
+Sending the ID token to IAP produces `Invalid IAP credentials: Invalid JWT
+audience`, which reads like an IAM problem and is not. Measured on 2026-09-24
+against the live front door: a user access token is refused **401, IAP error
+code 900**, and an impersonated service account's access token is refused
+**403 naming that service account** — which is IAP saying "authenticated, not
+authorised", one `roles/iap.httpsResourceAccessor` grant from working. So on a
+team deployment set `SWARM_IMPERSONATE_SA`; `SWARM_IAP_CLIENT_ID` applies only
+where the deployment configured its own OAuth client, and this one deliberately
+does not (a client id means a client secret in Terraform state).
 
 **`swarm` and `sc` are not on your PATH**, and nothing here should ever tell you
 they are. They are console scripts of `swarm-mcp`, installed into the uv-managed

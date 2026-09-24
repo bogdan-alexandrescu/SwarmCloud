@@ -111,6 +111,35 @@ look like a reading. Run `uv run swarm doctor` — it reports which of the four
 auth tiers this machine is on and what that tier can reach, which is almost
 always the real answer.
 
+### "I cannot reach it" is not "it is down" — say the first one
+
+This is the single most likely wrong report from this plugin, so it is worth
+being exact. On a **team** deployment the API is behind IAP at a load balancer,
+and `swarm doctor` prints which door it used and what that door takes:
+
+```
+front door  https://swarm.saga.xyz  (IAP; takes an OAuth ACCESS token)
+api         UNREACHABLE
+            GET /v1/tenants/me -> 401: ... Error code 900
+```
+
+Read the refusal, because the three of them mean three different things:
+
+| What comes back | What it means |
+|---|---|
+| **401, IAP error code 900** | IAP did not accept the token at all. A *user* credential cannot pass here: this deployment sets no `oauth2_client_id`, so IAP uses a Google-managed OAuth client and there is no audience a laptop can mint against. Set `SWARM_IMPERSONATE_SA` |
+| **403 that NAMES the caller** | IAP **authenticated** you and the principal is not on the list. One `roles/iap.httpsResourceAccessor` grant away — `frontend_iap_members` in Track C's tfvars |
+| **an HTML 404** | the wrong ADDRESS, not a missing route. Cloud Run's `*.run.app` hostname refuses everyone outside the VPC and renders the refusal as 404 |
+
+None of those is the cluster being down. **Say "I cannot reach the API from
+here, and this is why", never "SwarmCloud is broken"** — and if someone needs
+the numbers now, the console at the front-door host is signed in to the same
+API in a browser, where the session cookie is a credential this bridge does not
+have and must not go looking for.
+
+Exit code 1 is exactly this case, and exit code 3 is the other one. That is the
+whole reason they are different numbers.
+
 If accounts specifically are unreadable while everything else works, this
 deployment's swarm-api has no `/v1/accounts` route: the pool is **unknown from
 here**, not empty, and the cluster is otherwise fine — `sc` and `sc trouble`

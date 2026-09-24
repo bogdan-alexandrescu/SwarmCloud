@@ -25,6 +25,16 @@ ALL_VARS = (
     "SWARM_IMPERSONATE_SA",
     "K_SERVICE",
     "CLOUD_RUN_JOB",
+    # ADDRESS VARIABLES BELONG HERE TOO, now that the address decides the
+    # credential. A CI shell with `API_HOST` exported would make every client
+    # below think it is talking to a load balancer and reach for an access
+    # token, and the failure would look like a change in the tier logic.
+    "SWARM_API_URL",
+    "API_URL",
+    "SWARM_API_HOST",
+    "API_HOST",
+    "SWARM_REPO_ROOT",
+    "ENVIRONMENT",
 )
 
 
@@ -113,15 +123,34 @@ def test_every_unreachable_pairing_has_an_explanation():
                 assert (tier, profile) in WHY_NOT, f"{tier}->{profile} unexplained"
 
 
-# -- the proxy tier does not send its own token ----------------------------
+# -- a running proxy does not get a second Authorization header -------------
 
 
-def test_the_proxy_tier_must_not_add_an_authorization_header(monkeypatch):
+def test_a_running_proxy_must_not_get_a_second_authorization_header(monkeypatch):
     """gcloud supplies it. A second header would replace the only credential
-    Cloud Run accepts with one it does not."""
+    Cloud Run accepts with one it does not.
+
+    ASKED OF THE PROXY, NOT OF THE TIER, and the difference is a real bug that
+    this test used to assert as correct. It constructed a client with an
+    explicit `base_url`, so NO proxy was started -- and then asserted that the
+    client would send no credential, which meant an operator on the
+    user-credentials tier who set `SWARM_API_URL` made every request
+    unauthenticated. `sends_own_token` now answers "is a proxy supplying it",
+    which is the question it was always standing in for, so the case below
+    constructs the state it is about.
+    """
     c = client.SwarmClient(base_url="https://example.invalid", connect=True)
     assert c.tier is Tier.PROXY
+    c._proxy = object()  # a proxy is running; gcloud owns the header
     assert c.sends_own_token is False
+
+
+def test_an_explicit_url_on_the_user_tier_still_sends_a_credential(monkeypatch):
+    """No proxy was started, so nothing else will supply one."""
+    c = client.SwarmClient(base_url="https://example.invalid", connect=True)
+    assert c.tier is Tier.PROXY
+    assert c._proxy is None
+    assert c.sends_own_token is True
 
 
 def test_every_other_tier_does_send_its_own_token(monkeypatch):

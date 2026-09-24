@@ -40,6 +40,61 @@ _REAL = {tool["name"] for tool in server.TOOLS}
 #: The MCP server id in `.mcp.json`; a permission rule is `mcp__<server>__<tool>`.
 _PREFIX = "mcp__swarmcloud__"
 
+
+def _plugin_manifest() -> dict:
+    """`plugin/.claude-plugin/plugin.json`, parsed."""
+    import json
+
+    return json.loads((_PLUGIN / ".claude-plugin" / "plugin.json").read_text())
+
+
+def _scoped_prefix() -> str:
+    """The prefix a PLUGIN-bundled MCP server's tools arrive under.
+
+    DERIVED FROM THE MANIFEST, never written out, because both halves of it are
+    editable: the plugin's `name` and the key under `mcpServers`. A plugin's own
+    server is scoped -- `mcp__plugin_<plugin>_<server>__<tool>` -- and the
+    plugin name's hyphens become underscores. Renaming either would silently
+    ungrant every scoped permission in `delegate`, and "the model never got the
+    tool" looks exactly like "delegation does not work".
+    """
+    manifest = _plugin_manifest()
+    servers = manifest.get("mcpServers") or {}
+    assert isinstance(servers, dict) and servers, (
+        "plugin.json declares no mcpServers, so the `delegate` skill's tools "
+        "exist only when a session's own .mcp.json happens to register them -- "
+        "which is to say only inside this repository"
+    )
+    assert list(servers) == ["swarmcloud"], (
+        f"expected one server named `swarmcloud`, found {sorted(servers)}"
+    )
+    plugin_name = str(manifest["name"]).replace("-", "_")
+    return f"mcp__plugin_{plugin_name}_swarmcloud__"
+
+
+#: BOTH spellings of the same bridge. The project server and the plugin-bundled
+#: server are different registrations of one process, and a skill has to be
+#: granted whichever one the session actually has -- so every check below reads
+#: an entry under either prefix rather than under one.
+_PREFIXES = (_PREFIX, _scoped_prefix())
+
+
+def _granted(entries) -> set[str]:
+    """The bare tool names an `allowed-tools` list grants, both prefixes."""
+    names: set[str] = set()
+    for entry in entries:
+        for prefix in _PREFIXES:
+            if entry.startswith(prefix):
+                names.add(entry[len(prefix):])
+    return names
+
+
+def _granted_per_prefix(entries) -> dict[str, set[str]]:
+    return {
+        prefix: {e[len(prefix):] for e in entries if e.startswith(prefix)}
+        for prefix in _PREFIXES
+    }
+
 #: A fully backticked bare identifier -- `swarm_dispatch`, but NOT the
 #: `swarm_mcp` inside a backticked module path, which is not a tool name.
 _BACKTICKED = re.compile(r"`([^`\n]+)`")
@@ -138,11 +193,35 @@ def test_every_tool_a_skill_is_allowed_is_a_tool_the_bridge_serves(path):
     grants nothing, silently, and the model behaves as if the feature is
     missing rather than as if the manifest is."""
     fields, _ = _load(path)
-    allowed = [entry for entry in fields["allowed-tools"] if entry.startswith(_PREFIX)]
+    entries = [
+        entry
+        for entry in fields["allowed-tools"]
+        if any(entry.startswith(prefix) for prefix in _PREFIXES)
+    ]
     unknown = sorted(
-        entry for entry in allowed if entry[len(_PREFIX) :] not in _REAL
+        entry
+        for entry in entries
+        if not any(
+            entry.startswith(prefix) and entry[len(prefix):] in _REAL
+            for prefix in _PREFIXES
+        )
     )
     assert not unknown, f"{path.parent.name} allows tools that do not exist: {unknown}"
+
+    # A rule that begins `mcp__` and matches NEITHER registration is a rule that
+    # grants nothing at all, and it is the shape a typo takes -- `mcp__swarm__`,
+    # `mcp__plugin_swarmcloud__`. Caught here rather than left to be discovered
+    # as "the model never called the tool".
+    stray = sorted(
+        entry
+        for entry in fields["allowed-tools"]
+        if entry.startswith("mcp__")
+        and not any(entry.startswith(prefix) for prefix in _PREFIXES)
+    )
+    assert not stray, (
+        f"{path.parent.name} has MCP rules under neither registration, so they "
+        f"grant nothing: {stray}. The two are {list(_PREFIXES)}"
+    )
 
 
 @pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)
@@ -206,11 +285,7 @@ def test_the_read_only_skill_never_gains_a_tool_that_writes():
     never cancels anything, so it is always safe to run". That promise is a
     permission rule, so it is checked as one."""
     fields, _ = _load(_PLUGIN / "skills" / "sc" / "SKILL.md")
-    granted = {
-        entry[len(_PREFIX) :]
-        for entry in fields["allowed-tools"]
-        if entry.startswith(_PREFIX)
-    }
+    granted = _granted(fields["allowed-tools"])
     assert not granted & _WRITE_TOOLS, "sc is documented as read-only"
 
 
@@ -219,10 +294,69 @@ def test_the_delegation_skill_can_reach_every_tool_it_tells_a_session_to_call():
     skill was never granted. The model reads the instruction, calls the tool,
     and is refused."""
     fields, body = _load(_PLUGIN / "skills" / "delegate" / "SKILL.md")
-    granted = {
-        entry[len(_PREFIX) :]
-        for entry in fields["allowed-tools"]
-        if entry.startswith(_PREFIX)
-    }
+    granted = _granted(fields["allowed-tools"])
     needed = _identifiers(body) & _REAL
     assert needed <= granted, f"named but not allowed: {sorted(needed - granted)}"
+
+
+def test_both_registrations_grant_exactly_the_same_tools():
+    """THE MUTATION THIS CATCHES, and it is the one that will actually happen:
+    a nineteenth tool ships, somebody adds `mcp__swarmcloud__swarm_whatever` to
+    `delegate`, tests it in this repository where the project `.mcp.json` is what
+    registers the bridge, and it works. Installed anywhere else the session gets
+    the plugin's SCOPED server instead, the new permission does not match, and
+    the tool is refused -- with no error anyone will connect to the manifest.
+
+    So the two lists are one list, asserted symmetric. Drop either spelling of
+    any tool and this goes red naming which side is short.
+    """
+    fields, _ = _load(_PLUGIN / "skills" / "delegate" / "SKILL.md")
+    per_prefix = _granted_per_prefix(fields["allowed-tools"])
+    project, scoped = _PREFIXES
+    assert per_prefix[project], "no project-server permissions at all"
+    assert per_prefix[scoped], (
+        "no plugin-scoped permissions, so this skill works only in a session "
+        "whose own .mcp.json registers the bridge"
+    )
+    assert per_prefix[project] == per_prefix[scoped], (
+        "only under the project server: "
+        f"{sorted(per_prefix[project] - per_prefix[scoped])}; "
+        "only under the plugin server: "
+        f"{sorted(per_prefix[scoped] - per_prefix[project])}"
+    )
+
+
+def test_the_plugin_bundles_the_bridge_it_tells_a_session_to_call():
+    """`delegate` calls TOOLS, not commands, so the server has to arrive with
+    the plugin. It did not: `mcpServers` was absent from `plugin.json` and the
+    only registration was `.mcp.json` at the repository root -- which a session
+    in any other directory does not have. Eighteen permissions, a skill written
+    against them, and no server.
+
+    The command is checked too, because a server that cannot start is the same
+    outcome as one that is not declared: `${CLAUDE_PLUGIN_ROOT}` is the only
+    path the host expands here (it is NOT exported to Bash-tool commands, which
+    is why the shell half of this plugin stays repository-bound), and the bridge
+    is a console script of the workspace one directory above `plugin/`.
+    """
+    servers = _plugin_manifest()["mcpServers"]
+    swarmcloud = servers["swarmcloud"]
+    assert swarmcloud.get("command") == "uv", swarmcloud
+    args = swarmcloud.get("args") or []
+    assert args[-1] == "swarm-mcp", (
+        f"the server must run the `swarm-mcp` console script, not {args[-1]!r}"
+    )
+    assert "--directory" in args, (
+        "without --directory, `uv run` resolves against the session's working "
+        "directory, which is the thing this declaration exists to stop mattering"
+    )
+    directory = args[args.index("--directory") + 1]
+    assert directory.startswith("${CLAUDE_PLUGIN_ROOT}"), (
+        f"{directory!r} is not plugin-relative; a literal path works on one "
+        "machine and an unexpanded variable works on none"
+    )
+    # plugin/ -> the workspace root, which is where pyproject.toml lives.
+    assert directory == "${CLAUDE_PLUGIN_ROOT}/..", directory
+    assert (_PLUGIN.parent / "pyproject.toml").exists(), (
+        "the directory the plugin points `uv run` at holds no pyproject.toml"
+    )

@@ -20,10 +20,47 @@ allowed-tools:
   - mcp__swarmcloud__swarm_capacity
   - mcp__swarmcloud__swarm_agents
   - mcp__swarmcloud__swarm_trouble
+  - mcp__plugin_sc_swarmcloud__swarm_profiles
+  - mcp__plugin_sc_swarmcloud__swarm_dispatch
+  - mcp__plugin_sc_swarmcloud__swarm_workflow
+  - mcp__plugin_sc_swarmcloud__swarm_workflow_status
+  - mcp__plugin_sc_swarmcloud__swarm_workflow_result
+  - mcp__plugin_sc_swarmcloud__swarm_workflow_cancel
+  - mcp__plugin_sc_swarmcloud__swarm_follow
+  - mcp__plugin_sc_swarmcloud__swarm_status
+  - mcp__plugin_sc_swarmcloud__swarm_wait
+  - mcp__plugin_sc_swarmcloud__swarm_result
+  - mcp__plugin_sc_swarmcloud__swarm_apply
+  - mcp__plugin_sc_swarmcloud__swarm_integrate
+  - mcp__plugin_sc_swarmcloud__swarm_cancel
+  - mcp__plugin_sc_swarmcloud__swarm_overview
+  - mcp__plugin_sc_swarmcloud__swarm_accounts
+  - mcp__plugin_sc_swarmcloud__swarm_capacity
+  - mcp__plugin_sc_swarmcloud__swarm_agents
+  - mcp__plugin_sc_swarmcloud__swarm_trouble
   - Bash(uv run swarm tail:*)
   - Bash(swarm tail:*)
   - Bash(git status:*)
 ---
+
+> **Why every tool is listed twice.** The same bridge arrives under two names
+> depending on how it was registered, and a permission rule is matched, not
+> resolved, so the wrong spelling grants nothing and the session behaves as if
+> delegation is simply not available.
+>
+> * `.mcp.json` at the repository root registers it as the project server
+>   `swarmcloud`, and its tools are `mcp__swarmcloud__*`. That is the path when
+>   this session's working directory is the repository.
+> * `plugin/.claude-plugin/plugin.json` registers the same server as part of the
+>   plugin, and a plugin's own MCP server is SCOPED: its tools are
+>   `mcp__plugin_<plugin>_<server>__<tool>`, so `mcp__plugin_sc_swarmcloud__*`.
+>   That is the path when the plugin is installed and the session is anywhere
+>   else. Without it, `delegate` was 18 permissions for tools that only existed
+>   in one directory on one machine.
+>
+> `tests/unit/mcp/test_plugin_skills.py` holds the two lists in lockstep and
+> derives the scoped prefix from `plugin.json` itself, so renaming the plugin or
+> the server key goes red here rather than silently ungranting half the skill.
 
 # delegate — running this session's work in SwarmCloud
 
@@ -182,6 +219,22 @@ The un-seamless shape to avoid is: dispatch, go silent for eleven minutes,
 produce a result. Narrate. A local subagent shows progress and a remote one has
 to as well, even if the progress is only "four of five finished, `absentzero`
 is still running".
+
+## Before any of that: could this session reach the API at all?
+
+A tool that fails because the bridge never reached the control plane is not a
+dispatch that failed, and reporting it as one sends the developer to look at
+their prompt, their repository and the shared pool — none of which is involved.
+
+The tell is in the error, and it is unambiguous: `IAP refused this before the
+API saw it`, `an HTML 404 from Google's edge`, `Error code 900`, or a 403 that
+names a principal. All four mean the request never reached swarm-api. Run
+`uv run swarm doctor`, which prints the address it used and the kind of
+credential that address takes, and report **that** — the `sc` skill's table
+says what each refusal means and which one is an IAM grant away.
+
+Nothing was dispatched, so nothing was spent, so say that too: a developer who
+thinks a batch went out and died will not re-run it.
 
 ## When a remote agent dies — a bare task id is not a report
 
