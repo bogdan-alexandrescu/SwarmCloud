@@ -252,6 +252,35 @@ require_platform() {
   esac
 }
 
+# profile_input PROFILE RUN_ID -> the smallest input PROFILE's runner accepts
+# AND can complete, as compact JSON.
+#
+# Most runners take anything. `browser` refuses an input with neither `url` nor
+# `actions` ("browser runner needs input.url or at least one action",
+# apps/agent-worker/agent_worker/runners/browser.py), so the `{message, run_id}`
+# every suite used to send fails at the runner with dispatch working perfectly.
+# That made the smoke suite's GKE_AUTOPILOT row -- browser is its only profile
+# -- a check that could not pass, and `smoke-test.sh --profile browser` a proof
+# that could not prove anything.
+#
+# One screenshot of about:blank: Chromium starts, /dev/shm is large enough, the
+# workspace is writable and an artifact uploads, with no dependency on any site
+# outside the platform. Pinned by tests/unit/scripts/test_profile_input.py.
+profile_input() {
+  local profile="$1" run_id="$2"
+  case "${profile}" in
+    browser)
+      jq -nc --arg r "${run_id}" '{
+        message: "smoke", run_id: $r,
+        actions: [{type: "screenshot", name: "proof.png", full_page: false}],
+        extract_text: false}'
+      ;;
+    *)
+      jq -nc --arg r "${run_id}" '{message: "smoke", run_id: $r}'
+      ;;
+  esac
+}
+
 # submit_task PROFILE [INPUT_JSON] [EXTRA_JSON] -> task id on stdout
 submit_task() {
   local profile="$1" input="${2:-{\}}" extra="${3:-{\}}"

@@ -473,4 +473,27 @@ someone follows at 3am.
 * **Whether cause 7 is the last one.** Every fix in this incident revealed the
   next defect behind it, and there is no reason to believe the sequence is
   exhausted. The cheapest proof is one task:
-  `scripts/smoke-test.sh --profile browser --timeout 900`.
+  `scripts/prove-gke-dispatch.sh --timeout 900`.
+
+  *Added 2026-09-24:* that script now exists and the release runs it after
+  every deploy, after the smoke test. It submits one `browser` task and asserts
+  four things separately — dispatched, and to `GKE_AUTOPILOT`; `SUCCEEDED`; an
+  artifact under the tenant's own prefix; its lease released — and on failure
+  prints the attempt's own error, which is where cause 7's traceback appears. A
+  task PARKED on `CREDENTIAL_MISSING` fails at once, saying it proves nothing
+  about GKE, rather than waiting out its timeout.
+
+  *And a defect in the command this line used to name.* `smoke-test.sh
+  --profile browser` — and the smoke suite's `GKE_AUTOPILOT` row — submitted
+  `{message, run_id}`, which the browser runner refuses before Chromium starts
+  ("browser runner needs input.url or at least one action"). Both could fail
+  with dispatch working perfectly. Every suite now submits through
+  `profile_input` in `scripts/lib/testlib.sh`, which gives `browser` one
+  screenshot of `about:blank`.
+
+  *Still not proven:* the script has not been run against the deployment; it is
+  exercised only against a fake platform
+  (`tests/integration/test_gke_proof_can_fail.py`). The first release after it
+  merges is the first real run — and it needs the release identity's tenant to
+  hold an anthropic credential, or it will fail on `CREDENTIAL_MISSING`, by
+  design.

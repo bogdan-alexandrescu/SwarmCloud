@@ -317,8 +317,10 @@ while read -r BACKEND BPROFILE <&3; do
   fi
   t_case "Backend ${BACKEND}: submit a ${BPROFILE} task and run it to completion"
   B_RUN_ID="$(test_run_id)"
-  if ! B_TASK_ID="$(submit_task "${BPROFILE}" \
-      "$(jq -nc --arg r "${B_RUN_ID}" '{message:"smoke", run_id:$r}')" \
+  # profile_input, not a generic {message, run_id}: the browser runner refuses
+  # an input with neither url nor actions, so this row -- the only GKE one --
+  # failed at the runner even when dispatch worked. See testlib.sh.
+  if ! B_TASK_ID="$(submit_task "${BPROFILE}" "$(profile_input "${BPROFILE}" "${B_RUN_ID}")" \
       '{"priority":10,"metadata":{"source":"smoke-test-backend"}}')"; then
     t_fail "${BACKEND}: submission failed for profile ${BPROFILE}"
     continue
@@ -354,8 +356,7 @@ fi
 # ---------------------------------------------------------------------------
 t_case "Submit a ${PROFILE} task and run it to completion"
 RUN_ID="$(test_run_id)"
-TASK_ID="$(submit_task "${PROFILE}" \
-  "$(jq -nc --arg r "${RUN_ID}" '{message:"smoke", run_id:$r}')" \
+TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}")" \
   '{"priority":10,"metadata":{"source":"smoke-test"}}')" || die "submission failed"
 t_info "task ${TASK_ID}"
 
