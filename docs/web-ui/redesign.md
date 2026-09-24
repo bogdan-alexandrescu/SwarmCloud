@@ -9,12 +9,13 @@ rather than re-litigated per screen.
 Files changed: `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/styles.css`,
 this document.
 
-**Amended twice since.** The body below describes the nav as it is *today*, not
-as it was when this was first written; the two notes at the end of the file —
-[Superseded, 2026-09-21](#superseded-2026-09-21) and
+**Amended three times since.** The body below describes the nav as it is
+*today*, not as it was when this was first written; the three notes at the end
+of the file — [Superseded, 2026-09-21](#superseded-2026-09-21),
 [Changed, 2026-09-24](#changed-2026-09-24--the-two-sections-named-after-their-own-first-tab)
-— record what moved and why. Read them if you followed a citation here and the
-text does not match what you remember.
+and [Six sections to three](#changed-2026-09-24--six-sections-to-three) — record
+what moved and why. Read them if you followed a citation here and the text does
+not match what you remember.
 
 ---
 
@@ -68,36 +69,48 @@ agent's attempt history, because of four missing lines of routing.
 
 ## 2. The new architecture
 
-Six sections. Each is a question someone arrives with, not a route. The id in
-the first column is the first hash segment, so it is also the address people
-paste — the two are given together because they have drifted apart twice, and
-both times the drift routed a saved link somewhere the label did not name.
+Three sections and a landing screen. Each section is a question someone arrives
+with, not a route. The id in the first column is the first hash segment, so it
+is also the address people paste — the two are given together because they have
+drifted apart twice, and both times the drift routed a saved link somewhere the
+label did not name.
 
 | Section | id | The question | Panes |
 |---|---|---|---|
 | **Overview** | `overview` | Is the platform healthy right now, and if not, what is the first thing to look at? | Overview |
-| **Work** | `work` | What is running, what is waiting, what did it produce — and why has mine not moved? | Agents · Workflows · Submit a task · Submit a workflow |
-| **Runtimes** | `runtimes` | What kinds of agent can this platform run, where does each one run, and how big is one? | Runtimes |
-| **Capacity** | `capacity` | Is there room to run more, which ceiling is the binding one, and what is holding what there is? | Pools · Runner profiles · Holders · Accounts · Provider quota |
-| **History** | `history` | What has this platform done over time, who used it, and what did it cost? | Timeline · Platform counts |
-| **Admin** | `admin` | Change a ceiling, or see who is registered to use this platform. | Pool limits · Tenants |
+| **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit a task · Submit a workflow |
+| **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
+| **Admin** | `admin` | Change a ceiling, see who is registered to use this platform, and count what it has done. | Pool limits · Tenants · Platform counts |
+
+It was six on 2026-09-24 — the same fifteen panes under Overview, Work,
+**Runtimes**, Capacity, **History** and Admin.
+[Six sections to three](#changed-2026-09-24--six-sections-to-three) at the end
+of this file is the argument for the collapse, what it deliberately did *not*
+do, and the two tab renames that paid for it.
 
 Plus two things in the nav's utility corner rather than among the sections:
 **API reads** (`#reference`) and **Help** (`#help/<topic>`). Both are things
-you look up once, not things you work in. *Why these six* below gives the
+you look up once, not things you work in. *Why these sections* below gives the
 argument for keeping them out of the sections, and why "API reads" is neither
 of the two names that screen shipped with.
 
 The question is **not** printed on the pane. It was, on all fifteen routes,
-which is five copies of one sentence for Capacity alone and a line of vertical
+which is six copies of one sentence for Capacity alone and a line of vertical
 on every screen to say something nobody re-reads after the first visit. It now
 lives behind the head's `?`, written once. What did not change is what the
 question is *for*: it is the membership test for whether a screen belongs in a
-section. A screen that does not help answer it does not go there, and if it
-answers a question none of the six ask, that is the argument for a seventh
-section rather than for quietly widening one. Runtimes is that test working —
-it was added because it failed all five of the others, not because a screen
-existed.
+section.
+
+**With three sections that test has to carry more, and that is the price.** A
+question six panes pass is a weaker instrument than one two panes pass, so the
+failure to watch for is a question quietly *widened* to admit a screen someone
+wanted to place. Two were widened deliberately in the collapse and both are
+argued at the value in `App.tsx`: Capacity now asks what *can* run before it
+asks whether there is room, which is the order those two facts are read in;
+Admin now names the count, because one of its three panes changes nothing.
+A third widening needs an argument of that kind, in this file, before it
+happens — and a screen that answers a question none of the three ask is still
+the argument for another section rather than for stretching one.
 
 ### NO SECTION MAY BE NAMED AFTER ONE OF ITS OWN TABS
 
@@ -128,11 +141,13 @@ the noun the tab was carrying for it, and `Capacity > Capacity holders` says it
 twice. The requirement never changed; what changed is which level meets it.
 
 The rule bites only where both levels render, and that is stated deliberately
-rather than generalised. Overview and Runtimes are single-pane sections whose
-one tab carries the section's own label; no tab strip and no crumb tab is drawn
-for them at all, so nothing is said twice. A second pane added to either is the
-moment the rule applies, and the reviewer who adds it should expect to rename
-the section rather than the pane.
+rather than generalised. Overview is a single-pane section whose one tab
+carries the section's own label; no tab strip and no crumb tab is drawn for it
+at all, so nothing is said twice. A second pane added to Overview is the moment
+the rule applies, and the reviewer who adds it should expect to rename the
+section rather than the pane. (Runtimes was the other single-pane section and
+is now a *tab* of Capacity, which is the same rule seen from the other side:
+a section with one pane is a rail entry spent on a name said twice.)
 
 **The ids moved with the labels, and that was the argued half.** `SECTION_ALIASES`
 would have kept every `#agents/…` and `#pools/…` href working, and *because* it
@@ -142,7 +157,7 @@ every `#`-href literal under `apps/swarm-ui/src` and fails the build if one
 starts with an alias key or names a section or tab that does not exist. Aliases
 are for hashes someone else saved, never a second name this app may write.
 
-### Why these six
+### Why these sections
 
 **Overview merges into one pane.** (Superseded 2026-09-21: see the note below.) The control room's
 value is that it is short — a dispatch pill, four counters, and the pools that
@@ -214,15 +229,20 @@ later, which is the case a one-off audit does not cover.
 
 ### What was considered and rejected
 
-- **Three sections (Work, Capacity, Admin).** Folds Activity into Work and
-  Overview into Capacity. Rejected: "what is happening now" and "what
-  happened over the last 500 tasks" are different reads at different costs
-  with different failure modes, and the merged screen would have to explain
-  which numbers were which in prose. (The 2026-09-24 UX sweep re-proposes the
-  three-section shape from measurement rather than from taste — see
-  [the UX plan](ux-plan.md) §1.4. The two section *names* it proposes, Work
-  and Capacity, have since landed for an unrelated reason; the merge it
-  proposes has not, and this paragraph is still the standing objection to it.)
+- **Three sections (Work, Capacity, Admin) *by merging screens*.** Folding
+  Activity into Work and Overview into Capacity. Rejected, and **still
+  rejected**: "what is happening now" and "what happened over the last 500
+  tasks" are different reads at different costs with different failure modes,
+  and the merged screen would have to explain which numbers were which in
+  prose. Overview and Timeline are two screens and remain two screens.
+
+  **The three-section NAV landed on 2026-09-24 without doing any of that**, and
+  the distinction is the whole of why this paragraph did not have to be
+  withdrawn: what collapsed is the sections, not the screens. Timeline is a
+  pane of Work with its own route, its own read and its own failure state;
+  Overview is still its own screen on its own route. See
+  [Six sections to three](#changed-2026-09-24--six-sections-to-three), and
+  [the UX plan](ux-plan.md) §1.4 for the measurement that prompted it.
 - **A single "Dashboard" with everything on it.** This is what the brief's
   "one stop shop" could be read as asking for. Rejected: every panel on it is
   an independent read that can fail alone, and a page of twelve reads takes
@@ -352,12 +372,13 @@ Present, and now grouped where someone will look for it:
 
 - **Available and used capacity** — pool ceilings, units in use, headroom,
   per-profile "could start", who set the ceiling, and which pool binds:
-  Capacity → Pools and Runner profiles.
+  Capacity → Pools and Profile headroom.
 - **Current agents and runtimes** — state, elapsed, attempts used, resource
   class and weight, why it has not moved: Work → Agents. Per attempt:
   generation, backend, execution name, started/completed, exit code, peak RSS,
   peak disk, OOM near miss: Work → Agents → the drawer's Attempts pane. What a
-  runner profile *is*, and how big one is, is its own section: Runtimes.
+  runner profile *is*, and how big one is, is the pane next to it:
+  Capacity → Runtimes.
 - **Inputs and outputs** — the input on the agent detail's Input panel;
   artifacts (name, bytes, GCS URI), log URIs, the git outcome (commits,
   patch, pull request, publish reason) on its Output panel.
@@ -580,3 +601,132 @@ Three consequences a reader should expect to meet elsewhere:
   have left tab and heading still disagreeing. The first of those has since
   landed for a different reason (the parent now supplies the noun); the second
   has not and should not.
+
+---
+
+## Changed, 2026-09-24 — six sections to three
+
+The second amendment of the day, and the larger one. The nav went from six
+sections to **three plus a landing screen**: Overview, Work, Capacity, Admin.
+`App.tsx` points every reader here, so the argument is here and not in that
+array.
+
+### The measurement, not the taste
+
+From [the UX plan](ux-plan.md) §1.4, taken off the accessibility tree rather
+than off an opinion: fifteen screens under six sections, every screen carrying
+24–67 interactive elements, **and the rail alone was 21 of them on every single
+screen**. The grouping was by *which subsystem owns the data* — Runtimes had a
+section because `/v1/runtimes` is a route, History had one because two screens
+read the past — rather than by what anyone arrives wanting to know.
+
+A reader arrives with five questions. Overview answers the first. The other
+four were spread over **ten destinations**:
+
+| the question | where the answer was |
+|---|---|
+| is anything broken right now? | Overview |
+| what is running? | Agents, Workflows, Timeline |
+| why is this one stuck? | Agents → drawer, Holders, Pools, Provider quota |
+| how much has this cost? | Timeline, Accounts, Platform counts |
+| can I start something? | Submit a task, Submit a workflow, Runtimes, Profile headroom |
+
+### What moved
+
+| pane | was | is |
+|---|---|---|
+| Timeline | `#history/timeline` | `#work/timeline` |
+| Platform counts | `#history/counts` | `#admin/counts` |
+| Runtimes | `#runtimes/catalogue` | `#capacity/catalogue` |
+| Runner profiles → **Profile headroom** | `#capacity/profiles` | `#capacity/profiles` (label and `<h1>` only) |
+
+Every other route is byte-for-byte what it was. **Nothing was merged, nothing
+was removed**: all fifteen screens keep their own route, their own read, their
+own empty state and their own failure state. That is what makes this compatible
+with the standing objection in *What was considered and rejected* above, which
+refused a three-section nav *that merged Activity into Work and Overview into
+Capacity*. It still refuses that. What it objected to was two reads becoming
+one screen, and no two reads became one screen.
+
+### The two renames that paid for it, and why neither was optional
+
+**`Runner profiles` → `Profile headroom`.** The old `App.tsx` note on the
+Runtimes *section* explained why that section existed rather than being a tab
+under Pools, and the reason was not the count:
+
+> those two would then be adjacent tabs whose labels are near-synonyms while
+> answering different questions, which is how someone ends up reading
+> per-tenant headroom as a platform figure.
+
+That hazard is real and putting a tab between them does not touch it — a reader
+scanning six labels does not measure distance, they read words. So the words
+changed. `Runtimes.tsx` renders the runtime topology from `GET /v1/runtimes`:
+what kinds of agent exist, which backend each resolves to, how big one is.
+Every figure on it is platform-wide and cannot be otherwise — the catalogue
+route reads no tenant document at all. `Profiles.tsx` renders
+`capacity.runner_profiles`, whose pool lists are built with
+`pool_names_for(tenant_id=ctx.tenant_id)` unconditionally, admin included
+(`service.py:313-329`); every count on it answers *how many more could I
+submit*. One is a catalogue, the other is a measurement of one tenant against
+it, and **headroom** is the word this product already uses for that
+measurement — `headroomFor`, `headroomFigure`, the Pools table's own column.
+
+The **id stays `profiles`**: `runner_profile` is the contract's field name and
+invariant 10 is the reason the screen exists, so the address keeps the
+contract's noun while the label says which of the two questions the screen
+answers. `test_nav_headings_agree.py` moved the `<h1>` with the tab, because a
+tab and its heading are one name.
+
+**Capacity's and Admin's questions were widened, once each, and said so.**
+Capacity now asks what *can* run before it asks whether there is room, which is
+the order a reader who does not yet know what a profile weighs has to take them
+in. Admin now names the count, because Platform counts changes nothing and the
+old sentence ("change a ceiling, or see who is registered") would have been
+false about one of its three panes. Both widenings are written beside the value
+in `App.tsx`. **A third one needs an argument in this file before it happens** —
+with three sections the membership question is the only thing keeping a screen
+out of a section, and a question stretched to fit is that instrument quietly
+being disconnected.
+
+### The routing case that a head alias cannot express
+
+`SECTION_ALIASES` rewrites the *head* of a hash and keeps the tail, which is
+right when every pane of a retired section landed in one new section:
+`#runtimes/catalogue` → `capacity/catalogue`, `#history/timeline` →
+`work/timeline`. History's two panes did **not** go to one place, and the
+failure mode is worse than a dead link:
+
+`history` aliases to `work`. `work` is the section that owns the agent drawer,
+and `fromHash` reads a Work tail matching no tab as a **task id** — deliberately,
+so that `#agents/<id>` from the old nav still opens the agent. Put those
+together and `#history/counts` opens the agent inspector for a task called
+"counts": a spinner, then a not-found panel, on a hash that used to be a
+working link to the platform's own ledger.
+
+`MOVED_PANES` is the fix and it runs **first**, on the unaliased hash, because
+it is the only lookup in `fromHash` that sees both halves of the address at
+once. It also absorbed the hand-rolled `#settings/<tail>` branch, which was the
+same shape one rename earlier — Settings' two panes split between Admin and
+Capacity — so there is now one mechanism for it rather than two.
+`apps/swarm-ui/tests/route.test.ts` asserts the task-id reading specifically,
+because every other test in that file stays green through it.
+
+### What is still true after the collapse
+
+- **No section may be named after one of its own tabs.** Work, Capacity and
+  Admin each cover all of their panes and none of their panes' names.
+  `shell.test.tsx` asserts it for every section in the rail.
+- **Every old hash resolves, with its tail, and the address bar is rewritten**
+  to the current spelling. `#agents/…`, `#pools/…`, `#activity/…`,
+  `#history/…`, `#runtimes/…` and `#settings/…` all land. A *bare* retired head
+  (`#runtimes`, `#history`) lands on the new section's first pane, as an
+  unrecognised tail always has — `canonical` has never written a bare section
+  hash, so one exists only where somebody typed it.
+- **An alias is for hashes this app did not write.** `nav.links.test.tsx` fails
+  the build if an internal href uses one, which is why the two `#history/timeline`
+  links in `Overview.tsx` are now `#work/timeline` and the one that said
+  `cta="history"` says `cta="timeline"`.
+- **The evidence and audit files keep their old route names**, for the reason
+  given in the previous note: a measurement rewritten to match today is a
+  measurement that has been falsified. The translation table in
+  [`README.md`](README.md) gained the four new rows.

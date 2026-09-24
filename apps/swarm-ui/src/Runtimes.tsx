@@ -237,7 +237,11 @@ function Backends({
             here are platform-wide and cannot be otherwise -- the catalogue route
             reads no tenant document, and a backend pool has no tenant in its
             name. Nothing on this row is "yours"; per-tenant headroom is the
-            Runner profiles pane under Pools. */}
+            Profile headroom pane, one tab along under Capacity. That pane used
+            to be called "Runner profiles" and used to live in a different
+            section from this screen; both changed together, because a tab
+            named "Runner profiles" beside one named "Runtimes" is how the two
+            scopes get read as one. */}
         <span className="ctl-card-note is-end">
           {groups.length} target{groups.length === 1 ? '' : 's'} · platform-wide
         </span>

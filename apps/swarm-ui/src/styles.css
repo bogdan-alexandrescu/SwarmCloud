@@ -1493,7 +1493,13 @@ body {
 .wf-dispatch.is-none { color: var(--text-dim); }
 .wf-dispatch > .ctl-facts, .wf-drift { padding-top: 0; }
 .wf-drift + .wf-dispatch { margin-top: 0; }
-.wf-dispatch + .wf-canvas-wrap { margin-top: var(--ctl-s3); }
+/* The dispatch line and whatever starts the canvas -- which is the zoom strip
+   now, and was the scrolling wrapper before it. Both are named: the
+   adjacency selector stops matching the moment something is inserted
+   between them, and a rule that silently stops applying is how this sheet
+   has lost a gap twice. */
+.wf-dispatch + .wf-canvas-wrap,
+.wf-dispatch + .wf-zoom { margin-top: var(--ctl-s3); }
 
 .wf-body {
   border: 1px solid var(--line); border-top: 0;
@@ -1580,6 +1586,99 @@ body {
    that two edges converging on one join still touch. */
 .wf-edge-halo { fill: none; stroke: var(--wf-body-bg); stroke-width: 5; }
 .wf-arrowhead { fill: var(--line); }
+
+/* SEMANTIC ZOOM: THE STRIP ABOVE THE CANVAS.
+   ---------------------------------------------------------------------------
+   THREE PIECES OF CHROME AND NO PROSE (§6.11): the control that says how much
+   each step is allowed to say, the mark that says what this zoom is therefore
+   not drawing, and the map that says where you are on a canvas that still does
+   not fit. In that order, because it is the order a reader needs them: the
+   choice, its consequence, and where that leaves you.
+
+   IT WRAPS RATHER THAN SCROLLING. At 390px the segmented control alone is
+   wider than the column, and a chrome row with its own horizontal scrollbar
+   above a canvas that has one is two scrollbars arguing. `flex-wrap` is the
+   whole phone strategy here, exactly as it is for `.ctl-head`.
+
+   THE MINIMAP TAKES THE REST OF THE ROW. `flex: 1` with `min-width: 0`, so it
+   is as wide as the wrapper leaves it and never forces the row wider -- the
+   one thing a map of a too-wide canvas must not do is make the canvas wider. */
+.wf-zoom {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s3);
+  flex-wrap: wrap;
+  margin-bottom: var(--ctl-s3);
+}
+.wf-zoom-seg { flex: none; }
+.wf-zoom > .wf-caveat { flex: none; }
+
+/* THE MAP.
+   ---------------------------------------------------------------------------
+   ITS HEIGHT IS `BAND_H`, WHICH IS DERIVED AND NOT CHOSEN. 45px is what
+   `dag.ts` sums for a `.wf-band` -- one line of --t-meta inside `--ctl-s3` of
+   padding and a 1px border -- because that is what this sheet gives a one-line
+   summary of a whole stage. A one-line summary of the whole CANVAS is the same
+   kind of object one level up, so it is the same height, and it clears the 44px
+   touch target §7.2 asks of anything a finger lands on for the same reason the
+   band does.
+
+   THE SVG INSIDE IT SCALES THE TWO AXES INDEPENDENTLY (`preserveAspectRatio:
+   none`, set on the element). That is normally a defect and is the point here:
+   X is the scroll THIS WRAPPER owns and the thing the reader has lost track of,
+   Y is the page's own scroll and is not clipped by anything. Scaled together, a
+   3,671 x 4,134 canvas would render as a 40px-wide sliver -- a picture of the
+   aspect ratio instead of a picture of the position. `Minimap` says the same
+   thing in prose over the component.
+
+   `overflow: hidden` WITH THE RADIUS, so the viewport rectangle is clipped by
+   the rounded corner rather than square-ending outside it. */
+.wf-minimap {
+  flex: 1 1 200px;
+  min-width: 0;
+  height: 45px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--wf-body-bg);
+  overflow: hidden;
+  cursor: pointer;
+}
+.wf-minimap svg { display: block; width: 100%; height: 100%; }
+/* A STEP, IN ITS OWN TONE. Faint by default -- the map is chrome and most steps
+   on it are unremarkable -- and in the state colour when the state is one
+   somebody has to act on. `is-ok` is deliberately NOT coloured: §6.7, nothing
+   is coloured for being healthy, and a map of a finished workflow would
+   otherwise spend the whole severity budget on the part that is fine.
+
+   `is-wait` IS NOT COLOURED EITHER, AND THAT PUTS CANCELLED IN THE FAINT
+   BUCKET. `stateTone` gives CANCELLED the `wait` tone, alongside QUEUED, READY
+   and PARKED, and splitting it out here would be this sheet disagreeing with
+   `types.ts` about what a tone means. The guarantee that a cancelled step is
+   never invisible is kept where it belongs and is stronger there: the node
+   draws the word `cancelled` and its glyph at EVERY zoom tier, and a collapsed
+   stage holding one takes `.is-bad` on its band below, because `stageCensus`
+   counts failures and cancellations together. */
+.wf-mini-node { fill: var(--text-faint); }
+.wf-mini-node.is-live { fill: var(--info); }
+.wf-mini-node.is-bad { fill: var(--bad); }
+/* A COLLAPSED STAGE IS DRAWN AS THE BAND IT IS, and it takes the bad tone when
+   something inside it failed -- the same guarantee `.wf-band.has-failure` makes
+   on the canvas, at the one zoom level where the band itself can be off to the
+   right of the viewport. "Find what broke" has to work on the map too, or the
+   map is a picture of where you are and not of what is there. */
+.wf-mini-band { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; }
+.wf-mini-band.is-bad { fill: color-mix(in srgb, var(--bad) 45%, var(--surface-2)); stroke: var(--bad); }
+/* WHAT IS ON SCREEN. `vector-effect: non-scaling-stroke` because the SVG's two
+   axes are scaled by wildly different factors -- without it the 2px outline
+   would be drawn 2px in USER units and come out as a hairline on one axis and a
+   slab on the other. */
+.wf-mini-view {
+  fill: color-mix(in srgb, var(--info) 14%, transparent);
+  stroke: var(--info);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 
 /* THE COLLAPSED STAGE.
    ---------------------------------------------------------------------------
@@ -1886,11 +1985,23 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    the step id already pointed at: `#work/task/<id>` and the same drawer's
    `attempts` TAB. Three anchors, one destination. The card is the link now
    (see `StepNode`) and the row is deleted.
-   NODE_W IS 248 AND CHROME NO LONGER SETS IT. It is set by the widest string a
-   figure cell may not truncate -- `21.4k in · 3.2k out`, measured at 160px --
-   which is a fact about what this screen owes the reader rather than about
-   what a row of links happens to need. `dag.ts`'s `NODE_W` carries the
-   arithmetic and the browser sweep that produced it. */
+   NODE_W IS 255 AND CHROME NO LONGER SETS IT. It is set by the widest ROW a
+   node may not truncate, and `dag.ts` now computes it rather than stating it:
+   `.node-line` carrying `dead_lettered` beside `duration unread` needs 226.3px
+   and the figures row needs 222.6px, over 28px of padding and border. It read
+   248 while the border was uncounted and while nothing had measured the state
+   line -- at which width `99.9k in · 99.9k out` ellipsed by 2.6px. `dag.ts`'s
+   `NODE_CHROME_W` carries the correction and `NODE_W` carries the arithmetic.
+
+   AND IT IS ONLY THE FULL TIER'S WIDTH. Semantic zoom draws nodes at three
+   widths on one canvas -- `.node-slot`'s inline width comes from
+   `layout.nodeW`, and `.node.zoom-details` / `.node.zoom-names` simply have
+   fewer children. There is no per-tier rule in this sheet on purpose: a tier is
+   a set of FIELDS, so the difference between them is which elements React
+   renders, not which declarations win. A rule that hid a row with `display:
+   none` would leave the row in the accessibility tree and in `layoutOf`'s
+   height, which is the two-sources-of-truth defect this canvas has already
+   paid for twice. */
 
 @media (max-width: 560px) {
   /* A SECOND PHONE BLOCK FOR `.row` LIVED HERE AND WAS SILENTLY WINNING HALF
@@ -5797,8 +5908,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 :root { --rail-w: 200px; }
 /* Below 1280px the rail narrows rather than becoming a 56px icon column: this
-   product has no icon set, and a letter is not an icon when two sections begin
-   with the same one (Agents, Admin). 152px still fits "Runner profiles". */
+   product has no icon set, and a letter is not an icon -- it is a label with
+   everything but the first character deleted. That argument used to rest on
+   Agents and Admin sharing an initial; the three-section collapse made the
+   four rail entries Overview, Work, Capacity and Admin, so the collision is
+   gone and the argument is not (the TABS, which are most of this column's
+   height, have no initials at all). The longest tab label is now "Profile
+   headroom", one character longer than the "Runner profiles" the 152px figure
+   was measured against, and nothing offline can measure rendered text at a
+   width -- see the note on `Rail` in App.tsx. */
 @media (max-width: 1279px) { :root { --rail-w: 152px; } }
 
 .work { min-width: 0; }
@@ -6622,13 +6740,24 @@ table.pools tbody tr.unmeasured {
    button in place with `.stop-pending`, `.stop-note` or -- on a click --
    `.stop-confirm`, a real dialog with `max-width: 62ch`. Anchored `bottom:
    10px` in a box with no right edge, 62ch of it is about 440px against a 248px
-   node: it paints out over the neighbouring step, under the cards the canvas
-   draws after it, with no border of its own to say where it begins.
+   node (255px since `NODE_W` was recomputed; the arithmetic of the defect is
+   unchanged): it paints out over the neighbouring step, under the cards the
+   canvas draws after it, with no border of its own to say where it begins.
 
    SO THE STRIP HAS A RIGHT EDGE AND THE CONTENTS ARE BOUNDED BY IT. `right:
    12px` matches the card's own padding, so the control's box is exactly the
    node's text column; `max-width: 100%` on the children holds the dialog
-   inside it. `z-index: 2` -- layer 2 of the four listed over `.wf-levels` --
+   inside it.
+
+   AND THAT BOUND IS WHAT MAKES SEMANTIC ZOOM SAFE HERE. A `names` node is
+   138px, so this strip is 111px, and a confirm dialog asking for 62ch is held
+   to 111 of them -- cramped, wrapped, and INSIDE the card. That is the trade
+   taken deliberately: the stop control is an ACTION rather than one of the
+   fields a tier drops, and an action that is hard to read is recoverable where
+   an action that is not there is not. `NODE_H` reserves the 42px strip at every
+   tier for the same reason. If the wrapped dialog ever needs more room than
+   this, the answer is to move it out of the card, not to take the button away
+   from the tiers that are narrow. `z-index: 2` -- layer 2 of the four listed over `.wf-levels` --
    puts an opened dialog above the other cards AND above a stage band, rather
    than half behind them: an overlay that is partly occluded reads as a
    rendering fault, which is the sentence F9 uses about the button. The button

@@ -80,6 +80,47 @@ log = logging.getLogger(__name__)
 WORKER_UID = 10001
 WORKER_HOME = "/home/swarm"
 
+#: THE WORKSPACE MOUNT, AND THE ARTIFACTS DIRECTORY INSIDE IT.
+#:
+#: `/workspace` was written out in three places here -- the Cloud Run volume
+#: mount, the GKE volume mount, and nothing that tied them together -- so it is
+#: a constant now for the same reason WORKER_HOME is.
+#:
+#: WHY SWARM_ARTIFACTS_DIR HAS TO BE SET AT ALL. `runners/base.py` defaults
+#: `artifacts_dir` to `work.parent / "artifacts"`, and the work dir is the
+#: container's cwd, `/workspace` -- so the default resolves to `/artifacts`, at
+#: the root. On GKE_AUTOPILOT the container sets `readOnlyRootFilesystem: true`
+#: (CONTAINER_SECURITY_CONTEXT), so the runner died on its first line:
+#:
+#:     OSError: [Errno 30] Read-only file system: '/artifacts'
+#:
+#: measured 2026-09-24 on the first browser attempt that ever got as far as
+#: starting a container. Every earlier attempt failed before that, at
+#: `jobs.batch is forbidden`, so this was the next defect in the queue and had
+#: never been reachable.
+#:
+#: WHY CLOUD_RUN_JOB NEVER SHOWED IT. Identical image, identical
+#: `python -m agent_worker.runners.<x>` command out of the frozen catalogue --
+#: and a container that does NOT harden the root filesystem, so `mkdir
+#: /artifacts` simply succeeded. Twenty-two tasks passed through that path while
+#: the same code could not start on GKE. The hardening is right and its absence
+#: on Cloud Run is the anomaly.
+#:
+#: SET FOR BOTH BACKENDS, from this one shared builder, deliberately. Cloud Run
+#: does not need it today, and giving it the same value anyway means the two
+#: backends put artifacts in the same place, that Cloud Run stops depending on a
+#: writable root, and that there is one answer to "where do artifacts go" instead
+#: of one per backend. The upload reads `ctx.artifacts_dir`, so it follows.
+#:
+#: INSIDE THE WORKSPACE VOLUME rather than in a volume of its own: a dedicated
+#: emptyDir would need a `sizeLimit`, which is a second disk number to invent and
+#: keep in step when `workspace` already takes its limit from the resource
+#: class's disk. Artifacts are produced from the workspace and uploaded to
+#: ARTIFACT_BUCKET when the attempt ends, so charging them to that budget is the
+#: honest accounting.
+WORKSPACE_MOUNT = "/workspace"
+WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
+
 #: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
 #: Admission at `enforce: baseline` rather than `restricted` precisely because
 #: the manifest this module builds carried no securityContext at all, so
@@ -242,6 +283,9 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
             settings.core.max_in_worker_retry_delay_seconds
         ),
         "TASK_TIMEOUT_SECONDS": str(task.timeout_seconds),
+        # See WORKER_ARTIFACTS_DIR: without this the runner cannot create its
+        # own artifacts directory on a read-only root filesystem.
+        "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
     }
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
     if broker_url:
@@ -383,7 +427,7 @@ class CloudRunJobDispatcher:
             resources=run_v2.ResourceRequirements(
                 limits={"cpu": str(int(rc.cpu)), "memory": f"{rc.memory_gib}Gi"}
             ),
-            volume_mounts=[run_v2.VolumeMount(name="workspace", mount_path="/workspace")],
+            volume_mounts=[run_v2.VolumeMount(name="workspace", mount_path=WORKSPACE_MOUNT)],
         )
 
         volume = run_v2.Volume(
@@ -831,7 +875,7 @@ class GkeJobDispatcher:
                                 "resources": {"requests": resources, "limits": resources},
                                 "securityContext": CONTAINER_SECURITY_CONTEXT,
                                 "volumeMounts": [
-                                    {"name": "workspace", "mountPath": "/workspace"},
+                                    {"name": "workspace", "mountPath": WORKSPACE_MOUNT},
                                     {"name": "dshm", "mountPath": "/dev/shm"},
                                     # readOnlyRootFilesystem means every path the
                                     # runtime writes to needs a volume: /tmp, and
@@ -857,6 +901,27 @@ class GkeJobDispatcher:
             },
         }
 
+    @staticmethod
+    def _is_forbidden(exc: BaseException) -> bool:
+        """True for a 403 from the API server, however the client reports it.
+
+        `kubernetes.client.ApiException` carries `.status`, but this path also
+        sees transport wrappers and, in tests, plain exceptions -- so the
+        status is preferred and the message is the fallback rather than the
+        other way round. Being wrong in the FALSE direction costs the extra
+        sentence below; being wrong in the TRUE direction would add it to an
+        unrelated failure, so neither is expensive and neither is guessed at
+        beyond these two signals.
+        """
+        status = getattr(exc, "status", None)
+        if status is not None:
+            try:
+                return int(status) == 403
+            except (TypeError, ValueError):
+                pass
+        text = str(exc)
+        return "is forbidden" in text or '"code": 403' in text or "'code': 403" in text
+
     def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant) -> str:
         manifest = self._manifest(task=task, lease=lease, profile=profile, tenant=tenant)
         namespace = manifest["metadata"]["namespace"]
@@ -865,6 +930,42 @@ class GkeJobDispatcher:
         except DispatchError:
             raise
         except Exception as exc:  # kubernetes.client.ApiException and transport errors
+            # KUBERNETES AUTHORISES BEFORE IT RESOLVES, so a 403 here does NOT
+            # establish that this is a permissions problem.
+            #
+            # A Job created into a namespace that does not exist comes back as
+            #
+            #     jobs.batch is forbidden: User "1174050342..." cannot create
+            #     resource "jobs" in API group "batch" in the namespace
+            #     "swarm-tenant-eng"
+            #
+            # -- the authorizer runs against the namespaced request before
+            # anything looks for the namespace, so the API server reports a
+            # missing permission and never a missing namespace. There is no 404
+            # to wait for. On 2026-09-23 that message sent three separate
+            # investigations at IAM while the actual cause was that the
+            # provisioner spelled the namespace `swarm-eng` and this dispatcher
+            # spelled it `swarm-tenant-eng`; all seven `browser` tasks this
+            # platform had ever accepted had failed that way, over two days.
+            #
+            # So the namespace is NAMED and the ambiguity is stated, in the
+            # message rather than in a doc nobody reads at 03:00. `loop.py`
+            # logs `str(exc)` on its `dispatch failed` line, which is where an
+            # operator meets this. docs/gke-dispatch-403.md has the full
+            # diagnosis and the commands.
+            if self._is_forbidden(exc):
+                raise DispatchError(
+                    f"could not create GKE job in {namespace}: {exc} -- NOTE: a 403 "
+                    f"here does not prove this is a permissions problem. Kubernetes "
+                    f"authorises before it resolves, so a Job created into a "
+                    f"namespace that DOES NOT EXIST is also reported as "
+                    f"`jobs.batch is forbidden`, never as 404. Confirm the namespace "
+                    f"{namespace} exists and carries the swarm-dispatcher RoleBinding "
+                    f"before changing any IAM: kubectl get ns {namespace} && "
+                    f"kubectl get rolebinding swarm-dispatcher -n {namespace}. "
+                    f"See docs/gke-dispatch-403.md.",
+                    code="gke_create_job_forbidden",
+                ) from exc
             raise DispatchError(
                 f"could not create GKE job in {namespace}: {exc}",
                 code="gke_create_job_failed",

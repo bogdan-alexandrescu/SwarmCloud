@@ -86,11 +86,35 @@ roleRef:
   kind: Role
   name: swarm-dispatcher
 subjects:
-  # A Google service account is a `User` to Kubernetes RBAC, named by its
-  # email. Not a ServiceAccount subject: the scheduler runs on Cloud Run as a
-  # Google identity and never has a Kubernetes ServiceAccount of its own.
+  # A Google service account is a `User` to Kubernetes RBAC -- not a
+  # ServiceAccount subject: the scheduler runs on Cloud Run as a Google identity
+  # and never has a Kubernetes ServiceAccount of its own.
+  #
+  # BOUND TWICE, BY EMAIL AND BY NUMERIC uniqueId, AND THE SECOND ONE IS THE ONE
+  # THAT WORKS HERE. This file originally said a GSA is "named by its email",
+  # bound only that, and was wrong in the most expensive way available: the
+  # RoleBinding applied cleanly and authorised nobody. Measured 2026-09-24,
+  # after the namespace and the bindings had both been confirmed present:
+  #
+  #     jobs.batch is forbidden: User "117405034245659033603" cannot create
+  #     resource "jobs" in API group "batch" in the namespace "swarm-tenant-eng"
+  #
+  # That number is the scheduler GSA's uniqueId. The scheduler reaches the
+  # Kubernetes API with a Google OAuth ACCESS token (dispatch.py's
+  # `install_google_bearer_token`), and on that path GKE resolves the caller to
+  # the uniqueId rather than the email.
+  #
+  # Both are kept because the email IS the subject on other paths -- kubectl
+  # with an impersonated GSA, and Workload Identity -- and a binding that
+  # authorises one caller and not another is the exact shape of the defect this
+  # file was written to fix. A duplicate subject costs nothing: RBAC subjects are
+  # a list and a repeat grants nothing new, which is also why __SCHEDULER_UID__
+  # falls back to the email when no uniqueId is supplied.
   - kind: User
     name: __SCHEDULER_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__SCHEDULER_UID__"
     apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -128,6 +152,13 @@ roleRef:
   kind: Role
   name: swarm-reaper
 subjects:
+  # Email and numeric uniqueId, for the reason given on swarm-dispatcher above.
+  # The reconciler has not been observed failing this way only because it deletes
+  # rather than creates and nothing had reached the delete path yet -- it
+  # authenticates the same way and would have failed identically.
   - kind: User
     name: __RECONCILER_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__RECONCILER_UID__"
     apiGroup: rbac.authorization.k8s.io

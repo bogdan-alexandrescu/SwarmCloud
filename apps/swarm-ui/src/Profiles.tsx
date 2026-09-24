@@ -30,7 +30,25 @@ import { headroomFor, poolLabel, poolScope, type Capacity, type Pool, type Runne
 export function ProfilesScreen() {
   return (
     <Screen
-      title="Runner profiles"
+      /* "Profile headroom", NOT "Runner profiles", AND THE HEADING MOVED
+         BECAUSE THE TAB DID -- test_nav_headings_agree.py asserts the two are
+         one name and would have failed the build otherwise.
+         The rename is what pays for the three-section nav putting this screen
+         and `Runtimes.tsx` in one section. Those two were kept in SEPARATE
+         sections for exactly this reason: "Runtimes" and "Runner profiles" are
+         near-synonyms answering different questions, and two adjacent tabs
+         with near-synonymous labels is how a reader takes the per-tenant
+         figures on THIS screen for the platform-wide ones on that one. Every
+         count here is built from `pool_names_for(tenant_id=ctx.tenant_id)`
+         unconditionally, admin included (service.py:313-329); nothing on the
+         runtime topology reads a tenant document at all. "Headroom" is the
+         word this product already uses for a measurement of one tenant against
+         a ceiling, so the label now says which of the two questions this
+         screen answers instead of leaving it to be inferred from the section.
+         The route is still `#capacity/profiles`: `runner_profile` is the
+         contract's field name and invariant 10 is why this screen exists, so
+         the address keeps the contract's noun. */
+      title="Profile headroom"
       load={loadCapacity}
       summary={(d) => {
         const profiles = Object.values(d.runner_profiles)

@@ -101,29 +101,21 @@ run "ci_is_keyless_and_bound_to_one_repository_and_ref" {
     error_message = "without a ref condition a fork's pull request could mint a deploy token"
   }
 
-  # THE THIRD PIN, AND THE ONE CHECKOV CANNOT SEE.
+  # THERE IS DELIBERATELY NO `assertion.sub` ASSERTION HERE.
   #
-  # `assertion.sub` is the claim GitHub itself constructs:
-  # `repo:<owner>/<name>:<context>:<value>`. Pinning it is stricter than the
-  # two clauses above rather than a restatement -- those are satisfied by any
-  # token carrying the right repository and ref attributes, while this also
-  # fixes the CONTEXT segment to `ref:`, so a token minted for
-  # `...:environment:prod` or `...:pull_request` does not match.
+  # One existed, requiring
+  # `assertion.sub == "repo:saga/agent-swarm-infra:ref:refs/heads/main"` in the
+  # rendered condition, to gate a pin checkov could not read through a `join()`
+  # over a `for`. The pin itself was then REMOVED from wif.tf for two measured
+  # reasons: it rejected a legitimate `refs/heads/main` run
+  # (`unauthorized_client: The given credential is rejected by the attribute
+  # condition`), and it could never have admitted `release.yml`'s
+  # environment-gated `deploy` job at all, because GitHub mints those runs with
+  # `sub = repo:<owner>/<name>:environment:<env>` rather than `:ref:`.
   #
-  # IT IS ASSERTED HERE BECAUSE IT CANNOT BE ASSERTED BY CHECKOV. CKV_GCP_125
-  # reads `attribute_condition` as written text and looks for
-  # `assertion.sub == "..."`. Ours is composed in `local.sub_condition`, a
-  # `join()` over a `for` comprehension, and checkov's evaluator does not
-  # resolve that -- it sees `${local.sub_condition}` and reports the pin as
-  # absent. Terraform does resolve it, which is why the check is skipped in
-  # wif.tf and the property is gated here instead, against the RENDERED string.
-  assert {
-    condition = strcontains(
-      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
-      "assertion.sub == \"repo:saga/agent-swarm-infra:ref:refs/heads/main\"",
-    )
-    error_message = "the trust policy does not pin assertion.sub, so a token minted for a different context on an allowed ref is accepted"
-  }
+  # The assertion went with it rather than being widened to accept both context
+  # forms -- at which point it would add nothing the repository and ref clauses
+  # do not already say.
 
   # AND NOTHING WIDENS IT TO A PULL REQUEST. The single line in this file that
   # would matter most if it were ever deleted: a PR ref minting a token that

@@ -720,3 +720,128 @@ def test_a_cap_on_the_class_that_runs_really_stops_the_task(db, make_scheduler):
     assert report.denied == 1
     blocked = db.docs["tasks/task_override"]["blocked_by"]
     assert [entry["pool"] for entry in blocked] == ["resource:standard"]
+
+
+# ---------------------------------------------------------------------------
+# The 403 that means 404
+# ---------------------------------------------------------------------------
+
+
+class ForbiddenBatchApi:
+    """What the kubernetes client raises for a 403.
+
+    `.status` is what `ApiException` carries; the message is what the API server
+    sent. Both are supplied because the classifier reads the status first and
+    falls back to the text, and a test that only supplied one would leave half
+    of it unexercised.
+    """
+
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+
+    def create_namespaced_job(self, namespace, body):
+        error = Exception(
+            "(403)\nReason: Forbidden\njobs.batch is forbidden: User "
+            "\"117405034245659033603\" cannot create resource \"jobs\" in API group "
+            f"\"batch\" in the namespace \"{namespace}\": requires one of "
+            "[\"container.jobs.create\"] permission(s) in Cloud IAM or a Kubernetes "
+            "RBAC role with verb \"create\" for resource \"jobs\"."
+        )
+        error.status = 403
+        raise error
+
+
+class BrokenBatchApi:
+    def create_namespaced_job(self, namespace, body):
+        raise Exception("HTTPSConnectionPool(host=...): Max retries exceeded")
+
+
+def test_a_403_on_jobs_batch_says_the_namespace_may_simply_not_exist(settings, tenant):
+    """The message an operator meets first must not send them to IAM.
+
+    Kubernetes authorises before it resolves, so this exact 403 is also what a
+    Job created into a namespace that DOES NOT EXIST comes back as -- there is
+    no 404. On 2026-09-23 that sent three investigations at IAM while the real
+    cause was two spellings of the namespace, and all seven `browser` tasks the
+    platform had ever accepted had failed the same way over two days.
+
+    `loop.py` logs `str(exc)` on its `dispatch failed` line, so everything
+    asserted here is what reaches the log.
+
+    THE MUTATION THIS CATCHES: remove the `_is_forbidden` branch from
+    `GkeJobDispatcher.dispatch` and the message goes back to the bare upstream
+    text, which names a permission and nothing else.
+    """
+    dispatcher = GkeJobDispatcher(
+        settings,
+        target=GkeTarget("https://k8s", "/ca.pem"),
+        batch_api=ForbiddenBatchApi("swarm-tenant-eng"),
+    )
+    task = make_task("browser")
+    with pytest.raises(DispatchError) as raised:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+        )
+
+    message = str(raised.value)
+    # The namespace it TRIED, named. Without it the reader cannot even tell
+    # which namespace to go and look for.
+    assert "swarm-tenant-eng" in message
+    # And the ambiguity, stated. A reader who takes the upstream message at face
+    # value goes to IAM, which is what happened.
+    assert "DOES NOT EXIST" in message
+    assert "403" in message and "404" in message
+    # A command that settles it, and the page with the diagnosis.
+    assert "kubectl get ns swarm-tenant-eng" in message
+    assert "docs/gke-dispatch-403.md" in message
+    # A distinct code, so the two cases are separable in metrics and in
+    # `task.last_error` -- which is the only part of this a tenant is given.
+    assert raised.value.code == "gke_create_job_forbidden"
+
+
+def test_a_dispatch_failure_that_is_not_a_403_keeps_the_plain_code(settings, tenant):
+    """The extra sentence is a diagnosis of ONE failure, not a banner.
+
+    A connection error has nothing to do with namespaces, and attaching the
+    namespace advice to it would train people to ignore the advice.
+    """
+    dispatcher = GkeJobDispatcher(
+        settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=BrokenBatchApi()
+    )
+    task = make_task("browser")
+    with pytest.raises(DispatchError) as raised:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+        )
+
+    assert raised.value.code == "gke_create_job_failed"
+    assert "DOES NOT EXIST" not in str(raised.value)
+    # The namespace is still named: it is context for any dispatch failure.
+    assert "swarm-tenant-eng" in str(raised.value)
+
+
+def test_the_403_classifier_reads_the_status_and_falls_back_to_the_text():
+    """Both signals, because the client reports a 403 both ways.
+
+    `ApiException` carries `.status`; a wrapped or re-raised error may carry
+    only the message. A classifier that read one of them would silently stop
+    classifying the day the client version changed -- and this repository has
+    already lost a working check to a kubernetes client that quietly ignored
+    what it was handed.
+    """
+    by_status = Exception("something opaque")
+    by_status.status = 403
+    assert GkeJobDispatcher._is_forbidden(by_status)
+
+    by_text = Exception('jobs.batch is forbidden: User "1" cannot create resource "jobs"')
+    assert GkeJobDispatcher._is_forbidden(by_text)
+
+    not_403 = Exception("Internal error occurred")
+    not_403.status = 500
+    assert not GkeJobDispatcher._is_forbidden(not_403)
+
+    # A non-numeric status must not raise out of the classifier: it falls back
+    # to the text, and the text here says nothing about forbidden.
+    weird = Exception("timeout")
+    weird.status = "unknown"
+    assert not GkeJobDispatcher._is_forbidden(weird)

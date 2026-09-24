@@ -748,7 +748,16 @@ class GkeBackend:
     def __init__(
         self,
         *,
-        namespace_prefix: str = "swarm-",
+        # `swarm-tenant-`, not `swarm-`, and the difference is not cosmetic:
+        # this prefix is SLICED OFF a namespace name to recover a tenant id
+        # (`namespace[len(self._prefix):]`, twice below) whenever the
+        # `swarm-tenant` label is missing. The short spelling turned
+        # `swarm-tenant-eng` into the tenant `tenant-eng`, so a finding about a
+        # real orphan was filed against a tenant that does not exist. See
+        # `ReconcilerConfig.namespace_prefix` for the outage this spelling comes
+        # from, and `scripts/lib/check-contract-parity.sh` section 6 for what
+        # now holds every copy of it together.
+        namespace_prefix: str = "swarm-tenant-",
         batch_api: Any | None = None,
         core_api: Any | None = None,
         logger: Any | None = None,

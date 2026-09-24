@@ -216,17 +216,35 @@ kubectl delete validatingadmissionpolicy        swarm-worker-hardening-advisorie
 own manifest against the same requirements, so a regression on that side fails in
 CI rather than as Pending pods.
 
-### 5. Two KSA names for one service account
+### 5. Two KSA names for one service account — CLOSED, and it was worse than this said
 
-`scripts/register-tenant.sh` creates the KSA `swarm-worker`; `dispatch.py` asks
-for the KSA `swarm-<tenant>`. A pod naming a service account that does not exist
-stays Pending until its deadline expires, which reads as a scheduling problem
-rather than a missing object.
+This section described the mismatch as `swarm-worker` (created) against
+`swarm-<tenant>` (asked for), and recorded it as a cosmetic duplicate worked
+around by creating both. It was neither cosmetic nor accurate: `dispatch.py`
+had since been changed to ask for **`swarm-agent-worker`**, which is also the
+name `terraform/modules/tenancy` issues the Workload Identity binding for — and
+which nothing here created. Since `terraform/` has no kubernetes provider,
+`service-accounts/worker-serviceaccount.yaml` is the *only* thing that creates
+a tenant KSA, so the one name that mattered did not exist.
 
-Worked around by creating both KSA names here, both annotated for Workload
-Identity. Two names for one object should become one.
+A pod naming a missing ServiceAccount is admitted and then never scheduled: the
+Job controller reports `serviceaccount "swarm-agent-worker" not found` on the
+Job's events, no pod appears, and the task holds its lease until the deadline.
+That reads as a scheduling or capacity problem — the same disguise the
+namespace bug wore, one layer down. It is the failure that would have come next
+after the dispatcher RBAC was applied.
 
-The GSA half of this is **closed**: `register-tenant.sh` used to create
+`render.py` now renders `__KSA_NAME__` as `DEFAULT_KSA_NAME`
+(`swarm-agent-worker`), `register-tenant.sh` binds that name, and
+`tests/unit/worker/test_kubernetes_manifests.py` asserts the rendered
+ServiceAccount set contains exactly what `GkeJobDispatcher.ksa_for` asks for.
+`swarm-worker` stays: every tenant registered so far has a Workload Identity
+binding for it, and removing a bound name is a migration of its own.
+
+Full diagnosis, including why the error said 403: [docs/gke-dispatch-403.md](../docs/gke-dispatch-403.md).
+The commands: [docs/runbooks/gke-dispatch-redispatch.md](../docs/runbooks/gke-dispatch-redispatch.md).
+
+The GSA half was already closed: `register-tenant.sh` used to create
 `swarm-t-<tenant>`, and now creates `swarm-agent-worker-<tenant>` — the same
 identity `terraform/modules/tenancy` creates and the one `render.py --gsa`
 defaults to. All three agree, so the flag is for rendering against an identity

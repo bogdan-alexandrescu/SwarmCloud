@@ -106,6 +106,39 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E40
 #: second spelling of a contract value; it did not cover this one.
 NAMESPACE_PREFIX = "swarm-tenant-"
 
+#: THE KUBERNETES SERVICE ACCOUNT THE DISPATCHER'S POD SPEC NAMES.
+#:
+#: This is the SAME CLASS OF DEFECT as NAMESPACE_PREFIX above, one layer down,
+#: and it is what the RBAC fix would have hit next. Nothing in `terraform/`
+#: creates a Kubernetes object -- there is no kubernetes provider in this
+#: repository -- so `service-accounts/worker-serviceaccount.yaml` is the ONLY
+#: thing that creates a tenant's KSA. It created `swarm-worker` and
+#: `swarm-<tenant>`, while `apps/scheduler/scheduler/dispatch.py` asks for
+#: `swarm-agent-worker` (GkeTarget.ksa_name / Settings.worker_ksa_name) and
+#: `terraform/modules/tenancy` issues the Workload Identity binding for that
+#: same `swarm-agent-worker`. So the one name that mattered was the one nobody
+#: created.
+#:
+#: The failure mode is not a clean error either. A Job whose pod names a
+#: missing ServiceAccount is accepted by the API server and then never
+#: scheduled -- the Job controller retries with
+#: `serviceaccount "swarm-agent-worker" not found` on the Job's events, the pod
+#: stays absent, and the task sits RUNNING against a lease until its deadline.
+#: That reads as a capacity or scheduling problem, which is the same disguise
+#: the namespace bug wore.
+#:
+#: `swarm-<tenant>` is gone rather than kept as a third alias: it was created to
+#: match a dispatcher spelling that no longer exists (kubernetes/README.md §5
+#: records both the older mismatch and this one). `swarm-worker` stays because
+#: `scripts/register-tenant.sh` has workload-identity-bound it on every tenant
+#: it has ever registered, and removing a bound name is a separate, migrating
+#: change from adding the missing one.
+#:
+#: tests/unit/worker/test_kubernetes_manifests.py asserts that the rendered
+#: ServiceAccount set contains exactly what `GkeJobDispatcher.ksa_for` asks for,
+#: so the two cannot drift apart again without failing CI.
+DEFAULT_KSA_NAME = "swarm-agent-worker"
+
 
 class RenderError(SystemExit):
     """A value that must not reach the YAML. Exits non-zero with the reason."""
@@ -134,6 +167,42 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     # applies cleanly and nothing can use it.
     "SCHEDULER_GSA": re.compile(r"^swarm-scheduler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
     "RECONCILER_GSA": re.compile(r"^swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
+    # THE SAME TWO IDENTITIES, BY NUMERIC uniqueId, AND THIS IS THE SUBJECT GKE
+    # ACTUALLY PRESENTS.
+    #
+    # The comment above says a subject that does not exist "would bind a subject
+    # that does not exist and fail open-looking -- the RoleBinding applies
+    # cleanly and nothing can use it". That is exactly what happened, and not
+    # from a typo. Measured on 2026-09-24 against a live dispatch, after the
+    # namespace and the email-subject RoleBindings were both confirmed correct:
+    #
+    #     jobs.batch is forbidden: User "117405034245659033603" cannot create
+    #     resource "jobs" in API group "batch" in the namespace
+    #     "swarm-tenant-eng"
+    #
+    # `117405034245659033603` is `gcloud iam service-accounts describe
+    # swarm-scheduler@... --format='value(uniqueId)'`. The scheduler reaches the
+    # Kubernetes API with a Google OAuth ACCESS token (dispatch.py's
+    # `install_google_bearer_token`), and for that path GKE resolves the caller
+    # to the service account's uniqueId -- not, as the RBAC file asserted, to
+    # its email. The email binding was applying cleanly and authorising nobody.
+    #
+    # BOTH FORMS ARE BOUND rather than swapping one for the other, because the
+    # email form is what GKE presents on other paths (kubectl with an
+    # impersonated GSA, and Workload Identity), and a binding that works for one
+    # caller and not another is the shape this defect already had.
+    #
+    # Either spelling is accepted here. The default when no uniqueId is supplied
+    # is the EMAIL, which renders a duplicate subject -- inert, because RBAC
+    # subjects are a list and a repeat authorises nothing new. A numeric default
+    # would be a fabricated identity in a live RoleBinding, which is strictly
+    # worse than a duplicate: it reads as a grant and is not one.
+    "SCHEDULER_UID": re.compile(
+        r"^([0-9]{15,25}|swarm-scheduler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
+    ),
+    "RECONCILER_UID": re.compile(
+        r"^([0-9]{15,25}|swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
+    ),
     "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
     "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
     "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
@@ -284,11 +353,33 @@ def substitute(text: str, values: dict[str, str]) -> str:
 def tenant_values(args: argparse.Namespace) -> dict[str, str]:
     tenant = args.tenant
     namespace = args.namespace or f"{NAMESPACE_PREFIX}{tenant}"
+    # AN OVERRIDE MAY RENAME THE NAMESPACE; IT MAY NOT MOVE IT OUT OF THE
+    # PLATFORM'S PREFIX. `kubernetes/apply.sh` forwards every argument it does
+    # not recognise straight to this renderer, so `--namespace swarm-eng` is one
+    # word away from re-creating the outage in the header of this file: the
+    # objects would be applied to a namespace the dispatcher never writes to,
+    # and the dispatch would keep failing with a 403 that names permissions.
+    # The flag stays -- rendering against a namespace neither provisioning path
+    # derived is a real need -- but it stays inside `swarm-tenant-`, which is
+    # also what the reconciler's GC filter and this repository's kubectl guard
+    # both recognise as ours.
+    if not namespace.startswith(NAMESPACE_PREFIX):
+        raise RenderError(
+            f"render: --namespace {namespace!r} is outside {NAMESPACE_PREFIX!r}. "
+            "The scheduler dispatches into "
+            f"{NAMESPACE_PREFIX}<tenant> (apps/scheduler/scheduler/dispatch.py, "
+            "GkeTarget.namespace_template), so objects applied anywhere else "
+            "isolate a namespace nothing ever runs in -- and the resulting "
+            "dispatch failure is reported as `jobs.batch is forbidden`, never "
+            "as a missing namespace. See docs/gke-dispatch-403.md."
+        )
     return {
         "TENANT_ID": tenant,
         "NAMESPACE": namespace,
-        # The name the dispatcher's manifest asks for: sanitize_name("swarm", id).
-        "KSA_NAME": args.ksa or sanitize_name("swarm", tenant),
+        # The name the dispatcher's pod spec asks for. See DEFAULT_KSA_NAME:
+        # this used to be sanitize_name("swarm", id), a spelling nothing has
+        # asked for since the dispatcher's KSA was renamed.
+        "KSA_NAME": args.ksa or DEFAULT_KSA_NAME,
         "GSA_EMAIL": args.gsa
         or f"swarm-agent-worker-{tenant}@{args.project}.iam.gserviceaccount.com",
         # The control-plane identities, as RBAC subjects. Derived rather than
@@ -296,6 +387,17 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         # way to bind the wrong identity into a tenant's namespace.
         "SCHEDULER_GSA": f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
         "RECONCILER_GSA": f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
+        # The numeric uniqueId of each, which is the subject GKE presents for a
+        # service account reaching the API with an OAuth access token. NOT
+        # derivable from the project id -- it is assigned by IAM at creation --
+        # so unlike the emails above these have to be passed in. apply.sh looks
+        # them up; when nothing is passed they fall back to the email, which
+        # renders an inert duplicate subject rather than a fabricated identity.
+        # See _VALUE_PATTERNS for the measurement that made this necessary.
+        "SCHEDULER_UID": args.scheduler_uid
+        or f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
+        "RECONCILER_UID": args.reconciler_uid
+        or f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
         "PROJECT_ID": args.project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,
@@ -369,8 +471,56 @@ def render_job(args: argparse.Namespace) -> str:
 
 def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tenant", required=True, help="tenant id, e.g. eng or u-alice")
-    parser.add_argument("--namespace", default="", help="override the derived namespace")
-    parser.add_argument("--ksa", default="", help="override the Kubernetes service account name")
+    parser.add_argument(
+        "--namespace",
+        default="",
+        help=(
+            f"override the derived namespace. It must still start with "
+            f"{NAMESPACE_PREFIX!r}: that is the prefix the scheduler dispatches "
+            "into and the one the reconciler collects by, and a namespace "
+            "outside it is isolated but never used."
+        ),
+    )
+    parser.add_argument(
+        "--ksa",
+        default="",
+        help=(
+            f"override the Kubernetes service account name. Defaults to "
+            f"{DEFAULT_KSA_NAME}, which is what the dispatcher's pod spec names "
+            "and what terraform's Workload Identity binding was issued for; "
+            "pass this only for a cluster provisioned with another spelling, "
+            "and pass the same value to the scheduler as WORKER_KSA_NAME."
+        ),
+    )
+    # THE NUMERIC IDENTITIES, WHICH CANNOT BE DERIVED.
+    #
+    # Every other control-plane value here is computed from the project id, and
+    # the comment on SCHEDULER_GSA in tenant_values explains why that is
+    # deliberate: "a flag for them would be a way to bind the wrong identity
+    # into a tenant's namespace". These two are the exception the design did not
+    # anticipate, because a uniqueId is assigned by IAM at creation and is not a
+    # function of anything this script knows.
+    #
+    # The risk the original comment names is handled by validation instead:
+    # _VALUE_PATTERNS accepts only a 15-25 digit number or the exact matching
+    # swarm-scheduler@/swarm-reconciler@ address, so a flag cannot smuggle in an
+    # arbitrary subject. Omitting the flag falls back to the email, which is a
+    # duplicate of the subject already bound -- inert, and specifically not a
+    # fabricated numeric id that would read as a grant and authorise nobody.
+    for role in ("scheduler", "reconciler"):
+        parser.add_argument(
+            f"--{role}-uid",
+            default="",
+            help=(
+                f"the numeric uniqueId of swarm-{role}@<project>. GKE presents a "
+                "service account by uniqueId, not by email, when it authenticates "
+                "with an OAuth access token -- which is how the scheduler reaches "
+                "the API. Resolve it with `gcloud iam service-accounts describe "
+                f"swarm-{role}@<project>.iam.gserviceaccount.com "
+                "--format='value(uniqueId)'`. kubernetes/apply.sh does this for "
+                "you; omit it only for a render that will not be applied."
+            ),
+        )
     parser.add_argument(
         "--gsa",
         default="",

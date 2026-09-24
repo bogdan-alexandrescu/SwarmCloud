@@ -159,7 +159,43 @@ if [[ "${MODE}" == "policies" ]]; then
   info "rendering cluster-scoped admission policies"
 else
   [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies)"
-  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
+
+  # THE CONTROL PLANE'S NUMERIC IDENTITIES, RESOLVED HERE BECAUSE THEY CANNOT BE
+  # DERIVED.
+  #
+  # GKE resolves a Google service account reaching the Kubernetes API with an
+  # OAuth access token to its numeric uniqueId, not its email -- and that is how
+  # the scheduler reaches it. A RoleBinding naming only the email applies
+  # cleanly and authorises nobody, which is the failure that made every GKE
+  # dispatch this platform ever attempted return
+  #
+  #     jobs.batch is forbidden: User "117405034245659033603" cannot create ...
+  #
+  # for eight months of browser tasks. render.py takes the uniqueIds as flags
+  # and falls back to the email when they are absent, so a resolution failure
+  # here would silently re-create that exact bug. It is therefore FATAL rather
+  # than skipped: an apply that cannot name the identities it is authorising has
+  # nothing useful to do.
+  #
+  # Resolved by uniqueId lookup rather than read from terraform state, because
+  # this script must work against a cluster whose state file it cannot read.
+  uid_of() {
+    local account="$1" uid
+    uid="$(gcloud iam service-accounts describe "${account}" \
+      --project="${PROJECT_ID}" --format='value(uniqueId)' 2>/dev/null || true)"
+    [[ "${uid}" =~ ^[0-9]{15,25}$ ]] \
+      || die "could not resolve the uniqueId of ${account} (got '${uid}').
+       Without it the RoleBinding authorises nobody -- see kubernetes/rbac/dispatcher-rbac.yaml."
+    printf '%s' "${uid}"
+  }
+  SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
+  RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
+  info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID}"
+
+  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" \
+    --scheduler-uid "${SCHEDULER_UID}" \
+    --reconciler-uid "${RECONCILER_UID}" \
+    "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
   info "rendering tenant ${TENANT}"
 fi
 

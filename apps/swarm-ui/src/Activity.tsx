@@ -32,7 +32,8 @@ function helpHref(topic: TopicId): string {
 }
 
 /**
- * Screen A1 -- the Timeline pane of History.
+ * Screen A1 -- the Timeline pane of Work (it was History's until the nav
+ * collapsed to three sections; the route is `#work/timeline`).
  *
  * THE ONE DESIGN RULE: bound by ROWS, label by the SPAN those rows covered.
  * The window control says "Last 500 tasks", never "Last 7 days" -- the latter
@@ -55,10 +56,17 @@ export function ActivityScreen() {
       // "Timeline", not "Activity". "Activity" was this screen's own name when
       // it was a top-level nav item, and the redesign retired it there for
       // being a paraphrase of a question rather than a name for a thing; it
-      // then survived as the heading, so clicking History > Timeline landed on
-      // a page headed with the name of a section that no longer exists. What
-      // this renders IS a timeline: rows bucketed by hour, day, week or month
-      // across the span they turned out to cover.
+      // then survived as the heading, so clicking through to this pane landed
+      // on a page headed with the name of a section that no longer existed.
+      // What this renders IS a timeline: rows bucketed by hour, day, week or
+      // month across the span they turned out to cover.
+      //
+      // THE SECTION ABOVE IT HAS NOW CHANGED TWICE AND THE HEADING HAS NOT,
+      // which is the point of the rule: Activity became History > Timeline,
+      // and History became Work > Timeline when the nav collapsed to three
+      // sections. The pane is the same route, the same read and the same
+      // heading through both; `#activity/timeline` and `#history/timeline`
+      // both still open it (App.tsx, SECTION_ALIASES).
       title="Timeline"
       load={load}
       summary={(w) => <WindowSummary window={w} />}

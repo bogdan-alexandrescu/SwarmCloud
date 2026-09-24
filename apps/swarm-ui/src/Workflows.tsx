@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   loadWorkflowBoard,
@@ -8,21 +8,25 @@ import {
   type WorkflowUsage,
 } from './api'
 import {
+  autoTier,
   edgePath,
   layoutOf,
   levelsOf,
   profileMix,
   shapeOf,
   stageCensus,
-  stageIsWide,
   stepDuration,
   workflowSpend,
-  NODE_W,
+  CANVAS_COLUMN,
+  TIER_DROPS,
+  ZOOM_TIERS,
   type DagBand,
+  type DagLayout,
   type DagShape,
   type StageCensus,
   type StepDuration,
   type WorkflowSpend,
+  type ZoomTier,
 } from './dag'
 import {
   absentCell,
@@ -132,6 +136,18 @@ export function WorkflowsScreen() {
   // share one flag.
   const [stages, setStages] = useState<Record<string, boolean>>({})
 
+  // HOW MUCH EACH WORKFLOW'S NODES SAY, keyed by workflow id, and up here for
+  // exactly the reasons `stages` is. `auto` is not stored: an absent entry MEANS
+  // auto, so a reader who never touched the control cannot be holding a stale
+  // override from three polls ago, and the automatic choice is free to change
+  // when a workflow's widest stage does.
+  //
+  // PER WORKFLOW RATHER THAN PER BOARD, because the tier is a function of the
+  // workflow's own widest stage: a chain and a 13-wide fan on the same board
+  // want different answers, and a board-wide control would take the figures off
+  // the chain to pay for the fan.
+  const [zooms, setZooms] = useState<Record<string, ZoomChoice>>({})
+
   // A board-wide instruction overrules the per-card ones. Keeping stale
   // overrides would make "Collapse all" leave three cards open with no way to
   // tell why.
@@ -152,6 +168,11 @@ export function WorkflowsScreen() {
 
   const toggleStage = useCallback(
     (key: string, expanded: boolean) => setStages((s) => ({ ...s, [key]: !expanded })),
+    [],
+  )
+
+  const chooseZoom = useCallback(
+    (id: string, choice: ZoomChoice) => setZooms((z) => ({ ...z, [id]: choice })),
     [],
   )
 
@@ -179,6 +200,8 @@ export function WorkflowsScreen() {
           toggle={toggle}
           openStages={stages}
           toggleStage={toggleStage}
+          zooms={zooms}
+          chooseZoom={chooseZoom}
           reload={reload}
         />
       )}
@@ -202,6 +225,8 @@ function Board({
   toggle,
   openStages,
   toggleStage,
+  zooms,
+  chooseZoom,
   reload,
 }: {
   board: WorkflowBoard
@@ -211,6 +236,8 @@ function Board({
   toggle: (id: string, expanded: boolean) => void
   openStages: Record<string, boolean>
   toggleStage: (key: string, expanded: boolean) => void
+  zooms: Record<string, ZoomChoice>
+  chooseZoom: (id: string, choice: ZoomChoice) => void
   reload: () => void
 }) {
   // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
@@ -296,6 +323,8 @@ function Board({
             onToggle={toggle}
             openStages={openStages}
             onToggleStage={toggleStage}
+            zoom={zooms[w.workflow_id] ?? 'auto'}
+            onZoom={chooseZoom}
             reload={reload}
             usage={usage}
           />
@@ -533,6 +562,8 @@ export function WorkflowCard({
   onToggle,
   openStages,
   onToggleStage,
+  zoom = 'auto',
+  onZoom,
   reload,
 }: {
   workflow: Workflow
@@ -547,6 +578,16 @@ export function WorkflowCard({
    */
   openStages: Record<string, boolean>
   onToggleStage: (key: string, expanded: boolean) => void
+  /**
+   * How much this workflow's nodes say, or `auto` to fit the column.
+   *
+   * OPTIONAL, AND THE DEFAULT IS `auto`. The card is exported and rendered from
+   * more than one place; a required prop here would have made every caller
+   * state a preference it does not have, and the honest default for "I have no
+   * opinion" is the one that measures the graph.
+   */
+  zoom?: ZoomChoice
+  onZoom?: (id: string, choice: ZoomChoice) => void
   reload: () => void
 }) {
   const roll = rollupLine(workflow)
@@ -647,6 +688,8 @@ export function WorkflowCard({
             usage={usage}
             openStages={openStages}
             onToggleStage={onToggleStage}
+            zoom={zoom}
+            onZoom={onZoom}
             reload={reload}
           />
         </div>
@@ -1003,6 +1046,283 @@ function stageDomId(workflowId: string, level: number): string {
 }
 
 /**
+ * What the reader asked for, or `auto` for whatever fits the column.
+ *
+ * `auto` IS A REAL CHOICE AND NOT AN ABSENCE. It is the value the control shows
+ * as pressed when nobody has overridden anything, and it means "re-decide this
+ * every render against the workflow's own widest stage" -- which is a different
+ * thing from any of the three fixed tiers, and has to be selectable again once
+ * a reader has left it.
+ */
+type ZoomChoice = 'auto' | ZoomTier
+
+/**
+ * THE ZOOM CONTROL, AND THE REASON SEMANTIC ZOOM IS ALLOWED TO DROP A FIELD.
+ *
+ * "If a field is dropped, its absence must be legibly a ZOOM decision and not a
+ * data one" is the rule this control exists to satisfy, and it satisfies it in
+ * the strongest available form: the reader can put the field back. A canvas
+ * that silently stopped drawing runner profiles would be indistinguishable from
+ * a canvas whose steps have no runner profile, and this console's whole subject
+ * is keeping "not shown" apart from "not there".
+ *
+ * `.ctl-seg`, THE SAME PRIMITIVE AS THE BOARD'S Rows/Graph CONTROL, one level
+ * down -- the same gesture, the same shape, the same keyboard behaviour, and
+ * §6.11's one segmented control rather than a second kind of switch invented
+ * for this screen. Four real buttons, so it is tab-reachable and operable from
+ * the keyboard without the minimap being involved at all.
+ *
+ * THE LABELS NAME WHAT YOU GET, NOT HOW BIG IT IS. `Names`/`Details`/`Figures`
+ * are the fields; `Small`/`Medium`/`Large` would be the pixels, and the pixels
+ * are an output here -- `nodeWidthAt` measures the workflow's own step names, so
+ * two tiers can come out the same width on a workflow whose names were what set
+ * the width. A control whose labels claimed three sizes and delivered two would
+ * be lying about the mechanism.
+ */
+function ZoomControl({
+  workflowId,
+  choice,
+  auto,
+  onChoose,
+}: {
+  workflowId: string
+  choice: ZoomChoice
+  auto: ZoomTier
+  onChoose: (id: string, choice: ZoomChoice) => void
+}) {
+  // BUILT FROM `ZOOM_TIERS`, NOT LISTED AGAIN HERE. A fourth tier added to
+  // `dag.ts` gets a button for free, and -- more to the point -- a tier REMOVED
+  // there cannot leave a dead segment behind that still sets a `zoom` no
+  // `layoutOf` understands.
+  const options: ReadonlyArray<readonly [ZoomChoice, string, string]> = [
+    [
+      'auto',
+      'Auto',
+      `Draw as much as the column holds: the widest tier whose nodes let this workflow's widest stage be drawn in full. Right now that is ${TIER_LABEL[auto]}.`,
+    ],
+    ...ZOOM_TIERS.map((t) => [t, TIER_LABEL[t], TIER_TITLE[t]] as const),
+  ]
+  return (
+    <div className="ctl-seg wf-zoom-seg" role="group" aria-label="How much each step says">
+      {options.map(([value, label, title]) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={choice === value}
+          title={title}
+          onClick={() => onChoose(workflowId, value)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The tier names as the control spells them -- on its own buttons, in the
+ *  `auto` option's sentence and in the notice below. One place, so the three
+ *  cannot come apart. */
+const TIER_LABEL: Readonly<Record<ZoomTier, string>> = {
+  figures: 'Figures',
+  details: 'Details',
+  names: 'Names',
+}
+
+/**
+ * What each segment does, as its `title`.
+ *
+ * THE FIELDS ARE SPELLED OUT RATHER THAN COUNTED. "3 fields" is a number a
+ * reader has to go and check; "the runner profile, the duration and the four
+ * run figures are not drawn" is the thing they were about to check.
+ */
+const TIER_TITLE: Readonly<Record<ZoomTier, string>> = {
+  figures:
+    'Every field: the step name, its state, the runner profile, how long it has taken and the four run figures.',
+  details:
+    'The step name, its state, the runner profile and how long it has taken. The four run figures are not drawn.',
+  names:
+    'The step name and its state. The runner profile, the duration and the four run figures are not drawn.',
+}
+
+/**
+ * WHAT THIS ZOOM IS NOT DRAWING, SAID ONCE FOR THE WHOLE CANVAS.
+ *
+ * THE FAILURE IT PREVENTS is the one the requirement for semantic zoom names:
+ * "a zoom level that renders an unmeasured field as blank has turned 'nobody
+ * measured this' into 'this is fine'". Nothing here renders blank -- a dropped
+ * field leaves the card entirely rather than leaving an empty slot -- but a
+ * node with no figures on it still has to be distinguishable from a node whose
+ * figures nobody measured, and the distinction cannot live on the node: the
+ * node is what has stopped saying things.
+ *
+ * SO IT LIVES ON THE CANVAS, ONCE, in the board's own chrome vocabulary. It is
+ * the same argument the single `?` on this screen makes and the same argument
+ * `SampleNote` makes: the fact is a property of the READ (or here, of the
+ * zoom), not of any one row, and drawn per node it would be one mark per step.
+ *
+ * `is-partial`, not `is-absent`. `.ctl-mark.is-absent` means the platform
+ * reported nothing; this is a coverage statement -- part of the record is shown
+ * and part is not -- which is exactly what the partial mark's one-sided dash
+ * already encodes on `SampleNote`.
+ *
+ * SILENT AT THE FULL TIER, because `TIER_DROPS.figures` is empty. A mark saying
+ * "nothing is hidden" on every canvas that fits would be noise of the kind
+ * §8.4 removed from this screen twice already.
+ */
+function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
+  const dropped = TIER_DROPS[tier]
+  if (dropped.length === 0) return null
+  // `noUncheckedIndexedAccess` is on, so an index into a `readonly string[]` is
+  // `string | undefined` -- written out rather than asserted away, because the
+  // assertion would be the thing that broke if a tier ever dropped nothing and
+  // still reached here.
+  const head = dropped.slice(0, -1).join(', ')
+  const tail = dropped[dropped.length - 1] ?? ''
+  const list = head === '' ? tail : `${head} and ${tail}`
+  return (
+    <span className="wf-caveat" role="status">
+      <span
+        className="ctl-mark is-partial"
+        aria-label={
+          `This canvas is drawn at the ${TIER_LABEL[tier]} zoom` +
+          (choice === 'auto'
+            ? ', chosen automatically so that the widest stage fits the column'
+            : ', which you chose') +
+          `, so no step is drawing its ${list}. That is a decision about the zoom and not a fact about the steps: every one of those fields still exists and is still measured or still absent exactly as it was. Choose Figures above, or open a step, to see them.`
+        }
+      >
+        {list} not drawn
+      </span>
+    </span>
+  )
+}
+
+/**
+ * WHERE YOU ARE ON A CANVAS THAT DOES NOT FIT.
+ *
+ * WHY IT EXISTS. Scrolling used to be the whole answer to a wide canvas, and
+ * scrolling is what tells you where you are: you got there, so you know. A
+ * canvas that fits by DROPPING FIELDS has no such trail -- and one that still
+ * does not fit at the smallest tier is scrolled through with no idea how much
+ * is off to the right. The minimap is the position channel the zoom took away.
+ *
+ * IT IS NOT A NAVIGATION CONTROL AND MUST NOT BE THE ONLY WAY TO MOVE. It is
+ * `role="img"` with the whole position stated in its accessible name, plus a
+ * pointer shortcut for people who have a pointer. Everything it does is
+ * reachable without it: the wrapper scrolls natively (wheel, trackpad,
+ * touch, the scrollbar), every node is an `<a>` in the tab order and focusing
+ * one scrolls it into view, and every band is a `<button>`. A `role="img"` was
+ * chosen over a `<button>` deliberately -- a button whose only meaningful
+ * activation is "the x coordinate you clicked at" is a button a keyboard cannot
+ * use, and announcing one would promise a route that is not there.
+ *
+ * `preserveAspectRatio="none"`, WHICH IS NORMALLY WRONG AND IS RIGHT HERE. The
+ * two axes of this canvas answer different questions: X is the scroll this
+ * wrapper owns and the thing the reader has lost track of, Y is the page's own
+ * scroll and is not clipped by anything. Scaling them together would render a
+ * 3,671 x 4,134 canvas as a 45px-tall sliver 40px wide, which states neither.
+ * They are scaled independently, on purpose, and the strip is a map of the
+ * HORIZONTAL extent with the levels kept in order down it.
+ *
+ * ITS HEIGHT IS `BAND_H`, DERIVED AND NOT PICKED. 45px is what this sheet
+ * already gives a one-line summary of a whole stage (`dag.ts` sums it from the
+ * band's own rows), and a one-line summary of the whole canvas is the same kind
+ * of object at the next level up. Its width is the wrapper's, so nothing about
+ * it is a number somebody chose.
+ *
+ * A FAILURE IS VISIBLE IN HERE TOO. A step in a bad state draws in the bad
+ * tone, and a COLLAPSED stage holding one draws its band in that tone -- so
+ * "find what broke" works on the map as well as on the canvas, including for
+ * the part of the canvas that is off screen. That is the same guarantee
+ * `.wf-band.has-failure` makes, at the one remaining zoom level where the band
+ * itself might be off to the right.
+ */
+function Minimap({
+  layout,
+  taskById,
+  view,
+  onJump,
+}: {
+  layout: DagLayout
+  taskById: ReadonlyMap<string, Task> | null
+  /** The wrapper's horizontal viewport, in canvas pixels. `w === 0` means it
+   *  has not been measured -- first paint, and every test, because jsdom has no
+   *  layout engine and answers 0 to `clientWidth`. */
+  view: { left: number; w: number }
+  onJump: (fraction: number) => void
+}) {
+  const measured = view.w > 0
+  // THE FALLBACK IS THE MEASURED COLUMN, NOT A GUESS THAT IT OVERFLOWS. Before
+  // the wrapper has been measured the only width this file knows is
+  // CANVAS_COLUMN, the 1,054px the canvas gets at the viewport the audit was
+  // taken at, and `dag.ts` already treats it as the reference for exactly this.
+  const overflowing = measured ? layout.width > view.w + 1 : layout.width > CANVAS_COLUMN
+  if (!overflowing) return null
+
+  const w = Math.round(layout.width)
+  const label = measured
+    ? `Map of the canvas. It is ${w} pixels wide; ${Math.round(view.w)} of them are on screen, starting ${Math.round(view.left)} pixels from the left. The canvas scrolls, and tabbing to a step brings it into view.`
+    : `Map of the canvas. It is ${w} pixels wide, wider than the ${CANVAS_COLUMN} pixels the column holds at 1440. How much of it is on screen has not been measured. The canvas scrolls, and tabbing to a step brings it into view.`
+
+  return (
+    <div
+      className="wf-minimap"
+      role="img"
+      aria-label={label}
+      onPointerDown={(e) => {
+        const box = e.currentTarget.getBoundingClientRect()
+        // jsdom, and any layout that has not happened yet, answer 0. Dividing
+        // by it would send `scrollLeft` to NaN, which silently pins the canvas
+        // at 0 rather than throwing.
+        if (box.width <= 0) return
+        onJump((e.clientX - box.left) / box.width)
+      }}
+    >
+      <svg
+        viewBox={`0 0 ${layout.width} ${layout.height}`}
+        preserveAspectRatio="none"
+        aria-hidden
+        focusable="false"
+      >
+        {layout.bands.map((b) => {
+          const census = stageCensus(b.steps, taskById)
+          const broken = census.failed + census.cancelled > 0
+          return (
+            <rect
+              key={`band-${b.level}`}
+              className={`wf-mini-band${broken ? ' is-bad' : ''}`}
+              x={b.x}
+              y={b.y}
+              width={b.w}
+              height={b.h}
+            />
+          )
+        })}
+        {layout.nodes.map((n) => (
+          <rect
+            key={n.step.step_id}
+            className={`wf-mini-node is-${present(stepState(n.step, taskById)).tone}`}
+            x={n.x}
+            y={n.y}
+            width={layout.nodeW}
+            height={n.h}
+          />
+        ))}
+        {measured && view.w < layout.width && (
+          <rect
+            className="wf-mini-view"
+            x={view.left}
+            y={0}
+            width={view.w}
+            height={layout.height}
+          />
+        )}
+      </svg>
+    </div>
+  )
+}
+
+/**
  * THE CANVAS. Real edges between real node cards, FLOWING TOP TO BOTTOM.
  *
  * The positions come from `layoutOf`, which is pure and tested, so the edges
@@ -1011,21 +1331,27 @@ function stageDomId(workflowId: string, level: number): string {
  * anchor, a `title` and a stop button, and those are not things to re-implement
  * inside an `<svg>`.
  *
- * IT SCROLLS SIDEWAYS ONLY FOR A STAGE THE READER ASKED TO SEE IN FULL.
- * Scrolling was the whole answer, and on the measured 30-step run it was not an
- * answer at all: a 13-wide stage is 3,560px, 17 of 30 nodes were clipped, 4
- * were entirely off-screen and one workflow was 4.6 screen-heights tall. A
- * stage wider than `STAGE_FITS` is now drawn as one band that says what is in
- * it by state (`StageBand`), and expands to the full row on click -- so the
- * canvas shows the SHAPE of the workflow rather than the shape of its widest
- * moment, and the sideways scroll is something you opt into one stage at a
- * time. `dag.ts`'s stage-collapsing section holds the threshold and its
- * derivation.
+ * IT ZOOMS BEFORE IT COLLAPSES, AND IT COLLAPSES BEFORE IT CLIPS. Three
+ * mechanisms, in that order, and the order is the whole design:
+ *
+ *  1. SEMANTIC ZOOM. `autoTier` takes the widest tier whose nodes let this
+ *     workflow's widest stage be drawn in full. A five-step fan is 1,407px of
+ *     full nodes and 852px of `details` ones, so it is DRAWN rather than
+ *     summarised -- and what it costs is the four run figures, which are one
+ *     click away on the step itself. Nothing is scaled: `typescale.test.ts`
+ *     holds a floor under the type and a node scaled to fit is texture.
+ *  2. STAGE COLLAPSING. Thirteen nodes are 2,150px even at the smallest tier,
+ *     and no tier fixes that, so a stage that still does not fit is drawn as
+ *     one band that says what is in it by state (`StageBand`) and expands on
+ *     click. `autoTier` stays at the full tier when that happens rather than
+ *     stripping every node in the workflow to pay for a stage that is going to
+ *     be a band anyway.
+ *  3. SCROLLING, for the stage a reader has asked to see in full.
  *
  * WHAT DID NOT CHANGE, and must not: the flow still runs top to bottom with the
  * steps of one stage side by side across it. That is the owner's explicit
- * instruction and collapsing is orthogonal to it -- an expanded band draws
- * exactly the horizontal row it drew before.
+ * instruction, and both zoom and collapsing are orthogonal to it -- a stage
+ * drawn at any tier draws exactly the horizontal row it drew before.
  */
 function WorkflowGraph({
   workflow,
@@ -1033,6 +1359,8 @@ function WorkflowGraph({
   usage,
   openStages,
   onToggleStage,
+  zoom,
+  onZoom,
   reload,
 }: {
   workflow: Workflow
@@ -1040,6 +1368,8 @@ function WorkflowGraph({
   usage: UsageRead
   openStages: Record<string, boolean>
   onToggleStage: (key: string, expanded: boolean) => void
+  zoom: ZoomChoice
+  onZoom?: (id: string, choice: ZoomChoice) => void
   reload: () => void
 }) {
   const now = useNow()
@@ -1051,7 +1381,47 @@ function WorkflowGraph({
   levels.forEach((_, i) => {
     if (openStages[stageKey(workflow.workflow_id, i)] === true) expandedStages.add(i)
   })
-  const layout = layoutOf(workflow.steps, expandedStages)
+  // RESOLVED HERE AND PASSED DOWN AS ONE VALUE. `auto` is re-decided every
+  // render against the steps as they are now, which is right: a workflow whose
+  // fan-out has not been created yet should not be pinned to the tier its first
+  // two steps needed.
+  const auto = autoTier(workflow.steps)
+  const tier: ZoomTier = zoom === 'auto' ? auto : zoom
+  const layout = layoutOf(workflow.steps, expandedStages, tier)
+
+  // WHERE THE VIEWPORT IS, for the minimap. Read off the wrapper rather than
+  // computed, because it is the one number on this screen that genuinely is a
+  // browser measurement -- `CANVAS_COLUMN` is what the canvas gets at ONE
+  // viewport, and a reader on a 1920 monitor is looking at more of the canvas
+  // than any constant here knows about.
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [view, setView] = useState<{ left: number; w: number }>({ left: 0, w: 0 })
+  const syncView = useCallback(() => {
+    const el = wrapRef.current
+    if (el === null) return
+    // Compared before it is set: this runs on every scroll event and on every
+    // layout change, and a fresh object each time would re-render the card once
+    // per scroll tick for no change at all.
+    setView((v) =>
+      v.left === el.scrollLeft && v.w === el.clientWidth
+        ? v
+        : { left: el.scrollLeft, w: el.clientWidth },
+    )
+  }, [])
+  useEffect(() => {
+    syncView()
+  }, [syncView, layout.width, layout.height])
+  const jump = useCallback(
+    (fraction: number) => {
+      const el = wrapRef.current
+      if (el === null || el.clientWidth <= 0) return
+      // Centred on the point, not left-aligned to it: a map you click the
+      // middle of should put the middle of the canvas in front of you.
+      el.scrollLeft = Math.max(0, fraction * el.scrollWidth - el.clientWidth / 2)
+      syncView()
+    },
+    [syncView],
+  )
 
   // `levels`, NOT `layout.nodes`. A workflow whose every stage is collapsed has
   // no nodes and is emphatically not empty -- testing the node count would have
@@ -1066,10 +1436,56 @@ function WorkflowGraph({
   // wide level's nodes sit a band and a gap below the level's own top.
   const levelTop = layout.levelTop
 
+  // WHETHER THERE IS ANYTHING TO ZOOM, and the answer is no for the commonest
+  // shape in this product. A chain is one node wide at any depth, so no tier
+  // changes anything about it, and a segmented control that cannot alter what
+  // is under it is the noise §6.11 took off this screen twice. Four conditions,
+  // each one a case where the strip has something to say:
+  //
+  //   * the automatic choice already dropped fields, so the notice has to
+  //     explain them;
+  //   * a stage is a band, so the reader may want to know why and what the
+  //     alternatives cost;
+  //   * the canvas is wider than the column -- by the measured viewport where
+  //     there is one, and by CANVAS_COLUMN before the first layout -- so the
+  //     minimap has a position to state;
+  //   * the reader has OVERRIDDEN the zoom. This one is what stops the control
+  //     disappearing under its own consequence: a workflow that loses a step
+  //     and would now fit must not take away the only way back from a choice
+  //     still in force, leaving dropped fields with nothing explaining them.
+  const zoomable =
+    zoom !== 'auto' ||
+    tier !== 'figures' ||
+    layout.bands.length > 0 ||
+    layout.width > (view.w > 0 ? view.w : CANVAS_COLUMN)
+
   return (
-    <div className="wf-canvas-wrap">
-      <div className="wf-graph">
-        {/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS. When levels ran
+    <>
+      {/* THE ZOOM STRIP: the control, what this zoom is not drawing, and the
+          map. Three pieces of chrome and zero sentences of prose between them
+          (§6.11), in the order a reader needs them -- the choice, its
+          consequence, and where that leaves you.
+
+          `onChoose` FALLS BACK TO A NO-OP RATHER THAN HIDING THE CONTROL. A
+          caller with no `onZoom` still gets the buttons, because hiding them
+          would leave the dropped fields unexplained on exactly the surface with
+          no way to ask for them back. There is no such caller today; this is
+          what stops one appearing silently. */}
+      {zoomable && (
+        <div className="wf-zoom">
+          <ZoomControl
+            workflowId={workflow.workflow_id}
+            choice={zoom}
+            auto={auto}
+            onChoose={onZoom ?? (() => {})}
+          />
+          <ZoomNotice tier={tier} choice={zoom} />
+          <Minimap layout={layout} taskById={taskById} view={view} onJump={jump} />
+        </div>
+      )}
+      <div className="wf-canvas-wrap" ref={wrapRef} onScroll={syncView}>
+        <div className="wf-graph">
+          {/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS. When levels ran
             left to right these sat across the top, one over each column. Levels
             run DOWN now, so the captions run down beside them -- and they are
             STICKY at the left edge, so a fan-out of five scrolled sideways
@@ -1082,59 +1498,59 @@ function WorkflowGraph({
             does not state exactly, and it is in the eyebrow treatment every
             other section label in this console uses -- so it reads as chrome
             and can be skipped (design-system.md §6.13). */}
-        <ol className="wf-levels" aria-label="Dependency levels" style={{ height: layout.height }}>
-          {levels.map((level, i) => (
-            <li key={i} className="ctl-eyebrow" style={{ top: levelTop[i] }}>
-              {i === 0 ? 'starts' : 'then'}
-              {level.length > 1 ? ` ×${level.length}` : ''}
-            </li>
-          ))}
-        </ol>
-        <div className="wf-canvas" style={{ width: layout.width, height: layout.height }}>
-          <svg
-            className="wf-edges"
-            width={layout.width}
-            height={layout.height}
-            viewBox={`0 0 ${layout.width} ${layout.height}`}
-            aria-hidden
-            focusable="false"
-          >
-            <defs>
-              <marker
-                id={`arrow-${workflow.workflow_id}`}
-                viewBox="0 0 8 8"
-                refX="7"
-                refY="4"
-                markerWidth="7"
-                markerHeight="7"
-                orient="auto-start-reverse"
-              >
-                <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
-              </marker>
-            </defs>
-            {layout.edges.map((e) => (
-              // TWO PATHS, ONE EDGE, AND THE FIRST ONE IS WHY THE NODES LOST
-              // THEIR SHADOWS. Fourteen drop shadows on one screen bought one
-              // thing: an edge crossing a card read as passing under it rather
-              // than into it. A node is always at least one level below every
-              // parent, but it can be MORE than one, so a long edge does cross
-              // the band between -- the separation is real and had to go
-              // somewhere. It is now on the EDGE, which is the thing doing the
-              // crossing: a wider stroke in the canvas's own colour, drawn
-              // first, so the line carries its own clearance. One `<g>` per
-              // (parent, child) pair keyed by that pair, so the guarantee that
-              // one dependency draws one mark is unchanged.
-              <g key={`${e.from}->${e.to}`}>
-                <path className="wf-edge-halo" d={edgePath(e)} />
-                <path
-                  className="wf-edge"
-                  d={edgePath(e)}
-                  markerEnd={`url(#arrow-${workflow.workflow_id})`}
-                />
-              </g>
+          <ol className="wf-levels" aria-label="Dependency levels" style={{ height: layout.height }}>
+            {levels.map((level, i) => (
+              <li key={i} className="ctl-eyebrow" style={{ top: levelTop[i] }}>
+                {i === 0 ? 'starts' : 'then'}
+                {level.length > 1 ? ` ×${level.length}` : ''}
+              </li>
             ))}
-          </svg>
-          {/* THE NODES, GROUPED BY STAGE, and the grouping exists for one
+          </ol>
+          <div className="wf-canvas" style={{ width: layout.width, height: layout.height }}>
+            <svg
+              className="wf-edges"
+              width={layout.width}
+              height={layout.height}
+              viewBox={`0 0 ${layout.width} ${layout.height}`}
+              aria-hidden
+              focusable="false"
+            >
+              <defs>
+                <marker
+                  id={`arrow-${workflow.workflow_id}`}
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
+                </marker>
+              </defs>
+              {layout.edges.map((e) => (
+                // TWO PATHS, ONE EDGE, AND THE FIRST ONE IS WHY THE NODES LOST
+                // THEIR SHADOWS. Fourteen drop shadows on one screen bought one
+                // thing: an edge crossing a card read as passing under it rather
+                // than into it. A node is always at least one level below every
+                // parent, but it can be MORE than one, so a long edge does cross
+                // the band between -- the separation is real and had to go
+                // somewhere. It is now on the EDGE, which is the thing doing the
+                // crossing: a wider stroke in the canvas's own colour, drawn
+                // first, so the line carries its own clearance. One `<g>` per
+                // (parent, child) pair keyed by that pair, so the guarantee that
+                // one dependency draws one mark is unchanged.
+                <g key={`${e.from}->${e.to}`}>
+                  <path className="wf-edge-halo" d={edgePath(e)} />
+                  <path
+                    className="wf-edge"
+                    d={edgePath(e)}
+                    markerEnd={`url(#arrow-${workflow.workflow_id})`}
+                  />
+                </g>
+              ))}
+            </svg>
+            {/* THE NODES, GROUPED BY STAGE, and the grouping exists for one
               reason: a wide stage's band is a disclosure control and a
               disclosure control needs something to point `aria-controls` at.
               `.wf-stage` is a zero-size positioned box at the canvas origin, so
@@ -1142,48 +1558,64 @@ function WorkflowGraph({
               direct children -- it changes the accessibility tree and nothing
               about the layout. Stages that are never collapsible are not
               wrapped at all; a wrapper with no control aimed at it would be a
-              box in the tree with nothing to say. */}
-          {layout.levels.map((level, i) => {
-            const cards = layout.nodes
-              .filter((n) => n.level === i)
-              .map((n) => (
-                <StepNode
-                  key={n.step.step_id}
-                  step={n.step}
-                  state={stepState(n.step, taskById)}
-                  workflow={workflow}
-                  now={now}
-                  usage={usage}
-                  x={n.x}
-                  y={n.y}
-                  h={n.h}
-                  reload={reload}
-                />
-              ))
-            if (cards.length === 0) return null
-            return stageIsWide(level.length) ? (
-              <div key={i} className="wf-stage" id={stageDomId(workflow.workflow_id, i)}>
-                {cards}
-              </div>
-            ) : (
-              <Fragment key={i}>{cards}</Fragment>
-            )
-          })}
-          {/* LAST IN THE DOM AND ABOVE THE EDGES. A band is opaque and spans
+              box in the tree with nothing to say.
+
+              `layout.wide[i]`, NOT `stageIsWide(level.length)`. Which stages are
+              banded is a property of the width THIS tier gave the nodes, and the
+              layout is the thing that knows it -- asking the full tier's
+              threshold here would have wrapped a six-step stage that the
+              `details` tier draws in full. */}
+            {/* `_level` because the STEPS of a level are no longer read here: the
+                cards come from `layout.nodes` filtered by level, and whether the
+                stage is banded comes from `layout.wide`. It was `level.length`
+                passed to `stageIsWide`, which is the full tier's threshold and
+                would have wrapped a six-step stage the `details` tier draws in
+                full. The map is over the levels so that the index is the level
+                index and nothing has to be recovered. */}
+            {layout.levels.map((_level, i) => {
+              const cards = layout.nodes
+                .filter((n) => n.level === i)
+                .map((n) => (
+                  <StepNode
+                    key={n.step.step_id}
+                    step={n.step}
+                    state={stepState(n.step, taskById)}
+                    workflow={workflow}
+                    now={now}
+                    usage={usage}
+                    tier={layout.tier}
+                    x={n.x}
+                    y={n.y}
+                    w={layout.nodeW}
+                    h={n.h}
+                    reload={reload}
+                  />
+                ))
+              if (cards.length === 0) return null
+              return layout.wide[i] === true ? (
+                <div key={i} className="wf-stage" id={stageDomId(workflow.workflow_id, i)}>
+                  {cards}
+                </div>
+              ) : (
+                <Fragment key={i}>{cards}</Fragment>
+              )
+            })}
+            {/* LAST IN THE DOM AND ABOVE THE EDGES. A band is opaque and spans
               the canvas, so an edge arriving from the stage above passes behind
               it exactly as the cards pass behind the sticky level rail. */}
-          {layout.bands.map((b) => (
-            <StageBand
-              key={b.level}
-              band={b}
-              census={stageCensus(b.steps, taskById)}
-              controls={stageDomId(workflow.workflow_id, b.level)}
-              onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
-            />
-          ))}
+            {layout.bands.map((b) => (
+              <StageBand
+                key={b.level}
+                band={b}
+                census={stageCensus(b.steps, taskById)}
+                controls={stageDomId(workflow.workflow_id, b.level)}
+                onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
+              />
+            ))}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -1338,8 +1770,10 @@ function StepNode({
   workflow,
   now,
   usage,
+  tier,
   x,
   y,
+  w,
   h,
   reload,
 }: {
@@ -1348,14 +1782,30 @@ function StepNode({
   workflow: Workflow
   now: number
   usage: UsageRead
+  /**
+   * How much this card is allowed to say. See `dag.ts`'s semantic-zoom section:
+   * the tier is a set of FIELDS, and `w` is what those fields measure to for
+   * this workflow. Both come from the layout, so the card cannot draw a row the
+   * box was not sized for.
+   */
+  tier: ZoomTier
   x: number
   y: number
+  /** `layout.nodeW`. It was `NODE_W`, which is now only the full tier's value
+   *  -- a `details` node given it would have been 111px wider than the slot the
+   *  layout placed, overlapping the sibling beside it. */
+  w: number
   h: number
   reload: () => void
 }) {
   const p = present(state)
   const dur = stepDuration(state, now)
-  const f = figuresFor(state, usage, now)
+  // THE FIGURES ARE THE TIER, so they are only computed at the tier that draws
+  // them. `figuresFor` is pure and cheap, but computing four cells per node per
+  // second for a canvas that is not drawing them is work done to be thrown
+  // away, and on a 30-step run that is 120 cells a second.
+  const showFigures = tier === 'figures'
+  const f = showFigures ? figuresFor(state, usage, now) : null
   // A read still IN FLIGHT is not an absence. "not reported" is a claim about
   // the platform; a request that has not landed has made no claim at all, so
   // the cell draws a moving placeholder instead of a sentence.
@@ -1403,7 +1853,14 @@ function StepNode({
             open, so that card is a plain `<div>` and the name is not a dead
             link. */}
         {taskId ? <span className="node-name">{step.step_id}</span> : step.step_id}
-        {role === 'integrator' && (
+        {/* A ZOOM FIELD, AND THE FIRST ONE TO GO. The tag and its margin are
+            96px -- more than two thirds of a `names` node -- and it marks ONE
+            step in a workflow. Spending it on every card in a stage to label the
+            single node that opens the pull request is the worst ratio of any
+            field here, which is why the reduced tiers drop it and
+            `nodeWidthAt` only counts it at the full tier. The role is still on
+            the step's own task page, which the card is a link to. */}
+        {showFigures && role === 'integrator' && (
           <span className="tag ok" title="This step merges the other steps' branches and opens the workflow's single pull request.">
             opens the PR
           </span>
@@ -1415,11 +1872,29 @@ function StepNode({
            carries the tone, the word carries the state, the figure carries the
            time. Both keep their own element, because they are two different
            facts and each is asserted separately. */}
+      {/* THE ONE ROW THAT IS IN EVERY TIER. The mark carries the tone, the word
+           carries the state -- so a failed or cancelled step is findable at the
+           smallest zoom, by colour AND by shape AND by word, without expanding
+           anything. That is not a nicety: the reason to look at a 30-step
+           workflow at all is usually to find what broke.
+
+           THE DURATION SHARES THIS ROW ONLY AT THE FULL TIER. Together they are
+           the widest row on the card -- `dead_lettered` beside `duration
+           unread` is 226px of the 227 a full node has -- and splitting them is
+           precisely what lets a `details` node be 144px instead of 255. The
+           trade is one row of height for 111px of width, on the axis that ran
+           out. */}
       <div className="node-line">
         <i className={dotClass({ tone: p.tone, derived: p.derived })} aria-hidden />
         <span className="node-state">{p.word}</span>
-        <StepTime dur={dur} />
+        {showFigures && <StepTime dur={dur} />}
       </div>
+      {/* The duration on a row of its own. Dropped entirely at `names`, where
+          the canvas mark beside the zoom control says so -- never drawn blank,
+          because an empty slot where `not started` belongs is the exact
+          confusion between "no measurement" and "no problem" that this screen
+          exists to prevent. */}
+      {tier === 'details' && <StepTime dur={dur} />}
       {/* The llm used. The owner's "the way it's done today", kept verbatim.
 
           MEASURED AND NOT MERGED INTO THE ID ROW, which is the obvious way to
@@ -1429,7 +1904,7 @@ function StepNode({
           wrap would make the node's height something `layoutOf` cannot know,
           and a node taller than the box the layout drew is the overlap defect
           `heightOf` exists to prevent. */}
-      <div className="node-meta">{step.runner_profile}</div>
+      {tier !== 'names' && <div className="node-meta">{step.runner_profile}</div>}
 
       {/* The run, as four figures. A placeholder while the attempt read is in
           flight -- a request that has not landed has made no claim, and
@@ -1457,12 +1932,14 @@ function StepNode({
           an absence WORD would turn the one encoding this screen may not lose
           into `not att...`, so the stack stays and the height is what it
           costs. */}
-      <dl className="node-nums">
-        <NodeNum label="ran" cell={f.ran} pending={false} />
-        <NodeNum label="cost" cell={f.cost} pending={pending} />
-        <NodeNum label="tokens" cell={f.tokens} pending={pending} />
-        <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
-      </dl>
+      {f !== null && (
+        <dl className="node-nums">
+          <NodeNum label="ran" cell={f.ran} pending={false} />
+          <NodeNum label="cost" cell={f.cost} pending={pending} />
+          <NodeNum label="tokens" cell={f.tokens} pending={pending} />
+          <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
+        </dl>
+      )}
 
       {/* THE DEPENDENCY LIST, AND ITS ARROW NOW POINTS THE WAY THE GRAPH RUNS.
           It read `← plan` when parents were to the left; parents are ABOVE, so
@@ -1484,17 +1961,17 @@ function StepNode({
   )
 
   return (
-    <div className="node-slot" style={{ left: x, top: y, width: NODE_W, height: h }}>
+    <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
       {taskId ? (
         <a
-          className={`node ${p.tone}`}
+          className={`node ${p.tone} zoom-${tier}`}
           title={p.title}
           href={`#work/task/${encodeURIComponent(taskId)}`}
         >
           {body}
         </a>
       ) : (
-        <div className={`node ${p.tone}`} title={p.title}>
+        <div className={`node ${p.tone} zoom-${tier}`} title={p.title}>
           {body}
         </div>
       )}
