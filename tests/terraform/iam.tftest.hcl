@@ -301,16 +301,60 @@ run "custom_role_ids_accept_only_legal_characters" {
 # secrets only. If that separation ever collapses into one project-wide role,
 # a bug in the broker stops being a failed refresh and becomes every tenant's
 # provider key at once.
-run "the_broker_can_list_secrets_and_read_none" {
+run "the_broker_can_provision_account_secrets_and_read_none" {
   command = plan
 
   module {
     source = "../../terraform/modules/iam"
   }
 
+  # Pinned as an exact SET, not a subset check. The point of a custom role here
+  # is that every permission in it was argued for; asserting "contains x" would
+  # let an unrelated one be added silently, which is how a narrow role becomes
+  # roles/secretmanager.admin one commit at a time.
+  #
+  # `create` and `setIamPolicy` arrived when account management moved into the
+  # Settings page: a pool account's secret name contains a LABEL chosen at
+  # registration, so terraform cannot declare it and the component handling the
+  # registration has to make it -- and a secret created without an accessor
+  # binding is one the tenant's pod cannot read.
   assert {
-    condition     = google_project_iam_custom_role.secret_lister.permissions == toset(["secretmanager.secrets.list"])
-    error_message = "discovery needs exactly one permission; anything more is reach it does not use"
+    condition = google_project_iam_custom_role.secret_lister.permissions == toset([
+      "secretmanager.secrets.list",
+      "secretmanager.secrets.create",
+      "secretmanager.secrets.get",
+      "secretmanager.secrets.getIamPolicy",
+      "secretmanager.secrets.setIamPolicy",
+      "secretmanager.versions.add",
+      # RETENTION, 2026-09-22, on the owner's explicit decision. Nothing had
+      # ever expired a superseded version, so one secret reached 1,816 of them,
+      # all ENABLED, while only `latest` was ever read -- 1,815 dead
+      # credentials left retrievable. `list` is needed before `destroy`
+      # because retention recomputes the retained set from a live listing
+      # rather than recording state.
+      #
+      # These are METADATA and LIFECYCLE, not payload: neither reveals a
+      # secret's contents, and the two assertions below still refuse
+      # `versions.get` and `versions.access`. What they do carry is reach --
+      # project-wide, on a SHARED project. The owner chose that over a
+      # per-secret binding having been shown the trade. What stops the broker
+      # touching another team's secret is therefore
+      # `quota_broker.secretstore.owned_by_this_platform`, not this role.
+      "secretmanager.versions.list",
+      "secretmanager.versions.destroy",
+    ])
+    error_message = "every permission in this role was argued for; adding one silently is how it becomes secretmanager.admin"
+  }
+
+  # THE LINE THAT MUST NOT MOVE. The broker writes credentials and binds their
+  # readers; it never reads a payload project-wide. `versions.add` is
+  # write-only, and payload access stays per-secret.
+  assert {
+    condition = !contains(
+      google_project_iam_custom_role.secret_lister.permissions,
+      "secretmanager.versions.get"
+    )
+    error_message = "reading a version project-wide would defeat per-tenant secret isolation"
   }
 
   assert {
@@ -324,6 +368,13 @@ run "the_broker_can_list_secrets_and_read_none" {
   # roles/secretmanager.viewer would have done the job and is the obvious
   # shortcut. It also grants versions.list and versions.get over every secret in
   # a project this platform shares with other teams.
+  #
+  # HALF OF THAT ARGUMENT WAS SPENT ON 2026-09-22, and saying so is the point of
+  # this note. `versions.list` is now granted project-wide for retention, so the
+  # reason to keep refusing `viewer` is no longer "it reaches other teams'
+  # metadata" -- it is `versions.get`, which reaches their PAYLOADS, and which
+  # the assertion above still refuses. A future reader comparing this role to
+  # `viewer` should weigh that one permission, not the pair.
   assert {
     condition = !contains(
       local.plain_roles["swarm-quota-broker"],

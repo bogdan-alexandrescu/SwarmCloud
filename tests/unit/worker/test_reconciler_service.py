@@ -24,7 +24,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from test_backend_identity import JOB, PROJECT, REGION, FakeExecutionsClient, FakeJobsClient
+from test_backend_identity import (
+    JOB,
+    PROJECT,
+    REGION,
+    FakeExecutionsClient,
+    FakeJobsClient,
+    run_execution,
+)
 
 from reconciler.backends import CloudRunBackend
 from reconciler.logs import build_logger
@@ -224,8 +231,16 @@ def _view(name: str = f"{JOB}/executions/x1") -> ExecutionView:
 
 
 class _CancelClient(FakeExecutionsClient):
-    def __init__(self, result) -> None:
-        super().__init__({})
+    """A cancel whose acknowledgement is scripted, over a readable execution.
+
+    `current` is what a re-read of the execution returns, and it defaults to the
+    still-running shape: an unacknowledged cancel over an execution Cloud Run
+    still reports as running is the one case that must keep the slot held.
+    """
+
+    def __init__(self, result, current=None) -> None:
+        name = f"{JOB}/executions/x1"
+        super().__init__({JOB: [current if current is not None else run_execution(name=name)]})
         self.result = result
         self.cancelled: list[str] = []
 
@@ -233,6 +248,34 @@ class _CancelClient(FakeExecutionsClient):
         self.cancelled.append(request.name)
         outcome = self.result
         return SimpleNamespace(result=lambda timeout=None: outcome)
+
+
+class _RaisingCancelClient(FakeExecutionsClient):
+    """A cancel that fails, over an execution whose own state is readable.
+
+    This is the production shape. Cloud Run does not report "the cancellation
+    failed" and "the execution did not succeed" differently: all three failures
+    seen on saga-agents-staging arrive as an exception out of
+    `cancel_execution`/`operation.result()` while the execution itself is
+    already terminal.
+    """
+
+    def __init__(self, error: Exception, current=None, *, raise_on_get=None) -> None:
+        name = f"{JOB}/executions/x1"
+        super().__init__({JOB: [current if current is not None else run_execution(name=name)]})
+        self.error = error
+        self.raise_on_get = raise_on_get
+        self.cancelled: list[str] = []
+
+    def cancel_execution(self, request):
+        self.cancelled.append(request.name)
+        raise self.error
+
+    def get_execution(self, name: str):
+        if self.raise_on_get is not None:
+            self.read.append(name)
+            raise self.raise_on_get
+        return super().get_execution(name)
 
 
 def _backend(client) -> CloudRunBackend:
@@ -279,3 +322,185 @@ def test_an_execution_that_is_already_gone_counts_as_confirmed():
             raise gapi_exceptions.NotFound("no such execution")
 
     assert _backend(_NotFound()).terminate(view) is True
+
+
+# ---------------------------------------------------------------------------
+# ... and an execution Cloud Run reports as FINISHED is confirmed too
+#
+# Three shapes of "the cancel did not ack but the execution is over" have been
+# observed on saga-agents-staging, and each stranded the slot for at least a
+# full pass:
+#
+#   400 Execution 'swarm-job-u-bogdan-mock-w8g2g' cannot be cancelled because
+#       it is not running.                        (16 leases held, 2026-09-20)
+#   409 Task swarm-verify-dc9fl-task0 failed with exit code: 1 ...
+#                                                       (LRO error code 10)
+#   None Unspecified error. 2: Unspecified error.       (LRO error code 2)
+#
+# The last one is swarm-job-eng-claude-code-sq2l6. Its CancelExecution audit
+# entry carries `status { code: 2, message: "Execution
+# swarm-job-eng-claude-code-sq2l6 has failed to complete, 0/1 tasks were a
+# success." }` and, in the SAME payload, the execution with cancelledCount 1 and
+# completionTime set. The cancellation worked; Cloud Run failed the operation
+# because the execution did not SUCCEED. There is no way to tell those apart
+# from the ack, which is why the execution's own state has to be read.
+# ---------------------------------------------------------------------------
+
+
+def _finished(name: str = f"{JOB}/executions/x1"):
+    """The shape a real `get_execution` returned for sq2l6 after the cancel."""
+    return run_execution(name=name, running=0, cancelled=1, completed=True)
+
+
+def test_an_unspecified_cancel_error_over_a_finished_execution_is_confirmed():
+    """The sq2l6 case: the slot must come back."""
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    client = _RaisingCancelClient(gapi_exceptions.Unknown("Unspecified error."), _finished())
+    assert _backend(client).terminate(view) is True
+    assert client.read == [view.name], "the execution's own state must be read"
+
+
+def test_a_cancel_refused_because_the_execution_is_not_running_is_confirmed():
+    """`400 ... cannot be cancelled because it is not running.`
+
+    A read-then-act race: 16 of these arrived in 1.997s on 2026-09-20 because
+    the executions finished between the list and the cancel. The reconciler's
+    own record of that pass, pass_0bd239d41f79479385cf, reads findings 17,
+    skipped 16, slots_released 1.
+    """
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    client = _RaisingCancelClient(
+        gapi_exceptions.BadRequest(
+            f"Execution '{view.name}' cannot be cancelled because it is not running."
+        ),
+        _finished(),
+    )
+    assert _backend(client).terminate(view) is True
+
+
+def test_a_cancel_error_over_a_still_running_execution_keeps_the_slot_held():
+    """The refusal this whole module exists for, and it must not weaken.
+
+    The execution reads as running, so the cancel outcome is genuinely unknown.
+    The original error is re-raised so `repair.py` logs the real cause rather
+    than a bare False.
+    """
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    client = _RaisingCancelClient(gapi_exceptions.Unknown("Unspecified error."))
+    with pytest.raises(gapi_exceptions.Unknown):
+        _backend(client).terminate(view)
+    assert client.read == [view.name]
+
+
+def test_a_cancel_error_whose_re_read_finds_nothing_is_confirmed():
+    """A GET that 404s is the strongest proof there is: the execution is gone."""
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    client = _RaisingCancelClient(
+        gapi_exceptions.Unknown("Unspecified error."),
+        raise_on_get=gapi_exceptions.NotFound(view.name),
+    )
+    assert _backend(client).terminate(view) is True
+
+
+def test_a_cancel_error_whose_re_read_also_fails_keeps_the_slot_held():
+    """No proof either way is the same as no proof of a stop."""
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    client = _RaisingCancelClient(
+        gapi_exceptions.Unknown("Unspecified error."),
+        raise_on_get=gapi_exceptions.ServiceUnavailable("backend is down"),
+    )
+    with pytest.raises(gapi_exceptions.Unknown):
+        _backend(client).terminate(view)
+
+
+def test_a_cancel_error_over_an_execution_reporting_nothing_yet_keeps_the_slot_held():
+    """No counts and no completion time is a COLD START, not a stop.
+
+    This is the shape sq2l6 itself had for the three minutes before the cancel
+    ("Started deployed execution in 2m54.83s"), and the shape
+    `_execution_view` deliberately reads as RUNNING. Zero counts are the same
+    bytes whether the container has not started or the API is answering
+    partially, so "nothing is reported" must never read as "nothing is running"
+    -- that is a release straight into a live agent, and image pulls here take
+    minutes.
+    """
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    not_yet_reporting = run_execution(name=view.name, running=0)
+    assert not_yet_reporting.completion_time is None
+    client = _RaisingCancelClient(
+        gapi_exceptions.Unknown("Unspecified error."), not_yet_reporting
+    )
+    with pytest.raises(gapi_exceptions.Unknown):
+        _backend(client).terminate(view)
+
+
+def test_only_a_completed_execution_counts_as_finished():
+    """The predicate itself, one condition at a time."""
+    from reconciler.backends import execution_is_finished
+
+    assert execution_is_finished(run_execution(running=0, cancelled=1, completed=True))
+    assert execution_is_finished(run_execution(running=0, succeeded=1, completed=True))
+    assert execution_is_finished(run_execution(running=0, failed=1, completed=True))
+    # No completion time: every other field can look terminal and it still is not.
+    assert not execution_is_finished(run_execution(running=0, cancelled=1))
+    assert not execution_is_finished(run_execution(running=0))
+    assert not execution_is_finished(run_execution(running=1, completed=True))
+    assert not execution_is_finished(
+        run_execution(running=0, cancelled=1, completed=True, reconciling=True)
+    )
+    # An object carrying none of the fields holds the slot rather than freeing it.
+    assert not execution_is_finished(SimpleNamespace())
+
+
+def test_a_cancel_error_over_a_reconciling_execution_keeps_the_slot_held():
+    """`reconciling` means Cloud Run has not settled this resource yet.
+
+    `completion_time` can already be set while the service is still acting on
+    the execution -- sq2l6 grew an `ImmediateRetry` condition five seconds after
+    its completionTime -- so a resource still reconciling is not proof.
+    """
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    still_settling = run_execution(
+        name=view.name, running=0, cancelled=1, completed=True, reconciling=True
+    )
+    client = _RaisingCancelClient(gapi_exceptions.Unknown("Unspecified error."), still_settling)
+    with pytest.raises(gapi_exceptions.Unknown):
+        _backend(client).terminate(view)
+
+
+def test_a_cancel_error_over_an_execution_with_a_live_task_keeps_the_slot_held():
+    """A terminal count on a multi-task execution is not the whole execution.
+
+    `completion_time` plus `running_count > 0` is the shape that matters: one
+    task finished, another is still going, and the agent is still running.
+    """
+    from google.api_core import exceptions as gapi_exceptions
+
+    view = _view()
+    partly_done = run_execution(name=view.name, running=1, succeeded=1, completed=True)
+    client = _RaisingCancelClient(gapi_exceptions.Unknown("Unspecified error."), partly_done)
+    with pytest.raises(gapi_exceptions.Unknown):
+        _backend(client).terminate(view)
+
+
+def test_a_mismatched_ack_over_a_finished_execution_is_confirmed():
+    """The name comparison stays, but it is no longer the only evidence."""
+    view = _view()
+    client = _CancelClient(
+        SimpleNamespace(name=f"{JOB}/executions/someone-else"), current=_finished()
+    )
+    assert _backend(client).terminate(view) is True

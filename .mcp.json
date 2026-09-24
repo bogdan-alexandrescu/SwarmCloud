@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "swarmcloud": {
+      "command": "uv",
+      "args": ["run", "--directory", ".", "swarm-mcp"],
+      "env": {}
+    }
+  }
+}

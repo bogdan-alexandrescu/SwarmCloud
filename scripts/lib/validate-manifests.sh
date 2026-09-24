@@ -179,6 +179,79 @@ else
   ok "a root pod is refused for a restricted namespace"
 fi
 
+# ---------------------------------------------------------------------------
+# Security posture, per isolation class
+# ---------------------------------------------------------------------------
+#
+# WHY THIS LIVES HERE AND NOT ONLY IN CI. It used to be inline in
+# .github/workflows/application.yml and nowhere else, so `make lint` passed on
+# a tree that failed CI -- which is the exact shape CLAUDE.md warns about:
+# "every rule that got restated in a second place here has since drifted." The
+# workflow calls this script now, so there is one statement of the rule.
+#
+# WHY THE RULE HAS TWO BRANCHES. The old form asserted `runAsNonRoot: true` and
+# `readOnlyRootFilesystem: true` on EVERY worker template. worker-job-v2.yaml
+# sets the opposite on purpose -- `runAsUser: 0`, `readOnlyRootFilesystem:
+# false`, "Root with a writable root filesystem -- the point of v2" -- and pays
+# for it with an isolation boundary the other two do not have:
+# `runtimeClassName: gvisor`, itself commented as the load-bearing line in the
+# file. One posture for both classes cannot be satisfied by both.
+#
+# So each class is held to the posture that matches its isolation. THIS IS NOT
+# AN OPT-OUT: a gvisor template is not exempted, it is checked against a
+# different and equally specific list, and a template that names gvisor while
+# granting capabilities or leaving its uid implicit fails here. The one thing
+# this must never become is "skip the checks when the word gvisor appears",
+# which would turn the gate off for the template that most needs one.
+step "Worker template security posture"
+
+TEMPLATES="${REPO_ROOT}/kubernetes/worker-templates"
+if [[ ! -d "${TEMPLATES}" ]]; then
+  # Absence is a failure of the check, not a pass -- the same reasoning
+  # security.yml gives for its own Spot check on this directory.
+  err "kubernetes/worker-templates is missing; the posture check cannot run"
+  FAILED=1
+else
+  posture_found=0
+  for f in "${TEMPLATES}"/*.yaml; do
+    [[ -e "${f}" ]] || continue
+    posture_found=$((posture_found + 1))
+    name="$(basename "${f}")"
+
+    # Required of EVERY template, whatever isolates it.
+    grep -q 'allowPrivilegeEscalation: false' "${f}" \
+      || { err "${name}: missing allowPrivilegeEscalation: false"; FAILED=1; }
+    grep -q 'drop: \["ALL"\]' "${f}" \
+      || { err "${name}: does not drop ALL capabilities"; FAILED=1; }
+    if grep -q 'restartPolicy' "${f}"; then
+      grep -q 'restartPolicy: Never' "${f}" \
+        || { err "${name}: restartPolicy must be Never"; FAILED=1; }
+    fi
+
+    if grep -q 'runtimeClassName: gvisor' "${f}"; then
+      # SANDBOXED CLASS. Root is permitted because the kernel boundary is not
+      # the host's. What is required instead is that the privilege is
+      # DELIBERATE and STATED: an implicit uid here is indistinguishable from
+      # an oversight, and that is the thing review has to be able to see.
+      grep -qE 'runAsUser: [0-9]+' "${f}" \
+        || { err "${name}: gvisor template must state runAsUser explicitly"; FAILED=1; }
+      ok "${name}: sandboxed class (gvisor), privilege stated explicitly"
+    else
+      # UNSANDBOXED CLASS. Shares the node's kernel, so it gets the full
+      # posture the gate has always required.
+      grep -q 'runAsNonRoot: true' "${f}" \
+        || { err "${name}: missing runAsNonRoot: true (no gvisor sandbox)"; FAILED=1; }
+      grep -q 'readOnlyRootFilesystem: true' "${f}" \
+        || { err "${name}: missing readOnlyRootFilesystem: true (no gvisor sandbox)"; FAILED=1; }
+      ok "${name}: unsandboxed class, non-root and read-only"
+    fi
+  done
+  if [[ "${posture_found}" -eq 0 ]]; then
+    err "no worker templates found under kubernetes/worker-templates"
+    FAILED=1
+  fi
+fi
+
 if [[ "${FAILED}" -ne 0 ]]; then
   die "kubernetes manifest validation failed"
 fi

@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import (
+    CredentialRevokedSignal,
     QuotaExhaustedSignal,
     RunnerContext,
     RunnerFailure,
@@ -98,6 +99,27 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if completed >= steps:
         # A restored checkpoint already contains all the work.
         completed = steps
+
+    # `credential_revoked_times` rather than a bare flag: the behaviour worth
+    # testing is that the worker RELOADS and carries on, which needs a runner
+    # that refuses a bounded number of times and then succeeds. A permanent
+    # refusal can only ever test the give-up path.
+    refuse_times = int(payload.get("credential_revoked_times", 0) or 0)
+    if refuse_times:
+        marker = work / ".credential-refusals"
+        seen = int(marker.read_text().strip() or 0) if marker.exists() else 0
+        if seen < refuse_times:
+            marker.write_text(str(seen + 1))
+            raise CredentialRevokedSignal(
+                provider=str(payload.get("provider", "mock-provider")),
+                detail=str(
+                    payload.get(
+                        "credential_detail",
+                        "mock runner asked to simulate a revoked credential",
+                    )
+                ),
+                marker="oauth access token has been revoked",
+            )
 
     if payload.get("quota_exhausted"):
         raise QuotaExhaustedSignal(

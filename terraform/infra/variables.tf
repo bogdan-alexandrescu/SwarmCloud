@@ -128,6 +128,18 @@ variable "gke_enable_private_endpoint" {
   default = false
 }
 
+variable "gke_allow_open_master_authorized_network" {
+  description = <<-EOT
+    Permits 0.0.0.0/0 in gke_master_authorized_cidrs for this environment.
+
+    Default false, which is what keeps prod's control plane closed: prod runs
+    gke_enable_private_endpoint = false and relies on an empty allowlist, so the
+    refusal of 0.0.0.0/0 is its backstop rather than a formality.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "gke_master_authorized_cidrs" {
   type = list(object({
     cidr_block   = string
@@ -193,13 +205,29 @@ variable "tenants" {
     files are written as though it does.
   EOT
   type = map(object({
-    kind           = string
-    principal      = string
-    display_name   = optional(string, "")
-    providers      = optional(list(string), [])
-    max_active     = optional(number)
-    capacity_units = optional(number, 40)
-    ksa_name       = optional(string, "swarm-agent-worker")
+    kind      = string
+    principal = string
+    # Whether `principal` is a group that actually EXISTS in the directory and
+    # that swarm-api can resolve membership for.
+    #
+    # Separate from `kind` because they answer different questions. `kind`
+    # decides how the tenant id is derived and how its namespace and service
+    # account are named; this decides whether the group is put in TENANT_GROUPS
+    # for swarm-api to check at sign-in.
+    #
+    # It exists because those came apart on 2026-09-19. `smoke` was declared
+    # kind = "group" with principal swarm-smoke@saga.xyz, and no such group had
+    # ever been created. A FAILED GROUP LOOKUP IS FATAL BY DESIGN -- a
+    # higher-priority group being unknown could file a caller's work under the
+    # wrong tenant -- so that one phantom group made every authenticated request
+    # to the API answer 503, for every user, including ones in groups that do
+    # exist.
+    directory_group = optional(bool, true)
+    display_name    = optional(string, "")
+    providers       = optional(list(string), [])
+    max_active      = optional(number)
+    capacity_units  = optional(number, 40)
+    ksa_name        = optional(string, "swarm-agent-worker")
     # Identities allowed to add a version to THIS tenant's provider-key secrets.
     # Empty falls back to var.secret_admin_members, which must be a platform
     # admin group rather than any tenant's own group -- see the validation there.
@@ -210,6 +238,167 @@ variable "tenants" {
   validation {
     condition     = alltrue([for t, v in var.tenants : v.max_active == null || v.max_active > 0])
     error_message = "a tenant's max_active must be positive; omit it to take pool_limits.default_tenant."
+  }
+}
+
+variable "enable_safety_tick_alert" {
+  description = "Create the safety-tick-stopped alert. Requires the Cloud Scheduler metric to already exist in the project; see the module variable of the same name."
+  type        = bool
+  default     = true
+}
+
+variable "enable_frontend" {
+  description = <<-EOT
+    Build the external load balancer and IAP in front of swarm-api.
+
+    A flag rather than `frontend_hostname != ""`, because a count that depends
+    on a value unknown at plan time cannot be planned -- the same reason
+    enable_quota_refresh exists.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "frontend_hostname" {
+  description = "The name the managed certificate is issued for. DNS lives at an external registrar, so the A record is added by hand from the module's ip_address output."
+  type        = string
+  default     = ""
+}
+
+variable "frontend_iap_audiences" {
+  description = <<-EOT
+    Audiences swarm-api accepts on an IAP assertion, one per backend service:
+
+        /projects/<PROJECT NUMBER>/global/backendServices/<BACKEND SERVICE ID>
+
+    Declared rather than derived because deriving it from the frontend module is
+    a terraform cycle -- that module consumes the Cloud Run services this value
+    configures. Read it from `terraform output frontend_iap_audiences` once the
+    load balancer exists.
+
+    EMPTY MEANS THE IAP PATH IS OFF, not "accept any audience". An unpinned
+    audience makes google-auth skip the `aud` check, and an IAP assertion is
+    issued to anyone who can reach any IAP-protected resource anywhere.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "quota_broker_url" {
+  description = <<-EOT
+    Base URL of the swarm-quota-broker Cloud Run service, for the SCHEDULER's
+    environment. The scheduler never calls the broker; it passes this through
+    to every worker it dispatches (scheduler.dispatch.worker_env), and a worker
+    with no QUOTA_BROKER_URL uses no account pool at all.
+
+    Declared rather than derived, for the same reason frontend_iap_audiences
+    is: the scheduler's environment is an INPUT to the Cloud Run module and the
+    broker's URL is an OUTPUT of it, so referencing it is a cycle terraform
+    refuses to plan. Worker JOBS are unaffected -- locals.tf derives the same
+    value for them, because that module reads the Cloud Run outputs rather than
+    feeding them.
+
+    Read it from `terraform output quota_broker_url` after the first apply and
+    put it in <env>.tfvars. The `quota_broker_url_is_wired` check fails while it
+    is empty or stale.
+
+    EMPTY MEANS "NO POOL ON THE GKE PATH", not "guess". A guessed URL is the
+    worst outcome available here: a 404 is a configuration refusal, and a
+    worker that is refused PARKS rather than running on the wrong credential,
+    so a wrong guess would park every browser and GPU task in the fleet.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.quota_broker_url == "" || startswith(var.quota_broker_url, "https://")
+    error_message = "quota_broker_url must be an https:// base URL, or empty."
+  }
+}
+
+variable "frontend_iap_members" {
+  description = <<-EOT
+    Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant
+    boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
+    read to the caller's own tenant.
+
+    `domain:saga.xyz` is the intended shape: it matches what the API already
+    enforces, so there is no second list to drift. An enumeration of individual
+    users is the shape that rots.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "groups_impersonate_user" {
+  description = <<-EOT
+    The Workspace user swarm-api acts AS when it reads Cloud Identity groups.
+
+    Required because the Groups API does not authorize through GCP IAM. It
+    authorizes through admin, non-admin or namespace modes, and a
+    *.gserviceaccount.com identity is a principal in none of them -- every
+    lookup returns "Error(2028): Permission denied", which reads like a
+    missing role and is not one. Verified 2026-09-20:
+    roles/cloudidentity.groupsReader is an ALPHA role with no included
+    permissions, and granting it at the organization changed nothing.
+
+    Domain-wide delegation is the documented route. It is authorised in the
+    Google Admin console against this service account's OAuth client id
+    (116078917197392888097) and scoped to
+    https://www.googleapis.com/auth/cloud-identity.groups.readonly -- read
+    group membership, and nothing else.
+
+    Empty disables delegation.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "admin_users" {
+  description = <<-EOT
+    Individual email addresses granted admin, as an ESCAPE HATCH.
+
+    Admin is otherwise decided by Cloud Identity group membership, and
+    swarm-api cannot read groups: the Groups API does not authorize through
+    GCP IAM, and a *.gserviceaccount.com identity is not a Workspace
+    principal, so every membership lookup returns
+    "Error(2028): Permission denied". With no resolvable groups the admin set
+    is empty and NOBODY is an admin, which 403s every operator screen on the
+    platform.
+
+    Strictly worse than a group operationally -- changing this needs a deploy
+    -- and not a weakening of authentication: the email is the one from the
+    verified IAP assertion, which is the same source a group lookup would
+    have started from.
+
+    Empty this in the same change that grants swarm-api a Workspace Group
+    Reader role. See docs/audits/2026-09-20/session-handover.md.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "admin_groups" {
+  description = <<-EOT
+    Google groups whose members may act across tenants in swarm-api -- reading
+    another tenant's tasks, and the platform routes that are not tenant-scoped.
+
+    Separate from `tenants` on purpose. A tenant group is a group that OWNS
+    work; an admin group is one that may look at everyone's. Deriving one from
+    the other would make every tenant an administrator the moment it was
+    registered, which is the opposite of invariant 9.
+
+    Empty is the correct default and the current dev setting: with no admin
+    group, no caller is an administrator, and the only cross-tenant identity is
+    the platform tick account, which authenticates as a service account and
+    never through this path.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for g in var.admin_groups : can(regex("^[^@]+@[^@]+$", g))])
+    error_message = "every admin group must be a group email address."
   }
 }
 
@@ -328,11 +517,20 @@ variable "service_max_instances" {
     "swarm-scheduler"    = 3
     "swarm-quota-broker" = 3
     "swarm-reconciler"   = 2
+    "swarm-ui"           = 2
   }
 
   validation {
     condition     = alltrue([for k, v in var.service_max_instances : v > 0])
     error_message = "every service needs an explicit positive max-instances."
+  }
+
+  validation {
+    condition = length(setsubtract(
+      ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui"],
+      keys(var.service_max_instances),
+    )) == 0
+    error_message = "service_max_instances must name every control-plane service. A tfvars file written before a service existed omits it, and the failure is an 'Invalid index' at plan time that names a line number rather than the missing key."
   }
 }
 

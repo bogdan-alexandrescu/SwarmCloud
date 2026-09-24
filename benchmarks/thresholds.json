@@ -1,0 +1,115 @@
+{
+  "_comment": [
+    "Per-metric benchmark thresholds. See docs/benchmarks.md for how these are",
+    "applied and scripts/benchstat.py for the precedence: default <- base metric",
+    "name <- exact key including labels.",
+    "",
+    "EVERY NUMBER HERE IS A JUDGEMENT AND SHOULD CARRY ITS REASON in the _why",
+    "field beside it. A threshold with no stated reason is one nobody can argue",
+    "with, so the first time it fires spuriously it gets raised rather than",
+    "understood -- and after two of those it is decoration."
+  ],
+
+  "default": {
+    "statistic": "p95",
+    "max_regression_ratio": 1.5,
+    "min_samples": 5,
+    "max_missing_fraction": 0.2
+  },
+
+  "metrics": {
+    "api.latency": {
+      "max_regression_ratio": 1.4,
+      "_why": "Tighter than the global default because API latency on a warm service is the least variable thing measured here; 1.5x on a 200ms route is 100ms of real regression."
+    },
+
+    "api.stats.ms_per_1k_history": {
+      "max_regression_ratio": 1.3,
+      "_why": "This is the figure that SEPARATES a /v1/stats regression from ordinary history growth: it is latency divided by the number of task documents the route's count() aggregations scan. It should be roughly flat as the collection grows, so it can be held far tighter than the raw latency beside it. If this rises, the route got slower; if only api.latency{route=/v1/stats} rises, the platform simply has more history."
+    },
+
+    "api.stats.history_tasks": {
+      "max_regression_ratio": null,
+      "min_samples": 5,
+      "_why": "A GAUGE, not a latency: how much history exists right now. It only ever goes up on a live platform and growing is not a regression, so its ratio is not gated at all (max_regression_ratio null). It is kept in the file rather than dropped because api.stats.ms_per_1k_history is meaningless without it."
+    },
+
+    "reconcile.backend_errors": {
+      "absolute_max": 0,
+      "min_samples": 1,
+      "_why": "ZERO, absolutely. When a backend cannot be listed -- the GKE 401 of 2026-09-22 -- the reconciler correctly skips that backend's findings rather than repairing against a list it could not read, and returns a pass that is FASTER and examines LESS than a complete one. Every duration and count threshold rewards that pass. This is the only check that fails it. min_samples is 1 because a single pass reporting an error is already the finding."
+    },
+
+    "reconcile.duration_seconds": {
+      "max_regression_ratio": 2.0,
+      "_why": "Looser than the default: a pass's duration is dominated by how much state accumulated since the last one, which varies with platform load rather than with code. The counters beside it are what say whether a fast pass was a thorough one."
+    },
+
+    "reconcile.executions_examined": {
+      "min_samples": 1,
+      "max_regression_ratio": null,
+      "_why": "A COUNT that should not shrink. The regression ratio is irrelevant -- examining MORE is not a problem -- but the metric must exist and be measured, because a pass that examined no executions has reconciled nothing however quickly it finished. The not-measured and missing-from-baseline rules do the work here."
+    },
+
+    "dispatch.cold_start": {
+      "max_regression_ratio": 1.5,
+      "min_samples": 5,
+      "_why": "The 3m09s. Held at the default ratio rather than an absolute limit because an absolute one would have to be picked before anyone knows what normal is on this platform, and a threshold picked in advance of the data is a threshold that gets ignored. Record a baseline per runner profile and per backend -- they are different numbers with different owners, which is why they are separate labels."
+    },
+
+    "dispatch.segment.dispatched_to_starting": {
+      "max_regression_ratio": 1.5,
+      "_why": "The backend half of cold start: scheduling plus image pull. Separated from starting_to_running because a regression here is an image or a backend problem and a regression there is the container or the runner."
+    },
+
+    "dispatch.total": {
+      "max_regression_ratio": 1.5,
+      "max_missing_fraction": 0.05,
+      "_why": "max_missing_fraction is tightened to one in twenty: a missing dispatch.total means a task never reached a terminal state, and a run where one task in ten never finished is not a run whose latency percentile means anything."
+    },
+
+    "admission.throughput_per_s": {
+      "max_regression_ratio": null,
+      "_why": "THROUGHPUT IS THE ONE METRIC WHERE HIGHER IS BETTER, and benchstat compares in one direction only -- it fails when the statistic RISES. So a ratio threshold here would fail a scheduler that got faster and pass one that got slower. It is deliberately disabled rather than quietly wrong. Watch admission.window_seconds, which is a duration and moves the right way, and read this figure beside it. Fixing the direction properly means a `higher_is_better` flag in the engine; that is recorded in docs/benchmarks.md as the next change rather than faked here."
+    },
+
+    "admission.window_seconds": {
+      "max_regression_ratio": 1.5,
+      "_why": "The duration form of throughput, and the one that can be gated: the time from the first lease to the last for a fixed backlog size. Longer is worse, which is the direction the engine understands."
+    },
+
+    "admission.admitted_fraction": {
+      "max_missing_fraction": 0.02,
+      "max_regression_ratio": null,
+      "_why": "Every admitted task contributes a 1 and every task that was never admitted contributes a not-measured sample, so this metric is ENTIRELY about its missing fraction. Two percent: a backlog where more than one task in fifty never got a lease inside the timeout is a scheduler finding, not noise."
+    },
+
+    "cost.usd_per_task": {
+      "max_regression_ratio": 1.5,
+      "max_missing_fraction": 0.1,
+      "_why": "The missing fraction is the important half. `attempt_from_dict` dropped all five spend fields once and every cost figure in the product became unreachable; a task that ran an agent and reports no cost_usd lands here as not-measured, and more than one in ten of those means the fields have stopped arriving again."
+    },
+
+    "cost.input_tokens": {
+      "max_regression_ratio": 1.5,
+      "max_missing_fraction": 0.1,
+      "_why": "A change that doubles context -- a longer system prompt, a retry that re-sends history, a checkpoint restore that replays -- shows up here and in no latency benchmark."
+    },
+
+    "cost.output_tokens": {
+      "max_regression_ratio": 1.5,
+      "max_missing_fraction": 0.1,
+      "_why": "Same as input_tokens, and usually the more expensive side."
+    },
+
+    "ui.fetch": {
+      "max_regression_ratio": 1.5,
+      "_why": "What the BROWSER measured, which is not what curl measures: it includes connection reuse, queueing behind other requests on the page, and the proxy in front. Compared per screen and per route, because the same route costs differently depending on what else the screen asked for at the same time."
+    },
+
+    "ui.paint.first_contentful": {
+      "max_regression_ratio": 1.4,
+      "_why": "The number an operator actually experiences as 'the dashboard is slow'. Tighter than the fetch thresholds because it is a single measurement per load rather than one of a dozen parallel requests."
+    }
+  }
+}

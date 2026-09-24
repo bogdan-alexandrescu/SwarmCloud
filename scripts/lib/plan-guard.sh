@@ -77,9 +77,54 @@ judge() {
     "${plan}" >"${out}"
 }
 
+# THE GUARD'S OWN FAIL-OPEN BUG, found on 2026-09-19. Every check in `report`
+# was:
+#
+#     n="$(jq -r '.denylist_touches | length' "${verdict}")"
+#     if [[ "${n}" -gt 0 ]]; then ... abort=1; fi
+#
+# `[[ "" -gt 0 ]]` is FALSE. So an empty or malformed verdict -- a jq that wrote
+# nothing, a truncated file, a renamed key -- left `n` empty, all four checks
+# fell through, and the guard approved the plan in silence. The header of this
+# file promises the opposite: "Exit 1 = it could not be judged, which is also a
+# refusal: this fails closed." This is the control between a terraform plan and
+# another team's live GKE cluster (CLAUDE.md rule 2), so "could not read" must
+# never be spelled the same way as "nothing to report".
+#
+# VALIDATED HERE, NOT INSIDE THE COUNTS, and that distinction is the whole fix.
+# The first attempt put a `die` in a helper called as `n="$(helper ...)"`. A
+# command substitution runs in a SUBSHELL, so the die killed the substitution
+# and `report` carried on with an empty n -- reproducing the original bug inside
+# its own fix, and caught only because the new self-test cases below failed.
+# This runs as a plain statement, where die ends the process.
+require_valid_verdict() {
+  local verdict="$1" field err
+
+  if ! err="$(jq -e 'type == "object"' "${verdict}" 2>&1)"; then
+    hr
+    err "the plan guard's verdict is not readable JSON:"
+    printf '%s\n' "${err}" | head -n 3 | sed 's/^/     /' >&2
+    die "refusing a plan this guard was unable to evaluate -- unreadable is not the same as clean"
+  fi
+
+  for field in denylist_touches offenders wrong_project unlabelled_creations; do
+    # `null | length` is 0 in jq, so a missing or renamed field would otherwise
+    # read as a clean zero. The type is checked too: a scalar has a length.
+    if ! jq -e --arg f "${field}" 'has($f) and (.[$f] | type == "array")' \
+         "${verdict}" >/dev/null 2>&1; then
+      hr
+      err "the plan guard's verdict has no usable '${field}' array"
+      die "refusing a plan this guard was unable to evaluate -- unreadable is not the same as clean"
+    fi
+  done
+}
+
 # report VERDICT_JSON MODE -> 0 allowed, 2 refused
 report() {
   local verdict="$1" mode="$2" abort=0 n
+
+  # Before anything is counted. A verdict that cannot be read is a refusal.
+  require_valid_verdict "${verdict}"
 
   n="$(jq -r '.denylist_touches | length' "${verdict}")"
   if [[ "${n}" -gt 0 ]]; then
@@ -149,7 +194,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
 {"resource_changes":[
  {"address":"labelled.bucket","type":"google_storage_bucket",
   "change":{"actions":["create"],"before":null,
-    "after":{"name":"saga-agents-staging-swarm-artifacts","project":"saga-agents-staging",
+    "after":{"name":"swarm-artifacts-saga-agents-staging","project":"saga-agents-staging",
              "labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"unlabelled.topic","type":"google_pubsub_topic",
   "change":{"actions":["create"],"before":null,
@@ -157,7 +202,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
              "labels":{"component":"scheduler"}}}},
  {"address":"iam.edge","type":"google_storage_bucket_iam_member",
   "change":{"actions":["create"],"before":null,
-    "after":{"bucket":"saga-agents-staging-swarm-artifacts","project":"saga-agents-staging",
+    "after":{"bucket":"swarm-artifacts-saga-agents-staging","project":"saga-agents-staging",
              "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}},
  {"address":"unknown.labels","type":"google_cloud_run_v2_service",
   "change":{"actions":["create"],"before":null,
@@ -203,6 +248,32 @@ FIXTURE_JSON
     '[.denylist_touches[].address] | index("theirs.binding") != null' true
   check "our own bucket is not a deny-list hit" \
     '[.denylist_touches[].address] | index("labelled.bucket") == null' true
+
+  # ---------------------------------------------------------------------
+  # The guard's own fail-open bug. Every case above feeds `report` a WELL-FORMED
+  # verdict, which is exactly why this survived: the bug was never in the
+  # judging, it was in reading the judgement. These four feed it broken input
+  # and require a refusal.
+  # ---------------------------------------------------------------------
+  guard_refuses() {
+    local label="$1" content="$2" tmp rc=0
+    tmp="$(mktemp "${TMPDIR:-/tmp}/plan-guard-selftest.XXXXXX")"
+    printf '%s' "${content}" >"${tmp}"
+    # Subshell: `report` calls die on refusal, which must not kill the self-test.
+    ( report "${tmp}" apply ) >/dev/null 2>&1 || rc=$?
+    rm -f "${tmp}"
+    if [[ "${rc}" -ne 0 ]]; then
+      ok "${label}"
+    else
+      err "${label} -- THE GUARD APPROVED IT"
+      FAILED=1
+    fi
+  }
+
+  guard_refuses "an empty verdict is refused, not approved" ""
+  guard_refuses "a truncated verdict is refused" '{"denylist_touches": [], "offen'
+  guard_refuses "a verdict missing a field is refused" '{"denylist_touches": []}'
+  guard_refuses "a verdict that is not an object is refused" '"nope"'
 
   hr
   [[ "${FAILED}" -eq 0 ]] || die "PLAN-GUARD SELF-TEST FAILED -- do not trust the workflow gates until this passes"

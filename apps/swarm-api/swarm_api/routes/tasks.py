@@ -1,9 +1,18 @@
 """Task routes.
 
-Read the tenant argument on every store call below. `auth.tenant_id` comes from
-the verified ID token and the admin-registered group list; it is never taken
-from a path, a query string or a header, so there is no request a caller can
-construct that reads another tenant's task.
+Read the tenant argument on every store call below. It comes from
+`tenant_scope`, never from `auth.tenant_id` and never from a path, a query
+string or a header.
+
+WHY THE DEPENDENCY RATHER THAN `auth.tenant_id`. This docstring used to claim
+that deriving the id from the verified token was the whole boundary -- "there is
+no request a caller can construct that reads another tenant's task". That was
+wrong, and the counterexample is two VERIFIED identities holding the SAME id:
+the frozen `tenant_id_for_group` slugs the local part only, so `eng@saga.xyz`
+and `eng@partner.com` both derive `eng`, and a registered group `u-eng@saga.xyz`
+derives what the personal tenant of `eng@saga.xyz` derives. Submitting was
+already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
+`tenant_scope` applies that same principal check before any store call here.
 """
 
 from __future__ import annotations
@@ -13,8 +22,8 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from swarm_common.states import TaskState
 
 from ..auth import AuthContext
-from ..codec import task_to_api
-from ..deps import AppContext, current_auth, get_context, paged_limit
+from ..codec import attempt_to_api, task_to_api
+from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
 
@@ -68,7 +77,7 @@ def list_tasks(
     runner_profile: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     parsed_state: TaskState | None = None
@@ -81,7 +90,7 @@ def list_tasks(
                 detail={"known_states": [s.value for s in TaskState]},
             ) from None
     page = ctx.store.list_tasks(
-        auth.tenant_id,
+        tenant_id,
         state=parsed_state,
         workflow_id=workflow_id,
         runner_profile=runner_profile,
@@ -91,26 +100,30 @@ def list_tasks(
     return {
         "tasks": [task_to_api(task) for task in page.items],
         "next_page_token": page.next_page_token,
-        "tenant_id": auth.tenant_id,
+        "tenant_id": tenant_id,
     }
 
 
 @router.get("/{task_id}")
 def get_task(
     task_id: str,
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"task": task_to_api(ctx.store.get_task(auth.tenant_id, task_id))}
+    return {"task": task_to_api(ctx.store.get_task(tenant_id, task_id))}
 
 
 @router.post("/{task_id}/cancel")
 def cancel_task(
     task_id: str,
+    # Both: the scope decides WHOSE task may be cancelled, `auth` records WHO
+    # cancelled it. Cancelling is a write, and it was reachable across a tenant
+    # id collision until this dependency existed.
+    tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    task = ctx.store.request_cancel(auth.tenant_id, task_id, by=auth.email)
+    task = ctx.store.request_cancel(tenant_id, task_id, by=auth.email)
     return {
         "task": task_to_api(task),
         # A task holding capacity stays in its state until the worker or the
@@ -124,19 +137,207 @@ def cancel_task(
 def list_events(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    events = ctx.store.list_events(auth.tenant_id, task_id, limit=paged_limit(ctx, limit))
+    events = ctx.store.list_events(tenant_id, task_id, limit=paged_limit(ctx, limit))
     return {"task_id": task_id, "events": [_event_to_api(e) for e in events]}
+
+
+@router.get("/{task_id}/attempts")
+def list_attempts(
+    task_id: str,
+    limit: int | None = Query(default=None, ge=1),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Every attempt for one task, newest first.
+
+    P4, and the thing that makes a retried task legible. `result_summary` is
+    written once, by `finish()`, at terminal state -- so a task that failed
+    twice and succeeded on the third attempt carries ONLY attempt three's
+    numbers, and the first two attempts' exit codes, errors and peak RSS were
+    unreachable through any API.
+
+    Tenant-scoped like events and artifacts, not admin-gated: these are the
+    caller's own attempts.
+    """
+    # Resolve the task first so a wrong id is a 404 about the TASK rather than
+    # an empty attempt list, which would read as "this task never ran".
+    ctx.store.get_task(tenant_id, task_id)
+    attempts = ctx.store.list_attempts(
+        tenant_id, task_id, limit=paged_limit(ctx, limit)
+    )
+    return {
+        "task_id": task_id,
+        "attempts": [attempt_to_api(a) for a in attempts],
+    }
 
 
 @router.get("/{task_id}/artifacts")
 def list_artifacts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
-    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    artifacts = ctx.store.list_artifacts(auth.tenant_id, task_id, limit=paged_limit(ctx, limit))
-    return {"task_id": task_id, "artifacts": artifacts}
+    """What this attempt left in GCS, by reference.
+
+    `complete` is the field that stops an empty list being read as an answer: it
+    is false until the task reaches a terminal state and the worker writes its
+    result summary, so "no artifacts yet" and "this task produced none" are
+    distinguishable. `artifacts_skipped` names the files the worker dropped at
+    the size cap, for the same reason.
+
+    No download URL is minted here. The `uri` is a `gs://` reference the caller
+    reads with their own credentials, which keeps the tenant boundary in the one
+    place IAM already enforces it.
+    """
+    result = ctx.store.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
+    return {"task_id": task_id, **result}
+
+
+@router.get("/{task_id}/artifacts/content")
+def read_artifact(
+    task_id: str,
+    name: str = Query(..., min_length=1, max_length=512),
+    offset: int = Query(default=0, ge=0),
+    limit_bytes: int | None = Query(default=None, ge=1),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """ONE artifact's content, resolved by the server from the task's manifest.
+
+    THE PARAMETER IS A NAME AND NOT A PATH, and that is deliberate to the point
+    of being the reason this route is shaped the way it is. A route that
+    accepted a GCS path, or a key, or even a "relative" one, would be a
+    path-traversal hole into another tenant's prefix the moment any segment
+    check was missed -- and the only thing standing between it and invariant 9
+    would be the completeness of a sanitiser. Here `name` is matched for exact
+    equality against the entries `AgentLifecycle._upload_outputs` wrote into
+    THIS task's `result_summary`, and the object key is rebuilt from the task
+    document's own tenant and id. A caller who sends a path gets a 404 about an
+    artifact this task does not list, because that is what it is.
+
+    The tenant boundary is the SAME one the listing route uses and is not
+    re-derived: `tenant_scope` decides the scope, `Store.get_task` 404s a task
+    belonging to anyone else with the message a missing task gets, and only
+    then does a key exist.
+
+    BOUNDED AND REDACTED. `limit_bytes` is clamped into the service's range and
+    every response carries `truncated` and `next_offset`; a cut window also
+    carries a `detail` saying so in words, because a reader who takes a
+    truncated transcript for the whole output has been misled by the response
+    rather than by the data. Content is run through `swarm_api.redaction` on
+    the way out whatever happened at write time -- see `read_artifact`'s
+    docstring for why the worker's pass is not a guarantee this route may lean
+    on. An artifact that is not text is reported as `binary` with no bytes, not
+    base64-encoded: bytes nothing can scan are bytes this route does not serve.
+    """
+    return ctx.inspection.read_artifact(
+        tenant_id,
+        task_id,
+        name=name,
+        offset=offset,
+        limit_bytes=limit_bytes,
+    )
+
+
+@router.get("/{task_id}/checkpoints")
+def list_checkpoints(
+    task_id: str,
+    attempt_id: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1),
+    page_token: str | None = Query(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Every checkpoint this task has written, across every attempt.
+
+    READ-ONLY, and it has to be: a checkpoint is the entire value of an attempt
+    that was parked or killed, and the only component allowed to remove one is
+    `reconciler.checkpoints`, which decides by reference rather than by age.
+    Nothing on this path writes, deletes or mutates an object or a document.
+
+    TENANT SCOPE. `tenant_scope` -- not `auth.tenant_id` -- then
+    `Store.get_task`, which 404s a task belonging to anyone else with the same
+    message a missing task gets. Only after both does a prefix exist, and it is
+    built from the task document's own tenant and id rather than from anything
+    in the request. `attempt_id` can only NARROW that prefix and is validated as
+    a single path segment first, so there is no value of it that reaches
+    another tenant's objects.
+
+    WHY ACROSS ATTEMPTS. A resume is by definition a new attempt, and
+    `CheckpointManager.find_latest` scans the whole task prefix to pick what to
+    restore from -- so the checkpoint that matters after a crash was written by
+    the attempt that died. Listing only the current attempt would hide it.
+
+    THE THREE ANSWERS. A failed LISTING is a 503, never `{"checkpoints": []}`
+    with a 200. A checkpoint whose manifest is missing is reported `absent` and
+    `resumable: false` -- the manifest is the commit marker, so there is nothing
+    to resume from. A checkpoint whose manifest could not be READ is reported
+    `unreadable` with `resumable: null`, because "cannot resume" and "cannot
+    tell" are different facts.
+    """
+    return ctx.inspection.list_checkpoints(
+        tenant_id,
+        task_id,
+        attempt_id=attempt_id,
+        limit=paged_limit(ctx, limit),
+        page_token=page_token,
+    )
+
+
+@router.get("/{task_id}/logs")
+def read_logs(
+    task_id: str,
+    attempt_id: str | None = Query(default=None),
+    stream: str | None = Query(default=None),
+    source: str = Query(default="auto"),
+    offset: int = Query(default=0, ge=0),
+    limit_bytes: int | None = Query(default=None, ge=1),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """An attempt's captured stdout and stderr, redacted at read time.
+
+    THE REDACTION IS NOT BELT-AND-BRACES, IT IS THE BRACES. The worker's own
+    scrubbing pass replaces REGISTERED LITERAL VALUES -- the provider key this
+    platform resolved out of Secret Manager -- and matches no patterns at all;
+    both `_redact_before_upload` and `_publish_live_logs` skip the pass
+    entirely when no secret was registered, which is every `mock`-profile run.
+    So a token the agent minted, an `Authorization:` header a tool echoed, or
+    an `.env` printed out of a cloned repository reaches the bucket in the
+    clear. Everything served here is therefore run through
+    `swarm_api.redaction` on the way out, unconditionally, and the response
+    says so in `redaction.applied_at_read_time`.
+
+    The same filter is applied to any upstream error string this route reports,
+    because a storage client's exception can quote the request that failed and
+    a signed URL is a credential with an expiry.
+
+    Nothing in this route reads, logs or echoes a request header. The
+    `Authorization` header is consumed by `deps.current_auth` and by nothing
+    else in the process.
+
+    TWO OBJECTS PER STREAM. `logs/<stream>.log` is the complete record, written
+    once when the attempt finishes; `logs/live/<stream>.tail.log` is a bounded
+    window republished every few seconds while it runs. `source=auto` (the
+    default) prefers the record and falls back to the tail when the record is
+    ABSENT -- never when it is unreadable, because serving a different object
+    in place of a failed read reports success over the wrong window.
+
+    Each stream reports `ok`, `absent` or `unreadable` independently, and
+    `content` is null rather than `""` in the latter two, so a client that
+    renders content without reading status shows nothing instead of an empty
+    log that looks like a silent agent.
+    """
+    return ctx.inspection.read_logs(
+        tenant_id,
+        task_id,
+        attempt_id=attempt_id,
+        stream=stream,
+        source=source,
+        offset=offset,
+        limit_bytes=limit_bytes,
+    )

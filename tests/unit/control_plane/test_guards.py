@@ -58,7 +58,39 @@ def test_unknown_runner_profile_is_rejected(client):
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "validation_failed"
-    assert set(body["detail"]["known_runner_profiles"]) == set(RUNNER_PROFILES)
+    # THE SUGGESTION LIST IS WHAT YOU CAN SEND, not what exists. It used to be
+    # the whole catalogue, which meant a caller who mistyped was handed a list
+    # containing `codex` -- a profile that is refused on submit for a different
+    # reason. A suggestion you would also refuse is not a suggestion.
+    assert set(body["detail"]["known_runner_profiles"]) == {
+        n for n, p in RUNNER_PROFILES.items() if p.available
+    }
+    assert "codex" not in body["detail"]["known_runner_profiles"]
+
+
+def test_a_disabled_profile_is_refused_as_disabled_not_as_unknown(client):
+    """`codex` is spelled correctly and the platform will not run it.
+
+    Collapsing this into "unknown runner_profile" sends a caller hunting for a
+    typo that is not there. The reason is the only part they can act on: on
+    2026-09-23 four codex steps of a twenty-step run failed with "openai
+    refused the credential", and the platform was focused on Claude.
+    """
+    response = submit(client, "alice", runner_profile="codex")
+    assert response.status_code == 422
+    body = response.json()
+    detail = body["detail"]
+    assert detail["disabled"] is True
+    assert detail["runner_profile"] == "codex"
+    assert detail["reason"], "a disabled profile must say why"
+    assert "unknown" not in body["message"].lower(), (
+        "a known-but-refused profile must not be reported as unknown"
+    )
+
+
+def test_claude_code_is_available(client):
+    """The counterpart. Disabling one profile must not disable the platform."""
+    assert submit(client, "alice", runner_profile="claude-code").status_code in (200, 201)
 
 
 def test_the_profile_decides_the_resource_class_and_provider(client, db):

@@ -44,6 +44,8 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.models import (
+    Attempt,
+    Lease,
     ProviderState,
     QuotaState,
     SlotPool,
@@ -57,8 +59,10 @@ from swarm_common.models import (
 from swarm_common.states import EventType, TaskState, assert_transition
 
 from .codec import (
+    attempt_from_dict,
     event_from_dict,
     event_to_firestore,
+    lease_from_dict,
     pool_from_dict,
     quota_from_dict,
     task_from_dict,
@@ -78,15 +82,22 @@ TENANTS = "tenants"
 POOLS = "pools"
 QUOTA = "quota"
 LEASES = "leases"
+ATTEMPTS = "attempts"
 CONTROL = "control"
 EVENTS = "events"
-ARTIFACTS = "artifacts"
 
 CONTROL_DOC = "dispatch"
 
 #: Firestore caps a write batch at 500 operations. Each task costs two (the
 #: document and its `submitted` event), so a chunk of 200 tasks is the ceiling.
 _BATCH_CHUNK = 200
+
+#: Step-task point reads one list request may spend deriving workflow states.
+#: A page of `max_page_size` workflows at `max_workflow_steps` each would be
+#: 10,000 documents, which is not a cost a list route may incur on a caller's
+#: behalf. Past this the remaining steps come back UNREAD and the workflows that
+#: needed them derive as UNKNOWN -- slower to answer, never wrong.
+_STEP_READ_BUDGET = 500
 
 #: `evaluate_capacity` treats a MISSING pool as unlimited, but a Firestore
 #: document has no "absent integer" -- so a pool created only to carry an
@@ -151,6 +162,63 @@ def decode_cursor(token: str | None) -> datetime | None:
 class Page:
     items: list[Any]
     next_page_token: str | None
+
+
+@dataclass(frozen=True)
+class ArtifactManifest:
+    """What one task's `result_summary` says it wrote, unresolved.
+
+    `complete` is the field that stops an empty list reading as an answer, and
+    `skipped` is the same idea for a list that is short rather than empty: the
+    worker drops files once an attempt passes `max_artifact_bytes`, and a
+    listing that omitted them silently would show a short list with no reason
+    for it.
+
+    Nothing here has been resolved to an object. The `uri` on each entry is
+    Firestore DATA, written by a worker, and the reader that turns one into a
+    GCS key re-derives the key rather than trusting it -- see
+    `InspectionService.read_artifact`.
+    """
+
+    artifacts: list[dict[str, Any]]
+    skipped: list[str]
+    artifact_bytes: Any
+    complete: bool
+
+    def find(self, name: str) -> dict[str, Any] | None:
+        """The entry the SERVER already knows about, by exact name.
+
+        Exact equality, never a prefix, a suffix or a normalised path: the
+        caller names something this manifest lists or it names nothing. That is
+        what makes the content route's key a function of the manifest rather
+        than of the request.
+        """
+        for entry in self.artifacts:
+            if entry.get("name") == name:
+                return entry
+        return None
+
+
+@dataclass
+class StepStateRead:
+    """The outcome of reading a set of workflow steps' task states.
+
+    Three fields because there are three outcomes and collapsing them is how a
+    failed read becomes a cheerful answer:
+
+      * `states`  -- task_id -> state, for the tasks that were read.
+      * `absent`  -- read, and the document was not there or belonged to another
+                     tenant. A data fault.
+      * `unread`  -- never read: the budget ran out first. A capacity decision.
+
+    Both `absent` and `unread` make a workflow's rollup incomplete, and the
+    rollup reports which kind it hit.
+    """
+
+    states: dict[str, TaskState]
+    absent: list[str]
+    unread: list[str]
+    reads: int
 
 
 class Store:
@@ -273,6 +341,41 @@ class Store:
                 "requested_principal": incoming,
             },
         )
+
+    def assert_tenant_scope(self, tenant_id: str, principal: str) -> None:
+        """The READ-side half of the collision check `ensure_tenant` runs.
+
+        A tenant id is not a unique key for a principal. The frozen
+        `tenant_id_for_group` slugs the local part only, so `eng@saga.xyz` and
+        `eng@partner.com` both derive `eng`; and the group path adds no prefix
+        while the personal path adds `u-`, so a registered group named
+        `u-eng@saga.xyz` derives the same id as the personal tenant of
+        `eng@saga.xyz`. Two verified, unrelated identities therefore arrive
+        holding the same `tenant_id` string, and every query below filters on
+        exactly that string.
+
+        Until this existed the collision was refused on the SUBMIT paths only,
+        which is the wrong way round: submitting was 409 while listing, reading
+        and CANCELLING the other principal's tasks all succeeded. Reproduced
+        through the real routes on 2026-09-21 before the fix, in-process against
+        the test Firestore -- not against a deployment.
+
+        A missing document means nothing has ever been filed under the id.
+        Both paths that create work -- `submit_tasks` and `submit_workflow` --
+        go through `SubmissionService.tenant_for`, which calls `ensure_tenant`
+        before the first write, so a task under a tenant with no document is a
+        state this service cannot produce. Nothing to reach across, nothing to
+        refuse; refusing anyway would 409 every brand-new tenant's first list.
+
+        COLLISION ONLY, and deliberately not `enabled`: disabling a tenant stops
+        it starting work, and a stopped tenant still has to see and cancel what
+        it already has running. `SubmissionService.tenant_for` is what refuses a
+        disabled tenant, on the paths that create work.
+        """
+        existing = self.get_tenant(tenant_id)
+        if existing is None:
+            return
+        self._assert_principal_matches(existing, principal)
 
     def set_tenant_limits(
         self,
@@ -498,28 +601,76 @@ class Store:
         )
         return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
-    def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> list[dict]:
-        """Artifact METADATA only.
+    @staticmethod
+    def artifact_manifest(task: Task) -> "ArtifactManifest":
+        """WHERE THE MANIFEST LIVES, spelled once.
+
+        Two readers need this now -- the metadata listing below and
+        `InspectionService.read_artifact`, which resolves one entry to a GCS
+        key -- and CLAUDE.md is explicit that every rule restated twice in this
+        repository has since drifted. So the location is a single pure function
+        over a task document, and neither reader is allowed its own copy.
+
+        Pure on purpose: it takes the task the caller has ALREADY resolved
+        inside its tenant rather than a `(tenant_id, task_id)` pair. A second
+        `get_task` here would be a second tenant check, and two checks of one
+        boundary are two chances for them to differ.
+        """
+        summary = task.result_summary or {}
+        entries = summary.get("artifacts")
+        if not isinstance(entries, list):
+            entries = []
+        skipped = summary.get("artifacts_skipped")
+        if not isinstance(skipped, list):
+            skipped = []
+        return ArtifactManifest(
+            artifacts=[dict(e) for e in entries if isinstance(e, dict)],
+            skipped=[str(name) for name in skipped],
+            artifact_bytes=summary.get("artifact_bytes"),
+            # `result_summary` is written once, by `finish()`, at terminal
+            # state. Until then "no artifacts yet" and "produced none" are the
+            # same empty list, and only this flag tells them apart.
+            complete=bool(task.result_summary),
+        )
+
+    def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> dict:
+        """Artifact METADATA only, read from where the worker actually writes it.
 
         Artifacts live in the tenant's own GCS prefix and are passed by
         reference; nothing about them is inlined through Firestore, and this
         endpoint never mints a download URL -- the caller reads GCS with their
         own credentials, which keeps the tenant boundary in one place.
+
+        THE SOURCE IS `task.result_summary`, not a subcollection. This read used
+        to stream `tasks/<id>/artifacts`, and NOTHING in this repository has ever
+        written that subcollection: `ARTIFACTS` was referenced in exactly one
+        place, here. `AgentLifecycle._finalize` builds the manifest
+        -- `[{"name", "bytes", "uri"}, ...]` -- and `control.finish()` stores it
+        as `task.result_summary["artifacts"]`; `agent_worker.inputs` calls that
+        field "the manifest" and stages a downstream step's inputs from it. So
+        the route answered `[]` for every task that ever ran, with a 200, and
+        apps/swarm-ui/src/api.ts had already written the workaround into a
+        comment rather than the endpoint being fixed.
+
+        Pointing the reader at the existing writer is the fix. Inventing a second
+        writer would put the same manifest in two places and let them disagree.
+
+        `artifacts_skipped` comes back too. The worker drops files once the
+        attempt passes `max_artifact_bytes`, and an artifact list that silently
+        omits them is the same class of lie in miniature: the caller sees a short
+        list and no reason for it.
+
+        A task that has not reached a terminal state has no `result_summary`
+        yet, so `artifacts` is empty and `complete` is false -- which is a
+        different statement from "this task produced nothing".
         """
-        self.get_task(tenant_id, task_id)
-        query = (
-            self._db.collection(TASKS)
-            .document(task_id)
-            .collection(ARTIFACTS)
-            .order_by("created_at", direction=firestore.Query.ASCENDING)
-            .limit(limit)
-        )
-        out = []
-        for snap in query.stream():
-            data = dict(snap.to_dict())
-            data.setdefault("name", snap.id)
-            out.append(data)
-        return out
+        manifest = self.artifact_manifest(self.get_task(tenant_id, task_id))
+        return {
+            "artifacts": manifest.artifacts[:limit],
+            "artifacts_skipped": manifest.skipped,
+            "artifact_bytes": manifest.artifact_bytes,
+            "complete": manifest.complete,
+        }
 
     def count_tasks_by_state(self, tenant_id: str | None = None) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -574,6 +725,76 @@ class Store:
             rows = rows[:limit]
             next_token = encode_cursor(rows[-1].created_at)
         return Page(items=rows, next_page_token=next_token)
+
+    def workflow_step_states(
+        self,
+        tenant_id: str,
+        workflows: Sequence[Workflow],
+        *,
+        budget: int | None = None,
+    ) -> StepStateRead:
+        """Task states for every step of these workflows, by point read.
+
+        POINT READS, NOT A QUERY. Each `WorkflowStep` already carries its
+        `task_id`, so the ids are in hand and a query would only re-derive them
+        -- and a query per workflow costs the same documents plus a round trip
+        each. This is the pattern `SchedulerStore.task_states` already uses for
+        `depends_on`, for the same reason: a bounded number of point reads is not
+        a scan.
+
+        TENANT-CHECKED, like `get_task`: a step naming a task that belongs to
+        someone else reads as ABSENT rather than being returned. Invariant 9 does
+        not get an exception for a derived field.
+
+        BOUNDED, because a page of 200 workflows at 50 steps each is 10,000
+        documents and a list route must not be able to cost that. When the budget
+        runs out the remaining ids come back in `unread`, which makes every
+        workflow that needed one derive as UNKNOWN. That is the correct
+        degradation: the answer gets slower to appear, never wrong.
+        """
+        limit = _STEP_READ_BUDGET if budget is None else max(0, budget)
+        wanted: list[str] = []
+        for workflow in workflows:
+            for step in workflow.steps:
+                if step.task_id:
+                    wanted.append(step.task_id)
+        wanted = list(dict.fromkeys(wanted))
+
+        states: dict[str, TaskState] = {}
+        absent: list[str] = []
+        reads = 0
+        for task_id in wanted[:limit]:
+            snap = self._db.collection(TASKS).document(task_id).get()
+            reads += 1
+            if not snap.exists:
+                absent.append(task_id)
+                continue
+            data = snap.to_dict()
+            if data.get("tenant_id") != tenant_id:
+                absent.append(task_id)
+                continue
+            states[task_id] = TaskState(data["state"])
+        return StepStateRead(states=states, absent=absent, unread=wanted[limit:], reads=reads)
+
+    def set_workflow_state(self, workflow_id: str, state: TaskState) -> None:
+        """Write the derived state onto the workflow document.
+
+        The ONLY writer of `workflow.state` after `create_workflow`. It takes a
+        `TaskState`, not a string, so nothing can put `"UNKNOWN"` in a field that
+        `workflow_from_dict` decodes with `TaskState(...)` and would then raise on
+        for every subsequent read.
+
+        No `assert_transition`: the frozen state machine governs a TASK's
+        lifecycle, and a workflow's rollup legitimately moves in ways a task
+        never does -- QUEUED straight to RUNNING when the first step is admitted,
+        or RUNNING back to PARKED when the last live step parks on quota. Running
+        the task machine over it would reject the truth.
+        """
+        (
+            self._db.collection(WORKFLOWS)
+            .document(workflow_id)
+            .update({"state": state.value, "updated_at": self._now()})
+        )
 
     def cancel_workflow(self, tenant_id: str, workflow_id: str, *, by: str) -> dict[str, Any]:
         workflow = self.get_workflow(tenant_id, workflow_id)
@@ -666,6 +887,70 @@ class Store:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
         query = query.limit(limit)
         return [quota_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def list_leases(
+        self,
+        tenant_id: str | None = None,
+        *,
+        active_only: bool = True,
+        limit: int = 200,
+    ) -> list[Lease]:
+        """Leases, newest first.
+
+        THIS IS THE READ PATH THAT DID NOT EXIST. The documents were always
+        written (`agent_worker/control.py`), the decoder was always here
+        (`codec.lease_from_dict`) and the index was always declared
+        (`leases-tenant-created`, tenant_id ASC + created_at DESC). Only this
+        method and its route were missing, and their absence is what made
+        "which agents are holding capacity right now" unanswerable -- the
+        single highest-value gap in the operator UI.
+
+        `active_only` filters to leases that have not been released. It is a
+        CLIENT-SIDE filter on purpose: `released_at == None` plus an ordered
+        `created_at` would need a third composite index for a predicate that
+        is true of almost every row in the window anyway. If that stops being
+        true, add the index rather than paging blindly.
+
+        `tenant_id` None means every tenant, which is why the route is
+        admin-gated. Passing a tenant id uses the declared composite index;
+        passing None orders on created_at alone, which a single-field index
+        already covers.
+        """
+        query: Any = self._db.collection(LEASES)
+        if tenant_id is not None:
+            query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
+        query = query.limit(limit)
+        leases = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
+        if active_only:
+            leases = [lease for lease in leases if not lease.is_released]
+        return leases
+
+    def list_attempts(
+        self,
+        tenant_id: str,
+        task_id: str | None = None,
+        *,
+        limit: int = 200,
+    ) -> list[Attempt]:
+        """Attempts, newest first, for one tenant or one task.
+
+        Same story as leases: written, decodable and indexed
+        (`attempts-task-created`, `attempts-tenant-created`), never readable.
+
+        This is what makes a retried task legible. `result_summary` is written
+        once, by `finish()`, so a task that failed twice and succeeded on the
+        third attempt carries only attempt three's numbers. The earlier two
+        exist only here -- with their exit codes, their errors and their peak
+        RSS -- and until now nothing could read them.
+        """
+        query: Any = self._db.collection(ATTEMPTS)
+        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        if task_id is not None:
+            query = query.where(filter=FieldFilter("task_id", "==", task_id))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
+        query = query.limit(limit)
+        return [attempt_from_dict(snap.to_dict()) for snap in query.stream()]
 
     def set_provider_enabled(self, provider: str, enabled: bool) -> None:
         """Enable/disable a provider platform-wide.

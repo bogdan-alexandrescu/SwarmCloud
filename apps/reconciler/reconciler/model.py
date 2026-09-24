@@ -54,6 +54,11 @@ class TaskView:
     max_attempts: int = 3
     cancel_requested: bool = False
     started_at: datetime | None = None
+    #: The resume pointer `agent_worker.lifecycle._restore_checkpoint` reads
+    #: first. Carried here because checkpoint retention has to know which
+    #: checkpoint a future attempt of this task would come back to; the
+    #: reconciliation pass itself never looks at it.
+    latest_checkpoint: str | None = None
 
     @property
     def holds_capacity(self) -> bool:
@@ -78,6 +83,7 @@ class TaskView:
             max_attempts=int(doc.get("max_attempts", 3)),
             cancel_requested=bool(doc.get("cancel_requested")),
             started_at=as_datetime(doc.get("started_at")),
+            latest_checkpoint=doc.get("latest_checkpoint"),
         )
 
 
@@ -183,6 +189,18 @@ class ExecutionView:
     generation: int | None = None
     parent: str | None = None          # the Job resource this execution belongs to
     namespace: str | None = None
+    #: This execution CLAIMED a task in another tenant and the claim was
+    #: refused (see scope_executions_to_tenant).
+    #:
+    #: Recorded rather than inferred from `task_id is None`, because those are
+    #: two different facts and collapsing them costs one of two properties
+    #: depending on which way you collapse them. Stripping the claim and
+    #: leaving no trace makes a forged execution look like a non-worker
+    #: execution -- so a reconciler that (correctly) declines to terminate
+    #: compute it cannot attribute to a task would leave real compute running
+    #: in the attacker's tenant with a refused claim on the victim's work.
+    #: Caught by test_a_forged_execution_does_not_fence_the_victims_live_attempt.
+    claim_refused: bool = False
 
     @property
     def is_active(self) -> bool:

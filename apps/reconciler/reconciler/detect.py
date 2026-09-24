@@ -28,6 +28,13 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Iterable
 
+#: The slug character class is IMPORTED, never restated. `sanitised()` below
+#: undoes what the dispatcher's `sanitize_name` did, so the two escaping
+#: rules are one rule -- a private copy here is the half that would
+#: silently stop round-tripping, and the reconciler would then either kill
+#: a live execution it read as orphaned or never find a real orphan.
+#: docs/audits/2026-09-18/08-frozen-contract-restatements.md, finding 1.
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
@@ -44,6 +51,12 @@ class FindingKind(str, Enum):
     OBSOLETE_GENERATION = "obsolete_generation"
     UNUSED_JOB_RESOURCE = "unused_job_resource"
     EMPTY_NAMESPACE = "empty_namespace"
+    #: A checkpoint nothing can resume from: see `checkpoints.classify`.
+    RECLAIMABLE_CHECKPOINT = "reclaimable_checkpoint"
+    #: A checkpoint whose task or attempt document is gone, so no reference can
+    #: be established either way. The only finding in this module decided by a
+    #: clock rather than by state.
+    ORPHAN_CHECKPOINT = "orphan_checkpoint"
 
 
 @dataclass(frozen=True)
@@ -73,9 +86,6 @@ class Finding:
             FindingKind.ORPHAN_EXECUTION,
             FindingKind.OBSOLETE_GENERATION,
         ) or (self.execution is not None and self.execution.is_active)
-
-
-_NAME_SAFE = re.compile(r"[^a-z0-9-]+")
 
 
 def sanitised(value: str) -> str:
@@ -167,7 +177,19 @@ def scope_executions_to_their_tenant(
                 claimed_task=execution.task_id,
                 task_tenant=task.tenant_id,
             )
-        scoped.append(replace(execution, task_id=None, attempt_id=None, generation=None))
+        # The claim is stripped AND the refusal is recorded. Stripping alone
+        # would make this indistinguishable from an execution that never
+        # claimed anything, which is the shape detect_orphan_executions must
+        # leave alone.
+        scoped.append(
+            replace(
+                execution,
+                task_id=None,
+                attempt_id=None,
+                generation=None,
+                claim_refused=True,
+            )
+        )
     return scoped
 
 
@@ -177,7 +199,50 @@ def detect_stale_leases(
     config: ReconcilerConfig,
     now: datetime | None = None,
 ) -> list[Finding]:
-    """Leases whose worker has stopped proving it is alive."""
+    """Leases whose worker has stopped proving it is alive.
+
+    NOT YET ALIVE is a different condition from SILENT, and only one clock is
+    entitled to judge each of them.
+
+    A lease is written with `heartbeat_at: None` (`swarm_common/admission.py:224`),
+    so until the worker's first control-plane write `silent_seconds` falls back
+    to `created_at`. During that window both liveness clocks --
+    `heartbeat_grace_seconds` (90) and `expires_at`, which is
+    `created_at + lease_timeout_seconds` (120) -- are not measuring silence at
+    all. There is no process alive to be silent. They are measuring how long the
+    dispatch has been in flight, which is exactly what `dispatch_deadline`
+    (`created_at + dispatch_timeout_seconds`, 300) is for. The two answers
+    disagree by 180 seconds, and the shorter one was winning.
+
+    Measured 2026-09-22 from the live event streams, `dispatched` -> the
+    worker's first control-plane write, Cloud Run Jobs:
+
+        claude-code   n=41   min  46.2s   p50 122.6s   p90 159.0s   max 226.2s
+        mock          n=27   min  68.5s   p50 250.1s   p90 254.5s   max 256.1s
+
+    55 of those 68 attempts exceed the 90s grace and 44 exceed the 120s lease
+    timeout. NONE exceeds the 300s dispatch deadline.
+
+    Watched live on task_b5dc2568713a40158851, whose first attempt was killed
+    183s in by this very function, with its own reason string recording the
+    contradiction: "lease silent for 183s (grace 90s, expired=True,
+    dispatch_overdue=False)". The dispatch window still had 117 seconds to run.
+    The replacement worker booted, found its generation superseded and exited 70
+    without running the agent -- invariant 5 working perfectly on a worker that
+    was never unhealthy. The task succeeded on generation 3, twelve minutes
+    after submission.
+
+    Raising the timeouts was the other option and is worse: p90 is 159s and the
+    worst observed is 256s, so any value large enough would simply be
+    `dispatch_timeout_seconds` under a second name, and every GENUINE dead
+    worker would then wait that long to be reclaimed. Heartbeating earlier in
+    the worker cannot help either -- it already does (`lifecycle.py:332`, moved
+    there on 2026-09-19) and this whole window is before any worker code runs.
+
+    So: before the first heartbeat, the dispatch deadline is the only clock that
+    applies. After it, the worker has proven it exists, `silent_seconds` means
+    what it says, and the liveness clocks take over.
+    """
     now = now or utcnow()
     findings: list[Finding] = []
     for lease in snapshot.leases.values():
@@ -186,13 +251,31 @@ def detect_stale_leases(
         task = snapshot.tasks.get(lease.task_id)
         silent = lease.silent_seconds(now)
         expired = lease.expires_at is not None and now > lease.expires_at
-        overdue_dispatch = (
-            lease.state is TaskState.LEASED
-            and lease.dispatch_deadline is not None
-            and now > lease.dispatch_deadline
-        )
-        if not (expired or overdue_dispatch) and silent <= config.heartbeat_grace_seconds:
-            continue
+        deadline_passed = lease.dispatch_deadline is not None and now > lease.dispatch_deadline
+
+        if lease.heartbeat_at is None and lease.dispatch_deadline is not None:
+            # Never alive. Judged by the dispatch deadline alone -- and by it
+            # whatever the lease's state, which is the second half of the same
+            # defect. `mark_dispatched` moves the lease to DISPATCHED
+            # (`scheduler/store.py:235-237`) the moment the backend ACCEPTS the
+            # create call, long before a container runs. The old
+            # `state is TaskState.LEASED` guard therefore switched the deadline
+            # off for precisely the leases it was meant to bound: measured on
+            # the same task above, `dispatch_overdue` was still False 301s after
+            # admission. Suppressing the liveness clocks without widening this
+            # would have left such a lease with no clock at all and leaked its
+            # slots for ever.
+            #
+            # A lease with no `dispatch_deadline` -- a document written before
+            # the field existed -- falls through to the liveness clocks below,
+            # for that same reason: some clock has to reclaim it.
+            overdue_dispatch = deadline_passed
+            if not overdue_dispatch:
+                continue
+        else:
+            overdue_dispatch = lease.state is TaskState.LEASED and deadline_passed
+            if not (expired or overdue_dispatch) and silent <= config.heartbeat_grace_seconds:
+                continue
         if task is not None and task.generation != lease.generation:
             # Superseded. The generation rule handles the case where an
             # EXECUTION is still running under the old generation -- but it acts
@@ -331,7 +414,41 @@ def detect_orphan_executions(
 
         reason: str | None = None
         kind = FindingKind.ORPHAN_EXECUTION
-        if execution.task_id is None or task is None:
+
+        # NO task_id AT ALL IS NOT AN ORPHAN. It means this is not a worker
+        # execution, and this service has no authority over it.
+        #
+        # These were one condition, and the difference is the whole blast
+        # radius. The dispatcher sets TASK_ID on every worker execution it
+        # creates, so an execution WITHOUT one was created by something else.
+        # The Cloud Run backend selects jobs by the `swarm-` name prefix plus a
+        # platform label, and `swarm-verify` -- the verification gate, created
+        # by terraform with managed-by=swarm-terraform -- matches both. On
+        # 2026-09-21 this cancelled the gate's own executions four times, at
+        # about four minutes each, while the task the gate was waiting on took
+        # five minutes seventeen: the one run that would have proved the
+        # platform works was killed by the platform.
+        #
+        # It is worse than an own goal. saga-agents-staging is SHARED, and the
+        # only things between this loop and another team's Cloud Run job are a
+        # name prefix and a label neither of which they are obliged to avoid. A
+        # reconciler that cannot attribute compute to a task must not terminate
+        # it -- that is what its authority is FOR.
+        if execution.task_id is None and not execution.claim_refused:
+            log = getattr(config, "logger", None)
+            if log is not None:
+                log.info(
+                    "ignoring an execution that carries no task id; not a worker execution",
+                    execution=getattr(execution, "name", ""),
+                    parent=getattr(execution, "parent", ""),
+                )
+            continue
+
+        if execution.claim_refused:
+            # Real compute, running in its own tenant, that asserted a claim on
+            # another tenant's task. The claim is void; the compute is not.
+            reason = "execution claimed a task in another tenant; the claim was refused"
+        elif task is None:
             reason = "execution carries no task this control plane knows about"
         elif task.is_terminal:
             reason = f"task is already {task.state.value}"

@@ -130,6 +130,36 @@ jobs:
           terraform -chdir=tests/terraform init -input=false
           terraform -chdir=tests/terraform test
 
+  plan-not-run:
+    # NOT a no-op. A skipped job is invisible in the checks list, and this
+    # repository's rule is that a bound check says what it did not cover rather
+    # than going quiet -- silence has meant "did not run" here far more often
+    # than "nothing to report".
+    name: plan (not run on a pull request)
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: say what was not checked
+        run: |
+          set -euo pipefail
+          {
+            echo "### terraform plan was not run"
+            echo
+            echo "A pull request's OIDC ref is \`refs/pull/${{ github.event.number }}/merge\`."
+            echo "The workload identity pool is pinned to \`refs/heads/main\`, so no token"
+            echo "is minted here and no plan is possible. That pin is the security boundary:"
+            echo "the deployer holds \`resourcemanager.projectIamAdmin\` on a shared project."
+            echo
+            echo "**Checked on this pull request (offline, no credentials):**"
+            echo "- \`terraform fmt -check\`, \`validate\`, \`tflint\`"
+            echo "- \`checkov\`"
+            echo "- \`terraform test\` over \`tests/terraform\` (86 assertions, mock provider)"
+            echo
+            echo "**Not checked here:** what the plan would do to the live project."
+            echo "That runs on \`main\`, and \`release.yml\` applies it behind an"
+            echo "environment approval with the plan attached to read first."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   checkov:
     name: checkov
     runs-on: ubuntu-24.04
@@ -148,10 +178,32 @@ jobs:
         # for each accepted finding, so they are reviewable in a diff.
         run: checkov -d terraform --quiet --compact --framework terraform
 
+  # WHY A PULL REQUEST DOES NOT PLAN.
+  #
+  # A plan needs a real cloud token. GitHub's OIDC claim for a `pull_request`
+  # run is `refs/pull/<n>/merge`, and terraform/bootstrap/wif.tf pins the pool
+  # to `refs/heads/main` -- deliberately, in two independent places, because
+  # the deployer holds resourcemanager.projectIamAdmin on a SHARED project. A
+  # pull request that could mint that token is a pull request that could grant
+  # itself anything, and anyone can open a pull request. application.yml's
+  # `build` job states the same rule at more length: `github_allowed_refs` MUST
+  # NEVER INCLUDE refs/pull/*, and "fix CI by adding it" is the exact pressure
+  # this job existing-but-red would create. It is gated off instead.
+  #
+  # So this job is skipped on a pull request rather than failed. Every OFFLINE
+  # check still runs there and gates the merge: fmt, validate, tflint, checkov,
+  # and the 86-assertion `terraform test` suite against a mock provider. What a
+  # pull request cannot tell you is what the plan would do to the live project,
+  # which is why release.yml applies behind an environment approval with the
+  # plan attached for a person to read.
+  #
+  # `plan-not-run` below says all of that in the run itself, so a green
+  # pull request is not mistaken for a planned one.
   plan:
     name: plan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [validate]
+    if: github.event_name != 'pull_request'
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
     env:
       # Read by scripts/lib/plan-guard.sh (through scripts/lib/common.sh) to

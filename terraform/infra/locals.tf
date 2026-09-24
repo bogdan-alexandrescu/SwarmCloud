@@ -252,10 +252,31 @@ locals {
       # agent_worker.config reads the image and the command from the frozen
       # catalogue by NAME and refuses to take them from the environment at all
       # (invariant 10).
+      # QUOTA_BROKER_URL is what makes the account pool exist at runtime.
+      # Without it `WorkerConfig.quota_broker_url` is None, the worker builds
+      # no AccountBroker, and every agent runs on the one shared per-tenant
+      # secret -- the exact contention the pool was built to remove -- with
+      # nothing anywhere saying so.
+      #
+      # DERIVED HERE, and it can be: this module reads module.cloud_run's
+      # outputs and nothing in module.cloud_run reads local.jobs, so there is
+      # no cycle. The same value cannot be derived for the SCHEDULER's own
+      # environment, which lives inside module.cloud_run and would have to read
+      # a URL that is an attribute of the resource it is part of -- see
+      # var.quota_broker_url and the check block in main.tf.
+      #
+      # The dispatcher's per-execution overrides MERGE with this, and
+      # `worker_env()` omits the name entirely when the scheduler has no URL,
+      # so a Cloud Run Job keeps the value below either way.
       env = merge(local.common_env, {
         RUNNER_PROFILE = job.runner_profile
         TENANT_ID      = job.tenant_id
         WORKSPACE_ROOT = "/workspace"
+
+        QUOTA_BROKER_URL = module.cloud_run.service_urls["swarm-quota-broker"]
+        # The broker declares a custom audience, so a token minted for the
+        # service URL alone is one its own `aud` check rejects.
+        QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
       })
     }
   }
@@ -277,27 +298,190 @@ locals {
     MAX_ACTIVE_AGENTS     = tostring(var.pool_limits.global)
   }, var.settings_env)
 
+  # A Cloud Run service's OIDC audience is normally its own URL -- which cannot
+  # be written into that same service's environment, because the URL is an
+  # attribute of the resource the environment is part of. Terraform reports that
+  # honestly as a cycle, and the way it was resolved was to not set the variable
+  # at all, leaving both audience checks inert.
+  #
+  # A custom audience is the documented way out: a literal string known before
+  # apply, accepted by Cloud Run IN ADDITION to the service URL, and minted by
+  # the Pub/Sub and Cloud Scheduler OIDC tokens. Both sides then name the same
+  # constant and nothing needs to know a URL.
+  push_audiences = {
+    for name in ["swarm-scheduler", "swarm-quota-broker"] :
+    name => "https://${name}.${var.environment}.swarm.internal"
+  }
+
   service_env = {
     "swarm-api" = merge(local.common_env, {
-      WAKE_TOPIC = local.wake_topic
+      # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
+      # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
+      # which nothing has ever read. swarm_api.deps falls back to NullWaker()
+      # when the value is empty, so every submission silently skipped the
+      # publish and waited for the one-minute Cloud Scheduler safety tick.
+      #
+      # Nothing failed, which is why it survived: the queue still drained, just
+      # up to 60s later than designed, and tail latency is not a thing anyone
+      # alerts on. Renaming the env key is the whole fix -- the topic, the IAM
+      # and the subscription were always correct.
+      DISPATCH_TOPIC = local.wake_topic
+
+      # Neither name appeared anywhere in terraform, so swarm_api.settings read
+      # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
+      # fell through to the personal `u-<email>` tenant.
+      #
+      # That fallback is working, legitimate code -- which is exactly why this
+      # hid. Every request still succeeded and still got *a* tenant; it was just
+      # never the group one. A member of eng@saga.xyz spent their own personal
+      # quota and wrote to their own GCS prefix while the shared tenant this
+      # file provisions sat unused.
+      #
+      # Derived from var.tenants rather than restated: a tenant of kind "group"
+      # IS a tenant group, and keeping a second list in sync by hand is how the
+      # two would drift.
+      # Behind the load balancer a browser sends NO Authorization header -- IAP
+      # has already authenticated the person and forwards the result in
+      # x-goog-iap-jwt-assertion. Without these pinned, swarm-api has nothing to
+      # verify that against and answers 401 to every request from the web UI:
+      # a signed-in user, a valid certificate, a healthy load balancer, and an
+      # API that cannot see any of it.
+      #
+      # DECLARED, NOT DERIVED, and that is forced rather than chosen. Reading
+      # module.frontend's output here is a terraform CYCLE: the frontend module
+      # needs the Cloud Run services (for the serverless NEG), and this
+      # environment feeds those same services. I wrote "no cycle" in an earlier
+      # version of this comment and terraform disagreed, in detail.
+      #
+      # The audience contains a GCP-GENERATED backend service id, so unlike the
+      # push audiences above it cannot be made a constant known before apply.
+      # So it is an input: read the value from `terraform output
+      # frontend_iap_audiences` after the load balancer exists and put it in
+      # tfvars. The ids are stable for the life of the backend service.
+      IAP_AUDIENCES = join(",", var.frontend_iap_audiences)
+
+      # `directory_group` as well as `kind`: a tenant can be group-KINDED for
+      # naming and isolation while its principal is not a resolvable directory
+      # group. Listing one that does not exist 503s every request, not just that
+      # tenant's -- see the variable's description.
+      TENANT_GROUPS = join(",", sort([
+        for t, v in var.tenants : v.principal if v.kind == "group" && v.directory_group
+      ]))
+      ADMIN_GROUPS            = join(",", sort(var.admin_groups))
+      ADMIN_USERS             = join(",", sort(var.admin_users))
+      GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
+
+      # The verification job's identity, admitted past the domain check.
+      #
+      # swarm-api admits a caller through ALLOWED_USERS or through the frozen
+      # domain check against allowed_domains (saga.xyz). The swarm-verify job
+      # authenticates as swarm-verify@<project>.iam.gserviceaccount.com, whose
+      # domain is not saga.xyz and cannot be -- a service account is not a
+      # Workspace principal. ALLOWED_USERS exists in settings.py and auth.py
+      # for exactly this case and was set by no .tf and no .tfvars, so the
+      # in-VPC gate's every request was answered 403 by design.
+      #
+      # This widens WHICH verified identities are admitted, never whether an
+      # identity was verified: auth.py:331 consults this only after the token
+      # has been checked, and the address it compares comes from that token.
+      ALLOWED_USERS = google_service_account.verify.email
+
+      # The same principals terraform already refuses to let own a DECLARED
+      # tenant, handed to the runtime so it can refuse the ones terraform
+      # cannot see.
+      #
+      # variables.tf validates secret_admin_members against var.tenants, and
+      # that is the whole check -- but Store.ensure_tenant creates a
+      # self-service tenant for any allowed-domain caller on first sight, and
+      # var.tenants does not contain those. On 2026-09-21 admin@saga.xyz signed
+      # in to the web UI and became the principal of tenant u-admin.
+      #
+      # The `user:`/`group:` prefix is stripped because swarm-api compares
+      # against a bare principal (an email), which is what both
+      # tenant_id_for_group and tenant_id_for_user are given.
+      SECRET_ADMIN_PRINCIPALS = join(",", sort([
+        for m in var.secret_admin_members : replace(replace(m, "user:", ""), "group:", "")
+      ]))
+
+      # swarm-api PROXIES every account-pool call to the broker and never
+      # writes a subscription credential itself, so without this the Settings
+      # page cannot list or register an account at all.
+      #
+      # DECLARED, NOT DERIVED, for exactly the reason the scheduler's copy is
+      # (see var.quota_broker_url): this environment is an input to
+      # module.cloud_run and the broker's URL is an output of it, so
+      # referencing it here is a cycle terraform refuses to plan. The worker
+      # JOBS can derive it because they live outside that module.
+      #
+      # Unlike the silent failure the scheduler's comment warns about, an unset
+      # value here is LOUD: BrokerClient refuses to start and /v1/accounts
+      # answers 503 naming this variable. That is deliberate -- an account pool
+      # that half-exists is worse than one that is plainly absent -- and it is
+      # what the deployed API returned before this line was added.
+      QUOTA_BROKER_URL      = var.quota_broker_url
+      QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
     "swarm-scheduler" = merge(local.common_env, {
-      WAKE_TOPIC   = local.wake_topic
+      # See the swarm-api block: the reader has always been DISPATCH_TOPIC.
+      DISPATCH_TOPIC = local.wake_topic
+
+      # PushVerifier is the second auth layer in front of /v1/push: Cloud Run
+      # IAM proves the caller is authorised, this proves WHICH caller it is.
+      # Neither name was ever set, so the verifier constructed itself disabled
+      # and the comment in scheduler/main.py asserted a control that was not
+      # running. The audience matters independently: google-auth SKIPS the
+      # `aud` claim entirely when none is passed, so without it a token the
+      # tick account minted for ANY other service was accepted here.
+      PUSH_SERVICE_ACCOUNT = module.iam.tick_service_account
+      PUSH_AUDIENCE        = local.push_audiences["swarm-scheduler"]
+
       GKE_CLUSTER  = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION = var.region
       # Required for a client running OUTSIDE the cluster. Without both, the GKE
       # backend falls back to load_incluster_config(), which on Cloud Run fails
       # with "Service host/port is not set" on every reconciliation pass.
-      GKE_ENDPOINT      = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
-      GKE_CA_CERT_B64   = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
-      ARTIFACT_REGISTRY = var.artifact_registry_repository
-      IMAGE_BASE        = local.image_base
+      GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
+      GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
+      # ARTIFACT_REGISTRY_HOST, not ARTIFACT_REGISTRY or IMAGE_BASE. The
+      # scheduler reads only this one (scheduler/settings.py), and the other two
+      # names were read by nothing at all.
+      #
+      # This one was WORKING, which is the interesting part. Unset, the
+      # scheduler falls back to building the host itself out of
+      # `swarm_common.config.Settings.artifact_registry` -- a dataclass default
+      # of "swarm-images" that is never read from the environment -- and
+      # var.artifact_registry_repository also defaults to "swarm-images", so the
+      # two agreed and every dispatch happened to pull the right image.
+      #
+      # `artifact_registry_repository`'s own description says "Must match
+      # swarm_common.config.Settings.artifact_registry", and nothing enforced
+      # that. Changing the repository name in tfvars would have silently sent
+      # every dispatch at a registry path that does not exist, and the symptom
+      # would have been a 404 on the image, pointing at the build rather than at
+      # the variable. Passing the value makes it flow instead of coincide.
+      ARTIFACT_REGISTRY_HOST = local.image_base
       # The agent runtime images carry the same immutable git-SHA tag as the
       # control plane. Without this the dispatcher asked for ":latest", which
       # scripts/build-images.sh never pushes, so every dispatch failed with
       # `404 Image '...agent-runtime-base:latest' not found` and the task was
       # left holding a lease.
       WORKER_IMAGE_TAG = var.image_tag
+
+      # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, which
+      # is the single source of a worker's execution environment for both
+      # backends. The GKE path has no terraform-managed Job to carry it, so
+      # without this every browser/GPU worker runs with no pool.
+      #
+      # DECLARED, NOT DERIVED, and that is forced rather than chosen -- exactly
+      # like IAP_AUDIENCES above. This environment is an input to
+      # module.cloud_run, and the broker's URL is an output of it; referencing
+      # it here is a cycle terraform refuses to plan. So: apply once, read
+      # `terraform output quota_broker_url`, put it in tfvars. The check block
+      # in main.tf fails loudly while this is empty or stale, because the
+      # failure it prevents -- a pool that is configured everywhere except in
+      # the one place that matters -- is completely silent at runtime.
+      QUOTA_BROKER_URL      = var.quota_broker_url
+      QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
     "swarm-quota-broker" = merge(local.common_env, {
       # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a
@@ -312,14 +496,59 @@ locals {
       # arrival too, and its symptom -- credentials quietly stopping -- points
       # nowhere near the cause.
       #
-      # This is the Cloud Scheduler tick identity and nothing else. Workers
-      # report quota as their own tenant; being on this list would let any one
-      # of them set another tenant's hard max.
-      PLATFORM_SERVICE_ACCOUNTS = module.iam.tick_service_account
+      # The Cloud Scheduler tick, and swarm-api. NOT workers: they report quota
+      # as their own tenant, and being on this list would let any one of them
+      # set another tenant's hard max.
+      #
+      # swarm-api is here because it PROXIES the account-pool routes for a
+      # browser, so it has to be able to act for whichever tenant the signed-in
+      # caller resolved to -- it is not itself a tenant, and the broker's
+      # WorkerIdentity derives a tenant from the caller's service account name,
+      # which for swarm-api yields "caller is not a swarm worker service
+      # account" and a 403 on every account request.
+      #
+      # This is safe only because swarm-api resolves the caller's tenant ITSELF,
+      # through `ctx.submissions.tenant_for(auth)`, and sends that resolved
+      # value as `owner_tenant` -- it never forwards a tenant the browser
+      # supplied. swarm-api is the tenant boundary for these routes; the broker
+      # is the single writer. If that ever stops being true, this line is the
+      # one that turns it into a cross-tenant hole.
+      PLATFORM_SERVICE_ACCOUNTS = join(",", [
+        module.iam.tick_service_account,
+        module.iam.service_account_emails["swarm-api"],
+      ])
+
+      # Provisioning an account's two secrets, which moved here when account
+      # management became a Settings page rather than a shell script. A pool
+      # account's secret name contains a LABEL chosen at registration time, so
+      # terraform cannot declare it in advance and the component handling the
+      # registration has to create it.
+      BROKER_SERVICE_ACCOUNT = module.iam.service_account_emails["swarm-quota-broker"]
+
+      # A TEMPLATE, not a pattern rebuilt in Python. modules/tenancy owns what a
+      # tenant's service account is called -- `swarm-agent-worker-<tenant>`, with
+      # an 11-character tenant limit because of the 30-character GCP cap -- and a
+      # second copy of that rule inside the broker would be correct until the day
+      # it was not. The symptom then is a pod that cannot read the credential it
+      # was assigned, surfacing inside a job, nowhere near the cause.
+      #
+      # `{tenant}` is substituted by the broker. An unset value makes the
+      # register route REFUSE rather than create a secret no pod can read.
+      WORKER_SERVICE_ACCOUNT_TEMPLATE = "swarm-agent-worker-{tenant}@${var.project_id}.iam.gserviceaccount.com"
+
+      # WorkerIdentity refuses to start without this when `hardened`, for the
+      # same reason PUSH_AUDIENCE exists: no audience means google-auth does not
+      # check `aud` at all. It was never set, and `hardened` is driven by
+      # ENVIRONMENT -- which is "dev" for saga-agents-staging, a project that is
+      # production-shaped in every way except that label. So the guard written
+      # to make this impossible was itself disarmed in the only place it ran.
+      BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
     "swarm-reconciler" = merge(local.common_env, {
-      GKE_CLUSTER     = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
-      GKE_LOCATION    = var.region
+      # No GKE_CLUSTER/GKE_LOCATION here: the reconciler talks to the cluster
+      # through the endpoint and CA bundle directly (reconciler/backends.py) and
+      # has never read either name. The scheduler does read them; that is why
+      # they are set there and not here.
       GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
       GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
     })

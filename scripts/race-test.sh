@@ -16,6 +16,76 @@
 # pool, so the rest of the platform keeps working while it runs. The original
 # limit is restored on every exit path.
 #
+# ---------------------------------------------------------------------------
+# THIS SUITE CANNOT RUN IN-VPC TODAY, AND THE REASON IS A DECISION NOBODY HAS
+# TAKEN YET.
+# ---------------------------------------------------------------------------
+#
+# Narrowing the pool is a WRITE. `swarm-verify` -- the identity that runs the
+# in-VPC gate, because swarm-api's ingress refuses a laptop -- holds
+# roles/datastore.viewer (terraform/infra/verify.tf), so `fs_patch` below is
+# refused and this is the one target of the four that fails. It is not broken;
+# it is unauthorised, and which authority to grant is a security question with
+# three real answers. They are written out here, next to the code that needs the
+# permission, rather than in a document somebody has to find.
+#
+# terraform/ is TRACK C. Whichever option is chosen, the grant is Track C's to
+# make; this comment is a request, not a change.
+#
+# OPTION A -- grant swarm-verify a Firestore write role.
+#   Cost: Firestore IAM cannot scope below the DATABASE. This repository already
+#   established that and pays for it elsewhere: Firestore does not evaluate IAM
+#   Conditions on the data plane (tests/integration/test_register_tenant_grants.py),
+#   so there is no such thing as a grant scoped to `pools/*`. roles/datastore.user
+#   therefore means create, update and DELETE on every document in the `swarm`
+#   database -- every tenant's tasks, leases, attempts and secrets metadata, and
+#   the `pools/*` documents the whole platform admits against. It is also
+#   unattributed: a direct REST PATCH writes no event, increments no metric and
+#   names no actor, so nothing afterwards can say the test did it.
+#   And it keeps alive the exact capability this file's own comment (below, at
+#   "Narrow ${POOL_NAME}") says must never be exercised: writing `active`
+#   outside the admission transaction, which silently inflates capacity on a
+#   live deployment and makes the oversubscription assertion pass on a platform
+#   that is oversubscribed.
+#
+# OPTION B (RECOMMENDED) -- make swarm-verify an admin and narrow through
+#   `PUT /v1/admin/limits/runner/{profile}`.
+#   The capability is shaped like the operation, in four ways that A is not:
+#     * BOUNDED. `LimitRequest.limit` is `ge=0, le=100000` and `_check_runner`
+#       refuses any profile not in the frozen catalogue, so the request cannot
+#       name a pool that does not exist.
+#     * INCAPABLE OF THE DANGEROUS WRITE. `Store.upsert_pool` sets `hard_limit`
+#       and `enabled` and touches nothing else -- there is no value of this
+#       request that writes `active`. The field this file warns about becomes
+#       unreachable rather than merely unwritten.
+#     * ATTRIBUTED AND AUDITED. The route runs under `admin_auth`, the actor is
+#       the verified identity from the token, and it increments
+#       `admin_actions{action="limit_runner"}`.
+#     * ALREADY THE SUPPORTED PATH. It is what an operator uses during an
+#       incident, so the test exercises the interface the platform actually
+#       offers instead of reaching behind it.
+#   Cost, stated rather than minimised: `admin_auth` is ONE boolean. Admin is
+#   not scoped to one pool, so this identity would also gain pause/resume
+#   dispatch, provider and resource drains, tenant limits, and the admin read
+#   surfaces. That is a genuine widening. It is still far narrower than A --
+#   every one of those operations is bounded, validated and recorded, none of
+#   them reads a secret or another tenant's artifact, and all of them are
+#   reversible through the same API. The grant is one line:
+#   `admin_users` in terraform/environments/<env>/<env>.tfvars gaining
+#   `swarm-verify@<project>.iam.gserviceaccount.com`, which
+#   terraform/infra/locals.tf already wires to ADMIN_USERS. Grant it in dev and
+#   staging; there is no reason for the gate to be an admin in prod.
+#
+# OPTION C -- add no permission and race the pool at its real limit.
+#   Submit `effective_limit + N` tasks and race those. Needs no grant at all,
+#   and is the wrong trade here: the limit on a real deployment is large, so
+#   forcing contention means saturating a pool with test work in a project
+#   SHARED with another team, and the contention window stops being
+#   deterministic -- which is the whole property this suite exists to pin.
+#
+# Until one is chosen, `make verify-remote` reports race-test as FAILED. That is
+# the correct reading: the property is unverified. Do not make it skip.
+#
 # Usage: scripts/race-test.sh [--profile mock] [--parallel 12] [--timeout 300]
 
 set -euo pipefail
@@ -38,10 +108,31 @@ while [[ $# -gt 0 ]]; do
     --parallel) PARALLEL="$2"; shift 2 ;;
     --limit)    SLOT_LIMIT="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,20p' "$0"; exit 0 ;;
+    # Through the permission section: an operator running --help on a target
+    # that fails needs to read WHY it fails, not just what its flags are.
+    -h|--help)  sed -n '2,89p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# --parallel IS THE NUMBER OF CONTENDERS, so one of them is not a race and zero
+# is not a number this script can act on. Refused here rather than discovered
+# later, and there is a second reason to refuse zero specifically:
+#
+#     $ seq 1 0        # GNU coreutils (the swarm-verify image)
+#     $ seq 1 0        # BSD (macOS, which CLAUDE.md names as a target)
+#     1
+#     0
+#
+# BSD seq counts DOWN when the first argument exceeds the last, so the
+# submission loop below runs TWICE for `--parallel 0` on a laptop and not at
+# all in CI. Measured on this workstation on 2026-09-22. Nothing downstream
+# could tell the difference, because the loop's body does not mention `i`
+# except as a label.
+[[ "${PARALLEL}" =~ ^[0-9]+$ ]] || die "--parallel must be a whole number, not '${PARALLEL}'"
+[[ "${PARALLEL}" -ge 2 ]] || die "--parallel must be at least 2: ${PARALLEL} task(s) cannot race for a slot"
+[[ "${SLOT_LIMIT}" =~ ^[0-9]+$ ]] || die "--limit must be a whole number, not '${SLOT_LIMIT}'"
+[[ "${SLOT_LIMIT}" -lt "${PARALLEL}" ]] || die "--limit ${SLOT_LIMIT} is not below --parallel ${PARALLEL}: every task would be admitted and nothing would contend"
 
 step "Race conditions: ${PROJECT_ID} / ${ENVIRONMENT}"
 require_platform
@@ -59,20 +150,115 @@ if [[ "${ORIGINAL_POOL}" != "null" && -n "${ORIGINAL_POOL}" ]]; then
   ORIGINAL_ENABLED="$(jq -r 'if .enabled == false then "false" else "true" end' <<<"${ORIGINAL_POOL}")"
 fi
 
-restore() {
-  if [[ "${POOL_EXISTED}" -eq 1 ]]; then
-    fs_patch "pools/${POOL_NAME}" "hard_limit,enabled,updated_at" \
-      "$(jq -nc --argjson l "${ORIGINAL_LIMIT:-0}" --argjson e "${ORIGINAL_ENABLED}" --arg t "$(iso_now)" \
-        '{hard_limit:{integerValue:($l|tostring)},enabled:{booleanValue:$e},updated_at:{timestampValue:$t}}')" \
-      >/dev/null 2>&1 || true
-    info "restored ${POOL_NAME} hard_limit to ${ORIGINAL_LIMIT}"
+# `restored` USED TO BE PRINTED WHETHER OR NOT ANYTHING WAS RESTORED, and the
+# in-VPC run on 2026-09-22 is the proof. The narrowing PATCH was refused 403
+# (the verify identity holds roles/datastore.viewer, so it cannot write
+# Firestore at all), the script died on it under `set -e`, this trap fired, the
+# restoring PATCH was refused 403 by exactly the same IAM -- and the log said
+#
+#     ==> restored runner:mock hard_limit to 20
+#
+# Two separate lies in one line. Nothing had been narrowed, so nothing needed
+# restoring; and the write that would have restored it failed too. `>/dev/null
+# 2>&1 || true` discarded both the error and the status, which is the defect
+# class this repository keeps producing: a guard whose failure is
+# indistinguishable from the condition it checks.
+#
+# It matters beyond the log. The case this line exists for is the one where the
+# narrow SUCCEEDED and the restore then failed -- a 429, a dropped connection, a
+# role revoked mid-run. Then runner:mock is left pinned at one slot on a live
+# deployment, every mock task after this run serialises behind a single lease,
+# and the only record of it says it was put back.
+#
+# So: say nothing when nothing was changed, verify the restore by READING the
+# pool back rather than trusting the write's status, and when it did not take,
+# print the exact command that fixes it.
+NARROWED=0
+RESTORED=0
+
+# THREE ANSWERS, NOT TWO: the current ceiling, `absent`, or `unreadable`.
+#
+# Collapsing the last two is how a restore reports success over a pool it never
+# looked at -- `pool_doc` prints the empty string when the GET is refused, and
+# comparing that against an unset ORIGINAL_LIMIT is true. Keeping them apart is
+# what lets the caller say "the pool is fine" and "I could not tell" as
+# different sentences.
+_pool_hard_limit() {
+  local doc
+  doc="$(pool_doc "${POOL_NAME}" 2>/dev/null)" || { printf 'unreadable'; return 0; }
+  if [[ -z "${doc}" ]]; then
+    printf 'unreadable'
+  elif [[ "${doc}" == "null" ]]; then
+    printf 'absent'
   else
-    fs_delete "pools/${POOL_NAME}" 2>/dev/null || true
-    info "removed the temporary ${POOL_NAME} pool"
+    jq -r '.hard_limit // "absent"' <<<"${doc}" | tr -d '\n'
+  fi
+}
+
+restore() {
+  # Idempotent: the INT and TERM handlers below call this and then exit, which
+  # fires the EXIT trap and would otherwise run the whole thing a second time --
+  # re-cancelling tasks and re-reporting a restore that already happened.
+  [[ "${RESTORED}" -eq 1 ]] && return 0
+  RESTORED=1
+
+  # THE VERDICT COMES FROM THE POOL, NOT FROM THE WRITE. Whether this suite is
+  # finished with the platform is a question about what the pool document says
+  # now; the status of the PATCH meant to change it is at best evidence.
+  # Reading first also keeps the common case silent: when the narrowing write
+  # was itself refused there is nothing to undo, and a restoring write refused
+  # by the same IAM would print an error about a problem that does not exist.
+  local before="" after=""
+  if [[ "${NARROWED}" -eq 1 ]]; then
+    before="$(_pool_hard_limit)"
+    if [[ "${POOL_EXISTED}" -eq 1 ]]; then
+      if [[ "${before}" == "${ORIGINAL_LIMIT}" ]]; then
+        : # Already where it belongs -- the narrow never landed. Say nothing.
+      else
+        fs_patch "pools/${POOL_NAME}" "hard_limit,enabled,updated_at" \
+          "$(jq -nc --argjson l "${ORIGINAL_LIMIT:-0}" --argjson e "${ORIGINAL_ENABLED}" --arg t "$(iso_now)" \
+            '{hard_limit:{integerValue:($l|tostring)},enabled:{booleanValue:$e},updated_at:{timestampValue:$t}}')" \
+          >/dev/null 2>&1 || true
+        after="$(_pool_hard_limit)"
+        if [[ "${after}" == "${ORIGINAL_LIMIT}" ]]; then
+          info "restored ${POOL_NAME} hard_limit to ${ORIGINAL_LIMIT} (confirmed by readback)"
+        else
+          err "COULD NOT RESTORE ${POOL_NAME}. It is still narrowed, and every ${PROFILE} task"
+          err "on this deployment will serialise behind ${SLOT_LIMIT} slot(s) until it is put back."
+          err "  hard_limit now reads: ${after}    it should be: ${ORIGINAL_LIMIT}"
+          err "  fix with: scripts/pool-limit.sh --pool ${POOL_NAME} --limit ${ORIGINAL_LIMIT}"
+        fi
+      fi
+    else
+      if [[ "${before}" == "absent" ]]; then
+        : # The pool this run would have created is not there. Nothing to remove.
+      else
+        fs_delete "pools/${POOL_NAME}" >/dev/null 2>&1 || true
+        after="$(_pool_hard_limit)"
+        if [[ "${after}" == "absent" ]]; then
+          info "removed the temporary ${POOL_NAME} pool"
+        else
+          err "COULD NOT REMOVE the temporary ${POOL_NAME} pool (hard_limit ${after})."
+          err "  An unconfigured pool is unlimited; this one is not, so it now caps ${PROFILE}."
+          err "  fix by deleting the document pools/${POOL_NAME}"
+        fi
+      fi
+    fi
   fi
   [[ "${#TASK_IDS[@]}" -eq 0 ]] || cancel_all ${TASK_IDS[@]+"${TASK_IDS[@]}"}
 }
-trap restore EXIT INT TERM
+
+# INT and TERM RE-RAISE rather than returning into the suite.
+#
+# `trap restore EXIT INT TERM` ran the handler and then RESUMED at the next
+# statement: a Ctrl-C during the sampling loop put the ceiling back to its
+# original value, cancelled every task, and then carried on asserting "the
+# narrowed pool is never over its limit" against a pool that was no longer
+# narrowed and had no work left in it. An interrupted run could finish green.
+# Exiting from the handler is what makes a mid-suite die a failure.
+trap restore EXIT
+trap 'restore; exit 130' INT
+trap 'restore; exit 143' TERM
 
 # ---------------------------------------------------------------------------
 t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s)"
@@ -95,6 +281,13 @@ t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s)"
 # patches only hard_limit, pause-swarm only enabled -- and so does this now. A
 # pool that does not exist yet is created with active=0, which is safe because
 # no lease can be holding a pool document that has never existed.
+#
+# ARMED BEFORE THE WRITE, not after. A PATCH that times out may still have been
+# applied by the server, so "the write failed" is not the same as "nothing
+# changed"; only a read settles it, and `restore` above does exactly that. Set
+# afterwards, an ambiguous write would leave the pool narrowed and the trap
+# would skip it.
+NARROWED=1
 if [[ "${POOL_EXISTED}" -eq 1 ]]; then
   fs_patch "pools/${POOL_NAME}" "hard_limit,enabled,updated_at" \
     "$(jq -nc --argjson l "${SLOT_LIMIT}" --arg t "$(iso_now)" \
@@ -106,15 +299,58 @@ else
       '{name:{stringValue:$n},hard_limit:{integerValue:($l|tostring)},
         active:{integerValue:"0"},enabled:{booleanValue:true},updated_at:{timestampValue:$t}}')"
 fi
-assert_eq "${SLOT_LIMIT}" "$(pool_doc "${POOL_NAME}" | jq -r '.hard_limit')" "${POOL_NAME} hard_limit"
+
+# THE READBACK IS THE TEST, AND IT HAS TO BE FATAL.
+#
+# This was `assert_eq "${SLOT_LIMIT}" "$(pool_doc ... | jq -r '.hard_limit')"`,
+# which is wrong twice over.
+#
+# 1. `assert_eq` RECORDS a failure and returns. The suite then submitted its
+#    tasks anyway and case 3 sampled a pool still sitting at its original
+#    ceiling, where `assert_le "${WORST}" 1` is satisfied by any quiet moment --
+#    so the one assertion in this repository that exists to catch
+#    oversubscription reported PASS having created no contention at all. A red
+#    summary line does not retract a green assertion; the assertion is the part
+#    a person quotes.
+# 2. It compared `hard_limit`, and admission does not. `effective_limit` is
+#    min(hard_limit, adaptive_target, quota_derived_limit) -- the definition is
+#    swarm_common.models.SlotPool.effective_limit, restated once in FS_JQ. A
+#    pool whose quota_derived_limit is 0 because the provider is exhausted has
+#    an effective ceiling of 0: nothing is ever admitted, `WORST` stays 0, and
+#    the hard_limit check is perfectly happy. Zero contention, full marks.
+#
+# The command substitution is also captured and CHECKED here rather than passed
+# as an argument. As an argument its exit status is discarded -- set -e cannot
+# fire there -- so a 403, a 429 or a dropped connection on the read arrived as
+# the empty string and was compared as though it were a measurement. testlib.sh
+# carries the same note on assert_le/assert_ge; this is that trap one function
+# over.
+NARROW_DOC=""
+if ! NARROW_DOC="$(pool_doc "${POOL_NAME}")"; then
+  t_fatal "could not read ${POOL_NAME} back after narrowing it; the error is above. An unread ceiling is not a narrowed one."
+fi
+if [[ -z "${NARROW_DOC}" || "${NARROW_DOC}" == "null" ]]; then
+  t_fatal "${POOL_NAME} does not exist after the write that was supposed to create it"
+fi
+NARROW_EFFECTIVE="$(printf '%s' "${NARROW_DOC}" | jq -r "${FS_JQ} effective_limit")"
+if [[ "${NARROW_EFFECTIVE}" != "${SLOT_LIMIT}" ]]; then
+  t_info "hard_limit=$(printf '%s' "${NARROW_DOC}" | jq -r '.hard_limit // "unset"') adaptive_target=$(printf '%s' "${NARROW_DOC}" | jq -r '.adaptive_target // "unset"') quota_derived_limit=$(printf '%s' "${NARROW_DOC}" | jq -r '.quota_derived_limit // "unset"')"
+  t_fatal "${POOL_NAME} effective_limit is ${NARROW_EFFECTIVE}, not ${SLOT_LIMIT}: there is nothing for the tasks below to race for"
+fi
+t_pass "${POOL_NAME} effective_limit: ${NARROW_EFFECTIVE}"
 
 # ---------------------------------------------------------------------------
 t_case "${PARALLEL} tasks race for ${SLOT_LIMIT} slot(s)"
 SUBMIT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swarm-race.XXXXXX")"
 for i in $(seq 1 "${PARALLEL}"); do
   (
+    # submit_task already prints its own diagnosis (the HTTP status and the
+    # redacted response body) to stderr on failure. Capture it per-submission
+    # instead of routing it to /dev/null: `|| true` here only keeps one failed
+    # background submission from aborting the others, it must not also erase
+    # the one place the cause is recorded.
     submit_task "${PROFILE}" "$(jq -nc --argjson i "${i}" '{message:"race", index:$i, sleep_seconds:20}')" \
-      '{"metadata":{"source":"race-test"}}' >"${SUBMIT_DIR}/${i}.id" 2>/dev/null || true
+      '{"metadata":{"source":"race-test"}}' >"${SUBMIT_DIR}/${i}.id" 2>"${SUBMIT_DIR}/${i}.err" || true
   ) &
 done
 wait
@@ -123,8 +359,26 @@ for f in "${SUBMIT_DIR}"/*.id; do
   id="$(cat "${f}")"
   [[ -n "${id}" ]] && TASK_IDS+=("${id}")
 done
+FAILED_SUBMISSIONS=$(( PARALLEL - ${#TASK_IDS[@]} ))
+if [[ "${FAILED_SUBMISSIONS}" -gt 0 ]]; then
+  t_info "${FAILED_SUBMISSIONS} of ${PARALLEL} submission(s) failed; first failure below"
+  for f in "${SUBMIT_DIR}"/*.err; do
+    [[ -s "${f}" ]] || continue
+    redact <"${f}" | head -n 5 | sed 's/^/       /' >&2
+    break
+  done
+fi
 rm -rf "${SUBMIT_DIR}"
 assert_ge "${#TASK_IDS[@]}" "$(( PARALLEL - 1 ))" "tasks accepted concurrently"
+# Separate from the assertion above, and fatal rather than advisory. That one is
+# a quality bar -- one rejected submission out of twelve is worth reporting and
+# is not a reason to stop. This is the floor below which the word "race" stops
+# meaning anything: with fewer than two tasks in flight there is no last slot to
+# contend for, and every case below would report a property of an idle platform
+# while calling it a race.
+if [[ "${#TASK_IDS[@]}" -lt 2 ]]; then
+  t_fatal "only ${#TASK_IDS[@]} task(s) were accepted; two contenders are the minimum for a race"
+fi
 
 # ---------------------------------------------------------------------------
 t_case "The narrowed pool is never over its limit, at any sample"
@@ -148,14 +402,32 @@ while [[ "$(date -u +%s)" -lt "${DEADLINE}" ]]; do
 done
 t_info "${SAMPLES} samples, worst observed active=${WORST}"
 assert_le "${WORST}" "${SLOT_LIMIT}" "peak concurrent leases on ${POOL_NAME}"
+# The assertion above is satisfied by a platform that admitted nothing at all,
+# and a race test that never contended is worse than one that fails: it
+# certifies the property it was unable to test. `WORST` is the peak `active`
+# this run actually observed on the narrowed pool, so requiring at least one is
+# requiring that some task really did hold the slot the others were queued
+# behind.
+#
+# One, not SLOT_LIMIT: every sample is taken from outside the admission
+# transaction, so demanding that a 1Hz sampler catch the pool exactly full would
+# be a race of its own. Holding the slot at all is what proves the contention
+# was real.
+assert_ge "${WORST}" 1 "the narrowed pool was actually contended (peak active)"
 
 # ---------------------------------------------------------------------------
 t_case "Every attempt carries a distinct, increasing generation"
 BAD_GENERATIONS=0
 CHECKED=0
 for id in ${TASK_IDS[@]+"${TASK_IDS[@]}"}; do
+  # fs_query fails loudly on its own (fs_request -> fs_query propagate a
+  # non-2xx as a non-zero exit, and this is a bare statement under
+  # `set -o pipefail`, not an `if`/`while` condition, so that status is not
+  # suppressed): a denied or expired query aborts the script here with the
+  # real diagnosis already printed, rather than reading as zero attempts.
+  # Only jq's own stderr was ever routed to /dev/null; keep it visible too.
   gens="$(fs_query attempts "$(fs_field_filter task_id EQUAL "$(jq -nc --arg v "${id}" '{stringValue:$v}')")" 50 \
-    | jq -r "${FS_JQ} doc.generation" 2>/dev/null | sort -n | tr '\n' ' ')"
+    | jq -r "${FS_JQ} doc.generation" | sort -n | tr '\n' ' ')"
   [[ -z "${gens// /}" ]] && continue
   CHECKED=$(( CHECKED + 1 ))
   total_count="$(printf '%s' "${gens}" | tr ' ' '\n' | grep -c . || true)"

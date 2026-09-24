@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
-from swarm_common.models import Task, Tenant, utcnow
+from swarm_common.models import Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import EventType, ParkReason, TaskState
 
@@ -364,17 +364,32 @@ class Scheduler:
         self._metrics.leased.labels(
             tenant=task.tenant_id, runner_profile=task.runner_profile
         ).inc()
-        self._store.create_attempt(task, lease, backend.value)
-        self._store.append_event(
-            task,
-            EventType.LEASE_ACQUIRED,
-            {"pools": lease.pools, "units": lease.units, "backend": backend.value},
-            attempt_id=lease.attempt_id,
-            lease_id=lease.lease_id,
-            generation=lease.generation,
-        )
 
+        # EVERYTHING FROM HERE IS INSIDE THE GUARD, and the guard catches more
+        # than DispatchError. `acquire_lease_in_transaction` has committed: the
+        # pools are incremented, the lease document exists and the task is
+        # LEASED. Nothing in this service ever looks at a LEASED task again --
+        # `ready_tasks()` selects `state == "READY"` only -- so any exception
+        # escaping from here is a slot this scheduler can neither see nor undo,
+        # and invariant 3 counts it as occupied until the reconciler's deadline
+        # sweep reaches it minutes later, in another service.
+        #
+        # `create_attempt` and `append_event` used to sit above the try entirely,
+        # and the try caught DispatchError alone -- which the Cloud Run client
+        # construction inside `ensure_job` does NOT raise: a credential refresh
+        # failure there is a `DefaultCredentialsError` and went straight out of
+        # `drain()`. docs/audits/2026-09-18/05-scheduler-capacity-leaks.md,
+        # findings 1 and 2.
         try:
+            self._store.create_attempt(task, lease, backend.value)
+            self._store.append_event(
+                task,
+                EventType.LEASE_ACQUIRED,
+                {"pools": lease.pools, "units": lease.units, "backend": backend.value},
+                attempt_id=lease.attempt_id,
+                lease_id=lease.lease_id,
+                generation=lease.generation,
+            )
             execution = self._router.dispatch(
                 task=task, lease=lease, profile=profile, tenant=tenant, backend=backend
             )
@@ -404,11 +419,75 @@ class Scheduler:
             # progress. Reporting it as progress would keep the loop spinning on
             # a backend that is refusing dispatches.
             return False
+        except Exception as exc:
+            # Not a dispatch failure -- an unexpected one. Give the capacity back
+            # and RE-RAISE. Swallowing it would turn a broken credential or a
+            # broken Firestore into a scheduler that quietly admits, rolls back
+            # and retries the whole queue on every tick with nothing red
+            # anywhere; the leak is the bug being fixed here, not the crash.
+            self._rollback_admission(task, lease, exc)
+            raise
 
         self._store.mark_dispatched(task, lease, execution, backend.value)
         report.dispatched += 1
         self._metrics.dispatched.labels(backend=backend.value).inc()
+        # A SUCCESS LINE, because the absence of one is what hid a total outage.
+        #
+        # Only `dispatch failed` was ever logged. That reads as reasonable --
+        # why log the happy path -- until you try to answer "has GKE_AUTOPILOT
+        # ever dispatched?" and find the query returns nothing whether the
+        # backend is healthy or has never worked once. On 2026-09-23 it had
+        # never worked once: seven browser tasks, seven failures, over two days,
+        # and the only way to establish that was to read task documents.
+        #
+        # `swarm_scheduler_dispatched_total{backend}` already counts this, and a
+        # counter that stays at zero is exactly as invisible as a log line that
+        # is never written unless something is watching it -- which nothing was.
+        # The log line is the cheap half of the fix; the alert on the metric is
+        # in terraform/modules/monitoring/alerts.tf.
+        log.info(
+            "dispatch ok task=%s attempt=%s backend=%s profile=%s execution=%s",
+            task.id,
+            lease.attempt_id,
+            backend.value,
+            profile.name,
+            execution,
+        )
         return True
+
+    def _rollback_admission(self, task: Task, lease: Lease, cause: BaseException) -> None:
+        """Return a lease taken by an admission whose follow-through blew up.
+
+        Best effort, and it must never replace `cause` with its own failure: the
+        operator needs the fault that started this, not the second one it caused.
+        `return_to_ready_after_failed_dispatch` releases the lease BEFORE it
+        writes the task and the event, so even a Firestore that is refusing
+        writes usually gets the pools back -- the ordering that matters here.
+
+        `scheduler_internal_error` is a stable code, not the exception text:
+        `task.last_error` is returned to the tenant verbatim by
+        `codec.task_to_api`, and an auth or transport error routinely echoes the
+        service account, the job name or the secret names it was handed.
+        """
+        self._metrics.admission_rollbacks.inc()
+        log.exception(
+            "admission follow-through failed task=%s lease=%s attempt=%s: %s",
+            task.id,
+            lease.lease_id,
+            lease.attempt_id,
+            cause,
+        )
+        try:
+            self._store.return_to_ready_after_failed_dispatch(
+                task, lease, "scheduler_internal_error", correlation_id=lease.attempt_id
+            )
+        except Exception:
+            log.exception(
+                "could not return the capacity for task=%s lease=%s; the reconciler's "
+                "deadline sweep is now the only thing that will reclaim it",
+                task.id,
+                lease.lease_id,
+            )
 
     # -- promotion sweeps -------------------------------------------------
 

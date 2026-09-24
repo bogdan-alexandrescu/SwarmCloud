@@ -154,11 +154,21 @@ input, because a leaked lease is worse than the failure that leaked it.
 
 Not every task costs the same. `ResourceClass.units` weights them:
 
-| Class | cpu | memory | disk | units |
+| Class | cpu | memory | workspace | units |
 |---|---|---|---|---|
-| `standard` | 4 | 8 GiB | 20 GiB | 1 |
-| `browser` | 8 | 16 GiB | 40 GiB | 2 |
-| `large` | 8 | 32 GiB | 100 GiB | 4 |
+| `standard` | 4 | 8 GiB | 4 GiB of the 8 | 1 |
+| `browser` | 8 | 16 GiB | 8 GiB of the 16 | 2 |
+| `large` | 8 | 32 GiB | 16 GiB of the 32 | 4 |
+
+**The workspace column is memory, and it is a slice of the memory column, not
+capacity beside it.** This table previously read 20/40/100 GiB of disk, which was
+wrong by more than an order of magnitude and wrong in kind: disk-backed ephemeral
+storage is a Cloud Run Preview feature the Terraform google provider cannot
+express -- `empty_dir.medium` accepts only `"MEMORY"` -- so the workspace is a
+tmpfs carved out of the container's own memory. Adding `memory` and `workspace`
+together, or planning a node budget from the old disk figures, overstates what a
+class holds and understates what it costs. `swarm_common.profiles.ResourceClass`
+is the authority; `disk_gib` there is the slice.
 
 `max_active_agents` caps the number of agents; `global_capacity_units` caps their
 weight. Both exist because 100 `standard` agents and 25 `large` agents are the

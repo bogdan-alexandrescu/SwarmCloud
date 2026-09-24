@@ -72,7 +72,7 @@ info "database     ${FIRESTORE_DATABASE}"
 if [[ "${FIRESTORE_DATABASE}" == "(default)" || "${FIRESTORE_DATABASE}" == "default" ]]; then
   die "refusing to purge the (default) Firestore database; the swarm uses the named '${FIRESTORE_DATABASE}' database and (default) belongs to the rest of this shared project"
 fi
-fs_database_exists || die "Firestore database '${FIRESTORE_DATABASE}' does not exist"
+require_fs_database purge
 
 # --- guard 2: never a shared bucket ------------------------------------------
 if [[ "${WITH_ARTIFACTS}" -eq 1 ]] && is_shared_resource "${ARTIFACT_BUCKET}"; then
@@ -123,14 +123,38 @@ fi
 if [[ "${DRY_RUN}" -eq 0 && "${NO_BACKUP}" -eq 0 ]]; then
   step "Backup"
   BACKUP_URI="gs://${ARTIFACT_BUCKET}/backups/purge-$(date -u +%Y%m%dT%H%M%SZ)"
+  # WHY THIS PROBE KEEPS ITS STDERR. It stands immediately before an
+  # irreversible Firestore purge, and the remedy its own message offers is
+  # `--no-backup` -- delete anyway. `describe >/dev/null 2>&1` cannot tell an
+  # absent bucket from an expired session, a wrong PROJECT_ID or a caller
+  # without storage.buckets.get, so an operator whose token had died was told
+  # the bucket was gone and invited to purge with no backup at all.
+  # docs/audits/2026-09-18/04-script-error-messages.md, finding 1 -- the one it
+  # ranked most misleading, because the wrong action it suggests is unrecoverable.
+  BUCKET_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-purge-bucket.XXXXXX")"
   if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
-       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>"${BUCKET_ERR}"; then
+    rm -f "${BUCKET_ERR}"
     info "exporting Firestore to ${BACKUP_URI} (this is synchronous and can take minutes)"
     gcloud firestore export "${BACKUP_URI}" \
       --project "${PROJECT_ID}" --database "${FIRESTORE_DATABASE}" 2>&1 | redact
     ok "backup written to ${BACKUP_URI}"
   else
-    die "artifact bucket gs://${ARTIFACT_BUCKET} does not exist, so no backup can be taken; pass --no-backup to accept that"
+    BUCKET_DETAIL="$(cat "${BUCKET_ERR}")"
+    rm -f "${BUCKET_ERR}"
+    die_if_auth_failure "${BUCKET_DETAIL}"
+    case "${BUCKET_DETAIL}" in
+      # gcloud answered, and its answer was NOT_FOUND. Only here is absence a
+      # fact rather than an assumption, so only here may --no-backup be offered.
+      *404*|*"not found"*|*"does not exist"*|*NOT_FOUND*)
+        die "artifact bucket gs://${ARTIFACT_BUCKET} does not exist, so no backup can be taken; pass --no-backup to accept that"
+        ;;
+      *)
+        err "could not determine whether gs://${ARTIFACT_BUCKET} exists:"
+        printf '%s\n' "${BUCKET_DETAIL}" | redact | head -n 3 | sed 's/^/     /' >&2
+        die "that is a failure to LOOK UP the bucket, not proof it is absent. Do NOT reach for --no-backup on the strength of this: check the account, the project (${PROJECT_ID}) and storage.buckets.get, then re-run."
+        ;;
+    esac
   fi
 fi
 
@@ -207,7 +231,12 @@ DELETED=0
 
 for collection in "${COLLECTIONS[@]}"; do
   names="${WORK}/${collection}.names"
-  select_docs "${collection}" >"${names}" || true
+  # select_docs's own pipeline already fails loudly (fs_list/fs_query -> fs_request
+  # propagate a non-2xx as a non-zero exit under pipefail); do not paper over that
+  # with `|| true` -- a denied or expired listing must not be read as an empty one.
+  if ! select_docs "${collection}" >"${names}"; then
+    die "could not list documents in '${collection}'; see the Firestore error above -- this is a failed listing, not an empty collection"
+  fi
   n="$(wc -l <"${names}" | tr -d ' ')"
 
   if [[ "${collection}" == "tasks" && "${n}" -gt 0 ]]; then
@@ -218,7 +247,9 @@ for collection in "${COLLECTIONS[@]}"; do
     while IFS= read -r task_name; do
       [[ -n "${task_name}" ]] || continue
       task_id="${task_name##*/}"
-      fs_list "tasks/${task_id}/events" 300 | jq -r '.[]?.name' >>"${events}" || true
+      if ! fs_list "tasks/${task_id}/events" 300 | jq -r '.[]?.name' >>"${events}"; then
+        die "could not list events for task '${task_id}'; see the Firestore error above -- this is a failed listing, not an empty subcollection"
+      fi
     done <"${names}"
     e="$(wc -l <"${events}" | tr -d ' ')"
     if [[ "${e}" -gt 0 ]]; then
@@ -258,9 +289,25 @@ if [[ "${WITH_ARTIFACTS}" -eq 1 ]]; then
     gcloud storage ls "${PREFIX}/" --project "${PROJECT_ID}" 2>/dev/null | head -n 20 >&2 || true
   else
     info "deleting ${PREFIX}/"
-    gcloud storage rm --recursive "${PREFIX}/" --project "${PROJECT_ID}" 2>&1 | redact || \
-      warn "nothing to delete under ${PREFIX}/"
-    ok "artifacts removed"
+    rm_out="${WORK}/artifacts-rm.log"
+    if gcloud storage rm --recursive "${PREFIX}/" --project "${PROJECT_ID}" >"${rm_out}" 2>&1; then
+      redact <"${rm_out}"
+      ok "artifacts removed"
+    else
+      # A denied delete and an empty prefix both land here with a non-zero
+      # exit; only the specific "matched no objects" message from gcloud
+      # storage means the prefix was already empty. Anything else -- an
+      # expired session, missing storage.objects.delete, a wrong project, a
+      # retryable 503 -- must not be reported as a completed purge.
+      die_if_auth_failure "$(cat "${rm_out}")"
+      if grep -qi 'matched no objects\|no objects or files\|not found' "${rm_out}"; then
+        warn "nothing to delete under ${PREFIX}/ (already empty)"
+      else
+        err "gcloud storage rm failed under ${PREFIX}/; this is NOT confirmation the artifacts are gone"
+        redact <"${rm_out}" | head -n 5 | sed 's/^/     /' >&2
+        die "cannot confirm artifacts were removed under ${PREFIX}/"
+      fi
+    fi
   fi
 fi
 
@@ -271,8 +318,18 @@ if [[ "${WITH_SECRETS}" -eq 1 ]]; then
   step "Tenant credentials"
   filter="labels.component=tenant-credential"
   [[ -n "${TENANT}" ]] && filter="${filter} AND labels.tenant=${TENANT}"
-  secrets="$(gcloud secrets list --project "${PROJECT_ID}" --filter "${filter}" \
-    --format='value(name.basename())' 2>/dev/null || true)"
+  secrets_err="${WORK}/secrets-list.err"
+  # A denied secretmanager.secrets.list, an expired session or a malformed
+  # filter must not read as "no matching secrets" -- this is a credential
+  # purge, and reporting one destroyed when it was never even listed is worse
+  # than the script refusing to run.
+  if ! secrets="$(gcloud secrets list --project "${PROJECT_ID}" --filter "${filter}" \
+       --format='value(name.basename())' 2>"${secrets_err}")"; then
+    die_if_auth_failure "$(cat "${secrets_err}")"
+    err "gcloud secrets list failed; this is NOT proof there are no matching tenant secrets"
+    redact <"${secrets_err}" | head -n 5 | sed 's/^/     /' >&2
+    die "cannot confirm tenant secrets are absent; aborting rather than reporting them purged"
+  fi
   if [[ -z "${secrets}" ]]; then
     dim "  no matching secrets"
   else

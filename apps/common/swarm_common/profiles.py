@@ -98,6 +98,21 @@ class RunnerProfile:
     #: a subscription token, never both, so requiring all of them would refuse a
     #: tenant who supplied exactly the one they pay for.
     secrets_any_of: bool = False
+    #: Whether this profile may be dispatched AT ALL.
+    #:
+    #: A profile is disabled, not deleted, when its provider stops working.
+    #: Deleting the entry would refuse new work (which is the point) but also
+    #: strand anything already queued against it, and break the catalogue
+    #: lookup for every task document that still names it -- 4 exist for
+    #: `codex` today. The flag keeps the profile readable and makes re-enabling
+    #: one word.
+    #:
+    #: `disabled_reason` is required when this is False and is served to the
+    #: caller. "unknown runner_profile" would be a lie: the profile is known,
+    #: it is refused, and a caller who cannot tell those apart goes looking for
+    #: a typo that is not there.
+    available: bool = True
+    disabled_reason: str = ""
     supports_checkpoint: bool = True
     spot: SpotStrategy = SpotStrategy.ON_DEMAND_ONLY
     timeout_seconds: int = 3600
@@ -106,6 +121,11 @@ class RunnerProfile:
     checkpoint_interval_seconds: int = 120
 
     def __post_init__(self) -> None:
+        if not self.available and not self.disabled_reason:
+            raise ValueError(
+                f"runner {self.name}: a disabled profile must say why. A caller "
+                "told only that a known profile was refused has nothing to act on."
+            )
         if self.resource_class not in RESOURCE_CLASSES:
             raise ValueError(f"runner {self.name}: unknown resource class {self.resource_class}")
         if self.spot is not SpotStrategy.ON_DEMAND_ONLY:
@@ -159,6 +179,22 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         provider="openai",
         secrets=("OPENAI_API_KEY",),
         timeout_seconds=7200,
+        # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
+        # on Claude, and codex does not currently work here anyway. A twenty-step
+        # load test that day dispatched four codex steps and all four failed
+        # with "openai refused the credential" -- the tenant's
+        # swarm-tenant-eng-openai holds a single version written 2026-09-16 that
+        # the provider rejects.
+        #
+        # Left in the catalogue rather than deleted, so the four task documents
+        # that name it stay readable and re-enabling is one word. Nothing was
+        # queued or running against it when this landed.
+        available=False,
+        disabled_reason=(
+            "codex is disabled on this platform. The provider refused the "
+            "registered credential and the platform is focused on Claude. Use "
+            "claude-code."
+        ),
     ),
     "browser": RunnerProfile(
         name="browser",

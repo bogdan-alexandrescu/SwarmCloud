@@ -16,6 +16,16 @@
 # documents -- a flag that advertised scoping and did not apply it, on output
 # that gets pasted into tickets and captured in CI logs.
 #
+# A failed probe (gcloud, kubectl, Firestore) is NOT an empty result, and this
+# script no longer treats it as one: every read below either produces a
+# confirmed answer or dies with the diagnosis, instead of collapsing into "0",
+# "none" or "not deployed" the way it used to. `collect()` runs inside a
+# command substitution, and command substitutions do NOT inherit `set -e` into
+# further command substitutions nested inside them (this is a bash quirk
+# present in 3.2 through current bash with no fix short of `inherit_errexit`,
+# a 4.4+ shopt we cannot rely on) -- so every risky read here is followed by an
+# explicit `|| die ...`, never a bare assignment left for `set -e` to catch.
+#
 # Usage: scripts/status.sh [--json] [--watch [SECONDS]] [--tenant ID] [--no-gke] [--no-run]
 
 set -euo pipefail
@@ -38,15 +48,19 @@ while [[ $# -gt 0 ]]; do
     --tenant) TENANT_FILTER="$2"; shift 2 ;;
     --no-gke) WITH_GKE=0; shift ;;
     --no-run) WITH_RUN=0; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 require_cmd gcloud jq curl
 
-TASK_STATES=(SUBMITTED QUEUED PARKED READY LEASED DISPATCHED STARTING RUNNING
-             SUCCEEDED FAILED CANCELLED DEAD_LETTERED)
+# TASK_STATES, CONCURRENCY_STATES, PENDING_STATES and TERMINAL_STATES come from
+# lib/common.sh, which holds the one shell copy of swarm_common.states and is
+# asserted against it by scripts/lib/check-contract-parity.sh. This file used to
+# declare the enum here and then hardcode the capacity-holding four again in the
+# jq below -- two copies of the partition CONTRACT.md invariant 1 is about, in
+# the screen an operator reads to decide whether the platform is busy.
 
 # Every gcloud listing goes through redact() before it is parsed. A Cloud Run
 # service or Job description carries its whole environment block, and a
@@ -54,24 +68,135 @@ TASK_STATES=(SUBMITTED QUEUED PARKED READY LEASED DISPATCHED STARTING RUNNING
 # print it on the screen an operator is sharing. redact() is best-effort by
 # construction (docs/security.md says so), which is why it is applied here and
 # not relied on there.
+#
+# This used to swallow stderr (`2>/dev/null`) and any failure into a plain
+# `[]` -- an expired session, a denied run.services.list, a disabled Cloud Run
+# Admin API, or the wrong region/project all rendered as "no swarm services
+# deployed" with nothing else flagged. There is no legitimate way for
+# `gcloud ... list --format=json` to exit non-zero and mean "empty" -- an
+# empty result is `[]` on a ZERO exit. So any non-zero exit here is a real
+# failure and is treated as one: the caller must check this function's exit
+# status (see the call sites in collect()) and die with the diagnosis instead
+# of quietly asserting the resource is gone.
 gcloud_json() {
-  local out
-  if out="$("$@" --format=json 2>/dev/null | redact)"; then
-    printf '%s' "${out:-[]}"
-  else
-    printf '[]'
+  local out err_file err_body rc=0
+  err_file="$(mktemp "${TMPDIR:-/tmp}/swarm-status-gcloud.XXXXXX")"
+  if ! out="$("$@" --format=json 2>"${err_file}" | redact)"; then
+    rc=1
   fi
+  err_body="$(cat "${err_file}" 2>/dev/null || true)"
+  rm -f "${err_file}"
+  if [[ "${rc}" -ne 0 ]]; then
+    die_if_auth_failure "${err_body}"
+    err "$* --format=json failed:"
+    printf '%s\n' "${err_body}" | redact | head -n 3 | sed 's/^/     /' >&2
+    return 1
+  fi
+  printf '%s' "${out:-[]}"
+}
+
+# Whether the Firestore database exists, for a screen that must not turn a
+# failed lookup into a diagnosis. The three-valued fs_database_exists in
+# common.sh is the single source of that distinction; this used to repeat the
+# gcloud call here with stderr captured, which is exactly the restatement that
+# drifts. Prints "true" or "false" on a confirmed answer; on an unconfirmed one
+# the reason is already on stderr and this returns non-zero.
+firestore_database_status() {
+  local rc=0
+  fs_database_exists || rc=$?
+  case "${rc}" in
+    0) printf 'true';  return 0 ;;
+    1) printf 'false'; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# GKE reachability and pod listing, as one JSON object:
+#   {reachable, pods, pods_error, unreachable_reason}
+#
+# Four situations used to collapse into states this screen could not tell
+# apart:
+#   * no kubectl >= 1.30 resolved
+#   * kubectl points at a context that is not the swarm cluster
+#   * `kubectl get --raw=/readyz` failed -- this used to always be reported as
+#     one of the two causes above ("run scripts/configure-kubectl.sh"), but a
+#     PROVABLY correct context whose /readyz still fails is most likely the
+#     cluster's master authorized-networks allowlist (the operator's IP
+#     changed), which that script does not touch at all
+#   * /readyz answered, but `kubectl get pods -A` was then denied or dropped --
+#     this used to be swallowed into `pods:[]` with `reachable` HARDCODED
+#     true, asserting "no swarm workloads" with no evidence. `pods_error`
+#     keeps a failed listing apart from a genuinely empty cluster.
+#
+# An auth failure on any underlying kubectl call (most likely an expired
+# gke-gcloud-auth-plugin token) dies via die_if_auth_failure. Dying here only
+# unwinds THIS command substitution's subshell, not the caller's -- collect()
+# must, and does, check this function's own exit status.
+gke_status() {
+  local kb
+  kb="$(kubectl_bin 2>/dev/null || true)"
+  if [[ -z "${kb}" ]]; then
+    jq -nc '{reachable:false, pods:[], pods_error:null,
+      unreachable_reason:"no kubectl >= 1.30 resolved -- see kubectl_bin in scripts/lib/common.sh"}'
+    return 0
+  fi
+  if ! kube_context_is_swarm; then
+    jq -nc --arg ctx "$(kube_current_context 2>/dev/null || echo none)" \
+      '{reachable:false, pods:[], pods_error:null,
+        unreachable_reason:("kubectl context is " + $ctx + ", not the swarm cluster")}'
+    return 0
+  fi
+
+  local err_file err_body
+  err_file="$(mktemp "${TMPDIR:-/tmp}/swarm-status-readyz.XXXXXX")"
+  if ! "${kb}" get --raw='/readyz' --request-timeout=10s >/dev/null 2>"${err_file}"; then
+    err_body="$(redact <"${err_file}" 2>/dev/null || true)"
+    rm -f "${err_file}"
+    die_if_auth_failure "${err_body}"
+    jq -nc --arg ctx "$(kube_current_context 2>/dev/null || echo none)" \
+      --arg err "$(printf '%s' "${err_body}" | head -n 1)" \
+      '{reachable:false, pods:[], pods_error:null,
+        unreachable_reason:("context " + $ctx + " IS the swarm cluster, but `kubectl get --raw=/readyz` failed: " + $err + " -- most likely the master authorized-networks allowlist (your IP changed) or a dropped connection, NOT a wrong context")}'
+    return 0
+  fi
+  rm -f "${err_file}"
+
+  local pods
+  err_file="$(mktemp "${TMPDIR:-/tmp}/swarm-status-pods.XXXXXX")"
+  if pods="$("${kb}" get pods -A -l managed-by=swarm-terraform -o json 2>"${err_file}" \
+       | redact | jq -c '[.items[] | {
+           namespace: .metadata.namespace,
+           name: .metadata.name,
+           phase: .status.phase,
+           task: (.metadata.labels["swarm-task-id"] // null),
+           tenant: (.metadata.labels["swarm-tenant"] // null),
+           restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)
+         }]')"; then
+    rm -f "${err_file}"
+    jq -nc --argjson pods "${pods:-[]}" \
+      '{reachable:true, pods:$pods, pods_error:null, unreachable_reason:null}'
+    return 0
+  fi
+  err_body="$(redact <"${err_file}" 2>/dev/null || true)"
+  rm -f "${err_file}"
+  die_if_auth_failure "${err_body}"
+  jq -nc --arg err "${err_body}" \
+    '{reachable:true, pods:[], pods_error:$err, unreachable_reason:null}'
+  return 0
 }
 
 collect() {
-  local db_ok=false
-  fs_database_exists && db_ok=true
+  local db_ok=false fs_db_state
+  fs_db_state="$(firestore_database_status)" \
+    || die "could not check the Firestore database (see above); that is a failed lookup, not proof it is absent -- fix the account/permissions before trusting 'run make infra'"
+  [[ "${fs_db_state}" == "true" ]] && db_ok=true
 
   # ---- tasks by state -----------------------------------------------------
   local states='{}' state count
   if [[ "${db_ok}" == true ]]; then
     for state in "${TASK_STATES[@]}"; do
-      count="$(fs_count tasks state EQUAL "${state}")"
+      count="$(fs_count tasks state EQUAL "${state}")" \
+        || die "could not count tasks in state ${state}; see the Firestore error above -- this is a failed count, not zero tasks in that state"
       states="$(jq -c --arg s "${state}" --argjson n "${count:-0}" '. + {($s): $n}' <<<"${states}")"
     done
   fi
@@ -81,15 +206,19 @@ collect() {
   if [[ "${db_ok}" == true ]]; then
     local where
     where="$(fs_null_filter released_at IS_NULL)"
-    leases="$(fs_query leases "${where}" 500 | jq -sc "${FS_JQ} [ .[] | doc ]" || printf '[]')"
+    leases="$(fs_query leases "${where}" 500 | jq -sc "${FS_JQ} [ .[] | doc ]")" \
+      || die "could not list active leases; see the Firestore error above -- this is a failed query, not zero leases"
   fi
 
   # ---- pools, quota, tenants ---------------------------------------------
   local pools='[]' quota='[]' tenants='[]'
   if [[ "${db_ok}" == true ]]; then
-    pools="$(fs_list_docs pools | jq -sc '.' || printf '[]')"
-    quota="$(fs_list_docs quota | jq -sc '.' || printf '[]')"
-    tenants="$(fs_list_docs tenants | jq -sc '.' || printf '[]')"
+    pools="$(fs_list_docs pools | jq -sc '.')" \
+      || die "could not list pools; see the Firestore error above -- this is a failed listing, not zero pools"
+    quota="$(fs_list_docs quota | jq -sc '.')" \
+      || die "could not list quota; see the Firestore error above -- this is a failed listing, not zero provider-quota records"
+    tenants="$(fs_list_docs tenants | jq -sc '.')" \
+      || die "could not list tenants; see the Firestore error above -- this is a failed listing, not zero tenants"
   fi
 
   # ---- admin dispatch pause ----------------------------------------------
@@ -97,12 +226,15 @@ collect() {
   # scheduler/loop.py checks it BEFORE anything else -- so it is the first cause
   # of "work sits in READY while pools are idle", and it was the one cause this
   # screen could not show. An operator would check paused pools, then the Cloud
-  # Scheduler tick, then blocked_by, and never find it.
+  # Scheduler tick, then blocked_by, and never find it. A failed read used to
+  # collapse to the same {"dispatch_paused":false} as a genuinely absent
+  # document, silently restoring exactly that blind spot.
   local control='{"dispatch_paused":false}'
   if [[ "${db_ok}" == true ]]; then
-    control="$(fs_get "control/dispatch" \
-      | jq -c "${FS_JQ}"' if .fields then doc else {dispatch_paused:false} end' \
-      2>/dev/null || printf '{"dispatch_paused":false}')"
+    local control_raw
+    control_raw="$(fs_get "control/dispatch")" \
+      || die "could not read control/dispatch; see the Firestore error above -- this is a failed read, not proof dispatch is unpaused"
+    control="$(jq -c "${FS_JQ}"' if .fields then doc else {dispatch_paused:false} end' <<<"${control_raw}")"
     [[ -n "${control}" && "${control}" != "null" ]] || control='{"dispatch_paused":false}'
   fi
 
@@ -111,32 +243,23 @@ collect() {
   if [[ "${WITH_RUN}" -eq 1 ]]; then
     services="$(gcloud_json gcloud run services list \
       --project "${PROJECT_ID}" --region "${REGION}" \
-      --filter='metadata.labels.managed-by=swarm-terraform OR metadata.name~^swarm-')"
+      --filter='metadata.labels.managed-by=swarm-terraform OR metadata.name~^swarm-')" \
+      || die "could not list Cloud Run services; see the gcloud error above -- this is a failed listing, not zero services deployed"
     jobs="$(gcloud_json gcloud run jobs list \
       --project "${PROJECT_ID}" --region "${REGION}" \
-      --filter='metadata.name~^swarm-')"
+      --filter='metadata.name~^swarm-')" \
+      || die "could not list Cloud Run jobs; see the gcloud error above -- this is a failed listing, not zero jobs"
     executions="$(gcloud_json gcloud run jobs executions list \
-      --project "${PROJECT_ID}" --region "${REGION}" --limit 200)"
+      --project "${PROJECT_ID}" --region "${REGION}" --limit 200)" \
+      || die "could not list Cloud Run job executions; see the gcloud error above -- this is a failed listing, not zero executions"
   fi
 
   # ---- GKE ----------------------------------------------------------------
-  local gke='{"reachable":false,"pods":[]}'
+  local gke='{"reachable":false,"pods":[],"pods_error":null,"unreachable_reason":null}'
   if [[ "${WITH_GKE}" -eq 1 ]]; then
-    local kb pods
-    kb="$(kubectl_bin 2>/dev/null || true)"
-    if [[ -n "${kb}" ]] && kube_context_is_swarm \
-       && "${kb}" get --raw='/readyz' >/dev/null 2>&1; then
-      pods="$("${kb}" get pods -A -l managed-by=swarm-terraform \
-        -o json 2>/dev/null | redact | jq -c '[.items[] | {
-          namespace: .metadata.namespace,
-          name: .metadata.name,
-          phase: .status.phase,
-          task: (.metadata.labels["swarm-task-id"] // null),
-          tenant: (.metadata.labels["swarm-tenant"] // null),
-          restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)
-        }]' || printf '[]')"
-      gke="$(jq -nc --argjson pods "${pods:-[]}" '{reachable:true, pods:$pods}')"
-    fi
+    gke="$(gke_status)" || die "aborting: see the GKE failure reported above"
+  else
+    gke='{"reachable":false,"pods":[],"pods_error":null,"unreachable_reason":"--no-gke was passed"}'
   fi
 
   jq -nc \
@@ -225,15 +348,26 @@ render() {
   fi
 
   step "Tasks"
-  jq -r '
+  # Each row is DERIVED from the set in lib/common.sh rather than naming its
+  # members, so a state added to the frozen enum lands in the right row here the
+  # moment it lands there -- and `make test` fails until it does.
+  local pending_set holding_set terminal_set
+  pending_set="$(states_json ${PENDING_STATES[@]+"${PENDING_STATES[@]}"})"
+  holding_set="$(states_json ${CONCURRENCY_STATES[@]+"${CONCURRENCY_STATES[@]}"})"
+  terminal_set="$(states_json ${TERMINAL_STATES[@]+"${TERMINAL_STATES[@]}"})"
+  jq -r --argjson pending "${pending_set}" \
+         --argjson holding "${holding_set}" \
+         --argjson terminal "${terminal_set}" '
     .tasks as $t
-    | [ "  demand-free : QUEUED \($t.QUEUED // 0)   PARKED \($t.PARKED // 0)   READY \($t.READY // 0)   SUBMITTED \($t.SUBMITTED // 0)",
-        "  holding cap : LEASED \($t.LEASED // 0)   DISPATCHED \($t.DISPATCHED // 0)   STARTING \($t.STARTING // 0)   RUNNING \($t.RUNNING // 0)",
-        "  terminal    : SUCCEEDED \($t.SUCCEEDED // 0)   FAILED \($t.FAILED // 0)   CANCELLED \($t.CANCELLED // 0)   DEAD_LETTERED \($t.DEAD_LETTERED // 0)" ]
+    | def row($label; $set): "  \($label) : " + ([ $set[] | "\(.) \($t[.] // 0)" ] | join("   "));
+      [ row("demand-free"; $pending),
+        row("holding cap"; $holding),
+        row("terminal   "; $terminal) ]
     | .[]' <<<"${snapshot}" >&2
   local holding
-  holding="$(jq -r '[.tasks.LEASED, .tasks.DISPATCHED, .tasks.STARTING, .tasks.RUNNING] | map(. // 0) | add' <<<"${snapshot}")"
-  dim "  ${holding} task(s) hold capacity; QUEUED/PARKED/READY cost nothing"
+  holding="$(jq -r --argjson holding "${holding_set}" \
+    '.tasks as $t | [ $holding[] | $t[.] // 0 ] | add' <<<"${snapshot}")"
+  dim "  ${holding} task(s) hold capacity; $(IFS=/; echo "${PENDING_STATES[*]}") cost nothing"
 
   step "Leases"
   local now_epoch
@@ -313,17 +447,34 @@ render() {
 
   step "GKE (${GKE_CLUSTER})"
   if [[ "$(jq -r '.gke.reachable' <<<"${snapshot}")" == "true" ]]; then
-    jq -r '
-      .gke.pods
-      | if length == 0 then ["  no swarm workloads"]
-        else
-          ( group_by(.phase) | map("  \(.[0].phase): \(length)") )
-          + ( [ .[] | select(.restarts > 0) | "  RESTARTED \(.restarts)x  \(.namespace)/\(.name)" ] )
-        end
-      | .[]' <<<"${snapshot}" >&2
+    local pods_error
+    pods_error="$(jq -r '.gke.pods_error // ""' <<<"${snapshot}")"
+    if [[ -n "${pods_error}" ]]; then
+      err "  cluster answered /readyz, but 'kubectl get pods -A' failed -- this is NOT proof there are no swarm workloads:"
+      printf '%s\n' "${pods_error}" | head -n 3 | sed 's/^/       /' >&2
+    else
+      jq -r '
+        .gke.pods
+        | if length == 0 then ["  no swarm workloads"]
+          else
+            ( group_by(.phase) | map("  \(.[0].phase): \(length)") )
+            + ( [ .[] | select(.restarts > 0) | "  RESTARTED \(.restarts)x  \(.namespace)/\(.name)" ] )
+          end
+        | .[]' <<<"${snapshot}" >&2
+    fi
   else
-    dim "  not connected to the swarm cluster (context: $(kube_current_context || echo none))"
-    dim "  run scripts/configure-kubectl.sh, or pass --no-gke"
+    # unreachable_reason names WHICH of no-kubectl / wrong-context / a failed
+    # /readyz caused this -- a correct context whose /readyz still fails is
+    # most likely the master authorized-networks allowlist, which
+    # configure-kubectl.sh cannot fix, so it is no longer suggested for that case.
+    local reason
+    reason="$(jq -r '.gke.unreachable_reason // "not connected to the swarm cluster"' <<<"${snapshot}")"
+    dim "  ${reason}"
+    if [[ "${reason}" == *"authorized-networks"* ]]; then
+      dim "  scripts/configure-kubectl.sh will not fix this; it only refreshes credentials for a context you can already reach"
+    elif [[ "${reason}" != "--no-gke was passed" ]]; then
+      dim "  run scripts/configure-kubectl.sh, or pass --no-gke"
+    fi
   fi
 
   step "Attention"
@@ -335,6 +486,7 @@ render() {
       (if ([.pools[] | select(.enabled == false)] | length) > 0 then "  \([.pools[] | select(.enabled == false) | .id] | join(", ")) PAUSED -- resume with scripts/resume-swarm.sh" else empty end),
       (if ([.leases[] | select((.expires_at|epoch) < $now)] | length) > 0 then "  \([.leases[] | select((.expires_at|epoch) < $now)] | length) expired lease(s) still holding capacity" else empty end),
       (if ([.quota[] | select(.state == "EXHAUSTED" or .state == "COOLDOWN")] | length) > 0 then "  provider(s) throttled: \([.quota[] | select(.state == "EXHAUSTED" or .state == "COOLDOWN") | .id] | join(", "))" else empty end),
+      (if (.gke.pods_error // null) != null then "  could not list GKE pods (cluster reachable, listing failed) -- this is NOT evidence the platform has no workloads; see the GKE section above" else empty end),
       (if ([.gke.pods[] | select(.restarts > 0)] | length) > 0 then "  pod restarts observed -- the platform promises no restarts; investigate before dismissing" else empty end)
     ] | .[]' <<<"${snapshot}")"
   if [[ -z "${attention}" ]]; then

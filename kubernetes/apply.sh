@@ -118,12 +118,39 @@ case "${CLUSTER}" in
   *) die "cluster '${CLUSTER}' does not start with 'swarm-'; the swarm's Autopilot
        cluster does, and terraform refuses to manage any cluster that does not." ;;
 esac
-case "${CURRENT}" in
+# THE CONTEXT'S CLUSTER, NOT THE CONTEXT'S NAME.
+#
+# This used to match the context LABEL against the cluster name, which meant
+# the repository's own setup script produced a kubeconfig this script refused:
+# scripts/configure-kubectl.sh:132 deliberately renames the generated context
+# `gke_<project>_<region>_swarm-autopilot` to the friendlier `swarm-${ENV}`, so
+# the label is `swarm-dev` and the comparison failed every time. The documented
+# path -- "Run scripts/configure-kubectl.sh" -- produced the exact state the
+# error told you to fix by running it.
+#
+# That is not a cosmetic bug. Tenant namespaces are created by this script, and
+# with it refusing, `scripts/register-tenant.sh` takes its "not connected to the
+# swarm cluster" branch, logs an INFO, skips the whole GKE half and still
+# reports the tenant registered. On 2026-09-23 `swarm-tenant-eng` did not exist
+# on the cluster at all and every `browser` task the platform had ever accepted
+# -- seven of them -- had failed.
+#
+# A label is a nickname anyone may change; the cluster a context points AT is
+# the thing that decides which API server is about to be written to. Resolve it
+# and compare that, so the guard keeps refusing another team's cluster while
+# accepting any honest name for our own.
+CURRENT_CLUSTER="$("${KUBECTL}" config view -o \
+  "jsonpath={.contexts[?(@.name==\"${CURRENT}\")].context.cluster}" 2>/dev/null || true)"
+if [[ -z "${CURRENT_CLUSTER}" ]]; then
+  die "could not resolve which cluster context '${CURRENT}' points at; refusing to apply.
+       An unresolvable context is not a safe one -- it is one nothing checked."
+fi
+case "${CURRENT_CLUSTER}" in
   *"${CLUSTER}"*) ;;
-  *) die "context '${CURRENT}' does not name cluster '${CLUSTER}'; refusing to apply.
+  *) die "context '${CURRENT}' points at cluster '${CURRENT_CLUSTER}', not '${CLUSTER}'; refusing to apply.
        Run scripts/configure-kubectl.sh, or pass --context/--cluster deliberately." ;;
 esac
-info "context  ${CURRENT}"
+info "context  ${CURRENT} -> ${CURRENT_CLUSTER}"
 
 # --- render ------------------------------------------------------------------
 PYTHON="${PYTHON_BIN:-python3}"

@@ -10,6 +10,7 @@ dependencies = [
     "swarm-quota-broker",
     "swarm-agent-worker",
     "swarm-reconciler",
+    "swarm-mcp",
 ]
 
 [tool.uv]
@@ -22,15 +23,28 @@ swarm-scheduler = { path = "apps/scheduler", editable = true }
 swarm-quota-broker = { path = "apps/quota-broker", editable = true }
 swarm-agent-worker = { path = "apps/agent-worker", editable = true }
 swarm-reconciler = { path = "apps/reconciler", editable = true }
+# Local-only: the operator-side bridge. It is in the workspace so its tests
+# run in `make test` like everything else, NOT because anything deploys it.
+swarm-mcp = { path = "apps/swarm-mcp", editable = true }
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    # Measured 2026-09-23: tests/integration drives the real shell scripts
+    # against a fake `curl` that is a Python process, so ~600 requests per
+    # suite run cost ~42ms each in interpreter startup alone -- ~31s per run,
+    # ~480s for the file, which was 60% of `make test`. The cases are
+    # independent and each works in its own tmp_path, so they parallelise
+    # cleanly: 566s -> 66s on eight cores.
+    "pytest-xdist>=3.6",
     "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]
+markers = [
+    "serial: measures elapsed time or process liveness; must not run under -n",
+]
 testpaths = ["tests/unit"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]

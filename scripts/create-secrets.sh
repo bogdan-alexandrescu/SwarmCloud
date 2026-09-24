@@ -219,8 +219,23 @@ else
   ok "created ${SECRET_NAME} (replicated only to ${REGION})"
 fi
 
-PREVIOUS="$(gcloud secrets versions list "${SECRET_NAME}" --project "${PROJECT_ID}" \
-  --filter='state=ENABLED' --format='value(name)' --limit=50 2>/dev/null || true)"
+PREVIOUS=""
+previous_err="${TMPDIR_SECRET}/previous-versions.err"
+# A denied secretmanager.versions.list, an expired session or a wrong project
+# must not read as "this secret has no enabled versions" -- with
+# --disable-previous, that reading is exactly the difference between the
+# leaked key this rotation exists to kill being disabled and it staying live
+# while the operator is told the rotation completed.
+if ! PREVIOUS="$(gcloud secrets versions list "${SECRET_NAME}" --project "${PROJECT_ID}" \
+     --filter='state=ENABLED' --format='value(name)' --limit=50 2>"${previous_err}")"; then
+  if [[ "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die_if_auth_failure "$(cat "${previous_err}")"
+    err "gcloud secrets versions list failed for ${SECRET_NAME}; cannot tell which versions are enabled"
+    redact <"${previous_err}" | head -n 5 | sed 's/^/     /' >&2
+    die "--disable-previous requires knowing the current enabled versions; refusing to silently skip disabling them"
+  fi
+  PREVIOUS=""
+fi
 
 VERSION="$(gcloud secrets versions add "${SECRET_NAME}" \
   --project "${PROJECT_ID}" --data-file="${KEY_FILE}" --format='value(name)')"
@@ -243,13 +258,26 @@ if [[ "${DISABLE_PREVIOUS}" -eq 1 && -n "${PREVIOUS}" ]]; then
 fi
 
 step "Access"
-TENANT_SA="$(gcloud secrets get-iam-policy "${SECRET_NAME}" --project "${PROJECT_ID}" \
-  --format='value(bindings.members)' 2>/dev/null | tr ';' '\n' | grep -c 'serviceAccount:' || true)"
-if [[ "${TENANT_SA}" -gt 0 ]]; then
-  ok "${TENANT_SA} service account binding(s) already present"
+policy_err="${TMPDIR_SECRET}/iam-policy.err"
+# secretmanager.secrets.getIamPolicy can be denied to an operator who holds
+# only secretVersionAdder -- entirely plausible for someone whose job today is
+# rotating a key, not managing IAM. That denial must not collapse into "zero
+# bindings", or the operator is sent to re-run register-tenant.sh against a
+# tenant that was already wired, on a shared project, to answer a question
+# this step only failed to ask.
+if ! POLICY="$(gcloud secrets get-iam-policy "${SECRET_NAME}" --project "${PROJECT_ID}" \
+     --format='value(bindings.members)' 2>"${policy_err}")"; then
+  die_if_auth_failure "$(cat "${policy_err}")"
+  warn "could not check IAM bindings for ${SECRET_NAME}; this is NOT confirmation no service account can read it"
+  redact <"${policy_err}" | head -n 5 | sed 's/^/     /' >&2
 else
-  warn "no service account can read ${SECRET_NAME} yet"
-  dim "run: scripts/register-tenant.sh --tenant ${TENANT} --providers ${PROVIDER}"
+  TENANT_SA="$(printf '%s' "${POLICY}" | tr ';' '\n' | grep -c 'serviceAccount:' || true)"
+  if [[ "${TENANT_SA}" -gt 0 ]]; then
+    ok "${TENANT_SA} service account binding(s) already present"
+  else
+    warn "no service account can read ${SECRET_NAME} yet"
+    dim "run: scripts/register-tenant.sh --tenant ${TENANT} --providers ${PROVIDER}"
+  fi
 fi
 
 hr

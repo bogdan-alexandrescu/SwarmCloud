@@ -29,6 +29,37 @@ variable "dead_letter_subscription" {
   type = string
 }
 
+variable "enable_safety_tick_alert" {
+  description = <<-EOT
+    Create the safety-tick-stopped alert.
+
+    Separate from `create_alerts` because this one policy depends on a metric
+    that must EXIST before it can be referenced, and terraform cannot express a
+    dependency on runtime telemetry:
+
+        Error 404: Cannot find metric(s) that match type =
+        "cloudscheduler.googleapis.com/job/attempt_count"
+
+    Verified on 2026-09-19 in saga-agents-staging: the scheduler tick job is
+    ENABLED and attempting every minute, and the project still has ZERO
+    cloudscheduler.googleapis.com metric descriptors -- checked against
+    run.googleapis.com, which returns 49, so the query is sound and the absence
+    is real.
+
+    Until that changes, creating this policy fails the apply. Leaving it enabled
+    means every `make deploy` exits non-zero, which teaches everyone to ignore
+    the exit code -- a worse outcome than a missing alert, and exactly the habit
+    the rest of this repository is trying to break.
+
+    Check before flipping it back on:
+
+        curl -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+          "https://monitoring.googleapis.com/v3/projects/<project>/metricDescriptors?filter=metric.type%3Dstarts_with%28%22cloudscheduler.googleapis.com%22%29"
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "safety_tick_job" {
   description = "Cloud Scheduler job id of the one-minute tick. Its absence is the alert that matters most."
   type        = string

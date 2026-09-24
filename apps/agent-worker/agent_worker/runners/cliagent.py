@@ -47,7 +47,12 @@ from typing import Any, Sequence
 from ..logs import StructuredLogger
 from ..procman import run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
-from .base import QuotaExhaustedSignal, RunnerContext, RunnerFailure
+from .base import (
+    CredentialRevokedSignal,
+    QuotaExhaustedSignal,
+    RunnerContext,
+    RunnerFailure,
+)
 from .limits import platform_ceilings, resolve_limits
 
 BASE_PATH = "/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin:/bin"
@@ -80,6 +85,34 @@ _RATE_LIMIT_MARKERS = (
     # `_RETRY_AFTER_PATTERNS` then reads the value out of the same line.
     "retry-after",
     "retry_after",
+)
+
+#: Substrings that mean "this credential is no longer usable" -- as opposed to
+#: "wait and try again", which is what _RATE_LIMIT_MARKERS covers.
+#:
+#: THIS EXISTS BECAUSE OF HOW SUBSCRIPTION CREDENTIALS BEHAVE. Refreshing an
+#: OAuth credential REVOKES the previously issued access token; the platform
+#: refreshes every registered account on a timer, including accounts an agent
+#: is using right now. So a long-running attempt can have the token in its
+#: environment revoked underneath it, mid-run, through no fault of its own.
+#: The remedy is not to wait -- the token is gone permanently -- it is to read
+#: the secret again and restart with the credential that replaced it.
+#:
+#: Deliberately NOT including a bare "401": it occurs in ordinary agent output
+#: (a transcript discussing HTTP, a test fixture) and a false positive here
+#: silently restarts a healthy run. Every marker below names an authentication
+#: failure explicitly.
+_CREDENTIAL_MARKERS = (
+    "oauth access token has been revoked",
+    "authentication_error",
+    "invalid api key",
+    "invalid_api_key",
+    "invalid bearer token",
+    "fix external api key",
+    "please run /login",
+    "unauthorized",
+    "\"api_error_status\":401",
+    "api_error_status: 401",
 )
 
 _RETRY_AFTER_PATTERNS = (
@@ -199,6 +232,21 @@ def detect_rate_limit(text: str) -> tuple[bool, int | None, str | None]:
     return True, retry_after, (reset_match.group(1) if reset_match else None)
 
 
+def detect_credential_failure(text: str) -> tuple[bool, str | None]:
+    """Look for a refused credential in CLI output. Returns (hit, marker).
+
+    Checked only AFTER `detect_rate_limit` has said no. A 429 body sometimes
+    mentions authentication in passing, and mistaking a rate limit for a dead
+    credential would reload a perfectly good secret and restart immediately
+    into the same 429 -- turning a wait into a hot loop.
+    """
+    lowered = text.lower()
+    for marker in _CREDENTIAL_MARKERS:
+        if marker in lowered:
+            return True, marker
+    return False, None
+
+
 def _tail(path: Path, limit: int = 8000) -> str:
     if not path.exists():
         return ""
@@ -261,6 +309,28 @@ def run_cli_agent(
         "TERM": "dumb",
         "CI": "1",
         "NO_COLOR": "1",
+        # WHERE TO PUT ITS WORK. runners/base.py documents SWARM_ARTIFACTS_DIR
+        # as the contract -- "files written here are uploaded when the attempt
+        # ends" -- and runners/generic.py exports it. This runner did not, so a
+        # claude-code agent was never told where its output should go.
+        #
+        # Measured on the first real multi-agent workflow
+        # (wf_bcdc9180e4fb4a209f31, step `research`): the agent replied "The
+        # environment variable SWARM_ARTIFACTS_DIR is not set in this
+        # environment, so I can't determine the target directory" and exited 0
+        # having written nothing. The attempt still SUCCEEDED, because writing
+        # an artifact is not a success condition.
+        #
+        # The consequence was the platform's headline feature: this runner uses
+        # ctx.artifacts_dir for its OWN stdout/stderr (above), so
+        # result_summary.artifacts always contained exactly the runner's logs
+        # and the transcript and never anything the agent produced. With no
+        # agent artifact there is nothing for a downstream step's `input_from`
+        # to stage, so work could not be routed between agents at all -- while
+        # `input_from` itself was correct and tested, against the generic
+        # runner.
+        "SWARM_ARTIFACTS_DIR": str(ctx.artifacts_dir),
+        "SWARM_WORK_DIR": str(ctx.work_dir),
         credential_env: os.environ[credential_env],
     }
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
@@ -299,6 +369,17 @@ def run_cli_agent(
                 retry_after_seconds=retry_after,
                 reset_at=reset_at,
                 detail=f"{spec.name} reported a provider rate limit",
+            )
+        # Checked only after the rate-limit test has said no: a 429 body
+        # sometimes mentions authentication in passing, and reading that as a
+        # dead credential would reload a perfectly good secret and restart
+        # straight back into the same 429 -- turning a wait into a hot loop.
+        refused, marker = detect_credential_failure(combined)
+        if refused:
+            raise CredentialRevokedSignal(
+                provider=spec.provider,
+                detail=f"{spec.name} was refused its credential",
+                marker=marker or "",
             )
     if result.timed_out:
         raise RunnerFailure(f"{spec.name} timed out after {limits.timeout_seconds:.0f}s")

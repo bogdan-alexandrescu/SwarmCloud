@@ -66,6 +66,7 @@ class CloudIdentityGroups:
         project_id: str,
         *,
         session: HttpSession | None = None,
+        impersonate_user: str | None = None,
         ttl_seconds: int = 120,
         timeout_seconds: float = 5.0,
         now: Callable[[], datetime] = utcnow,
@@ -73,6 +74,7 @@ class CloudIdentityGroups:
         if not project_id:
             raise ValueError("project_id is required: it is the x-goog-user-project value")
         self._project_id = project_id
+        self._impersonate_user = (impersonate_user or "").strip() or None
         self._session = session
         self._ttl = timedelta(seconds=max(1, ttl_seconds))
         self._timeout = timeout_seconds
@@ -91,6 +93,48 @@ class CloudIdentityGroups:
             from google.auth.transport.requests import AuthorizedSession
 
             credentials, _ = google.auth.default(scopes=[GROUPS_READONLY_SCOPE])
+
+            # DOMAIN-WIDE DELEGATION, and the reason this platform needs it.
+            #
+            # Cloud Identity's Groups API does NOT authorize through GCP IAM.
+            # It has three modes -- admin, non-admin and namespace -- and a
+            # *.gserviceaccount.com identity satisfies none of them, because it
+            # is not a principal in the Workspace domain. Every lookup returns
+            # "Error(2028): Permission denied for resource <group>", which
+            # reads like a missing role and is not one:
+            # roles/cloudidentity.groupsReader is an ALPHA role with no
+            # included permissions, and granting it at the organization
+            # changed nothing when we tried.
+            #
+            # With delegation the service account ACTS AS a real Workspace
+            # user, which does satisfy those modes. The grant is authorised in
+            # the Admin console against this service account's OAuth client id
+            # and is scoped to cloud-identity.groups.readonly: read group
+            # membership, nothing else, no write, no mail, no files.
+            #
+            # `with_subject` exists ONLY on credentials loaded from a
+            # service-account key file. This originally guarded on it directly,
+            # on the assumption that the other case was a developer's user
+            # credentials -- but the production case is Cloud Run, whose
+            # metadata credentials have no `with_subject` either. So the
+            # delegation branch never fired where it mattered, and every lookup
+            # fell back to the service account's own identity and 403'd with
+            # Error(2028), which reads exactly like the missing-role problem
+            # delegation was introduced to solve. Observed live on 2026-09-20.
+            #
+            # `delegation.delegate` keeps the key-file path and adds the
+            # keyless one: build the assertion, have Google sign it with the key
+            # we are not allowed to hold, exchange it for a token that acts as
+            # the subject. See swarm_api/delegation.py.
+            if self._impersonate_user:
+                from . import delegation
+
+                credentials = delegation.delegate(
+                    credentials,
+                    subject=self._impersonate_user,
+                    scopes=[GROUPS_READONLY_SCOPE],
+                )
+
             self._session = AuthorizedSession(credentials)
         return self._session
 

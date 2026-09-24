@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Two, not one. A single #0b0d10 here painted the browser chrome dark on
+         a machine running the light theme, which is the one place this app has
+         no control over its own contrast. -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)" />
+    <title>SwarmCloud</title>
+
+    <!-- THE FAVICON: the SwarmCloud mark, inline, 16px-first.
+
+         NO BINARY ASSET AND NO REQUEST. It is a data URI, so it is in the
+         document and costs nothing at load; there is no .ico or .png to keep
+         in step with the component, and no font to wait for.
+
+         IT IS THE COMPACT GEOMETRY, and that is not a shortcut. The full mark
+         (hex outline, six spokes, seven discs) was rasterised at 14, 16, 18,
+         20, 24 and 28 px and looked at: below about 22px the 1px strokes land
+         on the same pixels as the discs and it turns into grey noise. The
+         compact variant -- six discs on a 7.6 ring around a 3.5 core, no
+         strokes at all -- is legible at 14px. These are the same numbers
+         `COMPACT` declares in src/Brand.tsx, and
+         src/__tests__/brand.test.tsx renders the component and fails if this
+         copy and that one ever disagree.
+
+         BOTH GROUNDS. `@media (prefers-color-scheme: dark)` inside the SVG
+         flips the fill, so the mark is dark ink on a light tab bar and light
+         ink on a dark one. A browser that does not render SVG favicons shows
+         no icon, which is what it showed before this line existed.
+
+         Decoded, it is:
+           <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>
+             <style>circle{fill:#0b0d10}
+               @media(prefers-color-scheme:dark){circle{fill:#e8ecf1}}</style>
+             <circle cx='12'    cy='4.4'  r='2.4'/>
+             <circle cx='18.58' cy='8.2'  r='2.4'/>
+             <circle cx='18.58' cy='15.8' r='2.4'/>
+             <circle cx='12'    cy='19.6' r='2.4'/>
+             <circle cx='5.42'  cy='15.8' r='2.4'/>
+             <circle cx='5.42'  cy='8.2'  r='2.4'/>
+             <circle cx='12'    cy='12'   r='3.5'/>
+           </svg>
+    -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cstyle%3Ecircle%7Bfill:%230b0d10%7D@media(prefers-color-scheme:dark)%7Bcircle%7Bfill:%23e8ecf1%7D%7D%3C/style%3E%3Ccircle cx='12' cy='4.4' r='2.4'/%3E%3Ccircle cx='18.58' cy='8.2' r='2.4'/%3E%3Ccircle cx='18.58' cy='15.8' r='2.4'/%3E%3Ccircle cx='12' cy='19.6' r='2.4'/%3E%3Ccircle cx='5.42' cy='15.8' r='2.4'/%3E%3Ccircle cx='5.42' cy='8.2' r='2.4'/%3E%3Ccircle cx='12' cy='12' r='3.5'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

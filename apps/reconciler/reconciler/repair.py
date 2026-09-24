@@ -30,6 +30,7 @@ from swarm_common.models import utcnow
 from swarm_common.states import EventType, TaskState
 
 from .backends import Backend
+from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
 from .detect import Finding, FindingKind, detect_all, detect_empty_namespaces, detect_unused_job_resources
 from .model import ControlSnapshot, ExecutionView, JobResourceView
@@ -81,6 +82,11 @@ class ReconcileReport:
     outcomes: list[RepairOutcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
+    #: The checkpoint sweep's own counters. None when it did not run on this
+    #: pass -- which is the usual case, because it runs on its own slower clock.
+    #: None and a zero-filled report mean different things and are reported as
+    #: different things.
+    checkpoint_sweep: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +106,7 @@ class ReconcileReport:
             "executions_terminated": sum(1 for o in self.outcomes if o.terminated),
             "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
             "skipped": sum(1 for o in self.outcomes if o.skipped),
+            "checkpoint_sweep": self.checkpoint_sweep,
             "outcomes": [o.as_dict() for o in self.outcomes],
             "errors": self.errors,
         }
@@ -113,11 +120,22 @@ class Reconciler:
         backends: list[Backend],
         config: ReconcilerConfig,
         logger: Any,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self._store = store
         self._backends = backends
         self._config = config
         self._log = logger
+        # None disables the sweep outright. An environment with no artifact
+        # bucket configured gets no collector rather than one that deletes
+        # nothing quietly while claiming to have run.
+        self._checkpoints = (
+            CheckpointCollector(
+                reader=store, objects=checkpoint_store, config=config, logger=logger
+            )
+            if checkpoint_store is not None
+            else None
+        )
 
     # ------------------------------------------------------------------
     def run_once(self) -> ReconcileReport:
@@ -165,10 +183,46 @@ class Reconciler:
                 self._log.exception("garbage collection failed", exc)
                 report.errors.append(f"gc: {exc}")
 
+        try:
+            self._collect_checkpoints(report, now=snapshot.taken_at)
+        except Exception as exc:
+            # Storage cleanup never fails a pass that has already terminated
+            # executions and released leases: that work happened, and reporting
+            # the pass as failed would send a retry over state that is now
+            # correct. The error is on the report, not swallowed.
+            self._log.exception("checkpoint collection failed", exc)
+            report.errors.append(f"checkpoint_gc: {exc}")
+
         report.finished_at = utcnow()
         self._log.info("reconciliation pass complete", **{
             k: v for k, v in report.as_dict().items() if k != "outcomes"
         })
+
+        # Persist the pass. Until this existed the report lived only in a
+        # per-instance dict, and swarm-reconciler runs with min_instance_count =
+        # 0 -- so the platform's entire account of what went wrong at runtime
+        # was discarded whenever the service scaled down.
+        #
+        # Deliberately NOT fatal. A pass that has already terminated executions
+        # and released leases has done real work; failing it here would report
+        # that work as not having happened, and a caller retrying would
+        # re-examine state that is now correct. The write failing is worth
+        # knowing about, which is why it becomes an error on the report rather
+        # than a silent pass.
+        #
+        # A DRY RUN WRITES NOTHING, including this. "dry run changes nothing" is
+        # a guarantee worth keeping absolute: the moment it means "changes
+        # nothing except some bookkeeping", nobody can use it to answer "is it
+        # safe to run this against prod".
+        try:
+            if not self._config.dry_run:
+                self._store.record_pass(
+                    report.as_dict(), retain_hours=self._config.pass_retention_hours
+                )
+        except Exception as exc:
+            self._log.exception("could not persist the reconciliation pass", exc)
+            report.errors.append(f"record_pass: {exc}")
+
         return report
 
     #: Findings that mean "nothing seems to be running" -- and are therefore
@@ -339,6 +393,11 @@ class Reconciler:
                 repaired = self._store.repair_task_state(
                     finding.task_id,
                     to_state=TaskState.READY,
+                    # Only the task this finding is actually about. A snapshot is
+                    # minutes old by the time slow terminations ahead of it are
+                    # done, and the task may legitimately be on a newer lease by
+                    # now -- see `repair_task_state`.
+                    expected_lease_id=finding.lease_id,
                     error=f"reconciled: {finding.reason}",
                     next_eligible_at=utcnow(),
                 )
@@ -356,6 +415,54 @@ class Reconciler:
                         lease_id=finding.lease_id,
                     )
         return outcome
+
+    # ------------------------------------------------------------------
+    def _collect_checkpoints(self, report: ReconcileReport, *, now: datetime) -> None:
+        """Reclaim checkpoints nothing can resume from.
+
+        Separate from `_collect_garbage` for two reasons. It asks a different
+        question of the control plane -- which tasks are FINISHED, where
+        `snapshot()` reads only the four states that hold capacity -- and it
+        lists an entire bucket, so it runs on its own slower clock instead of on
+        every five-minute tick.
+        """
+        if self._checkpoints is None or not self._config.enable_checkpoint_gc:
+            return
+        if self._config.dry_run:
+            # The claim is a WRITE. A dry run that took it would make the next
+            # real pass skip its sweep, so "dry run changes nothing" has to mean
+            # this too -- but the sweep itself still runs and still reports what
+            # it would have deleted, because a dry run that reported nothing
+            # would be useless for answering "is it safe to enable this".
+            #
+            # The consequence is deliberate and worth knowing: a reconciler left
+            # in dry run lists the bucket on EVERY pass rather than hourly.
+            sweep = self._checkpoints.sweep(now=now)
+        else:
+            if not self._store.claim_checkpoint_sweep(
+                min_interval_seconds=self._config.checkpoint_sweep_interval_seconds, now=now
+            ):
+                return
+            sweep = self._checkpoints.sweep(now=now)
+
+        report.checkpoint_sweep = sweep.as_dict()
+        report.errors.extend(sweep.errors)
+        for item in sweep.outcomes:
+            outcome = RepairOutcome(
+                kind=item.kind,
+                reason=item.reason,
+                tenant_id=item.tenant_id,
+                task_id=item.task_id,
+                skipped=item.skipped,
+            )
+            if item.deleted:
+                outcome.deleted = item.prefix
+                outcome.actions.append(f"deleted {item.objects_deleted} objects under {item.prefix}")
+            elif item.skipped == "dry_run":
+                outcome.actions.append(f"would delete {item.prefix}")
+            else:
+                outcome.actions.append(f"kept {item.prefix}")
+            report.outcomes.append(outcome)
 
     # ------------------------------------------------------------------
     def _collect_garbage(

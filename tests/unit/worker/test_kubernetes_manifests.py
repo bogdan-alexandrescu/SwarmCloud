@@ -22,6 +22,9 @@ from typing import Any
 import pytest
 import yaml
 
+from quota_broker.accounts import AccountError, validate_label
+from scheduler.dispatch import sanitize_name as dispatcher_sanitize_name
+from swarm_common.identity import _TENANT_SAFE
 from swarm_common.models import Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 
@@ -64,9 +67,20 @@ def tenant_docs() -> list[dict[str, Any]]:
         render.TENANT_FILES,
         {
             "TENANT_ID": TENANT,
-            "NAMESPACE": f"swarm-{TENANT}",
+            # DERIVED, never spelled again. This line read f"swarm-{TENANT}"
+            # and was the THIRD independent spelling of the tenant namespace
+            # -- render.py had one, the scheduler had another. The suite
+            # therefore asserted against the renderer's own mistake and
+            # agreed with it.
+            "NAMESPACE": f"{render.NAMESPACE_PREFIX}{TENANT}",
             "KSA_NAME": render.sanitize_name("swarm", TENANT),
             "GSA_EMAIL": f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
+            # The control-plane RBAC subjects. Added with
+            # rbac/dispatcher-rbac.yaml, which is what lets the scheduler
+            # create a Job in a tenant namespace at all -- without it the
+            # GKE backend cannot dispatch, which is how it sat broken.
+            "SCHEDULER_GSA": f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com",
+            "RECONCILER_GSA": f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com",
             "PROJECT_ID": PROJECT,
             "REGION": "us-central1",
             "PSS_ENFORCE": "restricted",
@@ -285,7 +299,11 @@ def test_every_worker_service_account_is_bound_to_workload_identity(tenant_docs)
 
 
 def test_workers_are_granted_no_kubernetes_api_access_at_all(tenant_docs):
-    role = one(tenant_docs, "Role")
+    # NAMED, because the namespace now holds three Roles: the worker's (empty,
+    # below), and the control plane's swarm-dispatcher / swarm-reaper added
+    # with rbac/dispatcher-rbac.yaml. An unnamed `one()` used to be
+    # unambiguous and silently became "assert there is only one Role".
+    role = one(tenant_docs, "Role", "swarm-worker")
     assert role["rules"] == [], "a worker needs nothing from the Kubernetes API"
 
 
@@ -296,7 +314,7 @@ def test_nothing_here_is_cluster_scoped(tenant_docs):
 
 
 def test_the_role_binding_covers_every_account_a_pod_could_use(tenant_docs):
-    binding = one(tenant_docs, "RoleBinding")
+    binding = one(tenant_docs, "RoleBinding", "swarm-worker")
     subjects = {s["name"] for s in binding["subjects"]}
     assert render.sanitize_name("swarm", TENANT) in subjects
     assert "swarm-worker" in subjects
@@ -690,8 +708,208 @@ def test_an_unsubstituted_placeholder_is_a_hard_error():
         render.substitute("name: __NAMESPACE__\n", {})
 
 
+#: Inputs chosen to separate a real copy of the dispatcher's `sanitize_name`
+#: from a plausible one: every branch of it is here. The uppercase and dotted
+#: cases exercise the character class, the long ones exercise truncation and the
+#: appended digest (the part that stops two long tenant names colliding), the
+#: leading-digit case exercises the `s` prefix, and the dash cases exercise the
+#: collapse and the strip.
+SANITIZE_MATRIX = (
+    ("swarm", "eng"),
+    ("task_9f3a",),
+    ("swarm", "u-alice"),
+    ("swarm", "job", "eng", "claude-code"),
+    ("swarm", "", "eng"),
+    ("Eng.Team",),
+    ("eng--team",),
+    ("--eng--",),
+    ("9lives",),
+    ("tenant_with_underscores", "and.dots"),
+    ("a" * 80,),
+    ("x" * 70, "y" * 70),
+)
+
+
 def test_the_renderer_agrees_with_the_dispatcher_about_names():
-    """Both sanitise the same way; the service account name depends on it."""
+    """Both sanitise the same way; the service account name depends on it.
+
+    This used to assert three hardcoded strings, which is not the same claim:
+    it would have stayed green through any change made to BOTH copies, and
+    through any change to the dispatcher alone. The dispatcher is called here so
+    that a change on either side fails, which is the only version of this test
+    that is about agreement.
+    """
     assert render.sanitize_name("swarm", "eng") == "swarm-eng"
     assert render.sanitize_name("task_9f3a") == "task-9f3a"
     assert render.sanitize_name("swarm", "u-alice") == "swarm-u-alice"
+    for parts in SANITIZE_MATRIX:
+        assert render.sanitize_name(*parts) == dispatcher_sanitize_name(*parts), parts
+
+
+def test_the_renderer_slugifies_with_the_frozen_character_class():
+    """The reconciler reverse-maps a Job label to a Firestore id by re-slugging it
+    (`reconciler/detect.py` `sanitised()`), so a renderer with its own idea of
+    which characters survive produces attempts the reconciler cannot resolve --
+    it then either reclaims a live one or misses an orphan.
+
+    The source is read for the import because `re.compile` CACHES: a local
+    `re.compile(r"[^a-z0-9-]+")` returns the very same object the frozen module
+    compiled, so `render._NAME_SAFE is _TENANT_SAFE` stays true even after the
+    import is replaced by a fourth copy. An identity assertion here would be a
+    test that passes while the thing it is about has been undone.
+    """
+    assert render._NAME_SAFE.pattern == _TENANT_SAFE.pattern
+    for raw in ("task_9f3a", "Eng.Team", "a b", "x/y", "u-alice", "9lives", "caf\u00e9"):
+        assert render._NAME_SAFE.sub("-", raw.lower()) == _TENANT_SAFE.sub("-", raw.lower())
+
+    source = (KUBERNETES / "render.py").read_text()
+    assert "from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE" in source
+    assert "_NAME_SAFE = re.compile" not in source
+
+
+def test_the_renderer_enforces_the_brokers_account_label_rule():
+    """`--account` is operator-supplied, and this file's whole purpose is to
+    validate every interpolated value before it reaches the YAML.
+
+    It carried the generic 63-character RFC1123 pattern while
+    `quota_broker.accounts` enforces a 40-character one, so it accepted labels
+    that could never have been registered -- a value the renderer waved through
+    and the rest of the platform would refuse. The pattern object itself is the
+    broker's now; these cases assert the consequence, so that swapping it back
+    for a copy fails even if the copy starts out identical."""
+    assert render._VALUE_PATTERNS["ACCOUNT_LABEL"] is render._ACCOUNT_LABEL
+
+    longest_legal = "a" * 40
+    assert validate_label(longest_legal) == longest_legal
+    assert render.check_values({"ACCOUNT_LABEL": longest_legal})
+
+    for refused in ("a" * 41, "a" * 63, "-leading", "trailing-", "Upper", "under_score", ""):
+        with pytest.raises(AccountError):
+            validate_label(refused)
+        with pytest.raises(SystemExit):
+            render.check_values({"ACCOUNT_LABEL": refused})
+
+
+def _render_v2_job(*extra: str) -> dict[str, Any]:
+    """The gvisor shape, which is the template that carries `__ACCOUNT_LABEL__`.
+
+    `restricted` is refused for it on purpose (the v2 pod runs as root), so the
+    namespace level is passed explicitly rather than left at the default.
+    """
+    import contextlib
+    import io
+
+    argv = [
+        "job",
+        "--tenant", TENANT,
+        "--profile", "claude-code",
+        "--task", "task_9f3a",
+        "--attempt", "att_7b21",
+        "--lease", "lease_c4",
+        "--generation", "3",
+        "--runtime", "gvisor",
+        "--pss-enforce", "baseline",
+        *extra,
+    ]
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(argv)
+    docs = documents(buffer.getvalue())
+    assert len(docs) == 1
+    return docs[0]
+
+
+def _account_annotation(doc: dict[str, Any]) -> str:
+    for meta in (doc["spec"]["template"]["metadata"], doc["metadata"]):
+        value = meta.get("annotations", {}).get("swarm.saga.xyz/account")
+        if value is not None:
+            return value
+    raise AssertionError("the v2 job no longer records which account it is burning")
+
+
+def test_a_rendered_job_records_an_account_the_broker_could_have_issued():
+    """The default is `unassigned`, which has to satisfy the same rule: a default
+    the broker would refuse is a manifest that only renders because nobody
+    checked it. And a label past the broker's cap must not reach the YAML at
+    all -- it did before this, because the renderer allowed 63 characters."""
+    default = _account_annotation(_render_v2_job())
+    assert default == "unassigned"
+    assert validate_label(default) == default
+
+    longest_legal = "a" * 40
+    assert _account_annotation(_render_v2_job("--account", longest_legal)) == longest_legal
+
+    with pytest.raises(SystemExit):
+        _render_v2_job("--account", "a" * 41)
+
+
+# ---------------------------------------------------------------------------
+# The control plane's own access to a tenant namespace
+# ---------------------------------------------------------------------------
+#
+# Without these the GKE backend cannot dispatch at all. On 2026-09-23 every
+# `browser` task the platform had ever accepted -- seven, over two days --
+# failed with `jobs.batch is forbidden`, and nothing in this suite would have
+# noticed, because the namespace it renders had no control-plane RBAC in it to
+# assert on.
+
+
+def test_the_scheduler_may_create_jobs_in_a_tenant_namespace(tenant_docs):
+    role = one(tenant_docs, "Role", "swarm-dispatcher")
+    verbs = {v for rule in role["rules"] if "jobs" in rule["resources"] for v in rule["verbs"]}
+    assert "create" in verbs, (
+        "the scheduler cannot create a Job, which is the whole of dispatching to GKE"
+    )
+    assert "get" in verbs and "list" in verbs, "it must be able to read back what it created"
+
+
+def test_the_scheduler_can_never_delete_a_job(tenant_docs):
+    """Reaping is the reconciler's. Keeping them apart means a mistake in one
+    is not an escalation into the other -- the same reasoning worker-rbac.yaml
+    gives for its own pair, and the same split as the swarmGkeDispatcher /
+    swarmGkeReaper IAM roles."""
+    role = one(tenant_docs, "Role", "swarm-dispatcher")
+    for rule in role["rules"]:
+        assert "delete" not in rule["verbs"], f"swarm-dispatcher may delete {rule['resources']}"
+
+
+def test_the_reconciler_may_delete_but_never_create(tenant_docs):
+    role = one(tenant_docs, "Role", "swarm-reaper")
+    verbs = {v for rule in role["rules"] if "jobs" in rule["resources"] for v in rule["verbs"]}
+    assert "delete" in verbs, "the reconciler cannot reap a finished Job"
+    for rule in role["rules"]:
+        assert "create" not in rule["verbs"], f"swarm-reaper may create {rule['resources']}"
+
+
+def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
+    """A RoleBinding to a subject that does not exist applies cleanly and
+    grants nothing, so a typo here fails looking exactly like success."""
+    for binding_name, expected in (
+        ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
+        ("swarm-reaper", f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"),
+    ):
+        binding = one(tenant_docs, "RoleBinding", binding_name)
+        subjects = binding["subjects"]
+        assert [s["name"] for s in subjects] == [expected]
+        # `User`, not `ServiceAccount`: the scheduler runs on Cloud Run as a
+        # Google identity and has no Kubernetes ServiceAccount of its own.
+        assert {s["kind"] for s in subjects} == {"User"}
+
+
+def test_the_namespace_the_renderer_builds_is_the_one_the_scheduler_dispatches_into(tenant_docs):
+    """THE BUG THIS PINS. `render.py` used NAMESPACE_PREFIX = "swarm-" while
+    apps/scheduler/scheduler/dispatch.py uses "swarm-tenant-{tenant}", so the
+    provisioner created `swarm-eng` and the dispatcher wrote into
+    `swarm-tenant-eng`. Kubernetes authorises before it resolves, so the
+    missing namespace surfaced as `jobs.batch is forbidden` -- a 403 about
+    permissions, never a 404 -- and sent three investigations at IAM."""
+    from scheduler.dispatch import GkeTarget  # noqa: PLC0415
+
+    template = GkeTarget.namespace_template
+    expected = template.format(tenant=TENANT)
+    namespace = one(tenant_docs, "Namespace")["metadata"]["name"]
+    assert namespace == expected, (
+        f"the renderer builds {namespace} and the scheduler dispatches into {expected}; "
+        "a Job created into a namespace that does not exist is reported as forbidden, "
+        "not as missing"
+    )

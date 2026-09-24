@@ -95,7 +95,7 @@ resource "google_cloud_scheduler_job" "quota_refresh" {
 
     oidc_token {
       service_account_email = var.tick_service_account
-      audience              = var.quota_broker_endpoint
+      audience              = coalesce(var.quota_broker_audience, var.quota_broker_endpoint)
     }
   }
 

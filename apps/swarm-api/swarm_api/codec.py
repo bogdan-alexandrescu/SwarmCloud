@@ -30,6 +30,8 @@ from swarm_common.models import (
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
+from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, DISPATCH_METADATA_KEY
+
 
 def as_datetime(value: Any) -> datetime | None:
     if value is None:
@@ -96,6 +98,51 @@ def task_from_dict(data: dict[str, Any]) -> Task:
     )
 
 
+def dispatch_of(task: Task) -> dict[str, Any]:
+    """The EFFECTIVE dispatch options for a task, always complete.
+
+    `task.metadata["dispatch"]` is where they are stored, and it is absent on
+    every task submitted before this feature existed. Absent means today's
+    behaviour -- harvest the patch, push nothing -- so it reads back as
+    `collect`/`checkpoints` rather than as null. A caller reading this key never
+    has to know that the encoding lives in metadata, or that a task may predate
+    it.
+    """
+    raw = task.metadata.get(DISPATCH_METADATA_KEY)
+    block = raw if isinstance(raw, dict) else {}
+    return {
+        "strategy": block.get("strategy") or DEFAULT_STRATEGY,
+        "carrier": block.get("carrier") or DEFAULT_CARRIER,
+        # None on everything but an `integrate` workflow's steps.
+        "role": block.get("role"),
+        "integrates": list(block.get("integrates") or ()),
+    }
+
+
+def workflow_dispatch(tasks: Any) -> dict[str, Any]:
+    """A workflow's dispatch options, read back from the tasks that carry them.
+
+    The frozen `Workflow` dataclass has no metadata field, so there is nowhere
+    on the workflow document to store them; every task of a workflow is written
+    with the same strategy and carrier, so any one of them answers. The per-step
+    ROLE is not reported here because it differs by step -- the integrator is
+    named instead, which is the part a caller wants from the workflow level.
+    """
+    strategy, carrier = DEFAULT_STRATEGY, DEFAULT_CARRIER
+    integrator_task_id: str | None = None
+    for task in tasks:
+        options = dispatch_of(task)
+        strategy, carrier = options["strategy"], options["carrier"]
+        if options["role"] == "integrator":
+            integrator_task_id = task.id
+            break
+    return {
+        "strategy": strategy,
+        "carrier": carrier,
+        "integrator_task_id": integrator_task_id,
+    }
+
+
 def task_to_api(task: Task) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec."""
     return {
@@ -118,11 +165,49 @@ def task_to_api(task: Task) -> dict[str, Any]:
         "next_eligible_at": task.next_eligible_at,
         "park_reason": task.park_reason.value if task.park_reason else None,
         "blocked_by": task.blocked_by,
+        # THE FENCING PAIR, which this serialiser never emitted.
+        #
+        # CONTRACT invariant 5 -- a stale worker exits without running the
+        # agent -- turns on `current_generation`, and `task_from_dict` above has
+        # always read both fields back. Neither ever reached a caller, so the
+        # platform's core safety mechanism was invisible through the API and no
+        # screen could show it. The live case: task_b5dc2568713a40158851 sat
+        # DISPATCHED for twenty minutes at generation 2 while its
+        # `current_lease_id` named an UNRELEASED generation-1 lease whose
+        # attempt never started, so the slot stayed held for work that could
+        # never run. The one number that says so was not served.
+        #
+        # THAT TASK'S DOCUMENT STILL PROVES THE POINT after the reconciler
+        # reclaimed it (`release_reason: reconciler:missing_execution`) and the
+        # retry succeeded: it is SUCCEEDED with `current_generation` 3 and
+        # `attempt_count` 2. Generation above attempt count is the permanent
+        # record that a stale worker was fenced, and it was unreadable through
+        # every API a person or a screen could call.
+        #
+        # Neither is withheld material. The docstring above promises no
+        # credential material and no backend spec: a generation is a small
+        # integer and the lease id is already public -- `lease_to_api` serves
+        # `lease_id` itself, and that lease's own generation, to the same
+        # callers. Nothing in this function's history ever removed them; they
+        # were absent from the first commit that wrote it.
+        #
+        # ALWAYS EMITTED, INCLUDING AS 0 AND None. Zero is an answer -- the
+        # task has never been admitted -- and it is what makes
+        # `current_generation > attempt_count` ("a stale worker was fenced")
+        # readable. A `or None` here would turn that answer back into "not
+        # reported", the conflation this codec has spent days removing.
+        "current_generation": task.current_generation,
+        "current_lease_id": task.current_lease_id,
         "workflow_id": task.workflow_id,
         "step_id": task.step_id,
         "depends_on": task.depends_on,
         "cancel_requested": task.cancel_requested,
         "metadata": task.metadata,
+        # Also inside `metadata`, which is where it is STORED. It is lifted out
+        # here so a caller reads the effective values -- including on a task
+        # that predates the feature and has no block -- without knowing the
+        # encoding.
+        "dispatch": dispatch_of(task),
         "repository_url": task.repository_url,
         "repository_ref": task.repository_ref,
         "input": task.input,
@@ -174,6 +259,27 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         peak_disk_bytes=data.get("peak_disk_bytes"),
         oom_near_miss=bool(data.get("oom_near_miss", False)),
         checkpoints=list(data.get("checkpoints") or []),
+        # THE FIVE SPEND FIELDS, which this decoder used to drop.
+        #
+        # `control.record_spend` merge-sets all five into the attempt document
+        # and they arrive intact -- but they were never read back here, so the
+        # dataclass defaults applied and `attempt_to_api` faithfully served
+        # None for every attempt that ever ran. Every cost and token figure in
+        # the product was unreachable, and the serialiser's own comment blamed
+        # a worker fix that had already shipped.
+        #
+        # `peak_rss_bytes` above is the control: same document, same decoder,
+        # and it round-tripped throughout. Exactly these five were missing.
+        #
+        # NOTE the `is None` checks rather than `or`: 0 tokens and $0.00 are
+        # measurements, and `data.get(k) or None` would turn a real zero back
+        # into "not measured" -- the same conflation this codebase has spent
+        # three days removing, reintroduced in the line that fixes it.
+        input_tokens=data.get("input_tokens"),
+        output_tokens=data.get("output_tokens"),
+        cache_read_input_tokens=data.get("cache_read_input_tokens"),
+        cache_creation_input_tokens=data.get("cache_creation_input_tokens"),
+        cost_usd=data.get("cost_usd"),
     )
 
 
@@ -210,6 +316,95 @@ def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
         enabled=bool(data.get("enabled", True)),
         updated_at=as_datetime(data.get("updated_at")) or datetime.now(timezone.utc),
     )
+
+
+def lease_to_api(lease: Lease) -> dict[str, Any]:
+    """Public JSON shape for a lease. No credential material, no backend spec.
+
+    `dispatch_overdue` and `expired` are COMPUTED here rather than left to the
+    caller. Both are one-line predicates on the model, and both are exactly
+    the kind of thing a UI gets subtly wrong -- `dispatch_overdue` is only
+    meaningful while the lease is still LEASED, because nothing ever writes
+    STARTING or RUNNING to a lease document. Computing them server-side means
+    every caller agrees with the reconciler.
+    """
+    return {
+        "lease_id": lease.lease_id,
+        "task_id": lease.task_id,
+        "attempt_id": lease.attempt_id,
+        "tenant_id": lease.tenant_id,
+        "generation": lease.generation,
+        "pools": lease.pools,
+        "units": lease.units,
+        # Only ever LEASED or DISPATCHED. The worker advances the TASK through
+        # STARTING and RUNNING and never touches this field, so a UI must not
+        # label this column "state" -- see docs/web-ui/02, trap B.
+        "dispatch_state": lease.state.value,
+        "created_at": lease.created_at,
+        "dispatch_deadline": lease.dispatch_deadline,
+        "expires_at": lease.expires_at,
+        "heartbeat_at": lease.heartbeat_at,
+        "released_at": lease.released_at,
+        "release_reason": lease.release_reason,
+        # `is_released` is a @property while `is_expired` and
+        # `dispatch_overdue` are methods. Mixed, on a frozen model, so it
+        # cannot be tidied -- calling the property returns a bool and then
+        # tries to call it, which fails at runtime rather than at import.
+        #
+        # `dispatch_overdue` no longer carries a `state is LEASED` guard. The
+        # old comment here argued the guard was safe "because nothing ever
+        # writes STARTING or RUNNING to a lease document". That premise was
+        # true and the conclusion did not follow: the state that ends the
+        # window is DISPATCHED, written by `mark_dispatched` as soon as the
+        # backend accepts the create call. So the flag read false on every
+        # lease whose dispatch was in flight -- the only population it is for.
+        "released": lease.is_released,
+        "expired": lease.is_expired(),
+        "dispatch_overdue": lease.dispatch_overdue(),
+    }
+
+
+def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
+    """Public JSON shape for one attempt.
+
+    This is the per-attempt record that `result_summary` cannot give you:
+    result_summary is written once, at terminal state, so a task that failed
+    twice and succeeded on the third try carries only the third attempt's
+    numbers. The first two live here.
+    """
+    return {
+        "attempt_id": attempt.attempt_id,
+        "task_id": attempt.task_id,
+        "tenant_id": attempt.tenant_id,
+        "generation": attempt.generation,
+        "lease_id": attempt.lease_id,
+        "backend": attempt.backend,
+        "execution_name": attempt.execution_name,
+        "created_at": attempt.created_at,
+        "started_at": attempt.started_at,
+        "completed_at": attempt.completed_at,
+        "exit_code": attempt.exit_code,
+        "error": attempt.error,
+        "peak_rss_bytes": attempt.peak_rss_bytes,
+        "peak_disk_bytes": attempt.peak_disk_bytes,
+        "oom_near_miss": attempt.oom_near_miss,
+        "checkpoints": attempt.checkpoints,
+        # NULL IS NOT ZERO: a caller must render an em dash, never $0.00, or a
+        # run with no measurement reads as a free one.
+        #
+        # This comment used to say "null until the worker fix ships in an
+        # agent-runtime-base image". That was false by the time anyone read it:
+        # the worker records all five, and `attempt_from_dict` was silently
+        # dropping them on the way back out. A comment naming the wrong cause
+        # is worse than none -- it was read, believed, and cited as the reason
+        # AgentDetail.tsx omits the cost columns, so a working feature stayed
+        # hidden behind an explanation that had stopped being true.
+        "input_tokens": attempt.input_tokens,
+        "output_tokens": attempt.output_tokens,
+        "cache_read_input_tokens": attempt.cache_read_input_tokens,
+        "cache_creation_input_tokens": attempt.cache_creation_input_tokens,
+        "cost_usd": attempt.cost_usd,
+    }
 
 
 def pool_to_api(pool: SlotPool) -> dict[str, Any]:
@@ -340,11 +535,33 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
     )
 
 
-def workflow_to_api(workflow: Workflow) -> dict[str, Any]:
+def workflow_to_api(
+    workflow: Workflow, rollup: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Public JSON shape for a workflow.
+
+    `state` SERVES THE DERIVED VALUE when a rollup is supplied, and the value
+    read out of Firestore is served beside it as `stored_state`. That is a
+    deliberate change of meaning for an existing field and it is the point of the
+    change: every consumer already asks "what state is this workflow in" by
+    reading `.state`, and until now the answer was QUEUED forever because nothing
+    advanced the stored field. Leaving `.state` faithful to the document would
+    have preserved the defect for the sake of a fidelity nobody asked for.
+
+    `rollup` is None only on a path that did not read the steps. The field then
+    reports the stored value and says so, rather than implying it was confirmed.
+    """
+    served = dict(rollup or {})
+    state = served.pop("state", None) or workflow.state.value
     return {
         "workflow_id": workflow.workflow_id,
         "tenant_id": workflow.tenant_id,
-        "state": workflow.state.value,
+        "state": state,
+        #: Always the value in Firestore. Kept so the cache can be audited, and
+        #: so a consumer that specifically wants the document gets the document.
+        "stored_state": workflow.state.value,
+        "state_source": "derived" if rollup else "stored",
+        **served,
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
         "submitted_by": workflow.submitted_by,

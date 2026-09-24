@@ -101,6 +101,43 @@ run "ci_is_keyless_and_bound_to_one_repository_and_ref" {
     error_message = "without a ref condition a fork's pull request could mint a deploy token"
   }
 
+  # THE THIRD PIN, AND THE ONE CHECKOV CANNOT SEE.
+  #
+  # `assertion.sub` is the claim GitHub itself constructs:
+  # `repo:<owner>/<name>:<context>:<value>`. Pinning it is stricter than the
+  # two clauses above rather than a restatement -- those are satisfied by any
+  # token carrying the right repository and ref attributes, while this also
+  # fixes the CONTEXT segment to `ref:`, so a token minted for
+  # `...:environment:prod` or `...:pull_request` does not match.
+  #
+  # IT IS ASSERTED HERE BECAUSE IT CANNOT BE ASSERTED BY CHECKOV. CKV_GCP_125
+  # reads `attribute_condition` as written text and looks for
+  # `assertion.sub == "..."`. Ours is composed in `local.sub_condition`, a
+  # `join()` over a `for` comprehension, and checkov's evaluator does not
+  # resolve that -- it sees `${local.sub_condition}` and reports the pin as
+  # absent. Terraform does resolve it, which is why the check is skipped in
+  # wif.tf and the property is gated here instead, against the RENDERED string.
+  assert {
+    condition = strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "assertion.sub == \"repo:saga/agent-swarm-infra:ref:refs/heads/main\"",
+    )
+    error_message = "the trust policy does not pin assertion.sub, so a token minted for a different context on an allowed ref is accepted"
+  }
+
+  # AND NOTHING WIDENS IT TO A PULL REQUEST. The single line in this file that
+  # would matter most if it were ever deleted: a PR ref minting a token that
+  # holds resourcemanager.projectIamAdmin on a SHARED project is the failure
+  # this whole pool exists to prevent, and "fix CI by adding refs/pull/*" is
+  # the exact pressure that would do it.
+  assert {
+    condition = !strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "refs/pull/",
+    )
+    error_message = "the trust policy admits a pull request ref; anyone can open a pull request"
+  }
+
   assert {
     condition     = google_iam_workload_identity_pool_provider.github[0].oidc[0].issuer_uri == "https://token.actions.githubusercontent.com"
     error_message = "the issuer must be GitHub's own OIDC endpoint"

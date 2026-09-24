@@ -82,10 +82,46 @@ jobs:
         # asserts the copies against the frozen module. It needs no credentials.
         run: ./scripts/lib/check-contract-parity.sh
 
+      - name: the deployment sets every environment variable the control plane reads
+        # Seven name mismatches between terraform and the apps had accumulated
+        # by 2026-09-18, every one of them failing open and silently -- a reader
+        # that gets "" takes its "not configured" branch, which is a quiet
+        # fallback rather than a crash. Nothing here needs credentials: it is a
+        # static comparison of what locals.tf writes against what the apps read.
+        run: ./scripts/lib/check-env-parity.sh
+
       - name: the plan guard still catches offenders
         # The single implementation both `make destroy` and the two Terraform
         # workflows use to decide whether a plan may touch this shared project.
         run: ./scripts/lib/plan-guard.sh --self-test
+
+      - name: the kubectl guard still refuses another team's cluster
+        # `make test` ran this and CI did not, so the one guard standing between
+        # a routine `kubectl` and another team's live cluster could be broken by
+        # a pull request and merged green. It was written after a bare
+        # `kubectl get runtimeclass` reached agents-staging and returned
+        # resources aged 133 days; the next command in that sequence was an
+        # apply. It takes no arguments and reaches no network.
+        run: ./scripts/lib/kubectl-guard.sh --self-test
+
+      - name: the auth guard still tells an expired session from an absent resource
+        # Same gap, same reason. This is the predicate every script uses to
+        # avoid reporting "not found" when the real answer is "your session
+        # expired" -- the failure mode that produced the swallowed-stderr sweep.
+        run: ./scripts/lib/auth-guard.sh --self-test
+
+      - name: the benchmark engine still fails a regression and a missed measurement
+        # `make test` runs this, so CI must too -- the rule the operator-surface
+        # test enforces, and the reason it exists: a guard that only one of the
+        # two runs is a guard a pull request can break and merge green.
+        #
+        # This is the engine that decides whether a performance regression is
+        # reported or swallowed. It asserts, offline and with no browser, that an
+        # unchanged run passes, that a 10x regression fails, that a run which
+        # measured NOTHING fails rather than setting a record, that the recorded
+        # 3m09s cold start of 2026-09-22 decomposes to 189s, and that a
+        # fixture-mode UI capture reports its API metrics as not measured.
+        run: ./scripts/bench.sh --self-test
 
       - name: no TODO or stub markers in shipped code
         # A TODO in a dispatch path is an outage with a comment attached.
@@ -167,12 +203,57 @@ jobs:
       - name: unit tests
         # No emulator, no credentials. The admission logic is pure so the
         # concurrency invariant can be tested exhaustively and fast.
-        run: uv run pytest tests/unit -q
+        # -n auto, for the reason the integration step below gives at length.
+        run: uv run pytest tests/unit -q -n auto
 
       - name: destroy-guard self-test
         # The guard is the only thing between `make destroy` and another team's
         # production cluster, so it is verified on every run, not before use.
         run: ./scripts/destroy.sh --self-test
+
+  ui:
+    name: swarm-ui typecheck / component tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 20 is what the reference workstation runs and what vitest 3 and
+          # jsdom 25 both support. `cache: npm` needs the lockfile path because
+          # the package is not at the repository root.
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/swarm-ui/package-lock.json
+
+      - name: install
+        working-directory: apps/swarm-ui
+        run: npm ci --no-audit --no-fund
+
+      - name: typecheck
+        # THE FIRST THING IN THIS REPOSITORY THAT EVER COMPILES THE TYPESCRIPT.
+        # Nothing ran `tsc` -- not make lint, not make test, not any workflow --
+        # so a field renamed in types.ts did not fail to build. It rendered as
+        # `undefined`, which this client prints as an em dash, so the visible
+        # symptom was a column reading "not measured" on every row.
+        working-directory: apps/swarm-ui
+        run: npm run typecheck
+
+      - name: component tests
+        # Offline by construction: setup.ts replaces the global `fetch` with
+        # one that throws, so a test that forgets to stub a response fails by
+        # name instead of reaching a machine.
+        working-directory: apps/swarm-ui
+        # `npm test` now chains TWO runners: vitest over src/**/*.test.ts(x),
+        # then node:test over tests/*.test.ts(x). The suites cannot share a
+        # runner -- one uses vitest's API, the other node:test's -- and vitest's
+        # include glob is scoped to src/ so neither swallows the other.
+        #
+        # NOT `npm test -- --run`: the trailing argument would be appended to
+        # the LAST command in the chain, not to vitest, so node tests/run.mjs
+        # would receive a flag it never asked for. `vitest run` is already
+        # non-watching.
+        run: npm test
 
   integration:
     name: integration tests (emulator)
@@ -240,11 +321,34 @@ jobs:
             exit 1
           fi
           export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
-          if [ -d tests/integration ] && ls tests/integration/test_*.py >/dev/null 2>&1; then
-            uv run pytest tests/integration -q
-          else
-            echo "no integration tests present"
-          fi
+          # NO "if the directory exists" GUARD. This job is the only place in the
+          # repository where the emulator-backed tests run -- `make test` is
+          # offline by design and never touches tests/integration -- so a guard
+          # that turns "I could not find them" into a green step is a gate that
+          # reports success having looked at nothing. Renaming the directory, or
+          # a checkout that lands short, used to print "no integration tests
+          # present" and exit 0, and the last-slot admission race (the one thing
+          # that needs REAL transaction semantics rather than a mock) would merge
+          # with CI green. docs/audits/2026-09-18/01-github-workflows.md, #1.
+          #
+          # pytest fails this step by itself in each of the three ways that
+          # matter: exit 4 if the path does not exist, exit 5 if it collects
+          # nothing, exit 1 if a test fails.
+          # PARALLEL, then the timing-sensitive few on their own.
+          #
+          # These cases drive the real shell scripts against a fake `curl` that
+          # is a Python script, so each of the ~600 requests a suite run makes
+          # pays ~42ms of interpreter startup -- ~31s per run, and this suite
+          # was 700 of `make test`'s 790 seconds before it was parallelised.
+          # The cases are independent and each works in its own tmp_path.
+          #
+          # The `serial` mark is not a flaky-test quarantine. It is two files
+          # whose assertions are ABOUT elapsed time -- one injects a 400ms delay
+          # and requires the gate to notice it, the other requires a process to
+          # still be running when it is looked at. Under -n they measure the
+          # runner's load instead of the thing they were written to measure.
+          uv run pytest tests/integration -q -n auto -m "not serial"
+          uv run pytest tests/integration -q -m serial
 
   manifests:
     name: kubernetes manifests
@@ -281,49 +385,38 @@ jobs:
         # operator does, and additionally fails on any placeholder that survives.
         run: ./scripts/lib/validate-manifests.sh
 
-      - name: security posture assertions
-        # These are platform promises, not style preferences: a workload that
-        # can run as root, escalate privileges or restart is a workload the
-        # no-preemption / no-restart guarantee does not actually cover.
-        #
-        # Scoped to kubernetes/worker-templates, and matching the real Spot LABEL
-        # rather than the word. The previous version matched `*policies*`, which
-        # also matches `network-policies/`, so a NetworkPolicy object was
-        # required to declare `runAsNonRoot`; it required the same of
-        # policies/pod-security.yaml, a ValidatingAdmissionPolicy that contains
-        # neither string; and `grep -qi spot` matched the prose in both worker
-        # templates and the eleven mentions in pod-security.yaml that exist in
-        # order to REJECT Spot. Four guaranteed errors on an untouched tree, so
-        # the gate enforced nothing. security.yml:172 already had this right.
+      # The posture assertions used to be written out here, inline, and NOWHERE
+      # ELSE -- so `make lint` passed on a tree that failed this job, and the
+      # only way to find out was to push. That is the shape CLAUDE.md names:
+      # "every rule that got restated in a second place here has since
+      # drifted." The rule now lives once, in the script the step above already
+      # runs, which is also what `make lint` runs. There is nothing left to
+      # restate here, so this step is gone rather than reduced to a call.
+
+  build-not-run:
+    # NOT a no-op, for the reason this repository keeps relearning: a skipped
+    # job is invisible in the checks list, and silence here has meant "did not
+    # run" far more often than "nothing to report".
+    name: build images (not run on a pull request)
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: say what was not built
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          fail=0
-          found=0
-          for f in kubernetes/worker-templates/*.yaml; do
-            found=$((found + 1))
-            grep -q 'runAsNonRoot: true' "$f" || { echo "::error file=$f::missing runAsNonRoot"; fail=1; }
-            grep -q 'allowPrivilegeEscalation: false' "$f" || { echo "::error file=$f::missing allowPrivilegeEscalation:false"; fail=1; }
-            grep -q 'readOnlyRootFilesystem: true' "$f" || { echo "::error file=$f::missing readOnlyRootFilesystem"; fail=1; }
-            if grep -q 'restartPolicy' "$f"; then
-              grep -q 'restartPolicy: Never' "$f" || { echo "::error file=$f::restartPolicy must be Never"; fail=1; }
-            fi
-            # The Spot node label, not the word: the admission policies name the
-            # same label in order to reject it, and both templates mention Spot
-            # in a comment explaining why it is disabled.
-            if grep -qE 'cloud\.google\.com/gke-spot' "$f"; then
-              echo "::error file=$f::a worker template requests Spot capacity (Spot Pods cannot use Autopilot extended run time)"
-              fail=1
-            fi
-          done
-          # A check that silently matches no files is a check that passes for the
-          # wrong reason; this is how the whole job came to enforce nothing.
-          if [ "$found" -eq 0 ]; then
-            echo "::error::no worker templates found under kubernetes/worker-templates"
-            fail=1
-          fi
-          echo "checked ${found} worker template(s)"
-          exit "$fail"
+          {
+            echo "### Images were not built"
+            echo
+            echo "A pull request's OIDC ref is \`refs/pull/${{ github.event.number }}/merge\`."
+            echo "The workload identity pool is pinned to \`refs/heads/main\`, so no token is"
+            echo "minted here. That pin is the security boundary, not a misconfiguration:"
+            echo "\`build-images.sh\` runs a checked-in \`cloudbuild.yaml\` from this branch,"
+            echo "as an identity holding \`resourcemanager.projectIamAdmin\` on a shared project."
+            echo
+            echo "**Checked on this pull request:** every test, lint and manifest job above."
+            echo "**Not checked here:** that the images build. That runs on \`main\`, in"
+            echo "\`release.yml\`, behind an environment approval."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: build images
@@ -345,14 +438,35 @@ jobs:
     # enough to read every tenant's provider key, read and write the whole swarm
     # Firestore database, and self-escalate to owner.
     #
-    # Today the WIF attribute condition saves this by accident:
-    # `github_allowed_refs` defaults to ['refs/heads/main'], so a pull_request
-    # ref is rejected and the auth step fails. That is not a control, it is
-    # standing pressure to add refs/pull/* to github_allowed_refs to "fix CI" --
-    # and the moment anyone does, any PR author runs arbitrary code as that
-    # identity. github_allowed_refs MUST NEVER INCLUDE refs/pull/*. The approval
-    # gate below is what makes this job workable without that change: a human
-    # looks at the diff before any credential is minted.
+    # THE REF PIN IS THE CONTROL, AND IT IS NOT AN ACCIDENT ANY MORE.
+    #
+    # `github_allowed_refs` is ['refs/heads/main'], so a pull_request ref --
+    # `refs/pull/<n>/merge` -- is rejected by the pool's attribute condition and
+    # the auth step fails with:
+    #
+    #     unauthorized_client: The given credential is rejected by the
+    #     attribute condition.
+    #
+    # Measured on 2026-09-24, the first run after WIF was applied. That is the
+    # boundary doing its job: this job authenticates as vars.GCP_DEPLOY_SA and
+    # then runs ./scripts/build-images.sh from the PULL REQUEST'S OWN CHECKOUT,
+    # and build-images.sh executes any checked-in cloudbuild.yaml, so the PR
+    # author chooses what runs. That identity holds datastore.owner,
+    # storage.admin and resourcemanager.projectIamAdmin on a SHARED project --
+    # enough to read every tenant's Firestore, every bucket, and to self-escalate
+    # to owner. A pull request that could mint it is a pull request that owns
+    # the project, and anyone can open a pull request.
+    #
+    # SO THE JOB IS SKIPPED ON A PULL REQUEST RATHER THAN LEFT TO FAIL. It could
+    # never go green there, and a permanently red required check is precisely the
+    # standing pressure to "fix CI" by adding refs/pull/* to github_allowed_refs
+    # -- which is the one change that must never be made. Leaving it red does not
+    # protect anything; it only makes the protection look like a bug.
+    #
+    # Images are built on main, by release.yml, behind an environment approval.
+    # `build-not-run` below says so in the run summary, so a green pull request
+    # is not mistaken for a built one.
+    if: github.event_name != 'pull_request'
     environment: build-pr
     steps:
       - uses: actions/checkout@v4

@@ -57,7 +57,9 @@ TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix
 TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
-        load-test quota-test concurrency-test failure-test race-test test tf-test lint \
+        load-test quota-test concurrency-test failure-test race-test e2e-test \
+        test tf-test ui-test ui-component-test lint \
+        bench bench-ui bench-baseline \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
         destroy purge-data dev kubectl register-tenant secrets clean
 
@@ -95,8 +97,7 @@ tf-init: ## terraform init for this environment (state prefix infra/$(ENVIRONMEN
 
 tf-plan: ## terraform plan (review every create in a shared project)
 	@test -f $(VAR_FILE) || { echo "no $(VAR_FILE); ENVIRONMENT=$(ENVIRONMENT) has no inputs"; exit 1; }
-	@mkdir -p build
-	@$(TERRAFORM) -chdir=$(TF_ROOT) plan -input=false -lock-timeout=120s $(TF_VAR_ARGS) -out=$(CURDIR)/build/$(ENVIRONMENT).tfplan
+	@$(SCRIPTS)/plan.sh
 
 tf-apply: ## terraform apply the plan from tf-plan
 	@test -f build/$(ENVIRONMENT).tfplan || { echo "run 'make tf-plan' first"; exit 1; }
@@ -107,6 +108,12 @@ infra: ## Plan and apply infrastructure, then point kubectl at the swarm cluster
 	@$(MAKE) tf-plan
 	@$(MAKE) tf-apply
 	@$(SCRIPTS)/configure-kubectl.sh || echo "note: the GKE cluster is not reachable yet; the Cloud Run path does not need it"
+
+pool-check: ## Compare live pool ceilings against the terraform output (needs credentials)
+	@# NOT part of `make test`, which is offline by contract. Pool documents carry
+	@# ignore_changes in terraform, so tfvars describes a NEW environment and says
+	@# nothing about a running one; this is the only thing that compares them.
+	@$(SCRIPTS)/pool-limit.sh --check
 
 kubectl-guard: ## Print the export that puts the guarded kubectl ahead of the real one
 	@echo 'export PATH="$(CURDIR)/bin:$$PATH"'
@@ -151,29 +158,148 @@ failure-test: ## Failures, cancellation and malformed input leak no capacity
 race-test: ## The last free slot goes to exactly one task
 	@$(SCRIPTS)/race-test.sh
 
+e2e-test: ## The seams: a workflow handoff, spend through the API, sign-in, state agreement
+	@# The other targets above check PROPERTIES of the platform. This one checks
+	@# that its halves are JOINED, which is the class of defect that produced
+	@# every outage of the last three days -- both ends built, the middle never
+	@# executed. tests/integration/test_e2e_suite_can_fail.py drives this same
+	@# script offline against a fake platform and proves each of its checks
+	@# fails when the fact it covers is false; that runs in `make test`.
+	@$(SCRIPTS)/e2e-test.sh
+
+bench: ## Performance benchmarks against baselines (SUITES=api,reconcile,cost)
+	@# READ-ONLY BY DEFAULT. The three suites in the default set submit nothing
+	@# and create nothing, so this is safe against a live environment. SUITES=
+	@# dispatch or admission SUBMIT TASKS (and cancel them); on --profile
+	@# claude-code they spend real provider tokens. docs/benchmarks.md states
+	@# what every suite costs in money and in minutes, because a benchmark
+	@# nobody runs because it is expensive is not a benchmark.
+	@$(SCRIPTS)/bench.sh $${SUITES:+--suites $$SUITES}
+
+bench-ui: ## Browser-side UI cost: paint, load and every /v1 fetch (URL=http://localhost:5173)
+	@# Separate from `bench` because it needs a UI already running and a browser,
+	@# which the three read-only API suites do not. It submits nothing and
+	@# creates nothing; against a fixture UI it records the API numbers as
+	@# not-measured WITH THAT REASON rather than omitting them, because an
+	@# omitted metric and a fast one are indistinguishable in a chart.
+	@$(SCRIPTS)/bench-ui.sh --url $${URL:-http://localhost:5173} $${ROUNDS:+--rounds $$ROUNDS}
+
+bench-baseline: ## Record this run's numbers as the reference (SUITES=api,...)
+	@# Recording a baseline asserts "this is what normal looks like". Read the
+	@# diff before committing it: a cold cache, a busy platform or a
+	@# half-deployed revision all produce numbers every honest run afterwards
+	@# will then fail against.
+	@$(SCRIPTS)/bench.sh --record-baseline $${SUITES:+--suites $$SUITES}
+
 test: ## Unit tests, terraform tests and the guard self-tests (no cloud resources needed)
 	@$(SCRIPTS)/destroy.sh --self-test
 	@$(SCRIPTS)/lib/plan-guard.sh --self-test
 	@$(SCRIPTS)/lib/auth-guard.sh --self-test
 	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
-	@if [ -d tests/unit ] && [ -n "$$(find tests/unit -name 'test_*.py' -print -quit)" ]; then \
-	  uv run --project . pytest tests/unit -q; \
-	else \
-	  echo "no unit tests in tests/unit yet"; \
-	fi
+	@$(SCRIPTS)/lib/check-env-parity.sh
+	@# The benchmark engine, offline. It gates on percentiles, on baselines and
+	@# on the difference between "fast" and "never measured", and every one of
+	@# those decisions is testable without a cloud. Wired in here for the reason
+	@# the comment under `test` gives about tests/integration: a suite that is
+	@# in no target rots, and this one decides whether a performance regression
+	@# is reported or swallowed.
+	@$(SCRIPTS)/bench.sh --self-test
+	@# NO "if the directory exists" GUARD on either suite below. `make test` is
+	@# the gate CLAUDE.md names before anyone may say a change is done, and a
+	@# guard that turns "I could not find the tests" into a green run is a gate
+	@# that passes hardest when it is most broken -- the class this repository
+	@# keeps producing. pytest already fails on each case that matters: exit 4
+	@# for a path that is not there, exit 5 for a path that collects nothing,
+	@# exit 1 for a failing test. Nothing here needs to second-guess it.
+	@uv run --project . pytest tests/unit -q -n auto
+	@# tests/integration is OFFLINE -- it drives the real scripts end to end with
+	@# a fake gcloud and a fake curl on PATH under --dry-run, creating nothing and
+	@# needing no credentials. It was in no target, and it rotted exactly as the
+	@# comment under tf-test predicted for the terraform suite: 9c639af ("An HTTP
+	@# error is not an empty result") correctly taught fs_request to check the
+	@# status code, the fake curl had never honoured `-o`/`-w`, and all three
+	@# files errored in their fixture for 95 commits with nothing to report it.
+	@uv run --project . pytest tests/integration -q -n auto -m "not serial"
+	@# The timing-sensitive files, alone and unhurried. See their pytestmark.
+	@uv run --project . pytest tests/integration -q -m serial
+	@$(MAKE) ui-component-test
 	@$(MAKE) tf-test
+
+ui-test: ## Drive the real UI in a headed browser and assert what a person would eyeball
+	@# DELIBERATELY NOT A PREREQUISITE OF `test`, AND `test` IS NOT A
+	@# PREREQUISITE OF THIS.
+	@#
+	@# `make test` is offline, needs no credentials, creates nothing and
+	@# finishes in seconds. That is load-bearing: it is the gate CLAUDE.md names
+	@# before anyone may say a change is done, so it has to stay cheap enough
+	@# that nobody is tempted to skip it. This suite builds a bundle, starts an
+	@# HTTP server and drives a headed Chromium, and takes minutes.
+	@#
+	@# Folding it in would also, the first time Chromium was missing on a
+	@# machine, teach somebody to add an "if the browser exists" guard -- and a
+	@# guard that turns "I could not find the browser" into a green run is the
+	@# exact shape the comment under `test` above refuses. Separate target, no
+	@# guard, and it exits 3 rather than 0 when it could not run at all.
+	@#
+	@# THE EXIT CODE HAS TO BE TRANSLATED HERE, because make destroys it.
+	@# ui-test.sh distinguishes 1 (findings, every one already in
+	@# tests/browser/baseline.json -- nothing got worse) from 2 (a NEW finding
+	@# -- something got worse) from 3 (the harness never ran). GNU make returns
+	@# 2 for ANY failed recipe, so through `make ui-test` all three arrive as
+	@# the same "Error 1 / exit 2" and the baseline stops meaning anything.
+	@# That is this repository's own defect class wearing a Makefile: both ends
+	@# built, the seam between them dropping the signal. So the recipe reads
+	@# the code itself and says in words which of the four happened.
+	@s=0; $(SCRIPTS)/ui-test.sh $(UI_TEST_ARGS) || s=$$?; \
+	  case $$s in \
+	    0) echo "ui-test: no findings." ;; \
+	    1) echo "ui-test: findings, ALL of them already recorded in tests/browser/baseline.json -- nothing got worse." ;; \
+	    2) echo "ui-test: NEW finding(s) -- something got worse. Read build/ui-test/report.txt before you re-baseline." ;; \
+	    3) echo "ui-test: the harness could not run at all. This is a harness failure, never a pass." ;; \
+	    *) echo "ui-test: unexpected exit $$s." ;; \
+	  esac; \
+	  exit $$s
+
+ui-component-test: ## swarm-ui typecheck + component tests (Vitest/jsdom, offline, no credentials)
+	@# 20,445 lines of TypeScript had NO test runner, and the Python files that
+	@# "test the UI" read `.tsx` as text and assert on source strings -- which
+	@# cannot catch a render error, cannot catch a runtime exception, and pass
+	@# when the string they look for appears in a comment. These files are full
+	@# of comments quoting the very copy those greps search for.
+	@#
+	@# The honesty rules are the product's best property and nothing enforced
+	@# them at runtime: a failed read renders no zero, a partial read says what
+	@# it could not see, an unmeasured figure is an em dash while a measured
+	@# zero is 0, and no total appears over a partial response.
+	@#
+	@# The script keeps the three failure reasons apart -- suite missing is a
+	@# FAILURE, node missing is the one skip, dependencies missing is an install
+	@# -- for the reason recorded under tf-test.
+	@$(SCRIPTS)/ui-component-test.sh
 
 tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no credentials)
 	@# 86 assertions covering the platform promises the docs lean on. This suite
 	@# existed and was wired into nothing -- not make test, not make lint, not any
 	@# workflow -- so it sat outside the gate CLAUDE.md names as the completeness
 	@# check and would have rotted the first time a module changed.
-	@if [ -n "$(TERRAFORM)" ] && [ -d tests/terraform ]; then \
+	@# The two reasons this can not run are kept apart. One message for both was
+	@# the audit-04 shape: "terraform not found, or no tests/terraform" sent a
+	@# reader to install a binary they already had when the suite had actually
+	@# been renamed out from under the target. A missing BINARY is a workstation
+	@# without terraform, and skipping is right -- the terraform.yml job still
+	@# runs it. A missing SUITE is the 86 assertions silently not running, and is
+	@# a failure.
+	@if [ ! -d tests/terraform ]; then \
+	  echo "tests/terraform is missing: the 86 mock-provider assertions cannot run." >&2; \
+	  echo "If the suite moved, point tf-test at it -- do not let it skip." >&2; \
+	  exit 1; \
+	elif [ -z "$(TERRAFORM)" ]; then \
+	  echo "terraform is not installed, so tests/terraform did NOT run here."; \
+	  echo "The terraform.yml workflow runs it on every push."; \
+	else \
 	  $(TERRAFORM) -chdir=tests/terraform init -input=false >/dev/null && \
 	  $(TERRAFORM) -chdir=tests/terraform test; \
-	else \
-	  echo "terraform not found, or no tests/terraform; skipping"; \
 	fi
 
 ## ---------------------------------------------------------------------------
@@ -266,3 +392,6 @@ purge-data: ## Delete swarm runtime data (Firestore, artifacts), never infrastru
 clean: ## Remove local build artifacts (never touches the cloud)
 	@rm -rf build/*.tfplan build/*.json build/*.jsonl build/kubeconfig-*.yaml build/cloudbuild-*.yaml build/rendered
 	@echo "cleaned build/"
+
+verify-remote: ## Run the verification gate INSIDE the VPC (smoke, concurrency, race, e2e)
+	@$(SCRIPTS)/verify-remote.sh

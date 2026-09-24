@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable
 
 from swarm_common.admission import _snapshot
 from swarm_common.admission import release_lease_in_transaction
-from swarm_common.models import TaskEvent, new_id, utcnow
+from swarm_common.models import TaskEvent, new_id, retries_exhausted, utcnow
 from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
@@ -35,6 +35,7 @@ from swarm_common.states import (
 )
 
 from .model import AttemptView, ControlSnapshot, LeaseView, TaskView
+from .model import as_datetime as _as_datetime
 
 
 class FirestoreTransactionRunner:
@@ -109,6 +110,64 @@ class ControlStore:
                     doc.to_dict() or {}, lease.attempt_id
                 )
         return snapshot
+
+    def task_and_attempts(self, task_id: str) -> tuple[TaskView | None, list[AttemptView]]:
+        """Everything checkpoint retention needs about one task.
+
+        Not part of `snapshot()`, and deliberately so: the snapshot reads only
+        tasks in the four concurrency states, because those are the only ones
+        that can hold capacity. Retention asks the opposite question -- which
+        tasks are finished -- so it reads by id, one task at a time, and a
+        backlog of a hundred thousand QUEUED tasks still costs this pass
+        nothing.
+
+        A task document that does not exist returns None, which `classify`
+        hands to the age backstop. A READ THAT FAILS raises, and the caller
+        keeps the objects untouched: "the task is gone" and "I could not look"
+        must never produce the same deletion.
+        """
+        snap = self._db.collection("tasks").document(task_id).get()
+        task = TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
+        attempts: list[AttemptView] = []
+        query = self._db.collection("attempts").where(
+            filter=self._filter("task_id", "==", task_id)
+        )
+        for doc in query.stream():
+            attempts.append(AttemptView.from_doc(doc.to_dict() or {}, doc.id))
+        return task, attempts
+
+    #: Where the checkpoint sweep records that it ran. A single document, read
+    #: and written inside one transaction, because swarm-reconciler scales to
+    #: zero and an in-process timer would reset on every cold start -- the same
+    #: mistake `record_pass` exists to undo.
+    SWEEP_STATE_PATH = ("reconciler_state", "checkpoint_gc")
+
+    def claim_checkpoint_sweep(self, *, min_interval_seconds: int, now: datetime) -> bool:
+        """True at most once per `min_interval_seconds`, across all instances.
+
+        The claim is written BEFORE the sweep runs, not after. A sweep that
+        crashes half way therefore waits a full interval before trying again,
+        which is the safe direction: the alternative is a failing sweep relisting
+        the entire bucket on every five-minute tick for as long as it keeps
+        failing.
+        """
+        collection, document = self.SWEEP_STATE_PATH
+        ref = self._db.collection(collection).document(document)
+
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            if snap.exists:
+                last = (snap.to_dict() or {}).get("last_started_at")
+                last_dt = _as_datetime(last)
+                if last_dt is not None and (now - last_dt).total_seconds() < min_interval_seconds:
+                    return False
+                txn.update(ref, {"last_started_at": now})
+            else:
+                txn.set(ref, {"last_started_at": now})
+            return True
+
+        return bool(self._txn.run(_apply))
 
     def active_tenants(self, snapshot: ControlSnapshot) -> set[str]:
         return {task.tenant_id for task in snapshot.tasks.values() if task.tenant_id}
@@ -186,6 +245,7 @@ class ControlStore:
         task_id: str,
         *,
         to_state: TaskState,
+        expected_lease_id: str | None = None,
         error: str | None = None,
         next_eligible_at: datetime | None = None,
     ) -> TaskState | None:
@@ -194,6 +254,21 @@ class ControlStore:
         Re-reads inside the transaction and refuses an illegal transition rather
         than forcing one: if a worker wrote SUCCEEDED between the snapshot and
         now, the correct repair is no repair.
+
+        `expected_lease_id` is the lease the FINDING was about, and this refuses
+        when the task has since moved to a different one -- the same "re-read and
+        refuse on mismatch" discipline `invalidate_generation` applies to the
+        generation. Without it, a finding about an old attempt reset a task whose
+        NEW attempt was running: `invalidate_generation` and `release_lease` both
+        correctly no-op on a superseded finding, and then this forced RUNNING ->
+        READY and cleared `current_lease_id` out from under a live, heartbeating
+        lease. The next drain admitted a second worker on the same repository --
+        invariant 5 broken through the machinery that enforces it -- and the
+        unhooked lease held capacity nothing would return.
+
+        None means "no expectation", for findings that carry no lease (an orphan
+        execution whose lease was released long ago). A task holding no lease has
+        nothing to strand, so those still repair.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -208,11 +283,26 @@ class ControlStore:
                 return None
             if current in TERMINAL_STATES:
                 return None
+            held = data.get("current_lease_id") or None
+            if held is not None and held != expected_lease_id:
+                self._log.info(
+                    "refusing to repair a task that has moved to another lease",
+                    task_id=task_id,
+                    holds_lease=held,
+                    finding_lease=expected_lease_id,
+                    state=current.value,
+                )
+                return None
             target = to_state
             if target is TaskState.READY:
-                attempts = int(data.get("attempt_count", 0))
-                max_attempts = int(data.get("max_attempts", 3))
-                if attempts >= max_attempts:
+                # The shared predicate, not a second copy of the comparison.
+                # This path had the rule and the scheduler's dispatch-failure
+                # path did not, which is how a task reached 83 attempts against
+                # a cap of 3 on 2026-09-23.
+                if retries_exhausted(
+                    int(data.get("attempt_count", 0)),
+                    int(data.get("max_attempts", 3)),
+                ):
                     target = TaskState.FAILED
             if current is target:
                 return None
@@ -277,3 +367,50 @@ class ControlStore:
                 "detail": event.detail,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Pass history
+    # ------------------------------------------------------------------
+
+    #: Outcomes kept on a pass document. A pass repairing thousands of leases
+    #: would otherwise approach Firestore's 1 MiB document limit, and a write
+    #: that fails because it grew too large loses the WHOLE record of the pass
+    #: that most needed recording.
+    MAX_STORED_OUTCOMES = 50
+
+    def record_pass(self, report: dict[str, Any], *, retain_hours: int) -> str | None:
+        """Persist one reconciliation pass, and return its id.
+
+        WHY THIS EXISTS. The report used to live in a per-instance dict
+        (`service.py`'s `state["last_report"]`) and nowhere else. swarm-reconciler
+        runs with min_instance_count = 0, so a cold instance answered
+        `last_pass_at: null` and every finding the previous pass had made was
+        gone. The reconciler is the component that detects stale leases, dead
+        workers and orphaned executions -- the platform's entire account of what
+        went wrong at runtime -- and it was discarded within minutes.
+
+        Persisting it is what makes an operator screen, or an alert on "no
+        successful pass in N minutes", possible at all.
+
+        Returns None rather than raising: a pass that repaired real damage must
+        not be reported as a failure because its bookkeeping write failed. The
+        error is logged by the caller.
+        """
+        from datetime import timedelta
+
+        outcomes = list(report.get("outcomes") or [])
+        stored = outcomes[: self.MAX_STORED_OUTCOMES]
+
+        pass_id = new_id("pass")
+        doc = {
+            **{k: v for k, v in report.items() if k != "outcomes"},
+            "pass_id": pass_id,
+            "outcomes": stored,
+            "outcome_count": len(outcomes),
+            # Never a silent truncation: a reader must be able to tell a pass
+            # with 50 outcomes from a pass with 4000 whose tail was dropped.
+            "outcomes_truncated": len(outcomes) > len(stored),
+            "expires_at": utcnow() + timedelta(hours=retain_hours),
+        }
+        self._db.collection("reconciler_passes").document(pass_id).set(doc)
+        return pass_id

@@ -216,17 +216,21 @@ kubectl delete validatingadmissionpolicy        swarm-worker-hardening-advisorie
 own manifest against the same requirements, so a regression on that side fails in
 CI rather than as Pending pods.
 
-### 5. Two service account names, two GSA naming schemes
+### 5. Two KSA names for one service account
 
-`scripts/register-tenant.sh` creates the KSA `swarm-worker` and the GSA
-`swarm-t-<tenant>`; `dispatch.py` asks for the KSA `swarm-<tenant>`;
-`terraform/modules/tenancy` creates the GSA `swarm-agent-worker-<tenant>`. A pod
-naming a service account that does not exist stays Pending until its deadline
-expires, which reads as a scheduling problem rather than a missing object.
+`scripts/register-tenant.sh` creates the KSA `swarm-worker`; `dispatch.py` asks
+for the KSA `swarm-<tenant>`. A pod naming a service account that does not exist
+stays Pending until its deadline expires, which reads as a scheduling problem
+rather than a missing object.
 
 Worked around by creating both KSA names here, both annotated for Workload
-Identity, and by making `--gsa` an explicit flag on `render.py` whose default is
-the terraform name. Three names for two objects should become one each.
+Identity. Two names for one object should become one.
+
+The GSA half of this is **closed**: `register-tenant.sh` used to create
+`swarm-t-<tenant>`, and now creates `swarm-agent-worker-<tenant>` — the same
+identity `terraform/modules/tenancy` creates and the one `render.py --gsa`
+defaults to. All three agree, so the flag is for rendering against an identity
+neither provisioning path made, not for papering over a mismatch.
 
 ### 6. Namespace `managed-by` is `swarm-terraform` but no terraform state holds it
 

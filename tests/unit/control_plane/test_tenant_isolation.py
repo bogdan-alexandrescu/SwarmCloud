@@ -295,3 +295,228 @@ def test_a_personal_tenant_records_the_user_as_its_principal(client, db):
     assert submit(client, "carol")["tenant_id"] == "u-carol"
     assert db.docs["tenants/u-carol"]["principal"] == "carol@saga.xyz"
     assert db.docs["tenants/u-carol"]["kind"] == "user"
+
+
+# -- the collision must be refused on READS, not only on submits -----------
+#
+# Until 2026-09-21 the principal check ran only inside `ensure_tenant`, which
+# the submit paths reach through `SubmissionService.tenant_for`. Every read and
+# the cancel route filtered Firestore by the raw `auth.tenant_id` string
+# instead, so the second principal was refused when submitting and served when
+# listing, reading, cancelling, counting and asking for capacity. That is the
+# wrong way round: the cheapest thing to do with somebody else's tenant id is
+# read it, and cancelling their work is a WRITE that arrived through a read
+# path. `deps.tenant_scope` -> `SubmissionService.scope_for` ->
+# `Store.assert_tenant_scope` is what closes it.
+
+
+def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
+    client = collision_client(db, "eng@partner.com", "mallory@partner.com")
+    mallory = {"Authorization": "Bearer token-mallory"}
+
+    created = client.post(
+        "/v1/tasks", headers={"Authorization": "Bearer token-alice"},
+        json={"runner_profile": "mock"},
+    )
+    assert created.status_code == 201
+    task_id = created.json()["task"]["id"]
+
+    workflow = client.post(
+        "/v1/workflows",
+        headers={"Authorization": "Bearer token-alice"},
+        json={"steps": [{"step_id": "only", "runner_profile": "mock"}]},
+    )
+    assert workflow.status_code == 201
+    workflow_id = workflow.json()["workflow"]["workflow_id"]
+
+    reads = (
+        ("GET", "/v1/tasks"),
+        ("GET", f"/v1/tasks/{task_id}"),
+        ("GET", f"/v1/tasks/{task_id}/events"),
+        ("GET", f"/v1/tasks/{task_id}/attempts"),
+        ("GET", f"/v1/tasks/{task_id}/artifacts"),
+        # The inspection routes. They read OBJECTS rather than documents, so
+        # forgetting `tenant_scope` on one of them would not merely show
+        # another tenant's metadata -- it would hand over their agent's stdout
+        # and their checkpoint archives. This list is the guard that catches a
+        # new route added without the dependency, so a new route belongs in it.
+        ("GET", f"/v1/tasks/{task_id}/checkpoints"),
+        ("GET", f"/v1/tasks/{task_id}/logs"),
+        ("GET", "/v1/workflows"),
+        ("GET", f"/v1/workflows/{workflow_id}"),
+        ("GET", "/v1/stats"),
+        ("GET", "/v1/capacity"),
+        ("GET", "/v1/providers"),
+        ("GET", "/v1/tenants/me"),
+    )
+    for method, path in reads:
+        response = client.request(method, path, headers=mallory)
+        assert response.status_code == 409, f"{method} {path} -> {response.status_code}"
+        assert response.json()["code"] == "conflict", path
+
+    # The two cancel routes are writes that were reachable through the read
+    # boundary, so they are asserted separately and against the document.
+    for path in (f"/v1/tasks/{task_id}/cancel", f"/v1/workflows/{workflow_id}/cancel"):
+        assert client.post(path, headers=mallory).status_code == 409, path
+    assert db.docs[f"tasks/{task_id}"]["cancel_requested"] is False
+    assert db.docs[f"tasks/{task_id}"]["state"] == "READY"
+
+    # And the owner is unaffected by the guard.
+    owner = {"Authorization": "Bearer token-alice"}
+    assert client.get("/v1/tasks", headers=owner).status_code == 200
+    assert client.get(f"/v1/tasks/{task_id}", headers=owner).status_code == 200
+    assert client.get("/v1/stats", headers=owner).status_code == 200
+
+
+def test_a_group_named_like_the_personal_prefix_collides_with_a_users_tenant(db):
+    """`u-eng@saga.xyz` as a registered GROUP derives the same id as the
+    PERSONAL tenant of `eng@saga.xyz`.
+
+    The frozen `tenant_id_for_user` prefixes `u-` and documents that this
+    "cannot collide with a group" -- but the group path adds no prefix at all,
+    so a group whose local part already begins `u-` lands on exactly that id.
+    No second domain and no punctuation variant is needed; one plausible group
+    name is enough. The fix for the id itself belongs in the frozen module, so
+    what is asserted here is the behaviour this service can guarantee without
+    it: the two principals are never served as one tenant.
+    """
+    from fastapi.testclient import TestClient
+
+    from swarm_api.auth import StaticTokenVerifier
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.deps import build_context
+    from swarm_api.groups import StaticGroups
+    from swarm_api.main import create_app
+    from swarm_api.waker import NullWaker
+
+    from .conftest import api_settings
+
+    group = "u-eng@saga.xyz"
+    ctx = build_context(
+        settings=api_settings(tenant_groups=(group,)),
+        db=db,
+        verifier=StaticTokenVerifier({
+            "token-member": {"email": "dana@saga.xyz", "email_verified": True, "sub": "s1"},
+            # In NO registered group, so she falls back to a personal tenant --
+            # and her local part is `eng`, so that tenant is `u-eng` too.
+            "token-eng": {"email": "eng@saga.xyz", "email_verified": True, "sub": "s2"},
+        }),
+        groups=StaticGroups({"dana@saga.xyz": (group,), "eng@saga.xyz": ()}),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+
+    owned = client.post(
+        "/v1/tasks", headers={"Authorization": "Bearer token-member"},
+        json={"runner_profile": "mock"},
+    )
+    assert owned.status_code == 201
+    assert owned.json()["task"]["tenant_id"] == "u-eng"
+    assert db.docs["tenants/u-eng"]["principal"] == "u-eng@saga.xyz"
+
+    intruder = {"Authorization": "Bearer token-eng"}
+    # Same derived id, different principal: refused on the write path...
+    assert client.post(
+        "/v1/tasks", headers=intruder, json={"runner_profile": "mock"}
+    ).status_code == 409
+    # ...and on the read paths, which is what was missing.
+    assert client.get("/v1/tasks", headers=intruder).status_code == 409
+    assert client.get(
+        f"/v1/tasks/{owned.json()['task']['id']}", headers=intruder
+    ).status_code == 409
+
+
+def test_the_guard_creates_no_tenant_document_on_a_read(db):
+    """A GET must not write. `scope_for` checks; `tenant_for` is what creates."""
+    from fastapi.testclient import TestClient
+
+    from swarm_api.auth import StaticTokenVerifier
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.deps import build_context
+    from swarm_api.groups import StaticGroups
+    from swarm_api.main import create_app
+    from swarm_api.waker import NullWaker
+
+    from .conftest import ENG_GROUP, api_settings
+
+    ctx = build_context(
+        settings=api_settings(),
+        db=db,
+        verifier=StaticTokenVerifier({
+            "token-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s1"},
+        }),
+        groups=StaticGroups({"alice@saga.xyz": (ENG_GROUP,)}),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+
+    assert client.get(
+        "/v1/tasks", headers={"Authorization": "Bearer token-alice"}
+    ).status_code == 200
+    assert "tenants/eng" not in db.docs
+
+
+def test_a_disabled_tenant_can_still_read_and_cancel_its_own_work(client, db):
+    """The read guard is the COLLISION check only, deliberately not `enabled`.
+
+    Disabling a tenant stops it starting work -- submission 403s through
+    `tenant_for`. A tenant that has been stopped still has to see what it has
+    running and be able to cancel it, so the read path must not inherit that
+    refusal.
+    """
+    task_id = submit(client, "alice")["id"]
+    db.docs["tenants/eng"]["enabled"] = False
+
+    assert client.post(
+        "/v1/tasks", headers=auth_header("alice"), json={"runner_profile": "mock"}
+    ).status_code == 403
+    assert client.get("/v1/tasks", headers=auth_header("alice")).status_code == 200
+    assert client.get(
+        f"/v1/tasks/{task_id}", headers=auth_header("alice")
+    ).status_code == 200
+    assert client.post(
+        f"/v1/tasks/{task_id}/cancel", headers=auth_header("alice")
+    ).status_code == 200
+
+
+def test_no_task_or_workflow_route_reads_the_raw_tenant_id():
+    """The boundary is the dependency, so a new route must not bypass it.
+
+    A source check, because the property is about code that does not exist yet:
+    the failure this guards against is somebody adding `GET /v1/tasks/{id}/logs`
+    next month with `auth.tenant_id` in the store call, which no request-level
+    test can reach. It reads the AST rather than the text so that prose about
+    `auth.tenant_id` -- which these two modules deliberately contain -- is not
+    mistaken for a use of it.
+
+    Only the two route modules. `service.py` uses `ctx.tenant_id` legitimately
+    inside `scope_for` (it IS the guard) and on paths already behind
+    `tenant_for`, so a blanket rule there would have to grow a whitelist, and a
+    whitelist is the thing that quietly readmits what it was meant to exclude.
+    `/v1/stats` and `/v1/capacity` are covered by the request-level test above.
+    """
+    import ast
+    import pathlib
+
+    import swarm_api
+
+    root = pathlib.Path(swarm_api.__file__).parent
+    offenders = []
+    for name in ("routes/tasks.py", "routes/workflows.py"):
+        tree = ast.parse((root / name).read_text(encoding="utf-8"), filename=name)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "tenant_id"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "auth"
+            ):
+                offenders.append(f"{name}:{node.lineno}")
+    assert not offenders, (
+        "take the tenant from the tenant_scope dependency, not from auth: two "
+        "verified principals can derive the same tenant_id, and only the "
+        "dependency checks which of them the tenant document belongs to. "
+        + ", ".join(offenders)
+    )

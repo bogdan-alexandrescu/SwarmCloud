@@ -16,15 +16,18 @@ Draining and disabling are different operations and both exist on purpose:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import os
+from typing import Any
+
+from fastapi import APIRouter, Depends, Query
 
 from swarm_common.models import ProviderState
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..auth import AuthContext
-from ..codec import pool_to_api, tenant_to_api
-from ..deps import AppContext, admin_auth, get_context
-from ..errors import ValidationFailed
+from ..codec import lease_to_api, pool_to_api, quota_to_api, tenant_to_api
+from ..deps import AppContext, admin_auth, get_context, paged_limit
+from ..errors import NotFound, ValidationFailed
 from ..schemas import (
     DrainRequest,
     LimitRequest,
@@ -35,6 +38,23 @@ from ..schemas import (
 from ..validation import known_providers
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+
+def _heartbeat_grace_seconds(core: Any) -> int:
+    """Resolve the grace EXACTLY as ReconcilerConfig.from_env does.
+
+    `reconciler/config.py:82-85` reads HEARTBEAT_GRACE_SECONDS and otherwise
+    derives max(90, heartbeat_interval_seconds * 3). If this diverges, the UI
+    colours a row amber at a threshold the reconciler does not act on, which
+    is worse than showing no threshold at all.
+    """
+    raw = os.environ.get("HEARTBEAT_GRACE_SECONDS")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return max(90, core.heartbeat_interval_seconds * 3)
 
 
 def _check_provider(provider: str) -> str:
@@ -125,6 +145,68 @@ def set_provider_limit(
     name = _check_provider(provider)
     pool = ctx.store.upsert_pool(f"provider:{name}", hard_limit=body.limit)
     ctx.metrics.admin_actions.labels(action="limit_provider").inc()
+    return {"pool": pool_to_api(pool)}
+
+
+@router.put("/limits/provider/{provider}/tenant/{tenant_id}")
+def set_provider_tenant_limit(
+    provider: str,
+    tenant_id: str,
+    body: LimitRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The per-tenant slice of a provider's concurrency.
+
+    Separate from /limits/provider/{provider}, and the distinction is the one
+    that matters when you are trying to raise a ceiling: a lease takes BOTH
+    pools, so capacity is the lower of them. Raising the provider-wide pool to
+    40 while this stays at 5 gives you 5, which is exactly what happened on
+    2026-09-20 and is why this route exists.
+
+    Verified against the tenant document rather than accepted blind: an
+    upsert on a misspelt tenant id would silently create a pool that nothing
+    ever reads, and it would look like the limit had been set.
+    """
+    name = _check_provider(provider)
+    # get_tenant returns None rather than raising, so this must be checked
+    # explicitly -- calling it and discarding the result would be the exact
+    # silent pass the docstring above claims to prevent.
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    pool = ctx.store.upsert_pool(f"provider:{name}:tenant:{tenant_id}", hard_limit=body.limit)
+    ctx.metrics.admin_actions.labels(action="limit_provider_tenant").inc()
+    return {"pool": pool_to_api(pool)}
+
+
+@router.put("/limits/backend/{backend}")
+def set_backend_limit(
+    backend: str,
+    body: LimitRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The ceiling on a whole execution backend.
+
+    Missing until 2026-09-20, which made backend:CLOUD_RUN_JOB unraisable
+    through the API -- every other pool in a lease's list had a route and this
+    one did not, so it silently became the binding constraint the moment the
+    others were raised.
+
+    AUTO is rejected: it is a routing instruction on a runner profile, not a
+    backend anything executes on, so a pool named backend:AUTO would never be
+    taken by any lease and setting it would be a no-op that looked like a
+    change.
+    """
+    name = backend.strip().upper()
+    real = {b.value for b in Backend} - {Backend.AUTO.value}
+    if name not in real:
+        raise ValidationFailed(
+            f"unknown backend {backend!r}",
+            detail={"known_backends": sorted(real)},
+        )
+    pool = ctx.store.upsert_pool(f"backend:{name}", hard_limit=body.limit)
+    ctx.metrics.admin_actions.labels(action="limit_backend").inc()
     return {"pool": pool_to_api(pool)}
 
 
@@ -302,9 +384,166 @@ def list_pools(
     return {"pools": [pool_to_api(p) for p in pools]}
 
 
+@router.get("/leases")
+def list_leases(
+    tenant_id: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    state: str | None = Query(default=None, description="LEASED or DISPATCHED"),
+    overdue_only: bool = Query(default=False, description="dispatch_deadline already passed"),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Who is holding capacity right now, and who never started.
+
+    P1. The documents, the decoder and the `leases-tenant-created` index all
+    existed; only this route was missing, and its absence is why nothing could
+    answer "which agents are actually holding a slot" -- the question an
+    operator asks first during a capacity incident.
+
+    ONE ROUTE, NOT TWO. "Silent workers" and "admitted but never dispatched"
+    are the same query with different filters, so `state` and `overdue_only`
+    are parameters rather than a second endpoint.
+
+    THE THRESHOLDS COME BACK WITH THE DATA, and that is the point of this
+    shape. 90 and 120 are the reconciler's `heartbeat_grace_seconds` and
+    `lease_timeout_seconds`; a `const GRACE = 90` in a front end is exactly
+    the restatement drift `scripts/lib/check-contract-parity.sh` exists to
+    catch in shell and jq. And the grace is NOT a constant -- the reconciler
+    reads HEARTBEAT_GRACE_SECONDS and otherwise derives
+    `max(90, heartbeat_interval_seconds * 3)` -- so this resolves it the same
+    way from the same Settings rather than becoming a third copy of the
+    number.
+
+    `last_error` is denormalised onto each row. The alternative is a caller
+    issuing one task read per lease, which is an N+1 waiting to be written as
+    a loop. On a dispatch failure it is a stable code plus the attempt id,
+    deliberately not the upstream message, because a Cloud Run or Kubernetes
+    error echoes the tenant service account, the job name and the secret
+    names.
+    """
+    leases = ctx.store.list_leases(
+        tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
+    )
+    now = ctx.now()
+    if state is not None:
+        wanted = state.strip().upper()
+        leases = [x for x in leases if x.state.value == wanted]
+    if overdue_only:
+        leases = [x for x in leases if x.dispatch_overdue(now)]
+
+    # One batched read for the error text, not one per row.
+    errors: dict[str, str | None] = {}
+    for lease in leases:
+        if lease.task_id in errors:
+            continue
+        try:
+            errors[lease.task_id] = ctx.store.get_task(lease.tenant_id, lease.task_id).last_error
+        except Exception:
+            # A lease whose task is gone is itself a finding -- the reconciler
+            # calls it task_missing. Do not let it fail the whole listing.
+            errors[lease.task_id] = None
+
+    rows = []
+    for lease in leases:
+        row = lease_to_api(lease)
+        row["last_error"] = errors.get(lease.task_id)
+        # Written out rather than `heartbeat_at ?? created_at`: the fallback is
+        # a real timestamp for a lease that has never beaten, never 0 and
+        # never now.
+        beat = lease.heartbeat_at if lease.heartbeat_at is not None else lease.created_at
+        row["silent_seconds"] = max(0, int((now - beat).total_seconds()))
+        row["heartbeat_ever"] = lease.heartbeat_at is not None
+        rows.append(row)
+
+    core = ctx.settings.core
+    return {
+        "leases": rows,
+        "thresholds": {
+            "heartbeat_grace_seconds": _heartbeat_grace_seconds(core),
+            "lease_timeout_seconds": core.lease_timeout_seconds,
+        },
+        "evaluated_at": now,
+        "active_only": active_only,
+        "tenant_id": tenant_id,
+        # Weighted UNITS, not agents -- admission increments by the resource
+        # class's units, so this and len(leases) are different numbers.
+        "units_held": sum(lease.units for lease in leases),
+    }
+
+
+@router.get("/quota")
+def list_quota(
+    tenant_id: str | None = Query(default=None),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Provider quota state, per provider per tenant.
+
+    P2. `Store.list_quota` already existed and was already used by
+    `/v1/providers` for the caller's own tenant; this exposes it across
+    tenants for an operator.
+
+    `effective_limit: 0` is a FACT, not a missing value -- QuotaState returns
+    0 deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN.
+    """
+    states = ctx.store.list_quota(tenant_id)
+    return {
+        "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
+        "tenant_id": tenant_id,
+    }
+
+
 @router.get("/tenants")
 def list_tenants(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     return {"tenants": [tenant_to_api(t) for t in ctx.store.list_tenants()]}
+
+
+@router.post("/workflows/rollup")
+def rollup_workflows(
+    tenant_id: str = Query(..., min_length=1),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Refresh the stored workflow state for one tenant's live workflows.
+
+    WHY THIS EXISTS SEPARATELY from the write-back the read routes already do.
+    The read routes converge the cache for any workflow somebody looks at, which
+    is most of them -- the web UI polls `GET /v1/workflows?limit=100`. This route
+    converges the rest, so a query like "list my failed workflows" is answerable
+    without having first listed them. That is the half of the owner's decision
+    the write exists for, and without a sweep it would only hold for workflows a
+    human happened to open.
+
+    TENANT IS EXPLICIT, not derived from the admin's own identity. An admin's
+    `tenant_scope` is the admin's own tenant, and sweeping that would silently do
+    nothing for the tenant the operator meant.
+
+    Terminal workflows are skipped and truncation is reported rather than hidden;
+    see `WorkflowRollups.sweep`. A caller that reads `truncated: true` has not
+    been given a complete census, and the response says so.
+    """
+    results, report = ctx.rollups.sweep(tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="workflow_rollup").inc()
+    return {
+        "tenant_id": tenant_id,
+        "report": report.to_api(),
+        # Only the ones that did not agree. A sweep over a healthy tenant returns
+        # an empty list, which is an answer rather than the absence of one.
+        "drifted": [
+            {
+                "workflow_id": r.workflow.workflow_id,
+                "stored": r.drift["stored"],
+                "derived": r.drift["derived"],
+                "agrees": r.drift["agrees"],
+                "repaired": r.drift["repaired"],
+                "reason": r.drift["reason"],
+            }
+            for r in results
+            if r.drift["agrees"] is not True
+        ],
+    }

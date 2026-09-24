@@ -107,22 +107,49 @@ declare -a BAD_BODIES=(
   '{"runner_profile":"../../etc/passwd","input":{}}'
 )
 REJECTED=0
+# A non-2xx from api_post is not proof the body was validated and rejected --
+# an expired session (401), a missing run.invoker binding (403), a cold-start
+# 503 or a curl-level timeout/DNS failure land in the same branch as a genuine
+# 400 unless the status is actually inspected. Only a 4xx means the request
+# reached validation and was turned away; anything else must not count.
+BAD_BODY_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-failtest.XXXXXX")"
 for body in "${BAD_BODIES[@]}"; do
-  if api_post "/tasks" "${body}" >/dev/null 2>&1; then
+  if api_post "/tasks" "${body}" >"${BAD_BODY_OUT}" 2>&1; then
     t_fail "accepted a malformed body: ${body}"
-  else
+  elif [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
     REJECTED=$(( REJECTED + 1 ))
+  else
+    detail="$(cat "${BAD_BODY_OUT}")"
+    rm -f "${BAD_BODY_OUT}"
+    die_if_auth_failure "${detail}"
+    t_fail "malformed body not evaluated -- HTTP ${API_STATUS} is not a validation rejection: ${body}"
+    printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
   fi
 done
+rm -f "${BAD_BODY_OUT}"
 assert_eq "${#BAD_BODIES[@]}" "${REJECTED}" "malformed bodies rejected"
 
 # ---------------------------------------------------------------------------
 t_case "An oversized input is refused rather than stored"
 BIG="$(jq -nc --arg s "$(head -c 400000 /dev/zero | tr '\0' 'x')" '{blob:$s}')"
-if api_post "/tasks" "$(jq -nc --argjson i "${BIG}" '{runner_profile:"mock", input:$i}')" >/dev/null 2>&1; then
+BIG_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-failtest.XXXXXX")"
+# API_STATUS=0 means curl itself never got an answer -- a ~400 KB body against
+# HTTP_TIMEOUT is exactly the request most likely to time out or have its
+# connection reset. That is not evidence max_input_bytes was enforced; only an
+# actual 4xx from the API is.
+if api_post "/tasks" "$(jq -nc --argjson i "${BIG}" '{runner_profile:"mock", input:$i}')" \
+     >"${BIG_OUT}" 2>&1; then
+  rm -f "${BIG_OUT}"
   t_fail "accepted an input larger than max_input_bytes (256 KiB)"
-else
+elif [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
+  rm -f "${BIG_OUT}"
   t_pass "oversized input rejected with HTTP ${API_STATUS}"
+else
+  detail="$(cat "${BIG_OUT}")"
+  rm -f "${BIG_OUT}"
+  die_if_auth_failure "${detail}"
+  t_fail "oversized input not evaluated -- HTTP ${API_STATUS} is not a validation rejection"
+  printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
 fi
 
 # ---------------------------------------------------------------------------

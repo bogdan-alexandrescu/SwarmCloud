@@ -136,9 +136,9 @@ resource "google_project_iam_custom_role" "gke_reaper" {
 resource "google_project_iam_custom_role" "secret_lister" {
   project = var.project_id
   role_id = local.custom_role_ids.secret_lister
-  title   = "Swarm Secret Lister"
+  title   = "Swarm Secret Lister and Account Provisioner"
 
-  description = "List secret METADATA project-wide. Cannot read any payload."
+  description = "List secret metadata project-wide, and create the two secrets an account pool entry needs. Cannot read any payload."
   stage       = "GA"
 
   # The quota broker must discover which tenants hold a subscription
@@ -152,5 +152,59 @@ resource "google_project_iam_custom_role" "secret_lister" {
   # refresh secrets, so a bug here cannot widen into reading tenant keys.
   permissions = [
     "secretmanager.secrets.list",
+
+    # PROVISIONING an account's secrets, added when account management moved
+    # into the Settings page and stopped being a shell script.
+    #
+    # A secret for a pool account cannot be created ahead of time: its name
+    # contains a LABEL the operator chooses at registration, so terraform
+    # cannot declare it and only the component handling the registration can
+    # make it. That component is this one, because it is already the single
+    # writer for subscription credentials -- see quota_broker.credentials for
+    # why a second writer bricks a rotating credential.
+    #
+    # `setIamPolicy` is here for the same reason `create` is. A secret created
+    # without an accessor binding is one the tenant's pod cannot read, and the
+    # failure surfaces much later as an unexplained auth error inside a job.
+    # Creating it and binding it are one operation or the secret is useless.
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
+    "secretmanager.versions.add",
+
+    # RETENTION, added 2026-09-22 on the owner's explicit decision.
+    #
+    # Without these the broker cannot expire what it supersedes, and it never
+    # could: swarm-tenant-u-bogdan-anthropic reached 1,816 versions, ALL
+    # ENABLED, ZERO destroyed, because nothing in this platform had ever
+    # expired one. Only `latest` is ever read, so 1,815 of those were dead
+    # credentials that stayed retrievable by anything holding accessor. A
+    # credential that rotates but leaves its predecessor enabled has not
+    # rotated -- the same point create-secrets.sh makes beside
+    # `--disable-previous`.
+    #
+    # `list` is needed before `destroy`: retention recomputes the retained set
+    # from a live listing on every publish rather than recording state.
+    #
+    # THE SCOPE IS PROJECT-WIDE AND THAT IS A DELIBERATE, INFORMED CHOICE, not
+    # an oversight. saga-agents-staging is SHARED, so this permits the broker
+    # to destroy a version of any secret in it, including another team's. The
+    # owner chose this over a per-secret binding on 2026-09-22 having been shown
+    # that trade-off explicitly.
+    #
+    # WHAT ACTUALLY STOPS IT is therefore no longer IAM but
+    # `quota_broker.secretstore.owned_by_this_platform`, which matches
+    # \Aswarm-(?:tenant|account)-[A-Za-z0-9_-]+\Z -- anchored with \A/\Z
+    # rather than ^/$ so a trailing newline cannot smuggle a second name past
+    # it, and admitting no `/` so a name cannot re-point the resource path at
+    # another secret or project. It was attacked with thirteen hostile inputs
+    # on 2026-09-22 -- newline injection, traversal, full resource paths,
+    # lookalike prefixes -- and refused all of them.
+    #
+    # If that guard is ever weakened, this grant becomes the hole. Do not widen
+    # one without re-reading the other.
+    "secretmanager.versions.list",
+    "secretmanager.versions.destroy",
   ]
 }

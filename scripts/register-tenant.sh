@@ -158,6 +158,11 @@ GSA_ID="${GSA_PREFIX}${TENANT_ID}"
 # able to read the other's provider keys. terraform/modules/tenancy/variables.tf
 # refuses the same ids for the same reason, so both provisioning paths agree on
 # which tenants can exist.
+#
+# This is a RESTATEMENT of swarm_common.identity's `_MAX_TENANT_ID`, which is
+# computed there the same way from the same prefix. scripts/lib/check-contract-parity.sh
+# asserts the two still agree, so the prefix moving on either side fails `make test`
+# rather than surfacing as a tenant the API resolves and nobody can provision.
 MAX_TENANT_ID=$(( 30 - ${#GSA_PREFIX} ))
 if [[ "${#TENANT_ID}" -gt "${MAX_TENANT_ID}" ]]; then
   die "tenant id '${TENANT_ID}' is ${#TENANT_ID} characters; the limit here is ${MAX_TENANT_ID}.
@@ -168,16 +173,20 @@ if [[ "${#TENANT_ID}" -gt "${MAX_TENANT_ID}" ]]; then
   identity, both tenants' secretAccessor bindings and both tenants' GCS prefix conditions
   accumulating on it. So this refuses, exactly as terraform/modules/tenancy does.
 
-  This is a CROSS-TRACK CONFLICT, not a misconfiguration of yours.
-  swarm_common.identity caps a tenant id at 22, sized for the prefix 'swarm-t-' (8 chars);
-  terraform/modules/tenancy uses '${GSA_PREFIX}' (${#GSA_PREFIX} chars), which leaves ${MAX_TENANT_ID}. Ids between
-  ${MAX_TENANT_ID} and 22 characters are therefore resolvable by the API and provisionable by nobody --
-  which includes most personal fallback tenants, because any dot in a local part makes the
-  slug lossy and the frozen module then appends a 6-character digest.
+  THIS SHOULD BE UNREACHABLE, and that is the useful part of the message. This id was
+  DERIVED by swarm_common.identity, not typed: '--tenant' is only ever checked for
+  agreement with the derived value. The frozen module budgets its slugs against the same
+  '${GSA_PREFIX}' prefix and the same 30-character cap, so it cannot mint an id longer
+  than ${MAX_TENANT_ID} -- a principal whose slug would overrun gets a shortened slug plus a
+  6-character digest instead. Reaching this line means the frozen module and this script
+  have DRIFTED: its budget is now larger than the one this prefix leaves.
 
-  Until the two agree, either register ${PRINCIPAL} under a group whose name slugs to
-  ${MAX_TENANT_ID} characters or fewer, or shorten the prefix in terraform/modules/tenancy.
-  See docs/multi-tenancy.md section 6."
+  So do not work around it per tenant. Compare swarm_common.identity's _GSA_PREFIX and
+  _MAX_TENANT_ID against GSA_PREFIX here and in terraform/modules/tenancy, and make them
+  agree again; scripts/lib/check-contract-parity.sh asserts exactly that pair and would
+  normally have failed 'make test' before you got here.
+  See docs/multi-tenancy.md section 6 -- note that that section still describes an
+  earlier 22-character cap in the frozen module, which no longer exists."
 fi
 
 GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -230,7 +239,14 @@ run() {
 # no trace beyond one changed field.
 #
 # Checked before anything is created, so a mistyped principal costs nothing.
-if fs_database_exists; then
+# A lookup that FAILED must not read as "no tenant document yet": that is the
+# path that silently skips the collision guard below and lets a mistyped id
+# take over another tenant's service account, secrets and GCS prefix. Only a
+# confirmed-absent database (exit 1) is allowed to skip it.
+PREFLIGHT_RC=0
+fs_database_exists || PREFLIGHT_RC=$?
+[[ "${PREFLIGHT_RC}" -le 1 ]] || die "cannot confirm Firestore database '${FIRESTORE_DATABASE}' exists (reason above), so the check that this tenant id is not already taken cannot run. Refusing to register."
+if [[ "${PREFLIGHT_RC}" -eq 0 ]]; then
   EXISTING_DOC="$(fs_get "tenants/${TENANT_ID}" | jq -c "${FS_JQ} if .fields then doc else null end")"
   if [[ -n "${EXISTING_DOC}" && "${EXISTING_DOC}" != "null" ]]; then
     EXISTING_PRINCIPAL="$(jq -r '.principal // ""' <<<"${EXISTING_DOC}")"
@@ -351,12 +367,31 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
   # `swarm-database-only-admin-ops`. A hardcoded title produces a command that
   # silently removes nothing for every tenant terraform provisioned, which is
   # the majority of them.
-  STALE="$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+  #
+  # Redirected to a file rather than `2>/dev/null`, and the exit status read.
+  # An empty answer here means "no stale binding" and is printed as silence, so
+  # discarding the failure made a policy read that never happened -- an expired
+  # session, a missing resourcemanager.projects.getIamPolicy -- indistinguishable
+  # from a clean tenant. That is the one reading this block must not produce:
+  # the advisory exists precisely for tenants provisioned before the fix, and
+  # they are the ones a failed read would silently clear.
+  STALE_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-stale-binding-err.XXXXXX")"
+  STALE=""
+  STALE_READ=0
+  if STALE_RAW="$(gcloud projects get-iam-policy "${PROJECT_ID}" \
     --flatten='bindings[].members' \
     --filter="bindings.role=${FIRESTORE_ROLE} AND bindings.members:${GSA_EMAIL} AND bindings.condition.expression:databases" \
     --format='csv[no-heading,separator="|"](bindings.condition.title,bindings.condition.expression,bindings.condition.description)' \
-    2>/dev/null | head -1)"
-  if [[ -n "${STALE}" ]]; then
+    2>"${STALE_ERR}")"; then
+    STALE_READ=1
+    STALE="$(printf '%s\n' "${STALE_RAW}" | head -1)"
+  else
+    warn "could NOT read the project IAM policy, so whether ${GSA_ID} still carries"
+    warn "a stale conditional ${FIRESTORE_ROLE##*/} binding is UNKNOWN -- not 'no'."
+    redact <"${STALE_ERR}" | head -n 3 | sed 's/^/     /' >&2
+  fi
+  rm -f "${STALE_ERR}"
+  if [[ "${STALE_READ}" -eq 1 && -n "${STALE}" ]]; then
     STALE_TITLE="${STALE%%|*}"
     STALE_REST="${STALE#*|}"
     STALE_EXPR="${STALE_REST%%|*}"
@@ -398,7 +433,8 @@ if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
   # script for any tenant, which means those tenants got their GCS access from
   # terraform or not at all.
   CONDITION_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-condition.XXXXXX")"
-  trap 'rm -f "${CONDITION_FILE}"' EXIT INT TERM
+  BUCKET_POLICY_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-bucket-policy.XXXXXX")"
+  trap 'rm -f "${CONDITION_FILE}" "${BUCKET_POLICY_FILE}"' EXIT INT TERM
   cat >"${CONDITION_FILE}" <<CONDEOF
 title: tenant_prefix_only
 description: Only this tenant's object prefix, listing included
@@ -409,6 +445,21 @@ CONDEOF
   # artifacts -- so an operator applying it should see what they are applying,
   # and a --dry-run that does not show it is not a rehearsal of anything.
   dim "  condition: objects/${GCS_PREFIX}/ and listing prefix ${GCS_PREFIX}/"
+  # Read the bucket policy ONCE, here, and answer both "already granted?"
+  # questions below from that one document. Two reads are two chances to decide
+  # two grants against two different policies, and this one is long -- it is the
+  # shared artifact bucket, so it holds every tenant's bindings.
+  #
+  # Redirected to a file rather than captured: `X="$(gcloud ...)"` runs the
+  # command in a subshell, and this policy is also the input to a predicate that
+  # must be able to say "I could not read it" separately from "it is not there".
+  # An empty file is that first answer, and it makes both checks below fall
+  # through to the add -- which either succeeds or fails out loud. The one
+  # outcome this must never produce is a skipped grant reported as a present one.
+  if ! gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
+       --project "${PROJECT_ID}" --format=json >"${BUCKET_POLICY_FILE}" 2>/dev/null; then
+    : >"${BUCKET_POLICY_FILE}"
+  fi
   # Skip if the binding is already there. terraform/modules/tenancy grants this
   # same conditioned binding for every tenant it manages, and adding it twice is
   # not merely redundant: gcloud reads the bucket policy at version 1, the
@@ -416,9 +467,13 @@ CONDEOF
   # "Specified policy version (1) must be at least 3" -- which aborts this
   # script before it reaches the tenant document, the thing it is actually
   # needed for.
-  if gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
-       --project "${PROJECT_ID}" --format=json 2>/dev/null \
-       | grep -q "serviceAccount:${GSA_EMAIL}"; then
+  #
+  # Role AND member, not either alone. This bucket's policy names every tenant,
+  # so "is this member in the policy at all" is a different question: a tenant
+  # holding only the metadata role below would have its object grant skipped and
+  # its worker left unable to read the artifacts it writes.
+  if iam_policy_binds_member "${BUCKET_POLICY_FILE}" \
+       roles/storage.objectUser "serviceAccount:${GSA_EMAIL}"; then
     ok "storage access already granted (terraform manages this tenant's binding)"
     rm -f "${CONDITION_FILE}"
   else
@@ -433,14 +488,21 @@ CONDEOF
 
   if gcloud iam roles describe "${BUCKET_METADATA_ROLE_ID}" \
        --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
-    # `--condition None` for the same reason as the project bindings: this
-    # policy contains conditions, so gcloud refuses an unconditioned addition
-    # unless told that is deliberate.
-    if gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
-         --project "${PROJECT_ID}" --format=json 2>/dev/null \
-         | grep -q "${BUCKET_METADATA_ROLE_ID}"; then
+    # This role is bound on ONE bucket for EVERY tenant
+    # (terraform/modules/tenancy/main.tf, `for_each = var.tenants`), so asking
+    # whether the policy mentions the role id at all is answered by the first
+    # tenant ever bound and never becomes false again. A tenant this script
+    # creates -- one that is not in var.tenants -- matched another tenant's
+    # binding here and was told the grant existed. It did not, and without
+    # storage.buckets.get its worker cannot mount the bucket at all.
+    if iam_policy_binds_member "${BUCKET_POLICY_FILE}" \
+         "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" \
+         "serviceAccount:${GSA_EMAIL}"; then
       ok "${BUCKET_METADATA_ROLE_ID} already granted"
     else
+      # `--condition None` for the same reason as the project bindings: this
+      # policy contains conditions, so gcloud refuses an unconditioned addition
+      # unless told that is deliberate.
       run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
         --member "serviceAccount:${GSA_EMAIL}" \
         --role "projects/${PROJECT_ID}/roles/${BUCKET_METADATA_ROLE_ID}" \
@@ -558,8 +620,18 @@ fi
 
 # --- 6. control-plane documents ----------------------------------------------
 step "Control plane"
-if ! fs_database_exists; then
-  warn "Firestore database '${FIRESTORE_DATABASE}' does not exist; run 'make infra' first"
+# require_fs_database is not used here: the cloud resources above were already
+# created, so the operator needs to be told that BEFORE the exit code, and both
+# non-zero cases end the same way.
+FS_RC=0
+fs_database_exists || FS_RC=$?
+if [[ "${FS_RC}" -ne 0 ]]; then
+  if [[ "${FS_RC}" -eq 1 ]]; then
+    warn "Firestore database '${FIRESTORE_DATABASE}' does not exist; run 'make infra' first"
+  else
+    warn "could not confirm Firestore database '${FIRESTORE_DATABASE}' exists (reason above)"
+    warn "that is a failure to look, not proof it is absent -- do not run 'make infra' on this alone"
+  fi
   warn "the cloud resources above were created, but the tenant is not yet known to the scheduler"
   exit 1
 fi

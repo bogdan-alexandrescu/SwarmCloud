@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -37,6 +39,16 @@ class TaskCreate(StrictModel):
     #: Provider model name, recorded for attribution and cost reporting. It
     #: selects nothing about the container.
     model: str | None = Field(default=None, max_length=128)
+    #: How this dispatch's work gets merged, and what carries it between steps.
+    #: Validated in `validation.resolve_dispatch_options`, which names the
+    #: accepted values in its refusal, rather than declared as a `Literal` here:
+    #: a Literal produces pydantic's generic 422 shape, and every other refusal
+    #: this service makes carries a stable `code` a caller can branch on.
+    #:
+    #: The defaults are today's behaviour, so a caller who sends neither field
+    #: gets exactly the dispatch they got before this feature existed.
+    strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
+    carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
 
     @field_validator("repository_url")
     @classmethod
@@ -74,6 +86,33 @@ class WorkflowCreate(StrictModel):
     priority: int = Field(default=0, ge=-100, le=100)
     on_step_failure: Literal["fail_workflow", "continue"] = "fail_workflow"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: Chosen once for the whole workflow, not per step: `integrate` produces
+    #: ONE pull request, so "which repository" cannot be a per-step answer.
+    #: Same accepted values and same defaults as `TaskCreate`.
+    strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
+    carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The repository every step of this workflow clones, and the one an
+    #: `integrate` step opens its pull request against.
+    #:
+    #: WHY IT IS HERE AND NOT ON THE STEP. A workflow step had no way to name a
+    #: repository at all before this, so a workflow's tasks were always created
+    #: with `repository_url=None` and no step could ever clone anything -- which
+    #: made every strategy but `collect` unreachable for a workflow. It is
+    #: workflow-level because the steps of one workflow integrate into one
+    #: branch; a step that needed a different repository is a different dispatch.
+    repository_url: str | None = Field(default=None, max_length=1024)
+    repository_ref: str | None = Field(default=None, max_length=256)
+
+    @field_validator("repository_url")
+    @classmethod
+    def _repo_scheme(cls, value: str | None) -> str | None:
+        # The same rule TaskCreate applies, stated here because a workflow's
+        # repository reaches Task.repository_url without passing through it.
+        if value is None:
+            return None
+        if not value.startswith(("https://", "git@", "ssh://")):
+            raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
+        return value
 
 
 # --------------------------------------------------------------------------
@@ -129,3 +168,95 @@ class TenantLimitsRequest(StrictModel):
     #: and echoed back but never enforced, and ParkReason.BUDGET_EXHAUSTED would
     #: never be reached. The route rejects it; see routes/admin.py.
     monthly_budget_usd: float | None = Field(default=None, ge=0)
+
+
+# --------------------------------------------------------------------------
+# The account pool (proxied to the quota broker)
+# --------------------------------------------------------------------------
+
+#: The one kind of credential the account pool handles.
+#:
+#: An account in this pool is a CLAUDE SUBSCRIPTION: a rotating OAuth pair the
+#: quota broker refreshes on a timer, where refreshing REVOKES the token it
+#: replaces. There is no API-key account and no credential-kind selector --
+#: nothing in the pool's write path, the broker's refresher or the worker's
+#: lease would know what to do with one. A tenant's own provider API key is a
+#: different thing entirely and has a different route
+#: (`POST /v1/tenants/me/credentials`), which this constant does not touch.
+SUBSCRIPTION_PROVIDER = "anthropic"
+
+
+class AccountSignInStart(StrictModel):
+    """Begin adding an account by signing in to Claude in a browser.
+
+    No credential here, which is the whole point: the person signs in with
+    Anthropic and we never see anything but the short code their callback page
+    displays afterwards.
+    """
+
+    label: str = Field(min_length=1, max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountSignInFinish(StrictModel):
+    """Finish it, with what the callback page showed."""
+
+    state: str = Field(min_length=8, max_length=256)
+    #: Taken as pasted. The callback renders the code followed by a hash and
+    #: the state, and people paste what is on screen; the broker splits it.
+    code: str = Field(min_length=4, max_length=2048)
+
+
+class AccountCreate(StrictModel):
+    """Register a Claude subscription into the CALLER's pool.
+
+    A SUBSCRIPTION, and nothing else: see `SUBSCRIPTION_PROVIDER` above. There
+    is no `api_key` field here and no kind selector, because the pool has one
+    kind of member.
+
+    THE OWNER IS THE TENANT ON THE VERIFIED TOKEN, always. `owner_tenant` below
+    is read for one purpose only -- to be compared against it -- and its value
+    is never what the account is filed under, so there is no ordering of
+    validation in which a body field could put a live credential into somebody
+    else's pool.
+
+    It is accepted at all because the broker's own route takes that field (this
+    API mirrors the broker's contract) and because the refusal can then explain
+    itself: a caller naming another tenant is told the rule, rather than getting
+    a bare `extra_forbidden` from `extra="forbid"` and guessing.
+    """
+
+    #: Optional, and only ever equal to the caller's own tenant. See above.
+    owner_tenant: str | None = Field(default=None, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    #: Not a choice: `SUBSCRIPTION_PROVIDER` is the only accepted value. The
+    #: field survives so a caller naming anything else gets a 422 that says why
+    #: rather than a bare `extra_forbidden`, and so the body still mirrors the
+    #: broker's own contract. `routes/accounts.py` does the comparison.
+    provider: str = Field(default=SUBSCRIPTION_PROVIDER, max_length=64)
+    #: Tenants this account will lend spare capacity to. Isolation is the
+    #: default (CONTRACT.md invariant 9); this is the narrowing, with a name on
+    #: it, and only the owner can set it.
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+    #: Write-only, and taken AS PASTED -- Claude Code's keychain item, including
+    #: its `claudeAiOauth` wrapper. `quota_broker.oauth.parse_credential` is the
+    #: single reader of that shape; parsing it here would be a second definition
+    #: of it, and the two would disagree the first time it changed.
+    #:
+    #: No response model in this service contains this field and no route in
+    #: this API can return key material -- the same rule the tenant credential
+    #: route states.
+    credential: str = Field(min_length=8, max_length=16384)
+
+
+class AccountLending(StrictModel):
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountStateChange(StrictModel):
+    #: AVAILABLE | PAUSED | DRAINING | REAUTH_REQUIRED. Deliberately not an enum
+    #: here: the broker owns the state machine and answers an unknown value with
+    #: a 422 listing what it accepts, and a second copy of that list in this
+    #: service is one more thing that can drift out of step with it.
+    state: str = Field(min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=512)

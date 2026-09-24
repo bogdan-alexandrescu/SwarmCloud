@@ -238,3 +238,32 @@ resource "google_storage_bucket_iam_member" "reconciler_admin" {
   role   = "roles/storage.objectAdmin"
   member = local.sa_member["swarm-reconciler"]
 }
+
+# --------------------------------------------------------------------------
+# Signing as itself, for domain-wide delegation without a key.
+# --------------------------------------------------------------------------
+
+# Cloud Identity's Groups API does not authorize through GCP IAM, so swarm-api
+# must ACT AS a real Workspace user to read a group at all. The usual way to do
+# that -- `credentials.with_subject(user)` -- works only on credentials loaded
+# from a service-account KEY FILE, and this repository refuses to hold one.
+#
+# The keyless route is to build the assertion and have Google sign it:
+# `iamcredentials ...:signJwt`. That call requires
+# roles/iam.serviceAccountTokenCreator ON THE SERVICE ACCOUNT, GRANTED TO THAT
+# SAME SERVICE ACCOUNT. It reads like a tautology and is not: being an identity
+# does not imply permission to mint signed assertions as it, and without this
+# binding signJwt returns 403 while every group lookup fails with Cloud
+# Identity's Error(2028) -- which looks exactly like the missing-role problem
+# that delegation was introduced to solve. That misreading cost a live outage
+# on 2026-09-20, so the binding lives next to the reason.
+#
+# It grants no new reach. The service account can already act as itself by
+# existing; this only lets it say so in a form Google will sign. The delegation
+# it then performs is bounded by the Admin console grant, which is scoped to
+# cloud-identity.groups.readonly.
+resource "google_service_account_iam_member" "api_signs_as_itself" {
+  service_account_id = google_service_account.platform["swarm-api"].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = local.sa_member["swarm-api"]
+}

@@ -51,17 +51,27 @@ key material at all and the pod's KSA-to-GSA binding is what grants access.
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
 
 log = logging.getLogger(__name__)
 
-_NAME_SAFE = re.compile(r"[^a-z0-9-]+")
+#: IMPORTED, not restated. This was a fourth private copy of `[^a-z0-9-]+`
+#: (here, reconciler/detect.py, kubernetes/render.py and identity.py itself),
+#: and the reconciler's `sanitised()` reverse-maps a Job label back to the
+#: Firestore id this function produced -- so the two escaping rules agreeing is
+#: what lets a running execution be matched to its task at all. If they drift,
+#: the reconciler either kills a live execution it read as orphaned or never
+#: finds a genuinely orphaned one. kubernetes/render.py already imports this
+#: symbol for the same reason. docs/audits/2026-09-18/08, finding 1.
 
 #: The image creates uid/gid 10001 with HOME=/home/swarm and runs as it
 #: (images/agent-runtime-base/Dockerfile). The pod spec repeats the number so
@@ -192,13 +202,28 @@ def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = N
 
 
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
-    """The ONLY thing the environment carries is identifiers.
+    """The ONLY thing the environment carries is identifiers and endpoints.
 
     No image, no command, no resource spec. A worker launched with a doctored
     environment still reads what to run from the frozen catalogue keyed by
     RUNNER_PROFILE, which is invariant 10 enforced at the last possible moment.
+
+    QUOTA_BROKER_URL IS HERE BECAUSE THERE IS NOWHERE ELSE IT COULD GO. This
+    function is the single source of a worker's execution environment for both
+    dispatchers below, so a name it does not carry is a name no worker ever
+    sees. The account pool was complete on both sides and entirely inert
+    because of that: nothing set it, `WorkerConfig.quota_broker_url` was always
+    None, and every worker took the "no broker configured" branch. It is not an
+    execution parameter -- it names a platform service, the same way
+    ARTIFACT_BUCKET does -- and it still cannot be influenced by a caller,
+    because it comes from the scheduler's own settings.
+
+    OMITTED RATHER THAN SET EMPTY when the deployment has no pool. A Cloud Run
+    execution override MERGES with the Job's own environment, so an empty value
+    here would override a URL that terraform had baked into the Job and turn a
+    wired deployment back into an unwired one.
     """
-    return {
+    env = {
         "TASK_ID": task.id,
         "ATTEMPT_ID": lease.attempt_id,
         "LEASE_ID": lease.lease_id,
@@ -218,6 +243,17 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         ),
         "TASK_TIMEOUT_SECONDS": str(task.timeout_seconds),
     }
+    broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
+    if broker_url:
+        env["QUOTA_BROKER_URL"] = broker_url
+        # The audience defaults to the URL inside the worker's client, which is
+        # what Cloud Run checks when a service declares no custom audience.
+        # This deployment's broker declares one, so the token minted for the
+        # URL alone would be rejected by the broker's own `aud` check.
+        audience = str(getattr(settings, "quota_broker_audience", "") or "").strip()
+        if audience:
+            env["QUOTA_BROKER_AUDIENCE"] = audience
+    return env
 
 
 def image_uri(settings: Any, profile: RunnerProfile) -> str:
@@ -269,6 +305,21 @@ class CloudRunJobDispatcher:
     def job_name(self, job_id: str) -> str:
         return f"{self.parent}/jobs/{job_id}"
 
+    def _pool_can_serve(self, tenant: Tenant, profile: RunnerProfile) -> bool:
+        """Whether this tenant's credential for `profile` comes from the pool.
+
+        Both halves matter. A deployment with no broker has no pool, so a
+        missing per-tenant key is simply a missing key. A tenant that HAS
+        registered a key keeps its secret mounted whether or not a pool exists,
+        because the pool is an addition to that tenant's options and not a
+        replacement for them.
+        """
+        if not str(getattr(self._settings, "quota_broker_url", "") or "").strip():
+            return False
+        if not profile.provider:
+            return False
+        return profile.provider not in (tenant.credentials or [])
+
     def _build_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
     ) -> Any:
@@ -284,6 +335,29 @@ class CloudRunJobDispatcher:
         ]
         for secret_env in profile.secrets:
             if not profile.provider:
+                continue
+            if self._pool_can_serve(tenant, profile):
+                # A POOL ACCOUNT IS THIS TENANT'S CREDENTIAL, so there is no
+                # per-tenant secret to project and naming one would be naming a
+                # secret that does not exist. Cloud Run resolves a
+                # `secretKeyRef` when the JOB is created, so that fails the
+                # create outright and the tenant cannot be dispatched at all --
+                # not "runs without a key", but "never starts". The pool could
+                # not replace the per-tenant secret for anyone, which is most
+                # of the point of having it.
+                #
+                # Narrow on purpose: only when this deployment HAS a pool and
+                # this tenant has registered no key of its own. Without a pool,
+                # a tenant with no key cannot run this profile however the job
+                # is shaped, and the existing behaviour -- mount it, fail
+                # loudly -- is left exactly as it was.
+                #
+                # The worker resolves its own credential either way, from
+                # Secret Manager or from the pool, so this mount has always
+                # been a convenience rather than the thing the agent runs on. A
+                # tenant with neither a key nor a usable account still parks as
+                # CREDENTIAL_MISSING, in the worker, where the reason can be
+                # written onto the task.
                 continue
             # The tenant's OWN secret, by the one spelling the frozen contract
             # defines. A shared secret here would break invariant 9.
@@ -438,6 +512,133 @@ class CloudRunJobDispatcher:
 # GKE Autopilot
 # --------------------------------------------------------------------------
 
+def gke_api_host(endpoint: str) -> str:
+    """The `host` a kubernetes client Configuration needs for this cluster.
+
+    GKE_ENDPOINT is `google_container_cluster.endpoint` passed straight through
+    by terraform/infra/locals.tf, and that attribute is a BARE address --
+    `34.118.229.12`, no scheme. The kubernetes client concatenates
+    `configuration.host` with the resource path and hands the result to urllib3,
+    which needs a scheme to choose a connection pool at all: without it every
+    call fails on a URL it cannot parse, and it fails AFTER admission has taken
+    the lease, so the task is already committed to a backend that will never
+    start it.
+
+    This function is duplicated, deliberately: the identical body lives in
+    `reconciler.backends`. The two services are separate images that share only
+    the FROZEN `swarm_common` package -- images/swarm-scheduler/Dockerfile
+    copies `apps/common/` and `apps/scheduler/` and nothing else -- so neither
+    can import the other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_host.py` pins the two together by
+    asserting they agree on the same inputs, which is exactly the check that was
+    missing while they did not: the reconciler added the scheme and this side
+    did not.
+    """
+    raw = (endpoint or "").strip()
+    if not raw:
+        # The caller treats "unset" as "GKE is not configured" and refuses to
+        # dispatch; it must not be turned into the URL "https://".
+        return ""
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        rest = raw
+    elif scheme.lower() != "https":
+        # The client puts a cloud-platform OAuth token in an Authorization
+        # header on every call; any other scheme puts it on the wire in clear.
+        raise ValueError(
+            "GKE_ENDPOINT must be a bare host or an https:// URL; "
+            f"{scheme}:// would send the bearer token in clear text"
+        )
+    rest = rest.rstrip("/")
+    if not rest:
+        raise ValueError(f"GKE_ENDPOINT is not a usable host: {endpoint!r}")
+    return f"https://{rest}"
+
+
+def google_bearer_token(credentials: Any) -> str:
+    """The access token for the NEXT Kubernetes API call, refreshed if stale.
+
+    A Google OAuth access token lives about an hour, and on Cloud Run often much
+    less: the metadata server hands out whatever remains of the token it has
+    cached. This dispatcher is built once per process -- `main.create_app` puts
+    the Scheduler in app state and the one-minute Cloud Scheduler tick keeps the
+    instance warm -- so a token minted at first use is the token every later
+    dispatch carries.
+
+    The reconciler proved what that costs. Instance 00a41e8c of swarm-reconciler
+    started at 2026-09-22T00:18:03Z, minted on its first pass at 00:20:24Z, and
+    from 00:55:08Z answered 401 Unauthorized for 3h50m and 40 consecutive
+    passes; the identical construction lived here. On this side the damage is
+    worse in one way and better in another: every GKE dispatch on a warm
+    instance fails, so a browser-profile task never starts -- but the 401 is
+    wrapped into a DispatchError by `GkeJobDispatcher.dispatch`, so the lease
+    does come back and no capacity leaks.
+
+    `Credentials.valid` is google.auth's own answer to "would this token still be
+    accepted", already carrying google.auth's refresh threshold, so a token this
+    returns had time left when the request was built. Credentials that cannot say
+    when they expire are refreshed on every call: one extra metadata round trip
+    is cheaper than one dispatch lost to a dead token.
+    """
+    import google.auth.transport.requests
+
+    expiry = getattr(credentials, "expiry", None)
+    if expiry is None or not getattr(credentials, "valid", False):
+        credentials.refresh(google.auth.transport.requests.Request())
+    token = getattr(credentials, "token", None)
+    if not token:
+        # Never the token itself. `DispatchError.code` and the message below
+        # reach `task.last_error`, which the API returns to the tenant verbatim.
+        raise RuntimeError(
+            "google.auth returned no access token for the GKE API; "
+            "no job can be created without one"
+        )
+    return str(token)
+
+
+def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
+    """Give a kubernetes Configuration a token it refreshes for every request.
+
+    `refresh_api_key_hook` is the kubernetes client's own extension point for
+    exactly this, and it is called on every single request:
+    `ApiClient.update_params_for_auth` -> `Configuration.auth_settings` ->
+    `get_api_key_with_prefix("authorization")` -> the hook. Hooking it is what
+    lets the client, its connection pool and the CA file on disk stay cached for
+    the life of the process while the credential does not.
+
+    This function is duplicated in `reconciler.backends`, deliberately and for
+    the same reason `gke_api_host` is: the two services ship as separate images
+    that share only the FROZEN `swarm_common` package, so neither can import the
+    other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_auth.py` pins the two copies
+    together, by running the same expiring credential through both and asserting
+    the same sequence of headers comes out.
+    """
+
+    def refresh(config: Any) -> None:
+        config.api_key["authorization"] = f"Bearer {google_bearer_token(credentials)}"
+
+    # Refused, not assumed. A Configuration that does not KNOW about the hook
+    # would accept the attribute and never call it -- silently restoring the
+    # one-shot token this replaces, with no test and no log line to show for it.
+    # Both images resolve `kubernetes>=30` at build time rather than from a
+    # lock, and this repository has already lost a working check to a client
+    # version that quietly ignored what it was handed.
+    if not hasattr(configuration, "refresh_api_key_hook"):
+        raise RuntimeError(
+            "this kubernetes client Configuration has no refresh_api_key_hook, "
+            "so a GKE access token cannot be refreshed per request"
+        )
+    # Seeded as well as hooked. `auth_settings()` only asks for a bearer token
+    # when `api_key` ALREADY holds an "authorization" entry, so a Configuration
+    # carrying the hook alone would send no Authorization header at all -- and
+    # the API server answers a missing bearer with the very same 401 this is
+    # here to stop.
+    configuration.api_key = {}
+    refresh(configuration)
+    configuration.refresh_api_key_hook = refresh
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -451,6 +652,18 @@ class GkeTarget:
     #: `swarm-agent-worker`, so that is the default here; `WORKER_KSA_NAME`
     #: overrides it for a cluster provisioned with a different spelling.
     ksa_name: str = "swarm-agent-worker"
+    #: The cluster CA as terraform actually supplies it. `locals.tf` sets
+    #: GKE_CA_CERT_B64 for this service (and for the reconciler) from
+    #: `module.gke_autopilot[0].ca_certificate`, which is base64 exactly as the
+    #: container API returns it. Nothing anywhere writes a CA file into this
+    #: image, so `ca_cert_path` alone could never be satisfied in a deployed
+    #: environment; it stays for a path supplied out of band.
+    ca_cert_b64: str = ""
+
+    @property
+    def api_host(self) -> str:
+        """`endpoint` as a URL the kubernetes client can use. See gke_api_host."""
+        return gke_api_host(self.endpoint)
 
 
 class GkeJobDispatcher:
@@ -466,27 +679,61 @@ class GkeJobDispatcher:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
+        self._ca_file: str | None = None
+
+    def _ca_cert_file(self, target: GkeTarget) -> str:
+        """A path on local disk holding the cluster CA.
+
+        Terraform hands this service the CA base64-encoded in GKE_CA_CERT_B64,
+        never as a file, so a base64 value is materialised once per process --
+        the same thing the reconciler does with the same variable.
+        """
+        if target.ca_cert_path:
+            return target.ca_cert_path
+        if self._ca_file is None:
+            handle = tempfile.NamedTemporaryFile(
+                prefix="gke-ca-", suffix=".crt", delete=False
+            )
+            handle.write(base64.b64decode(target.ca_cert_b64))
+            handle.close()
+            self._ca_file = handle.name
+        return self._ca_file
 
     def _api(self) -> Any:
         if self._batch_api is not None:
             return self._batch_api
         if self._target is None:
             raise DispatchError(
-                "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_PATH",
+                "GKE dispatch is not configured: set GKE_ENDPOINT and GKE_CA_CERT_B64",
                 code="gke_not_configured",
             )
+        try:
+            host = self._target.api_host
+            ca_cert = self._ca_cert_file(self._target)
+        except ValueError as exc:
+            # A malformed GKE_ENDPOINT or a CA that is not base64 is a
+            # configuration fault, and the dispatch loop catches DispatchError
+            # and NOTHING else: any other exception escapes it with the lease
+            # still held, so the slot stays occupied until the dispatch deadline
+            # for a container that was never created. (binascii.Error, which
+            # b64decode raises, is a ValueError.)
+            raise DispatchError(
+                f"GKE dispatch is misconfigured: {exc}", code="gke_misconfigured"
+            ) from exc
         import google.auth
-        import google.auth.transport.requests
         from kubernetes import client as k8s
 
         credentials, _ = google.auth.default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-        credentials.refresh(google.auth.transport.requests.Request())
         configuration = k8s.Configuration()
-        configuration.host = self._target.endpoint
-        configuration.ssl_ca_cert = self._target.ca_cert_path
-        configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
+        configuration.host = host
+        configuration.ssl_ca_cert = ca_cert
+        # Per request, not once. `self._batch_api` is cached for the life of the
+        # process and this method returns it unchanged on every later dispatch,
+        # so a token minted here would be the token every subsequent
+        # create_namespaced_job carried until the instance died.
+        install_google_bearer_token(configuration, credentials)
         self._batch_api = k8s.BatchV1Api(k8s.ApiClient(configuration))
         return self._batch_api
 
@@ -667,11 +914,44 @@ class BackendRouter:
         )
 
 
+def _gke_ca_file() -> str:
+    """Materialise the cluster CA bundle, returning a path, or "" if unset.
+
+    The environment carries the bundle base64-encoded (`GKE_CA_CERT_B64`, written
+    by terraform from the cluster's own output) because a Cloud Run environment
+    variable is a string and a CA bundle is a file. This end of it used to read
+    `GKE_CA_CERT_PATH` instead -- a name nothing has ever set, and a different
+    shape besides -- so `target` was always None and every GKE dispatch died on
+    "GKE dispatch is not configured".
+
+    It never looked like a configuration bug: the scheduler treats a dispatch
+    failure as transient, returns the task to READY and retries on the next
+    drain, so the symptom was a browser task that stayed queued forever rather
+    than anything that crashed or alerted. The reconciler read the right name
+    all along (reconciler/backends.py), which is what made this survivable and
+    also what made it invisible -- the two halves disagreed and only one was
+    ever exercised.
+    """
+    import base64
+    import os
+    import tempfile
+
+    ca_b64 = os.environ.get("GKE_CA_CERT_B64", "").strip()
+    if not ca_b64:
+        return ""
+    handle = tempfile.NamedTemporaryFile(prefix="gke-ca-", suffix=".crt", delete=False)
+    handle.write(base64.b64decode(ca_b64))
+    handle.close()
+    return handle.name
+
+
 def build_router(settings: Any) -> BackendRouter:
     import os
 
     endpoint = os.environ.get("GKE_ENDPOINT", "").strip()
-    ca_path = os.environ.get("GKE_CA_CERT_PATH", "").strip()
+    # _gke_ca_file already decodes GKE_CA_CERT_B64 to a file, so there is one
+    # representation of the bundle here rather than two.
+    ca_path = _gke_ca_file()
     target = None
     if endpoint and ca_path:
         target = GkeTarget(

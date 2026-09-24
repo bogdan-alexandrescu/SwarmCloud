@@ -50,7 +50,18 @@ FORBIDDEN_CALLER_FIELDS = (
 
 
 def known_providers() -> tuple[str, ...]:
-    """Providers the catalogue actually references. Nothing else is registrable."""
+    """Providers the catalogue actually references. Nothing else is registrable.
+
+    DELIBERATELY THE WHOLE CATALOGUE, not `available_runner_profiles()`. Codex
+    is disabled and openai is now referenced only by a disabled profile -- but
+    a tenant already holds an openai credential, and narrowing this would make
+    that secret unmanageable through the API: unregistrable, unrotatable, and
+    undeletable by the route that owns it. Disabling a runner should not strand
+    a credential someone has to be able to clean up.
+
+    It also keeps re-enabling cheap: the key can be replaced before the profile
+    is switched back on, rather than after.
+    """
     return tuple(sorted({p.provider for p in RUNNER_PROFILES.values() if p.provider}))
 
 
@@ -59,9 +70,33 @@ def validate_runner_profile(name: str) -> RunnerProfile:
     if profile is None:
         raise ValidationFailed(
             f"unknown runner_profile {name!r}",
-            detail={"known_runner_profiles": sorted(RUNNER_PROFILES)},
+            detail={"known_runner_profiles": sorted(available_runner_profiles())},
+        )
+    # KNOWN BUT REFUSED IS NOT THE SAME AS UNKNOWN, and collapsing them sends a
+    # caller hunting for a typo that is not there. The profile exists, it is
+    # spelled correctly, and the platform will not run it -- so say that, and
+    # say why, because the reason is the only part they can act on.
+    if not profile.available:
+        raise ValidationFailed(
+            f"runner_profile {name!r} is disabled: {profile.disabled_reason}",
+            detail={
+                "runner_profile": name,
+                "disabled": True,
+                "reason": profile.disabled_reason,
+                "known_runner_profiles": sorted(available_runner_profiles()),
+            },
         )
     return profile
+
+
+def available_runner_profiles() -> dict[str, RunnerProfile]:
+    """The profiles a caller may actually dispatch.
+
+    Every list OFFERED to a caller comes from here rather than from
+    RUNNER_PROFILES, so a disabled profile cannot be advertised on one screen
+    and refused on submit from another.
+    """
+    return {n: p for n, p in RUNNER_PROFILES.items() if p.available}
 
 
 def validate_resource_class_override(profile: RunnerProfile, requested: str | None) -> str:
@@ -127,6 +162,213 @@ def validate_batch_size(count: int, max_batch_size: int) -> None:
             f"batch of {count} exceeds max_batch_size {max_batch_size}",
             detail={"count": count, "max_batch_size": max_batch_size},
         )
+
+
+# --------------------------------------------------------------------------
+# Dispatch options: how the work gets merged, and what carries it between steps
+# --------------------------------------------------------------------------
+#
+# Decided by the owner and recorded in docs/design/dispatch-and-integration.md,
+# sections 4.2 and 4.3. Two knobs, chosen per dispatch at submit time.
+#
+# THEY ARE NOT EXECUTION PARAMETERS, so invariant 10 is untouched: neither one
+# selects an image, a command, a resource class, a backend or a provider. They
+# say what happens to the work AFTER the agent has produced it.
+#
+# They live in `task.metadata` rather than on the Task dataclass because
+# `apps/common/swarm_common/` is frozen and a new field on Task would be a
+# frozen change. `metadata` is already the free-form per-dispatch dict and is
+# already used this way (`metadata.unit` from swarm-mcp, `metadata.input_from`
+# written by workflow submission below).
+
+#: Accepted `strategy` values, in the order every refusal lists them.
+#:
+#:   collect     patches are harvested into the task's GCS prefix and nothing is
+#:               pushed. The only strategy that works with a read-only token.
+#:   direct-pr   every agent pushes `swarm/<task>` and opens its own PR.
+#:   integrate   one final step receives the others' patches and opens ONE PR.
+DISPATCH_STRATEGIES = ("collect", "direct-pr", "integrate")
+
+#: Accepted `carrier` values -- where a step's work is kept for the next step.
+#:
+#:   checkpoints the tarballs the worker already writes every few minutes.
+#:   branches    pushed feature branches; durable, and they outlive the platform.
+DISPATCH_CARRIERS = ("checkpoints", "branches")
+
+#: THE DEFAULTS ARE TODAY'S BEHAVIOUR, and that is the whole reason they are
+#: these two values. A caller who sends neither field gets a task that behaves
+#: exactly as it did before this feature existed, and a deployment whose tenant
+#: token is read-only keeps working. Widening a token's scope stays a decision
+#: somebody makes rather than one that happens to them because a default moved.
+DEFAULT_STRATEGY = "collect"
+DEFAULT_CARRIER = "checkpoints"
+
+#: The single key inside `task.metadata` this feature owns. One nested key
+#: rather than two flat ones because `metadata` is caller-supplied and free
+#: form: a caller who already sends `metadata.strategy` for their own purposes
+#: must not have it silently overwritten by the platform.
+DISPATCH_METADATA_KEY = "dispatch"
+
+#: Strategies and carriers that cannot work without somewhere to push to.
+_NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
+
+
+class DispatchOptionError(ValidationFailed):
+    code = "invalid_dispatch"
+
+
+@dataclass(frozen=True)
+class DispatchOptions:
+    """The resolved per-dispatch integration contract for ONE task."""
+
+    strategy: str = DEFAULT_STRATEGY
+    carrier: str = DEFAULT_CARRIER
+    #: "integrator" or "contributor" on an `integrate` workflow, None otherwise.
+    #: A standalone task and every task of a `collect`/`direct-pr` dispatch has
+    #: no role, because there is only one kind of participant.
+    role: str | None = None
+    #: The task ids whose work the integrator must apply, in topological order.
+    #: Set on the integrator only. It is stored rather than re-derived because
+    #: `task.depends_on` holds DIRECT parents only -- in a chain a -> b -> c the
+    #: integrator c never names a -- and walking the DAG in the worker would be
+    #: a second implementation of the ordering this module already computed.
+    integrates: tuple[str, ...] = ()
+
+    @property
+    def needs_repository(self) -> bool:
+        """True when this dispatch has to push somewhere to mean anything.
+
+        `direct-pr` and `integrate` both end in a pull request, and
+        `carrier: branches` pushes intermediate work. All three need a
+        repository, and a dispatch without one would run to completion and
+        quietly produce nothing -- which is the failure this platform keeps
+        hitting, so it is refused at submission instead.
+        """
+        return self.strategy in _NEEDS_REPOSITORY_STRATEGIES or self.carrier == "branches"
+
+    def with_role(self, role: str, integrates: Sequence[str] = ()) -> "DispatchOptions":
+        return DispatchOptions(
+            strategy=self.strategy,
+            carrier=self.carrier,
+            role=role,
+            integrates=tuple(integrates),
+        )
+
+    def to_metadata(self) -> dict[str, Any]:
+        """The `task.metadata["dispatch"]` block, exactly as the worker reads it."""
+        block: dict[str, Any] = {"strategy": self.strategy, "carrier": self.carrier}
+        if self.role is not None:
+            block["role"] = self.role
+        if self.integrates:
+            block["integrates"] = list(self.integrates)
+        return block
+
+
+def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key: str) -> str:
+    text = (value or "").strip() if isinstance(value, str) else value
+    if text not in accepted:
+        raise DispatchOptionError(
+            f"unknown {name} {value!r}; accepted values are " + ", ".join(accepted),
+            detail={detail_key: list(accepted)},
+        )
+    return text
+
+
+def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
+    """`metadata.dispatch` is computed by this service, never accepted from a caller.
+
+    Accepting it would let a caller write a role, an integrates list, or a
+    strategy that never passed the checks below, straight into the document the
+    worker acts on.
+    """
+    if DISPATCH_METADATA_KEY in metadata:
+        raise DispatchOptionError(
+            f"metadata.{DISPATCH_METADATA_KEY} is reserved: it records the strategy "
+            "and carrier this service resolved for the dispatch. Use the top-level "
+            "`strategy` and `carrier` fields instead.",
+            detail={"reserved_metadata_keys": [DISPATCH_METADATA_KEY]},
+        )
+
+
+def resolve_dispatch_options(
+    *,
+    strategy: Any,
+    carrier: Any,
+    scale: str,
+    repository_url: str | None,
+) -> DispatchOptions:
+    """Validate the pair and return it, or refuse with the accepted values named.
+
+    `scale` is "task" or "workflow" and decides one rule only: `integrate`
+    names a FINAL STEP that receives the other steps' patches, so a standalone
+    task -- and every task in a batch, which is N independent tasks with no
+    dependencies between them -- has nothing to integrate. That is a refusal
+    rather than a quiet downgrade to `collect`, because a caller who asked for
+    one pull request and silently got three has been lied to.
+    """
+    options = DispatchOptions(
+        strategy=_accepted_value("strategy", strategy, DISPATCH_STRATEGIES,
+                                 "accepted_strategies"),
+        carrier=_accepted_value("carrier", carrier, DISPATCH_CARRIERS,
+                                "accepted_carriers"),
+    )
+    if options.strategy == "integrate" and scale != "workflow":
+        raise DispatchOptionError(
+            "strategy 'integrate' has nothing to integrate here: it names a final "
+            "step that receives the other steps' patches, and a single task (or a "
+            "batch, whose tasks are independent) has no other steps. Submit a "
+            "workflow whose last step depends on the rest, or choose "
+            "'collect' or 'direct-pr'.",
+            detail={"scale": scale, "accepted_strategies": list(DISPATCH_STRATEGIES)},
+        )
+    if options.needs_repository and not (repository_url or "").strip():
+        raise DispatchOptionError(
+            f"strategy {options.strategy!r} with carrier {options.carrier!r} has to "
+            "push, so it needs a repository_url on the "
+            + ("workflow" if scale == "workflow" else "task")
+            + ". Without one the agent would run to completion and publish nothing.",
+            detail={
+                "strategy": options.strategy,
+                "carrier": options.carrier,
+                "missing": "repository_url",
+            },
+        )
+    return options
+
+
+def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
+    """The step that integrates the others: the workflow's single sink.
+
+    Call this only AFTER `validate_dag`, which has already rejected cycles and
+    dangling dependencies.
+
+    Exactly one step may be final -- one that nothing else depends on -- because
+    `integrate` promises ONE pull request and a second final step would open a
+    second one. That single check is also sufficient to prove every other step
+    feeds the integrator: from any step, follow its dependents; the graph is
+    finite and acyclic so the walk ends at a step nothing depends on, and there
+    is only one of those. Transitive feeding is what matters, so a chain
+    a -> b -> c is a legal `integrate` workflow with c as the integrator.
+    """
+    if len(steps) < 2:
+        raise DispatchOptionError(
+            "strategy 'integrate' needs something to integrate: it names a final "
+            f"step that receives the OTHER steps' patches, and this workflow has "
+            f"{len(steps)} step(s). Add the steps whose work should be merged, or "
+            "choose 'collect' or 'direct-pr'.",
+            detail={"steps": len(steps)},
+        )
+    depended_on = {dep for step in steps for dep in step.depends_on}
+    terminals = [step.step_id for step in steps if step.step_id not in depended_on]
+    if len(terminals) != 1:
+        raise DispatchOptionError(
+            "strategy 'integrate' opens ONE pull request, so exactly one step must be "
+            f"final -- the one every other step feeds. This workflow has "
+            f"{len(terminals)} steps that nothing depends on: " + ", ".join(terminals)
+            + ". Make the integrating step depend on them.",
+            detail={"terminal_steps": terminals},
+        )
+    return terminals[0]
 
 
 def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:

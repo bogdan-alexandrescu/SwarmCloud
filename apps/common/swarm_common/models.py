@@ -142,8 +142,26 @@ class Lease:
         return (now or utcnow()) > self.expires_at
 
     def dispatch_overdue(self, now: datetime | None = None) -> bool:
-        """Admitted but never started. The reconciler reclaims these."""
-        return self.state is TaskState.LEASED and (now or utcnow()) > self.dispatch_deadline
+        """Past the dispatch deadline with no worker to show for it.
+
+        NOT guarded on `state is LEASED`. `mark_dispatched`
+        (scheduler/store.py) writes DISPATCHED to the lease the moment the
+        backend ACCEPTS the create call -- long before a container runs -- so
+        that guard excluded essentially every lease this method names. Measured
+        on task_b5dc2568713a40158851 in saga-agents-staging on 2026-09-22:
+        `dispatch_overdue` was still False 301 seconds after admission, and the
+        `overdue_only=1` operator query returned an empty list at exactly the
+        moment it was asked.
+
+        A `heartbeat_at is None` conjunct is deliberately NOT added. The
+        reconciler needs that distinction because it decides whether to fence a
+        generation; this method answers the narrower question -- has the
+        deadline passed -- and a lease that heartbeated and then went quiet past
+        the deadline is still, factually, overdue.
+
+        Changed 2026-09-22 by the owner's decision on contract change request 9.
+        """
+        return (now or utcnow()) > self.dispatch_deadline
 
 
 # --------------------------------------------------------------------------
@@ -186,12 +204,39 @@ class Task:
     result_summary: dict[str, Any] | None = None
     latest_checkpoint: str | None = None
 
+    def retries_exhausted(self) -> bool:
+        """This task has used its last attempt. See `retries_exhausted`."""
+        return retries_exhausted(self.attempt_count, self.max_attempts)
+
     def to_firestore(self) -> dict[str, Any]:
         d = asdict(self)
         d["state"] = self.state.value
         d["park_reason"] = self.park_reason.value if self.park_reason else None
         return d
 
+
+
+def retries_exhausted(attempt_count: int, max_attempts: int) -> bool:
+    """Whether a task has used its last attempt.
+
+    A FREE FUNCTION as well as a method because the two enforcement points do
+    not both hold a `Task`: the reconciler decides inside a Firestore
+    transaction, from the raw document, where constructing one would mean
+    decoding a task to read two integers.
+
+    THIS EXISTS BECAUSE THE RULE WAS RESTATED AND THEN OMITTED. It lived only
+    in `reconciler/store.py`, on the path that repairs a task to READY. The
+    scheduler's `return_to_ready_after_failed_dispatch` -- the OTHER path that
+    returns a task to READY -- wrote the state unconditionally, so a task whose
+    dispatch kept failing retried for ever. Observed 2026-09-23:
+    `task_d18d8d8b044d469cb43c` reached 83 attempts against a cap of 3,
+    re-dispatching every 30 seconds for hours on `gke_create_job_failed`.
+
+    The scheduler and the reconciler are separate images and cannot import each
+    other, so a rule they both need has exactly one home that is not a
+    restatement: here.
+    """
+    return attempt_count >= max_attempts
 
 @dataclass
 class Attempt:
@@ -213,6 +258,27 @@ class Attempt:
     peak_disk_bytes: int | None = None
     oom_near_miss: bool = False
     checkpoints: list[str] = field(default_factory=list)
+
+    # What the attempt SPENT. Added 2026-09-19 as change request #2 in
+    # docs/contract-change-requests.md, approved by the platform owner.
+    #
+    # Until this existed an attempt recorded precisely how much MEMORY and DISK
+    # it used and nothing at all about tokens -- on a platform whose entire cost
+    # is tokens. The numbers were already being captured
+    # (agent_worker.lifecycle._usage_summary) and landed in an untyped runner
+    # summary, where no index can reach them: "spend per tenant last week" meant
+    # scanning and parsing rather than querying.
+    #
+    # All optional, defaulting to None, so every existing document stays valid
+    # and no migration runs. None means NOT REPORTED, which is genuinely
+    # different from zero: a mock task costs nothing on purpose, and a run whose
+    # result could not be parsed costs an unknown amount. A UI that renders
+    # those two the same way is lying about one of them.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass

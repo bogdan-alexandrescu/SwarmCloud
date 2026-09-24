@@ -11,6 +11,12 @@ dependencies = [
     "google-cloud-firestore>=2.16",
     "google-cloud-secret-manager>=2.20",
     "google-cloud-pubsub>=2.21",
+    # Reading checkpoints and logs back out of the artifact bucket
+    # (swarm_api.objects). The import is lazy so create_app() still builds no
+    # client, but images/swarm-api/Dockerfile installs THIS package and nothing
+    # else -- an undeclared dependency would be an ImportError the first time an
+    # operator opened a log, in production, reading like a permissions problem.
+    "google-cloud-storage>=2.18",
     "google-auth>=2.30",
     "prometheus-client>=0.20",
 ]

@@ -17,12 +17,34 @@ Two invariants, both about not locking a tenant out:
      limit while a human is the only possible fix. The tenant's provider is
      marked so admission parks its work rather than dispatching attempts that
      are certain to fail authentication.
+
+And one about not writing for the sake of writing:
+
+  3. An UNCHANGED credential adds no secret version. A sweep runs every five
+     minutes and a token lives eight hours, so anything this module writes per
+     tick it writes ~1,700 times per token. See `_BaseState` for the bool that
+     could not tell "the secret differs" from "I was not allowed to look", and
+     what that cost -- and `quota_broker.publishledger` for why the replacement
+     had to be durable rather than a dict on this object.
+
+     The rule the whole of `_base_state` exists to enforce: A WRITE NEEDS
+     POSITIVE EVIDENCE THAT IT IS NEEDED. A read that failed is not evidence of
+     anything. There are exactly two admissible sources -- a successful
+     comparison, or a durable record of what this platform last published --
+     and when neither can answer, nothing is written and the sweep says so.
+
+     That rule applies to the BASE secret only, and deliberately. The
+     `-refresh` half changes on every single exchange -- measured, see the
+     comment beside its `add_version` below -- so there is no unchanged write
+     to suppress there and a digest comparison over it could never match. Its
+     growth is bounded by retention in `quota_broker.secretstore`, not by this.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Protocol
 
 from .oauth import (
@@ -33,6 +55,12 @@ from .oauth import (
     parse_credential,
     refresh,
     serialise,
+)
+from .publishledger import (
+    InMemoryPublishLedger,
+    LedgerUnavailable,
+    PublishLedger,
+    fingerprint,
 )
 
 #: Suffix for the long-lived half. The short-lived half keeps the original name
@@ -54,6 +82,53 @@ class SecretStore(Protocol):
         """
 
     def add_version(self, name: str, payload: str) -> None: ...
+
+
+class _BaseState(Enum):
+    """What is KNOWN about the worker-facing secret's current contents.
+
+    Four values, and every one of them is a separate decision the caller has to
+    make. The check used to be a bool, and a bool cannot say "I could not
+    look" -- so a read that FAILED returned the same False as a read that
+    succeeded and found a different token, and the caller published either way.
+
+    That is indistinguishable-guard-failure, and it cost 1,741 identical secret
+    versions on `swarm-account-u-bogdan-devops-main` and 1,814 on
+    `swarm-tenant-u-bogdan-anthropic` in saga-agents-staging before anyone
+    noticed. The broker holds `secretmanager.versions.add` on the worker-facing
+    secret but NOT `secretmanager.versions.access` -- verified in the live IAM
+    policy on 2026-09-22, where `roles/secretmanager.secretAccessor` on those
+    secrets names the WORKER's service account and the broker appears only
+    under `roles/secretmanager.secretVersionAdder` -- so `access()` raises
+    PermissionDenied every single time. The bool turned that permanent,
+    structural fact into "the secret is stale", and the sweep republished an
+    identical value every five minutes from 2026-09-18T07:26 onward without one
+    line of log to say so.
+
+    Replacing the bool with a three-valued state and an in-process note reduced
+    that to one write per PROCESS rather than per tick, which on a
+    scale-to-zero service redeployed several times a day is a slower leak, not
+    a closed one -- measured, four deploys and four writes, in
+    `quota_broker.publishledger`. The fourth value is what closes it: when the
+    read is refused, the answer comes from a durable record or it does not come
+    at all.
+    """
+
+    #: The read succeeded and the secret already holds this token, or the read
+    #: was refused and the durable ledger says this platform put exactly this
+    #: token there. Either way: nothing to do.
+    CURRENT = "current"
+    #: A DEFINITE answer that a write is needed: the read succeeded and the
+    #: payload differs, or there is no enabled version at all.
+    NEEDS_PUBLISH = "needs_publish"
+    #: The read was refused, and the ledger answered that this platform has
+    #: never published this token into this secret. Not a comparison -- but a
+    #: positive record, and one that can only ever be true once per token, so
+    #: it cannot produce a cadence.
+    UNVERIFIED_NEEDED = "unverified_needed"
+    #: The read failed AND the ledger could not be consulted. NOTHING here knows
+    #: anything about the secret's contents, so nothing here may write to it.
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -83,12 +158,30 @@ class CredentialRefresher:
         logger: Any,
         window: timedelta = timedelta(hours=3),
         now: Any = None,
+        ledger: PublishLedger | None = None,
     ) -> None:
         self._store = store
         self._endpoint = endpoint
         self._log = logger
         self._window = window
         self._now = now or (lambda: datetime.now(timezone.utc))
+        #: The durable record of what this platform last published into each
+        #: worker-facing secret. It is the ONLY evidence admissible when the
+        #: read-back is refused -- see `quota_broker.publishledger`, and
+        #: `_BaseState` for what an in-process note cost instead.
+        #:
+        #: Defaulted rather than required so a deployment with no Firestore
+        #: handle still gets within-process deduplication; `create_app` passes
+        #: the durable one, and that is what production runs on.
+        self._ledger: PublishLedger = ledger or InMemoryPublishLedger()
+        #: What the ledger is believed to hold, so an unchanged credential
+        #: re-reads it but never re-writes it. Purely an optimisation: every
+        #: decision is made from `_ledger`, never from this.
+        self._ledger_cache: dict[str, str] = {}
+        #: secret name -> the digest the "published unchecked" warning was last
+        #: emitted for. The warning is worth saying once per token and worth
+        #: nothing 288 times a day.
+        self._warned: dict[str, str] = {}
 
     def refresh_tenant(self, tenant_id: str, provider: str) -> RefreshOutcome:
         return self._refresh(
@@ -145,10 +238,64 @@ class CredentialRefresher:
             # already carry it. Compared rather than written blindly: writing
             # every sweep would add a secret version every five minutes, which
             # is 288 a day of identical values.
-            if self._base_is_current(base, credential.access_token):
+            state, detail = self._base_state(base, credential.access_token)
+            if state is _BaseState.CURRENT:
+                # Covers both "the comparison succeeded and matched" and "the
+                # comparison was refused, and the ledger says this platform put
+                # exactly this token there". Writing again could not change
+                # what the secret holds; it could only add another identical
+                # version, which is the leak.
+                #
+                # What the second case gives up: it no longer heals a base
+                # version somebody disabled or destroyed out of band, because
+                # it cannot see that happen. The refresh path publishes
+                # unconditionally, so that self-heals within one token lifetime
+                # (five hours here) instead of five minutes. Five minutes of
+                # healing is not worth 288 unverified writes a day, and the
+                # real fix for both is the accessor grant named below.
+                self._remember_published(base, credential.access_token)
                 return RefreshOutcome(
                     tenant_id, provider, False, "still_valid", credential.expires_at
                 )
+
+            if state is _BaseState.UNKNOWN:
+                # NEITHER SOURCE OF EVIDENCE COULD ANSWER, so this does not
+                # write. That is the entire lesson of the 1,741-version leak:
+                # a failed read is not a negative answer, and publishing on one
+                # turns a permanent misconfiguration into a permanent write
+                # cadence. Louder than the blind-publish case below because
+                # two things are broken at once, and the credential may now be
+                # going stale unnoticed.
+                self._log.error(
+                    "could not read the worker-facing secret AND could not "
+                    "read the record of what was last published to it, so "
+                    "nothing was written; grant the broker "
+                    "roles/secretmanager.secretAccessor on it and check "
+                    "Firestore, or this credential will only be republished "
+                    "when it next actually rotates",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "provider": provider,
+                        "error": detail,
+                    },
+                )
+                return RefreshOutcome(
+                    tenant_id,
+                    provider,
+                    False,
+                    "unverified_skipped",
+                    credential.expires_at,
+                )
+
+            if state is _BaseState.UNVERIFIED_NEEDED:
+                # Said ONCE PER TOKEN, not once per sweep, and now that is true
+                # across restarts too: the ledger answers CURRENT on every
+                # later tick of this token's life, so this branch is reached at
+                # most once per (secret, token) for the life of the record.
+                # Loud because a permanently blind guard is a misconfiguration
+                # somebody has to fix, and the only thing that ever reported it
+                # was the secret-version count.
+                self._warn_unverified(base, credential.access_token, tenant_id, provider, detail)
             try:
                 self._store.add_version(base, credential.access_token)
             except Exception as exc:
@@ -161,12 +308,23 @@ class CredentialRefresher:
                     },
                 )
                 return RefreshOutcome(tenant_id, provider, False, "publish_failed")
+            # AFTER the write returned, never before. A note that we published
+            # something we did not is how the branch above would suppress a
+            # write the secret actually needs.
+            self._remember_published(base, credential.access_token)
             self._log.info(
                 "published an access token that was already valid",
                 extra={"tenant_id": tenant_id, "provider": provider},
             )
             return RefreshOutcome(
-                tenant_id, provider, True, "published", credential.expires_at
+                tenant_id,
+                provider,
+                True,
+                # Distinct from `published` so the sweep response and the
+                # Settings screen say which of the two happened: a write the
+                # broker CHECKED was needed, or one it could not check.
+                "published" if state is _BaseState.NEEDS_PUBLISH else "published_unverified",
+                credential.expires_at,
             )
 
         try:
@@ -192,6 +350,25 @@ class CredentialRefresher:
         # expiry to decide whether to refresh. Skipping the write when the
         # endpoint returns the same refresh token would leave a stale expiry
         # behind and refresh again on every tick, forever.
+        #
+        # AND THE TOKEN DOES ROTATE, EVERY TIME -- so there is nothing here for
+        # a ledger to suppress, and the `-refresh` half will never get the
+        # deduplication the base half got. Measured on 2026-09-22 from this
+        # deployment's own logs, over the 14 days to that date: 76 exchanges
+        # logged "subscription credential refreshed" and 76 logged "refresh
+        # token rotated and persisted", with the same per-account distribution
+        # (20 / 15 / 15 / 14 / 4 / 4 / 4). That log line fires only on
+        # `fresh.refresh_token != credential.refresh_token`, so every exchange
+        # returned a NEW refresh token. `oauth.refresh` still carries the
+        # presented token forward when the endpoint omits one, because that
+        # costs nothing and losing it strands the account -- but no exchange
+        # has yet omitted one.
+        #
+        # The consequence is worth stating plainly, because it is the reason
+        # the retention rule exists: every legitimate refresh MUST append a
+        # version here, ~4.8 a day per account, forever. The waste was never
+        # the write; it was that nothing ever expired what the write
+        # superseded. See `RETAINED_VERSIONS` in quota_broker.secretstore.
         self._store.add_version(refresh_secret, serialise(fresh))
         if fresh.refresh_token != credential.refresh_token:
             self._log.info(
@@ -201,6 +378,13 @@ class CredentialRefresher:
 
         # Only now the short-lived half the worker actually mounts.
         self._store.add_version(base, fresh.access_token)
+        # Recorded here too, and this is what makes the steady state cost
+        # nothing even where the read-back is refused: the next ~59 sweeps in
+        # this token's life find the digest of the token they were about to
+        # write and stop. Without this line the blind-publish branch would fire
+        # once per tick again, because nothing else ever tells it what is in
+        # there.
+        self._remember_published(base, fresh.access_token)
 
         self._log.info(
             "subscription credential refreshed",
@@ -219,19 +403,105 @@ class CredentialRefresher:
         """
         return self._refresh(secret_base, tenant_id=label or secret_base, provider="account")
 
-    def _base_is_current(self, base: str, access_token: str) -> bool:
-        """Whether the worker-facing secret already holds this access token.
+    def _base_state(self, base: str, access_token: str) -> tuple[_BaseState, str]:
+        """What the worker-facing secret holds, and how confident that is.
 
-        A read failure is reported as NOT current, deliberately. Publishing a
-        credential the secret may already have costs one redundant version;
-        NOT publishing one it lacks costs every task for that tenant. The two
-        mistakes are not the same size, so the uncertain case takes the cheap
-        one.
+        Returns the reason string alongside the state because the caller logs
+        it: `PermissionDenied` and `ServiceUnavailable` both fail the read and
+        want completely different things done about them, and which one it was
+        is the entire diagnosis.
+
+        `KeyError` is the store's contract for "no such secret, or no enabled
+        version" -- see `SecretStore.access`. That is a DEFINITE answer and
+        exactly the onboarding case this path exists for, so it is
+        NEEDS_PUBLISH. Collapsing it into the unreadable case would be the same
+        mistake in the other direction: a real outage would read as an empty
+        secret and be written to on every tick.
+
+        WHEN THE READ FAILS, THIS DOES NOT GUESS. It asks the ledger, which
+        answers one of three things, and each maps to a different state:
+
+          * the same digest      -> CURRENT. Positive evidence; no write.
+          * a different digest,
+            or no record at all  -> UNVERIFIED_NEEDED. Positive evidence that
+                                    this platform has not put this token here.
+                                    True at most once per (secret, token), so
+                                    it cannot produce a cadence.
+          * it could not tell    -> UNKNOWN. No evidence. No write.
+
+        The middle case is the only one that writes without a comparison, and
+        it is bounded: the write records the digest, and every later tick of
+        that token's life reads it back as CURRENT. That bound is what makes
+        the difference between one version per credential and the 1,741 this
+        path actually produced.
         """
         try:
-            return self._store.access(base) == access_token
-        except Exception:
-            return False
+            stored = self._store.access(base)
+        except KeyError:
+            return _BaseState.NEEDS_PUBLISH, "no_version"
+        except Exception as exc:
+            read_error = type(exc).__name__
+        else:
+            return (
+                _BaseState.CURRENT if stored == access_token else _BaseState.NEEDS_PUBLISH
+            ), "compared"
+
+        try:
+            known = self._ledger.published_digest(base)
+        except LedgerUnavailable as exc:
+            return _BaseState.UNKNOWN, f"{read_error}/ledger:{exc}"
+        except Exception as exc:
+            # A ledger that raises something other than its own contract type
+            # is still a ledger that did not answer. Anything else here would
+            # be the swallowed exception this whole module exists to remove.
+            return _BaseState.UNKNOWN, f"{read_error}/ledger:{type(exc).__name__}"
+
+        if known is not None:
+            self._ledger_cache[base] = known
+            if known == fingerprint(access_token):
+                return _BaseState.CURRENT, f"{read_error}/ledger_match"
+        return _BaseState.UNVERIFIED_NEEDED, read_error
+
+    def _remember_published(self, base: str, access_token: str) -> None:
+        """Record what is now in the secret. Called only after a write returned.
+
+        Skipped when the ledger is already believed to hold this digest, so an
+        unchanged credential costs a Firestore READ per tick and never a write.
+        A ledger write that fails is logged and NOT cached: the cost of losing
+        it is one redundant secret version on a later tick, and pretending it
+        landed would cost a write the secret genuinely needs.
+        """
+        digest = fingerprint(access_token)
+        if self._ledger_cache.get(base) == digest:
+            return
+        try:
+            self._ledger.record(base, digest)
+        except Exception as exc:
+            self._log.warning(
+                "could not record which access token was published, so the "
+                "next sweep may publish an identical version before it can "
+                "tell that it should not",
+                extra={"secret": base, "error": type(exc).__name__},
+            )
+            return
+        self._ledger_cache[base] = digest
+
+    def _warn_unverified(
+        self, base: str, access_token: str, tenant_id: str, provider: str, detail: str
+    ) -> None:
+        """Say once per token that a write went out without being checked."""
+        digest = fingerprint(access_token)
+        if self._warned.get(base) == digest:
+            return
+        self._warned[base] = digest
+        self._log.warning(
+            "could not read the worker-facing secret to see whether it "
+            "already holds this access token, so it was published "
+            "unchecked; grant the broker "
+            "roles/secretmanager.secretAccessor on it, or every new "
+            "token is written without anything confirming it was needed",
+            extra={"tenant_id": tenant_id, "provider": provider, "error": detail},
+        )
 
     def sweep_accounts(self, secrets: list[tuple[str, str]]) -> list[RefreshOutcome]:
         """Refresh every account given, INCLUDING ones nobody is using.

@@ -78,24 +78,104 @@ nothing alerts on it.
 
 ## Failure behaviour
 
-| `on_step_failure` | Effect |
+| `on_step_failure` | Intended effect |
 |---|---|
 | `fail_workflow` (default) | a failed step fails the workflow; steps not yet started do not start |
 | `continue` | independent branches keep going; only dependents of the failed step are blocked |
 
-Steps already `RUNNING` are **not** killed when a sibling fails. They hold leases
-and partial work; killing them wastes what checkpointing exists to preserve.
-Cancel explicitly if that is what you want:
+**`on_step_failure` IS NOT HONOURED TODAY, and the two rows behave identically.**
+This is stated rather than softened because a runbook that promises
+`fail_workflow` will stop a workflow is one somebody follows at 3am. The field is
+validated (`schemas.py:87`), stored (`service.py:388`) and echoed back
+(`codec.py:506`); nothing reads it. `grep -rn on_step_failure apps/` finds no
+reader outside the codec and the schema.
+
+What actually happens, under both settings:
+
+* the dependents of a failed step are CANCELLED by the scheduler's dependency
+  sweep, with `last_error` naming the failed parents
+  (`scheduler/loop.py:295,494`);
+* every independent branch keeps running to completion.
+
+That is the `continue` row. `fail_workflow` selects it too. Cancel explicitly if
+you need a workflow stopped:
 
 ```bash
 ./scripts/api.sh POST "/workflows/$WORKFLOW_ID/cancel"
 ```
+
+Steps already `RUNNING` are **not** killed when a sibling fails, under either
+setting. They hold leases and partial work; killing them wastes what
+checkpointing exists to preserve. This is also why the derived workflow state
+below reports RUNNING rather than FAILED while a sibling is still live: the
+workflow is not over and a container is still costing money.
+
+## Workflow state
+
+`workflow.state` is **derived from the step tasks on every read**, and the stored
+copy is written back when the two disagree. Both halves matter and they are
+different halves:
+
+* **derived**, so the value a reader sees cannot go stale. Until 2026-09-22
+  nothing ever advanced the stored field — `create_workflow` set it once and
+  `cancel_workflow` only touched `cancel_requested` — so every workflow read
+  `QUEUED` for its whole life. `wf_bcdc9180e4fb4a209f31` read QUEUED while its
+  three steps were SUCCEEDED, FAILED and CANCELLED.
+* **written**, so it is queryable. A purely derived field cannot answer "list my
+  failed workflows" without loading every workflow's tasks.
+
+The rule, in `apps/swarm-api/swarm_api/rollup.py`, in the order it is applied:
+
+| condition | derived state |
+|---|---|
+| any step's task could not be read | `UNKNOWN` |
+| any step holds capacity (`LEASED`/`DISPATCHED`/`STARTING`/`RUNNING`) | `RUNNING` |
+| every step terminal | the worst present: `DEAD_LETTERED` > `FAILED` > `CANCELLED` > `SUCCEEDED` |
+| otherwise | the most advanced pending: `READY` > `PARKED` > `QUEUED` |
+
+`UNKNOWN` is not a `TaskState` and is never written to Firestore. It is what a
+read says when it could not establish an answer, and it exists so that a
+derivation over a partial read cannot come back as "SUCCEEDED because the
+failures did not load".
+
+`cancel_requested` stays a separate boolean and is **not** folded into the state.
+Cancelling is a request: a step holding a lease keeps it until the worker or the
+reconciler releases it, so between the request and the release the workflow
+really is still running.
+
+### The drift check
+
+The stored copy and the derived one are two records of one fact, which is the
+defect shape this platform has had elsewhere (a pool counter versus a lease sum).
+Every workflow read therefore carries a `drift` block:
+
+```json
+{"stored": "QUEUED", "derived": "FAILED", "agrees": false, "repaired": true}
+```
+
+`agrees` is three-valued. `null` means the two were **not compared**, because a
+step could not be read — the same caution the capacity-holders screen carries
+about a delta computed over a truncated page. A disagreement stays reported as a
+disagreement after the write-back has fixed it, and moves
+`swarm_api_workflow_state_drift_total`, because a repair that leaves no trace is
+a silent resolution.
+
+Workflows nobody reads are converged by an explicit sweep:
+
+```bash
+./scripts/api.sh POST "/admin/workflows/rollup?tenant_id=$TENANT"
+```
+
+There is no periodic caller for that route yet; see request #7 in
+[contract-change-requests.md](contract-change-requests.md).
 
 ## Inspecting
 
 ```bash
 ./scripts/api.sh GET "/workflows/$WORKFLOW_ID" | jq '{
   state: .workflow.state,
+  stored: .workflow.stored_state,
+  drift: .workflow.drift,
   steps: [.tasks[] | {step_id, state, park_reason, blocked_by}]
 }'
 ```
@@ -187,11 +267,18 @@ make smoke concurrency-test race-test quota-test failure-test load-test
 ```bash
 git checkout -b feature/thing
 # edit
-make lint test           # shellcheck, terraform fmt/validate, tflint, unit tests
-make build push deploy   # to dev
-make smoke
-git push -u origin feature/thing && gh pr create
+git commit && git push -u origin feature/thing
+gh pr create
+gh run list --branch feature/thing   # read the run
+gh run view <id> --log-failed        # read the failure
 ```
+
+**The lint, the tests, the build and the deploy are all CI's**, not this
+machine's: `application.yml` and `terraform.yml` gate the pull request, and
+`release.yml` builds, applies and deploys on the way to an environment. See
+[where the gates run](ci.md). The `make` targets above this section are how
+those workflows invoke each suite and how an operator drives a deployment they
+already have credentials for — they are not steps in authoring a change.
 
 **Never edit `apps/common/swarm_common/`.** It is frozen by `CONTRACT.md`. If a
 change is genuinely needed there, say so in the PR description rather than making

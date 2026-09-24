@@ -64,6 +64,47 @@ class Workspace:
         """Written by a runner that hit a provider rate limit."""
         return self.work / "quota.json"
 
+    @property
+    def credential_path(self) -> Path:
+        """Written by a runner whose credential was refused.
+
+        Separate from `quota_path` because the two mean opposite things and
+        have opposite remedies. A rate limit means "the same credential will
+        work later, wait"; a refused credential means "this credential will
+        never work again, get the current one". Parking on the second would
+        wait out a reset that is not coming.
+        """
+        return self.work / "credential.json"
+
+    def control_file_names(self) -> frozenset[str]:
+        """The names of the control files this class places inside `work/`.
+
+        Found by inspection rather than listed, and that is the whole point.
+        `inputs.destination_for` refuses to stage a declared input over any
+        name in this set, so a control file that is NOT in it is one an
+        upstream artifact can quietly land on first -- a file staged over
+        `input.json` is destroyed by the worker moments later, and one staged
+        over `result.json` is read back as the agent's own result. A list
+        written out by hand at the call site stays correct only until someone
+        adds a fifth property above and does not know to go and edit it.
+
+        A property that raises is deliberately NOT swallowed: dropping a name
+        out of this set is exactly the silent hole the method exists to close,
+        and every property here is a path join.
+        """
+        names: set[str] = set()
+        for klass in type(self).__mro__:
+            for attribute, descriptor in vars(klass).items():
+                if not isinstance(descriptor, property):
+                    continue
+                value = getattr(self, attribute)
+                # `work` only: `stdout_path` and `stderr_path` live under
+                # `logs/`, which the agent never has a path into and no
+                # declared input can reach.
+                if isinstance(value, Path) and value.parent == self.work:
+                    names.add(value.name)
+        return frozenset(names)
+
     def disk_bytes(self) -> int:
         """Bytes on disk under the workspace, symlinks not followed."""
         total = 0

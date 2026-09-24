@@ -12,3 +12,8 @@ tfplan.json
 dist/
 build/
 *.egg-info/
+.gstack/
+
+# Ephemeral git worktrees created by the Workflow tool for isolated agents.
+# They are real clones; committing them embeds a repository inside this one.
+.claude/worktrees/

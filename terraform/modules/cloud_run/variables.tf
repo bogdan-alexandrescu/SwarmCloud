@@ -63,12 +63,30 @@ variable "services" {
     concurrency           = optional(number, 80)
     request_timeout       = optional(string, "300s")
     env                   = optional(map(string), {})
+    # Extra OIDC audiences this service accepts, alongside its own URL. Present
+    # so a caller and a receiver can agree on an audience that is a constant
+    # rather than a URL only known after apply -- without it, a service cannot
+    # be told its own audience, because the URL is an attribute of the very
+    # resource whose environment would carry it.
+    custom_audiences = optional(list(string), [])
+    # Null means "use the module-wide var.vpc_egress". Set it only for a
+    # service that must reach another INTERNAL-ingress service by its public
+    # hostname, which only works when its egress routes through the VPC.
+    vpc_egress = optional(string)
     # caller label -> IAM member. Keyed by label because the members are service
     # account emails that are unknown until apply.
     invokers          = optional(map(string), {})
     health_check_path = optional(string, "/healthz")
     container_port    = optional(number, 8080)
   }))
+
+  validation {
+    condition = alltrue([
+      for k, v in var.services :
+      v.vpc_egress == null || contains(["PRIVATE_RANGES_ONLY", "ALL_TRAFFIC"], v.vpc_egress)
+    ])
+    error_message = "a service's vpc_egress override must be PRIVATE_RANGES_ONLY or ALL_TRAFFIC."
+  }
 
   validation {
     condition     = alltrue([for k, v in var.services : startswith(k, "swarm-")])

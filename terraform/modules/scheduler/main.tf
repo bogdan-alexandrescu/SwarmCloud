@@ -81,7 +81,7 @@ resource "google_pubsub_subscription" "wake" {
     # unauthenticated entry point anywhere.
     oidc_token {
       service_account_email = var.tick_service_account
-      audience              = var.scheduler_push_endpoint
+      audience              = coalesce(var.scheduler_push_audience, var.scheduler_push_endpoint)
     }
   }
 

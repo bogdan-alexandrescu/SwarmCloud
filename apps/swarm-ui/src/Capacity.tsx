@@ -1,0 +1,575 @@
+import { useState } from 'react'
+import { loadCapacity } from './api'
+import { isPaused } from './fetch'
+import type { TopicId } from './help'
+import { HelpCard, HelpLinks } from './HelpCard'
+import { Screen } from './Shell'
+import { headroomFigure } from './Blockers'
+import {
+  POOL_FAMILY_ORDER,
+  headroomFor,
+  overCeiling,
+  poolKind,
+  poolLabel,
+  poolScope,
+  setBy,
+  type Capacity,
+  type Headroom,
+  type Pool,
+  type PoolKind,
+} from './types'
+
+const FAMILY_TITLE: Record<PoolKind, string> = {
+  global: 'Global',
+  tenant: 'Tenants',
+  resource: 'Resource classes',
+  runner: 'Runner profiles',
+  backend: 'Backends',
+  provider: 'Providers',
+}
+
+/**
+ * Screen B -- the capacity board.
+ *
+ * Where an operator goes when something is not being admitted and they need to
+ * know which ceiling is the binding one.
+ *
+ * NOTE ON THE SPEC: docs/web-ui/02-cluster-state.md defines this screen in
+ * §4.1 and then stops -- the source text is cut off mid-sentence and §§4.2-9
+ * were never written. So the grouping order and the scope declarations below
+ * come from the spec; the columns come from the five data traps in §1.1 and
+ * from what pool_to_api actually sends. Anything beyond that is not sourced
+ * and is not pretended to be.
+ *
+ * ---------------------------------------------------------------------------
+ * B4.4: WHERE THE THREE PARAGRAPHS WENT.
+ *
+ * This screen carried ~85 words of explanation above and below its figures.
+ * All three claims survive; none of them is a sentence any more.
+ *
+ *   THE CONJUNCTION -- "a task must clear EVERY pool at once; capacity is the
+ *   MINIMUM across them, never a sum" -- is now the COLUMN NAME:
+ *   `Could start (min across pools)`. §8.4(3). This is strictly stronger than
+ *   the paragraph was. The paragraph sat above a table and had to be carried
+ *   back down to the column it was about; a reader who scrolled past it read
+ *   the figures with no qualifier at all. The parenthetical cannot be
+ *   separated from the number it qualifies, and cannot be applied to the wrong
+ *   column.
+ *
+ *   THE SCOPE -- "these are YOUR tenant's pools, not the platform's" -- is the
+ *   `.ctl-card-note` on every card that carries a figure, and it is on the
+ *   family cards too, which is where two figures of different scope could
+ *   otherwise be compared (Trap E).
+ *
+ *   THE EM-DASH RULE -- "an em dash is not a zero: it means the number was not
+ *   measured" -- is `.ctl-mark`, in the row that has one. `is-unread` when a
+ *   required pool could not be read, and an `uncapped` fact chip when nothing
+ *   caps the profile at all. Those two were one sentence and are two different
+ *   situations; the marks tell them apart where the sentence could not.
+ *
+ * The arguments are at `#help/pools-all-at-once`, `#help/tenant-scope` and
+ * `#help/absent-vs-zero`, which is where they were already written down.
+ */
+export function CapacityScreen() {
+  const [asTable, setAsTable] = useState(true)
+
+  return (
+    <Screen
+      // "Pools", not "Capacity". The tab that leads here says Pools, the
+      // section says Pools, the table below is a list of pools -- and a
+      // heading reading "Capacity" made the one screen look like two places,
+      // so a runbook step saying "go to Pools" named nothing on the screen it
+      // landed you on. The nav's own rule (App.tsx: sections are named after
+      // OBJECTS, not the question they answer) decides which side gives way.
+      title="Pools"
+      load={loadCapacity}
+      summary={(d) => {
+        const paused = d.pools.filter(isPaused).length
+        const over = d.pools.filter(overCeiling).length
+        return (
+          <>
+            {d.pools.length} pools
+            {paused > 0 && ` · ${paused} paused`}
+            {over > 0 && ` · ${over} over ceiling`}
+          </>
+        )
+      }}
+      /* A REAL ZERO. Pools are created at provisioning time, so an environment
+         with none has not been fully applied -- which is an absence the mark
+         names in two words instead of two clauses. */
+      empty={{
+        heading: 'No pools exist',
+        body: (
+          <>
+            <span className="ctl-mark is-zero">real zero</span> none provisioned in this
+            environment
+          </>
+        ),
+      }}
+    >
+      {(d) => (
+        <>
+          <Headroom capacity={d} />
+
+          {/* §6.11: THE ONLY CHROME A DATA SCREEN GETS ABOVE ITS CONTENT. The
+              toggle was a pair of bare buttons under a paragraph; it is now
+              the segmented control, right-aligned, with no words around it.
+              It is promoted above every family rather than sitting between
+              two of them, because it governs all of them. */}
+          <div className="ctl-toolbar">
+            <span className="ctl-eyebrow cap-eyebrow">Pools by family</span>
+            <div className="ctl-seg is-end">
+              <button type="button" aria-pressed={asTable} onClick={() => setAsTable(true)}>
+                Table
+              </button>
+              <button type="button" aria-pressed={!asTable} onClick={() => setAsTable(false)}>
+                Cards
+              </button>
+            </div>
+          </div>
+
+          <div className="cap-families">
+            {POOL_FAMILY_ORDER.map((kind) => {
+              const pools = d.pools
+                .filter((p) => poolKind(p.name) === kind)
+                .sort((a, b) => a.name.localeCompare(b.name))
+              if (pools.length === 0) return null
+              return <Family key={kind} kind={kind} pools={pools} asTable={asTable} />
+            })}
+          </div>
+
+          <HelpLinks topics={CAPACITY_TOPICS} />
+        </>
+      )}
+    </Screen>
+  )
+}
+
+/**
+ * Per-runner-profile headroom: how many more agents of each kind could start
+ * right now, and which pool is the one stopping more.
+ *
+ * The number is the minimum across the profile's pools divided by its weight,
+ * because a task must clear all of them at once and each is incremented by
+ * `units` rather than by one. THAT FACT IS THE COLUMN NAME, not a footnote.
+ *
+ * The pool list comes from pool_names_for for the CALLING tenant -- including
+ * for an admin -- so an admin reading these as the platform's capacity is the
+ * single most plausible misreading here. A platform-wide figure does not exist
+ * today and is not faked by substituting another tenant's pools. The card's
+ * note says whose figures these are, on every render.
+ */
+function Headroom({ capacity }: { capacity: Capacity }) {
+  const profiles = Object.entries(capacity.runner_profiles)
+  if (profiles.length === 0) return null
+
+  // `/v1/capacity` names the tenant itself -- service.capacity() has always
+  // sent `tenant_id`, and this file used to guess it back out of the pool
+  // names. The regex stays as the fallback for an API that predates the
+  // field, because a blank here silently drops the scope from every figure.
+  const tenant =
+    capacity.tenant_id ??
+    capacity.pools
+      .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
+      .find((t): t is string => Boolean(t))
+
+  const rows = profiles
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, profile]) => ({ name, profile, h: headroomFor(profile) }))
+
+  const unmeasured = rows.filter((r) => r.h.agents === null).length
+
+  return (
+    /* §B6.1: one box, and it is the table's. Headroom was the only panel on
+       this screen inside a card -- the six family tables below it are bare
+       `.ctl-table`s with their heading on the page -- so the same kind of
+       content was drawn two ways on one screen. */
+    <section className="section cap-headroom">
+      <div className="ctl-toolbar">
+        {/* NO `?` ON THE HEADING (B7.4). `tenant-scope` was here to say these
+            figures are the CALLING tenant's and not the platform's -- and the
+            card already declares that on its own right-hand note, in words, on
+            every render, which is the note the comment below this one is about.
+            A glyph that opens a card restating the line beside it is the
+            clutter the density pass was counting. The topic is in the footer
+            index. */}
+        <h2 className="ctl-card-title">Headroom</h2>
+        {/* TRAP D, AS AN ATTRIBUTE OF THE CARD. Every figure in this card is
+            this tenant's; the note is what stops an admin reading them as the
+            platform's. It is one line, mono and muted -- chrome, not copy. */}
+        <span className="ctl-card-note is-end">
+          {tenant ? `tenant ${tenant}` : 'your tenant'}
+        </span>
+      </div>
+
+      <div className="ctl-table is-stacked">
+        <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Runner profile</th>
+                {/* THE CONJUNCTION LIVES HERE NOW. A task must clear every
+                    pool in its list at the same moment, so the figure is the
+                    minimum across them and never a sum -- and saying that in
+                    the column name attaches it to the number it governs. */}
+                {/* THE ONE `?` THIS SCREEN KEEPS (B7.4), and the one the
+                    density pass could not fold into a label. `(min across
+                    pools)` says WHAT the arithmetic is; it does not say that
+                    the reservation is all-or-nothing in a single transaction,
+                    which is invariant 2 and the reason the answer is a minimum
+                    rather than a sum. That is a platform rule a column name
+                    cannot carry without becoming a sentence, so it stays behind
+                    the glyph, in the cell whose figure obeys it.
+                    `honesty.capacity.test.tsx` pins it to this cell. */}
+                <th role="columnheader" scope="col" className="is-num">
+                  Could start (min across pools)
+                  <HelpCard topic="pools-all-at-once" />
+                </th>
+                <th role="columnheader" scope="col" className="is-num">Weight</th>
+                {/* Plural on purpose. A task must clear EVERY pool at once, so
+                    more than one can refuse at the same moment -- and while this
+                    column named a single one, an operator would raise it and
+                    nothing would move. */}
+                <th role="columnheader" scope="col">Held back by</th>
+                <th role="columnheader" scope="col">Backend</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {rows.map(({ name, profile, h }) => {
+                const figure = headroomFigure(h)
+                return (
+                  <tr
+                    role="row"
+                    key={name}
+                    className={
+                      h.agents === 0 ? 'over' : h.agents === null ? 'unmeasured' : undefined
+                    }
+                  >
+                    <th role="rowheader" scope="row">{name}</th>
+                    {/* THE CELL IS THE FIGURE AND NOTHING ELSE, so an absent
+                        one is an em dash with no digit anywhere in it. WHICH
+                        KIND of absence it is is drawn in `Held back by`, where
+                        there is room for a mark; the sentence is the cell's
+                        accessible name, which a `title=` was not. */}
+                    <td
+                      role="cell"
+                      data-label="Could start"
+                      className="is-num"
+                      aria-label={figure.title}
+                    >
+                      {figure.text === '—' ? <span className="ctl-em">—</span> : figure.text}
+                    </td>
+                    <td role="cell" data-label="Weight" className="is-num">{profile.units}u</td>
+                    <td role="cell" data-label="Held back by">
+                      <HeldBackBy h={h} />
+                    </td>
+                    <td role="cell" data-label="Backend">{profile.backend}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PANEL. How many of these
+              figures are measurements is a property of the read, not of each
+              row, so it is said here rather than repeated per cell. It is a
+              `<caption>` rather than a `.ctl-card-foot` now (§B6.1): the card
+              it was the foot of is gone, and a caption is the slot the one
+              box that is left already has for exactly this. */}
+          <caption>
+            {rows.length - unmeasured} of {rows.length} measured
+            {unmeasured > 0 && ` · ${unmeasured} not counted`}
+          </caption>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * EVERY pool refusing this profile, not the tightest one.
+ *
+ * The bug this replaces: `headroomFor` kept a running minimum and overwrote
+ * `binding` on each new one, so with `resource:large` and `provider:anthropic`
+ * both at their ceilings the cell named one of them. An operator raised it,
+ * nothing changed, and the pool still refusing never appeared anywhere.
+ *
+ * A pause and a full pool are drawn differently because the remedies are
+ * opposite -- resume it, versus wait or raise it -- and a paused pool can read
+ * 0 of 8 units in use while admitting nothing at all, which is the case that
+ * looks healthiest and is not.
+ *
+ * THE TWO ABSENCES ARE TWO MARKS. `not read` (dashed, warning-toned) is a
+ * failure that is ours; `uncapped` is a measured fact about the platform and
+ * is drawn as a fact, in `--info`, never as a verdict. One sentence used to
+ * carry both and could not tell them apart.
+ */
+function HeldBackBy({ h }: { h: Headroom }) {
+  const marks = (
+    <>
+      {!h.complete && (
+        <span
+          className="ctl-mark is-unread"
+          title={`${h.unread.length} of this profile's pools could not be read.`}
+        >
+          not read
+        </span>
+      )}
+      {h.missing.length > 0 && (
+        <span className="ctl-chip is-info" title="No pool of this name is configured, so nothing caps it.">
+          <i aria-hidden="true" />
+          uncapped
+        </span>
+      )}
+    </>
+  )
+
+  if (h.blockers.length === 0) {
+    return (
+      <span className="cap-marks">
+        {h.complete && h.missing.length === 0 && <span className="ctl-em">—</span>}
+        {marks}
+      </span>
+    )
+  }
+  return (
+    <span className="cap-marks">
+      {h.blockers.map((b) => (
+        <span
+          key={b.pool}
+          className={`ctl-chip ${b.reason === 'MANUAL_PAUSE' ? 'is-paused' : 'is-bad'}`}
+          title={`${b.pool} — ${b.reason}, ${b.active} of ${b.limit} units in use`}
+        >
+          <i aria-hidden="true" />
+          {poolLabel(b.pool)}
+          {b.reason === 'MANUAL_PAUSE' ? ' paused' : ` ${b.active}/${b.limit}`}
+        </span>
+      ))}
+      {marks}
+    </span>
+  )
+}
+
+function Family({
+  kind,
+  pools,
+  asTable,
+}: {
+  kind: PoolKind
+  pools: Pool[]
+  asTable: boolean
+}) {
+  // Trap E: a number may only sit beside another number of the same scope, so
+  // the scope is declared on the group rather than left to be inferred. It is
+  // the card's note now rather than a badge beside an <h2>, which is the same
+  // claim in the slot the design system reserves for exactly this kind of
+  // qualifier.
+  const first = pools[0]
+  if (!first) return null
+  const scope = poolScope(first.name)
+
+  return (
+    <section className="ctl-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
+        <span className="ctl-card-note">
+          {scope === 'platform' ? 'platform-wide' : 'this tenant'}
+        </span>
+      </div>
+      {asTable ? (
+        <div className="ctl-card-body is-flush">
+          <PoolTable pools={pools} />
+        </div>
+      ) : (
+        <div className="ctl-card-body">
+          <div className="cap-pool-grid">
+            {pools.map((p) => (
+              <PoolCard key={p.name} pool={p} />
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function PoolTable({ pools }: { pools: Pool[] }) {
+  return (
+    <div className="ctl-table is-stacked">
+      <table role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Pool</th>
+            {/* "units", never "agents". Trap A: admission increments by the
+                resource class's units (1, 2 or 4), so active: 8 may be two
+                large agents or eight standard ones. §8.4(3) again: the caveat
+                is in the column name, where it cannot be scrolled away from
+                the figures it governs. B7.4 deleted the `?` that repeated it --
+                the parenthetical IS the caveat, and it is already in the one
+                place a reader cannot scroll past it. */}
+            <th role="columnheader" scope="col" className="is-num">In use (units)</th>
+            <th role="columnheader" scope="col" className="is-num">Ceiling</th>
+            <th role="columnheader" scope="col" className="is-num">Headroom</th>
+            <th role="columnheader" scope="col">Set by</th>
+            <th role="columnheader" scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {pools.map((p) => (
+            <PoolRow key={p.name} pool={p} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function PoolRow({ pool }: { pool: Pool }) {
+  const paused = isPaused(pool)
+  const over = overCeiling(pool)
+  const full = !over && pool.effective_limit > 0 && pool.active >= pool.effective_limit
+  const by = setBy(pool)
+
+  return (
+    <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : full ? 'is-warn full' : undefined}>
+      <th role="rowheader" scope="row" title={pool.name}>
+        {poolLabel(pool.name)}
+        <span className="ctl-sub">{pool.name}</span>
+      </th>
+      <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
+      <td role="cell" data-label="Ceiling" className="is-num">
+        {pool.effective_limit}
+        {pool.effective_limit < pool.hard_limit && (
+          <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+            /{pool.hard_limit}
+          </span>
+        )}
+      </td>
+      <td role="cell" data-label="Headroom" className="is-num">{pool.available}</td>
+      <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
+      <td role="cell" data-label="Status">
+        <span className="cap-marks">
+          {paused && (
+            <span className="ctl-chip is-paused" title="An operator paused this pool. It admits nothing until resumed.">
+              <i aria-hidden="true" />
+              paused
+            </span>
+          )}
+          {over && (
+            <span
+              className="ctl-chip is-bad"
+              title={`${pool.active} units are held against a ceiling of ${pool.effective_limit}. Admission cannot produce this, so it is drift: a limit lowered under running work, or a slot never released. 'make pool-check' finds these.`}
+            >
+              <i aria-hidden="true" />
+              over ceiling
+            </span>
+          )}
+          {full && (
+            <span className="ctl-chip is-warn">
+              <i aria-hidden="true" />
+              full
+            </span>
+          )}
+          {/* §6.7: SEVERITY IS DRAWN ONLY WHERE IT IS ABNORMAL. A healthy pool
+              is a bare dot and the word, not a green badge -- a healthy
+              platform should be a quiet grey screen. */}
+          {!paused && !over && !full && (
+            <span className="ctl-chip is-ok">
+              <i aria-hidden="true" />
+              ok
+            </span>
+          )}
+        </span>
+      </td>
+    </tr>
+  )
+}
+
+/**
+ * One pool as a card: the proportion IS the card, so the figure gets the
+ * figure tier (§6.3) rather than sitting at body size under a 30px number
+ * that says the same thing.
+ */
+function PoolCard({ pool }: { pool: Pool }) {
+  const limit = pool.effective_limit
+  const ratio = limit > 0 ? Math.min(1, pool.active / limit) : 0
+  const paused = isPaused(pool)
+  const over = overCeiling(pool)
+  const full = !over && limit > 0 && pool.active >= limit
+  const measuredZero = limit > 0 && pool.active === 0
+
+  return (
+    <div className="cap-pool">
+      <span className="cap-pool-name" title={pool.name}>
+        {poolLabel(pool.name)}
+      </span>
+
+      <b className="ctl-figure cap-pool-figure">
+        {pool.active}
+        <span className="ctl-figure-unit">
+          {limit > 0 ? `/ ${limit}` : 'no ceiling'}
+        </span>
+      </b>
+
+      {/* THE ONE TRACK (§6.4). `.is-unknown` when no ceiling was read -- an
+          empty plain track is a claim that nothing is in use, and "no ceiling"
+          is not a zero. `.is-zero` draws the origin tick, which is what makes
+          a measured nought different from a widget that failed to paint. */}
+      <div
+        className={`ctl-util-track${limit > 0 ? (measuredZero ? ' is-zero' : '') : ' is-unknown'}`}
+        role="meter"
+        aria-valuenow={pool.active}
+        aria-valuemin={0}
+        aria-valuemax={limit}
+        /* "units", not "agents": admission counts weighted units, so 8 may be
+           two large agents or eight standard ones. */
+        aria-label={`${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`}
+      >
+        {limit > 0 &&
+          (measuredZero ? (
+            <i className="ctl-util-zero" />
+          ) : (
+            <i
+              className={`ctl-util-fill${over || full ? ' is-bad' : paused ? ' is-paused' : ratio > 0.8 ? ' is-warn' : ''}`}
+              style={{ width: `${Math.round(ratio * 100)}%` }}
+            />
+          ))}
+      </div>
+
+      <span className="cap-marks">
+        {paused && (
+          <span className="ctl-chip is-paused">
+            <i aria-hidden="true" />
+            paused
+          </span>
+        )}
+        {over && (
+          <span className="ctl-chip is-bad">
+            <i aria-hidden="true" />
+            over ceiling
+          </span>
+        )}
+        {full && (
+          <span className="ctl-chip is-warn">
+            <i aria-hidden="true" />
+            full
+          </span>
+        )}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * The legend this screen used to end on, as links.
+ *
+ * The middle entry carried "standard 1, browser 2, large 4" -- three platform
+ * figures typed into a paragraph, which §5 of the prose migration table lists
+ * as a restatement nothing checks. `units-not-agents` states the RULE and
+ * names no figure, and the weights themselves are on the sizing table under
+ * Runtimes, where they are read from the catalogue.
+ */
+const CAPACITY_TOPICS: readonly TopicId[] = [
+  'units-not-agents',
+  'pools-all-at-once',
+  'pool-freshness',
+  'tenant-scope',
+  'absent-vs-zero',
+]

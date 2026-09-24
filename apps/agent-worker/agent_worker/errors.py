@@ -114,6 +114,18 @@ class QuotaExhausted(WorkerError):
         self.detail = detail
 
 
+class InputUnavailable(WorkerError):
+    """A declared `input_from` artifact could not be staged into the workspace.
+
+    Fails the attempt on purpose, and the agent is never started. A step that
+    declares an input has been PROMISED that file: its prompt is written as
+    though the file is there, so running without it produces a confident, wrong
+    answer that nothing downstream can distinguish from a right one. Every
+    message raised with this names the upstream task and the filename, because
+    those two strings are what a person needs in order to fix it.
+    """
+
+
 class ArtifactTooLarge(WorkerError):
     """An artifact or checkpoint exceeded its configured cap and was refused."""
 

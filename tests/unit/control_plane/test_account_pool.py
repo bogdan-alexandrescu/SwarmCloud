@@ -7,6 +7,7 @@ nobody lent them.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -225,7 +226,9 @@ def test_next_reset_reports_only_what_is_actually_blocking():
 
 def test_the_secret_name_is_derived_never_supplied():
     """A caller who could name the secret could name someone else's."""
-    assert secret_name("u-bogdan", "personal") == "swarm-account-u-bogdan-personal"
+    # Two dashes between tenant and label: a single one made
+    # ("acme-prod","x") and ("acme","prod-x") the same secret.
+    assert secret_name("u-bogdan", "personal") == "swarm-account-u-bogdan--personal"
 
 
 @pytest.mark.parametrize("bad", [
@@ -252,3 +255,127 @@ def test_firestore_round_trip_preserves_everything_that_matters():
     assert back.assigned == a.assigned
     assert back.headroom(NOW) == pytest.approx(a.headroom(NOW))
     assert back.may_serve("eng")
+
+
+def test_the_state_an_account_had_before_its_credential_died_survives_a_round_trip():
+    """The record of where a recovered account belongs. A sweep marks
+    REAUTH_REQUIRED and a person clears it, so without this the only state
+    recovery could choose is AVAILABLE -- and an account an operator had
+    deliberately paused would come back in service with nothing saying the
+    pause had been overruled."""
+    a = replace(_acct("personal", state=AccountState.REAUTH_REQUIRED),
+                state_before_reauth=AccountState.PAUSED)
+
+    back = Account.from_firestore(a.to_firestore())
+
+    assert back.state is AccountState.REAUTH_REQUIRED
+    assert back.state_before_reauth is AccountState.PAUSED
+
+
+def test_a_document_with_no_remembered_state_reads_as_nothing_remembered():
+    """Both a document written before the field existed and an account an
+    operator typed REAUTH_REQUIRED onto. Recovery from either is AVAILABLE."""
+    raw = _acct("personal").to_firestore()
+    del raw["state_before_reauth"]
+    assert Account.from_firestore(raw).state_before_reauth is None
+
+
+def test_an_unrecognised_remembered_state_does_not_hide_the_account():
+    """Deliberately more forgiving than `state`, which is allowed to raise and
+    take the document out of `AccountStore.list` with it. This field only says
+    where to put the account back; the account itself is fine, and dropping it
+    from the pool over an advisory value would be the larger failure."""
+    raw = _acct("personal").to_firestore()
+    raw["state_before_reauth"] = "ASCENDED"
+    assert Account.from_firestore(raw).state_before_reauth is None
+
+
+# -- secret names must not collide across tenants --------------------------
+
+
+def test_two_ordinary_registrations_cannot_share_a_secret():
+    """CONTRACT.md invariant 9, broken with no attacker and no malice.
+
+    With a single dash, `("acme-prod", "x")` and `("acme", "prod-x")` produced
+    the identical secret name. Registering the second bound the second tenant's
+    worker service account as an accessor on a secret holding the FIRST
+    tenant's live refresh and access tokens.
+
+    Reported in docs/audits/2026-09-18/06-quota-broker-accounts.md and left
+    unfixed while account onboarding was a script an operator ran. It became
+    urgent when registration moved into the Settings page, where the label is
+    chosen by whoever is signed in.
+    """
+    from quota_broker.accounts import secret_name
+
+    assert secret_name("acme-prod", "x") != secret_name("acme", "prod-x")
+
+
+def test_a_tenant_id_that_could_forge_a_separator_is_refused():
+    """The separator is only unambiguous while neither side can contain it."""
+    from quota_broker.accounts import AccountError, secret_name
+
+    with pytest.raises(AccountError, match="separates"):
+        secret_name("acme--evil", "x")
+
+
+def test_a_label_containing_the_separator_is_still_unambiguous():
+    """A label MAY contain `--` and that is harmless, because the name splits
+    at the FIRST separator and everything after it is the label by definition.
+    Only the tenant side has to be constrained."""
+    from quota_broker.accounts import secret_name
+
+    assert secret_name("acme", "prod--x") == "swarm-account-acme--prod--x"
+
+    # The tenant side is what must be constrained, and is: a tenant containing
+    # the separator is refused outright, so no second reading of that name
+    # exists.
+    from quota_broker.accounts import AccountError
+
+    with pytest.raises(AccountError, match="separates"):
+        secret_name("acme--prod", "x")
+
+
+def test_a_recorded_secret_name_survives_a_change_to_how_names_are_made():
+    """The reason the name is stored rather than derived.
+
+    When `secret_name` moved from one dash to two -- to stop
+    ("acme-prod","x") and ("acme","prod-x") colliding -- every account already
+    registered began deriving a name that had never existed. Nothing said so:
+    the refresh sweep reports "no_refresh_credential" for a missing refresh
+    secret, which is also exactly what a healthy API-key tenant reports, and
+    the usage poller simply skips. Three live accounts were orphaned that way
+    and the platform looked entirely healthy.
+    """
+    from quota_broker.accounts import Account
+
+    recorded = Account(
+        account_id="u-bogdan:personal",
+        owner_tenant="u-bogdan",
+        label="personal",
+        secret_ref="swarm-account-u-bogdan-personal",   # the pre-change name
+    )
+    assert recorded.secret == "swarm-account-u-bogdan-personal"
+    assert recorded.secret != secret_name("u-bogdan", "personal")
+
+
+def test_a_document_written_before_the_field_existed_still_resolves():
+    """Backwards compatibility for every account registered before this.
+    Empty means derive, which is the only thing such a document can do."""
+    from quota_broker.accounts import Account
+
+    legacy = Account.from_firestore(
+        {"account_id": "t:l", "owner_tenant": "t", "label": "l"}
+    )
+    assert legacy.secret == secret_name("t", "l")
+
+
+def test_the_recorded_name_survives_a_firestore_round_trip():
+    """It is only useful if it persists; an in-memory-only field would be lost
+    the first time the document was read back."""
+    from quota_broker.accounts import Account
+
+    original = Account(
+        account_id="t:l", owner_tenant="t", label="l", secret_ref="legacy-name"
+    )
+    assert Account.from_firestore(original.to_firestore()).secret == "legacy-name"

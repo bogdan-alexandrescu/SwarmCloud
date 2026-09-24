@@ -35,6 +35,32 @@ Readings go stale. An account last observed an hour ago may have been used by
 something else since -- another pod, or the operator's own laptop, which shares
 these accounts. `Account.headroom()` therefore decays confidence with age and
 `stale_after` exists to say when a reading stops counting at all.
+
+"STALE" AND "SPENT" ARE DIFFERENT CLAIMS
+----------------------------------------
+They have to stay different all the way out to the caller, because the caller
+waits differently for each. An account that is spent comes back when the
+provider's window rolls over -- hours, at a known instant. An account whose
+reading has merely aged out says nothing about whether it has room; it says
+nobody has looked lately, and the broker's own usage poll looks on every sweep.
+Reporting the second as the first sends a task to sleep for a quarter of an
+hour over a pool that will be readable again in five minutes; reporting either
+as "waiting on a person" sends an operator to look at a pause that is not
+there. `eligibility()` is the one place that decides which of these is true,
+and `choose()` and the assign route both go through it so they cannot disagree
+about what "unavailable" meant.
+
+A HOLD IS HOW MANY AGENTS ARE REALLY ON AN ACCOUNT
+--------------------------------------------------
+`assigned` used to be a bare counter that went up on assign and down on
+release. A worker that is SIGKILLed, OOM-killed or preempted never releases, so
+the counter only ever drifted upward -- and since it is `choose()`'s
+load-spreading tiebreak and the number an operator reads as "agents on this
+account", it degraded quietly and permanently. Each assignment is therefore a
+HOLD with an id and a deadline, `assigned` is the number of holds that have not
+expired, and the sweep prunes the rest. That also gives release something to
+prove: it names the hold it is giving back, so a tenant an account is lent to
+cannot drive the owner's counter to zero with calls it never earned.
 """
 
 from __future__ import annotations
@@ -49,6 +75,11 @@ from typing import Any, Iterable
 #: secret name is derived, never supplied, for the same reason tenant secret
 #: names are: a caller who could name the secret could name someone else's.
 _SECRET_PREFIX = "swarm-account"
+
+#: Separates the tenant from the label in a secret name. Two dashes because a
+#: single one is ambiguous when both sides may contain dashes -- see
+#: `secret_name`, which is where that cost invariant 9.
+_SEPARATOR = "--"
 
 #: Labels become part of a secret name and a Kubernetes annotation, so they are
 #: restricted to what both accept. Checked on the way IN, so a bad label is
@@ -65,6 +96,38 @@ DEFAULT_STALE_AFTER = timedelta(minutes=30)
 #: almost immediately and the swap machinery will have to rescue it, which is
 #: more expensive than simply not starting it there.
 DEFAULT_ASSIGN_FLOOR = 0.15
+
+#: How long a hold survives without being released.
+#:
+#: Longer than the longest runner profile's timeout (7200s) plus the setup and
+#: teardown around it, so it can never expire under a worker that is still
+#: running -- an expiring hold under a live agent would let the broker hand the
+#: same subscription to a second one. Short enough that a worker killed without
+#: warning costs a couple of hours of one slot on one account rather than that
+#: slot forever.
+DEFAULT_HOLD_TTL = timedelta(hours=3)
+
+
+class Unavailable(str, Enum):
+    """Why no account could be assigned. Each one is a different wait.
+
+    Kept as an enum rather than a string at the call site because these travel
+    to a worker that picks a park duration from them, and a typo in a literal
+    would silently become the long fallback.
+    """
+
+    #: This tenant may use no account at all. Not a wait: the pool is not how
+    #: this deployment runs, and the caller falls back to its tenant secret.
+    NO_ACCOUNTS_REGISTERED = "no_accounts_registered"
+    #: Accounts exist, the binding window on every one of them is below the
+    #: assign floor, and at least one says when it clears. A clock.
+    NO_ACCOUNT_AVAILABLE = "no_account_available"
+    #: Every account is paused, draining or needs re-authentication. A person.
+    POOL_PAUSED = "pool_paused"
+    #: Accounts have room by their last reading, but every reading is too old
+    #: to act on. The broker's usage poll, minutes away -- NOT a clock, and
+    #: emphatically not "they are spent".
+    NO_RECENT_READING = "no_recent_reading"
 
 
 class AccountState(str, Enum):
@@ -95,11 +158,39 @@ class AccountError(RuntimeError):
 
 
 def secret_name(owner_tenant: str, label: str) -> str:
-    """`swarm-account-<tenant>-<label>`. Derived, never supplied."""
+    """`swarm-account-<tenant>--<label>`. Derived, never supplied.
+
+    TWO DASHES, and that is a security boundary rather than a style choice.
+
+    A single dash made the name AMBIGUOUS, because a tenant id and a label may
+    both contain one: `("acme-prod", "x")` and `("acme", "prod-x")` produced the
+    identical secret. Registering the second would bind the second tenant's
+    worker service account as an accessor on a secret holding the FIRST
+    tenant's live refresh and access tokens -- CONTRACT.md invariant 9, broken
+    with no attacker and no malice, by two ordinary onboardings. Reported in
+    docs/audits/2026-09-18/06-quota-broker-accounts.md and unfixed until
+    account registration moved into the Settings page, where the label is
+    chosen by whoever is signed in rather than by an operator running a script.
+
+    `--` is unambiguous because the name splits at the FIRST occurrence and the
+    TENANT cannot contain one -- the check below refuses that. A label may
+    contain `--` harmlessly: everything after the first separator is the label
+    by definition, so there is still exactly one way to read the name.
+    (`validate_label` does not forbid a repeated dash, and an earlier draft of
+    this comment claimed it did.)
+
+    Changed at the only moment it was free: no account had yet been registered
+    anywhere, so there was nothing to migrate.
+    """
     validate_label(label)
     if not owner_tenant:
         raise AccountError("an account must have an owning tenant")
-    return f"{_SECRET_PREFIX}-{owner_tenant}-{label}"
+    if _SEPARATOR in owner_tenant:
+        raise AccountError(
+            f"tenant id {owner_tenant!r} contains {_SEPARATOR!r}, which separates "
+            "the tenant from the label in a secret name and must appear in neither"
+        )
+    return f"{_SECRET_PREFIX}-{owner_tenant}{_SEPARATOR}{label}"
 
 
 def validate_label(label: str) -> str:
@@ -128,6 +219,25 @@ class WindowReading:
 
 
 @dataclass(frozen=True)
+class Hold:
+    """One agent's claim on an account, with a deadline.
+
+    The deadline is what makes the count self-correcting. A worker releases on
+    its own exit path and that is the normal case; a worker that is killed
+    outright cannot, and nothing else in this repository knows the assignment
+    existed -- `apps/reconciler/` has no account code. So the hold carries its
+    own expiry and the quota sweep prunes it.
+    """
+
+    assignment_id: str
+    tenant_id: str
+    expires_at: datetime
+
+    def is_expired(self, now: datetime) -> bool:
+        return now >= self.expires_at
+
+
+@dataclass(frozen=True)
 class Account:
     account_id: str
     owner_tenant: str
@@ -146,12 +256,92 @@ class Account:
     windows: dict[str, WindowReading] = field(default_factory=dict)
     observed_at: datetime | None = None
 
-    #: How many agents currently hold this account. Advisory: the authoritative
-    #: record is the lease, and this is what makes a listing readable.
+    #: The live claims on this account. The authoritative answer to "how many
+    #: agents are on it", and the reason `assigned` cannot drift upward forever.
+    holds: tuple[Hold, ...] = ()
+
+    #: How many agents currently hold this account -- the projection of `holds`
+    #: that a listing reads and `choose()` sorts on, maintained by the same
+    #: transaction that changes them. Advisory in the sense that the lease is
+    #: still the authoritative record of a running attempt.
     assigned: int = 0
+
+    #: Tenants that were handed this account and could not read its secret,
+    #: with when they said so. Per TENANT rather than global, on purpose: a
+    #: borrower reporting that it cannot read a lent secret says nothing about
+    #: the owner, and letting one tenant's report pause an account for everyone
+    #: would be a griefing tool. `choose()` skips an account for the tenant
+    #: that reported it, for as long as `unreadable_after` says.
+    unreadable_by: dict[str, datetime] = field(default_factory=dict)
 
     #: Why it is in its current state, for the human who has to act on it.
     reason: str = ""
+
+    #: The state this account held when something marked it REAUTH_REQUIRED,
+    #: so that recovery can give it back rather than promote it.
+    #:
+    #: REAUTH_REQUIRED is written by a BACKGROUND SWEEP and cleared by a
+    #: PERSON, and those two facts together are why this exists. Without it,
+    #: the only sensible state to recover to is AVAILABLE -- so an account an
+    #: operator had deliberately PAUSED or DRAINING would come back in service
+    #: the moment its credential was replaced, with nothing saying the pause
+    #: had been overruled. `AccountStore.register` carries the same reasoning
+    #: for the same reason: a sweep must not undo a decision nobody asked it
+    #: to touch.
+    #:
+    #: None means "nothing is remembered", which is both a document written
+    #: before this field existed and an account that reached REAUTH_REQUIRED
+    #: by an operator typing it. Recovery from that is AVAILABLE.
+    state_before_reauth: AccountState | None = None
+
+    #: The secret this account's credential actually lives in, RECORDED at
+    #: registration rather than re-derived on every read.
+    #:
+    #: Derivation was fine until the naming rule had to change. When
+    #: `secret_name` moved from one dash to two -- to stop
+    #: ("acme-prod","x") and ("acme","prod-x") colliding -- every account
+    #: already registered started deriving a name that does not exist, and
+    #: nothing said so: the refresh sweep reports "no_refresh_credential",
+    #: which is also what a healthy API-key tenant reports, and the usage
+    #: poller simply skips. Three live accounts were orphaned that way and the
+    #: platform looked fine.
+    #:
+    #: A name that is stored cannot be invalidated by a change to how names are
+    #: made. Empty means "derive it", which is what a document written before
+    #: this field existed needs.
+    secret_ref: str = ""
+
+    #: When an agent was last assigned this account, ever. None means NEVER,
+    #: and that is the field's whole purpose: a pool with accounts in it and
+    #: nothing ever assigned from it is a pool no worker can reach, which is
+    #: the one failure mode of this feature that is otherwise completely
+    #: silent -- no error, no log, a healthy-looking listing, and every agent
+    #: quietly back on the one shared per-tenant subscription. The sweep says
+    #: so out loud.
+    last_assigned_at: datetime | None = None
+
+    def live_holds(self, now: datetime) -> tuple[Hold, ...]:
+        return tuple(h for h in self.holds if not h.is_expired(now))
+
+    def is_unreadable_for(
+        self,
+        tenant_id: str,
+        now: datetime,
+        *,
+        unreadable_after: timedelta = DEFAULT_STALE_AFTER,
+    ) -> bool:
+        """Whether this tenant recently found this account's secret unreadable.
+
+        TIME-LIMITED rather than sticky, because both causes fix themselves or
+        get fixed: a freshly onboarded account gets its access token published
+        on the broker's next sweep, and a missing `secretAccessor` grant on a
+        lent secret is something an operator adds. A permanent mark would turn
+        a five-minute onboarding window into an account that never came back.
+        """
+        reported = self.unreadable_by.get(tenant_id)
+        if reported is None:
+            return False
+        return now - _aware(reported) <= unreadable_after
 
     def may_serve(self, tenant_id: str) -> bool:
         """Whether this account is allowed to run `tenant_id`'s work at all.
@@ -198,13 +388,30 @@ class Account:
             (1.0 if w.is_reset(now) else w.remaining()) for w in self.windows.values()
         )
 
+    def is_stale(
+        self,
+        now: datetime,
+        *,
+        stale_after: timedelta = DEFAULT_STALE_AFTER,
+    ) -> bool:
+        """Whether the last reading is too old to act on.
+
+        A never-observed account is NOT stale: it has no reading to age out,
+        and `headroom()` deliberately treats it as full so a new account can be
+        assigned before it can report anything.
+        """
+        if self.observed_at is None:
+            return False
+        return now - self.observed_at > stale_after
+
     def next_reset(
         self,
         now: datetime,
         *,
         floor: float = DEFAULT_ASSIGN_FLOOR,
+        stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> datetime | None:
-        """When this account becomes assignable again, or None if it already is.
+        """When this account becomes assignable again, or None if nothing is a clock.
 
         Only windows that are actually CONSTRAINING count. An account with room
         has nothing to wait for, and reporting its next window rollover as a
@@ -212,9 +419,26 @@ class Account:
         which reads, to whoever is looking at it, as though the account had been
         exhausted.
 
-        This is what lets a drained account be scheduled back at a known instant
-        instead of polled.
+        THE ELIGIBILITY RULE HERE IS THE ONE `headroom()` USES, staleness
+        included, which it did not used to be. `choose()` rejects on
+        `headroom()`, which HALVES an aged reading; this compared the raw
+        remaining against the floor and applied no staleness at all. So an
+        account blocked only by the halving -- raw remaining between the floor
+        and twice it, last observed over `stale_after` ago -- was rejected by
+        `choose()` and reported no blocking window, and the route answered "no
+        account available, and no idea when". The caller then fell back to its
+        long poll for exactly the case the "park until a known instant" design
+        was written for. Taking the same `stale_after` makes the two agree by
+        construction.
+
+        A stale reading that is otherwise fine still yields None here, and that
+        is correct: nothing is waiting on a window. It is waiting on the next
+        usage poll, which is not a reset instant and must not be dressed up as
+        one -- see `eligibility()`, which says so in words the caller can act
+        on.
         """
+        if self.headroom(now, stale_after=stale_after) >= floor:
+            return None
         blocking = [
             w.resets_at
             for w in self.windows.values()
@@ -238,7 +462,21 @@ class Account:
 
     @property
     def secret(self) -> str:
-        return secret_name(self.owner_tenant, self.label)
+        """Where this account's credential actually lives.
+
+        The RECORDED name wins over a derived one. Deriving was safe until the
+        naming rule changed: when `secret_name` moved from one dash to two, to
+        stop ("acme-prod","x") and ("acme","prod-x") colliding, every account
+        already registered began pointing at a secret that had never existed --
+        silently, because a missing refresh secret and a tenant that simply
+        uses an API key report the identical thing. Three live accounts were
+        orphaned that way and the platform looked healthy.
+
+        A name that is stored cannot be invalidated by a change to how names
+        are made. Empty means "derive it", which is what a document written
+        before this field existed needs.
+        """
+        return self.secret_ref or secret_name(self.owner_tenant, self.label)
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -249,7 +487,17 @@ class Account:
             "state": self.state.value,
             "lend_to": list(self.lend_to),
             "assigned": self.assigned,
+            "last_assigned_at": self.last_assigned_at,
+            "holds": holds_to_firestore(self.holds),
+            "unreadable_by": dict(self.unreadable_by),
             "reason": self.reason,
+            # "" rather than None: the same empty-means-nothing-remembered
+            # spelling `secret` uses, so a document never carries a null that
+            # a reader has to tell apart from a missing key.
+            "state_before_reauth": (
+                self.state_before_reauth.value if self.state_before_reauth else ""
+            ),
+            "secret": self.secret_ref,
             "observed_at": self.observed_at,
             "windows": {
                 name: {"utilization": w.utilization, "resets_at": w.resets_at}
@@ -276,16 +524,84 @@ class Account:
             provider=data.get("provider", "anthropic"),
             state=AccountState(data.get("state", AccountState.AVAILABLE.value)),
             lend_to=tuple(data.get("lend_to") or ()),
+            secret_ref=str(data.get("secret") or ""),
             windows=windows,
             observed_at=_aware(observed) if isinstance(observed, datetime) else None,
+            holds=holds_from_firestore(data.get("holds")),
+            last_assigned_at=(
+                _aware(data["last_assigned_at"])
+                if isinstance(data.get("last_assigned_at"), datetime)
+                else None
+            ),
+            unreadable_by={
+                str(t): _aware(v)
+                for t, v in (data.get("unreadable_by") or {}).items()
+                if isinstance(v, datetime)
+            },
             assigned=int(data.get("assigned", 0)),
             reason=data.get("reason", "") or "",
+            state_before_reauth=_optional_state(data.get("state_before_reauth")),
         )
+
+
+def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
+    return [
+        {
+            "assignment_id": h.assignment_id,
+            "tenant_id": h.tenant_id,
+            "expires_at": h.expires_at,
+        }
+        for h in holds
+    ]
+
+
+def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
+    """Read holds back, dropping any that are not shaped like one.
+
+    Skipping a malformed entry rather than raising, for the reason
+    `AccountStore.list` gives about malformed documents: one bad hold must not
+    make the whole account unreadable and take the pool down with it. A dropped
+    hold under-counts by one, which `choose()` survives; an unreadable account
+    is one nothing can be assigned from at all.
+    """
+    holds: list[Hold] = []
+    for item in raw or ():
+        if not isinstance(item, dict):
+            continue
+        expires = item.get("expires_at")
+        assignment_id = item.get("assignment_id")
+        if not isinstance(expires, datetime) or not assignment_id:
+            continue
+        holds.append(
+            Hold(
+                assignment_id=str(assignment_id),
+                tenant_id=str(item.get("tenant_id") or ""),
+                expires_at=_aware(expires),
+            )
+        )
+    return tuple(holds)
 
 
 def _aware(value: datetime) -> datetime:
     """Firestore hands back naive datetimes in some client versions."""
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _optional_state(raw: Any) -> AccountState | None:
+    """A remembered state, or None -- never an exception.
+
+    Deliberately more forgiving than the `state` field above, which is allowed
+    to raise and take the document out of `AccountStore.list` with it. This one
+    is ADVISORY: it only says where recovery should put the account back. An
+    unrecognised value here must not make an account unreadable and remove it
+    from the pool, because the account itself is fine.
+    """
+    if not raw:
+        return None
+    try:
+        return AccountState(str(raw))
+    except ValueError:
+        return None
 
 
 def account_id_for(owner_tenant: str, label: str) -> str:
@@ -300,6 +616,7 @@ def choose(
     *,
     assign_floor: float = DEFAULT_ASSIGN_FLOOR,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
+    exclude: Iterable[str] = (),
 ) -> Account | None:
     """The account a new agent for `tenant_id` should get, or None.
 
@@ -314,12 +631,24 @@ def choose(
     parks the task, which costs nothing and resumes by itself once an account
     frees up. Handing back an exhausted account instead would trade a free park
     for a failed dispatch.
+
+    `exclude` is how a caller says "not that one, I already tried it". It
+    exists because everything above is deterministic: without it, a worker
+    handed an account whose secret it cannot read would be handed the same
+    account on its next ask, and on the retry after that, until the task ran
+    out of attempts. `unreadable_by` does the same job across attempts and for
+    this tenant only -- a borrower that cannot read a lent secret says nothing
+    about the owner, so its report must not take the account away from anyone
+    else.
     """
+    skip = {str(a) for a in exclude}
     candidates = [
         a
         for a in accounts
         if a.state in ASSIGNABLE_STATES
         and a.may_serve(tenant_id)
+        and a.account_id not in skip
+        and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
         and a.headroom(now, stale_after=stale_after) >= assign_floor
     ]
     if not candidates:
@@ -333,6 +662,81 @@ def choose(
             a.label,
         ),
     )
+
+
+def eligibility(
+    accounts: Iterable[Account],
+    tenant_id: str,
+    now: datetime,
+    *,
+    assign_floor: float = DEFAULT_ASSIGN_FLOOR,
+    stale_after: timedelta = DEFAULT_STALE_AFTER,
+    exclude: Iterable[str] = (),
+) -> tuple[Unavailable, datetime | None]:
+    """WHY nothing can be assigned, and when that changes.
+
+    Call it only when `choose()` returned None, with the same arguments, so the
+    two cannot disagree about what "unavailable" meant. That coupling is the
+    whole reason this exists as a function rather than as a few lines in the
+    route: the route used to answer "when" with a rule that did not match the
+    rule `choose()` had just answered "no" with, and the two disagreed in
+    exactly the band where it mattered.
+
+    The second element is a reset INSTANT and only ever that. A pool waiting on
+    a person, or on the next usage poll, has no instant, and inventing one
+    would wake a task up to the same answer. The reason is what the caller
+    picks its wait from.
+    """
+    skip = {str(a) for a in exclude}
+    serves = [a for a in accounts if a.may_serve(tenant_id)]
+    if not serves:
+        # The pool is not how this tenant runs at all. The ONE answer that
+        # means "fall back to your tenant secret" rather than "wait", and the
+        # reason every deployment that has never registered an account is
+        # unaffected by any of this.
+        return Unavailable.NO_ACCOUNTS_REGISTERED, None
+
+    mine = [
+        a
+        for a in serves
+        if a.account_id not in skip
+        and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
+    ]
+    if not mine:
+        # Accounts exist and this attempt has ruled every one of them out --
+        # it tried them and could not read them. A wait, not a fallback: a
+        # tenant whose pool is broken must not quietly go back to sharing one
+        # subscription, which is the contention the pool exists to remove.
+        return Unavailable.NO_ACCOUNT_AVAILABLE, None
+
+    assignable = [a for a in mine if a.state in ASSIGNABLE_STATES]
+    if not assignable:
+        # Paused, draining or needing re-authentication. Every one of those is
+        # a person's decision or a person's job, so there is nothing to wait
+        # for and no point waking up sooner.
+        return Unavailable.POOL_PAUSED, None
+
+    resets = [
+        r
+        for r in (
+            a.next_reset(now, floor=assign_floor, stale_after=stale_after)
+            for a in assignable
+        )
+        if r is not None
+    ]
+    if resets:
+        return Unavailable.NO_ACCOUNT_AVAILABLE, min(resets)
+
+    if any(a.is_stale(now, stale_after=stale_after) for a in assignable):
+        # Nothing is waiting on a window: every account that is blocked is
+        # blocked by the staleness halving alone. That is not evidence of
+        # exhaustion and must not be reported as it -- the broker's own usage
+        # poll refreshes these readings on its next sweep.
+        return Unavailable.NO_RECENT_READING, None
+
+    # Assignable, fresh, and still under the floor with no unreset window:
+    # genuinely spent, with nothing that can say when it clears.
+    return Unavailable.NO_ACCOUNT_AVAILABLE, None
 
 
 def due_for_refresh(
@@ -360,14 +764,20 @@ __all__ = [
     "Account",
     "AccountError",
     "AccountState",
+    "Hold",
+    "Unavailable",
     "WindowReading",
     "ASSIGNABLE_STATES",
     "USABLE_STATES",
     "DEFAULT_ASSIGN_FLOOR",
+    "DEFAULT_HOLD_TTL",
     "DEFAULT_STALE_AFTER",
     "account_id_for",
     "choose",
     "due_for_refresh",
+    "eligibility",
+    "holds_from_firestore",
+    "holds_to_firestore",
     "secret_name",
     "validate_label",
 ]

@@ -5,6 +5,53 @@ Instructions for an AI agent (or a new human) making changes here. Read
 
 ---
 
+## Rule zero: deliver everything that was asked, in full
+
+Every task in the request is delivered. Not most of it, not the easy part, not
+a different task that resembles it. If something genuinely cannot be done, or
+should be dropped or deferred, **ask** — do not decide it silently and do not
+bury it in a status list. If you said you would do it, it is a debt; close it.
+
+**Empty output is not success.** A loop that printed nothing, a probe that
+returned `[]`, a sweep that found no defects: verify it RAN before reporting
+from it. The interactive shell here is zsh, which does not word-split unquoted
+variables, so `for x in $LIST` silently iterates once — that exact bug has
+produced "clean sweep" reports over a single item more than once. Feed loops
+from an array or a `while read` and print the count you actually visited.
+
+When reporting, keep three categories apart and never let the third hide inside
+the first:
+
+* **done and verified** — with the command and its result;
+* **attempted** — what was tried and what happened;
+* **not started** — named plainly, with why.
+
+Owner's instruction, 2026-09-23: "Do not ever forget or exclude tasks without
+asking my permission to do so and do not commit to anything you are not going
+to deliver or fail to deliver on anything you already committed on doing."
+
+---
+
+## Never stop while unblocked work remains
+
+A blocked step is not a blocked task. Decide whether the block is **real** — a
+permission denial on that exact action, a credential only the owner can supply,
+a decision that is genuinely theirs — or **artificial**: your own caution, a
+convention like track ownership, an ordering you invented. Artificial blocks
+are not blocks.
+
+Then decompose and keep going. "Fix GKE dispatch" is not one task; it is find
+the cause, fix the renderer, fix the guard, write the RBAC, apply it, cover it
+in smoke, add the logging. On 2026-09-23 exactly one of those was blocked by a
+permission classifier and the other six were not. Do every unblocked piece
+before reporting anything, and report the block in one line.
+
+Prepare the blocked step's dependants anyway — write the manifest, render it,
+validate it, commit it — so that when the block lifts, what remains is one
+command.
+
+---
+
 ## The three rules that are not negotiable
 
 **1. `apps/common/swarm_common/` is FROZEN.**
@@ -36,10 +83,20 @@ Several tracks work in this repository at once. Stay inside your own:
 | `terraform/`, `kubernetes/` | Track C |
 | `docs/`, `scripts/`, `.github/`, `Makefile`, `README.md`, `CLAUDE.md`, `.env.example`, `LICENSE`, `docker-compose.yml` | Track D (operations) |
 
-Read other tracks' code freely — you must, to describe it accurately — but do not
-edit it. If another track's layout contradicts yours (for example, where the
-Terraform root lives), **change your side to match theirs and report the
-conflict**; do not patch theirs.
+Read other tracks' code freely — you must, to describe it accurately. Prefer to
+edit inside your own area, and if another track's layout contradicts yours (for
+example, where the Terraform root lives), change your side to match theirs and
+report the conflict.
+
+**TRACK OWNERSHIP IS NEVER A REASON TO REFUSE OR DEFER WORK.** It is a
+convention for keeping parallel lanes from overwriting each other — nothing
+more. When the owner asks for something, do it, wherever it lives, and say in
+the commit which track's files you crossed into and why. Reclassify the area if
+that is what the work needs. Never answer a request with "that belongs to
+another track"; never quietly narrow a task to the part that sits inside your
+own area. Owner's instruction, 2026-09-23: *"I dont care what track it is... I
+want to make sure this is done and we never refuse or circumvent work that we
+said we will do."*
 
 ---
 
@@ -158,10 +215,43 @@ Specifically, these must stay in the docs and must not be softened:
 
 ## Before you say you are finished
 
+**THIS MACHINE AUTHORS CODE AND OPENS PULL REQUESTS. NOTHING ELSE.**
+
+Tests run in CI. Builds run in CI. Deployments run in CI. Do not run `make
+test`, `make lint`, `pytest`, `vitest` or a build here — not the full gate and
+not one file of it. The owner has said so four times; the fourth was *"why are
+you running tests in here!??? Make it so that tests run in CI, builds run in
+CI, deployments run in CI. Here we only author code, create PRs."*
+
+There is no narrow-suite exception. "Just this one file, it takes six seconds"
+is what produced the fourth telling.
+
+So the finishing sequence is:
+
 ```bash
-make lint        # shellcheck + doc links + terraform fmt/validate + tflint + manifests
-make test        # unit tests + terraform tests + the guard and parity self-tests
+git commit && git push          # then:
+gh pr create                    # or push to an existing PR branch
+gh run list --branch <branch>   # read the run
+gh run view <id> --log-failed   # read the failure
 ```
+
+Report the CI run's conclusion. Never report a local exit code, because there
+should not be one.
+
+**Proving a test actually catches its defect is still required** — see the
+mutation rule below. Prove it by committing an assertion that would fail, and
+letting CI demonstrate that, rather than by running the mutation here. A
+mutation proven in CI is proven for everyone forever; one proven on this laptop
+is proven once.
+
+What the CI jobs cover, so you know what you are waiting for:
+
+| workflow | jobs |
+|---|---|
+| `application.yml` | shell · python (unit) · ui (typecheck + component) · integration (emulator) · manifests · build images |
+| `terraform.yml` | fmt/validate/tflint · `terraform test` (86 assertions) · checkov · plan (main only) |
+| `security.yml` | filesystem · secrets · iac · policy · images (scheduled) |
+| `release.yml` | verify · build · infrastructure · deploy (push to main, env-gated) |
 
 `make test` is fully offline — no credentials, no emulator, nothing created. It
 runs the unit tests, `terraform test` over `tests/terraform` (86 assertions

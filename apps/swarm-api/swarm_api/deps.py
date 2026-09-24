@@ -21,18 +21,27 @@ from .auth import (
     AuthContext,
     Authenticator,
     GoogleTokenVerifier,
+    IapAssertionVerifier,
     TokenVerifier,
     require_admin,
 )
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
 from .groups import CloudIdentityGroups, MembershipResolver
+from .inspect import InspectionService
 from .metrics import ApiMetrics
+from .objects import ObjectReader, build_object_reader
 from .ratelimit import TokenBucketLimiter
+from .rollup import WorkflowRollups
 from .service import SubmissionService
 from .settings import ApiSettings
 from .store import Store
 from .waker import NullWaker, PubSubWaker, SchedulerWaker
+
+#: Sentinel for "the caller did not pass this", kept distinct from None because
+#: None is a real value for `objects` -- it is how a deployment says it has no
+#: artifact store at all.
+_MISSING = object()
 
 
 @dataclass
@@ -46,6 +55,17 @@ class AppContext:
     limiter: TokenBucketLimiter
     metrics: ApiMetrics
     waker: SchedulerWaker
+    #: Reads checkpoints and logs out of the artifact bucket. The SERVICE is
+    #: always present; the READER inside it may be None when no bucket is
+    #: configured, which the service turns into "no artifact store is
+    #: configured for this deployment" -- a deployment problem with a named
+    #: fix -- rather than into an empty list.
+    inspection: InspectionService
+    #: Derives a workflow's state from its steps, reports drift against the
+    #: stored copy, and writes the stored copy back. Constructed here like every
+    #: other collaborator so a test gets the shipped code path over an in-memory
+    #: Firestore rather than a patched import.
+    rollups: WorkflowRollups
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -82,6 +102,13 @@ def build_context(
     credentials: CredentialWriter | None = None,
     waker: SchedulerWaker | None = None,
     metrics: ApiMetrics | None = None,
+    # The artifact-bucket reader. Injected by the tests with an in-memory one
+    # for the same reason `db` is: the inspection routes must be exercisable
+    # with no credentials and no network. `_MISSING` rather than None, because
+    # None is a MEANINGFUL value here -- it is how a caller says "this
+    # deployment has no artifact store" -- and a default of None would make
+    # that indistinguishable from "not supplied".
+    objects: ObjectReader | None | object = _MISSING,
     now: Callable[[], Any] = utcnow,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
@@ -98,12 +125,19 @@ def build_context(
         settings.core.api_audience, require_audience=settings.hardened
     )
     groups = groups or CloudIdentityGroups(
-        settings.project_id, ttl_seconds=settings.group_cache_ttl_seconds
+        settings.project_id,
+        impersonate_user=settings.groups_impersonate_user,
+        ttl_seconds=settings.group_cache_ttl_seconds,
     )
     credentials = credentials or SecretManagerCredentials(settings.project_id)
     waker = waker or (PubSubWaker(settings.dispatch_topic)
                       if settings.dispatch_topic else NullWaker())
-    authenticator = Authenticator(settings, verifier, groups)
+    # OFF unless an audience is pinned. A verifier that accepts an assertion
+    # without checking which backend minted it would accept one issued to any
+    # IAP-protected resource anywhere, so "not configured" must mean "not used"
+    # rather than "used without the check".
+    iap = IapAssertionVerifier(settings.iap_audiences)
+    authenticator = Authenticator(settings, verifier, groups, iap=iap)
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now
     )
@@ -111,6 +145,22 @@ def build_context(
         rate_per_second=settings.core.requests_per_second,
         burst=settings.rate_limit_burst,
     )
+    reader = (
+        build_object_reader(
+            bucket=settings.core.artifact_bucket, project_id=settings.project_id
+        )
+        if objects is _MISSING
+        else objects
+    )
+    inspection = InspectionService(
+        store=store,
+        objects=reader,  # type: ignore[arg-type]
+        scan_limit=settings.object_scan_limit,
+        max_log_bytes=settings.max_log_bytes,
+        default_log_bytes=settings.default_log_bytes,
+        min_log_bytes=settings.min_log_bytes,
+    )
+    rollups = WorkflowRollups(store=store, metrics=metrics)
     return AppContext(
         settings=settings,
         db=db,
@@ -121,6 +171,8 @@ def build_context(
         limiter=limiter,
         metrics=metrics,
         waker=waker,
+        inspection=inspection,
+        rollups=rollups,
         now=now,
     )
 
@@ -142,6 +194,11 @@ def current_auth(
     serverless_authorization: str | None = Header(
         default=None, alias="X-Serverless-Authorization"
     ),
+    # Identity-Aware Proxy puts the authenticated identity here. A browser behind
+    # IAP sends NO Authorization header at all -- there is no Google ID token a
+    # single-page app can mint -- so for every web caller this is the only
+    # credential that arrives.
+    iap_assertion: str | None = Header(default=None, alias="X-Goog-IAP-JWT-Assertion"),
     ctx: AppContext = Depends(get_context),
 ) -> AuthContext:
     """Authenticate, then rate-limit by principal.
@@ -164,7 +221,7 @@ def current_auth(
     """
     presented = serverless_authorization or authorization
     try:
-        auth = ctx.authenticator.authenticate(presented)
+        auth = ctx.authenticator.authenticate(presented, iap_assertion)
     except Exception as exc:
         ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
         log.warning(
@@ -185,6 +242,29 @@ def current_auth(
         raise
     request.state.tenant_id = auth.tenant_id
     return auth
+
+
+def tenant_scope(
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> str:
+    """The caller's tenant id for a tenant-scoped route, through the guard.
+
+    WHY A ROUTE MUST NOT USE `auth.tenant_id` DIRECTLY. The id is derived from
+    the verified identity and can never be supplied by a caller -- that half was
+    always true -- but it is not UNIQUE to an identity. The frozen
+    `tenant_id_for_group` slugs the local part only, so two registered groups
+    can derive one id, and the personal-tenant prefix `u-` is one a group's own
+    slug can produce. A route that hands the raw string to the store is then
+    filtering by a value two unrelated principals both hold.
+
+    `SubmissionService.scope_for` compares the caller's tenant principal against
+    the one the tenant document was created for and refuses a mismatch, exactly
+    as `ensure_tenant` does on the submit paths. Declaring this dependency is
+    what makes that impossible to forget when a route is added, which is the
+    same reason the store owns the tenant filter rather than the routes.
+    """
+    return ctx.submissions.scope_for(auth)
 
 
 def admin_auth(auth: AuthContext = Depends(current_auth)) -> AuthContext:

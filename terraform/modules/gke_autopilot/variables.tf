@@ -68,10 +68,51 @@ variable "master_authorized_cidrs" {
   }))
   default = []
 
+  # 0.0.0.0/0 is refused BY DEFAULT, and opening it is an explicit, per-
+  # environment opt-in rather than an edit to this rule. The rule itself stays,
+  # because prod runs gke_enable_private_endpoint = false and depends on an
+  # empty allowlist -- deleting the check to unblock dev would have quietly
+  # removed prod's backstop too.
+  #
+  # WHAT THE ALLOWLIST BUYS, so the opt-in can be judged rather than copied:
+  # it is a NETWORK control and nothing more. The GKE API server still requires
+  # a Google identity and still enforces RBAC, so opening it does not make the
+  # cluster unauthenticated -- it makes it reachable, and so discoverable and
+  # probe-able, from the internet.
+  #
+  # WHY DEV OPTS IN (2026-09-18, operator decision): the allowlist rots. It held
+  # one operator's home /32, which changes without warning, and the symptom when
+  # it changes is kubectl hanging rather than saying why. That is what happened
+  # here -- the cluster carried a stale operator /32 for an address that person
+  # no longer had, so the control was denying the one person it existed to admit
+  # while protecting nothing.
+  #
+  # The alternative that keeps both properties is a private endpoint reached
+  # through IAP TCP forwarding or a bastion: no public exposure, no IP to rot.
+  # Not chosen because it is setup work rather than a flag. If GKE access
+  # becomes routine here rather than occasional, it is the right answer.
   validation {
-    condition     = alltrue([for c in var.master_authorized_cidrs : c.cidr_block != "0.0.0.0/0"])
-    error_message = "0.0.0.0/0 is not an authorized network; that is the same as having none."
+    condition = alltrue([
+      for c in var.master_authorized_cidrs :
+      c.cidr_block != "0.0.0.0/0" || var.allow_open_master_authorized_network
+    ])
+    error_message = "0.0.0.0/0 is not an authorized network; that is the same as having none. Opening the control plane to the internet requires allow_open_master_authorized_network = true, set per environment and never in prod."
   }
+}
+
+variable "allow_open_master_authorized_network" {
+  description = <<-EOT
+    Permits 0.0.0.0/0 in master_authorized_cidrs.
+
+    Exists so that opening a control plane is a decision recorded in an
+    environment's tfvars, reviewable in a diff, rather than an edit to the
+    validation that protects every environment at once.
+
+    Dev sets it. Prod must not: a prod cluster keeps the private endpoint and
+    reaches the control plane from inside the VPC.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "deletion_protection" {

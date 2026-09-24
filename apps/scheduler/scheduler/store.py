@@ -39,6 +39,7 @@ from swarm_common.models import (
     TaskEvent,
     Tenant,
     new_id,
+    retries_exhausted,
     utcnow,
 )
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
@@ -278,16 +279,37 @@ class SchedulerStore:
         reference = correlation_id or lease.attempt_id
         public = f"{error_code} (attempt {reference})"
         self.release_lease(lease.lease_id, reason=f"dispatch_failed: {error_code}"[:200])
-        assert_transition(TaskState.LEASED, TaskState.READY)
-        self._db.collection(TASKS).document(task.id).update(
-            {
-                "state": TaskState.READY.value,
-                "current_lease_id": None,
-                "last_error": public[:1000],
-                "next_eligible_at": now + timedelta(seconds=max(0, retry_delay_seconds)),
-                "updated_at": now,
-            }
-        )
+
+        # THE CAP IS ENFORCED HERE TOO, and its absence was a real outage.
+        # This path returns a task to READY after a dispatch failure, and it
+        # used to do so unconditionally -- so a task whose dispatch kept failing
+        # retried for ever. The backoff below spaces the attempts out and the
+        # docstring reasons about it carefully; nothing counted them.
+        # `task_d18d8d8b044d469cb43c` reached 83 attempts against a cap of 3 on
+        # 2026-09-23, re-dispatching every 30s for hours on
+        # gke_create_job_failed, and was stopped by hand.
+        #
+        # The rule lives in swarm_common so the reconciler's repair path and
+        # this one cannot disagree again -- they are separate images and cannot
+        # import each other, so a shared predicate is the only home that is not
+        # a restatement.
+        exhausted = retries_exhausted(task.attempt_count, task.max_attempts)
+        target = TaskState.FAILED if exhausted else TaskState.READY
+        assert_transition(TaskState.LEASED, target)
+        payload: dict[str, Any] = {
+            "state": target.value,
+            "current_lease_id": None,
+            "last_error": public[:1000],
+            "updated_at": now,
+        }
+        if exhausted:
+            # A terminal task needs a completion time; it will never be
+            # eligible again, so a next_eligible_at would be a lie about a
+            # retry that is not coming.
+            payload["completed_at"] = now
+        else:
+            payload["next_eligible_at"] = now + timedelta(seconds=max(0, retry_delay_seconds))
+        self._db.collection(TASKS).document(task.id).update(payload)
         self.append_event(
             task,
             EventType.LEASE_RELEASED,
