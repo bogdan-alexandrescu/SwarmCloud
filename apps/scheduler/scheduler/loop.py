@@ -35,7 +35,7 @@ from typing import Any, Callable
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
-from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, EventType, ParkReason, TaskState  # MUTANT M1
+from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
 
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
@@ -78,12 +78,12 @@ FAIL_WORKFLOW = "fail_workflow"
 #: whole run under the default setting, and the stop dialog's "the rest of the
 #: run keeps going" would be false. A stop still takes its own dependents, by
 #: the dependency rule.
-_WORKFLOW_FAILING_STATES = (TaskState.FAILED, TaskState.DEAD_LETTERED, TaskState.CANCELLED)  # MUTANT M3
+_WORKFLOW_FAILING_STATES = (TaskState.FAILED, TaskState.DEAD_LETTERED)
 
 #: "Has not started": SUBMITTED, QUEUED, READY, PARKED, which are exactly the
 #: states that hold no capacity. Derived from the frozen set rather than
 #: listed, and sorted only so that the sweep's query order is stable.
-_NOT_STARTED_STATES = tuple(sorted(PENDING_STATES | CONCURRENCY_STATES, key=lambda state: state.value))  # MUTANT M1
+_NOT_STARTED_STATES = tuple(sorted(PENDING_STATES, key=lambda state: state.value))
 
 #: How many failed steps a cancel event names. Ten is enough to say which ones
 #: without sending one document per failure. A workflow with more failures
@@ -472,7 +472,7 @@ class Scheduler:
                 # This drain just wrote FAILED on a workflow step. Its siblings
                 # may be next in this very pass, and the verdict cached for the
                 # workflow was read before the failure existed.
-                pass  # MUTANT M6: eviction removed
+                self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
             report.dispatch_failures += 1
             self._metrics.dispatch_failures.labels(backend=backend.value).inc()
             log.warning(
@@ -622,7 +622,7 @@ class Scheduler:
 
         verdict: _FailedWorkflow | None = None
         policy = self._store.workflow_on_step_failure(task.tenant_id, workflow_id)
-        if policy is not None:  # MUTANT M2
+        if policy == FAIL_WORKFLOW:
             failed: list[Task] = []
             for state in _WORKFLOW_FAILING_STATES:
                 failed.extend(
