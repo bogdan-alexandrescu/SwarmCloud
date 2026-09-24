@@ -1360,7 +1360,12 @@ function AgentDrawer({
       <button className="drawer-close" onClick={close} aria-label="Close">
         ✕
       </button>
-      <div className="ctl-subnav" role="tablist" aria-label="Agent panes">
+      {/* THE ONE SEGMENTED CONTROL, NOT TWO PILLS. `.ctl-subnav` drew Detail /
+          Attempts as 999px pills with a filled, bordered selection -- the
+          shape design-system.md §6.11 retired in favour of `.ctl-seg` (one
+          bordered group, selection by a surface step and weight). `ctl-subnav`
+          stays only for where the strip sits in the drawer. */}
+      <div className="ctl-seg ctl-subnav" role="tablist" aria-label="Agent panes">
         <button role="tab" aria-selected={pane === 'detail'} onClick={() => go(base)}>
           Detail
         </button>

@@ -46,10 +46,12 @@ import { scaleLinear, scaleUtc } from '@visx/scale'
 import { LinePath } from '@visx/shape'
 import { useId } from 'react'
 
+import { HELP, helpAnchor } from '../help'
 import {
   coverageOf,
   inTimeOrder,
   measuredRuns,
+  stepAfter,
   timeExtent,
   valueExtent,
   type ChartPoint,
@@ -125,6 +127,19 @@ export function TimeSeries({
   // NOTHING MEASURED. No domain exists, so no axis is drawn. A library asked
   // to chart this produces an axis from 0 to 1 and an empty plot area, which
   // reads as "measured, and flat at zero". The sentence is the honest render.
+  //
+  // §6.9'S SHAPE: HEADING, ONE SENTENCE, A LINK OUT. This was a 40-word
+  // paragraph -- the largest block of prose in the agent drawer (§12.5) -- and
+  // it ended with `absentCopy`, which is written for the PLOTTED case: Token
+  // spend's says "Hover a hatched band for the reason", and in this state
+  // there is no plot and no band to hover. The heading is the fact, the
+  // sentence is its size, and why an absence is not a zero is one topic away.
+  // `absentCopy` stays where it is true -- under a plot that has absences.
+  //
+  // NO `.ctl-mark` HERE, on purpose: `Mark` lives in AgentDetail.tsx, which
+  // imports this layer through TokenSpend, and the chart layer importing a
+  // screen would close that loop. Promoting `Mark` into the primitives is the
+  // primitive-collapse pass's to do, not this one's.
   if (vExtent === null || tExtent === null) {
     return (
       <figure className="ctl-chart" aria-label={title}>
@@ -132,9 +147,9 @@ export function TimeSeries({
         <div className="ctl-empty" role="status">
           <h3>Nothing was measured</h3>
           <p>
-            None of the {cover.points} {plural(noun, cover.points)} reported a
-            value, so there is no axis and no line to draw. {absentCopy}
+            None of the {cover.points} {plural(noun, cover.points)} reported a value.
           </p>
+          <a href={`#${helpAnchor('absent-vs-zero')}`}>{HELP['absent-vs-zero'].title}</a>
         </div>
       </figure>
     )
@@ -180,7 +195,11 @@ export function TimeSeries({
         width={width}
         height={height}
         viewBox={`0 0 ${width} ${height}`}
-        role="img"
+        // A GROUP, NOT AN IMAGE: an image's children are presentational, and
+        // every absence band's <title> below is the sentence saying why that
+        // point has no value. Those reasons are the accessible route to what
+        // the band means; one label for the whole chart would hide all of them.
+        role="group"
         aria-label={title}
       >
         <defs>
@@ -341,6 +360,150 @@ export function TimeSeries({
 
 function ChartHead({ title }: { title: string }) {
   return <p className="ctl-chart-title">{title}</p>
+}
+
+// ---------------------------------------------------------------------------
+// THE PRIMITIVES EVERY OTHER CHART IS BUILT FROM
+// ---------------------------------------------------------------------------
+//
+// WHY THEY LIVE IN THIS FILE. `chart.tokenspend.test.tsx` fails if any module
+// other than this one imports the charting library, and that rule is worth
+// more than a tidy file layout: it is what keeps the absent-value rules in one
+// place. The phase bars, the peak-memory step line, the checkpoint strip and
+// the diffstat (`AttemptPhases.tsx`, `PeakMemory.tsx`, `CheckpointStrip.tsx`,
+// `Diffstat.tsx`) therefore reach visx ONLY through the four exports below,
+// and each export carries one of the rules with it:
+//
+//   linearScale  a domain the caller built from MEASUREMENTS (an `Extent`),
+//                never `.nice()`d, collapsing to the middle when degenerate
+//                rather than inventing a span;
+//   ValueAxis    ticks whose ends ARE the extent -- the top of an axis is the
+//                largest measurement, never a rounder number past it;
+//   StepLine     `defined` hard-coded, over `ChartPoint`s, so an absence has
+//                no value to plot and breaks the stroke;
+//   LinearScale  the type, so a chart can hold a scale without importing
+//                the library to name it.
+//
+// There is deliberately no bar, no stack and no area primitive. A bar here is
+// a plain `<rect>` between two recorded instants, drawn by the chart that owns
+// the data, because the audit's §B5 finding still stands for stacking: a
+// stacking function given an unknown segment gives it height 0 and the bar
+// silently shortens. Nothing in this layer stacks.
+
+/** A visx linear scale, by its type only. */
+export type LinearScale = ReturnType<typeof scaleLinear<number>>
+
+/**
+ * A linear scale over an extent the DATA produced.
+ *
+ * `extent` comes from `valueExtent`, `phaseExtent` or an equivalent built from
+ * measured values only, so there is no way to hand this a domain that an
+ * absence widened. A degenerate extent (every value the same) collapses to the
+ * middle of the range instead of being padded out to a span nobody recorded --
+ * the same rule `TimeSeries` applies to its own axes above.
+ */
+export function linearScale(extent: Extent, range: readonly [number, number]): LinearScale {
+  const mid = (range[0] + range[1]) / 2
+  return scaleLinear<number>({
+    domain: [extent.lo, extent.hi],
+    range: extent.degenerate ? [mid, mid] : [range[0], range[1]],
+  })
+}
+
+/**
+ * An axis whose ends are the extent, with its interior ticks spaced.
+ *
+ * `keep` names values that must be labelled when they are inside the extent
+ * (the phase chart keeps 0, which is admission). `minGapPx` drops a tick whose
+ * label would sit on top of one already kept; the ends and `keep` win, the
+ * library's interior ticks give way. Nothing outside the extent is ever
+ * labelled.
+ */
+export function ValueAxis({
+  side,
+  scale,
+  extent,
+  format,
+  top = 0,
+  left = 0,
+  ticks = 3,
+  minGapPx = 0,
+  keep = [],
+}: {
+  side: 'bottom' | 'left'
+  scale: LinearScale
+  extent: Extent
+  format: (value: number) => string
+  top?: number
+  left?: number
+  ticks?: number
+  minGapPx?: number
+  keep?: readonly number[]
+}) {
+  const base = valueTicks(extent, scale.ticks(ticks))
+  const inside = (v: number) => v >= extent.lo && v <= extent.hi
+  // Priority order: the values the caller must see, then the top, then the
+  // floor, then the library's interior ticks.
+  const ranked = [
+    ...keep.filter(inside),
+    extent.hi,
+    extent.lo,
+    ...base.filter((v) => v !== extent.hi && v !== extent.lo),
+  ]
+  const chosen: number[] = []
+  for (const v of ranked) {
+    if (chosen.includes(v)) continue
+    const px = scale(v)
+    if (chosen.some((c) => Math.abs(scale(c) - px) < minGapPx)) continue
+    chosen.push(v)
+  }
+  const values = extent.degenerate ? [extent.lo] : chosen.sort((a, b) => a - b)
+  const common = {
+    top,
+    left,
+    scale,
+    tickValues: values,
+    tickFormat: (v: unknown) => format(Number(v)),
+    numTicks: values.length,
+    axisClassName: 'ctl-chart-axis',
+    tickClassName: 'ctl-chart-tick',
+    axisLineClassName: 'ctl-chart-axisline',
+    tickLength: 3,
+  }
+  return side === 'bottom' ? <AxisBottom {...common} /> : <AxisLeft {...common} />
+}
+
+/**
+ * A step-after line through a running maximum, broken at every absence.
+ *
+ * The geometry is `stepAfter` (series.ts), which adds a corner only between
+ * two measured neighbours; `defined` is hard-coded here exactly as it is on
+ * `TimeSeries`' line, and there is no prop that can change it. With no run of
+ * two or more measured points there is no line at all -- the caller draws the
+ * points themselves.
+ */
+export function StepLine({
+  points,
+  x,
+  y,
+}: {
+  points: readonly ChartPoint[]
+  x: (at: number) => number
+  y: (value: number) => number
+}) {
+  const vertices = stepAfter(points)
+  if (!measuredRuns(vertices).some((run) => run.length >= 2)) return null
+  return (
+    <LinePath<ChartPoint>
+      className="ctl-chart-line is-step"
+      data-testid="step-line"
+      data={vertices}
+      x={(p) => x(p.at)}
+      // NaN rather than 0, for the reason given on `TimeSeries`' line.
+      y={(p) => (p.measured ? y(p.value) : Number.NaN)}
+      defined={(p) => p.measured}
+    />
+  )
 }
 
 /**

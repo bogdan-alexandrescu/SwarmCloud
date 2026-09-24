@@ -1729,8 +1729,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         )}
 
         {/* THE TOKEN MIX, AS A PROPORTION RATHER THAN FOUR NUMBERS IN A LIST.
-            Hand-rolled: four `<i>` widths off one total, one series colour
-            each, `--series-5` for the neutral. A segment whose count is ABSENT
+            Hand-rolled: four `<i>` widths off one total, in four tones of ONE
+            series hue (see `.ov-s1` in OVERVIEW_CSS). A segment whose count is ABSENT
             is not drawn at all and its fact keeps its slot below with an em
             dash -- a missing segment and a zero-width segment are the same
             picture, so the em dash is what tells them apart. */}
@@ -1832,7 +1832,7 @@ function TokenMix({ s }: { s: SpendRollup }) {
         // empty track is a claim that the scale starts somewhere.
         <div className="ov-mix is-unknown" role="img" aria-label="No attempt in this sample reported a token count, so there is no proportion to draw." />
       )}
-      {/* THE SWATCH IS ON THE WORD. The bar above is four hues and the legend
+      {/* THE SWATCH IS ON THE WORD. The bar above was four hues and the legend
           under it named them in plain grey, so the only way to learn which
           segment was `c-rd` was to guess from the order -- the owner's "the
           spend bar is a rainbow ... with no legend near it".
@@ -1840,8 +1840,9 @@ function TokenMix({ s }: { s: SpendRollup }) {
           1.36:1 from end to end and are therefore NOT separable in greyscale,
           so a multi-series chart carries a legend naming every series and never
           relies on the segment's colour to say which segment it is. This is
-          that legend, and it is the option sec 11.3 left open that keeps the
-          proportion rather than throwing it away for one hue.
+          that legend. The bar is now one hue at four tones rather than four
+          hues, so the swatch keys a segment by LIGHTNESS as well -- which a
+          greyscale screenshot keeps -- and the proportion stays.
 
           A SERIES THAT REPORTED NOTHING GETS A HOLLOW SWATCH, not a solid one.
           It has no segment on the bar, and a solid swatch beside an em dash
@@ -2852,15 +2853,37 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    track claims the scale starts somewhere and the value is at the start of
    it, which is the absent-as-zero lie in bar form. */
 .ov-mix.is-unknown { background: var(--ctl-hatch); }
-/* SERIES, NEVER STATE. A segment drawn in --ok is read as a verdict; these are
-   identities, and each metric keeps its colour across the product. */
+/* ONE METRIC, ONE HUE, FOUR TONES. SERIES, NEVER STATE.
+   A segment drawn in --ok is read as a verdict, so these were --series-1..4:
+   blue, teal, violet, amber. That was four saturated hues in one 8px rule --
+   two of them the colours a reader has learned for PARKED (violet) and WARN
+   (amber) -- and the series block itself records that those five sit in a
+   1.36:1 band, NOT separable in greyscale. The keyed legend (design-system.md
+   §12.1) told a colour reader which swatch was which; a greyscale screenshot
+   still showed four identical greys.
+   Tokens are one metric split four ways, so they get ONE series (--series-1,
+   the single-series slot) at four tones.
+   THE TONES STEP TOWARD THE INK, NEVER TOWARD THE CARD. The first ramp mixed
+   toward --surface and bought its greyscale steps by fading three of the four
+   into the card: c-wr's 8px swatch measured 1.35:1 on white and 1.42:1 on the
+   dark card, under the 3:1 every series fill promises (styles.css, THE SERIES
+   PALETTE; WCAG 1.4.11). --series-1 is already the floor of that band -- 3.36
+   on light --surface-2 -- so any step toward the card goes under it, and the
+   only direction with room is toward --text: lighter on the dark card, darker
+   on the light one. At 100/75/50/25% the worst fill is --series-1 itself
+   (3.36, light --surface-2), and every other one is >= 4.77 on --bg, --surface
+   and --surface-2 in both themes; every pair is >= 1.32:1 (dark c-rd/c-wr).
+   Order is the reading order: input is the series hue itself, and each later
+   count sits one step nearer the ink, so c-wr is the heaviest mark. The .ov-sN
+   class names are unchanged, so each swatch still takes its fill from the same
+   class its segment does. encoding.hues.test.ts holds both floors. */
 .ov-s1 { background: var(--series-1); }
-.ov-s2 { background: var(--series-2); }
-.ov-s3 { background: var(--series-3); }
-.ov-s4 { background: var(--series-4); }
+.ov-s2 { background: color-mix(in srgb, var(--series-1) 75%, var(--text)); }
+.ov-s3 { background: color-mix(in srgb, var(--series-1) 50%, var(--text)); }
+.ov-s4 { background: color-mix(in srgb, var(--series-1) 25%, var(--text)); }
 .ov-mix-facts { padding: 0; }
 
-/* THE KEY TO THE FOUR HUES, NEXT TO THE WORD THEY BELONG TO.
+/* THE KEY TO THE FOUR TONES, NEXT TO THE WORD THEY BELONG TO.
    8px square, --track-radius so it is the same corner the bar it keys is drawn
    with, and it takes its fill from the SAME .ov-sN class the segment does --
    one declaration per series, so a segment and its key cannot drift apart.
@@ -2977,8 +3000,17 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
 /* A figure that is REAL but not CURRENT: its window reset, or the poll is past
    the staleness window. Grey, never the red or amber that says a ceiling is
    being approached now, and the tilde beside it is the same mark that cs
-   status and the Accounts screen use for the same two cases. */
-.ctl-util-fill.ov-projected { background: var(--ctl-absent); }
+   status and the Accounts screen use for the same two cases.
+   THE BAR IS --text-faint, NOT --ctl-absent. It used to be --ctl-absent, which
+   was then var(--text-faint), so the two spellings painted the same pixel.
+   --ctl-absent is now its own warm stone (styles.css, :root), so that
+   an absence stops matching the CANCELLED fill; a proportion fill, though, is
+   grey unless it carries a verdict (design-system.md §6.4, owner decision
+   2026-09-24), and a warm stone chosen to be told apart from grey by its hue
+   is not a grey. So the bar keeps the exact grey it had, by name, and the
+   tilde beside it -- text, not a fill -- takes the absence colour.
+   test_state_colour_discriminability.py lists this value in DOCUMENTED_GREYS. */
+.ctl-util-fill.ov-projected { background: var(--text-faint); }
 .ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
 
 /* ---- attention ---------------------------------------------------------- */

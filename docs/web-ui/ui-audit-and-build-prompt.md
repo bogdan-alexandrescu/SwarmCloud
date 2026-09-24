@@ -2239,6 +2239,16 @@ this is `redesign.md`'s "Superseded, 2026-09-21" block, which records what moved
 rather than silently editing. I did not add one — that is an edit to a document
 the owner may want left as the record of what was believed at `f0154b4`.
 
+> **Answered by the owner, 2026-09-24.** The answer is a dated status block, not a
+> "Superseded" rewrite. `redesign-v2.md`'s old header line, "Status: proposal.
+> Nothing here is implemented", is replaced by a block titled "Status,
+> 2026-09-24". It lists what shipped (checked against the code at `b0fff1b`,
+> with file references) and what is still open. It records Q1 and Q3–Q6 as
+> answered, and Q2 as half answered: F0 and §1.1(a) shipped, while the
+> duplicate `@keyframes pulse` and `.filters` are still in the sheet and are on
+> its open list. The body stays as the design record of what was believed at
+> `f0154b4`.
+
 **D7 — Which seam is built first: S1 (events paging) or S3 (cross-task
 attempts)?**
 The prompt ranks S1 first because every timeline is built on a page that
