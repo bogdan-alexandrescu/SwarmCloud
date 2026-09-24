@@ -36,7 +36,21 @@
 # fixed in 1.3.2-r0. The security gate in scripts/push-images.sh caught it
 # between build and promotion, which is exactly where it should be caught.
 # Bumping the base is the fix; excluding the finding would not be.
-ARG NODE_IMAGE=node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+#
+# NODE 24 LTS, THE SAME DIGEST images/agent-runtime-base PINS. This was
+# node:20-bookworm-slim until 2026-09-24, although Node 20 reached end of life in
+# April 2026 and docs/versions.md had already moved the platform to 24. The
+# digest is the base image's, re-resolved from Docker Hub on 2026-09-24: an OCI
+# index whose linux/amd64 image carries NODE_VERSION=24.21.0 -- the same Node
+# the current `24-bookworm-slim` tag points at -- so the platform has one Node
+# build, not two.
+#
+# THIS LINE IS ALSO THE UI JOB'S NODE. .github/workflows/application.yml reads
+# the major from here rather than pinning its own, so CI tests and builds the
+# bundle on the line this image ships it from. tests/unit/scripts/
+# test_ui_node_line.py holds both: one major across every Node image, pinned
+# by digest, and the ui job reading it from this file.
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:b54ac358b83fc6c965793fd271839b4ea4cdb6e99895bb19618cbc2ca152d972
 
 # --- build -----------------------------------------------------------------

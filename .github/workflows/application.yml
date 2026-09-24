@@ -222,18 +222,43 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: read the Node major the swarm-ui image builds with
+        id: node
+        # ONE PLACE STATES IT: `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
+        # the Node that compiles the bundle that ships. This job used to pin
+        # `node-version: "20"` on its own -- a second copy, and by 2026-09 a copy
+        # of a line that reached end of life in April 2026 (docs/versions.md).
+        # Reading it from the Dockerfile means the typecheck, the tests and the
+        # build below run on the line the image uses, and a bump there moves
+        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
+        # literal comes back.
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+          echo "swarm-ui builds with Node ${majors} (${dockerfile})"
+
       - uses: actions/setup-node@v4
         with:
-          # 20 is what the reference workstation runs and what vitest 3 and
-          # jsdom 25 both support. `cache: npm` needs the lockfile path because
-          # the package is not at the repository root.
-          node-version: "20"
+          # From the step above, not a literal. vitest 3.2 and jsdom 25 both
+          # support Node 24. `cache: npm` needs the lockfile path because the
+          # package is not at the repository root.
+          node-version: ${{ steps.node.outputs.major }}
           cache: npm
           cache-dependency-path: apps/swarm-ui/package-lock.json
 
       - name: install
         working-directory: apps/swarm-ui
-        run: npm ci --no-audit --no-fund
+        run: |
+          set -euo pipefail
+          echo "node $(node --version), npm $(npm --version)"
+          npm ci --no-audit --no-fund
 
       - name: typecheck
         # THE FIRST THING IN THIS REPOSITORY THAT EVER COMPILES THE TYPESCRIPT.
@@ -259,6 +284,15 @@ jobs:
         # would receive a flag it never asked for. `vitest run` is already
         # non-watching.
         run: npm test
+
+      - name: production build
+        # `npm run build` -- `tsc -b && vite build`, the command the swarm-ui
+        # image runs. The typecheck above is `tsc -b --noEmit`; this is the half
+        # that EMITS, through vite's bundler and plugins on this Node. Before it
+        # was here, a toolchain change (Node 20 to 24 included) was proven only
+        # by the image build on main, after merge, behind an approval.
+        working-directory: apps/swarm-ui
+        run: npm run build
 
   integration:
     name: integration tests (emulator)
