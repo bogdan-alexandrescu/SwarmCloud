@@ -39,6 +39,23 @@ something other than what is running. The Cloud Run Job id carries the class for
 the same reason: Cloud Run fixes sizing on the Job resource, so one Job per
 (tenant, profile) could only ever express one size.
 
+NEITHER DISPATCHER SETS A CONTAINER `command` OR `args`, and that is the rule
+the rest of the platform's safety hangs on. Both worker images declare
+`ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]`: the
+worker LIFECYCLE. It checks the fencing generation (invariant 5), honours a
+requested cancel, moves the task to STARTING and RUNNING, heartbeats, starts
+the runner as a supervised child, checkpoints (invariant 8), writes the
+terminal state and releases the lease. A container `command` REPLACES the
+ENTRYPOINT, so setting it to `RunnerProfile.command` -- which is the runner's
+argv, `python -m agent_worker.runners.<x>` -- ran the bare runner with none of
+that. Until 2026-09-24 the GKE path did exactly this for every browser task
+(incident wf_ebb3ab2d65664707a559): the pods crashed on `/artifacts`, never
+wrote to the control plane, and left their leases holding every browser slot.
+`RunnerProfile.command` is the lifecycle's CHILD argv (`lifecycle._runner_argv`);
+the lifecycle finds it by the profile NAME in `RUNNER_PROFILE`, which
+`worker_env` below sets. tests/unit/control_plane/test_dispatch_manifests.py
+and tests/unit/worker/test_kubernetes_manifests.py hold both dispatchers to it.
+
 SECRETS ARE NOT INJECTED ON THE GKE PATH. The worker reads its tenant's key from
 Secret Manager at runtime using Workload Identity (agent_worker/secrets.py), and
 on Cloud Run the Job additionally projects it natively from Secret Manager. On
@@ -86,38 +103,45 @@ WORKER_HOME = "/home/swarm"
 #: mount, the GKE volume mount, and nothing that tied them together -- so it is
 #: a constant now for the same reason WORKER_HOME is.
 #:
-#: WHY SWARM_ARTIFACTS_DIR HAS TO BE SET AT ALL. `runners/base.py` defaults
-#: `artifacts_dir` to `work.parent / "artifacts"`, and the work dir is the
-#: container's cwd, `/workspace` -- so the default resolves to `/artifacts`, at
-#: the root. On GKE_AUTOPILOT the container sets `readOnlyRootFilesystem: true`
-#: (CONTAINER_SECURITY_CONTEXT), so the runner died on its first line:
+#: THE `/artifacts` CRASH, AND WHAT IT WAS ACTUALLY A SYMPTOM OF. Measured
+#: 2026-09-24 on the first browser attempt that ever started a container:
 #:
 #:     OSError: [Errno 30] Read-only file system: '/artifacts'
 #:
-#: measured 2026-09-24 on the first browser attempt that ever got as far as
-#: starting a container. Every earlier attempt failed before that, at
-#: `jobs.batch is forbidden`, so this was the next defect in the queue and had
-#: never been reachable.
+#: `runners/base.py` defaults `artifacts_dir` to `work.parent / "artifacts"`
+#: when SWARM_ARTIFACTS_DIR is unset, which from a cwd of `/workspace` is
+#: `/artifacts`, on a root this container mounts read-only.
 #:
-#: WHY CLOUD_RUN_JOB NEVER SHOWED IT. Identical image, identical
-#: `python -m agent_worker.runners.<x>` command out of the frozen catalogue --
-#: and a container that does NOT harden the root filesystem, so `mkdir
-#: /artifacts` simply succeeded. Twenty-two tasks passed through that path while
-#: the same code could not start on GKE. The hardening is right and its absence
-#: on Cloud Run is the anomaly.
+#: CORRECTED 2026-09-24 (incident wf_ebb3ab2d65664707a559). This note used to say
+#: Cloud Run never showed the crash because it ran the "identical image,
+#: identical `python -m agent_worker.runners.<x>` command" on a writable root.
+#: The commands were NOT identical, and that false sentence is what hid the real
+#: defect for a day:
 #:
-#: SET FOR BOTH BACKENDS, from this one shared builder, deliberately. Cloud Run
-#: does not need it today, and giving it the same value anyway means the two
-#: backends put artifacts in the same place, that Cloud Run stops depending on a
-#: writable root, and that there is one answer to "where do artifacts go" instead
-#: of one per backend. The upload reads `ctx.artifacts_dir`, so it follows.
+#:   * Terraform's Cloud Run Jobs carry `command = null`
+#:     (terraform/modules/cloud_run_jobs/main.tf), so the image ENTRYPOINT --
+#:     the worker lifecycle -- ran. The lifecycle builds its runner child's
+#:     environment from an allowlist and sets SWARM_ARTIFACTS_DIR to the
+#:     attempt's own `<WORKSPACE_ROOT>/<attempt>/artifacts`
+#:     (`workspace.Workspace.child_env`). The runner never reaches the default.
+#:   * The GKE Job this module built set `command` to the RUNNER, which replaced
+#:     the lifecycle. With no lifecycle, nothing set the variable. The crash was
+#:     the first visible consequence of the missing lifecycle -- and fixing the
+#:     crash alone (ffa82e3, which set the variable on the container) would have
+#:     let the bare runner go on to run unfenced, uncheckpointed, with no
+#:     heartbeat and no lease release. See the module docstring.
 #:
-#: INSIDE THE WORKSPACE VOLUME rather than in a volume of its own: a dedicated
-#: emptyDir would need a `sizeLimit`, which is a second disk number to invent and
-#: keep in step when `workspace` already takes its limit from the resource
-#: class's disk. Artifacts are produced from the workspace and uploaded to
-#: ARTIFACT_BUCKET when the attempt ends, so charging them to that budget is the
-#: honest accounting.
+#: WHAT SWARM_ARTIFACTS_DIR ON THE CONTAINER DOES NOW: nothing the lifecycle
+#: reads. It is kept, on both backends from this one builder and in all three
+#: worker templates, because it is inert and because a runner started BY HAND
+#: inside a worker container (a `kubectl exec` repro during an incident) then
+#: gets a writable path instead of Errno 30. It is not what makes a runner work,
+#: and it is not the reason Cloud Run and GKE behaved differently.
+#:
+#: INSIDE THE WORKSPACE VOLUME rather than in a volume of its own, for the same
+#: reason the lifecycle puts its own there: a dedicated emptyDir would need a
+#: `sizeLimit`, a second disk number to invent and keep in step, when
+#: `workspace` already takes its limit from the resource class's disk.
 WORKSPACE_MOUNT = "/workspace"
 WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 
@@ -126,7 +150,10 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 #: the manifest this module builds carried no securityContext at all, so
 #: enforcing the stronger policy would have rejected every job the dispatcher
 #: created. These two blocks are what `restricted` asks for, and they mirror
-#: kubernetes/worker-templates/worker-job-browser.yaml field for field.
+#: kubernetes/worker-templates/worker-job-browser.yaml field for field -- which
+#: was a claim until 2026-09-24 and is now an assertion:
+#: test_the_rendered_job_and_the_dispatched_job_are_the_same_job renders both
+#: from the same inputs and fails on any field that changes what the pod does.
 POD_SECURITY_CONTEXT: dict[str, Any] = {
     "runAsNonRoot": True,
     "runAsUser": WORKER_UID,
@@ -149,6 +176,73 @@ CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
     "capabilities": {"drop": ["ALL"]},
     "seccompProfile": {"type": "RuntimeDefault"},
 }
+
+#: THE BACKEND'S DEADLINE IS A BACKSTOP, AND IT MUST FIRE AFTER THE LIFECYCLE'S.
+#:
+#: The worker lifecycle enforces the task's timeout itself: at
+#: `TASK_TIMEOUT_SECONDS` it stops the runner child, checkpoints, uploads,
+#: writes FAILED ("runner exceeded its timeout") and releases the lease. The
+#: backend's own deadline -- a GKE Job's `activeDeadlineSeconds`, a Cloud Run
+#: execution's `timeout` -- exists only for a lifecycle that has wedged.
+#:
+#: Both used to be `task.timeout_seconds`, and the backend always won. A Job's
+#: deadline counts from Job CREATION, which includes Autopilot provisioning a
+#: node and pulling the image; the lifecycle's counts from `Worker.__init__`,
+#: minutes later. So the Job controller SIGTERMed the pod first, and on SIGTERM
+#: the lifecycle takes its INTERRUPTION path instead (`_handle_interruption`):
+#: it parks the task PARKED/SCHEDULED_RETRY with `next_eligible_at=now`. Nothing
+#: in the platform promotes a SCHEDULED_RETRY park, so a task that simply ran
+#: out of time never became FAILED and its workflow never finished -- the
+#: "workflow stuck" symptom of incident wf_ebb3ab2d65664707a559, reached through
+#: its own fix (review of PR #31). Cloud Run had the same race with a margin of
+#: seconds.
+#:
+#: So the backend's deadline is the task's timeout PLUS:
+#:
+#:   * the latest a lifecycle can START and still be running --
+#:     `dispatch_timeout_seconds` after the lease. The reconciler reclaims any
+#:     attempt with no heartbeat by then (reconciler/detect.py), and the
+#:     lifecycle heartbeats before any slow work, so a lifecycle that started
+#:     later has already been fenced. Read from the scheduler's settings, the
+#:     same value admission writes into `lease.dispatch_deadline`, never restated.
+#:   * WORKER_FINALISE_BUDGET_SECONDS, below.
+#:
+#: The headroom is the BACKEND's, not the agent's: TASK_TIMEOUT_SECONDS in the
+#: worker's environment is still exactly `task.timeout_seconds`.
+#:
+#: The cost of the headroom is that a wedged lifecycle is killed later. It is
+#: small: a wedged lifecycle stops heartbeating, and the reconciler reclaims a
+#: silent lease after `heartbeat_grace_seconds` (90) and terminates the
+#: execution itself, long before either backend deadline.
+#:
+#: tests/unit/control_plane/test_dispatch_manifests.py holds both dispatchers to
+#: it, feeding the worker's own `WorkerConfig.from_env` the environment the
+#: dispatcher built; tests/unit/worker/test_kubernetes_manifests.py holds the
+#: three YAML templates to it, and its parity test holds `render.py`'s value
+#: equal to this one's (render.py imports this function).
+#:
+#: WHAT THE LIFECYCLE DOES AFTER ITS OWN DEADLINE, which the backend must wait
+#: for: stop the runner child (TERMINATION_GRACE_SECONDS, 20 by default), take
+#: the final checkpoint, harvest the git changes (GIT_HARVEST_TIMEOUT_SECONDS,
+#: 120), upload the outputs and write the terminal state. The first two numbers
+#: are bounded by the worker's own config and add up to 140s; the uploads have no
+#: bound of their own, so they get the rest. 300s is a chosen number, not a
+#: measured one. The tests compare it with the worker's actual defaults, so
+#: raising either of those past it fails CI rather than bringing the race back.
+WORKER_FINALISE_BUDGET_SECONDS = 300
+
+
+def backend_deadline_seconds(task_timeout_seconds: int, *, dispatch_timeout_seconds: int) -> int:
+    """The backend's hard deadline for one attempt. See WORKER_FINALISE_BUDGET_SECONDS.
+
+    The ONE place it is computed: both dispatchers call it, and
+    kubernetes/render.py imports it for the YAML templates.
+    """
+    return (
+        int(task_timeout_seconds)
+        + int(dispatch_timeout_seconds)
+        + WORKER_FINALISE_BUDGET_SECONDS
+    )
 
 
 class DispatchError(Exception):
@@ -283,8 +377,9 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
             settings.core.max_in_worker_retry_delay_seconds
         ),
         "TASK_TIMEOUT_SECONDS": str(task.timeout_seconds),
-        # See WORKER_ARTIFACTS_DIR: without this the runner cannot create its
-        # own artifacts directory on a read-only root filesystem.
+        # Inert under the worker lifecycle, which gives its runner child a
+        # per-attempt value of its own. See WORKER_ARTIFACTS_DIR for why it is
+        # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
     }
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
@@ -446,7 +541,13 @@ class CloudRunJobDispatcher:
         container = run_v2.Container(
             name="worker",
             image=image_uri(self._settings, profile),
-            command=list(profile.command),
+            # NO `command` AND NO `args`: the image ENTRYPOINT is the worker
+            # lifecycle, and `profile.command` is its child's argv, not the
+            # container's (module docstring). Terraform's Jobs already leave
+            # both unset; this Job -- created whenever `get_job` 404s, for a
+            # new tenant, profile or resource class -- used to set
+            # `command=list(profile.command)` and would have run the bare
+            # runner exactly as the GKE pods of 2026-09-24 did.
             env=env,
             # Cloud Run expresses sizing as limits; the platform never sets a
             # request below the limit, so requests == limits holds.
@@ -488,7 +589,16 @@ class CloudRunJobDispatcher:
                     # new fencing generation. Cloud Run retrying underneath us
                     # would run the agent twice on one generation.
                     max_retries=0,
-                    timeout=duration_pb2.Duration(seconds=profile.timeout_seconds),
+                    # What an execution started BY HAND (no override) gets. The
+                    # scheduler's own executions override it per task below.
+                    # Later than the lifecycle's deadline; see
+                    # WORKER_FINALISE_BUDGET_SECONDS.
+                    timeout=duration_pb2.Duration(
+                        seconds=backend_deadline_seconds(
+                            profile.timeout_seconds,
+                            dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
+                        )
+                    ),
                     service_account=tenant.service_account,
                     execution_environment=run_v2.ExecutionEnvironment.EXECUTION_ENVIRONMENT_GEN2,
                 ),
@@ -503,7 +613,7 @@ class CloudRunJobDispatcher:
         profile: RunnerProfile,
         tenant: Tenant,
         resource_class: str | None,
-    ) -> None:
+    ) -> bool:
         """Bring a job THIS dispatcher created up to the image it would create today.
 
         A Cloud Run Job pins its image on the job resource, and this method's
@@ -521,20 +631,26 @@ class CloudRunJobDispatcher:
         Checked once per job per process (the caller caches the result in
         `_ensured`), and a new scheduler revision starts with an empty cache --
         which is exactly when the digest map changes.
+
+        Returns True when it rewrote the job. The rewrite is a whole Job from
+        `_build_job`, so it carries no container `command` or `args` either,
+        and the caller need not look for an ENTRYPOINT override on it
+        (`_clear_entrypoint_override`). A failed rewrite refuses the dispatch,
+        so a job that also overrides the ENTRYPOINT is never run on this path.
         """
         from google.api_core import exceptions as gexc
         from google.cloud import run_v2
 
         labels = dict(getattr(existing, "labels", None) or {})
         if labels.get("managed-by") != "swarm-scheduler":
-            return
+            return False
         wanted = image_uri(self._settings, profile)
         try:
             current = existing.template.template.containers[0].image
         except (AttributeError, IndexError):
             current = ""
         if current == wanted:
-            return
+            return False
         job = self._build_job(profile, tenant, resource_class)
         job.name = name
         try:
@@ -547,6 +663,7 @@ class CloudRunJobDispatcher:
                 code="cloud_run_update_job_failed",
             ) from exc
         log.info("cloud run job %s moved from %s to %s", name, current or "?", wanted)
+        return True
 
     def ensure_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
@@ -570,7 +687,20 @@ class CloudRunJobDispatcher:
                 code="cloud_run_get_job_failed",
             ) from exc
         if existing is not None:
-            self._refresh_image(client, name, existing, profile, tenant, resource_class)
+            # Two corrections, and at most ONE write. A job this dispatcher
+            # created and left at an old image is rebuilt whole from
+            # `_build_job`, which sets no container `command` or `args`, so the
+            # rebuild also removes an ENTRYPOINT override -- and a job created
+            # before 2026-09-24 typically carries both. Only a job that was NOT
+            # rebuilt (terraform's own, or one already at the wanted image) is
+            # then READ for an override and cleared in place. Running both on
+            # one job would write it twice, and the second write would send
+            # `existing` -- the pre-rebuild Job, with its now-stale etag and its
+            # old image -- so it would either be refused as a conflict or put
+            # the old image back.
+            if not self._refresh_image(client, name, existing, profile, tenant, resource_class):
+                # READ, not merely found. See _clear_entrypoint_override.
+                self._clear_entrypoint_override(client, existing, job_id)
             self._ensured.add(job_id)
             return name
 
@@ -594,6 +724,68 @@ class CloudRunJobDispatcher:
         self._ensured.add(job_id)
         return name
 
+    def _clear_entrypoint_override(self, client: Any, job: Any, job_id: str) -> None:
+        """Remove a container `command`/`args` from a Job that already exists.
+
+        Taking `command=` out of `_build_job` fixed only the Jobs created from
+        then on. Every Job this dispatcher created BEFORE 2026-09-24 -- any
+        non-default resource class (`swarm-job-<t>-<p>-<class>`), any provider
+        outside a tenant's terraform `providers` -- still carries
+        `command=python -m agent_worker.runners.<x>`, which replaces the image
+        ENTRYPOINT and runs the bare runner: no fencing (invariant 5), no
+        checkpoint (invariant 8), no heartbeat, no lease release (module
+        docstring). `ensure_job` used to return the moment `get_job` succeeded,
+        and a per-execution `ContainerOverride` has `args`, `env` and
+        `clear_args` but NO `command` field, so `run_job` could never clear it.
+        So the Job is corrected in place, once per process, before its first
+        execution here (review of PR #31).
+
+        CLEARED IN PLACE rather than rebuilt from `_build_job`: only the two
+        fields that replace the lifecycle change, so a Job terraform owns keeps
+        terraform's image, environment, secrets, labels and identity -- terraform
+        already leaves both fields null, so this moves it towards its own
+        configuration, never away. The dispatcher holds `run.jobs.update`
+        (terraform/modules/iam/custom_roles.tf). `update_job` sends the Job's
+        etag, so a concurrent writer is refused rather than overwritten.
+
+        REFUSED, never run, if the correction fails. Running the bare runner is
+        not a fallback: the DispatchError returns the lease and the task, and the
+        code names what to fix.
+        """
+        from google.cloud import run_v2
+
+        template = getattr(getattr(job, "template", None), "template", None)
+        containers = list(getattr(template, "containers", None) or [])
+        overriding = [c for c in containers if list(c.command) or list(c.args)]
+        if not overriding:
+            return
+        found = ", ".join(
+            f"{c.name or '<unnamed>'}: command={list(c.command)!r} args={len(c.args)}"
+            for c in overriding
+        )
+        for container in overriding:
+            container.command = []
+            container.args = []
+        log.warning(
+            "Cloud Run job %s overrides the image ENTRYPOINT (%s), so its executions "
+            "would run the bare runner instead of the worker lifecycle; clearing both "
+            "before running it",
+            job_id,
+            found,
+        )
+        try:
+            operation = client.update_job(request=run_v2.UpdateJobRequest(job=job))
+            operation.result(timeout=120)
+        except Exception as exc:  # any failure, a poll timeout included, refuses
+            raise DispatchError(
+                f"Cloud Run job {job_id} overrides the image ENTRYPOINT ({found}) and "
+                f"could not be corrected: {exc}. Its executions would run the bare "
+                "runner with no fencing, checkpoint, heartbeat or lease release, so "
+                "nothing is started on it. Clear the container command and args on the "
+                "Job, or delete it and let the scheduler recreate it.",
+                code="cloud_run_job_overrides_entrypoint",
+            ) from exc
+
     def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant) -> str:
         from google.api_core import exceptions as gexc
         from google.cloud import run_v2
@@ -612,7 +804,14 @@ class CloudRunJobDispatcher:
                 )
             ],
             task_count=1,
-            timeout=duration_pb2.Duration(seconds=task.timeout_seconds),
+            # Later than the lifecycle's own deadline, which is
+            # TASK_TIMEOUT_SECONDS in `env`. See WORKER_FINALISE_BUDGET_SECONDS.
+            timeout=duration_pb2.Duration(
+                seconds=backend_deadline_seconds(
+                    task.timeout_seconds,
+                    dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
+                )
+            ),
         )
         try:
             operation = self._jobs().run_job(
@@ -973,6 +1172,20 @@ class GkeJobDispatcher:
             "swarm-resource-class": sanitize_name(rc.name),
             "swarm-task": sanitize_name(task.id),
         }
+        # Autopilot extended run time: the pod is not evicted for scale-down.
+        # This is only available on on-demand capacity, which is why Spot is
+        # disabled platform-wide.
+        #
+        # ON THE POD TEMPLATE AS WELL AS THE JOB, and the pod is the one that
+        # matters. The cluster autoscaler reads this annotation from PODS, and a
+        # Job's own annotations are not copied onto the pods it creates -- so
+        # until 2026-09-24, when it sat on the Job alone, every pod this
+        # dispatcher created was evictable in a scale-down while this comment
+        # said it was not. kubernetes/worker-templates/ had it on both; the
+        # parity test in tests/unit/worker/test_kubernetes_manifests.py
+        # (test_the_rendered_job_and_the_dispatched_job_are_the_same_job) is
+        # what found the difference.
+        not_evictable = {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -980,12 +1193,7 @@ class GkeJobDispatcher:
                 "name": job_name,
                 "namespace": self.namespace_for(tenant),
                 "labels": labels,
-                "annotations": {
-                    # Autopilot extended run time: the pod is not evicted for
-                    # scale-down. This is only available on on-demand capacity,
-                    # which is why Spot is disabled platform-wide.
-                    "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
-                },
+                "annotations": dict(not_evictable),
             },
             "spec": {
                 # The platform owns retries; a k8s-level retry would re-run the
@@ -993,10 +1201,20 @@ class GkeJobDispatcher:
                 "backoffLimit": 0,
                 "completions": 1,
                 "parallelism": 1,
-                "activeDeadlineSeconds": task.timeout_seconds,
+                # Later than the lifecycle's own deadline (TASK_TIMEOUT_SECONDS
+                # in `env`), which it must never pre-empt: the Job controller
+                # SIGTERMs the pod, and a SIGTERMed lifecycle PARKS the task
+                # instead of failing it. See WORKER_FINALISE_BUDGET_SECONDS.
+                "activeDeadlineSeconds": backend_deadline_seconds(
+                    task.timeout_seconds,
+                    dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
+                ),
                 "ttlSecondsAfterFinished": 3600,
                 "template": {
-                    "metadata": {"labels": dict(labels)},
+                    "metadata": {
+                        "labels": dict(labels),
+                        "annotations": dict(not_evictable),
+                    },
                     "spec": {
                         "restartPolicy": "Never",
                         "serviceAccountName": self.ksa_for(tenant),
@@ -1014,7 +1232,17 @@ class GkeJobDispatcher:
                             {
                                 "name": "worker",
                                 "image": image_uri(self._settings, profile),
-                                "command": list(profile.command),
+                                # NO "command" AND NO "args". The image
+                                # ENTRYPOINT, `tini -- python -m agent_worker`,
+                                # is the worker lifecycle; it reads
+                                # RUNNER_PROFILE from `env` below and starts
+                                # `profile.command` as its supervised CHILD.
+                                # Setting `command` here replaced the lifecycle
+                                # with the bare runner on every GKE pod until
+                                # 2026-09-24: no fencing, no cancel, no
+                                # heartbeat, no checkpoint, no lease release
+                                # (incident wf_ebb3ab2d65664707a559; module
+                                # docstring).
                                 "env": env,
                                 # requests == limits, both directions, no bursting.
                                 "resources": {"requests": resources, "limits": resources},

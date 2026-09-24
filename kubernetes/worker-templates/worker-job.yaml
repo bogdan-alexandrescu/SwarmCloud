@@ -58,7 +58,13 @@ spec:
   backoffLimit: 0
   completions: 1
   parallelism: 1
-  activeDeadlineSeconds: __TIMEOUT_SECONDS__
+  # LATER than the worker's own TASK_TIMEOUT_SECONDS, never equal to it. This
+  # counts from Job creation (node provisioning and image pull included), the
+  # worker's from its own start; when they were the same number the Job always
+  # SIGTERMed the pod first and the worker PARKED the task instead of failing
+  # it. render.py computes it with the dispatcher's own function
+  # (backend_deadline_seconds in apps/scheduler/scheduler/dispatch.py).
+  activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
   # Keep the finished Job around long enough for the reconciler's next pass and
   # for a person to read the logs, then let the cluster clean it up.
   ttlSecondsAfterFinished: 3600
@@ -114,32 +120,30 @@ spec:
               memory: __MEMORY__
               ephemeral-storage: __DISK__
           env:
-            # WHERE THE RUNNER MAY WRITE, WHICH ON THIS BACKEND IS NOT THE DEFAULT.
+            # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
             #
+            # On 2026-09-24 the first browser pod ever started died with
+            # `OSError: [Errno 30] Read-only file system: '/artifacts'`, because
             # `runners/base.py` defaults `artifacts_dir` to `work.parent /
-            # "artifacts"`. The work dir here is the cwd, `/workspace`, so the
-            # default resolves to `/artifacts` -- and this container sets
-            # `readOnlyRootFilesystem: true`, so the runner died on its first
-            # line:
+            # "artifacts"` when this is unset.
             #
-            #     OSError: [Errno 30] Read-only file system: '/artifacts'
+            # CORRECTED (incident wf_ebb3ab2d65664707a559). This note used to
+            # say Cloud Run never showed the crash because it ran "the identical
+            # `python -m agent_worker.runners.<x>` command" on a writable root.
+            # It did not run the same command. Cloud Run ran the image
+            # ENTRYPOINT -- the worker lifecycle, exactly as the `command is
+            # ABSENT` paragraph at the top of this file requires -- and the
+            # lifecycle gives its runner child SWARM_ARTIFACTS_DIR itself, per
+            # attempt, from an allowlist that never passes this value through.
+            # The scheduler's GKE Job had overridden `command` with the runner,
+            # so no lifecycle ran and nothing set the variable. That override is
+            # gone and tests/unit/worker/test_kubernetes_manifests.py now holds
+            # the dispatcher's Job and this template to the same spec.
             #
-            # WHY CLOUD RUN NEVER SHOWED THIS. The identical image, running the
-            # identical `python -m agent_worker.runners.<x>` command from the
-            # frozen catalogue, works on CLOUD_RUN_JOB -- because that container
-            # does NOT harden the root filesystem, so `mkdir /artifacts`
-            # succeeds. The hardening here is right and Cloud Run's absence of it
-            # is the anomaly; what was missing is a writable path to point at.
-            #
-            # POINTED INSIDE THE WORKSPACE VOLUME RATHER THAN GIVEN ITS OWN.
-            # A dedicated emptyDir at /artifacts would honour the documented
-            # default, and would also need a `sizeLimit` -- a second disk number
-            # to invent and keep in step, when `workspace` already derives its
-            # limit from the resource class's `__DISK__`. Artifacts are produced
-            # from the workspace and are uploaded to ARTIFACT_BUCKET when the
-            # attempt ends, so charging them to the same budget is the honest
-            # accounting. `SWARM_ARTIFACTS_DIR` exists precisely so this is a
-            # configuration rather than a code change.
+            # It stays because it is harmless and because a runner started BY
+            # HAND in this container, during an incident, then writes inside the
+            # `workspace` volume -- whose size limit already derives from
+            # `__DISK__` -- instead of failing on the read-only root.
             - name: SWARM_ARTIFACTS_DIR
               value: /workspace/artifacts
             # Identifiers only. No image, no command, no resource spec: the

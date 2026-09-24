@@ -142,7 +142,7 @@ class Scheduler:
             return report
         self._metrics.paused.set(0)
 
-        report.promoted_dependencies = self._promote_dependencies()
+        report.promoted_dependencies = self._promote_dependencies(report)
         report.promoted_credentials = self._promote_credentials()
         if self._settings.enable_prewarm:
             report.promoted_prewarm = self._prewarm()
@@ -270,7 +270,7 @@ class Scheduler:
         if task.cancel_requested:
             # It holds no capacity in READY, so it can be finished here.
             self._store.cancel(task, "cancellation requested before admission")
-            report.cancelled += 1
+            self._count_cancel(report, reason="cancel_requested")
             return False
 
         if task.next_eligible_at is not None and task.next_eligible_at > now:
@@ -299,7 +299,7 @@ class Scheduler:
                     "an upstream workflow step did not succeed",
                     {"failed_parents": failed},
                 )
-                report.cancelled += 1
+                self._count_cancel(report, reason="failed_parent")
                 return False
             if any(states.get(tid) is not TaskState.SUCCEEDED for tid in task.depends_on):
                 self._store.park(
@@ -489,15 +489,29 @@ class Scheduler:
                 lease.lease_id,
             )
 
+    def _count_cancel(self, report: DrainReport, *, reason: str) -> None:
+        """One place that counts a cancel, so the report and the metric agree.
+
+        The dependency sweep below used to cancel without counting at all: the
+        drain that cancelled a workflow's `synthesis` step at 07:40:11Z on
+        2026-09-24 reported `cancelled: 0`. Every cancel path now calls this.
+        """
+        report.cancelled += 1
+        self._metrics.cancelled.labels(reason=reason).inc()
+
     # -- promotion sweeps -------------------------------------------------
 
-    def _promote_dependencies(self) -> int:
+    def _promote_dependencies(self, report: DrainReport) -> int:
         """Return DEPENDENCY_INCOMPLETE tasks to READY once every parent SUCCEEDED.
 
         This is the "returns to READY when the last parent succeeds" half of
         dependency resolution. It runs at the top of the drain rather than being
         triggered by the succeeding worker, so a worker that dies immediately
         after writing SUCCEEDED cannot strand its children.
+
+        A dependent whose parent did NOT succeed is cancelled here, and counted
+        in `report.cancelled` (and `swarm_scheduler_cancelled_total`) exactly as
+        `_admit_one` counts the same cancel. Returns the number PROMOTED.
         """
         promoted = 0
         for task in self._store.parked_tasks(
@@ -519,6 +533,7 @@ class Scheduler:
                     task, "an upstream workflow step did not succeed",
                     {"failed_parents": failed},
                 )
+                self._count_cancel(report, reason="failed_parent")
                 continue
             if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
                 self._store.promote_to_ready(
