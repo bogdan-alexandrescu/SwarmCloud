@@ -6733,13 +6733,24 @@ table.pools tbody tr.unmeasured {
    button in place with `.stop-pending`, `.stop-note` or -- on a click --
    `.stop-confirm`, a real dialog with `max-width: 62ch`. Anchored `bottom:
    10px` in a box with no right edge, 62ch of it is about 440px against a 248px
-   node: it paints out over the neighbouring step, under the cards the canvas
-   draws after it, with no border of its own to say where it begins.
+   node (255px since `NODE_W` was recomputed; the arithmetic of the defect is
+   unchanged): it paints out over the neighbouring step, under the cards the
+   canvas draws after it, with no border of its own to say where it begins.
 
    SO THE STRIP HAS A RIGHT EDGE AND THE CONTENTS ARE BOUNDED BY IT. `right:
    12px` matches the card's own padding, so the control's box is exactly the
    node's text column; `max-width: 100%` on the children holds the dialog
-   inside it. `z-index: 2` -- layer 2 of the four listed over `.wf-levels` --
+   inside it.
+
+   AND THAT BOUND IS WHAT MAKES SEMANTIC ZOOM SAFE HERE. A `names` node is
+   138px, so this strip is 111px, and a confirm dialog asking for 62ch is held
+   to 111 of them -- cramped, wrapped, and INSIDE the card. That is the trade
+   taken deliberately: the stop control is an ACTION rather than one of the
+   fields a tier drops, and an action that is hard to read is recoverable where
+   an action that is not there is not. `NODE_H` reserves the 42px strip at every
+   tier for the same reason. If the wrapped dialog ever needs more room than
+   this, the answer is to move it out of the card, not to take the button away
+   from the tiers that are narrow. `z-index: 2` -- layer 2 of the four listed over `.wf-levels` --
    puts an opened dialog above the other cards AND above a stage band, rather
    than half behind them: an overlay that is partly occluded reads as a
    rendering fault, which is the sentence F9 uses about the button. The button
