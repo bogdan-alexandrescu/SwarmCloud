@@ -97,6 +97,28 @@ what was not (what the plan would do to the live project), and where the real
 plan happens. Silence in this repository has meant "did not run" far more often
 than "nothing to report", so a bound check says what it did not cover.
 
+### Where a plan is read, and why it is never a pull-request comment
+
+The `plan` job writes the plan into **the run summary** and uploads the text
+plan as the `tfplan-text-<env>` **artifact**. That is all. There is no comment
+on a pull request, because there is no pull-request plan to post.
+
+Until 2026-09-24 the job carried a "comment on the PR" step gated
+`github.event_name == 'pull_request'`, inside a job gated
+`github.event_name != 'pull_request'`. Each condition is right on its own; together
+they mean the step never ran on any event, and a skipped step is green, so it
+read as a working feature. It was also the only reason the workflow granted
+`pull-requests: write`, so every run carried a write token nothing used. The step
+and the permission are both gone.
+
+[`tests/unit/scripts/test_workflow_step_reachability.py`](../tests/unit/scripts/test_workflow_step_reachability.py)
+now computes, for every workflow, the events each job and each step can run on,
+and fails on a step its own job can never reach. It models only
+`github.event_name` comparisons and treats anything else as "any event", so it
+can miss a dead step but cannot invent one. If a plan ever needs to reach a pull
+request, the answer is not a step in this job. This job cannot run on a pull
+request, and the reason is the security boundary described above.
+
 ## What a pull request therefore does not tell you
 
 Stated plainly, because a green pull request is the thing most likely to be
@@ -105,10 +127,12 @@ over-read:
 * **Nothing about the live project.** No plan, no apply, no deployed state.
 * **Nothing about an image actually building**, unless a reviewer approved the
   `build-pr` environment on that run.
-* **Nothing a browser would see.** The UI job is a typecheck plus Vitest in
-  jsdom; jsdom has no layout engine, so overlap, overflow, wrapping and contrast
-  are invisible to it. Every one of those defects this repository has found was
-  found in a real browser and none of them turned a check red.
+* **Nothing a browser would see.** The UI job is a typecheck, Vitest in jsdom,
+  `node:test`, and the production build (`npm run build`); jsdom has no layout
+  engine, so overlap, overflow, wrapping and contrast are invisible to it. Every
+  one of those defects this repository has found was found in a real browser
+  and none of them turned a check red. The build proves the bundle compiles on
+  the image's Node, not that the `swarm-ui` image builds. That runs on `main`.
 * **Nothing about the seams against a real deployment.** Smoke, concurrency,
   race, failure and e2e run through `scripts/verify-remote.sh` inside the VPC,
   because `swarm-api` ingress refuses a laptop. They are not pull-request
@@ -116,6 +140,27 @@ over-read:
 
 `terraform test` runs against a *mock* provider, so it proves the configuration
 says what was meant — never that GCP would accept it.
+
+## The UI job's Node is read from the image, not pinned
+
+The `ui` job does not name a Node version. Its first step reads the major from
+`ARG NODE_IMAGE` in [`images/swarm-ui/Dockerfile`](../images/swarm-ui/Dockerfile)
+and hands it to `setup-node`. The install step prints the `node` and `npm` it
+got. The step fails unless it finds exactly one such line.
+
+It used to say `node-version: "20"`, while the image said `node:20` separately.
+Two statements of one number is the drift
+[`mirrored-values.md`](mirrored-values.md) exists to record. By September 2026
+both copies named a line that reached end of life in April 2026, after
+[`versions.md`](versions.md) had moved the platform to Node 24 LTS. The image now
+pins `node:24-bookworm-slim` at the same digest `agent-runtime-base` pins, and a
+bump there moves CI with it.
+[`tests/unit/scripts/test_ui_node_line.py`](../tests/unit/scripts/test_ui_node_line.py)
+fails if the job gets a literal back, if the two Node images disagree on the
+major, or if the job stops running the production build.
+
+Which Node line is *current* is not something a test can know. That is a fact
+about a date, and it is decided in [`versions.md`](versions.md).
 
 ## The finishing sequence
 
