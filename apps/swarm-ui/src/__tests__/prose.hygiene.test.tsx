@@ -14,7 +14,7 @@
 //
 // Each test says what it would take to break it.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -38,7 +38,23 @@ function glyphStyle(): Map<string, string> {
   // cannot parse -- `1px solid var(--line)` is one -- so reading the style
   // back off a mounted button would report no border on the very glyph this
   // test is about. The server renderer writes the object out verbatim.
-  const html = renderToStaticMarkup(<HelpCard topic="capacity" />)
+  //
+  // It also warns that `useEdgeSafePlacement`'s useLayoutEffect "does nothing
+  // on the server", which is true and irrelevant: placement is measured on
+  // open, and this reads the closed glyph. That one warning is swallowed so the
+  // CI log does not carry a stack trace nobody needs to chase; anything else
+  // still reaches stderr.
+  const original = console.error
+  const quiet = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('useLayoutEffect does nothing on the server')) return
+    original(...args)
+  })
+  let html: string
+  try {
+    html = renderToStaticMarkup(<HelpCard topic="capacity" />)
+  } finally {
+    quiet.mockRestore()
+  }
   const m = /<button[^>]*\sstyle="([^"]*)"/.exec(html)
   expect(m, 'the help card rendered no styled button').not.toBeNull()
   const out = new Map<string, string>()
