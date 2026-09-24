@@ -20,7 +20,13 @@ Secret Manager) on PATH, sharing one state file:
   * a deletion that did not land is found by the proof and exits non-zero,
     with the tenant document kept so the id stays held and the run repeats;
   * a real run removes every record and object version of `eng` and leaves
-    every one of `eng-x` alone -- the tenant whose id `eng` is a prefix of.
+    every one of `eng-x` alone -- the tenant whose id `eng` is a prefix of;
+  * events are found by their own `tenant_id`, across every task, and a task
+    is never deleted while an event is left under it -- so a run after a
+    failed proof finds what the first one left instead of printing 0 over
+    events no task listing can reach any more;
+  * the publication ledger is listed from the ledger itself, so an entry
+    whose secret is already gone is still found.
 
 The two refusal guards are also MUTATED in-test: the same assertions run
 against a copy of the script with the guard removed, and must then see the
@@ -32,8 +38,15 @@ WHAT THIS CANNOT PROVE: that the real Firestore REST API and `gcloud` answer
 in the shapes the fakes serve. The `gcloud storage ls --long` TOTAL line and
 its "matched no objects" error were read from the live artifact bucket on
 2026-09-24 (read-only). The Firestore request and response shapes are the ones
-`scripts/lib/common.sh` already speaks; the cursor-paginated `runQuery` with a
-`select` projection is new here and was NOT run against a live database.
+`scripts/lib/common.sh` already speaks. The collection-group queries on
+`events` were run read-only against the live `swarm` database on 2026-09-24,
+for a tenant id that does not exist: without `orderBy at DESC` a runQuery and
+a count both answer 400 FAILED_PRECONDITION, with it both answer 200, and a
+`startAt` cursor of `[at, __name__]` is accepted. The fake refuses the same
+shapes. That no result came back means the cursor's PAGING over real rows was
+not observed; and `gcloud secrets list --filter='labels.tenant:*'
+--format='value(name.basename(),labels.tenant)'` was read the same day and
+prints TAB-separated columns, as the fake does.
 """
 
 from __future__ import annotations
@@ -78,6 +91,7 @@ pytestmark = pytest.mark.skipif(
 #: do not land -- the failure the proof exists to catch.
 FAKE_CURL = r'''#!{python} -S
 import json, os, sys
+from functools import cmp_to_key
 from urllib.parse import urlsplit
 
 args = sys.argv[1:]
@@ -159,19 +173,91 @@ def matches(fields, flt):
     raise SystemExit("fake firestore: unsupported filter " + json.dumps(flt))
 
 
+#: Firestore's cross-type order, for the value types these tests store.
+TYPE_ORDER = ["nullValue", "booleanValue", "integerValue", "doubleValue", "timestampValue",
+              "stringValue", "referenceValue"]
+
+
+def value_key(v):
+    for rank, kind in enumerate(TYPE_ORDER):
+        if kind in v:
+            x = v[kind]
+            if kind == "nullValue":
+                x = 0
+            elif kind == "integerValue":
+                x = int(x)
+            return (rank, x)
+    raise SystemExit("fake firestore: cannot order on " + json.dumps(v))
+
+
+def field_value(p, path):
+    if path == "__name__":
+        return {"referenceValue": base + "/" + p}
+    return docs[p].get("fields", {})[path]
+
+
+def compare(a, b, dirs):
+    for x, y, d in zip(a, b, dirs):
+        kx, ky = value_key(x), value_key(y)
+        if kx != ky:
+            c = -1 if kx < ky else 1
+            return -c if d == "DESCENDING" else c
+    return 0
+
+
+#: Measured read-only against the live `swarm` database on 2026-09-24: a
+#: collection-group query on `events` filtered on tenant_id -- a runQuery or a
+#: count -- is refused with FAILED_PRECONDITION ("The query requires a
+#: COLLECTION_GROUP_ASC index for collection events and field tenant_id")
+#: unless it orders by `at` DESCENDING. Single-field indexes are kept for
+#: COLLECTION scope only, so the one index that serves it is terraform's
+#: `events-tenant-at` (tenant_id ASC, at DESC, __name__ DESC). The fake refuses
+#: the same queries the database does.
+def cg_index_ok(q):
+    if not q.get("where") and not q.get("orderBy"):
+        return True
+    f = (q.get("where") or {}).get("fieldFilter", {})
+    if f.get("field", {}).get("fieldPath") != "tenant_id" or f.get("op") != "EQUAL":
+        return False
+    order = [(o["field"]["fieldPath"], o.get("direction", "ASCENDING")) for o in q.get("orderBy", [])]
+    return order in ([("at", "DESCENDING")], [("at", "DESCENDING"), ("__name__", "DESCENDING")])
+
+
 def run_query(parent, q):
     (frm,) = q["from"]
-    found = [p for p in children(parent, frm["collectionId"])
-             if matches(docs[p].get("fields", {}), q.get("where"))]
-    names = [base + "/" + p for p in found]
-    rows = sorted(zip(names, found))
+    coll = frm["collectionId"]
+    if frm.get("allDescendants"):
+        if not cg_index_ok(q):
+            reply(400, [{"error": {"code": 400, "status": "FAILED_PRECONDITION",
+                                   "message": "The query requires a COLLECTION_GROUP_ASC index for "
+                                              "collection %s and field tenant_id." % coll}}])
+        prefix = parent + "/" if parent else ""
+        paths = [p for p in docs if p.startswith(prefix) and p.split("/")[-2] == coll]
+    else:
+        paths = children(parent, coll)
+    order = [(o["field"]["fieldPath"], o.get("direction", "ASCENDING")) for o in q.get("orderBy", [])]
+    # A document that lacks a field the query orders by is not in the result.
+    found = [p for p in paths
+             if matches(docs[p].get("fields", {}), q.get("where"))
+             and all(f == "__name__" or f in docs[p].get("fields", {}) for f, _ in order)]
+    if not any(f == "__name__" for f, _ in order):
+        order.append(("__name__", order[-1][1] if order else "ASCENDING"))
+    dirs = [d for _, d in order]
+
+    def key(p):
+        return [field_value(p, f) for f, _ in order]
+
+    rows = sorted(found, key=cmp_to_key(lambda a, b: compare(key(a), key(b), dirs)))
     start = q.get("startAt")
     if start:
-        cursor = start["values"][0]["referenceValue"]
-        rows = [r for r in rows if (r[0] > cursor if not start.get("before") else r[0] >= cursor)]
+        cur = start["values"]
+        if start.get("before"):
+            rows = [p for p in rows if compare(key(p)[: len(cur)], cur, dirs) >= 0]
+        else:
+            rows = [p for p in rows if compare(key(p)[: len(cur)], cur, dirs) > 0]
     if "limit" in q:
         rows = rows[: q["limit"]]
-    return rows
+    return [(base + "/" + p, p) for p in rows]
 
 
 def project(fields, q):
@@ -200,7 +286,8 @@ for verb in (":runQuery", ":runAggregationQuery", ":commit"):
         if verb == ":runQuery":
             q = payload["structuredQuery"]
             rows = run_query(parent, q)
-            log("query", parent=parent, collection=q["from"][0]["collectionId"], n=len(rows))
+            log("query", parent=parent, collection=q["from"][0]["collectionId"], n=len(rows),
+                group=bool(q["from"][0].get("allDescendants")))
             out = [{"document": {"name": n, "fields": project(docs[p].get("fields", {}), q)},
                     "readTime": "2026-09-24T00:00:00Z"} for n, p in rows]
             reply(200, out or [{"readTime": "2026-09-24T00:00:00Z"}])
@@ -208,7 +295,8 @@ for verb in (":runQuery", ":runAggregationQuery", ":commit"):
             q = dict(payload["structuredAggregationQuery"]["structuredQuery"])
             q.pop("limit", None)
             n = len(run_query(parent, q))
-            log("count", parent=parent, collection=q["from"][0]["collectionId"], n=n)
+            log("count", parent=parent, collection=q["from"][0]["collectionId"], n=n,
+                group=bool(q["from"][0].get("allDescendants")))
             reply(200, [{"result": {"aggregateFields": {"n": {"integerValue": str(n)}}},
                          "readTime": "2026-09-24T00:00:00Z"}])
         if verb == ":commit":
@@ -343,18 +431,37 @@ if args[:2] == ["storage", "rm"]:
     sys.exit(0)
 
 if args[:2] == ["secrets", "list"]:
-    flt = ""
+    # `--format=value(a,b)` prints the columns TAB-separated, as the real one
+    # did for `value(name.basename(),labels.tenant)` on 2026-09-24.
+    flt, fmt = "", "value(name.basename())"
     for i, a in enumerate(args):
         if a.startswith("--filter="):
             flt = a.split("=", 1)[1]
         elif a == "--filter":
             flt = args[i + 1]
+        elif a.startswith("--format="):
+            fmt = a.split("=", 1)[1]
+        elif a == "--format":
+            fmt = args[i + 1]
     log(cmd="secrets-list", filter=flt)
-    assert flt.startswith("labels.tenant="), flt
-    wanted = flt.split("=", 1)[1]
-    for s in state["secrets"]:
-        if s["labels"].get("tenant") == wanted:
-            print(s["name"])
+    if flt == "labels.tenant:*":
+        chosen = [s for s in state["secrets"] if "tenant" in s["labels"]]
+    elif flt.startswith("labels.tenant="):
+        chosen = [s for s in state["secrets"] if s["labels"].get("tenant") == flt.split("=", 1)[1]]
+    else:
+        raise SystemExit("fake gcloud: unsupported secrets filter " + flt)
+    assert fmt.startswith("value(") and fmt.endswith(")"), fmt
+    cols = [c.strip() for c in fmt[len("value("):-1].split(",")]
+    for s in chosen:
+        out = []
+        for c in cols:
+            if c == "name.basename()":
+                out.append(s["name"])
+            elif c.startswith("labels."):
+                out.append(s["labels"].get(c[len("labels."):], ""))
+            else:
+                raise SystemExit("fake gcloud: unsupported secrets column " + c)
+        print("\t".join(out))
     sys.exit(0)
 
 print("fake gcloud: unhandled " + " ".join(args), file=sys.stderr)
@@ -408,10 +515,13 @@ def world(**over) -> dict:
         "tasks/task_e1": {"fields": {"tenant_id": s(TENANT), "state": s("SUCCEEDED")}},
         "tasks/task_e2": {"fields": {"tenant_id": s(TENANT), "state": s("PARKED")}},
         "tasks/task_x1": {"fields": {"tenant_id": s(NEIGHBOUR), "state": s("RUNNING")}},
-        "tasks/task_e1/events/ev1": {"fields": {"tenant_id": s(TENANT)}},
-        "tasks/task_e1/events/ev2": {"fields": {"tenant_id": s(TENANT)}},
-        "tasks/task_e2/events/ev3": {"fields": {"tenant_id": s(TENANT)}},
-        "tasks/task_x1/events/evx": {"fields": {"tenant_id": s(NEIGHBOUR)}},
+        # Every writer of an event sets `at` (scheduler, API, worker and
+        # reconciler stores). ev1 and ev2 share one, so a listing paginated on
+        # `at` alone would skip one of them at a page boundary.
+        "tasks/task_e1/events/ev1": {"fields": {"tenant_id": s(TENANT), "at": ts("2026-09-23T20:13:30Z")}},
+        "tasks/task_e1/events/ev2": {"fields": {"tenant_id": s(TENANT), "at": ts("2026-09-23T20:13:30Z")}},
+        "tasks/task_e2/events/ev3": {"fields": {"tenant_id": s(TENANT), "at": ts("2026-09-23T21:00:00Z")}},
+        "tasks/task_x1/events/evx": {"fields": {"tenant_id": s(NEIGHBOUR), "at": ts("2026-09-23T20:13:30Z")}},
         "attempts/att_e1": {"fields": {"tenant_id": s(TENANT)}},
         "attempts/att_x1": {"fields": {"tenant_id": s(NEIGHBOUR)}},
         "leases/lease_e1": {"fields": {"tenant_id": s(TENANT), "released_at": ts()}},
@@ -515,6 +625,9 @@ class Run:
 
 def _run(tmp_path: Path, state: dict, *args: str, typed: str | None = None,
          mutate: tuple[str, str] | None = None, **env_extra: str) -> Run:
+    # A subdirectory per run, so one test can run the script twice over the
+    # state the first run left.
+    tmp_path.mkdir(parents=True, exist_ok=True)
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     script = root / SCRIPT_REL
@@ -878,3 +991,157 @@ def test_a_listing_that_fails_is_not_an_empty_prefix(tmp_path):
     assert "failure to LOOK" in run.stderr, run.stderr[-3000:]
     assert not run.writes
     assert run.state == before
+
+
+# ---------------------------------------------------------------------------
+# 7. Events are found by their tenant, not only under the tasks a run listed
+# ---------------------------------------------------------------------------
+#
+# Firestore does not delete a document's subcollections with it. A task
+# document deleted while an event is still under it leaves that event where no
+# `tenant_id ==` listing of tasks can reach it again -- and a proof that
+# counts events only under the tasks it listed then prints 0 over it. The
+# fault that produces it is a delete that did not land (FAKE_DROP_DELETES),
+# and in production an event appended between the events delete and the task
+# delete: `store.cancel`'s cascade and the reconciler both append events as
+# blind sets, outside any transaction the script could see.
+
+
+def _eng_events(state: dict) -> list[str]:
+    """Every stored event that carries eng's id, wherever it is."""
+    out = []
+    for path, doc in state["docs"].items():
+        segs = path.split("/")
+        if len(segs) == 4 and segs[0] == "tasks" and segs[2] == "events" \
+                and doc.get("fields", {}).get("tenant_id") == s(TENANT):
+            out.append(path)
+    return sorted(out)
+
+
+#: An event of `eng` whose task document is already gone -- what an earlier
+#: run of the old script left after its proof failed -- and one of `eng-x`
+#: in the same shape, which must be left alone.
+ORPHANS = {
+    "tasks/task_gone/events/ev_o1": {"fields": {"tenant_id": s(TENANT), "at": ts("2026-09-22T09:00:00Z")}},
+    "tasks/task_gone_x/events/ev_ox": {"fields": {"tenant_id": s(NEIGHBOUR), "at": ts("2026-09-22T09:00:00Z")}},
+}
+
+
+def test_a_task_whose_events_survived_their_delete_is_not_deleted(tmp_path):
+    run = _run(tmp_path, world(), "--tenant", TENANT, "--apply", typed=TENANT, FAKE_DROP_DELETES="events")
+
+    assert run.writes, "the fault case never reached the delete; it tests nothing"
+    for task in ("tasks/task_e1", "tasks/task_e2"):
+        assert task not in run.deleted_docs(), (
+            f"{task} was deleted with its events still under it; nothing that lists tasks by "
+            f"tenant_id can reach those events again:\n{run.stderr[-3000:]}"
+        )
+        assert task in run.state["docs"]
+    assert run.rc != 0, run.stderr[-3000:]
+    assert "VERIFICATION FAILED" in run.stderr
+    proof = _section(run.stderr, "== Proof:")
+    assert _row(proof, "events by tenant_id").startswith("3"), proof
+
+
+def test_running_again_after_an_events_fault_finishes_the_job(tmp_path):
+    """The runbook's answer to a failed proof is to run the same command
+    again. That rerun must find what the first run left, delete it and prove
+    it -- not print 0 over events it can no longer see and release the id."""
+    first = _run(tmp_path / "first", world(), "--tenant", TENANT, "--apply", typed=TENANT,
+                 FAKE_DROP_DELETES="events")
+    assert first.rc != 0 and "VERIFICATION FAILED" in first.stderr, first.stderr[-3000:]
+    assert _eng_events(first.state), "the fault left no events behind; the rerun tests nothing"
+
+    second = _run(tmp_path / "second", first.state, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    left = _eng_events(second.state)
+    assert not (left and f"tenants/{TENANT}" not in second.state["docs"]), (
+        f"the rerun released tenants/{TENANT} with {len(left)} of its events still stored: {left}\n"
+        f"{second.stderr[-3000:]}"
+    )
+    assert second.rc == 0, second.stderr[-3000:]
+    assert _eng_docs(second.state) == [], f"left behind: {_eng_docs(second.state)}"
+    assert second.state["docs"] == _not_eng(world()), "a document that is not eng's changed"
+
+
+def test_an_event_whose_task_is_already_gone_is_found_by_its_tenant(tmp_path):
+    before = world(**ORPHANS)
+    run = _run(tmp_path / "apply", before, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    assert "tasks/task_gone/events/ev_o1" not in run.state["docs"], (
+        f"an event of {TENANT} under a task that no longer exists survived the offboarding:\n"
+        f"{run.stderr[-3000:]}"
+    )
+    assert run.state["docs"]["tasks/task_gone_x/events/ev_ox"] == ORPHANS["tasks/task_gone_x/events/ev_ox"]
+    assert run.rc == 0, run.stderr[-3000:]
+    assert _eng_docs(run.state) == [], f"left behind: {_eng_docs(run.state)}"
+    assert run.state["docs"] == _not_eng(before), "a document that is not eng's changed"
+    proof = _section(run.stderr, "== Proof:")
+    assert _row(proof, "events by tenant_id").startswith("0"), proof
+
+    # The dry run counts it too: the inventory is what --apply deletes.
+    dry = _run(tmp_path / "dry", before, "--tenant", TENANT, typed=TENANT)
+    assert dry.rc == 0, dry.stderr[-3000:]
+    inv = _section(dry.stderr, "== Inventory:")
+    assert _row(inv, "events by tenant_id").startswith("4 "), inv
+    assert _row(inv, "task events").startswith("3 "), inv
+
+
+def test_every_listing_is_paginated_not_capped(tmp_path):
+    """Pages of two, so every listing -- the collection-group one on its
+    (at, __name__) cursor included -- crosses a page boundary, and two events
+    share an `at`. A listing capped at its first page, or a cursor on `at`
+    alone, leaves an event behind that this test finds."""
+    before = world(**ORPHANS)
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT,
+               mutate=("FS_PAGE=300", "FS_PAGE=2"))
+
+    assert _eng_docs(run.state) == [], f"left behind: {_eng_docs(run.state)}\n{run.stderr[-3000:]}"
+    assert run.rc == 0, run.stderr[-3000:]
+    assert run.state["docs"] == _not_eng(before), "a document that is not eng's changed"
+
+
+# ---------------------------------------------------------------------------
+# 8. The publication ledger is read from the ledger, not only from labels
+# ---------------------------------------------------------------------------
+
+def test_a_ledger_entry_is_found_from_the_ledger_not_only_from_secret_labels(tmp_path):
+    """`credential_publications/<secret name>` carries no tenant field. A
+    listing of it that starts from the secrets labelled `tenant=<id>` finds
+    nothing for a secret that is already gone, and a proof built on the same
+    listing prints 0 over the entry. So the ledger itself is listed, an entry
+    is this tenant's when its id is one of this tenant's secret-name forms,
+    and it is left alone when a secret of that name is labelled for another
+    tenant or a longer registered tenant id also names it."""
+    ledger = "credential_publications/"
+    before = world(**{
+        # eng's, with no secret left to carry a label.
+        f"{ledger}swarm-tenant-{TENANT}-openai": {"fields": {"digest": s("d3")}},
+        f"{ledger}swarm-account-{TENANT}--main": {"fields": {"digest": s("d4")}},
+        # A secret named for eng-z, labelled eng-z, whose tenant document is
+        # gone: `swarm-tenant-eng-` starts it, and the label says whose it is.
+        f"{ledger}swarm-tenant-eng-z-openai": {"fields": {"digest": s("d5")}},
+    })
+    before["secrets"] = [
+        sec for sec in before["secrets"] if sec["labels"].get("tenant") != NEIGHBOUR
+    ] + [{"name": "swarm-tenant-eng-z-openai", "labels": {"tenant": "eng-z"}}]
+    # eng-x's own entry (in the world) now has no secret either; eng-x is
+    # registered, and its id is the longer one that names the entry.
+    assert f"{ledger}swarm-tenant-{NEIGHBOUR}-anthropic" in before["docs"]
+
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    for gone in (f"swarm-tenant-{TENANT}-anthropic", f"swarm-tenant-{TENANT}-openai",
+                 f"swarm-account-{TENANT}--main"):
+        assert ledger + gone not in run.state["docs"], (
+            f"{ledger}{gone} survived the offboarding of {TENANT}:\n{run.stderr[-3000:]}"
+        )
+    for kept in (f"swarm-tenant-{NEIGHBOUR}-anthropic", "swarm-tenant-eng-z-openai"):
+        assert run.state["docs"][ledger + kept] == before["docs"][ledger + kept], (
+            f"{ledger}{kept} is not {TENANT}'s and was touched"
+        )
+    assert run.rc == 0, run.stderr[-3000:]
+    inv = _section(run.stderr, "== Inventory:")
+    assert _row(inv, "credential_publications").startswith("3 "), inv
+    proof = _section(run.stderr, "== Proof:")
+    assert _row(proof, "credential_publications").startswith("0"), proof
