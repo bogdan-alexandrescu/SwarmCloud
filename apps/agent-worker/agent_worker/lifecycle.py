@@ -95,7 +95,7 @@ from .gitops import (
     shallow_clone,
     summarize_work,
 )
-from .metrics import ResourceSampler
+from .metrics import ResourceSampler, ResourceUsage, combine_usage
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
@@ -217,7 +217,13 @@ class Worker:
         )
         self._interrupted = False
         self._child: ChildProcess | None = None
+        # The LIVE runner's sampler, or None between runners. The runners that
+        # have ended are in `_runner_usage`, and `_attempt_usage` combines the
+        # two: every figure this worker reports -- the attempt document, the
+        # export, the HEARTBEAT series -- is the attempt's, not one runner's.
         self._sampler: ResourceSampler | None = None
+        self._runner_usage: list[ResourceUsage] = []
+        self._metrics_exported = False
         self._last_checkpoint: CheckpointRecord | None = None
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
@@ -1506,7 +1512,10 @@ class Worker:
         self.control.heartbeat()
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            usage = self._sampler.usage if self._sampler else None
+            # The ATTEMPT's usage, every runner so far plus the live one. A
+            # runner restarted in place gets a fresh sampler that starts from
+            # zero, and a cumulative series built on it went backwards there.
+            usage = self._attempt_usage()
             cpu_seconds = usage.cpu_seconds if usage else None
             self.control.emit(
                 EventType.HEARTBEAT,
@@ -2369,10 +2378,20 @@ class Worker:
         if self._sampler is None:
             return
         usage = self._sampler.stop()
+        # Kept, not replaced by the next runner's sampler: that replacement is
+        # what made every figure below describe the last runner only.
+        self._runner_usage.append(usage)
+        self._sampler = None
+        # THE ATTEMPT'S PEAKS, not this runner's. `record_resource_usage`
+        # merge-sets absolute values, so writing each runner's own peak let a
+        # quiet second runner overwrite the first runner's high-water mark --
+        # and a near miss in the first -- on the one document a sizing report
+        # reads.
+        attempt = self._attempt_usage() or usage
         self.control.record_resource_usage(
-            peak_rss_bytes=usage.peak_rss_bytes,
-            peak_disk_bytes=usage.peak_disk_bytes,
-            oom_near_miss=usage.oom_near_miss,
+            peak_rss_bytes=attempt.peak_rss_bytes,
+            peak_disk_bytes=attempt.peak_disk_bytes,
+            oom_near_miss=attempt.oom_near_miss,
         )
         if usage.oom_near_miss:
             self.log.error(
@@ -2382,11 +2401,29 @@ class Worker:
                 resource_class=self.cfg.resource_class,
             )
 
+    def _attempt_usage(self) -> ResourceUsage | None:
+        """Every runner this attempt has started, combined; None if none has.
+
+        The live runner is included as far as it has got, so a heartbeat
+        mid-run and the export on a crash that left a runner alive both see
+        the whole attempt.
+        """
+        parts = list(self._runner_usage)
+        if self._sampler is not None:
+            parts.append(self._sampler.usage)
+        return combine_usage(parts)
+
     def _export_metrics(self) -> None:
-        if self._sampler is None:
+        # Once per attempt. Several exits reach this, and one that failed
+        # partway -- an export that raised -- falls through to the crash
+        # handler, which calls it again; a successful export is not repeated.
+        if self._metrics_exported:
+            return
+        usage = self._attempt_usage()
+        if usage is None:
             return
         self.metrics.export(
-            self._sampler.usage,
+            usage,
             {
                 "tenant_id": self.cfg.tenant_id,
                 "runner_profile": self.cfg.runner_profile,
@@ -2396,7 +2433,7 @@ class Worker:
                 "task_id": self.cfg.task_id,
             },
         )
-        self._sampler = None
+        self._metrics_exported = True
 
     # -- misc --------------------------------------------------------------
     def _remaining_seconds(self) -> float:

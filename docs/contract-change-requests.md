@@ -1214,10 +1214,17 @@ reaped-children total as the last resort -- and reports:
 
 | field | meaning |
 |---|---|
-| `cpu_seconds` | CPU time consumed while the runner ran |
-| `peak_cpu_cores` | the busiest sampling interval, in cores |
-| `mean_cpu_cores` | `cpu_seconds` over the wall time it was measured across |
+| `cpu_seconds` | CPU time consumed while the attempt's runners ran, summed over every runner it started |
+| `peak_cpu_cores` | the busiest sampling interval of any of those runners, in cores |
+| `mean_cpu_cores` | total `cpu_seconds` over the total runner time it was measured across |
 | `cpu_source` | `cgroup` (the whole container), `proc` (the runner's tree) or `rusage` |
+
+Every figure is the ATTEMPT's. An attempt restarts its runner in place after
+a short rate limit or a reloaded credential. Each runner has its own sampler,
+and `metrics.combine_usage` puts the runners back together. The first cut of
+this reported only the last runner. The same fix also corrected
+`peak_rss_bytes` / `peak_disk_bytes` / `oom_near_miss` on the attempt
+document, which each runner used to overwrite with its own figure.
 
 It reaches three places, none of them typed or indexable:
 
@@ -1227,8 +1234,11 @@ It reaches three places, none of them typed or indexable:
   `roles/monitoring.viewer`);
 * every HEARTBEAT event, as a CUMULATIVE `cpu_seconds`, so two consecutive
   events give utilisation over the span between them. This is the only
-  per-attempt CPU figure a reader of the API can reach today, and it resets
-  when a runner is restarted in place.
+  per-attempt CPU figure a reader of the API can reach today. It covers every
+  runner the attempt has started, so an in-place restart continues the series
+  instead of resetting it. The span between two events can include a retry
+  wait in which no runner ran, and utilisation computed over that span counts
+  the wait as idle time.
 
 ### Why it stopped there
 
@@ -1251,8 +1261,12 @@ Optional, defaulting to `None`, so every existing document remains valid and
 nothing migrates. `None` means NOT MEASURED -- a macOS local run has a total and
 no peak, and an attempt fenced before its runner started has neither -- which
 is different from an agent that used no CPU. `mean_cpu_cores` is deliberately
-not requested: it is derivable from `cpu_seconds` and the attempt's own
-`started_at`/`completed_at`.
+not requested. `cpu_seconds` over the attempt's own `started_at`/`completed_at`
+gives an approximation of it. That approximation is lower than the worker's
+figure, because the attempt's span also covers setup, the clone and any retry
+wait, where the worker divides by runner time only. For a sizing question
+("how much of the reserved CPU did the agent use") the lower figure is the one
+that matters, since the reservation is held for the whole span.
 
 ### What breaks if it is made
 

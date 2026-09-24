@@ -30,6 +30,13 @@ memory row and no CPU row, and could not have one without a worker change:
     mean_cpu_cores    cpu_seconds over the wall time it was measured across
     cpu_source        where the numbers came from: cgroup, proc or rusage
 
+PER ATTEMPT, NOT PER RUNNER. One attempt can start several runners -- a short
+rate limit and a reloaded credential both restart in place -- and each gets a
+sampler of its own. `combine_usage` is how the worker turns them back into the
+attempt's figures: CPU summed, peaks maximised, and one mean taken as total CPU
+over total runner time. Reporting the last runner alone understated every
+restarted attempt, and restarted the cumulative HEARTBEAT total from zero.
+
 The same preference order as memory, for the same reason: cgroup v2 `cpu.stat`
 is the container's own account and what its CPU limit is enforced against. With
 no cgroup, the runner's process TREE is walked in /proc -- a tree and not a
@@ -47,7 +54,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
@@ -70,12 +77,74 @@ class ResourceUsage:
     peak_cpu_cores: float | None = None
     mean_cpu_cores: float | None = None
     cpu_source: str | None = None
+    #: The wall time `cpu_seconds` was measured across, first sample to last.
+    #: Not reported anywhere by itself; it is what lets `combine_usage` give an
+    #: attempt of several runners ONE mean -- total CPU over total time --
+    #: rather than an average of means that weighs a one-second run like a
+    #: one-hour one.
+    cpu_wall_seconds: float | None = None
 
     def merge_rss(self, value: int) -> None:
         self.peak_rss_bytes = max(self.peak_rss_bytes, int(value))
 
     def merge_disk(self, value: int) -> None:
         self.peak_disk_bytes = max(self.peak_disk_bytes, int(value))
+
+
+def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
+    """One attempt's usage from the runners it started, in the order they ran.
+
+    None when there are no parts: an attempt that never started a runner
+    measured nothing, which is not the same as measuring zero.
+
+    * `cpu_seconds` and `cpu_wall_seconds` add up, over the parts that have
+      them. A part with no reading contributes nothing rather than a zero, so
+      a total is None only when NO runner was measured.
+    * The peaks -- memory, disk, CPU cores -- are the highest of any part, and
+      a near miss in any runner is a near miss for the attempt.
+    * `mean_cpu_cores` is total CPU over total time across the parts that have
+      both, and exists only if at least one part was long enough to have a
+      mean of its own (see `ResourceSampler._min_interval`), so combining
+      cannot turn two too-short spans into the "ten cores" that rule exists
+      to refuse.
+    * `memory_events` is the latest part's that has any: cgroup counters are
+      the container's own running totals, so the latest already includes
+      every runner before it.
+
+    The parts are read, never modified. The last one may belong to a runner
+    that is still running, whose sampler is still writing to it.
+    """
+    if not parts:
+        return None
+    out = ResourceUsage()
+    timed_cpu = 0.0
+    timed_wall = 0.0
+    any_mean = False
+    for part in parts:
+        out.merge_rss(part.peak_rss_bytes)
+        out.merge_disk(part.peak_disk_bytes)
+        out.oom_near_miss = out.oom_near_miss or bool(part.oom_near_miss)
+        if part.memory_events:
+            out.memory_events = dict(part.memory_events)
+        out.samples += int(part.samples)
+        if part.cpu_source is not None:
+            out.cpu_source = part.cpu_source
+        cpu, wall = part.cpu_seconds, part.cpu_wall_seconds
+        if cpu is not None:
+            out.cpu_seconds = (out.cpu_seconds or 0.0) + cpu
+        if wall is not None:
+            out.cpu_wall_seconds = (out.cpu_wall_seconds or 0.0) + wall
+        if part.peak_cpu_cores is not None and (
+            out.peak_cpu_cores is None or part.peak_cpu_cores > out.peak_cpu_cores
+        ):
+            out.peak_cpu_cores = part.peak_cpu_cores
+        if cpu is not None and wall is not None:
+            timed_cpu += cpu
+            timed_wall += wall
+        any_mean = any_mean or part.mean_cpu_cores is not None
+    if any_mean and timed_wall > 0:
+        out.mean_cpu_cores = timed_cpu / timed_wall
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +438,10 @@ class ResourceSampler:
         # Held at its high-water mark: a tree reading dips when a process
         # exits before its parent reaps it, and a total must not go backwards.
         self.usage.cpu_seconds = max(self.usage.cpu_seconds or 0.0, reading - self._cpu_first)
+        # Kept current while the runner is alive, so a combination taken
+        # mid-run (a heartbeat, a crash's export) pairs CPU-so-far with
+        # time-so-far rather than with nothing.
+        self.usage.cpu_wall_seconds = now - self._t_first
         base_time, base_reading = self._cpu_base or (now, reading)
         elapsed = now - base_time
         if elapsed < self._min_interval:
@@ -388,13 +461,12 @@ class ResourceSampler:
             consumed = None
         if consumed is not None:
             self.usage.cpu_seconds = consumed
-        if (
-            self.usage.cpu_seconds is not None
-            and self._t_first is not None
-            and self._t_last is not None
-            and self._t_last - self._t_first >= self._min_interval
-        ):
-            self.usage.mean_cpu_cores = self.usage.cpu_seconds / (self._t_last - self._t_first)
+        if self.usage.cpu_seconds is None or self._t_first is None or self._t_last is None:
+            return
+        span = self._t_last - self._t_first
+        self.usage.cpu_wall_seconds = span
+        if span >= self._min_interval:
+            self.usage.mean_cpu_cores = self.usage.cpu_seconds / span
 
     def sample_once(self) -> None:
         peak = cgroup_memory_peak()
