@@ -2410,7 +2410,7 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
           at a glance which commit carried the work and which only deleted.
           A binary change gets a diamond, never a 0/0 row -- `binary_files`
           exists so it does not read as "changed nothing". */}
-      {false && commits.length > 0 && <DiffstatChart commits={commits} commitCount={git.commit_count} />}
+      {commits.length < 0 && <DiffstatChart commits={commits} commitCount={git.commit_count} />}
 
       {commits.length > 0 && (
         /* `is-stacked` (F6), and this is the widest of the drawer's tables:
