@@ -34,6 +34,11 @@ KUBERNETES = REPO / "kubernetes"
 TENANT = "eng"
 PROJECT = "saga-agents-staging"
 
+#: The control plane's numeric uniqueIds in that project. See the assertion at
+#: the bottom of this file for why a RoleBinding needs them at all.
+SCHEDULER_UID = "117405034245659033603"
+RECONCILER_UID = "108023754768362642341"
+
 
 def _load_renderer() -> Any:
     """Import kubernetes/render.py by path; it is a script, not a package."""
@@ -81,6 +86,14 @@ def tenant_docs() -> list[dict[str, Any]]:
             # GKE backend cannot dispatch, which is how it sat broken.
             "SCHEDULER_GSA": f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com",
             "RECONCILER_GSA": f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com",
+            # THE NUMERIC uniqueIds, and these are the real ones from
+            # saga-agents-staging rather than invented digits. They are not
+            # secret -- `gcloud iam service-accounts describe` prints them to
+            # anyone who can read the project -- and using the real values means
+            # this fixture matches what apply.sh renders, so a future change to
+            # the subject shape fails here rather than only in a live cluster.
+            "SCHEDULER_UID": SCHEDULER_UID,
+            "RECONCILER_UID": RECONCILER_UID,
             "PROJECT_ID": PROJECT,
             "REGION": "us-central1",
             "PSS_ENFORCE": "restricted",
@@ -912,4 +925,64 @@ def test_the_namespace_the_renderer_builds_is_the_one_the_scheduler_dispatches_i
         f"the renderer builds {namespace} and the scheduler dispatches into {expected}; "
         "a Job created into a namespace that does not exist is reported as forbidden, "
         "not as missing"
+    )
+
+
+def test_every_gsa_rbac_subject_is_also_bound_by_numeric_unique_id(tenant_docs):
+    """THE EIGHT-MONTH BUG, AS A RULE.
+
+    Every GKE dispatch this platform ever attempted failed with
+
+        jobs.batch is forbidden: User "117405034245659033603" cannot create
+        resource "jobs" in API group "batch" in the namespace "swarm-tenant-eng"
+
+    while `swarm-dispatcher`'s RoleBinding named
+    `swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com` and nothing
+    else. Both were correct descriptions of the same identity and only one of
+    them was the SUBJECT: the scheduler reaches the Kubernetes API with a Google
+    OAuth access token (dispatch.py's `install_google_bearer_token`), and on that
+    path GKE resolves the caller to the service account's numeric uniqueId. The
+    RoleBinding applied cleanly, validated, diffed clean, and authorised nobody.
+
+    Nothing offline could have caught that -- the manifest was valid and the
+    identity existed. What CAN be caught offline is the asymmetry: a binding that
+    names a Google service account by only ONE of its two names. That is what
+    this asserts, for every RoleBinding the tenant render produces, so neither
+    spelling can be dropped again.
+
+    MUTATION: delete either `__SCHEDULER_UID__` or `__RECONCILER_UID__` subject
+    from kubernetes/rbac/dispatcher-rbac.yaml. This names the binding and the
+    account whose second spelling went missing.
+    """
+    gsa_suffix = ".iam.gserviceaccount.com"
+    uid_by_account = {
+        f"swarm-scheduler@{PROJECT}{gsa_suffix}": SCHEDULER_UID,
+        f"swarm-reconciler@{PROJECT}{gsa_suffix}": RECONCILER_UID,
+    }
+
+    bindings = by_kind(tenant_docs, "RoleBinding")
+    assert bindings, "the tenant render produced no RoleBinding; this test would check nothing"
+
+    checked = 0
+    for binding in bindings:
+        names = {str(s.get("name", "")) for s in binding.get("subjects", [])}
+        for account, uid in uid_by_account.items():
+            if account not in names:
+                continue
+            checked += 1
+            assert uid in names, (
+                f"RoleBinding {binding['metadata']['name']} binds {account} by email "
+                f"but not by its uniqueId {uid}. GKE presents a service account "
+                f"authenticating with an OAuth access token by uniqueId, so this "
+                f"binding applies cleanly and authorises nobody -- which is exactly "
+                f"how every GKE dispatch failed before 2026-09-24."
+            )
+
+    # NOT AN EMPTY SWEEP. If the subject spellings change shape, the loop above
+    # matches nothing and passes silently -- the failure mode this repository
+    # keeps paying for. Two bindings name a control-plane account: swarm-dispatcher
+    # (the scheduler) and swarm-reaper (the reconciler).
+    assert checked == 2, (
+        f"expected to check 2 control-plane bindings, checked {checked}. The subject "
+        f"spellings changed and this assertion stopped looking at anything."
     )

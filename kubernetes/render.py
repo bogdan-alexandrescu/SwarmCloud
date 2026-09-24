@@ -134,6 +134,42 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     # applies cleanly and nothing can use it.
     "SCHEDULER_GSA": re.compile(r"^swarm-scheduler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
     "RECONCILER_GSA": re.compile(r"^swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
+    # THE SAME TWO IDENTITIES, BY NUMERIC uniqueId, AND THIS IS THE SUBJECT GKE
+    # ACTUALLY PRESENTS.
+    #
+    # The comment above says a subject that does not exist "would bind a subject
+    # that does not exist and fail open-looking -- the RoleBinding applies
+    # cleanly and nothing can use it". That is exactly what happened, and not
+    # from a typo. Measured on 2026-09-24 against a live dispatch, after the
+    # namespace and the email-subject RoleBindings were both confirmed correct:
+    #
+    #     jobs.batch is forbidden: User "117405034245659033603" cannot create
+    #     resource "jobs" in API group "batch" in the namespace
+    #     "swarm-tenant-eng"
+    #
+    # `117405034245659033603` is `gcloud iam service-accounts describe
+    # swarm-scheduler@... --format='value(uniqueId)'`. The scheduler reaches the
+    # Kubernetes API with a Google OAuth ACCESS token (dispatch.py's
+    # `install_google_bearer_token`), and for that path GKE resolves the caller
+    # to the service account's uniqueId -- not, as the RBAC file asserted, to
+    # its email. The email binding was applying cleanly and authorising nobody.
+    #
+    # BOTH FORMS ARE BOUND rather than swapping one for the other, because the
+    # email form is what GKE presents on other paths (kubectl with an
+    # impersonated GSA, and Workload Identity), and a binding that works for one
+    # caller and not another is the shape this defect already had.
+    #
+    # Either spelling is accepted here. The default when no uniqueId is supplied
+    # is the EMAIL, which renders a duplicate subject -- inert, because RBAC
+    # subjects are a list and a repeat authorises nothing new. A numeric default
+    # would be a fabricated identity in a live RoleBinding, which is strictly
+    # worse than a duplicate: it reads as a grant and is not one.
+    "SCHEDULER_UID": re.compile(
+        r"^([0-9]{15,25}|swarm-scheduler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
+    ),
+    "RECONCILER_UID": re.compile(
+        r"^([0-9]{15,25}|swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
+    ),
     "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
     "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
     "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
@@ -296,6 +332,17 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         # way to bind the wrong identity into a tenant's namespace.
         "SCHEDULER_GSA": f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
         "RECONCILER_GSA": f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
+        # The numeric uniqueId of each, which is the subject GKE presents for a
+        # service account reaching the API with an OAuth access token. NOT
+        # derivable from the project id -- it is assigned by IAM at creation --
+        # so unlike the emails above these have to be passed in. apply.sh looks
+        # them up; when nothing is passed they fall back to the email, which
+        # renders an inert duplicate subject rather than a fabricated identity.
+        # See _VALUE_PATTERNS for the measurement that made this necessary.
+        "SCHEDULER_UID": args.scheduler_uid
+        or f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
+        "RECONCILER_UID": args.reconciler_uid
+        or f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
         "PROJECT_ID": args.project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,
@@ -371,6 +418,35 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tenant", required=True, help="tenant id, e.g. eng or u-alice")
     parser.add_argument("--namespace", default="", help="override the derived namespace")
     parser.add_argument("--ksa", default="", help="override the Kubernetes service account name")
+    # THE NUMERIC IDENTITIES, WHICH CANNOT BE DERIVED.
+    #
+    # Every other control-plane value here is computed from the project id, and
+    # the comment on SCHEDULER_GSA in tenant_values explains why that is
+    # deliberate: "a flag for them would be a way to bind the wrong identity
+    # into a tenant's namespace". These two are the exception the design did not
+    # anticipate, because a uniqueId is assigned by IAM at creation and is not a
+    # function of anything this script knows.
+    #
+    # The risk the original comment names is handled by validation instead:
+    # _VALUE_PATTERNS accepts only a 15-25 digit number or the exact matching
+    # swarm-scheduler@/swarm-reconciler@ address, so a flag cannot smuggle in an
+    # arbitrary subject. Omitting the flag falls back to the email, which is a
+    # duplicate of the subject already bound -- inert, and specifically not a
+    # fabricated numeric id that would read as a grant and authorise nobody.
+    for role in ("scheduler", "reconciler"):
+        parser.add_argument(
+            f"--{role}-uid",
+            default="",
+            help=(
+                f"the numeric uniqueId of swarm-{role}@<project>. GKE presents a "
+                "service account by uniqueId, not by email, when it authenticates "
+                "with an OAuth access token -- which is how the scheduler reaches "
+                "the API. Resolve it with `gcloud iam service-accounts describe "
+                f"swarm-{role}@<project>.iam.gserviceaccount.com "
+                "--format='value(uniqueId)'`. kubernetes/apply.sh does this for "
+                "you; omit it only for a render that will not be applied."
+            ),
+        )
     parser.add_argument(
         "--gsa",
         default="",
