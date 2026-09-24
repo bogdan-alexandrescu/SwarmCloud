@@ -55,10 +55,13 @@ function run(): AgentRun {
       logs: {},
     },
   })
+  // PRODUCTION SHAPE. A started attempt's `created_at` equals its
+  // `started_at` -- the worker's `record_attempt_start` rewrites the document
+  // (control.py) -- and admission survives only as its `lease_acquired`.
   const attempts = [
-    attempt(1, { created_at: at(0), started_at: at(1), completed_at: at(6), exit_code: 1 }),
+    attempt(1, { created_at: at(1), started_at: at(1), completed_at: at(6), exit_code: 1 }),
     attempt(2, {
-      created_at: at(10),
+      created_at: at(13),
       started_at: at(13),
       completed_at: at(20),
       checkpoints: ['ck_1', 'ck_2'],
@@ -68,7 +71,9 @@ function run(): AgentRun {
   return {
     task: t,
     events: [
+      ev('lease_acquired', at(0), 'att_1'),
       ev('ready', at(8), null),
+      ev('lease_acquired', at(10), 'att_2'),
       ev('heartbeat', at(15), 'att_2', { peak_rss_bytes: 900_000_000 }),
       ev('heartbeat', at(17.5), 'att_2', { peak_rss_bytes: 1_400_000_000 }),
       ev('checkpoint_completed', at(16), 'att_2', {
@@ -84,10 +89,10 @@ function run(): AgentRun {
   }
 }
 
-async function mount(): Promise<HTMLElement> {
+async function mount(r: AgentRun = run()): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
-  const { container } = render(<Run run={run()} />)
+  const { container } = render(<Run run={r} />)
   await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull())
   return container as HTMLElement
 }
@@ -133,6 +138,46 @@ describe('the inspector draws its charts and keeps its tables', () => {
     const table = chart!.nextElementSibling
     expect(table?.textContent).toContain('Harden the guard')
     expect(table?.textContent).toContain('+61 −12')
+  })
+})
+
+describe('an attempt whose task has let go of its lease is over on the card as well as the chart', () => {
+  // The quota path (CONTRACT invariant 4): checkpoint, park, release, exit.
+  // `park()` writes the task -- PARKED, `current_lease_id` cleared -- and never
+  // touches the attempt document, so `completed_at` stays null for ever. The
+  // chart and the card read one predicate; if either kept its own copy, one
+  // would say "running" above the other saying "over".
+  function parked(): AgentRun {
+    const base = run()
+    return {
+      ...base,
+      task: {
+        ...base.task,
+        state: 'PARKED',
+        park_reason: 'QUOTA_EXHAUSTED',
+        current_lease_id: null,
+        attempt_count: 1,
+        updated_at: at(41),
+        result_summary: null,
+      },
+      attempts: [attempt(1, { created_at: at(1), started_at: at(1), completed_at: null, exit_code: null })],
+      events: [
+        ev('lease_acquired', at(0), 'att_1'),
+        ev('heartbeat', at(40), 'att_1', { peak_rss_bytes: 1_000_000_000 }),
+        ev('parked', at(41), 'att_1'),
+      ],
+    }
+  }
+
+  it('does not call a parked attempt running, on its card or in the phase chart', async () => {
+    const el = await mount(parked())
+    const title = el.querySelector('.att-card .ctl-card-title')
+    expect(title, 'the attempt card is not mounted').not.toBeNull()
+    expect(title!.textContent).not.toMatch(/running/)
+    expect(title!.textContent).toContain('ended, no end recorded')
+    const runMark = el.querySelector('figure.ctl-phases [data-phase="run"]')
+    expect(runMark, 'the phase chart drew no run mark').not.toBeNull()
+    expect(runMark!.getAttribute('data-live')).toBe('no')
   })
 })
 

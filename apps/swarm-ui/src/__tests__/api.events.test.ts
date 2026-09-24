@@ -1,4 +1,4 @@
-// The run screens' event read asks for the route's MAXIMUM page.
+// The run screens' event and attempt reads ask for the route's MAXIMUM page.
 //
 // THE DEFECT. `GET /v1/tasks/{id}/events` with no `limit` answers with the
 // API's DEFAULT page, `default_page_size = 50` (swarm_api/settings.py), not
@@ -48,6 +48,44 @@ describe('the events read', () => {
     expect(eventReads, 'the events route was never read, so this test checked nothing').toHaveLength(2)
     for (const c of eventReads) {
       expect(c).toBe(`/v1/tasks/tsk_live/events?limit=${API_MAX_PAGE_SIZE}`)
+    }
+  })
+})
+
+// THE SAME DEFECT ON THE ATTEMPTS ROUTE. `GET /v1/tasks/{id}/attempts` goes
+// through the same `paged_limit` (routes/tasks.py), so with no `limit` it
+// returns 50 attempts, NEWEST first. task_d18d8d8b044d469cb43c reached 83
+// attempts on 2026-09-23; the inspector would have read 50 of them and the
+// phase chart's sum would have said "over 50 of 50".
+describe('the attempts read', () => {
+  it('asks the attempts route for its maximum page, not its default', async () => {
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const calls: string[] = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calls.push(url)
+      const body = url.includes('/events')
+        ? { events: [] }
+        : url.includes('/attempts')
+          ? { attempts: [] }
+          : url.includes('/resource-classes')
+            ? { resource_classes: {} }
+            : { task: { id: 'tsk_live', state: 'RUNNING' } }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const api = await import('../api')
+    await api.loadAgentRun('tsk_live')
+    await api.loadAttempts('tsk_live')
+
+    const attemptReads = calls.filter((c) => c.includes('/attempts'))
+    expect(attemptReads, 'the attempts route was never read, so this test checked nothing').toHaveLength(2)
+    for (const c of attemptReads) {
+      expect(c).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}`)
     }
   })
 })
