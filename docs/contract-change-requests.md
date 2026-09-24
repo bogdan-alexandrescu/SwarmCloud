@@ -28,6 +28,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
+| 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
 
 ---
 
@@ -1476,3 +1477,102 @@ event of each attempt. It is up to one heartbeat period stale at the end of a
 run (the last event before exit is not the exit), it is not queryable across
 attempts, and a "CPU per resource class over the last week" report means
 reading every attempt's event stream.
+
+---
+
+## 16. `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies
+
+**Status:** open, recorded 2026-09-24 by the reconciler-gke lane (PR #32). The
+owner asked for the reconciler to name tenant namespaces "through the SAME
+namespace-naming helper the dispatcher uses". It cannot import that helper, so
+this is the request that would make that literally true.
+
+### What is duplicated
+
+The rule the dispatcher uses to name a tenant's namespace when the tenant
+document records none:
+
+* `apps/scheduler/scheduler/dispatch.py`: `GkeJobDispatcher.namespace_for`
+  returns `sanitize_name(template.format(tenant=tenant_id))`, with
+  `namespace_template = "swarm-tenant-{tenant}"`.
+* `apps/reconciler/reconciler/backends.py`: `GkeBackend.namespace_for`
+  returns `sanitize_name(prefix + tenant_id)`, with
+  `ReconcilerConfig.namespace_prefix = "swarm-tenant-"`. `sanitize_name` here
+  is a copy of the scheduler's. The comment-stripped bodies are identical, and
+  both import the character class from `swarm_common.identity._TENANT_SAFE`.
+
+Both prefer the tenant document's recorded `namespace`. That precedence is also
+stated twice.
+
+### Why it cannot be one copy today
+
+The same reason as request 5. `images/swarm-reconciler/Dockerfile` copies
+`apps/common/` and `apps/reconciler/`, and `images/swarm-scheduler/Dockerfile`
+copies `apps/common/` and `apps/scheduler/`. Neither image contains the other's
+package, so `swarm_common` is the only place a single copy could live in both.
+
+### How the copies drifted before the copy existed
+
+Until PR #32, the reconciler named the namespace with `detect.sanitised`. That
+function reproduces only the character-class half of `sanitize_name`. It has no
+63-character truncation, no hash of the full name, and no `s` prefix for a name
+that does not start with a letter. The only test pinning the two used short
+tenant ids, so it could not see the difference.
+
+The difference was latent, not observed:
+
+* `identity._slug` caps a tenant id at 11 characters.
+* `scripts/register-tenant.sh` refuses anything longer.
+* A live attempt is read at the namespace its own `execution_name` records.
+
+### What holds the copies together now
+
+`tests/unit/control_plane/test_reconciler_gke_namespaced.py`:
+
+* `test_the_reconciler_and_the_dispatcher_sanitise_names_identically` runs both
+  `sanitize_name` copies over a corpus that reaches every branch.
+* `test_the_reconciler_names_a_long_tenant_namespace_exactly_as_the_dispatcher_does`
+  pins the two `namespace_for` methods on ids up to 200 characters.
+* `test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does`
+  pins the recorded-namespace precedence.
+
+`scripts/lib/check-contract-parity.sh` section 6 holds the prefix to the
+template. As with request 5, these checks work only because the test process
+can import both services, which neither image can.
+
+### The requested change
+
+Add a stdlib-only function to `swarm_common/identity.py`, next to
+`_TENANT_SAFE`, which it already depends on:
+
+```python
+def k8s_name(*parts: str, max_length: int = 63) -> str: ...        # today's sanitize_name
+def tenant_namespace(tenant_id: str, recorded: str | None = None,
+                     template: str = "swarm-tenant-{tenant}") -> str: ...
+```
+
+Both services would call it. Two decisions go with it:
+
+* **The exception type.** Today the scheduler raises `DispatchError(code=
+  "invalid_resource_name")` and the reconciler raises `ValueError`. A shared
+  function would raise `ValueError`, and the dispatcher would wrap it.
+* **Whether `detect.sanitised` should use `k8s_name` too.** `sanitised` matches
+  label-derived ids back to document ids, and labels also pass through
+  `sanitize_name` with the 63-character cap. Task and attempt ids are 25
+  characters, so the cap is unreachable there today.
+
+### What it would break if accepted
+
+It adds functions and changes none, so no stored document and no wire format
+changes. There is also a third copy, in shell: `tenant_namespace` in
+`scripts/lib/common.sh`, which `register-tenant.sh` calls. It is the bare
+prefix plus the id, with no sanitising. That is correct only because
+`register-tenant.sh` first refuses any id that is not a clean slug of 11
+characters or fewer. It would stay a restatement, and `check-contract-parity.sh`
+section 6 would still hold its prefix.
+
+### What is left to live with if it is declined
+
+Two copies, and three tests that pin them over inputs longer than any id in
+use. If the rule changes, both copies must be edited. If only one is edited,
+the tests fail rather than production.
