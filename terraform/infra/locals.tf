@@ -113,6 +113,32 @@ locals {
 
   image_base = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repository}"
 
+  # --- images, by digest ---------------------------------------------------
+  #
+  # Every image this root deploys. The platform images are named where they
+  # are used (main.tf, verify.tf); the runner images come from the catalogue
+  # mirror above, so a profile that moves to a new image is pinned the day it
+  # moves rather than the day someone remembers this list.
+  platform_images = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-verify"]
+  runner_images   = sort(distinct([for name, p in local.runner_profiles : p.image]))
+  deployed_images = sort(distinct(concat(local.platform_images, local.runner_images)))
+
+  # Read by the precondition on google_cloud_run_v2_job.verify, which fails the
+  # plan while this is non-empty.
+  images_without_a_digest = [for name in local.deployed_images : name if !contains(keys(var.image_refs), name)]
+
+  # THE ONLY SPELLING OF AN IMAGE IN THIS ROOT. An image with no digest maps to
+  # "" rather than to anything plausible: the plan fails on the precondition
+  # before that value can be used, and if a `-target` ever routed around the
+  # precondition, "" is refused by the Cloud Run API instead of resolving to
+  # whatever a tag points at.
+  image = { for name in local.deployed_images : name => lookup(var.image_refs, name, "") }
+
+  # What the scheduler names in every Job it creates itself -- every GKE Job,
+  # and a Cloud Run Job for a tenant terraform does not know. Only the runner
+  # images: the dispatcher never starts a control-plane image.
+  worker_image_refs = { for name in local.runner_images : name => local.image[name] }
+
   tenant_ids = keys(var.tenants)
 
   # Resolved once, used by both the tenant slot pool and the tenant document, so
@@ -223,7 +249,7 @@ locals {
         tenant_id       = tenant_id
         runner_profile  = profile_name
         resource_class  = profile.resource_class
-        image           = "${local.image_base}/${profile.image}:${var.image_tag}"
+        image           = local.image[profile.image]
         timeout_seconds = profile.timeout_seconds
         secret_env = {
           for env_name, provider in profile.secret_env :
@@ -469,12 +495,22 @@ locals {
       # would have been a 404 on the image, pointing at the build rather than at
       # the variable. Passing the value makes it flow instead of coincide.
       ARTIFACT_REGISTRY_HOST = local.image_base
-      # The agent runtime images carry the same immutable git-SHA tag as the
-      # control plane. Without this the dispatcher asked for ":latest", which
-      # scripts/build-images.sh never pushes, so every dispatch failed with
-      # `404 Image '...agent-runtime-base:latest' not found` and the task was
-      # left holding a lease.
-      WORKER_IMAGE_TAG = var.image_tag
+      # The runner images BY DIGEST, as a JSON object of image name -> ref.
+      #
+      # This was WORKER_IMAGE_TAG, and the dispatcher built
+      # `<registry>/<image>:<tag>` for every GKE Job and every Cloud Run Job it
+      # created. A tag is resolved when the image is PULLED, and the GKE
+      # template pulls IfNotPresent, so a node holding a cached layer for an
+      # older push of the same tag ran the older code (docs/security.md, the
+      # worker-path paragraph, said as much). The scheduler now refuses a value
+      # here that is not digest-pinned, and refuses to dispatch a profile whose
+      # image is missing from it rather than fall back to a tag.
+      #
+      # Before that, WORKER_IMAGE_TAG existed because the dispatcher asked for
+      # ":latest", which scripts/build-images.sh never pushes -- every dispatch
+      # failed with `404 Image '...agent-runtime-base:latest' not found`. A
+      # digest map removes that failure too: there is no default to fall to.
+      WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
 
       # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, which
       # is the single source of a worker's execution environment for both

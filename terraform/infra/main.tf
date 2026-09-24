@@ -267,7 +267,7 @@ module "cloud_run" {
   services = {
     "swarm-api" = {
       service_account_email = module.iam.service_account_emails["swarm-api"]
-      image                 = "${local.image_base}/swarm-api:${var.image_tag}"
+      image                 = local.image["swarm-api"]
       max_instances         = var.service_max_instances["swarm-api"]
       cpu                   = "1"
       memory                = "1Gi"
@@ -309,7 +309,7 @@ module "cloud_run" {
     }
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
-      image                 = "${local.image_base}/swarm-scheduler:${var.image_tag}"
+      image                 = local.image["swarm-scheduler"]
       max_instances         = var.service_max_instances["swarm-scheduler"]
       cpu                   = "2"
       memory                = "2Gi"
@@ -324,7 +324,7 @@ module "cloud_run" {
     }
     "swarm-quota-broker" = {
       service_account_email = module.iam.service_account_emails["swarm-quota-broker"]
-      image                 = "${local.image_base}/swarm-quota-broker:${var.image_tag}"
+      image                 = local.image["swarm-quota-broker"]
       max_instances         = var.service_max_instances["swarm-quota-broker"]
       cpu                   = "1"
       memory                = "512Mi"
@@ -361,7 +361,7 @@ module "cloud_run" {
     }
     "swarm-ui" = {
       service_account_email = module.iam.service_account_emails["swarm-api"]
-      image                 = "${local.image_base}/swarm-ui:${var.image_tag}"
+      image                 = local.image["swarm-ui"]
       max_instances         = var.service_max_instances["swarm-ui"]
       cpu                   = "1"
       memory                = "512Mi"
@@ -381,7 +381,7 @@ module "cloud_run" {
     }
     "swarm-reconciler" = {
       service_account_email = module.iam.service_account_emails["swarm-reconciler"]
-      image                 = "${local.image_base}/swarm-reconciler:${var.image_tag}"
+      image                 = local.image["swarm-reconciler"]
       max_instances         = var.service_max_instances["swarm-reconciler"]
       cpu                   = "1"
       memory                = "1Gi"
@@ -491,8 +491,6 @@ module "frontend" {
   service_name    = "swarm-api"
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname
-
-  iap_members = var.frontend_iap_members
 
   labels = local.labels
 

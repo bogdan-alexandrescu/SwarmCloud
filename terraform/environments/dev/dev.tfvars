@@ -64,7 +64,10 @@ firestore_database      = "swarm"
 artifact_retention_days = 14
 
 # --- images ----------------------------------------------------------------
-image_tag            = "bootstrap"
+# No image is named here. Every image is deployed by digest through
+# `image_refs`, which scripts/lib/image-refs.sh writes from the promotion
+# manifest at plan and deploy time; a tfvars value would be a digest nobody
+# updates.
 immutable_image_tags = false
 
 # --- capacity --------------------------------------------------------------
@@ -338,12 +341,10 @@ alert_emails  = []
 enable_frontend   = true
 frontend_hostname = "swarm.saga.xyz"
 
-# The outer gate only. swarm-api stays the tenant boundary: it verifies the
-# token, enforces allowed_domains above, and scopes every read to the caller's
-# own tenant. This matches that domain rather than maintaining a second list,
-# because a hand-maintained list of principals is the shape that rots -- as the
-# GKE allowlist in this same file did.
-frontend_iap_members = ["domain:saga.xyz"]
+# WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
+# (frontend_iap_members) on 2026-09-24, because managing it from this root made
+# CI's deployer need IAP admin rights that could not be scoped to our backends.
+# See terraform/modules/frontend/main.tf, "Who may pass IAP".
 
 # The IAP OAuth brand is NOT created by terraform: google_iap_brand cannot be
 # deleted, so terraform could create one and never remove it. It is a
