@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 
 import { Mark } from './AgentDetail'
 import { USE_FIXTURES } from './api'
@@ -653,6 +653,10 @@ function Branch({
       role={depth === 0 ? 'tree' : 'group'}
       className={depth === 0 ? 'ckb-tree' : 'ckb-group'}
       aria-label={depth === 0 ? 'Files in this checkpoint' : undefined}
+      // One handler, on the tree, for every row in it: key events from a
+      // row's button bubble here. Only the root carries it, or a key pressed
+      // in a nested directory would be handled once per level above it.
+      onKeyDown={depth === 0 ? (e) => treeKey(e, toggle) : undefined}
     >
       {sortedChildren(node).map((child) => (
         <Node
@@ -688,8 +692,14 @@ function Node({
     const expanded = open.has(node.path)
     return (
       <li role="treeitem" aria-expanded={expanded}>
-        <div className="ckb-node is-dir">
-          <button type="button" className="ckb-open" onClick={() => toggle(node.path)}>
+        <div className="ckb-node is-dir is-control" onClick={rowClick(() => toggle(node.path))}>
+          <button
+            type="button"
+            className="ckb-open"
+            data-path={node.path}
+            data-dir="true"
+            data-expanded={expanded ? 'true' : 'false'}
+          >
             {expanded ? '▾' : '▸'} {node.name}/
           </button>
           <span className="ckb-meta">{node.children.size}</span>
@@ -717,14 +727,12 @@ function Node({
   const openable = m.type === 'file' && !m.undecodable
   return (
     <li role="treeitem" aria-selected={isOpen}>
-      <div className={`ckb-node${isOpen ? ' is-open' : ''}`}>
+      <div
+        className={`ckb-node${openable ? ' is-control' : ''}${isOpen ? ' is-open' : ''}`}
+        onClick={openable ? rowClick(() => onOpen(m)) : undefined}
+      >
         {openable ? (
-          <button
-            type="button"
-            className="ckb-open"
-            aria-expanded={isOpen}
-            onClick={() => onOpen(m)}
-          >
+          <button type="button" className="ckb-open" aria-expanded={isOpen} data-path={m.path}>
             {node.name}
           </button>
         ) : (
@@ -753,6 +761,92 @@ function Node({
       </div>
     </li>
   )
+}
+
+/**
+ * THE ROW IS THE CONTROL. Measured on the live inspector on 2026-09-24: a click
+ * on the `result.json` row opened nothing. Only the NAME was a button; the
+ * size, the mode and the run to the panel's edge -- most of what a pointer
+ * lands on, and the centre of the row an automated click aims for -- were
+ * inert, and a click there was dropped without a trace.
+ *
+ * So the handler is on the row, and the name stays a native `<button>` inside
+ * it: Tab reaches it, Enter and Space activate it, and the click that
+ * activation produces bubbles to this same handler -- one action, whichever
+ * part of the row or whichever key started it. The button carries no handler
+ * of its own, or a click on it would run twice (and a directory would open
+ * and shut in the same event). A click beside the name also moves focus to
+ * the name, so the arrow keys carry on from the row just used.
+ */
+function rowClick(act: () => void): (e: MouseEvent<HTMLDivElement>) => void {
+  return (e) => {
+    act()
+    const button = e.currentTarget.querySelector<HTMLButtonElement>('button.ckb-open')
+    if (button !== null && e.target !== button) button.focus()
+  }
+}
+
+/**
+ * THE TREE'S KEYS, per the WAI-ARIA tree pattern a `role="tree"` promises:
+ * Up and Down move between visible rows, Home and End go to the ends, Right
+ * opens a shut directory (or steps into an open one), Left shuts an open
+ * directory (or steps out to the one containing the row). Every row keeps
+ * its own Tab stop -- a native button's -- so nothing here is needed to reach
+ * a row, only to move between them faster.
+ *
+ * The rows are read off the DOM in document order rather than recomputed from
+ * the tree, because the DOM is exactly what is visible: a shut directory's
+ * children are not rendered, so they are not in the list and are skipped.
+ */
+function treeKey(e: KeyboardEvent<HTMLUListElement>, toggle: (path: string) => void): void {
+  const here = e.target
+  if (!(here instanceof HTMLButtonElement) || !here.classList.contains('ckb-open')) return
+  const rows = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button.ckb-open')]
+  const i = rows.indexOf(here)
+  if (i < 0) return
+  const item = here.closest<HTMLElement>('li[role="treeitem"]')
+  const dir = here.dataset.dir === 'true'
+  const expanded = here.dataset.expanded === 'true'
+  const path = here.dataset.path ?? ''
+
+  let next: HTMLButtonElement | undefined
+  switch (e.key) {
+    case 'ArrowDown':
+      next = rows[i + 1]
+      break
+    case 'ArrowUp':
+      next = rows[i - 1]
+      break
+    case 'Home':
+      next = rows[0]
+      break
+    case 'End':
+      next = rows[rows.length - 1]
+      break
+    case 'ArrowRight':
+      if (dir && !expanded) toggle(path)
+      else if (dir) {
+        const first = rows[i + 1]
+        if (first !== undefined && item !== null && item.contains(first)) next = first
+      }
+      break
+    case 'ArrowLeft':
+      if (dir && expanded) toggle(path)
+      else next = parentRow(item)
+      break
+    default:
+      return
+  }
+  e.preventDefault()
+  next?.focus()
+}
+
+/** The button of the directory row that contains `item`, if any. */
+function parentRow(item: HTMLElement | null): HTMLButtonElement | undefined {
+  const parent = item?.parentElement?.closest<HTMLElement>('li[role="treeitem"]')
+  if (!parent) return undefined
+  const row = [...parent.children].find((c) => c.classList.contains('ckb-node'))
+  return row?.querySelector<HTMLButtonElement>('button.ckb-open') ?? undefined
 }
 
 // ---------------------------------------------------------------------------

@@ -194,13 +194,19 @@ describe('a listing', () => {
     await waitFor(() => expect(l.file).toHaveBeenCalledTimes(1))
   })
 
-  it('shows a binary member as not text, with no bytes', async () => {
-    const l = loaders(ok(listing({ files: [member('shot.png', { size: 48211 })], count: 1 })), (p) =>
-      ok(content(p, null, { status: 'binary', content_type: null, total_bytes: 48211, returned_bytes: 0 })),
+  it('shows a member the NUL sniff found binary as not text, with no bytes', async () => {
+    // RE-POINTED. This used `shot.png` with `content_type: null`, which is not
+    // the sniff case: a null content type is the server's allowlist REFUSING
+    // the name before a byte was read (`checkpoint_content.content_type_for`),
+    // so "not text" was a claim nobody had measured. That case now has its own
+    // test below. What reaches "not text" is a name the allowlist accepted
+    // whose first bytes held a NUL -- a finding, and the only one here.
+    const l = loaders(ok(listing({ files: [member('data.log', { size: 48211 })], count: 1 })), (p) =>
+      ok(content(p, null, { status: 'binary', content_type: 'text/plain', total_bytes: 48211, returned_bytes: 0 })),
     )
     mount(l)
-    fireEvent.click(await screen.findByRole('button', { name: 'shot.png' }))
-    const viewer = await screen.findByRole('region', { name: 'Artifact shot.png' })
+    fireEvent.click(await screen.findByRole('button', { name: 'data.log' }))
+    const viewer = await screen.findByRole('region', { name: 'Artifact data.log' })
     expect(await within(viewer).findByText(/not text/)).toBeTruthy()
     expect(viewer.querySelector('pre')).toBeNull()
   })
@@ -442,5 +448,194 @@ describe('opened from the checkpoint list', () => {
     await waitFor(() =>
       expect(screen.queryByRole('region', { name: 'Checkpoint ckpt_0002 files' })).toBeNull(),
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The ROW is the control, the keyboard reaches it, and a refusal is a refusal
+// ---------------------------------------------------------------------------
+//
+// THE DEFECT, measured on the live inspector on 2026-09-24
+// (`13-checkpoint-browser-1440.png` -> `14-checkpoint-file-1440.png`): a click
+// on the `result.json` row opened nothing. Only the NAME was a button; the rest
+// of the row -- the size, the mode, the empty run to the right edge, which is
+// most of what a pointer lands on -- was inert text, and a click there was
+// silently dropped. The two screenshots are identical but for the clock.
+//
+// And two answers the per-file route gives were drawn as something else:
+//
+//   * the ALLOWLIST refusing a name (`status: binary`, `content_type: null`,
+//     decided before a byte is read) was drawn `not measured` + "not text" --
+//     an absence, and a claim about the bytes that nobody measured;
+//   * a 413 (the member lies past this request's read budget) was drawn as
+//     "The API failed on this request" with a `try again` that can only ever
+//     get the same answer.
+
+/** The `.ckb-node` row a tree item draws for itself, not for its children. */
+function rowOf(tree: HTMLElement, name: string): HTMLElement {
+  // The item's own row is its direct child; a directory's item also holds its
+  // children's rows further down, which must not be mistaken for its own.
+  const node = within(tree)
+    .getAllByRole('treeitem')
+    .map((li) => [...li.children].find((c) => c.classList.contains('ckb-node')) as HTMLElement | undefined)
+    .find((n) => n !== undefined && (n.textContent ?? '').startsWith(name))
+  if (!node) throw new Error(`no row for ${name}`)
+  return node
+}
+
+describe('a file row opens the viewer', () => {
+  const FLAT = [member('result.json', { size: 409 }), member('progress/step-0001.txt', { size: 39 })]
+
+  /**
+   * MUTATION: move the open handler back onto the name button alone. The click
+   * below lands on the size text beside the name and opens nothing -- the
+   * live defect.
+   */
+  it('opens the file a click anywhere on its row names, and reads exactly that path', async () => {
+    const l = loaders(ok(listing({ files: FLAT, count: FLAT.length })), (p) =>
+      ok(content(p, `{"path": "${p}"}\n`)),
+    )
+    mount(l)
+    const tree = await screen.findByRole('tree', { name: 'Files in this checkpoint' })
+
+    const row = rowOf(tree, 'result.json')
+    const meta = row.querySelector<HTMLElement>('.ckb-meta')
+    expect(meta, 'the row lost its size and mode').not.toBeNull()
+    fireEvent.click(meta!)
+
+    const viewer = await screen.findByRole('region', { name: 'Artifact result.json' })
+    expect(await within(viewer).findByText('{"path": "result.json"}')).toBeTruthy()
+    expect(l.file).toHaveBeenCalledTimes(1)
+    expect(l.file).toHaveBeenCalledWith('task_a', 'att_1', 'ckpt-00001', 'result.json')
+  })
+
+  /**
+   * A DIRECTORY ROW IS THE SAME KIND OF CONTROL. Its entry count is the part
+   * of the row beside the name, and a click there was dropped the same way.
+   * MUTATION: leave the toggle on the name button alone.
+   */
+  it('opens and closes a directory on a click anywhere on its row', async () => {
+    mount(loaders(ok(listing({ files: FLAT, count: FLAT.length }))))
+    const tree = await screen.findByRole('tree', { name: 'Files in this checkpoint' })
+    const meta = rowOf(tree, '▾ progress/').querySelector<HTMLElement>('.ckb-meta')
+    expect(meta, 'the directory row lost its entry count').not.toBeNull()
+    fireEvent.click(meta!)
+    expect(within(tree).getByRole('button', { name: '▸ progress/' })).toBeTruthy()
+    expect(within(tree).queryByRole('button', { name: 'step-0001.txt' })).toBeNull()
+  })
+
+  it('reads a nested member by its full path, not by the name the row shows', async () => {
+    const l = loaders(ok(listing({ files: FLAT, count: FLAT.length })), (p) =>
+      ok(content(p, `step one of ${p}\n`)),
+    )
+    mount(l)
+    const tree = await screen.findByRole('tree', { name: 'Files in this checkpoint' })
+    fireEvent.click(rowOf(tree, 'step-0001.txt'))
+
+    const viewer = await screen.findByRole('region', { name: 'Artifact progress/step-0001.txt' })
+    expect(await within(viewer).findByText('step one of progress/step-0001.txt')).toBeTruthy()
+    expect(l.file).toHaveBeenCalledWith('task_a', 'att_1', 'ckpt-00001', 'progress/step-0001.txt')
+  })
+
+  /**
+   * THE KEYBOARD. Every openable row is a native button, so Tab reaches it and
+   * Enter and Space open it -- the browser does that, and jsdom does not
+   * synthesise it, so what is asserted here is the part this file adds: a
+   * `role="tree"` is expected to move between its rows on the arrow keys and
+   * to open and close a directory on Right and Left.
+   *
+   * MUTATION: drop the tree's key handler. Focus stays where it was.
+   */
+  it('moves between rows on the arrow keys, and opens and closes a directory', async () => {
+    mount(loaders(ok(listing())))
+    const tree = await screen.findByRole('tree', { name: 'Files in this checkpoint' })
+    const controls = within(tree).getAllByRole('button')
+    expect(controls.map((b) => b.textContent)).toEqual([
+      '▾ bin/',
+      'run.sh',
+      '▾ progress/',
+      'step-0001.md',
+      'state.json',
+    ])
+
+    controls[0]!.focus()
+    fireEvent.keyDown(controls[0]!, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(controls[1])
+    fireEvent.keyDown(controls[1]!, { key: 'End' })
+    expect(document.activeElement).toBe(controls[4])
+    fireEvent.keyDown(controls[4]!, { key: 'Home' })
+    expect(document.activeElement).toBe(controls[0])
+    fireEvent.keyDown(controls[0]!, { key: 'ArrowUp' })
+    expect(document.activeElement, 'Up from the first row went somewhere').toBe(controls[0])
+
+    // Left from a file goes to its directory; Left on an open directory shuts
+    // it; Right opens it again.
+    fireEvent.keyDown(controls[1]!, { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(controls[0])
+    fireEvent.keyDown(controls[0]!, { key: 'ArrowLeft' })
+    expect(within(tree).getByRole('button', { name: '▸ bin/' })).toBeTruthy()
+    expect(within(tree).queryByRole('button', { name: 'run.sh' })).toBeNull()
+    fireEvent.keyDown(within(tree).getByRole('button', { name: '▸ bin/' }), { key: 'ArrowRight' })
+    expect(within(tree).getByRole('button', { name: 'run.sh' })).toBeTruthy()
+  })
+})
+
+describe('a refusal is drawn as a refusal', () => {
+  /**
+   * `content_type: null` is the allowlist's answer about the NAME, given
+   * before a byte of the member was read. MUTATION: fall through to the
+   * `binary` branch and this reads `not measured` / "not text" again.
+   */
+  it('draws the allowlist refusing a name as refused, with the server’s reason', async () => {
+    const l = loaders(ok(listing({ files: [member('shot.png', { size: 48211 })], count: 1 })), (p) =>
+      ok(
+        content(p, null, {
+          status: 'binary',
+          content_type: null,
+          total_bytes: 48211,
+          returned_bytes: 0,
+          detail:
+            "this file's type is not on the text allowlist, so its bytes are not served here: nothing could scan them for a credential before they left. Download the whole checkpoint to read it.",
+        }),
+      ),
+    )
+    mount(l)
+    fireEvent.click(await screen.findByRole('button', { name: 'shot.png' }))
+    const viewer = await screen.findByRole('region', { name: 'Artifact shot.png' })
+
+    expect(await within(viewer).findByText(/^refused/)).toBeTruthy()
+    expect(viewer.textContent).toContain('not on the text allowlist')
+    expect(viewer.textContent, 'a refusal drawn as an absence').not.toContain('not measured')
+    expect(viewer.textContent, '"not text" is a claim about bytes nobody read').not.toMatch(/not text/)
+    expect(viewer.querySelector('pre')).toBeNull()
+  })
+
+  /**
+   * A 413 is the server declining a member that lies past this request's read
+   * budget -- it says so, and says the download is the way to it. MUTATION:
+   * route it through the failed-read panel and it grows a `try again`.
+   */
+  it('draws a read-budget refusal as refused, with no retry', async () => {
+    const l = loaders(ok(listing()), () => ({
+      status: 'error',
+      error: {
+        kind: 'server_error',
+        httpStatus: 413,
+        code: 'checkpoint_scan_budget_exceeded',
+        message:
+          "'state.json' could not be read within this request's scan budget. It may well be in the archive; download the whole checkpoint to read it.",
+      },
+    }))
+    mount(l)
+    fireEvent.click(await screen.findByRole('button', { name: 'state.json' }))
+    const viewer = await screen.findByRole('region', { name: 'Artifact state.json' })
+
+    expect(await within(viewer).findByText(/^refused/)).toBeTruthy()
+    expect(viewer.textContent).toContain('scan budget')
+    expect(
+      within(viewer).queryByRole('button', { name: 'try again' }),
+      'retrying a refusal can only get the same refusal',
+    ).toBeNull()
+    expect(viewer.textContent).not.toMatch(/API failed/)
   })
 })

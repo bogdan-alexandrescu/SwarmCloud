@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { loadCapacity } from './api'
+import { CeilingTag, ceilingFigure } from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
 import { isPaused, type ApiError } from './fetch'
 import { HelpCard } from './HelpCard'
@@ -7,7 +8,10 @@ import { FailedPanel, Screen } from './Shell'
 import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
+  blockerCeiling,
+  ceilingCopy,
   headroomFor,
+  needsAPerson,
   requiredInputKeys,
   type Capacity,
   type Pool,
@@ -884,13 +888,33 @@ function Form({ capacity }: { capacity: Capacity }) {
  *  A FILL, AND THE NAME AT THE TOP OF IT. These facts are about ONE row of the
  *  list above; loose paragraphs under a five-row list read as being about the
  *  list. The `--surface-2` block is the same line-to-step substitution §13.3
- *  applies everywhere else, and the name is what binds it to the choice. */
-function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerProfile; pools: Pool[] }) {
+ *  applies everywhere else, and the name is what binds it to the choice.
+ *
+ *  Exported for `submit.room.test.tsx`, which renders it with hand-built
+ *  arguments rather than through the whole form. */
+export function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerProfile; pools: Pool[] }) {
   const byName = new Map<string, Pool>(pools.map((p) => [p.name, p]))
   // Read off `profile.admission`: the server computed it from
   // `evaluate_capacity`, so this box and the Capacity board cannot disagree.
   const room = headroomFor(profile)
-  const binding = room.binding ? byName.get(room.binding) ?? null : null
+  // THE POOL THE SENTENCE NAMES, and what its ceiling says about it. The
+  // sentence has room for one pool, and `room.binding` is the FIRST binding
+  // pool in the profile's order -- so `global` at its ceiling was named ahead
+  // of a pool an operator had capped at zero, and the sentence said "wait"
+  // about a task no wait will start. The pool a person must act on wins, as it
+  // does in the one-line wait reason (`leadBlocker` in types.ts).
+  //
+  // A LEAD WHOSE CEILING IS NOT A FULL ONE -- paused, or at limit 0 -- is
+  // described by `ceilingCopy`, the sentence the wait reason uses, never as
+  // "held down by X, 0 of 0 weighted units in use": that fraction is the live
+  // "busy platform-wide. (0/0)" in this box's words. `blockerCeiling` decides
+  // it from the blocker the server sent, not from the pool row.
+  const lead =
+    room.blockers.find((b) => needsAPerson(blockerCeiling(b))) ??
+    room.blockers.find((b) => b.pool === room.binding)
+  const leadCopy = lead ? ceilingCopy(lead, lead.pool) : null
+  const bindingName = lead?.pool ?? room.binding
+  const binding = bindingName ? byName.get(bindingName) ?? null : null
   // headroomFor's contract: a profile's pool list is the CALLING TENANT'S, so
   // this answers "how many more could I submit", never "what the platform has"
   // -- and its doc requires the tenant beside the number. /v1/capacity carries
@@ -935,25 +959,30 @@ function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerP
           <>
             Room for <strong>{room.agents}</strong> more task{room.agents === 1 ? '' : 's'} of this
             profile right now, for {tenant ?? 'a tenant this response does not name'}
-            {binding && (isPaused(binding)
-              ? <> — <code>{binding.name}</code> is paused and admits nothing at all</>
-              : <> — held down by <code>{binding.name}</code>, {binding.active} of {binding.effective_limit} weighted units in use</>)}.
+            {leadCopy !== null
+              ? <>. {leadCopy}</>
+              : <>
+                {binding && (isPaused(binding)
+                  ? <> — <code>{binding.name}</code> is paused and admits nothing at all</>
+                  : <> — held down by <code>{binding.name}</code>, {binding.active} of {binding.effective_limit} weighted units in use</>)}.
+              </>}
           </>
         )}
       </p>
       {/* EVERY pool refusing it, not the tightest. Two ceilings can bind at
           the same moment, and a submitter shown one of them raises it, tries
-          again and gets refused by the other. */}
+          again and gets refused by the other. The tag and the figure are
+          Blockers.tsx's own (`CeilingTag`, `ceilingFigure`): this row was a
+          second copy of that one, decided `full` on the reason alone, and
+          kept printing "0 of 0" and "0 of 1000000" after the first stopped. */}
       {room.blockers.length > 0 && (
         <ul className="blocker-list compact">
           {room.blockers.map((b) => (
             <li key={b.pool} className="blocker-row">
               <span className="tags">
-                <span className={`tag ${b.reason === 'MANUAL_PAUSE' ? 'paused' : 'full'}`}>
-                  {b.reason === 'MANUAL_PAUSE' ? 'paused' : 'full'}
-                </span>
+                <CeilingTag blocker={b} />
               </span>
-              <code>{b.pool}</code> — {b.active} of {b.limit} units in use
+              <code>{b.pool}</code> — {ceilingFigure(b)}
             </li>
           ))}
         </ul>

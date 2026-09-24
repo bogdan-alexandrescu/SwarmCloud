@@ -184,6 +184,36 @@ describe('held back by', () => {
     expect(chip?.className).not.toContain('is-bad')
     expect(chip?.textContent).toContain('paused')
   })
+
+  /**
+   * THE SAME POOL THE AGENTS LIST CALLED "busy" (live, 2026-09-24). A
+   * `resource:` pool an operator set to `hard_limit 0` refuses with the same
+   * RESOURCE_CLASS_LIMIT a full one does, and the chip drew it as `0/0` in the
+   * full pool's red -- a fraction that reads as "all of nothing is in use".
+   * MUTATION: draw every non-MANUAL_PAUSE blocker as `active/limit`.
+   */
+  it('draws a pool an operator capped at zero as limit 0, with the paused tone, never 0/0', async () => {
+    renderCapacity(
+      capacity({
+        runner_profiles: {
+          browser: profile({
+            resource_class: 'browser',
+            pools: ['resource:browser'],
+            admission: admission({
+              headroom: 0,
+              blockers: [blocker({ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 0, active: 0 })],
+            }),
+          }),
+        },
+      }),
+    )
+    const row = (await screen.findByRole('rowheader', { name: 'browser' })).closest('tr')
+    const chip = row?.querySelector('.ctl-chip')
+    expect(chip?.textContent).toContain('limit 0')
+    expect(chip?.textContent).not.toContain('0/0')
+    expect(chip?.className).toContain('is-paused')
+    expect(chip?.className).not.toContain('is-bad')
+  })
 })
 
 // ---------------------------------------------------------------------------

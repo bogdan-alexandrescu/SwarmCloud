@@ -105,7 +105,15 @@ export function ArtifactViewer({
           <span className="ctl-pending art-loading-bar" />
         </p>
       )}
-      {state.kind === 'error' && (
+      {state.kind === 'error' && state.error.httpStatus === 413 && (
+        // A 413 IS THE SERVER DECLINING, not failing: the checkpoint per-file
+        // route answers it for a member past one request's read budget, and
+        // says the download is the way to it. Drawn as a failed read it grew
+        // "The API failed on this request" and a `try again` that can only
+        // ever get the same answer.
+        <Refused what="past this request's read budget">{state.error.message}</Refused>
+      )}
+      {state.kind === 'error' && state.error.httpStatus !== 413 && (
         <div className="ctl-empty is-failed" role="status">
           <h3>
             <Mark
@@ -156,6 +164,21 @@ function Body({ data }: { data: ArtifactContent }) {
       >
         {data.detail}
       </Note>
+    )
+  }
+
+  // REFUSED BY NAME, before a byte was read. The checkpoint per-file route
+  // serves `content_type` -- the text allowlist's verdict on the member's
+  // name -- and `null` is the allowlist saying no. It reaches this viewer as
+  // `status: binary`, and drawn as `binary` it said `not measured` and "not
+  // text": an absence, and a claim about bytes nobody read. The run-output
+  // route serves no `content_type` at all, so `undefined` is not `null` and
+  // an artifact never lands here.
+  if (data.status === 'binary' && (data as WithVerdict).content_type === null) {
+    return (
+      <Refused what={`type not on the text allowlist · ${num(data.total_bytes)} bytes`}>
+        {data.detail}
+      </Refused>
     )
   }
 
@@ -300,6 +323,31 @@ function CopyGsutil({ uri }: { uri: string | null }) {
     >
       copy gsutil
     </button>
+  )
+}
+
+/** A content read that may also carry the text allowlist's verdict. */
+type WithVerdict = ArtifactContent & { content_type?: string | null }
+
+/**
+ * THE SERVER DECLINED -- which is neither an absence nor a failure, and is
+ * drawn as neither.
+ *
+ * Not `absent` (`not measured`): the object is there. Not `unread` with a
+ * retry: nothing failed, and asking again gets the same answer. It is a rule
+ * answering -- the same kind of fact as the admin gate, and drawn in its tone
+ * (`.ctl-empty.is-refused`) with no retry. There is no seventh mark for it:
+ * the six marks are the vocabulary for "we do not know", and a refusal is a
+ * thing the server does know and has said. The word leads the heading
+ * instead, and the server's own sentence -- which names the way round it --
+ * is the body.
+ */
+function Refused({ what, children }: { what: string; children?: ReactNode }) {
+  return (
+    <div className="ctl-empty is-refused" role="status">
+      <h3>refused · {what}</h3>
+      {children !== undefined && children !== null && <p>{children}</p>}
+    </div>
   )
 }
 

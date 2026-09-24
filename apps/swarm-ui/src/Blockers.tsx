@@ -15,11 +15,15 @@
 
 import { timeAgo } from './Shell'
 import {
+  blockerCeiling,
   blockerGroup,
+  ceilingCopy,
   headroomFor,
+  needsAPerson,
   poolLabel,
   reasonCopy,
   type Capacity,
+  type Ceiling,
   type Counterfactual,
   type Headroom,
   type ProfileBlocker,
@@ -63,38 +67,88 @@ export function IncompleteNote({ h }: { h: Headroom }) {
   )
 }
 
+/** The tag each ceiling is drawn with, and what hovering it says. */
+const CEILING_TAG: Readonly<Record<Ceiling, { cls: string; word: string; title: string }>> = {
+  paused: {
+    cls: 'paused',
+    word: 'paused',
+    title: 'An operator paused this pool. It admits nothing until somebody resumes it — raising its limit changes nothing.',
+  },
+  'set-to-zero': {
+    // The paused tone, because the remedy is the paused one: a person acts.
+    cls: 'paused',
+    word: 'limit 0',
+    title: "An operator set this pool's limit to 0. It admits nothing until somebody raises it — waiting changes nothing.",
+  },
+  zero: {
+    cls: 'capped',
+    word: 'limit 0',
+    title: "This pool's limit is 0, so it admits nothing. A provider pool's quota state lowers it as well as an operator does, so this does not say who set it.",
+  },
+  full: {
+    cls: 'full',
+    word: 'full',
+    title: 'This pool is at its ceiling. Waiting clears it, and so does raising the ceiling.',
+  },
+}
+
+/**
+ * The tag a refusing pool is drawn with: `paused`, `limit 0` or `full`.
+ *
+ * EXPORTED BECAUSE THERE ARE TWO ROWS, and the second one is where this went
+ * wrong. The submit box (`Submit.tsx` `ProfileFacts`) draws a compact row of
+ * its own, and it kept deciding the tag on `reason === 'MANUAL_PAUSE'` after
+ * this file stopped -- so a pool capped at zero was still `full` there after
+ * it had become `limit 0` here. One definition, two callers.
+ */
+export function CeilingTag({ blocker }: { blocker: ProfileBlocker }) {
+  const tag = CEILING_TAG[blockerCeiling(blocker)]
+  return (
+    <span className={`tag ${tag.cls}`} title={tag.title}>
+      {tag.word}
+    </span>
+  )
+}
+
+/**
+ * The numbers that made a pool refuse, as the row prints them. "units", never
+ * "agents": admission increments by the profile's weight. A paused pool admits
+ * nothing at ANY ceiling -- and a drained one carries the unlimited sentinel
+ * as its limit -- so it prints what is held and no ceiling; a pool at zero
+ * says the zero in words. Only a full pool gets the fraction, because it is
+ * the only one the fraction is true of. Shared with the submit box for the
+ * reason `CeilingTag` is.
+ */
+export function ceilingFigure(blocker: ProfileBlocker): string {
+  const ceiling = blockerCeiling(blocker)
+  const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
+  if (ceiling === 'full') return `${blocker.active} of ${blocker.limit} units in use`
+  return ceiling === 'paused' ? held : `limit 0 · ${held}`
+}
+
 function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
   // A pause and a full pool both stop everything and have OPPOSITE remedies:
-  // resume it, versus wait or raise it. They are told apart by the reason the
-  // server sent, never by the count -- a paused pool can read 0 of 8 in use
-  // and still admit nothing, which is the case that looks healthiest and is
-  // not.
-  const paused = blocker.reason === 'MANUAL_PAUSE'
+  // resume it, versus wait or raise it. A pause is told apart by the reason
+  // the server sent -- a paused pool can read 0 of 8 in use and still admit
+  // nothing, which is the case that looks healthiest and is not. A pool at
+  // ZERO is told apart by its ceiling, because its reason is the full pool's
+  // (see `blockerCeiling`): "0 of 0 units in use" under a `full` tag is how
+  // the live console came to call a switched-off pool busy.
+  const ceiling = blockerCeiling(blocker)
   return (
-    <li className={`blocker-row${paused ? ' is-paused' : ' is-full'}`}>
+    <li className={`blocker-row${needsAPerson(ceiling) ? ' is-paused' : ' is-full'}`}>
       <span className="blocker-head">
         <span className="tags">
-          {paused ? (
-            <span className="tag paused" title="An operator paused this pool. It admits nothing until somebody resumes it — raising its limit changes nothing.">
-              paused
-            </span>
-          ) : (
-            <span className="tag full" title="This pool is at its ceiling. Waiting clears it, and so does raising the ceiling.">
-              full
-            </span>
-          )}
+          <CeilingTag blocker={blocker} />
         </span>
         <code className="blocker-pool" title={blocker.pool}>
           {poolLabel(blocker.pool)}
         </code>
         <strong className="blocker-reason">{blocker.reason}</strong>
-        {/* The numbers that made it fail, on the entry that failed. "units",
-            never "agents": admission increments by the profile's weight. */}
-        <span className="blocker-at">
-          {blocker.active} of {blocker.limit} units in use
-        </span>
+        {/* The numbers that made it fail, on the entry that failed. */}
+        <span className="blocker-at">{ceilingFigure(blocker)}</span>
       </span>
-      <span className="blocker-copy">{reasonCopy(blocker.reason)}</span>
+      <span className="blocker-copy">{ceilingCopy(blocker, 'This pool') ?? reasonCopy(blocker.reason)}</span>
     </li>
   )
 }

@@ -275,11 +275,21 @@ export function headroomFor(profile: RunnerProfile): Headroom {
  * that this screen does not know, which renders as an ungrouped list rather
  * than as a confident one. A hard-coded copy here would be exactly the
  * TypeScript restatement `admission` was added to remove.
+ *
+ * ONE EXCEPTION, AND IT IS DECIDED BY THE NUMBERS, NOT BY A REASON. The
+ * server groups by reason (`headroom.py`), and the reason cannot see the
+ * ceiling: a `resource:` pool an operator set to 0 refuses with the same
+ * reason as one at 4 of 4, and so arrives filed under `no_room` -- "waiting
+ * is a valid answer" -- above a pool no wait will ever reopen (live,
+ * 2026-09-24). A pool only a person writes, capped at zero, is drawn under
+ * `needs_action`. A provider pool at zero is NOT moved: its quota state can
+ * zero it and a cooldown ends by itself. See `blockerCeiling`.
  */
 export function blockerGroup(
   blocker: ProfileBlocker,
   groups: Record<string, string[]> | undefined,
 ): 'needs_action' | 'no_room' | null {
+  if (blockerCeiling(blocker) === 'set-to-zero') return 'needs_action'
   if (blocker.group === 'needs_action' || blocker.group === 'no_room') return blocker.group
   if (groups) {
     if (groups.needs_action?.includes(blocker.reason)) return 'needs_action'
@@ -1798,10 +1808,96 @@ export function reasonCopy(reason: string): string {
   return REASON_COPY[reason] ?? reason
 }
 
+/**
+ * WHAT A BLOCKER'S CEILING SAYS ABOUT ITS POOL, which the reason alone cannot.
+ *
+ * THE DEFECT, measured on the live console on 2026-09-24: a READY `browser`
+ * task whose pool had been set to `hard_limit 0` read "This resource class is
+ * busy platform-wide. (0/0)". Nothing was busy. Admission (`evaluate_capacity`,
+ * swarm_common/admission.py) writes ONE reason per kind of pool whatever the
+ * numbers -- `resource:browser` refusing at 4 of 4 and at 0 of 0 are both
+ * RESOURCE_CLASS_LIMIT -- so `REASON_COPY` alone sends the reader to the one
+ * remedy that cannot work, waiting. The ceiling the blocker carries (`limit`,
+ * the pool's `effective_limit`) is what tells the two apart:
+ *
+ *  - `paused`: the pool is switched off (`enabled: false`), which admission
+ *    writes as MANUAL_PAUSE. Only the admin pool routes write `enabled`. Its
+ *    `limit` may be the `UNLIMITED_HARD_LIMIT` sentinel (swarm_api/store.py)
+ *    for a pool created only to carry the flag, so no ceiling is printed.
+ *  - `set-to-zero`: a limit of 0 on a pool only a person writes. A
+ *    non-provider pool's effective limit is its `hard_limit` alone: the quota
+ *    broker's adaptive and quota-derived caps land on `provider:` pools only
+ *    (quota_broker/service.py `_write_pool`). Waiting cannot clear it.
+ *  - `zero`: a limit of 0 on a `provider:` pool, or on a blocker that names no
+ *    pool. The broker lowers provider pools on quota state, and a cooldown
+ *    ends by itself, so nobody is named and the server's grouping stands.
+ *  - `full`: a positive ceiling reached -- the only case "busy" is true of.
+ */
+export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full'
+
+export function blockerCeiling(b: { reason: string; pool?: string; limit?: unknown }): Ceiling {
+  if (b.reason === 'MANUAL_PAUSE') return 'paused'
+  if (b.limit !== 0) return 'full'
+  return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'zero' : 'set-to-zero'
+}
+
+/** The two ceilings no amount of waiting clears: a person has to act. */
+export function needsAPerson(c: Ceiling): boolean {
+  return c === 'paused' || c === 'set-to-zero'
+}
+
+/**
+ * The sentence for a blocker whose ceiling its reason's copy would
+ * misdescribe, or null when `reasonCopy` is true of it (`full`).
+ *
+ * `subject` is what the sentence is about: the pool's name where the line has
+ * nothing else naming it (the agents list), or "This pool" beside a row that
+ * already prints the name.
+ */
+export function ceilingCopy(
+  b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
+  subject: string = b.pool ?? 'This pool',
+): string | null {
+  const c = blockerCeiling(b)
+  if (c === 'full') return null
+  // WHAT IS STILL HELD. A pool lowered to zero under running work keeps the
+  // units it already leased until they are released; admission never admits
+  // past a ceiling, so they were admitted before it came down.
+  const n = typeof b.active === 'number' && b.active > 0 ? b.active : 0
+  const held = n > 0 ? ` ${n} unit${n === 1 ? '' : 's'} still held by work admitted earlier.` : ''
+  switch (c) {
+    case 'paused':
+      return `${subject} is paused by operator. It admits nothing until somebody resumes it.${held}`
+    case 'set-to-zero':
+      return `${subject} is paused by operator (limit 0). It admits nothing until somebody raises its limit.${held}`
+    case 'zero': {
+      const who =
+        b.pool !== undefined && poolKind(b.pool) === 'provider'
+          ? " A provider pool's limit also falls with its quota state, so this does not say who set it."
+          : ' The blocker names no pool, so this does not say who set it.'
+      return `${subject} is at limit 0 and admits nothing until that limit rises.${who}${held}`
+    }
+  }
+}
+
+/**
+ * The blocker a one-line reason should name. The line has room for one pool,
+ * and admission lists every refusing pool in the order the profile names them
+ * -- so `global` at its ceiling can come before a pool capped at zero, and the
+ * first entry would say "waiting is the answer" about a task no wait will
+ * start. The first pool a person must act on wins; otherwise the first.
+ */
+function leadBlocker(list: readonly BlockedEntry[] | null | undefined): BlockedEntry | undefined {
+  if (!list || list.length === 0) return undefined
+  return list.find((b) => needsAPerson(blockerCeiling(b))) ?? list[0]
+}
+
 /** The one-line "why is this not running" for a task, or null if it is. */
 export function whyNotRunning(task: Task): string | null {
-  const first = task.blocked_by?.[0]
+  const first = leadBlocker(task.blocked_by)
   if (first?.reason) {
+    const ceiling = ceilingCopy(first)
+    if (ceiling !== null) return ceiling
     const where = first.pool ? ` (${first.pool})` : ''
     const at =
       typeof first.limit === 'number' && typeof first.active === 'number'
@@ -1859,8 +1955,13 @@ export function whyAgent(task: Task): string {
     return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
   }
   if (task.state === 'READY' && task.blocked_by?.length) {
-    const b = task.blocked_by[0]
+    const b = leadBlocker(task.blocked_by)
     if (!b) return ''
+    // A pool paused or capped at zero is not "busy", and "(0/0)" or
+    // "(0/1000000)" beside it is a fraction that describes nothing. See
+    // `blockerCeiling`.
+    const ceiling = ceilingCopy(b)
+    if (ceiling !== null) return ceiling
     // Only show the fraction when BOTH keys are present. An admission blocker
     // always carries them; a worker park's arbitrary detail may not.
     const at =
