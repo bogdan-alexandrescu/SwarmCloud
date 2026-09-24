@@ -41,9 +41,12 @@ from .detect import (
     detect_orphan_executions,
     detect_stale_leases,
     detect_unused_job_resources,
+    normalise_executions,
     sanitised,
+    stuck_candidates,
 )
 from .model import AttemptView, ControlSnapshot, ExecutionView, JobResourceView, LeaseView
+from .progress import assess
 from .store import ControlStore
 
 #: The two lines the reconciler writes when it holds back, spelled ONCE.
@@ -62,6 +65,15 @@ from .store import ControlStore
 #: pass that nobody was watching.
 BACKEND_UNAVAILABLE = "backend unavailable; skipping its findings"
 NOT_REPAIRING = "not repairing: the backend that would hold this execution was unreadable"
+
+#: The line written once per GKE Job the two eviction rules terminate, so an
+#: operator can find every eviction with one filter (docs/runbooks/
+#: browser-eviction.md). The persisted pass carries the same outcome.
+EVICTED = "evicted a GKE job"
+
+#: Findings repaired by terminating a Job and never by fencing it.
+_TERMINATE_ONLY = (FindingKind.LEFT_RUNNING,)
+_EVICTIONS = (FindingKind.STUCK_NO_PROGRESS, FindingKind.LEFT_RUNNING)
 
 #: The event each repaired state is announced with.
 _EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
@@ -273,6 +285,11 @@ class Reconciler:
 
         sight = self._look(snapshot, report)
         report.executions_examined = len(sight.executions)
+        # Both AFTER the listing, and in this order: the settled read decides
+        # whose task an execution is (and so its tenant), and the progress read
+        # is only for executions whose task is known.
+        self._read_settled(snapshot, sight.executions, report)
+        self._read_progress(snapshot, sight.executions, report)
 
         findings = detect_all(
             snapshot, sight.executions, self._config, now=snapshot.taken_at, logger=self._log
@@ -448,6 +465,98 @@ class Reconciler:
             self._log.exception("could not read the registered tenants", exc)
             report.errors.append(f"tenants: {exc}")
             return {}
+
+    def _read_settled(
+        self,
+        snapshot: ControlSnapshot,
+        executions: list[ExecutionView],
+        report: ReconcileReport,
+    ) -> None:
+        """Read, by id, every task an ACTIVE execution names that the snapshot lacks.
+
+        `snapshot()` reads only the four concurrency states, so a task that
+        finished -- or was re-queued, or parked -- is simply absent from it. An
+        execution still running for such a task used to be judged as naming "no
+        task this control plane knows about", which cannot tell apart the cases
+        that matter here: a finished task whose Job was left running, a
+        re-queued task whose OLD Job is still going, and a task re-admitted
+        between the snapshot and now, whose Job may be its NEW attempt. One
+        `get` each tells them apart.
+
+        Bounded by the executions that need it: ordinarily none at all.
+        """
+        wanted = sorted(
+            {
+                execution.task_id
+                for execution in normalise_executions(snapshot, executions)
+                if execution.is_active
+                and execution.task_id
+                and execution.task_id not in snapshot.tasks
+            }
+        )
+        for task_id in wanted:
+            try:
+                task = self._store.task_by_id(task_id)
+            except Exception as exc:
+                snapshot.unreadable_tasks.add(task_id)
+                self._log.warning(
+                    "could not read the task an active execution names; "
+                    "nothing is concluded about that execution this pass",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+                report.errors.append(f"task {task_id}: {exc}")
+                continue
+            if task is not None:
+                snapshot.settled[task_id] = task
+
+    def _read_progress(
+        self,
+        snapshot: ControlSnapshot,
+        executions: list[ExecutionView],
+        report: ReconcileReport,
+    ) -> None:
+        """Read the progress evidence of every attempt the stuck rule could act on.
+
+        Only attempts `stuck_candidates` names: running on GKE, on the current
+        generation, with a heartbeating lease, and running longer than the
+        threshold. A read that fails leaves that attempt unassessed, which the
+        rule treats as "not judged" -- never as "no progress".
+        """
+        now = snapshot.taken_at
+        for subject in stuck_candidates(snapshot, executions, self._config, now):
+            attempt_id = subject.lease.attempt_id
+            try:
+                events = self._store.attempt_events(subject.task.task_id, attempt_id)
+            except Exception as exc:
+                self._log.warning(
+                    "could not read an attempt's progress; not judging it this pass",
+                    task_id=subject.task.task_id,
+                    attempt_id=attempt_id,
+                    error=str(exc),
+                )
+                report.errors.append(f"progress {attempt_id}: {exc}")
+                continue
+            verdict = assess(
+                events,
+                attempt_id=attempt_id,
+                generation=subject.lease.generation,
+                started_at=subject.started_at,
+                now=now,
+                stuck_after_seconds=self._config.stuck_after_seconds,
+                cpu_floor_cores=self._config.stuck_cpu_floor_cores,
+                max_gap_seconds=self._config.stuck_evidence_max_gap_seconds,
+            )
+            snapshot.progress[attempt_id] = verdict
+            if not verdict.judged:
+                # Worth a line: an attempt this old that cannot be judged is
+                # one the rule is blind to, and "why" is the whole answer.
+                self._log.info(
+                    "not judging an attempt's progress: the evidence is incomplete",
+                    task_id=subject.task.task_id,
+                    attempt_id=attempt_id,
+                    because=verdict.unjudged_because,
+                )
 
     @staticmethod
     def _attempt_namespace(
@@ -798,6 +907,8 @@ class Reconciler:
             lease_id=finding.lease_id,
             execution=finding.execution.name if finding.execution else None,
         )
+        if finding.kind in _TERMINATE_ONLY:
+            return self._repair_left_running(finding, outcome, handles)
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append("would invalidate, terminate, release and repair")
@@ -827,29 +938,8 @@ class Reconciler:
                 )
 
         # ---- STEP 2: terminate the execution ----------------------------
-        termination_required = finding.execution is not None and finding.execution.is_active
-        if termination_required:
-            backend = handles.get(finding.execution.backend)
-            if backend is None:
-                outcome.skipped = "backend_unavailable"
-                outcome.actions.append("did NOT release: backend unavailable to confirm the kill")
-                return outcome
-            try:
-                outcome.terminated = bool(backend.terminate(finding.execution))
-            except Exception as exc:
-                self._log.error(
-                    "termination failed; NOT releasing the slot",
-                    execution=finding.execution.name,
-                    error=str(exc),
-                )
-                outcome.skipped = f"termination_failed: {exc}"
-                outcome.actions.append("did NOT release: termination was not confirmed")
-                return outcome
-            if not outcome.terminated:
-                outcome.skipped = "termination_unconfirmed"
-                outcome.actions.append("did NOT release: termination was not confirmed")
-                return outcome
-            outcome.actions.append(f"terminated {finding.execution.name}")
+        if not self._terminate(finding, outcome, handles):
+            return outcome
 
         # ---- STEP 3: release the slot -----------------------------------
         if finding.lease_id:
@@ -917,7 +1007,122 @@ class Reconciler:
                         attempt_id=finding.attempt_id,
                         lease_id=finding.lease_id,
                     )
+        if finding.kind in _EVICTIONS:
+            self._log_eviction(finding, outcome)
         return outcome
+
+    def _terminate(
+        self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
+    ) -> bool:
+        """Stop the finding's execution; True only when there is nothing left running.
+
+        True, too, when there was nothing to stop. False means the caller must
+        NOT go on to release anything: the kill was refused, failed, or not
+        confirmed, and `outcome` already says which.
+        """
+        if finding.execution is None or not finding.execution.is_active:
+            return True
+        backend = handles.get(finding.execution.backend)
+        if backend is None:
+            outcome.skipped = "backend_unavailable"
+            outcome.actions.append("did NOT release: backend unavailable to confirm the kill")
+            return False
+        try:
+            outcome.terminated = bool(backend.terminate(finding.execution))
+        except Exception as exc:
+            self._log.error(
+                "termination failed; NOT releasing the slot",
+                execution=finding.execution.name,
+                error=str(exc),
+            )
+            outcome.skipped = f"termination_failed: {exc}"
+            outcome.actions.append("did NOT release: termination was not confirmed")
+            return False
+        if not outcome.terminated:
+            outcome.skipped = "termination_unconfirmed"
+            outcome.actions.append("did NOT release: termination was not confirmed")
+            return False
+        outcome.actions.append(f"terminated {finding.execution.name}")
+        return True
+
+    def _repair_left_running(
+        self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
+    ) -> RepairOutcome:
+        """Terminate a Job whose task already finished; release only its own lease.
+
+        No fence. The task is terminal, so there is no generation left for this
+        Job to run under -- and `invalidate_generation` on a task that has been
+        re-opened since (FAILED -> READY is legal) would bump a generation that
+        belongs to the NEXT attempt. No task-state repair either: a terminal
+        state is the worker's own record of how the task ended.
+
+        The lease on the finding, if any, is this Job's own: same attempt, same
+        generation, unreleased (`detect_left_running`). It is released only
+        after the kill is confirmed, for the same reason every release here is.
+        """
+        name = finding.execution.name if finding.execution else None
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would terminate {name}"
+                + (f" and release {finding.lease_id}" if finding.lease_id else "")
+            )
+            return outcome
+        if not self._terminate(finding, outcome, handles):
+            return outcome
+        if finding.lease_id:
+            outcome.released = self._store.release_lease(
+                finding.lease_id, f"reconciler:{finding.kind.value}"
+            )
+            if outcome.released:
+                outcome.actions.append(f"released {finding.lease_id}")
+                if finding.task_id:
+                    self._store.emit(
+                        task_id=finding.task_id,
+                        tenant_id=finding.tenant_id,
+                        event_type=EventType.LEASE_RELEASED,
+                        detail={"reason": finding.kind.value, "detail": finding.reason},
+                        attempt_id=finding.attempt_id,
+                        lease_id=finding.lease_id,
+                    )
+        if finding.task_id:
+            # The event that names the reason on the task's own timeline. The
+            # frozen EventType has no "execution evicted"; GENERATION_FENCED is
+            # the nearest -- the reconciler stopped an execution of this
+            # generation that had no right to run -- and `phase` says which
+            # kind of stop it was. Contract request 17 asks for a type of its own.
+            self._store.emit(
+                task_id=finding.task_id,
+                tenant_id=finding.tenant_id,
+                event_type=EventType.GENERATION_FENCED,
+                detail={
+                    "reason": finding.reason,
+                    "finding": finding.kind.value,
+                    "phase": "left_running",
+                    "execution": name,
+                    "task_state": finding.detail.get("task_state"),
+                    "lease_released": outcome.released,
+                },
+                attempt_id=finding.attempt_id,
+                lease_id=finding.lease_id,
+                generation=finding.generation,
+            )
+        self._log_eviction(finding, outcome)
+        return outcome
+
+    def _log_eviction(self, finding: Finding, outcome: RepairOutcome) -> None:
+        self._log.info(
+            EVICTED,
+            kind=finding.kind.value,
+            task_id=finding.task_id,
+            tenant_id=finding.tenant_id,
+            execution=outcome.execution,
+            namespace=finding.detail.get("namespace"),
+            terminated=outcome.terminated,
+            released=outcome.released,
+            repaired_to=outcome.repaired_to,
+            reason=finding.reason,
+        )
 
     # ------------------------------------------------------------------
     def _collect_checkpoints(self, report: ReconcileReport, *, now: datetime) -> None:
