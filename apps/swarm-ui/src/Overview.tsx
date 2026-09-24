@@ -1729,8 +1729,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         )}
 
         {/* THE TOKEN MIX, AS A PROPORTION RATHER THAN FOUR NUMBERS IN A LIST.
-            Hand-rolled: four `<i>` widths off one total, one series colour
-            each, `--series-5` for the neutral. A segment whose count is ABSENT
+            Hand-rolled: four `<i>` widths off one total, in four tones of ONE
+            series hue (see `.ov-s1` in OVERVIEW_CSS). A segment whose count is ABSENT
             is not drawn at all and its fact keeps its slot below with an em
             dash -- a missing segment and a zero-width segment are the same
             picture, so the em dash is what tells them apart. */}
@@ -1832,7 +1832,7 @@ function TokenMix({ s }: { s: SpendRollup }) {
         // empty track is a claim that the scale starts somewhere.
         <div className="ov-mix is-unknown" role="img" aria-label="No attempt in this sample reported a token count, so there is no proportion to draw." />
       )}
-      {/* THE SWATCH IS ON THE WORD. The bar above is four hues and the legend
+      {/* THE SWATCH IS ON THE WORD. The bar above was four hues and the legend
           under it named them in plain grey, so the only way to learn which
           segment was `c-rd` was to guess from the order -- the owner's "the
           spend bar is a rainbow ... with no legend near it".
@@ -1840,8 +1840,9 @@ function TokenMix({ s }: { s: SpendRollup }) {
           1.36:1 from end to end and are therefore NOT separable in greyscale,
           so a multi-series chart carries a legend naming every series and never
           relies on the segment's colour to say which segment it is. This is
-          that legend, and it is the option sec 11.3 left open that keeps the
-          proportion rather than throwing it away for one hue.
+          that legend. The bar is now one hue at four tones rather than four
+          hues, so the swatch keys a segment by LIGHTNESS as well -- which a
+          greyscale screenshot keeps -- and the proportion stays.
 
           A SERIES THAT REPORTED NOTHING GETS A HOLLOW SWATCH, not a solid one.
           It has no segment on the bar, and a solid swatch beside an em dash
@@ -2852,15 +2853,27 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    track claims the scale starts somewhere and the value is at the start of
    it, which is the absent-as-zero lie in bar form. */
 .ov-mix.is-unknown { background: var(--ctl-hatch); }
-/* SERIES, NEVER STATE. A segment drawn in --ok is read as a verdict; these are
-   identities, and each metric keeps its colour across the product. */
+/* ONE METRIC, ONE HUE, FOUR TONES. SERIES, NEVER STATE.
+   A segment drawn in --ok is read as a verdict, so these were --series-1..4:
+   blue, teal, violet, amber. That was four saturated hues in one 8px rule --
+   two of them the colours a reader has learned for PARKED (violet) and WARN
+   (amber) -- and the series block itself records that those five sit in a
+   1.36:1 band, NOT separable in greyscale. The keyed legend (design-system.md
+   §12.1) told a colour reader which swatch was which; a greyscale screenshot
+   still showed four identical greys.
+   Tokens are one metric split four ways, so they get ONE series (--series-1,
+   the single-series slot) at four steps toward the card: every pair >= 1.25:1
+   in both themes, the lightest >= 1.34:1 off --surface. Order is the reading
+   order: input strongest, cache writes faintest. The .ov-sN class names are
+   unchanged, so each swatch still takes its fill from the same class its
+   segment does. encoding.hues.test.ts holds the floor. */
 .ov-s1 { background: var(--series-1); }
-.ov-s2 { background: var(--series-2); }
-.ov-s3 { background: var(--series-3); }
-.ov-s4 { background: var(--series-4); }
+.ov-s2 { background: color-mix(in srgb, var(--series-1) 68%, var(--surface)); }
+.ov-s3 { background: color-mix(in srgb, var(--series-1) 44%, var(--surface)); }
+.ov-s4 { background: color-mix(in srgb, var(--series-1) 26%, var(--surface)); }
 .ov-mix-facts { padding: 0; }
 
-/* THE KEY TO THE FOUR HUES, NEXT TO THE WORD THEY BELONG TO.
+/* THE KEY TO THE FOUR TONES, NEXT TO THE WORD THEY BELONG TO.
    8px square, --track-radius so it is the same corner the bar it keys is drawn
    with, and it takes its fill from the SAME .ov-sN class the segment does --
    one declaration per series, so a segment and its key cannot drift apart.

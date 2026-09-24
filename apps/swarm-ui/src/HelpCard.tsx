@@ -268,10 +268,18 @@ const GLYPH: CSSProperties = {
   // A real <button>: a <span> with a click handler is not reachable by Tab,
   // which would make "opens on focus" untrue for the people who need it most.
   appearance: 'none',
-  background: 'transparent',
-  border: '1px solid var(--line)',
+  // A DISC, NOT A RING -- the substitution design-system.md §13.3 made for
+  // `.ctl-q-glyph`, applied to the other `?`. This was a 1px `--line` ring,
+  // which is a bordered pill: 14 of them in the agent drawer, 19 on Runtimes,
+  // 16 on Accounts, the largest remaining source of pill radii on those screens
+  // (§11.3, §12.5). The ring separated nothing, so it goes; the fill carries
+  // the affordance instead, and the ink comes up from --text-faint to
+  // --text-dim because the glyph lost the edge that was half its presence.
+  // `prose.hygiene.test.tsx` holds both halves: no border, and still a fill.
+  background: 'var(--surface-2)',
+  border: 0,
   borderRadius: '999px',
-  color: 'var(--text-faint)',
+  color: 'var(--text-dim)',
   cursor: 'help',
   display: 'inline-flex',
   alignItems: 'center',
