@@ -421,10 +421,22 @@ def list_leases(
     deliberately not the upstream message, because a Cloud Run or Kubernetes
     error echoes the tenant service account, the job name and the secret
     names.
+
+    THE WINDOW SAYS WHETHER IT WAS CUT. The store reads the newest `limit`
+    lease documents and every filter here -- `active_only`, `state`,
+    `overdue_only` -- runs over that window afterwards. So an empty page meant
+    either "nothing holds capacity" or "the window filled with released leases
+    before it reached the live ones", and the Holders screen's drift check
+    (`units_held` against `pool.active`) could not tell a leaked lease from a
+    short read. `truncated` is true when older lease documents exist past the
+    window; `examined` is how many documents the filters ran over. When
+    `truncated` is true, `units_held` is a sum over this window, not over the
+    platform, and must not be read as a leak on its own.
     """
-    leases = ctx.store.list_leases(
+    scan = ctx.store.scan_leases(
         tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
     )
+    leases = scan.leases
     now = ctx.now()
     if state is not None:
         wanted = state.strip().upper()
@@ -469,6 +481,10 @@ def list_leases(
         # Weighted UNITS, not agents -- admission increments by the resource
         # class's units, so this and len(leases) are different numbers.
         "units_held": sum(lease.units for lease in leases),
+        # Older lease documents exist past the window these rows came from.
+        "truncated": scan.truncated,
+        # Lease documents read, BEFORE active_only / state / overdue_only.
+        "examined": scan.examined,
     }
 
 
@@ -486,11 +502,19 @@ def list_quota(
 
     `effective_limit: 0` is a FACT, not a missing value -- QuotaState returns
     0 deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN.
+
+    `generated_at` is the server's clock when it read these documents, as on
+    `/v1/capacity`, `/v1/stats` and `/v1/providers`. Without it a panel could
+    only show when the bytes ARRIVED, which says nothing about when the
+    platform computed them (docs/audits/2026-09-20/data-gaps-found-by-fanout.md
+    section 2). Each row's own `updated_at` is a different fact -- when the
+    broker last wrote that document -- and is not a substitute.
     """
     states = ctx.store.list_quota(tenant_id)
     return {
         "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
         "tenant_id": tenant_id,
+        "generated_at": ctx.now(),
     }
 
 

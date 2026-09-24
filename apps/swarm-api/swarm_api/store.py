@@ -29,12 +29,21 @@ processes. Two tasks created in the same microsecond would collapse a page
 boundary; ids are generated with microsecond-resolution timestamps and random
 suffixes, so that is a theoretical rather than an operational concern, and the
 `id` tiebreak below makes it deterministic anyway.
+
+The EVENTS and cross-task ATTEMPTS pages use a (timestamp, document id) keyset
+instead -- `_keyset_page` -- because for them a collapsed boundary is not
+theoretical to their callers: `swarm_mcp.follow` gave up on a timestamp cursor
+precisely because "two events written in the same microsecond ... a timestamp
+cursor would either duplicate or drop". Both still order on ONE field, so both
+are served by the single-field index on it (events) or by the composite index
+already declared (`attempts-tenant-created`); no index is added.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -72,7 +81,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
-from .errors import Conflict, NotFound, ValidationFailed
+from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +114,16 @@ _STEP_READ_BUDGET = 500
 #: Writing 0 there instead would turn "drain this resource class" into "cap it at
 #: zero forever", and undraining would silently leave it blocked.
 UNLIMITED_HARD_LIMIT = 1_000_000
+
+#: Documents one keyset page may read because they share a single instant.
+#:
+#: A page boundary that falls inside a run of equal timestamps is placed by
+#: document id, which means reading the whole run. Every writer of an event or
+#: an attempt stamps `utcnow()` at microsecond resolution, so a run is one
+#: document nearly always and a handful at worst. 1000 is far past anything
+#: those writers produce and still a bounded read; past it the page refuses
+#: (`Unpageable`) rather than guessing -- see `_same_instant`.
+_TIE_READ_LIMIT = 1000
 
 
 #: Google caps a service account id at 30 characters. Provisioning truncates to
@@ -159,9 +178,88 @@ def decode_cursor(token: str | None) -> datetime | None:
 
 
 @dataclass(frozen=True)
+class KeysetCursor:
+    """Where a keyset page stopped: the last row's timestamp and document id."""
+
+    at: datetime
+    doc_id: str
+
+
+def encode_keyset(*, scope: str, order: str, at: datetime, doc_id: str) -> str:
+    """An opaque token for the row a keyset page ended on.
+
+    `scope` and `order` travel inside the token so that a token is refused,
+    rather than reinterpreted, when it is sent back to a different listing or
+    in the other direction. Both misuses would otherwise produce a page that
+    looks right: an ascending cursor read descending serves the rows BEFORE it.
+
+    Nothing in it is a credential. It names a timestamp and a document id the
+    caller was already served, and every read it continues re-applies the
+    tenant check before the cursor is used.
+    """
+    payload = json.dumps(
+        {"v": 1, "s": scope, "o": order, "at": at.isoformat(), "id": doc_id},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def decode_keyset(token: str | None, *, scope: str, order: str) -> KeysetCursor | None:
+    if not token:
+        return None
+    try:
+        raw = json.loads(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
+        version, token_scope, token_order = raw["v"], raw["s"], raw["o"]
+        at = datetime.fromisoformat(raw["at"])
+        doc_id = raw["id"]
+        if version != 1 or not isinstance(doc_id, str) or not doc_id:
+            raise ValueError("not a keyset cursor")
+    except (binascii.Error, UnicodeError, ValueError, KeyError, TypeError, AttributeError):
+        # 422, as for `decode_cursor`: a bad token is a bad request, and a 404
+        # would say the caller's rows had disappeared.
+        raise ValidationFailed("page_token is not a valid cursor") from None
+    if token_scope != scope:
+        raise ValidationFailed(
+            "page_token was issued by a different listing; start again without it",
+            detail={"page_token_scope": token_scope},
+        )
+    if token_order != order:
+        raise ValidationFailed(
+            f"page_token was issued for order={token_order}; continue with the same "
+            "order, or start again without a token",
+            detail={"page_token_order": token_order, "requested_order": order},
+        )
+    return KeysetCursor(
+        at=at if at.tzinfo else at.replace(tzinfo=timezone.utc), doc_id=doc_id
+    )
+
+
+@dataclass(frozen=True)
 class Page:
     items: list[Any]
     next_page_token: str | None
+
+
+@dataclass(frozen=True)
+class LeaseScan:
+    """A lease listing plus what the read behind it actually covered.
+
+    `list_leases` reads the newest `limit` lease documents and filters released
+    ones AFTERWARDS, so a short or empty `leases` list is two different facts
+    wearing one shape: few leases hold capacity, or the window filled with
+    released leases before it reached the live ones. `truncated` is what tells
+    them apart, and `examined` is the unfiltered count every filter ran over
+    (docs/audits/2026-09-20/data-gaps-found-by-fanout.md, section 1).
+
+    Computed HERE, where the query runs, and not inferred by a caller from the
+    page length: `len(leases) == limit` is false in exactly the case that
+    matters -- a window of released leases filtered down to nothing.
+    """
+
+    leases: list[Lease]
+    examined: int
+    truncated: bool
 
 
 @dataclass(frozen=True)
@@ -242,6 +340,124 @@ class Store:
     def _chunks(self, items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
         for start in range(0, len(items), size):
             yield items[start : start + size]
+
+    def _same_instant(
+        self,
+        base: Any,
+        field: str,
+        at: datetime,
+        decode: Callable[[dict[str, Any]], Any],
+    ) -> list[Any]:
+        """Every document under `base` whose `field` is exactly `at`.
+
+        An equality filter on the ordering field, which the same index serves.
+        BOUNDED, and loud past the bound: a run longer than `_TIE_READ_LIMIT`
+        cannot be ordered by id without reading all of it, and the alternative
+        to refusing is serving a page that skips or repeats rows with a 200.
+        """
+        query = base.where(filter=FieldFilter(field, "==", at)).limit(_TIE_READ_LIMIT + 1)
+        snaps = list(query.stream())
+        if len(snaps) > _TIE_READ_LIMIT:
+            log.error(
+                "more than %d documents share %s=%s; refusing to place a page boundary",
+                _TIE_READ_LIMIT, field, at.isoformat(),
+            )
+            raise Unpageable(
+                f"more than {_TIE_READ_LIMIT} records share one {field} timestamp, so "
+                "this page's boundary cannot be placed exactly; no writer on this "
+                "platform should produce that",
+                detail={"field": field, "at": at.isoformat()},
+            )
+        return [decode(snap.to_dict()) for snap in snaps]
+
+    def _keyset_page(
+        self,
+        base: Any,
+        *,
+        field: str,
+        decode: Callable[[dict[str, Any]], Any],
+        key: Callable[[Any], tuple[datetime, str]],
+        limit: int,
+        after: KeysetCursor | None,
+        descending: bool,
+        mint: Callable[[datetime, str], str],
+        lower: datetime | None = None,
+        upper: datetime | None = None,
+    ) -> Page:
+        """One page ordered by (`field`, document id), continuing from `after`.
+
+        WHY NOT A TIMESTAMP CURSOR. `at > t` drops the rest of a run of equal
+        timestamps at a boundary and `at >= t` serves it again. The order here
+        is (timestamp, id), which is total, and the token names both halves.
+
+        WHY NOT ORDER BY TWO FIELDS. `order_by(field).order_by(id)` needs a
+        composite index nobody has declared. So the query orders on `field`
+        alone -- served by the index that already exists -- and the id half of
+        the order is applied here, in the two places it can matter:
+
+          * the run AT the cursor's own instant is read whole
+            (`_same_instant`) and filtered by id; the window query then starts
+            strictly past that instant;
+          * when the window came back full and the page ends inside the run at
+            the window's far edge, that run is read whole too, because which of
+            its members the window happened to return is the backend's choice,
+            not the (timestamp, id) order the next token continues from.
+
+        Neither extra read happens on the first page of an untied history.
+
+        `lower` (inclusive) and `upper` (exclusive) bound `field`, so windows
+        with a shared edge tile without overlap. `base` must carry EQUALITY
+        filters only: the run reads add an equality on `field` to it.
+        """
+        mark = (after.at, after.doc_id) if after is not None else None
+
+        def inside(row: Any) -> bool:
+            at, doc_id = key(row)
+            if lower is not None and at < lower:
+                return False
+            if upper is not None and at >= upper:
+                return False
+            if mark is None:
+                return True
+            return (at, doc_id) < mark if descending else (at, doc_id) > mark
+
+        found: dict[str, Any] = {}
+
+        def keep(rows: Iterable[Any]) -> None:
+            for row in rows:
+                if inside(row):
+                    found.setdefault(key(row)[1], row)
+
+        window_query = base
+        if lower is not None:
+            window_query = window_query.where(filter=FieldFilter(field, ">=", lower))
+        if upper is not None:
+            window_query = window_query.where(filter=FieldFilter(field, "<", upper))
+        if after is not None:
+            keep(self._same_instant(base, field, after.at, decode))
+            window_query = window_query.where(
+                filter=FieldFilter(field, "<" if descending else ">", after.at)
+            )
+        window_query = window_query.order_by(
+            field,
+            direction=firestore.Query.DESCENDING if descending else firestore.Query.ASCENDING,
+        ).limit(limit + 1)
+        window = [decode(snap.to_dict()) for snap in window_query.stream()]
+        keep(window)
+
+        rows = sorted(found.values(), key=key, reverse=descending)
+        if len(window) > limit:
+            # Full window: every instant before its far edge was read whole,
+            # the edge's own run may not have been.
+            edges = [key(row)[0] for row in window]
+            edge = min(edges) if descending else max(edges)
+            if key(rows[limit - 1])[0] == edge:
+                keep(self._same_instant(base, field, edge, decode))
+                rows = sorted(found.values(), key=key, reverse=descending)
+
+        page = rows[:limit]
+        token = mint(*key(page[-1])) if len(rows) > limit else None
+        return Page(items=page, next_page_token=token)
 
     # -- tenants ----------------------------------------------------------
 
@@ -590,16 +806,48 @@ class Store:
         )
         return event
 
-    def list_events(self, tenant_id: str, task_id: str, *, limit: int = 200) -> list[TaskEvent]:
+    def list_events(
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        limit: int = 200,
+        page_token: str | None = None,
+        descending: bool = False,
+    ) -> Page:
+        """One page of a task's events, oldest first unless `descending`.
+
+        THIS USED TO RETURN THE HEAD AND NOTHING ELSE: `order_by(at).limit(n)`
+        with no cursor, so a history longer than one page had an unreachable
+        tail -- the end of a long run, which is the part anybody opens it for.
+
+        THE DEFAULT IS UNCHANGED. No token and ascending is still "the oldest
+        `limit` events", and row N is still row N for every limit that reaches
+        it. `swarm_mcp.follow` keeps a COUNT as its cursor and depends on
+        exactly that, so the id tie-break below is the one Firestore already
+        applied implicitly (`__name__`, and an event's document id IS its
+        `event_id`) -- made explicit, not changed.
+
+        `descending` is the end of the run in one request.
+        """
         self.get_task(tenant_id, task_id)         # tenant check before any read
-        query = (
-            self._db.collection(TASKS)
-            .document(task_id)
-            .collection(EVENTS)
-            .order_by("at", direction=firestore.Query.ASCENDING)
-            .limit(limit)
+        order = "desc" if descending else "asc"
+        # Bound to the task: a token from another task's history would be a
+        # timestamp that means nothing here, served as though it did.
+        scope = f"events:{task_id}"
+        after = decode_keyset(page_token, scope=scope, order=order)
+        return self._keyset_page(
+            self._db.collection(TASKS).document(task_id).collection(EVENTS),
+            field="at",
+            decode=event_from_dict,
+            key=lambda event: (event.at, event.event_id),
+            limit=limit,
+            after=after,
+            descending=descending,
+            mint=lambda at, doc_id: encode_keyset(
+                scope=scope, order=order, at=at, doc_id=doc_id
+            ),
         )
-        return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
     @staticmethod
     def artifact_manifest(task: Task) -> "ArtifactManifest":
@@ -915,16 +1163,39 @@ class Store:
         admin-gated. Passing a tenant id uses the declared composite index;
         passing None orders on created_at alone, which a single-field index
         already covers.
+
+        The listing alone cannot say whether the window was cut; `scan_leases`
+        returns the same rows with that answer, and is what the admin route
+        uses.
+        """
+        return self.scan_leases(tenant_id, active_only=active_only, limit=limit).leases
+
+    def scan_leases(
+        self,
+        tenant_id: str | None = None,
+        *,
+        active_only: bool = True,
+        limit: int = 200,
+    ) -> LeaseScan:
+        """`list_leases`, plus whether older lease documents lay past the window.
+
+        One document past `limit` is read to answer that, and then dropped: the
+        rows are exactly the ones `limit` alone would have returned.
         """
         query: Any = self._db.collection(LEASES)
         if tenant_id is not None:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
         query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
-        query = query.limit(limit)
-        leases = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
-        if active_only:
-            leases = [lease for lease in leases if not lease.is_released]
-        return leases
+        query = query.limit(limit + 1)
+        documents = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
+        truncated = len(documents) > limit
+        documents = documents[:limit]
+        leases = (
+            [lease for lease in documents if not lease.is_released]
+            if active_only
+            else documents
+        )
+        return LeaseScan(leases=leases, examined=len(documents), truncated=truncated)
 
     def list_attempts(
         self,
@@ -951,6 +1222,48 @@ class Store:
         query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
         query = query.limit(limit)
         return [attempt_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def page_attempts(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 50,
+        page_token: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Page:
+        """A tenant's attempts across every task, newest first, paged.
+
+        `list_attempts(task_id=None)` answered the same question with no
+        cursor, and nothing called it: the only route passed a task id, so "what
+        did this tenant's runs cost" was one request per task. This is the paged
+        form `GET /v1/attempts` serves.
+
+        THE TENANT FILTER IS THE FIRST CLAUSE, an equality on `tenant_id`, as
+        on every list in this module; the caller's tenant comes from
+        `deps.tenant_scope` and never from the request (invariant 9).
+
+        Served by `attempts-tenant-created` (tenant_id ASC, created_at DESC):
+        `since`/`until` and the cursor are all ranges on `created_at`, the
+        index's ordered field, and the run read at a boundary is two equalities.
+        """
+        after = decode_keyset(page_token, scope="attempts", order="desc")
+        return self._keyset_page(
+            self._db.collection(ATTEMPTS).where(
+                filter=FieldFilter("tenant_id", "==", tenant_id)
+            ),
+            field="created_at",
+            decode=attempt_from_dict,
+            key=lambda attempt: (attempt.created_at, attempt.attempt_id),
+            limit=limit,
+            after=after,
+            descending=True,
+            mint=lambda at, doc_id: encode_keyset(
+                scope="attempts", order="desc", at=at, doc_id=doc_id
+            ),
+            lower=since,
+            upper=until,
+        )
 
     def set_provider_enabled(self, provider: str, enabled: bool) -> None:
         """Enable/disable a provider platform-wide.
