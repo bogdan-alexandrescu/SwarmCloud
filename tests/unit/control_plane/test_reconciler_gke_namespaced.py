@@ -26,14 +26,18 @@ actually returning units to every pool (invariant 2):
 
   F-1  namespaces come from the control plane and are read one by one; nothing
        cluster-scoped is ever called; readability is per namespace, judged at
-       the attempt's OWN namespace.
+       the attempt's OWN namespace; a tenant's namespace is named by the
+       dispatcher's own rule, 63-character truncation and hash included.
   F-3  a requested cancel is finished as CANCELLED in the same pass, never
        READY, and never downgraded to FAILED by spent attempts.
   F-4  when a namespace cannot be listed, the attempt's Job is read by name:
-       404 and a terminal condition release; an active Job is killed first;
-       403 proves nothing.
-  F-5  a held-back finding is counted as suppressed, and the log lines the
-       alert policy matches are the ones the code writes.
+       404 and a terminal condition release; 403 proves nothing; an active
+       Job is killed first -- but ONLY where the list path would kill it too,
+       i.e. under a lease that is stale by the ordinary rule. An active Job
+       under a heartbeating lease disproves the finding and is left alone.
+  F-5  a held-back finding is counted as suppressed, and each log line the
+       alert policy counts is the one the code writes, compared against the
+       metric's parsed FILTER rather than anywhere in the file.
 
 The fake Kubernetes API below models the reconciler's REAL grant rather than a
 permissive one. That is the whole point: a fake that answered the cluster-scope
@@ -44,6 +48,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,6 +110,14 @@ def not_found(name: str) -> Exception:
     return ApiException(status=404, reason="Not Found")
 
 
+def api_error(status: int) -> Exception:
+    """A LIST that fails for a reason other than RBAC: APF, a blip, a timeout."""
+    from kubernetes.client.rest import ApiException
+
+    reasons = {429: "Too Many Requests", 500: "Internal Server Error", 504: "Gateway Timeout"}
+    return ApiException(status=status, reason=reasons.get(status, "Error"))
+
+
 class RbacBatchApi:
     """BatchV1Api under the `swarm-reaper` Role and nothing else.
 
@@ -122,12 +135,16 @@ class RbacBatchApi:
         gettable: set[str] | None = None,
         deletable: set[str] | None = None,
         on_delete: Callable[[str, str], None] | None = None,
+        list_fails_with: int | None = None,
     ) -> None:
         self.jobs = list(jobs or [])
         self.listable = set(listable or set())
         self.gettable = set(self.listable if gettable is None else gettable)
         self.deletable = set(self.listable if deletable is None else deletable)
         self.on_delete = on_delete
+        #: Every LIST fails with this status, RBAC or not -- the transient
+        #: failure a single GET a moment later does not share.
+        self.list_fails_with = list_fails_with
         self.calls: list[tuple[str, ...]] = []
         self.deleted: list[str] = []
 
@@ -140,6 +157,8 @@ class RbacBatchApi:
     def list_namespaced_job(self, namespace: str, label_selector: str | None = None,
                             **kwargs: Any) -> Any:
         self.calls.append(("list_namespaced_job", namespace))
+        if self.list_fails_with is not None:
+            raise api_error(self.list_fails_with)
         if namespace not in self.listable:
             raise forbidden("list", namespace)
         return SimpleNamespace(
@@ -300,18 +319,29 @@ def seed_stranded(
     attempt_count: int = 1,
     max_attempts: int = 3,
     minutes_ago: int = 20,
+    state: str = "DISPATCHED",
+    heartbeat_seconds_ago: int | None = None,
 ) -> dict[str, str]:
-    """A task exactly as the incident left it.
+    """A task exactly as the incident left it -- or, with a heartbeat, a healthy one.
 
-    DISPATCHED, lease never heartbeated (`heartbeat_at: None`, which admission
-    writes), dispatch deadline long past, attempt naming `<namespace>/<job>` the
-    way `GkeJobDispatcher.dispatch` records it. Two units on each of the seven
-    pools a browser task acquires.
+    By default: DISPATCHED, lease never heartbeated (`heartbeat_at: None`, which
+    admission writes), dispatch deadline long past, attempt naming
+    `<namespace>/<job>` the way `GkeJobDispatcher.dispatch` records it. Two
+    units on each of the seven pools a browser task acquires.
+
+    `heartbeat_seconds_ago` makes the lease one a worker is keeping alive: the
+    worker's heartbeat writes `heartbeat_at = now` and pushes `expires_at` out
+    by its extension (`agent_worker/control.py`), so both move together here.
     """
     suffix = task_id.replace("task_", "")
     lease_id, attempt_id = f"lease_{suffix}", f"att_{suffix}"
     now = utcnow()
     created = now - timedelta(minutes=minutes_ago)
+    if heartbeat_seconds_ago is None:
+        heartbeat_at, expires_at = None, created + timedelta(seconds=120)
+    else:
+        heartbeat_at = now - timedelta(seconds=heartbeat_seconds_ago)
+        expires_at = heartbeat_at + timedelta(seconds=120)
     pools = pool_names_for(
         tenant_id=tenant, provider="anthropic", resource_class="browser",
         runner_profile="browser", backend=backend,
@@ -322,7 +352,7 @@ def seed_stranded(
         else f"projects/p/locations/us-central1/jobs/swarm-job-{tenant}-browser/executions/x-{suffix}"
     )
     db.docs[f"tasks/{task_id}"] = {
-        "id": task_id, "tenant_id": tenant, "state": "DISPATCHED",
+        "id": task_id, "tenant_id": tenant, "state": state,
         "runner_profile": "browser", "resource_class": "browser",
         "current_generation": generation, "current_lease_id": lease_id,
         "attempt_count": attempt_count, "max_attempts": max_attempts,
@@ -331,15 +361,16 @@ def seed_stranded(
     db.docs[f"leases/{lease_id}"] = {
         "lease_id": lease_id, "task_id": task_id, "attempt_id": attempt_id,
         "tenant_id": tenant, "generation": generation, "pools": pools, "units": 2,
-        "state": "DISPATCHED", "created_at": created,
+        "state": state, "created_at": created,
         "dispatch_deadline": created + timedelta(seconds=300),
-        "expires_at": created + timedelta(seconds=120),
-        "heartbeat_at": None, "released_at": None,
+        "expires_at": expires_at,
+        "heartbeat_at": heartbeat_at, "released_at": None,
     }
     db.docs[f"attempts/{attempt_id}"] = {
         "attempt_id": attempt_id, "task_id": task_id, "tenant_id": tenant,
         "generation": generation, "lease_id": lease_id, "backend": backend,
-        "created_at": created, "execution_name": execution_name, "started_at": None,
+        "created_at": created, "execution_name": execution_name,
+        "started_at": created if heartbeat_at is not None else None,
     }
     for pool in pools:
         doc = db.docs.setdefault(
@@ -584,6 +615,82 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
             ), tenant
 
 
+#: Tenant ids that exercise EVERY branch of the dispatcher's `sanitize_name`,
+#: not only the short clean ids `identity._slug` produces today. A tenant
+#: document written by `register-tenant.sh` or by hand is not bound by `_slug`'s
+#: budget, and the branches the short ids never reach -- truncation at 63 with a
+#: hash of the full name -- are exactly where a restated copy drifts unseen.
+NAMING_CORPUS = [
+    "eng",
+    "u-bogdan",
+    "Eng_Platform.Team",             # lossy: case, underscore, dot
+    "double__underscore--dash",      # runs collapse to one dash
+    "--edges--",                     # stripped at both ends
+    "a" * 50,                        # 13 + 50 = 63: the last length kept whole
+    "a" * 51,                        # one over: truncated, hashed
+    "platform-engineering-" * 4,     # a dash exactly at the cut
+    "x" * 200,
+]
+
+
+def test_the_reconciler_names_a_long_tenant_namespace_exactly_as_the_dispatcher_does():
+    """Past 63 characters the dispatcher truncates and appends a hash; so must we.
+
+    `sanitised` -- which the reconciler used to name namespaces -- mirrors only
+    the character-class half of `sanitize_name`. For a tenant id over 50
+    characters the dispatcher creates `swarm-tenant-aaaa...-<sha8>` while the
+    reconciler read `swarm-tenant-aaaa...` in full: a namespace nobody writes
+    to, listed empty on every pass, and every task in the real one looking
+    abandoned.
+    """
+    backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(), core_api=RbacCoreApi())
+    dispatchers = [
+        GkeJobDispatcher(scheduler_settings(), target=None),
+        GkeJobDispatcher(scheduler_settings(), target=GkeTarget("10.0.0.1", "/dev/null")),
+    ]
+    for tenant_id in NAMING_CORPUS:
+        tenant = Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@saga.xyz",
+                        created_at=utcnow())
+        for dispatcher in dispatchers:
+            expected = dispatcher.namespace_for(tenant)
+            assert len(expected) <= 63
+            assert backend.namespace_for(tenant_id, None) == expected, tenant_id
+
+
+def test_the_reconciler_and_the_dispatcher_sanitise_names_identically():
+    """Two copies of one rule, held together the way `gke_api_host`'s are.
+
+    The reconciler image ships `apps/common` and `apps/reconciler` and nothing
+    else, so it cannot import the scheduler's `sanitize_name`; the frozen
+    `swarm_common` is the only place both could share one (contract request 13
+    in docs/contract-change-requests.md). Until then this equality is the only
+    thing that keeps the copies from drifting.
+    """
+    from reconciler.backends import sanitize_name as reconciler_sanitize
+    from scheduler.dispatch import DispatchError
+    from scheduler.dispatch import sanitize_name as scheduler_sanitize
+
+    cases: list[tuple[str, ...]] = [(t,) for t in NAMING_CORPUS]
+    cases += [
+        (f"{NS}{t}",) for t in NAMING_CORPUS
+    ] + [
+        ("9lives",),                  # not led by a letter: an `s` is prepended
+        ("swarm", "", "job", "eng"),  # empty parts are skipped, not joined
+        ("swarm", "job", "u-bogdan", "claude-code"),
+    ]
+    for parts in cases:
+        for max_length in (63, 40, 20):
+            assert reconciler_sanitize(*parts, max_length=max_length) == (
+                scheduler_sanitize(*parts, max_length=max_length)
+            ), (parts, max_length)
+
+    # Neither copy invents a name out of nothing.
+    with pytest.raises(DispatchError):
+        scheduler_sanitize("___")
+    with pytest.raises(ValueError):
+        reconciler_sanitize("___")
+
+
 # ---------------------------------------------------------------------------
 # F-3: a requested cancel finishes in one hop
 # ---------------------------------------------------------------------------
@@ -746,6 +853,80 @@ def test_an_active_job_found_by_name_is_killed_before_its_lease_is_released():
     assert [o.kind for o in killed] == ["dead_worker"]
 
 
+@pytest.mark.parametrize("list_status", [429, 500, 403])
+def test_a_live_job_under_a_heartbeating_lease_is_never_killed_because_a_list_failed(
+    list_status: int,
+):
+    """An ACTIVE answer by name DISPROVES an absence. It does not convict a lease.
+
+    The list path and the probe path must reach the same verdict on the same
+    world. Listed, this Job lands in `by_attempt`: no missing_execution is
+    raised, a lease that heartbeated ten seconds ago is not stale, and nothing
+    happens. Probed, the missing_execution that the FAILED list produced was
+    turned into a dead_worker -- generation fenced 1 -> 2, the Job deleted, the
+    lease released, the task re-queued: a healthy agent killed mid-run, its work
+    since the last checkpoint lost. On every pass where a list failed and a get
+    did not: APF answering 429 to LIST, a 5xx blip, a timeout -- or RBAC that
+    grants `get` without `list` (403).
+    """
+    db = FakeFirestore()
+    seed_tenant(db, ENG, record_namespace=True)
+    ids = seed_stranded(db, "task_5b1e0f4c9d8a4e7b8c21", state="RUNNING",
+                        heartbeat_seconds_ago=10)
+    job = k8s_job(task_id=ids["task"], active=1)
+    if list_status == 403:
+        batch = RbacBatchApi(jobs=[job], listable=set(), gettable={ENG_NS},
+                             deletable={ENG_NS})
+    else:
+        batch = RbacBatchApi(jobs=[job], listable={ENG_NS}, list_fails_with=list_status)
+    before = pool_actives(db)
+    rec, stream = reconciler(db, gke(batch))
+
+    report = rec.run_once()
+
+    assert report.leases_examined == 1, "the lease must be in the snapshot"
+    # The path under test RAN: the list failed, and the Job was read by name.
+    assert ENG_NS in batch.listed()
+    job_name = ids["execution"].split("/", 1)[1]
+    assert ("read_namespaced_job", ENG_NS, job_name) in batch.calls, "the probe was not tried"
+
+    assert batch.deleted == [], "a heartbeating agent was killed because a LIST failed"
+    task = db.docs[f"tasks/{ids['task']}"]
+    assert task["current_generation"] == 1, "a live worker's generation was fenced"
+    assert task["state"] == "RUNNING"
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None
+    assert pool_actives(db) == before
+    assert report.findings == 0
+    # Disproved, not held back. Counting it as suppressed, or logging
+    # NOT_REPAIRING for it, would page after thirty minutes of an agent that is
+    # doing exactly what it should.
+    assert report.findings_suppressed == 0, [s.as_dict() for s in report.suppressed]
+    assert not [l for l in log_lines(stream) if l["message"] == repair.NOT_REPAIRING]
+
+
+def test_a_live_job_under_a_silent_lease_is_still_killed_before_its_release():
+    """The other half, so the fix above cannot be "never kill on a probe".
+
+    The worker heartbeated, then went silent for ten minutes while its Job
+    still reads active by name. Listed, that is a dead_worker; probed, it must
+    be one too: fence, terminate, and only then release.
+    """
+    db = FakeFirestore()
+    seed_tenant(db, ENG, record_namespace=True)
+    ids = seed_stranded(db, "task_0c6d2a9e71f84b35a1d4", state="RUNNING",
+                        heartbeat_seconds_ago=600)
+    job = k8s_job(task_id=ids["task"], active=1)
+    batch = RbacBatchApi(jobs=[job], listable={ENG_NS}, list_fails_with=500)
+    rec, _ = reconciler(db, gke(batch))
+
+    report = rec.run_once()
+
+    assert batch.deleted == [f"{ENG_NS}/{job.metadata.name}"], batch.calls
+    assert db.docs[f"tasks/{ids['task']}"]["current_generation"] == 2
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is not None
+    assert [o.kind for o in report.outcomes if o.terminated] == ["dead_worker"]
+
+
 def test_a_job_is_judged_by_its_conditions_not_by_its_failed_counter():
     """`status.failed` moves before a Job is over; `Failed`/`Complete` do not.
 
@@ -812,19 +993,193 @@ def test_a_blind_pass_counts_what_it_held_back_instead_of_reporting_zero():
     assert any(e.startswith(f"{GKE}: listing executions failed") for e in report.errors)
 
 
+def _hcl_string_end(text: str, i: int) -> int:
+    """Index of the quote closing a string whose body starts at `i`.
+
+    Interpolations are walked, not skipped by character: `"${join(" OR ", x)}"`
+    holds quotes of its own, and a lexer that did not know that would lose its
+    place in `alerts.tf`'s locals block and read everything after it wrong.
+    """
+    while i < len(text):
+        if text.startswith(("$${", "%%{"), i):
+            i += 3
+            continue
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == '"':
+            return i
+        if c == "\n":
+            raise AssertionError(f"unterminated HCL string near offset {i}")
+        if text.startswith(("${", "%{"), i):
+            i = _hcl_interpolation_end(text, i + 2)
+            continue
+        i += 1
+    raise AssertionError("unterminated HCL string at end of file")
+
+
+def _hcl_interpolation_end(text: str, i: int) -> int:
+    depth = 0
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            i = _hcl_string_end(text, i + 1) + 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            if depth == 0:
+                return i + 1
+            depth -= 1
+        i += 1
+    raise AssertionError("unterminated HCL interpolation")
+
+
+def hcl_tokens(text: str) -> list[tuple[str, str]]:
+    """HCL as (kind, value) tokens, with every comment GONE.
+
+    Just enough lexer to answer "what is this attribute's value", which a
+    substring search of the file cannot: in a substring search a comment
+    quoting the message satisfies the check exactly as well as the filter does.
+    Kinds: STRING (raw body, escapes intact), HEREDOC, IDENT, PUNCT.
+    """
+    tokens: list[tuple[str, str]] = []
+    i, n = 0, len(text)
+    word = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
+    heredoc = re.compile(r"<<-?([A-Za-z_][A-Za-z0-9_]*)\n")
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c == "#" or text.startswith("//", i):
+            newline = text.find("\n", i)
+            i = n if newline < 0 else newline
+        elif text.startswith("/*", i):
+            i = text.index("*/", i) + 2
+        elif (opened := heredoc.match(text, i)) is not None:
+            marker = re.compile(rf"^[ \t]*{opened.group(1)}[ \t]*$", re.M)
+            closed = marker.search(text, opened.end())
+            assert closed is not None, f"unterminated heredoc {opened.group(1)}"
+            tokens.append(("HEREDOC", text[opened.end():closed.start()]))
+            i = closed.end()
+        elif c == '"':
+            end = _hcl_string_end(text, i + 1)
+            tokens.append(("STRING", text[i + 1:end]))
+            i = end + 1
+        elif (matched := word.match(text, i)) is not None:
+            tokens.append(("IDENT", matched.group(0)))
+            i = matched.end()
+        else:
+            tokens.append(("PUNCT", c))
+            i += 1
+    return tokens
+
+
+def hcl_block(tokens: list[tuple[str, str]], *header: str) -> list[tuple[str, str]]:
+    """The tokens inside `resource "<type>" "<name>" { ... }`, braces excluded."""
+    head = [("IDENT", header[0]), *(("STRING", label) for label in header[1:]), ("PUNCT", "{")]
+    for start in range(len(tokens) - len(head) + 1):
+        if tokens[start:start + len(head)] == head:
+            break
+    else:
+        raise AssertionError(f"no block {' '.join(header)} in alerts.tf")
+    depth, body = 1, []
+    for token in tokens[start + len(head):]:
+        if token == ("PUNCT", "{"):
+            depth += 1
+        elif token == ("PUNCT", "}"):
+            depth -= 1
+            if depth == 0:
+                return body
+        body.append(token)
+    raise AssertionError(f"block {' '.join(header)} is never closed")
+
+
+_HCL_OPEN = {("PUNCT", "{"), ("PUNCT", "("), ("PUNCT", "[")}
+_HCL_CLOSE = {("PUNCT", "}"), ("PUNCT", ")"), ("PUNCT", "]")}
+
+
+def hcl_attribute(body: list[tuple[str, str]], name: str) -> list[tuple[str, str]]:
+    """The value tokens of a TOP-LEVEL `name = <value>` in a block body.
+
+    Top level only, so `key = ...` inside a nested `labels { }` block is never
+    mistaken for an attribute of the resource itself.
+    """
+    depth = 0
+    for index, token in enumerate(body):
+        if token in _HCL_OPEN:
+            depth += 1
+        elif token in _HCL_CLOSE:
+            depth -= 1
+        elif depth == 0 and token == ("IDENT", name) and body[index + 1:index + 2] == [
+            ("PUNCT", "=")
+        ]:
+            return _hcl_value(body[index + 2:])
+    raise AssertionError(f"no top-level attribute {name!r}")
+
+
+def _hcl_value(rest: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """One expression: a literal, a name, a call, or a bracketed collection."""
+    value: list[tuple[str, str]] = []
+    depth = 0
+    for position, token in enumerate(rest):
+        value.append(token)
+        if token in _HCL_OPEN:
+            depth += 1
+            continue
+        if token in _HCL_CLOSE:
+            depth -= 1
+        if depth:
+            continue
+        following = rest[position + 1] if position + 1 < len(rest) else None
+        if token[0] == "IDENT" and following in (("PUNCT", "("), ("PUNCT", "[")):
+            continue                      # a function call or an index follows
+        return value
+    return value
+
+
+def hcl_literals(value: list[tuple[str, str]]) -> list[str]:
+    """The string literals in an attribute value, escapes decoded."""
+    return [
+        body.replace('\\"', '"').replace("\\\\", "\\")
+        for kind, body in value
+        if kind == "STRING"
+    ]
+
+
 def test_the_alert_policy_matches_the_lines_the_reconciler_writes():
     """A log-based metric whose filter matches nothing is not an error anywhere.
 
     It is a number that stays at zero and an alert that never fires, which is
-    indistinguishable from a healthy platform. So the strings are compared,
-    verbatim, against the file the metrics are built from.
+    indistinguishable from a healthy platform. So each message is compared,
+    verbatim, against the FILTER of the metric that counts it -- parsed, with
+    comments removed. The first version of this test searched the file's text,
+    where the comment above the metrics quotes BACKEND_UNAVAILABLE word for
+    word: the filter could have said anything at all and the test would pass.
     """
     alerts = (REPO / "terraform" / "modules" / "monitoring" / "alerts.tf").read_text()
-    assert repair.BACKEND_UNAVAILABLE in alerts
-    assert repair.NOT_REPAIRING in alerts
-    # The fields the metrics extract are the ones the log lines carry.
-    assert "EXTRACT(jsonPayload.backend)" in alerts
-    assert "EXTRACT(jsonPayload.lease_id)" in alerts
+    tokens = hcl_tokens(alerts)
+    expected = {
+        "reconciler_backend_unavailable": (repair.BACKEND_UNAVAILABLE, {"backend"}),
+        "reconciler_not_repairing": (repair.NOT_REPAIRING, {"lease_id", "backend"}),
+    }
+    for metric, (message, fields) in expected.items():
+        body = hcl_block(tokens, "resource", "google_logging_metric", metric)
+        filter_literals = hcl_literals(hcl_attribute(body, "filter"))
+        assert f'jsonPayload.message="{message}"' in filter_literals, (metric, filter_literals)
+        # Every line from the reconciler carries component=reconciler; the
+        # shared clause lives in a local the filter must actually use.
+        assert ("IDENT", "local.reconciler_log_filter") in hcl_attribute(body, "filter"), metric
+
+        # The fields the metric extracts are the ones the log line carries.
+        extractors = hcl_attribute(body, "label_extractors")
+        pairs = {
+            key[1]: value[1]
+            for key, eq, value in zip(extractors, extractors[1:], extractors[2:])
+            if key[0] == "IDENT" and eq == ("PUNCT", "=") and value[0] == "STRING"
+        }
+        assert pairs == {f: f"EXTRACT(jsonPayload.{f})" for f in fields}, (metric, pairs)
 
 
 # ---------------------------------------------------------------------------
