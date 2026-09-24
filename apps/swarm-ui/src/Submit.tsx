@@ -884,8 +884,11 @@ function Form({ capacity }: { capacity: Capacity }) {
  *  A FILL, AND THE NAME AT THE TOP OF IT. These facts are about ONE row of the
  *  list above; loose paragraphs under a five-row list read as being about the
  *  list. The `--surface-2` block is the same line-to-step substitution §13.3
- *  applies everywhere else, and the name is what binds it to the choice. */
-function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerProfile; pools: Pool[] }) {
+ *  applies everywhere else, and the name is what binds it to the choice.
+ *
+ *  Exported for `submit.room.test.tsx`, which renders it with hand-built
+ *  arguments rather than through the whole form. */
+export function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerProfile; pools: Pool[] }) {
   const byName = new Map<string, Pool>(pools.map((p) => [p.name, p]))
   // Read off `profile.admission`: the server computed it from
   // `evaluate_capacity`, so this box and the Capacity board cannot disagree.
