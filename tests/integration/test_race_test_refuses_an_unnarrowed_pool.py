@@ -637,6 +637,31 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
         "the admin-route repair did not say what it needs through the front "
         f"door, so it reads as a command that simply works:\n{proc.transcript}"
     )
+    # The ADDRESS, not only the name. #23 moved `frontend_iap_members` out of
+    # the environment's tfvars into terraform/bootstrap, and every remedy that
+    # named the old file survived a clean textual merge because it was only
+    # checked for the variable's name (tests/unit/mcp/test_front_door.py has
+    # the same property for the client's remedies). Whatever tfvars file this
+    # repair sends the reader to must exist and must SET the list. Only the
+    # path that follows the variable's name is read: the transcript can name
+    # other tfvars files for other reasons (admin_users is in the
+    # environment's), and those are not this claim. The window spans the line
+    # break and the ` fail ` prefix `err` puts on the next line.
+    named = re.findall(
+        r"frontend_iap_members in[\s\S]{0,40}?(terraform/[\w<>./-]+\.tfvars)",
+        proc.transcript,
+    )
+    assert named, (
+        "the admin-route repair names frontend_iap_members but not the file "
+        f"that sets it:\n{proc.transcript}"
+    )
+    for relative in named:
+        path = REPO / relative
+        assert path.is_file(), f"the repair sends the reader to {relative}, which does not exist"
+        assert re.search(r"^\s*frontend_iap_members\s*=", path.read_text(), re.M), (
+            f"the repair sends the reader to {relative}, which does not set "
+            "frontend_iap_members"
+        )
     assert not _firestore_writes(proc.requests), (
         "a refused restore fell back to writing Firestore directly:\n"
         f"{proc.requests}"

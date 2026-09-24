@@ -427,6 +427,25 @@ later release, including the one that applies decision 2. Strict means it
 turns red the moment the member is added, so the marker has to come off in
 that change.
 
+**Update, later on 2026-09-24: landed, through #23 and not in `dev.tfvars`.**
+#23 moved the IAP accessor list out of `terraform/infra` altogether, because
+the release's deployer needed an IAP admin role that could not be scoped to
+this platform's two backends. The list is now `frontend_iap_members` in
+`terraform/bootstrap/terraform.tfvars`, applied by the owner rather than by the
+release, and it holds `domain:saga.xyz` and
+`serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com`. #23
+records the grant as applied and read back through the IAP API on both
+backends. That is #23's measurement; this lane did not repeat it.
+
+The strict xfail above did **not** catch it, and could not have: it read
+`frontend_iap_members` from `dev.tfvars`, the variable left that file, and the
+test went on failing, as expected, for the wrong reason. The merge of main into
+PR #21 points the test at `terraform/bootstrap/terraform.tfvars`, removes the
+marker, and adds a check that the bootstrap root's `project_id` is dev's, so the
+member is on the front door `swarm-verify` actually calls. The race-test repair
+that names the list now names the file too, and the integration test requires
+that file to set it.
+
 ### 2. `swarm-verify` is a platform admin in dev, and race-test narrows through the admin API
 
 **Decision:** recommendation (b) above, with the attribution this note said
@@ -468,8 +487,9 @@ was "not optional".
   * a ceiling above `LimitRequest`'s bound of 100000, because the restore would
     then be a 422. The script holds a copy of that bound as `API_LIMIT_MAX`, and
     `tests/unit/scripts/test_race_test_limit_bound.py` fails if the copy drifts.
-    This is a new mirrored value. `docs/mirrored-values.md` should list it once
-    PR #16, which has that file open, lands.
+    This is a new mirrored value. It is listed in `docs/mirrored-values.md`,
+    under "Covered elsewhere", added when PR #16 (which had that file open)
+    merged and main was merged into this branch.
 * **Attribution**, in `apps/swarm-api`. `Store.upsert_pool(…, by=)` writes
   `admin_changed_by` (the verified caller) and `admin_changed_at` on the pool
   document. Every admin route that writes a pool now passes `auth.email`: the six

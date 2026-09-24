@@ -9,6 +9,14 @@ docs/audits/2026-09-22/race-test-needs-a-write.md):
    cover a `*.iam.gserviceaccount.com` identity. PR #15's end-to-end check and
    every operator script run with SWARM_IMPERSONATE_SA go through that door.
 
+   The list is `frontend_iap_members` in terraform/bootstrap/terraform.tfvars,
+   NOT the environment's tfvars. #23 moved it there on 2026-09-24 (the release's
+   deployer could not be given an IAP role scoped to our backends), and it is
+   applied by the owner rather than by the release. This test first read
+   dev.tfvars, and after that move it would have gone on "failing as expected"
+   under its strict xfail for the wrong reason -- the variable was no longer in
+   the file, not the member missing from the list.
+
 2. `swarm-verify` is a platform admin in dev, so race-test narrows
    `runner:mock` through `PUT /v1/admin/limits/runner/mock` instead of a raw
    Firestore PATCH.
@@ -35,10 +43,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[3]
 DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
+#: Where the IAP accessor list lives since #23; scripts/lib/common.sh's IAP
+#: remedy sends the reader to the same file.
+BOOTSTRAP_TFVARS = ROOT / "terraform" / "bootstrap" / "terraform.tfvars"
 VERIFY_TF = ROOT / "terraform" / "infra" / "verify.tf"
 LOCALS_TF = ROOT / "terraform" / "infra" / "locals.tf"
 
@@ -49,17 +58,19 @@ def _strip_comments(text: str) -> str:
     return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
 
 
-def _string_list(text: str, name: str) -> list[str]:
+def _string_list(path: Path, name: str) -> list[str]:
     """The string elements of a top-level `name = [ ... ]` assignment."""
-    body = _strip_comments(text)
+    body = _strip_comments(path.read_text())
     m = re.search(rf"^{re.escape(name)}\s*=\s*\[(.*?)\]", body, re.S | re.M)
-    assert m, f"{name} is not assigned as a list in {DEV_TFVARS.relative_to(ROOT)}"
+    assert m, f"{name} is not assigned as a list in {path.relative_to(ROOT)}"
     return re.findall(r'"([^"]+)"', m.group(1))
 
 
-def _string_value(text: str, name: str) -> str:
-    m = re.search(rf'^{re.escape(name)}\s*=\s*"([^"]+)"', _strip_comments(text), re.M)
-    assert m, f"{name} is not assigned in {DEV_TFVARS.relative_to(ROOT)}"
+def _string_value(path: Path, name: str) -> str:
+    m = re.search(
+        rf'^{re.escape(name)}\s*=\s*"([^"]+)"', _strip_comments(path.read_text()), re.M
+    )
+    assert m, f"{name} is not assigned in {path.relative_to(ROOT)}"
     return m.group(1)
 
 
@@ -72,7 +83,7 @@ def _verify_identity() -> str:
         re.S,
     )
     assert m, "google_service_account.verify has no literal account_id in verify.tf"
-    project = _string_value(DEV_TFVARS.read_text(), "project_id")
+    project = _string_value(DEV_TFVARS, "project_id")
     return f"{m.group(1)}@{project}.iam.gserviceaccount.com"
 
 
@@ -92,28 +103,25 @@ def test_the_derived_identity_is_the_one_swarm_api_admits() -> None:
     ), "swarm-api no longer admits google_service_account.verify through ALLOWED_USERS"
 
 
-#: STRICT, so it cannot outlive the edit it stands for. Decision 1 is decided and
-#: NOT in this branch: the authoring sessions' permission classifier classed the
-#: dev.tfvars change as a permission grant and refused it (in the first session,
-#: and again in the fix-up session), so it waits for the owner to make it or to
-#: authorise it directly. A plain red test here would put
-#: `release.yml`'s `verify` job -- `uv run pytest tests/unit`, which build,
-#: infrastructure and deploy all need -- red on main the moment this merged, and
-#: block every release after it, including the one that applies admin_users.
-#: strict=True turns this RED the moment the member is added, so whoever adds
-#: it has to delete this marker in the same change.
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "owner decision 1 (2026-09-24): serviceAccount:swarm-verify@... in "
-        "frontend_iap_members -- the dev.tfvars edit is pending; remove this "
-        "marker in the change that adds it"
-    ),
-)
+#: No xfail any more. This was `xfail(strict=True)` while decision 1 was decided
+#: and not yet in the branch. It landed through #23 -- in
+#: terraform/bootstrap/terraform.tfvars, which #23 reports applied and read back
+#: on both backends -- and the marker came off in the merge of main that brought
+#: it here. A strict xfail over a moved variable is the trap this file now
+#: avoids: it kept passing because the old file no longer SET the list at all.
 def test_the_verify_identity_can_pass_iap_on_the_front_door() -> None:
     """Decision 1: IAP admits swarm-verify, as a serviceAccount member."""
     email = _verify_identity()
-    members = _string_list(DEV_TFVARS.read_text(), "frontend_iap_members")
+    # The bootstrap root grants on the front door of ITS project. If that ever
+    # stopped being the project swarm-verify lives in, the member below would
+    # be admitted to somebody else's load balancer and still 403 on ours.
+    bootstrap_project = _string_value(BOOTSTRAP_TFVARS, "project_id")
+    dev_project = _string_value(DEV_TFVARS, "project_id")
+    assert bootstrap_project == dev_project, (
+        f"terraform/bootstrap grants IAP in {bootstrap_project}, but swarm-verify "
+        f"and dev's front door are in {dev_project}"
+    )
+    members = _string_list(BOOTSTRAP_TFVARS, "frontend_iap_members")
 
     assert f"serviceAccount:{email}" in members, (
         f"frontend_iap_members is {members}; IAP answers 403 'Access denied. For "
@@ -127,7 +135,7 @@ def test_the_verify_identity_can_pass_iap_on_the_front_door() -> None:
 def test_the_verify_identity_is_a_platform_admin_in_dev() -> None:
     """Decision 2: ADMIN_USERS names swarm-verify, as a bare email."""
     email = _verify_identity()
-    admins = _string_list(DEV_TFVARS.read_text(), "admin_users")
+    admins = _string_list(DEV_TFVARS, "admin_users")
 
     assert email in admins, (
         f"admin_users is {admins}; PUT /v1/admin/limits/runner/mock answers 403 "

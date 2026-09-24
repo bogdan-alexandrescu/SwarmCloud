@@ -246,6 +246,7 @@ that "not in the parity checker" is never read as "not covered".
 | the tenant KSA the renderer creates | `render.py` vs `GkeJobDispatcher.ksa_for` | the same file |
 | the Cloud Run Job id | `dispatch.py` vs `job_matrix.key` in terraform | `tests/unit/control_plane/test_job_name_matches_terraform.py` |
 | every environment variable the control plane reads | the readers vs what terraform sets | `scripts/lib/check-env-parity.sh` |
+| the admin API's ceiling bound | `API_LIMIT_MAX` in `scripts/race-test.sh` mirrors the `le=` on `LimitRequest.limit` in `swarm_api.schemas`; the script cannot ask the API, and refuses before its first write to narrow a pool whose ceiling it could not restore | `tests/unit/scripts/test_race_test_limit_bound.py` imports `LimitRequest` and requires equality — higher strands a narrowed pool behind a 422, lower refuses pools the API could restore |
 | the shared deny-list and the unlabelable-type list | `SHARED_DENY_LIST` in `common.sh`, and `unlabelable-types.json` | nothing — both were restated in `tests/integration/test_destroy_guard.py` and neither was compared; now derived there, with the derivation itself asserted. See below |
 
 ## (c) Not compared, and why

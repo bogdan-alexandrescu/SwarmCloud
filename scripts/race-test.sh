@@ -301,13 +301,17 @@ restore() {
       else
         RESTORE_RC=1
         # TWO REPAIRS, because the one that matches this suite's own write
-        # cannot be run from a workstation today. The front door refuses every
+        # cannot be run with a person's credential. The front door refuses every
         # user credential (scripts/api.sh: SWARM_IMPERSONATE_SA is REQUIRED
         # there), so the admin route only works as an identity that is BOTH an
-        # admin and admitted by IAP. pool-limit.sh works now, as an operator,
-        # through a Firestore updateMask that names hard_limit alone. Printing
-        # only the first sent whoever read this to a 403 with nothing else on
-        # screen, while every mock task serialised.
+        # admin and admitted by IAP. In dev that is swarm-verify once both of
+        # its grants are live: IAP through frontend_iap_members in
+        # terraform/bootstrap/terraform.tfvars (#23, applied by the owner, not
+        # the release) and admin through admin_users (applied by the release).
+        # pool-limit.sh needs neither: it works as an operator, through a
+        # Firestore updateMask that names hard_limit alone. Printing only the
+        # first sent whoever read this to a 403 with nothing else on screen,
+        # while every mock task serialised.
         err "COULD NOT RESTORE ${POOL_NAME}. It is still narrowed, and every ${PROFILE} task"
         err "on this deployment will serialise behind ${SLOT_LIMIT} slot(s) until it is put back."
         err "  the restoring PUT ${API_PREFIX}${LIMIT_ROUTE} answered ${answered}"
@@ -319,8 +323,8 @@ restore() {
         err "    scripts/api.sh PUT ${LIMIT_ROUTE} '{\"limit\":${ORIGINAL_LIMIT}}'"
         err "      the admin route this suite used, which records who made the change."
         err "      Through the front door it needs SWARM_IMPERSONATE_SA naming an identity"
-        err "      that is in admin_users AND admitted by IAP (frontend_iap_members);"
-        err "      a user credential is refused there."
+        err "      that is in admin_users AND admitted by IAP (frontend_iap_members in"
+        err "      terraform/bootstrap/terraform.tfvars); a user credential is refused there."
       fi
     fi
   fi
