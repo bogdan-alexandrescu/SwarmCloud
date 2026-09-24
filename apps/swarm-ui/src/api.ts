@@ -129,6 +129,32 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
 }
 
 /**
+ * HOW MANY EVENTS A RUN SCREEN ASKS FOR, and why it has to ask at all.
+ *
+ * `GET /v1/tasks/{id}/events` with no `limit` answers with the API's DEFAULT
+ * page, `default_page_size = 50` (swarm_api/settings.py), not its maximum.
+ * Every comment in this client -- and redesign-v2 §4 -- reasons about "the
+ * 200-event page", and every run screen was in fact reading 50: at one
+ * heartbeat event per 150s plus a checkpoint event per 120s, that page ends
+ * around the half-hour mark of an attempt, so the peak-memory line, the
+ * checkpoint strip and the checkpoint table's locations all stopped there.
+ *
+ * 200 is `max_page_size`, the server's own cap (`paged_limit` clamps to it,
+ * silently). Asking for more would be clamped to the same 200 and would make
+ * a full page look like one that asked for less. The route still returns no
+ * page token, so a page that comes back FULL is a window, and the charts say
+ * so; that is seam S1, and it belongs to the API, not to this constant.
+ *
+ * WHAT THIS CANNOT SEE. `MAX_PAGE_SIZE` is environment-overridable and set
+ * nowhere in this repository today. A deployment that lowered it would clamp
+ * this request below 200, and a full page would then arrive SHORT of this
+ * number and not be flagged as full. Nothing here ever reads a short page as
+ * complete in the other direction either: an interval with no recorded end
+ * stays open whatever the page length (duration.ts).
+ */
+export const EVENT_PAGE_LIMIT = 200
+
+/**
  * One agent, with its event timeline.
  *
  * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is deliberately NOT
@@ -149,7 +175,7 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
   const path = `/v1/tasks/${encodeURIComponent(taskId)}`
   const [task, events] = await Promise.all([
     read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events`, () => false),
+    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
   ])
 
   if (task.status === 'loading' || task.status === 'error') return task
@@ -971,7 +997,7 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   const path = `/v1/tasks/${encodeURIComponent(taskId)}`
   const [task, events, attempts, classes] = await Promise.all([
     read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events`, () => false),
+    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
     read<{ attempts: AttemptRow[] }>(`${path}/attempts`, (d) => d.attempts.length === 0),
     loadResourceClasses(),
   ])
