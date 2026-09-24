@@ -248,7 +248,8 @@ The single richest operator-facing data source that actually exists. Every lifec
 | `dispatched` | `execution_name`, `backend` | scheduler, `store.py:243-248` |
 | `checkpoint_completed` | `seq`, `size_bytes`, `uri`, `checkpoint_id` | worker, `control.py:478-482` |
 | `heartbeat` | `elapsed_seconds`, `peak_rss_bytes`, `checkpoints` | worker, `lifecycle.py:793-799` |
-| `cancelled` (request) | `requested_by`, `from_state`, `phase` (`cancelled` vs `cancel_requested`) | API, `swarm_api/store.py:448-455` |
+| `cancel_requested` (not terminal) | `requested_by`, `from_state`, `phase` (`cancel_requested`) | API, `Store.request_cancel`, for a task holding capacity: only the flag is set. Before 2026-09-24 this was written as `cancelled` with `phase: cancel_requested`; the API serves those stored rows as `cancel_requested` (contract request 17) |
+| `cancelled` (API) | `requested_by`, `from_state`, `phase` (`cancelled`) | API, `Store.request_cancel`, for a task holding nothing: the API made the transition itself |
 | `submitted` | `runner_profile`, `resource_class`, `state`, `workflow_id` | API, `store.py:351-363` |
 
 `lease_released.reason` is the one field whose vocabulary spans three writers: `dispatch_failed` (scheduler), `parked:<ParkReason>` and `terminal:<TaskState>` (worker), or a bare `FindingKind` such as `stale_lease` (reconciler). Render it as a literal; do not map it through any one enum.

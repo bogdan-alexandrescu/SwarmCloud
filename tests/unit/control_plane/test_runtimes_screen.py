@@ -499,7 +499,7 @@ def test_a_catalogue_that_gains_entries_needs_no_edit_here(client, monkeypatch, 
                 image=f"probe-image-{n}",
                 resource_class=next(iter(RESOURCE_CLASSES)),
                 backend=Backend.CLOUD_RUN_JOB,
-                command=("python", "-m", "agent_worker.runners.mock"),
+                runner_argv=("python", "-m", "agent_worker.runners.mock"),
             ),
         )
 

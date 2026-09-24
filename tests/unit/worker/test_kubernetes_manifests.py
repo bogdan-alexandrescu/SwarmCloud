@@ -1597,8 +1597,9 @@ def test_neither_copy_of_the_job_overrides_the_image_entrypoint(profile):
     one catalogue edit from GKE.
 
     The image ENTRYPOINT is `tini -- python -m agent_worker`, the worker
-    lifecycle. `RunnerProfile.command` is the lifecycle's CHILD argv; as a
-    container `command` it replaces the lifecycle with the bare runner.
+    lifecycle. `RunnerProfile.runner_argv` (called `command` until contract
+    request 18) is the lifecycle's CHILD argv; as a container `command` it
+    replaces the lifecycle with the bare runner.
     """
     for source, job in (
         ("render.py", _rendered_job(profile)),

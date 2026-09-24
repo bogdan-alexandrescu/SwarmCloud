@@ -29,8 +29,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
-| 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | open |
-| 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | open |
+| 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
+| 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | ACCEPTED 2026-09-24 (the owner's "#14"), rename applied in PR #44 |
 | 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 
@@ -1602,9 +1602,97 @@ the tests fail rather than production.
 
 ## 17. `states.py`: a cancel that is only requested is recorded as `cancelled`
 
-**Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
-(where it was filed as CR-1). Found while the incident's stuck tasks were read
-event by event. It did not cause that incident.
+**Status: ACCEPTED — accepted by the owner in session, 2026-09-24 — and applied
+in PR #44.** This edits `apps/common/swarm_common/states.py`, which is frozen,
+and is recorded here as such. The owner accepted it as "#13" together with
+request 18 as "#14": those were the session's numbers for the two incident
+requests, not this file's. **Requests 13 and 14 in this file (the pool account
+on `Attempt`, a sub-agent's parent) are NOT accepted by this and are still
+open.**
+
+Recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559` (where it was filed
+as CR-1). Found while the incident's stuck tasks were read event by event. It
+did not cause that incident.
+
+### What was applied
+
+* `EventType.CANCEL_REQUESTED = "cancel_requested"`, documented in `states.py`
+  as NOT terminal, next to `CANCELLED`, which is documented as "the task
+  reached CANCELLED".
+* `swarm_api.store.request_cancel` writes `CANCEL_REQUESTED` when it only sets
+  the flag and `CANCELLED` only for the transition it makes itself (SUBMITTED,
+  QUEUED, READY, PARKED to CANCELLED). `detail.phase` is still written on both,
+  so a reader of the old discriminator keeps working.
+* The terminal `cancelled` for a task that held capacity was already written by
+  whoever finishes it, and is unchanged: the worker (`control.finish`), the
+  reconciler (F-3, `repair.py`), the scheduler (`SchedulerStore.cancel`).
+* **History is read, not rewritten.** Events stored before this change keep
+  `type: cancelled, phase: cancel_requested`. `swarm_api.codec.stored_event_type`
+  (called by `event_from_dict`, the decoder behind every event route) serves
+  exactly that shape as `cancel_requested`, with the detail as stored, so a
+  served legacy request is the same shape as a new one. A `cancelled` with
+  `phase: cancelled` or with no phase is a real cancel and is untouched. No
+  migration was written: this lane writes no live data, and the read is one
+  line where a migration is a write to every task's history.
+* Four readers can see the raw legacy row, and each applies the same reading to
+  it. Only one reads Firestore directly: `scripts/load-test.sh`, through
+  `testlib.sh`'s `task_events`. The other three read through the API. They
+  carry their own copy because they can meet a `swarm-api` image from before
+  this change, which serves the legacy row as stored:
+  * `swarm_mcp.follow.event_type`, called by `swarm_follow` (`_event_row`) and
+    `swarm tail` (`cli.cmd_tail`);
+  * `scripts/benchstat.py`, whose one collector, `bench-dispatch.sh`, reads
+    `GET /v1/tasks/{id}/events`. (Corrected 2026-09-24: this record first said
+    benchstat reads Firestore directly. It does not.)
+  * the console's `apps/swarm-ui/src/events.ts`, used by the Timeline's
+    end-of-history check and its type labels.
+* Tests: `tests/unit/control_plane/test_cancel_request_is_not_a_cancel.py`,
+  plus additions to `test_request_cancel_is_transactional.py`,
+  `tests/unit/mcp/test_follow_cursor.py`, `tests/unit/scripts/test_benchstat.py`
+  and `apps/swarm-ui/src/__tests__/cancel.request.timeline.test.tsx`. Every
+  copy of the legacy reading except `load-test.sh`'s jq is pinned by a test
+  that feeds it the raw row. For the plugin, two tests run the real application
+  with its decoder put back to the pre-change `EventType(data["type"])`: through
+  the current API, which already reads the legacy shape, removing either call
+  site stayed green.
+
+### What is still true after it (the breakage the request predicted)
+
+The breakage predicted below is real and was not engineered away. A
+`swarm-api` image from before this change decodes a stored event with
+`EventType(data["type"])`, and `cancel_requested` is not in its enum. So when
+such an image serves a page of `GET /v1/tasks/{id}/events` that holds a
+`cancel_requested` event, it raises `ValueError` inside `_keyset_page`. There is
+no per-row handling, so the whole page is a 500. `swarm-api` is the only
+decoder of stored events; the scheduler, reconciler and worker never decode
+one.
+
+That happens in two situations, and only the first one ends by itself:
+
+* **During the rollout.** An instance still on the old image serves the page
+  after a new instance has written the event. This lasts until the rollout
+  completes.
+* **After a rollback past this change.** The documented recovery for a broken
+  control-plane service is to deploy the previous manifest
+  ([operations.md §7](operations.md#7-deploying-a-change),
+  [disaster-recovery.md §3](disaster-recovery.md#3-a-control-plane-service-is-broken)).
+  The `cancel_requested` events written since the deploy are permanent. A
+  pre-change image fails on them for as long as it serves, on every task that
+  was cancelled while it held capacity. The console Timeline, `swarm_follow`
+  and `swarm tail` then report that task's history as unreadable, during an
+  incident, which is when it is needed most. Reverting this change has the
+  same effect. (Corrected 2026-09-24: this record first said the crash "lasts
+  one rollout of `swarm-api`", which holds only if nobody rolls back.)
+
+Both runbooks now say this: do not roll `swarm-api` back to a build from before
+this change, and do not revert it. Roll forward instead, and check a rollback
+target with `git grep CANCEL_REQUESTED <tag> -- apps/common/swarm_common/states.py`.
+
+Not done, because it is the owner's choice: shipping the reader (the enum
+member and `stored_event_type`) as a release of its own before the writer
+(`request_cancel`). That would make a one-step rollback after the writer safe.
+It would not make a rollback past the reader safe, so the runbook constraint
+is needed either way.
 
 ### The claim that is false
 
@@ -1648,7 +1736,9 @@ finishes it:
   previous image that lists the events of a task holding a `cancel_requested`
   event raises `ValueError` for that page. `swarm-api` is both the only writer
   and a reader, so the exposure is one rolling deploy. It is still a window in
-  which a task's event page can fail.
+  which a task's event page can fail. (Corrected after acceptance: a rollback
+  to an image from before the change reopens it, for as long as the rollback
+  lasts. See "What is still true after it" above.)
 * **History keeps the old shape.** Events already written stay
   `type: cancelled, phase: cancel_requested`. A reader that wants the truth
   about old tasks must keep reading `detail.phase`, unless a one-off migration
@@ -1668,10 +1758,36 @@ incident's operators were in.
 
 ## 18. `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command
 
-**Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
-(where it was filed as CR-2). The code defect it describes is fixed outside the
-frozen package, in `apps/scheduler/scheduler/dispatch.py`. This request is about
-the field that made the defect easy to write.
+**Status: ACCEPTED — accepted by the owner in session, 2026-09-24 — in its
+stronger form, and applied in PR #44.** This edits
+`apps/common/swarm_common/profiles.py`, which is frozen, and is recorded here as
+such. The owner's "#14" (see request 17's status for the numbering): the field
+is RENAMED to `runner_argv` and documented as the argv the worker lifecycle
+starts as its child, never a container command.
+
+Recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559` (where it was filed
+as CR-2). The code defect it describes is fixed outside the frozen package, in
+`apps/scheduler/scheduler/dispatch.py`. This request is about the field that
+made the defect easy to write.
+
+### What was applied
+
+* `RunnerProfile.command` is now `RunnerProfile.runner_argv`, with the comment
+  proposed below on the field itself (plus a note of the old name and why it
+  changed). Values are unchanged.
+* Every reader moved: `agent_worker.lifecycle._runner_argv`,
+  `swarm_api.runnerinputs.runner_module`, the comments in
+  `scheduler/dispatch.py`, and the tests listed below plus
+  `test_runtime_catalogue.py`, `test_runtimes_screen.py`,
+  `test_dispatch_manifests.py` and `tests/unit/mcp/test_profiles.py` (whose
+  leak list named `command` and now names `runner_argv`, with an assertion
+  that every name on it is a real field).
+* `tests/unit/control_plane/test_runner_argv_is_the_lifecycles_child.py` pins
+  that no field is called `command`, that every profile's `runner_argv` names a
+  real runner module, and that the warning stays on the field.
+* Not a wire change and not a data change, as predicted: no route serialises
+  the field and no stored document holds it. `scripts/lib/check-contract-parity.sh`
+  restates nothing about it (checked).
 
 ### What happened
 

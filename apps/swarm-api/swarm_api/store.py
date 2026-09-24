@@ -824,14 +824,24 @@ class Store:
                 event_id=new_id("ev"),
                 task_id=task_id,
                 tenant_id=tenant_id,
-                type=EventType.CANCELLED,
+                # CANCELLED only for the transition THIS call made. A task that
+                # holds capacity is not cancelled by this write -- only flagged
+                # -- so its event is CANCEL_REQUESTED, and the terminal
+                # CANCELLED is written by the worker (`control.finish`) or the
+                # reconciler (F-3) when one of them actually finishes it.
+                # Until 2026-09-24 this wrote CANCELLED for both and left
+                # `phase` as the only discriminator, which is how incident
+                # wf_ebb3ab2d65664707a559 showed four DISPATCHED tasks as
+                # cancelled for over an hour (contract request 17).
+                type=EventType.CANCELLED if immediate else EventType.CANCEL_REQUESTED,
                 at=now,
                 detail={
                     "requested_by": by,
                     "from_state": task.state.value,
-                    # "cancel_requested" means the flag is set but the task
-                    # still holds capacity: the worker or reconciler releases
-                    # the lease.
+                    # Kept although the type now says the same thing: a reader
+                    # written against the old discriminator keeps working, and
+                    # a stored legacy request that `event_from_dict` serves as
+                    # CANCEL_REQUESTED is then the same shape as a new one.
                     "phase": "cancelled" if immediate else "cancel_requested",
                 },
             )
