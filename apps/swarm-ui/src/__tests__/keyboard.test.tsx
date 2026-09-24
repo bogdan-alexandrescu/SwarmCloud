@@ -378,8 +378,8 @@ describe('keyboard traversal', () => {
       // utility, where it was 21 (6 + 13 + 2) before the collapse; the comment
       // on STOP_FLOOR said 22 and was counting a tab strip under Runtimes that
       // a single-pane section never drew. So this proves the SHELL rendered
-      // rather than the screen. What notices a screen going empty is the total below
-      // and the per-route numbers in the log.
+      // rather than the screen. What notices a screen going empty is the
+      // total below and the per-route numbers in the log.
       expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(20)
     }
     expect(stops, 'the sweep reached almost nothing').toBeGreaterThan(STOP_FLOOR)
