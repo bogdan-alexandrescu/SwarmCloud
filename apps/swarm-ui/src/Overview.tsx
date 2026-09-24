@@ -3018,9 +3018,8 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    there the tilde carries the difference and the bar barely does.
    test_state_colour_discriminability.py lists the bar in DOCUMENTED_GREYS and
    holds both marks away from --ctl-absent. */
-.ctl-util-fill.ov-projected { background: var(--text-dim); }
+.ctl-util-fill.ov-projected { background: var(--text-faint); }
 .ov-tilde { color: var(--text-faint); margin-right: 1px; }
-.ctl-util-figure .ov-tilde { color: var(--ctl-absent); }
 
 /* ---- attention ---------------------------------------------------------- */
 
