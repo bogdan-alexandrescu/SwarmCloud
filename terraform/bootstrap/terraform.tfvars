@@ -19,6 +19,20 @@ github_repository = "bogdan-alexandrescu/SwarmCloud"
 # correct trade and terraform.yml handles it rather than widening this.
 github_allowed_refs = ["refs/heads/main"]
 
+# The deployer's roles that have traded their project-wide grant for a
+# conditioned one (deployer_conditions.tf). EMPTY: the conditions are written
+# and none is applied yet.
+#
+# ADD ONE PER RELEASE, apply bootstrap between releases, and let the next
+# release's plan -- which refreshes everything terraform/infra manages -- prove
+# it. A wrong condition fails that plan with a 403 on our own resource; the
+# revert is deleting the line and applying again.
+#
+# Accepted names: roles/compute.networkAdmin, roles/compute.securityAdmin,
+# roles/container.admin, roles/datastore.owner, roles/logging.configWriter,
+# roles/resourcemanager.projectIamAdmin, swarmSecretProvisioner.
+deployer_scoped_roles = []
+
 # Who may pass IAP on the front door (wif.tf, frontend_accessors).
 #   domain:saga.xyz -- people; swarm-api still enforces the tenant boundary.
 #   swarm-verify    -- owner decision 2026-09-24: the in-VPC checks, PR #15's

@@ -424,14 +424,14 @@ def test_the_mock_runner_needs_no_provider_key(tmp_path, monkeypatch):
 
 
 def test_each_runner_module_is_executable_as_the_catalogue_names_it():
-    """`RUNNER_PROFILES[...].command` is `python -m agent_worker.runners.<name>`,
-    and the worker runs exactly that. A module that cannot be imported as
+    """`RUNNER_PROFILES[...].runner_argv` is `python -m agent_worker.runners.<name>`,
+    and the worker lifecycle starts exactly that as its child. A module that cannot be imported as
     `__main__` is a dispatch-time outage, so every one is checked here."""
     from swarm_common.profiles import RUNNER_PROFILES
 
     for profile in RUNNER_PROFILES.values():
-        module = profile.command[-1]
-        assert profile.command[:2] in (("python", "-m"), ("python3", "-m"))
+        module = profile.runner_argv[-1]
+        assert profile.runner_argv[:2] in (("python", "-m"), ("python3", "-m"))
         result = subprocess.run(
             [sys.executable, "-c", f"import {module} as m; assert callable(m.main)"],
             capture_output=True,

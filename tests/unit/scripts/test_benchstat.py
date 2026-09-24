@@ -447,6 +447,43 @@ class TestSegments:
         ]
         assert self.by_metric(events)["dispatch.total"] == 60.0
 
+    def test_a_cancel_that_was_only_requested_does_not_end_the_total(self):
+        """Contract request 17, accepted 2026-09-24: a request is not an ending.
+
+        The collector reads events through the API, and a `swarm-api` from
+        before the change serves them as stored. Before the change the API
+        wrote a flag-only cancel as `type: cancelled, phase: cancel_requested`.
+        Taking that as terminal ends the total at the moment somebody PRESSED
+        cancel, while the task went on holding its lease until the worker or
+        the reconciler finished it.
+        """
+        stored_before = [
+            {"type": "submitted", "at": "2026-09-24T07:30:00Z"},
+            {"type": "cancelled", "at": "2026-09-24T07:40:20Z",
+             "detail": {"phase": "cancel_requested", "from_state": "DISPATCHED"}},
+            {"type": "cancelled", "at": "2026-09-24T09:00:00Z",
+             "detail": {"phase": "cancelled", "source": "reconciler"}},
+        ]
+        assert self.by_metric(stored_before)["dispatch.total"] == 5400.0
+        stored_after = [
+            {"type": "submitted", "at": "2026-09-24T07:30:00Z"},
+            {"type": "cancel_requested", "at": "2026-09-24T07:40:20Z",
+             "detail": {"phase": "cancel_requested", "from_state": "DISPATCHED"}},
+            {"type": "cancelled", "at": "2026-09-24T09:00:00Z",
+             "detail": {"phase": "cancelled", "source": "reconciler"}},
+        ]
+        assert self.by_metric(stored_after)["dispatch.total"] == 5400.0
+        # Still unfinished: a request alone measures nothing.
+        assert self.by_metric(stored_before[:2])["dispatch.total"] is None
+        # A real cancel -- the immediate path, or the scheduler's cascade, which
+        # carries no phase -- still ends the total.
+        cascade = [
+            {"type": "submitted", "at": "2026-09-24T07:30:00Z"},
+            {"type": "cancelled", "at": "2026-09-24T07:31:00Z",
+             "detail": {"reason": "an upstream workflow step did not succeed"}},
+        ]
+        assert self.by_metric(cascade)["dispatch.total"] == 60.0
+
     def test_labels_travel_with_every_sample(self):
         labels = {"runner_profile": "claude-code", "backend": "cloud_run"}
         for sample in bs.segment_samples(self.REAL_RUN, labels=labels):

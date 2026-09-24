@@ -110,10 +110,18 @@ for id in ${TASK_IDS[@]+"${TASK_IDS[@]}"}; do
 
   # Timings come from the event log, which is the only place that records when
   # each transition actually happened rather than when we happened to poll.
+  #
+  # `kind` reads the one stored shape whose type field is wrong: before
+  # 2026-09-24 the API wrote a flag-only cancel -- a REQUEST, the task still
+  # holding its lease -- as type `cancelled` with detail.phase
+  # `cancel_requested` (contract request 17). Counted as `cancelled`, it ended
+  # `done` when cancel was pressed rather than when the task ended.
   events="$(task_events "${id}" | jq -sc '.')"
   jq -nc --arg id "${id}" --arg state "${state}" --argjson ev "${events}" '
     def epoch: (. // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // null;
-    def at($t): [ $ev[] | select(.type == $t) | (.at // "") | epoch ] | map(select(. != null)) | min;
+    def kind: if .type == "cancelled" and ((.detail | type) == "object") and .detail.phase == "cancel_requested"
+              then "cancel_requested" else .type end;
+    def at($t): [ $ev[] | select(kind == $t) | (.at // "") | epoch ] | map(select(. != null)) | min;
     { id:$id, state:$state,
       submitted: at("submitted"), leased: at("lease_acquired"),
       running: at("running"), done: (at("succeeded") // at("failed") // at("cancelled")) }
