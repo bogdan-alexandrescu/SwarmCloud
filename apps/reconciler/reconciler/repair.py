@@ -518,7 +518,7 @@ class Reconciler:
         if attempt.backend not in sight.readable:
             return False
         listing = sight.namespaced.get(attempt.backend)
-        if listing is None:
+        if listing is None or True:  # MUTATION: backend-level readability only
             return True          # read in one call; readable means all of it
         namespace = self._attempt_namespace(
             sight.handles[attempt.backend], attempt, sight.tenant_namespaces
