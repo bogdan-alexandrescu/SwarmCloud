@@ -167,6 +167,17 @@ What stays whatever you do, and is worth saying so nobody reports it deleted:
   `tenants/<id>/`. So a registration of the same id that gets a worker service
   account within 7 days of step 6 could restore the old tenant's objects. The
   script prints how many there are.
+* Old versions of every deleted Firestore document. Point-in-time recovery is
+  **on** for the `swarm` database: `pointInTimeRecoveryEnablement:
+  POINT_IN_TIME_RECOVERY_ENABLED`, `versionRetentionPeriod: 604800s`, read with
+  `gcloud firestore databases describe --database=swarm` on 2026-09-24. A
+  document step 6 deletes can still be read *as of* a time before the delete,
+  for 7 days. Every tenant worker's `swarmTenantWorkerFirestore` role is
+  unconditioned and includes `datastore.entities.get` (though not `list`), so
+  such a read needs only a known document id. `tenants/<id>`, `quota/<p>:<id>`
+  and `accounts/<id>:<label>` have predictable ids; task ids do not. Whether a
+  read at a past time needs more than `datastore.entities.get` was **not**
+  verified.
 * Firestore exports that `scripts/purge-data.sh` wrote earlier, for some other
   purge, to `gs://<bucket>/backups/purge-<timestamp>`. Each holds the whole
   database, every tenant included, until the bucket's age rule expires it after
@@ -234,9 +245,10 @@ Letting data expire did not close that: live objects expired after
 `artifact_retention_days` (14 in dev, 180 in prod), noncurrent versions 30 days
 after that, and Firestore records never.
 
-What deleting does **not** close is the soft-delete window described under
-[the inventory](#the-inventory-everything-a-tenant-has): 7 days in which the
-old objects can still be restored. Nothing in this runbook shortens it.
+What deleting does **not** close are two 7-day windows described under
+[the inventory](#the-inventory-everything-a-tenant-has): soft-deleted objects
+can still be restored, and deleted Firestore documents can still be read as of
+an earlier time. Nothing in this runbook shortens either.
 
 **Offboarding a tenant is not revoking people.** Who may pass IAP is
 `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, and today it
@@ -1327,8 +1339,8 @@ checks it the same way, down to `tenants/<id> absent` and no pool ids.
   for the namespace. Secret versions are gone for good; the tenant registers new
   keys with `scripts/create-secrets.sh`. Nothing under `tenants/<id>/` or in
   Firestore survives step 6, so a returning tenant starts empty, exactly as a
-  different principal with the same id would. The exception is the soft-deleted
-  objects, which can be restored for 7 days
+  different principal with the same id would. The exceptions are the two 7-day
+  windows, soft-deleted objects and point-in-time Firestore reads
   ([the inventory](#the-inventory-everything-a-tenant-has) says why).
 * **Several tenants at once.** There is no bulk path. Run it once per tenant;
   step 7 can remove several tenants in one PR if the plan lists exactly their

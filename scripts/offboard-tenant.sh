@@ -71,7 +71,12 @@
 # retention (7 days, measured 2026-09-24). roles/storage.objectUser includes
 # storage.objects.restore (measured the same day), and that is the role a
 # tenant's worker holds on its prefix -- so a re-registration of this id that
-# gets a worker service account inside that window could restore them.
+# gets a worker service account inside that window could restore them. And the
+# `swarm` database has point-in-time recovery on with a 7-day version retention
+# (measured the same day), so every document deleted here stays readable AS OF
+# an earlier time for 7 days, by id, to any holder of datastore.entities.get --
+# which every tenant worker's unconditioned role includes. Neither window is
+# something this script can close; docs/runbooks/tenant-offboarding.md lists both.
 #
 # Dry run is the default: it checks, inventories and exits. --apply deletes,
 # after the tenant id is TYPED at a terminal. SWARM_ASSUME_YES is ignored.
@@ -806,6 +811,31 @@ report_soft_deleted() {
   fi
 }
 
+# The Firestore half of the same fact: with point-in-time recovery on, every
+# document deleted above can still be read AS OF an earlier time, by id, until
+# the database's version retention passes. Read from the database itself on
+# every run rather than asserted from a date, and run in a subshell for the
+# reason report_soft_deleted gives.
+report_point_in_time_recovery() {
+  local db pitr retention
+  fresh_token
+  if db="$(fs_request GET "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}")" \
+       && pitr="$(jq -r '.pointInTimeRecoveryEnablement // "UNKNOWN"' <<<"${db}")" \
+       && retention="$(jq -r '.versionRetentionPeriod // "unknown"' <<<"${db}")"; then
+    case "${pitr}" in
+      POINT_IN_TIME_RECOVERY_ENABLED)
+        warn "point-in-time recovery is ON for ${FIRESTORE_DATABASE} (version retention ${retention}): every document deleted above stays readable as of an earlier time until then, by id, to any holder of datastore.entities.get -- which every tenant worker's unconditioned role includes." 2>&1 \
+          | tee -a "${RECORD}" >&2 ;;
+      POINT_IN_TIME_RECOVERY_DISABLED)
+        printf '    %-34s off   (point-in-time recovery)\n' "${FIRESTORE_DATABASE}" | tee -a "${RECORD}" >&2 ;;
+      *)
+        warn "could not tell whether point-in-time recovery is on for ${FIRESTORE_DATABASE} ('${pitr}'); that says nothing either way" ;;
+    esac
+  else
+    warn "could not read ${FIRESTORE_DATABASE}'s point-in-time recovery setting; that says nothing either way"
+  fi
+}
+
 release_tenant_id() {
   local doc
   fresh_token
@@ -870,6 +900,7 @@ delete_records
 prove_gone
 release_tenant_id
 report_soft_deleted
+( report_point_in_time_recovery ) || true
 
 hr
 ok "tenant ${TENANT}: every record and object this script owns is gone, and the proof is above (kept in ${RECORD})"
