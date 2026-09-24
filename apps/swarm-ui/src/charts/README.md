@@ -1,8 +1,9 @@
 # The chart layer, and the one rule it exists to enforce
 
 `TimeSeries.tsx` is the only module in this application that imports a
-charting library. Screens import `TimeSeries`; a test fails if anything else
-reaches past it.
+charting library. Screens import `TimeSeries`, or a chart built on the three
+primitives it exports (see "The inspector charts" below); a test fails if
+anything else reaches past it.
 
 ## Why a wrapper and not a chart per screen
 
@@ -94,6 +95,54 @@ an axis component, so this is the audit's own arithmetic inside the owner's
 decision rather than against it. The audit's §B5 rule still stands for stacked
 bars, and nothing here stacks.
 
+## The inspector charts, and the three primitives they share
+
+Four more charts draw in the agent inspector (`AgentDetail.tsx`). None of
+them imports visx. They reach it through three exports of `TimeSeries.tsx`,
+which stays the only module that imports the library, so the guard test's
+claim is unchanged:
+
+| Primitive | The rule it carries |
+|---|---|
+| `linearScale(extent, range)` | The domain is an `Extent` built from measurements; no `.nice()`; a degenerate extent collapses to the middle instead of being padded to a span nobody recorded. |
+| `ValueAxis` | Tick ends are the extent itself. `keep` forces a value (admission, zero) and `minGapPx` drops an interior tick before it lets two labels collide. |
+| `StepLine` | `defined` hard-coded, over `ChartPoint`s, so an absence breaks the stroke. The step corners come from `stepAfter` in `series.ts`, which inserts a corner only between two measured neighbours. |
+
+There is still no bar, stack or area primitive. A bar is a plain `<rect>`
+between two **recorded** instants, drawn by the chart that owns the data. The
+audit's §B5 finding (a stacked bar gives an unknown segment height 0 and the
+bar silently shortens) stands, and nothing here stacks.
+
+| Chart | Viz (redesign-v2 §4) | Where | What it must not imply, and how it is prevented |
+|---|---|---|---|
+| `AttemptPhases.tsx`: phase bars | #3 | Attempts panel | That a missing end is an end. Every segment is drawn between two recorded instants measured from **admission** (`attempt.created_at`), so nothing's position depends on another segment's length. A segment with no recorded end is **open**: a wash up to the newest instant at which the phase was demonstrably still going, then a chevron. It is never closed at "now" and never at a guess. |
+| `AttemptPhases.tsx`: retry lollipop | #15 | same figure | That `task.started_at` is the task's start (it is overwritten per attempt). One stem per attempt, and an open attempt is an arrowhead at its lower bound, not a dot at a value. |
+| `AttemptPhases.tsx`: the sum | #15 | same figure | That a total covers attempts it does not. The line prints the total with `k of n` from the same `WorkSum` object; an open attempt's lower bound is printed after the total and never added into it. |
+| `PeakMemory.tsx` | #4 | each attempt's resources | That it is memory in use now. Titled "peak reached by T+n", drawn as a step that holds each reading until the next. The end-of-attempt figure is a separate diamond and the line does not run to it. |
+| `CheckpointStrip.tsx` | #6 | above each attempt's checkpoint table | That a hollow dot is a broken checkpoint, or that a checkpoint with no event has a time. Dot **area** is bytes; hollow is "location not on this page"; a checkpoint whose event is off the page goes in a tray beside the axis, not on it. |
+| `Diffstat.tsx` | #7 | above the commit table | That a binary change is 0/0. A binary-only commit gets a diamond and no zero mark; a non-numeric count is hatched, not zero. |
+
+The tables these sit above are unchanged. Each chart adds what its table
+cannot show; each table keeps the facts as text a reader can copy.
+
+**Two measured decisions worth keeping:**
+
+* **T+ is measured from `attempt.started_at`, not from the heartbeat's
+  `elapsed_seconds`.** That field is the *agent child's* clock, and before the
+  child exists the worker writes `0` (`lifecycle.py`, the `if self._child else
+  0` in `_heartbeat`). A heartbeat taken during clone or restore would sit at
+  T+0 whenever it was taken. The event's `at` minus `started_at` is a real
+  position for every reading, and it is the origin the checkpoint strip uses.
+* **An open segment's lower bound comes from evidence of life, not from the
+  newest event.** A reconciler reclaiming a dead worker writes its event
+  minutes after the worker stopped. `duration.ts` bounds a run only by events
+  a live worker emits (`running`, `heartbeat`, `checkpoint_*`) and a cold
+  start only by the scheduler's `lease_acquired` and `dispatched`.
+
+The event page these read is now requested at `limit=200` (`api.ts`,
+`EVENT_PAGE_LIMIT`). Before this, the run screens asked for no limit and got
+the API's **default** page of 50, not its maximum of 200.
+
 ## The tests
 
 * `src/__tests__/honesty.chart.test.tsx` — the four rules, read back off the
@@ -106,3 +155,27 @@ bars, and nothing here stacks.
 
 Each was proved by mutation — the fix undone, the named test watched going red,
 the fix restored. The mutations are listed in the commit message.
+
+The inspector charts' tests, each read back off the rendered SVG:
+
+* `src/__tests__/chart.phases.test.tsx` — §9's measured run (3m 09s of cold
+  start drawn about ten times 18s of run); an open run bounded by its newest
+  heartbeat and unchanged when the clock moves a day; a reclaim event NOT
+  taken as evidence of life; an absent retry queue that moves no other
+  segment; a retry queue started at its `ready` event rather than the
+  previous attempt's end; an open lower bound kept out of the total.
+* `src/__tests__/chart.peak.test.tsx` — only horizontal and vertical strokes,
+  two subpaths around a missing reading, the at-exit figure not joined, and a
+  reading placed by its `at` rather than the zeroed child clock.
+* `src/__tests__/chart.checkpoints.test.tsx` — area, not radius; hollow for
+  no location; an off-page checkpoint in the tray and never on the axis.
+* `src/__tests__/chart.diffstat.test.tsx` — a binary-only commit never wears
+  the zero mark; a non-numeric count is hatched; both sides share one zero.
+* `src/__tests__/inspector.charts.test.tsx` — each chart is mounted on the
+  real `Run`, above the table it does not replace.
+* `src/__tests__/api.events.test.ts` — the events read asks for `limit=200`
+  on the live path.
+
+These were proved the way CLAUDE.md asks: the defect committed on the branch
+and the named tests watched going red in CI, then reverted. The run ids are in
+the pull request.

@@ -1,6 +1,10 @@
 import { useCallback, useId, useState, type CSSProperties, type ReactNode } from 'react'
 import { loadAgentRun, type AgentRun } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
+import { AttemptDurations } from './charts/AttemptPhases'
+import { CheckpointStrip } from './charts/CheckpointStrip'
+import { DiffstatChart } from './charts/Diffstat'
+import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
 import { num } from './fetch'
@@ -1057,6 +1061,15 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           chart states the coverage with the total, always. */}
       <TokenSpendChart attempts={ordered} profile={task.runner_profile} />
 
+      {/* WHERE THE WALL CLOCK WENT, attempt by attempt, and the summed agent
+          work under it (redesign-v2 §4 viz #3 and #15). The cards below still
+          carry each attempt's start, end and `ran` as facts; this is what
+          they cannot show -- that a run spent three minutes waiting for a
+          container and eighteen seconds working, and how the retries compare.
+          Each phase is drawn between two RECORDED instants and an interval
+          with no recorded end is drawn OPEN, never closed at "now". */}
+      <AttemptDurations task={task} attempts={ordered} events={run.events} />
+
       {ordered.map((a, i) => (
         <AttemptCard
           key={a.attempt_id}
@@ -1510,6 +1523,13 @@ function AttemptResources({
           )}
         </p>
       )}
+
+      {/* THE BAR ABOVE IS THE FIGURE; THIS IS ITS HISTORY. The bar keeps the
+          one number and where it came from. The step line shows how the peak
+          was reached, from every heartbeat of this attempt on the page -- and
+          its title says "peak reached by", because the reading is a running
+          maximum and would lie if it were read as memory in use now. */}
+      <PeakMemoryChart attempt={a} events={events} />
     </div>
   )
 }
@@ -1684,7 +1704,16 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
            an object literal and the file stops parsing — three of these in this
            file, and `tsc` said `TS1005: ')' expected`. Caught by CI on the
            first push of this change, which is the only place it could have
-           been caught. */
+           been caught.
+
+           THE STRIP GOES ABOVE THE TABLE AND DOES NOT REPLACE IT. The table
+           is the fact -- every id, size and location as text a reader can
+           copy. The strip is the cadence the table cannot show: whether this
+           attempt checkpointed steadily or stopped partway. A checkpoint
+           whose event is off this page has no instant, so the strip puts it
+           in a tray beside the axis rather than at a time nobody recorded. */
+        <>
+        <CheckpointStrip attempt={a} events={run.events} />
         <div className="ctl-table is-stacked">
           <table role="table">
             <thead role="rowgroup">
@@ -1747,6 +1776,7 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
             )}
           </table>
         </div>
+        </>
       )}
     </div>
   )
@@ -2374,6 +2404,13 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
           </li>
         )}
       </ul>
+
+      {/* THE SHAPE OF THE CHANGE, ABOVE THE TABLE THAT STATES IT. The table
+          keeps every subject and exact count as text; the diverging bars show
+          at a glance which commit carried the work and which only deleted.
+          A binary change gets a diamond, never a 0/0 row -- `binary_files`
+          exists so it does not read as "changed nothing". */}
+      {commits.length > 0 && <DiffstatChart commits={commits} commitCount={git.commit_count} />}
 
       {commits.length > 0 && (
         /* `is-stacked` (F6), and this is the widest of the drawer's tables:
