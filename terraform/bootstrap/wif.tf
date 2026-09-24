@@ -34,29 +34,40 @@ locals {
     for ref in var.github_allowed_refs : "assertion.ref == \"${ref}\""
   ])
 
-  # THE SAME PIN A THIRD TIME, through the claim GitHub itself constructs.
+  # THERE IS NO `assertion.sub` CLAUSE, AND THAT IS A MEASUREMENT RATHER THAN AN
+  # OMISSION.
   #
-  # `sub` is minted by GitHub as `repo:<owner>/<name>:<context>:<value>`, and
-  # for a branch run that is `repo:owner/name:ref:refs/heads/main`. Pinning it
-  # is STRICTER than the repository and ref clauses above rather than a
-  # restatement of them: those two are satisfied by any token carrying the
-  # right repository and ref attributes, while this one also fixes the CONTEXT
-  # segment to `ref:`. A token minted for `repo:owner/name:environment:prod` or
-  # `repo:owner/name:pull_request` does not match it, whatever else it carries.
+  # One was added on 2026-09-24, pinning
+  # `assertion.sub == "repo:<owner>/<name>:ref:<ref>"` for each allowed ref. The
+  # argument for it was good: `sub` is the claim GitHub constructs, it fixes the
+  # CONTEXT segment to `ref:`, and it is the only form checkov's CKV_GCP_125 can
+  # read. It was also wrong for this repository, and both halves of the evidence
+  # are worth keeping.
   #
-  # It is also the only form checkov's CKV_GCP_125 recognises, and that check
-  # is right to insist: it reads `assertion.sub`, rejects the abusable claims
-  # (`actor`, `workflow`, and the rest -- any of which an attacker controls by
-  # naming a workflow), rejects a wildcard in either half, and requires the
-  # repo value to be a real `org/name`. A condition it cannot read is a
-  # condition nobody is checking on our behalf.
+  # IT REJECTED A LEGITIMATE MAIN REF. The first release run after it was applied
+  # failed at google-github-actions/auth with
   #
-  # Derived from the same two variables as the clauses above, so the three
-  # cannot drift apart.
-  sub_condition = join(" || ", [
-    for ref in var.github_allowed_refs :
-    "assertion.sub == \"repo:${var.github_repository}:ref:${ref}\""
-  ])
+  #     unauthorized_client: The given credential is rejected by the attribute
+  #     condition.
+  #
+  # on a `workflow_dispatch` against `refs/heads/main` -- exactly the case the
+  # clause was written to admit.
+  #
+  # AND IT COULD NEVER HAVE ADMITTED THE DEPLOY. `release.yml`'s `infrastructure`
+  # and `deploy` jobs declare `environment:`, and GitHub mints those runs with
+  # `sub = repo:<owner>/<name>:environment:<env>`. A clause pinning the context to
+  # `ref:` therefore blocks the approval-gated deploy permanently, by design --
+  # which makes it incompatible with the one control this pipeline most depends
+  # on. The clause I wrote to exclude an environment subject would have excluded
+  # OUR environment subject.
+  #
+  # WHAT REMAINS IS SUFFICIENT. `assertion.ref` is a separate claim and is still
+  # `refs/heads/main` for an environment-context token, so the repository and ref
+  # clauses below pin both halves for every job shape this repository uses. The
+  # boundary that actually matters -- that no pull request ref can mint a token --
+  # is asserted in tests/terraform/bootstrap.tftest.hcl against the RENDERED
+  # condition, which is stronger than CKV_GCP_125 and does not depend on a claim
+  # format this project does not produce.
 }
 
 resource "google_iam_workload_identity_pool" "github" {
@@ -76,7 +87,7 @@ resource "google_iam_workload_identity_pool" "github" {
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
-  # checkov:skip=CKV_GCP_125:The pin this check looks for IS present -- `local.sub_condition` below composes `assertion.sub == "repo:<owner>/<name>:ref:<ref>"` for every allowed ref -- but checkov reads `attribute_condition` as written text and does not resolve a `join()` over a `for` comprehension, so it sees `${local.sub_condition}` and reports the pin as absent. The property is gated instead in tests/terraform/bootstrap.tftest.hcl, against the RENDERED condition, where terraform has evaluated the local: it asserts the sub clause is present for the allowed ref AND that the condition never contains `refs/pull/`. That is strictly more than this check tests, and it is run by `make test` and by the terraform workflow.
+  # checkov:skip=CKV_GCP_125:This check requires the trust policy to pin `assertion.sub`, and this pool deliberately does not -- a `sub` clause was applied on 2026-09-24 and REJECTED a legitimate `refs/heads/main` run, and could never have admitted the environment-gated deploy jobs at all, because GitHub mints those with `sub = repo:<owner>/<name>:environment:<env>` rather than `:ref:`. See the `locals` comment above for the measurement. The boundary the check is reaching for is asserted instead in tests/terraform/bootstrap.tftest.hcl against the RENDERED attribute_condition: the repository and ref are both pinned, and the condition may never contain `refs/pull/`. That last assertion is the one that matters and CKV_GCP_125 does not make it.
   count = local.wif_enabled
 
   project                            = var.project_id
@@ -94,39 +105,22 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repo_ref" = "assertion.repository + \"@\" + assertion.ref"
   }
 
-  # All three clauses matter, and each stops something the others do not.
+  # BOTH CLAUSES MATTER, and each stops something the other does not.
   #
   #   repository   stops any other repo on GitHub. Without it the pool trusts
   #                GitHub's issuer, which is to say every repository on it.
   #   ref          stops a branch anyone can push, and a pull request from a
-  #                fork, from minting a deploy token.
-  #   sub          stops a token minted for a different CONTEXT on an allowed
-  #                ref -- an environment or a pull_request subject -- and is
-  #                the form CKV_GCP_125 reads (see `sub_condition` above).
+  #                fork, from minting a deploy token. This is the clause that
+  #                refuses `refs/pull/<n>/merge`, measured 2026-09-24 on a real
+  #                pull request run.
   #
-  # WHAT IS MEASURED AND WHAT IS NOT, as of 2026-09-24.
+  # A third clause on `assertion.sub` was tried and removed; see the comment in
+  # `locals` above for what it rejected and why it could never have worked here.
   #
-  # REJECT DIRECTION: VERIFIED. A pull_request run on
-  # fix/silent-failures-env-parity-and-audits was refused with
-  #
-  #     unauthorized_client: The given credential is rejected by the
-  #     attribute condition.
-  #
-  # which is the ref clause doing its job on `refs/pull/<n>/merge`.
-  #
-  # ACCEPT DIRECTION: VERIFIED FOR repository+ref, NOT YET FOR sub. A push to
-  # main authenticated successfully as swarm-tf-deployer@ -- but that ran
-  # against the condition BEFORE the sub clause was applied, so what it proves
-  # is the first two clauses. The `sub` format is GitHub's documented
-  # `repo:<owner>/<name>:ref:<git-ref>` for a branch run and the next main run
-  # is what confirms it.
-  #
-  # IF THAT RUN IS REJECTED: the sub format is wrong, not the pin. Read the
-  # run's OIDC claims and correct the format here. Do NOT widen the condition,
-  # and never to `refs/pull/*` -- application.yml's `build` job spends twenty
-  # lines on why, and this repository has already had one required check that
-  # existed only to create pressure for that change.
-  attribute_condition = "assertion.repository == \"${var.github_repository}\" && (${local.ref_condition}) && (${local.sub_condition})"
+  # NEVER WIDEN THIS TO `refs/pull/*`. application.yml's `build` job spends
+  # twenty lines on why, and this repository has already had one required check
+  # that existed only to create pressure for that change.
+  attribute_condition = "assertion.repository == \"${var.github_repository}\" && (${local.ref_condition})"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
