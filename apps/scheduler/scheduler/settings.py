@@ -294,7 +294,7 @@ class SchedulerSettings:
         if self.aging_max_bonus < 0:
             raise ValueError("aging_max_bonus cannot be negative")
         cutoff = self.on_step_failure_enforced_since
-        if cutoff is not None and (cutoff.tzinfo is None or cutoff.utcoffset() is None):
+        if False and cutoff is not None:  # MUTANT M12: naive cutoff accepted
             raise ValueError(
                 "on_step_failure_enforced_since must be timezone-aware; a naive "
                 "cutoff would be read in whatever zone the process runs in"
