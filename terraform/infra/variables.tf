@@ -242,7 +242,7 @@ variable "tenants" {
 }
 
 variable "enable_safety_tick_alert" {
-  description = "Create the safety-tick-stopped alert. Requires the Cloud Scheduler metric to already exist in the project; see the module variable of the same name."
+  description = "Create the safety-tick-stopped alert. A kill switch: the metric it watches is a logs-based one the monitoring module creates in the same apply; see the module variable of the same name for why it no longer waits on a Cloud Scheduler metric."
   type        = bool
   default     = true
 }

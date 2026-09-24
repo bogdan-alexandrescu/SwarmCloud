@@ -43,9 +43,11 @@ resource "google_monitoring_notification_channel" "email" {
 # have been READY for an hour.
 # ---------------------------------------------------------------------------
 resource "google_monitoring_alert_policy" "safety_tick_absent" {
-  # Also gated on its own flag: the metric it references must exist before the
-  # policy can be created, and that is runtime state terraform cannot wait for.
-  # See enable_safety_tick_alert.
+  # Also gated on its own flag, which is now only a switch. It used to be
+  # WAITING for `cloudscheduler.googleapis.com/job/attempt_count` to exist; that
+  # metric is not one Google publishes, so the wait could not end. The metric
+  # below is a logs-based one this module creates in the same apply, and the
+  # reference to it orders the two. See metrics.tf for the measurement.
   count = var.create_alerts && var.enable_safety_tick_alert ? 1 : 0
 
   project      = var.project_id
@@ -54,13 +56,13 @@ resource "google_monitoring_alert_policy" "safety_tick_absent" {
   severity     = "CRITICAL"
 
   conditions {
-    display_name = "No scheduler tick attempt in 10 minutes"
+    display_name = "No scheduler tick delivered in 10 minutes"
 
     condition_absent {
       filter = join(" AND ", [
         "resource.type = \"cloud_scheduler_job\"",
         "resource.labels.job_id = \"${var.safety_tick_job}\"",
-        "metric.type = \"cloudscheduler.googleapis.com/job/attempt_count\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.safety_tick_attempts.name}\"",
       ])
 
       duration = "600s"
@@ -76,7 +78,7 @@ resource "google_monitoring_alert_policy" "safety_tick_absent" {
 
   documentation {
     mime_type = "text/markdown"
-    content   = "The one-minute safety tick has not run for ten minutes. Pub/Sub may still be waking the scheduler, so the queue is not necessarily stalled -- but the bound on staleness is gone. Check the Cloud Scheduler job and the swarm-scheduler service logs.${local.alert_docs_suffix}"
+    content   = "The one-minute safety tick has not been delivered for ten minutes. Pub/Sub may still be waking the scheduler, so the queue is not necessarily stalled -- but the bound on staleness is gone. Check the Cloud Scheduler job (a failed attempt logs AttemptFinished at ERROR with a status) and the swarm-scheduler service logs. If the swarm was paused with scripts/pause-swarm.sh and its scheduler step, the tick is paused too and this is expected.${local.alert_docs_suffix}"
   }
 
   alert_strategy {

@@ -37,6 +37,12 @@ metric does not exist until Cloud Scheduler has emitted it, and Google's own
 message says it can take ten minutes to become queryable. The ticks are running
 now, so a later `make deploy` should create it with no other change.
 
+**Corrected 2026-09-24: it would not have.** Google publishes no Cloud Scheduler
+metric of any name, so this one could never become queryable. The alert now
+watches a logs-based metric built from Cloud Scheduler's attempt logs
+(`terraform/modules/monitoring/metrics.tf`, `safety_tick_attempts`), created in
+the same apply as the policy.
+
 Nothing else depends on it. It is an alert, not a control.
 
 ## Exception 2: pool ceilings are NOT what dev.tfvars says
@@ -119,9 +125,10 @@ Fixing the swallowed stderr in `deploy.sh` surfaced both:
 ## Still outstanding
 
 * the DNS A record above;
-* `enable_safety_tick_alert = false` in dev until the Cloud Scheduler metric
-  exists — the project currently has zero `cloudscheduler.googleapis.com`
-  metric descriptors;
+* the safety-tick alert: `enable_safety_tick_alert` is back to `true` in dev,
+  watching a logs-based metric instead of a Cloud Scheduler metric that Google
+  does not publish. Outstanding until a release applies it and the policy
+  exists;
 * `register-tenant.sh` keeps its three sweep findings: its agent was reclaimed
   three times before the heartbeat-ordering fix landed;
 * `destroy.sh:340` still reports the other team's cluster as missing when a

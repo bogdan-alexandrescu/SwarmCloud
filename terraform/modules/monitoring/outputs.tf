@@ -28,9 +28,9 @@ output "notification_channels" {
 # instead of failing the whole output.
 #
 # It used to index [0] unconditionally under `var.create_alerts`, which assumed
-# every policy shares that one flag. `safety_tick_absent` now has its own gate
-# (it cannot be created until its Cloud Scheduler metric exists), and the moment
-# it was switched off this output became:
+# every policy shares that one flag. `safety_tick_absent` has its own gate (it
+# was switched off for days waiting on a Cloud Scheduler metric that Google does
+# not publish), and the moment it was switched off this output became:
 #
 #     Error: Invalid index
 #     google_monitoring_alert_policy.safety_tick_absent is empty tuple
