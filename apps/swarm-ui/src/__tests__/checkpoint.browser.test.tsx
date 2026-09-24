@@ -323,6 +323,24 @@ describe('absence and failure are not an empty checkpoint', () => {
     const tree = screen.getByRole('tree')
     expect(tree.textContent).not.toContain('outside')
   })
+
+  it('shows a member whose name is not UTF-8 by its escaped bytes, and offers no way to open it', async () => {
+    // The server serves the name's bytes escaped (`caf\xe9.txt`) and flags the
+    // row `undecodable`. The escaped form is a display, not an address -- the
+    // server refuses it as a path -- so the row is not a button. It is NOT
+    // drawn as unsafe: a restore unpacks such a name without complaint, and
+    // "cannot be resumed" would be a false statement about this checkpoint.
+    const odd = { ...member('caf\\xe9.txt'), undecodable: true }
+    const l = loaders(ok(listing({ files: [...MEMBERS, odd], count: MEMBERS.length + 1 })))
+    mount(l)
+
+    const tree = await screen.findByRole('tree', { name: 'Files in this checkpoint' })
+    expect(tree.textContent).toContain('caf\\xe9.txt')
+    expect(within(tree).queryByRole('button', { name: /caf/ })).toBeNull()
+    expect(tree.textContent).toMatch(/not UTF-8/)
+    expect(region().textContent).not.toMatch(/unsafe path/)
+    expect(l.file).not.toHaveBeenCalled()
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -391,6 +391,66 @@ def test_a_member_the_archive_names_outside_itself_is_listed_unsafe_and_never_se
         assert "absolute content" not in response.text
 
 
+def not_utf8(raw: bytes) -> str:
+    """A name as `Path.rglob` hands it to `tarfile` on Linux.
+
+    A byte that is not UTF-8 arrives SURROGATE-ESCAPED (`b"\\xe9"` becomes
+    `"\\udce9"`), `tarfile`'s PAX writer stores it as raw bytes under
+    `hdrcharset=BINARY`, and its reader gives the same lone surrogate back.
+    """
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def test_a_member_name_that_is_not_utf8_is_listed_escaped_and_is_not_a_500(
+    client, db, objects
+):
+    """One Latin-1 file name in a cloned repository, and every listing of every
+    checkpoint of that task was an unhandled 500: a lone surrogate is a `str`
+    no JSON encoder will write, so the response failed AFTER the route had
+    returned -- not an ApiError, no reason, and a retry that never helps.
+
+    The name is served as its bytes, escaped (`caf\\xe9.txt`), and flagged
+    `undecodable`. It is NOT `unsafe`: that flag says a restore would refuse
+    the archive, and a restore unpacks a Latin-1 name without complaint.
+    """
+    seed(db)
+    put_checkpoint(objects, archive=tar_gz([
+        ("ok.txt", "file", "fine"),
+        (not_utf8(b"caf\xe9.txt"), "file", "latin-1 named content"),
+        (not_utf8(b"d\xe9/inner.txt"), "file", "inside a latin-1 directory"),
+        ("pointer", "symlink", not_utf8(b"t\xe9")),
+    ]))
+
+    response = files(client)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok"
+    rows = {r["path"]: r for r in body["files"]}
+    assert set(rows) == {"ok.txt", "caf\\xe9.txt", "d\\xe9/inner.txt", "pointer"}, rows
+
+    assert rows["caf\\xe9.txt"]["undecodable"] is True
+    assert rows["caf\\xe9.txt"]["unsafe"] is False, "a restore unpacks it; it is not an escape"
+    assert rows["d\\xe9/inner.txt"]["undecodable"] is True
+    assert rows["pointer"]["link"] == "t\\xe9"
+    assert rows["pointer"]["undecodable"] is True, "the TARGET is what was escaped"
+    assert rows["ok.txt"]["undecodable"] is False
+
+    # The escaped form is a display, never an address: it carries a backslash,
+    # which `requested_path` refuses before any object is read.
+    escaped = one_file(client, "caf%5Cxe9.txt")
+    assert escaped.status_code == 422, escaped.text
+    # Latin-1 percent-encoding decodes to U+FFFD, which names nothing here.
+    latin = one_file(client, "caf%E9.txt")
+    assert latin.status_code == 404, latin.text
+    assert "latin-1 named content" not in escaped.text + latin.text
+
+    # A link whose target is not UTF-8 is refused as a link -- a 422 naming
+    # the escaped target -- and not a 500 from the error body itself.
+    link = one_file(client, "pointer")
+    assert link.status_code == 422, link.text
+    assert link.json()["detail"]["link"] == "t\\xe9"
+
+
 def test_a_hostile_checkpoint_or_attempt_id_reaches_no_object(client, db, objects):
     a_workspace_checkpoint(db, objects)
     put_checkpoint(objects, tenant="research", task="task_b", archive=tar_gz(WORKSPACE))
@@ -444,7 +504,7 @@ def test_the_listing_is_every_member_with_path_size_mode_and_type(client, db, ob
     assert by_path["progress"]["type"] == "dir"
     assert by_path["state.json"] == {
         "path": "state.json", "size": 23, "mode": 0o644, "type": "file",
-        "link": None, "unsafe": False,
+        "link": None, "unsafe": False, "undecodable": False,
     }
     assert by_path["bin/run.sh"]["mode"] == 0o755
     assert by_path["latest"]["type"] == "symlink"
@@ -592,6 +652,41 @@ def test_an_unreadable_manifest_does_not_stop_the_listing_or_pretend_to_agree(
     assert body["manifest"]["status"] == "unreadable"
     assert body["file_count_agrees"] is None, "null: there was nothing to compare with"
     assert len(body["files"]) == 6
+
+
+def test_a_manifest_string_json_cannot_carry_is_escaped_not_a_500(client, db, objects):
+    """The same lone surrogate by the other door. `json.dumps` writes one as
+    the escape `\\udce9` and `json.loads` hands it straight back, so a manifest
+    field is a second way for a string no response can encode to reach one.
+
+    And the download's HEADERS: a manifest is data a worker wrote into a
+    bucket, and a header is latin-1 with no control characters. A digest that
+    is not a digest is left out rather than failing the download it labels.
+    """
+    seed(db)
+    put_checkpoint(
+        objects,
+        archive=tar_gz(WORKSPACE),
+        file_count=4,
+        manifest_overrides={
+            "label": "caf\udce9",
+            "created_at": "\ud800",
+            "archive_sha256": "☃ not a digest\r\nX-Injected: 1",
+        },
+    )
+
+    response = files(client)
+    assert response.status_code == 200, response.text
+    manifest = response.json()["manifest"]
+    assert manifest["status"] == "present"
+    assert manifest["label"] == "caf\\xe9"
+    assert manifest["created_at"] == "\\ud800"
+
+    fetched = download(client)
+    assert fetched.status_code == 200, fetched.text
+    assert "x-checkpoint-sha256" not in fetched.headers
+    assert "x-injected" not in fetched.headers
+    assert fetched.headers["x-checkpoint-manifest"] == "present"
 
 
 def test_a_checkpoint_never_committed_is_still_listed_and_says_so(client, db, objects):
@@ -925,7 +1020,12 @@ def test_the_whole_archive_downloads_as_an_attachment_in_windows(
     assert response.headers["content-disposition"] == (
         'attachment; filename="task_a-att_1-ckpt-00001.tar.gz"'
     )
-    assert int(response.headers["content-length"]) == len(archive)
+    # CHUNKED, NOT `Content-Length`. Cloud Run refuses an HTTP/1 response over
+    # 32 MiB unless it is chunked or streamed, and uvicorn -- HTTP/1 only here
+    # -- chunks exactly when the application declares no length. The size
+    # travels in its own header, where no proxy acts on it.
+    assert "content-length" not in response.headers
+    assert response.headers["x-checkpoint-bytes"] == str(len(archive))
     assert response.headers["x-swarm-redaction"] == "not-applied"
     assert response.headers["x-checkpoint-manifest"] == "present"
     assert response.headers["x-checkpoint-sha256"] == hashlib.sha256(archive).hexdigest()
@@ -956,12 +1056,15 @@ def test_an_unreadable_archive_is_a_503_before_any_byte(client, db, objects):
     assert "content-disposition" not in response.headers
 
 
-def test_a_failure_mid_download_ends_short_of_its_content_length(
+def test_a_failure_mid_download_ends_short_of_its_declared_size(
     client, db, objects, budgets
 ):
-    """After the status line is sent it cannot change; `Content-Length` is
-    what lets the client see the stream was cut rather than save a short file
-    that looks complete."""
+    """After the status line is sent it cannot change. What lets a client see
+    the stream was cut, rather than save a short file that looks complete, is
+    `X-Checkpoint-Bytes` (and the digest, when the manifest has one) -- and,
+    on the wire, a chunked body that never receives its terminating chunk,
+    which a browser reports as a failed download. Not `Content-Length`: see
+    the test above for why the response may not carry one."""
     seed(db)
     archive = tar_gz([(f"f{n}.bin", "file", noise(64 * 1024, n)) for n in range(4)])
     base = put_checkpoint(objects, archive=archive)
@@ -969,7 +1072,8 @@ def test_a_failure_mid_download_ends_short_of_its_content_length(
     objects.fail_after_first.add(f"{base}/archive.tar.gz")
 
     response = download(client)
-    assert int(response.headers["content-length"]) == len(archive)
+    assert "content-length" not in response.headers
+    assert int(response.headers["x-checkpoint-bytes"]) == len(archive)
     assert len(response.content) < len(archive)
     assert response.content == archive[: len(response.content)]
 
