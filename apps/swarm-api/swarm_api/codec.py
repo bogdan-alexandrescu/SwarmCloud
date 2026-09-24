@@ -227,12 +227,41 @@ def event_to_firestore(event: TaskEvent) -> dict[str, Any]:
     return d
 
 
+def stored_event_type(data: dict[str, Any]) -> EventType:
+    """The type a stored event RECORDS, which for one legacy shape is not its field.
+
+    Until 2026-09-24 `Store.request_cancel` wrote a flag-only cancel -- a task
+    that still held capacity, so nothing was cancelled -- as `type: cancelled`
+    with `detail.phase: "cancel_requested"`. Contract request 17 gave that its
+    own type, CANCEL_REQUESTED, and the API writes it now. The events already
+    stored keep the old shape: nothing rewrites them, because a migration is a
+    write to every task's history for a fact this one line can read correctly.
+
+    So the old shape is read HERE, the one decoder every event route goes
+    through, and every API reader -- the console, `swarm_follow`, `swarm tail`
+    -- gets one vocabulary whenever the event was written. Only that exact
+    shape: a `cancelled` with `phase: "cancelled"` (the immediate path) or with
+    no phase (the scheduler's cascade, the worker, the reconciler) was a real
+    cancel and stays one. The detail is served as stored, so the served legacy
+    event is the same shape as a new one, `phase` included.
+    """
+    kind = EventType(data["type"])
+    detail = data.get("detail")
+    if (
+        kind is EventType.CANCELLED
+        and isinstance(detail, dict)
+        and detail.get("phase") == EventType.CANCEL_REQUESTED.value
+    ):
+        return EventType.CANCEL_REQUESTED
+    return kind
+
+
 def event_from_dict(data: dict[str, Any]) -> TaskEvent:
     return TaskEvent(
         event_id=data["event_id"],
         task_id=data["task_id"],
         tenant_id=data["tenant_id"],
-        type=EventType(data["type"]),
+        type=stored_event_type(data),
         at=_required_datetime(data.get("at")),
         attempt_id=data.get("attempt_id"),
         lease_id=data.get("lease_id"),

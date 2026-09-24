@@ -11,10 +11,12 @@
 # validates its fencing generation, creates an isolated workspace, restores the
 # latest checkpoint and only then starts the runner named by the frozen
 # catalogue as a supervised child. Overriding `command` with
-# `RUNNER_PROFILES[...].command` would start the runner DIRECTLY -- no fencing
-# check, no checkpointing, no heartbeat, no lease release -- which is every
-# safety property in this platform switched off at once. The profile's command
-# is the runner's entrypoint, not the container's.
+# `RUNNER_PROFILES[...].runner_argv` would start the runner DIRECTLY -- no
+# fencing check, no checkpointing, no heartbeat, no lease release -- which is
+# every safety property in this platform switched off at once. The profile's
+# runner_argv is the lifecycle's child, not the container's command (it was
+# called `command` until 2026-09-24, and that name is how both dispatchers came
+# to set it here; contract request 18).
 #
 # `backoffLimit: 0`. A retry is a new attempt with a new fencing generation,
 # minted by the scheduler inside the admission transaction. A Kubernetes-level

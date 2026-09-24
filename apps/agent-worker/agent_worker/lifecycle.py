@@ -2535,16 +2535,20 @@ class Worker:
 
 
 def _runner_argv(cfg: WorkerConfig) -> list[str]:
-    """The command comes from the FROZEN catalogue, keyed by profile name.
+    """The runner's argv comes from the FROZEN catalogue, keyed by profile name.
 
     Nothing from the environment and nothing from the caller contributes to it,
     which is invariant 10 enforced at the last possible moment.
+
+    `RunnerProfile.runner_argv` is what THIS process starts as its supervised
+    child. It is not, and must never be, the container's command: the
+    container's command is this lifecycle (contract request 18).
     """
-    command = list(cfg.profile.command)
-    program = command[0]
+    argv = list(cfg.profile.runner_argv)
+    program = argv[0]
     if program in ("python", "python3") and shutil.which(program) is None:
-        command[0] = sys.executable
-    return command
+        argv[0] = sys.executable
+    return argv
 
 
 def _execution_name() -> str | None:
