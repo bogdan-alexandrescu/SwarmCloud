@@ -57,19 +57,20 @@ def _scoped_prefix() -> str:
     plugin name's hyphens become underscores. Renaming either would silently
     ungrant every scoped permission in `delegate`, and "the model never got the
     tool" looks exactly like "delegation does not work".
+
+    COMPUTED AT IMPORT, so it must not assert: a failed assertion here is a
+    COLLECTION error, which pytest reports as "this file is broken" rather than
+    as "the manifest is". The claims about the manifest live in
+    `test_the_plugin_bundles_the_bridge_it_tells_a_session_to_call`, where a
+    failure names what is wrong; this only computes the prefix, and falls back
+    to the server key the skill is written against so the lockstep test still
+    has something to compare.
     """
     manifest = _plugin_manifest()
-    servers = manifest.get("mcpServers") or {}
-    assert isinstance(servers, dict) and servers, (
-        "plugin.json declares no mcpServers, so the `delegate` skill's tools "
-        "exist only when a session's own .mcp.json happens to register them -- "
-        "which is to say only inside this repository"
-    )
-    assert list(servers) == ["swarmcloud"], (
-        f"expected one server named `swarmcloud`, found {sorted(servers)}"
-    )
-    plugin_name = str(manifest["name"]).replace("-", "_")
-    return f"mcp__plugin_{plugin_name}_swarmcloud__"
+    servers = manifest.get("mcpServers")
+    server_key = next(iter(servers), "swarmcloud") if isinstance(servers, dict) else "swarmcloud"
+    plugin_name = str(manifest.get("name", "")).replace("-", "_")
+    return f"mcp__plugin_{plugin_name}_{server_key}__"
 
 
 #: BOTH spellings of the same bridge. The project server and the plugin-bundled
@@ -339,7 +340,17 @@ def test_the_plugin_bundles_the_bridge_it_tells_a_session_to_call():
     is why the shell half of this plugin stays repository-bound), and the bridge
     is a console script of the workspace one directory above `plugin/`.
     """
-    servers = _plugin_manifest()["mcpServers"]
+    servers = _plugin_manifest().get("mcpServers")
+    assert isinstance(servers, dict) and servers, (
+        "plugin.json declares no mcpServers, so `delegate`'s tools exist only "
+        "when the session's own .mcp.json happens to register them -- which is "
+        "to say only inside this repository, on a machine where that file was "
+        "approved. Eighteen permissions and no server."
+    )
+    assert list(servers) == ["swarmcloud"], (
+        f"expected one server keyed `swarmcloud` -- the name the skill's "
+        f"permissions are written against -- and found {sorted(servers)}"
+    )
     swarmcloud = servers["swarmcloud"]
     assert swarmcloud.get("command") == "uv", swarmcloud
     args = swarmcloud.get("args") or []
