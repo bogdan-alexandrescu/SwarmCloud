@@ -120,7 +120,12 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
         # terminal that accepted `--profile codex` while the tool refused it
         # would be two answers to one question, which is the defect this
         # repository keeps paying for.
-        runner_profile=catalogue.check(args.profile, where="swarm dispatch"),
+        # The label is prefixed onto the refusal -- "uv run swarm dispatch:
+        # there is no runner profile called 'claude'" -- so it is spelled to
+        # run, like every other command string this package emits. The MCP
+        # side passes `swarm_dispatch`, the TOOL name, which is right there for
+        # the same reason: a reader must be able to act on what they are shown.
+        runner_profile=catalogue.check(args.profile, where=terminal_command("swarm dispatch")),
         repository_url=args.repo,
         repository_ref=args.ref,
         metadata={"unit": args.label} if args.label else None,
@@ -734,7 +739,8 @@ def cmd_init(_client, args) -> int:
 
     target = Path(args.write or ".env")
     lines = [
-        "# Written by `swarm init`. Safe to commit? NO -- it names your project.",
+        f"# Written by `{terminal_command('swarm init')}`. Safe to commit? "
+        "NO -- it names your project.",
         f"PROJECT_ID={project}",
         f"REGION={region()}",
         f"API_SERVICE={service_name()}",
