@@ -41,7 +41,7 @@ Three reasons, in the order they cost the most:
 | `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -294,8 +294,9 @@ after the apply had already changed prod, which made it a question with no
 decision left in it. Adding a third for the promotion would have put
 promotion behind a *different* approval from the apply, not "that same" one.
 So `approval` is the only job in `release.yml` that names an environment;
-`promote`, `terraform apply` and `deploy and smoke` name none and run only
-if it **succeeded**.
+`promote`, `terraform apply` and `deploy and smoke` name none. They run only
+if it **succeeded**, and on prod only in the attempt it succeeded in (see
+"A prod approval clears one attempt" below).
 
 That last clause is written out in each job's `if:` and it is load-bearing.
 `terraform apply` needs a status function, because a `skip_build` redeploy
@@ -327,6 +328,54 @@ during `promote` can stop `push-images.sh` between two tag moves, before its
 put-back runs, and leave `:prod` mixed (see "ALL OR NOTHING" in that
 script). A cancel during `terraform apply` leaves whatever Terraform had
 finished.
+
+**A prod approval clears one attempt of the run, not the run.** GitHub asks
+for an approval only for a job that names a protected environment. A
+*partial* re-run — "Re-run failed jobs", or "Re-run this job" — starts the
+chosen jobs and every job that depends on them again, and keeps the result
+and outputs of every other job (GitHub's REST reference: "Re-run all of the
+failed jobs and their dependent jobs"; "Re-run a job and its dependent
+jobs"). Re-running a failed `terraform apply (prod)` therefore leaves
+`approval` out, and `needs.approval.result` is still the `success` of the
+attempt the reviewer approved. With nothing else in the way, the apply would
+start at once, with nobody asked. GitHub allows a re-run for 30 days, to
+anyone with write access. The apply "plans immediately before applying", so
+it would plan and apply that day's state of the shared project, and on a
+`skip_build` redeploy it would resolve `:prod` again. Nobody would have
+approved that plan. On `main` before this change, the apply and the deploy
+named `prod` themselves, so every re-run of them asked again. Moving the
+approval to one job made this possible.
+
+So the approval is tied to the **attempt** it cleared:
+
+* `approval` outputs `attempt: ${{ github.run_attempt }}`. GitHub renders it
+  at the end of the job, so no step can write the wrong number.
+* On prod, `promote`, `terraform apply` and `deploy and smoke` each run only
+  if `needs.approval.outputs.attempt == github.run_attempt`. Each carries the
+  condition itself, because "Re-run this job" on a deploy whose smoke test
+  failed keeps the apply's old `success` too.
+* A partial re-run of prod therefore skips all three. A run whose re-run jobs
+  are all skipped would end **green** having changed nothing, so the
+  `stale-approval` job ("prod approval is from an earlier attempt") needs
+  all of them. It is re-run with any of them, and it fails the run with
+  the error `Nothing was released -- re-run ALL jobs`.
+* **"Re-run all jobs"** is how to retry a prod release. It runs `approval`
+  again, and `approval` waits for its reviewer and records the new attempt.
+* dev has no reviewer, so dev re-runs are not tied. "Re-run failed jobs" on a
+  dev apply that hit the state lock applies again, as it always did (owner:
+  keep dev un-gated).
+
+**The cost, and the alternative.** "Re-run all jobs" runs everything again.
+For prod that includes `images and scan`. CI never builds for prod, so this
+is **a second Cloud Build of all eight images** in the shared project, plus
+the verify job and a second scan, before the reviewer is even asked. The
+other way to close the hole is to name `prod` on the apply (and the deploy)
+again. A re-run of those jobs would then wait for its own approval, and
+nothing would be rebuilt. But every prod release would ask the reviewer two
+or three times, which "one approval" was chosen to avoid. `promote` would
+still need the attempt check or an environment of its own. **This is the
+owner's choice and is not settled.** This change ships the attempt check,
+which keeps one approval per release, pending that decision.
 
 **GitHub's Deployments list shows the approval, not the deploy.** GitHub
 records a deployment against a job that names an environment, and here that
@@ -389,7 +438,13 @@ in any of those runs — and that, approved, every one of them still can. Two
 more tests cancel the run. They try every way the jobs, or the earlier steps,
 could have ended, and assert that no such job starts and no such step runs.
 It also asserts that exactly one job names `prod`, and that no dev release
-names it. `test_push_images_scan_only.py` holds `--scan-only` to moving
+names it. The re-run tests carry an approved first attempt into a second
+one. They try every set of jobs one partial re-run can restart without
+`approval`, from every distinct approved first attempt. In each, no job that
+promotes, applies or deploys may start, and a job that exists to fail must
+start. "Re-run all jobs" must still reach every such job, and a dev re-run
+must still promote, apply and deploy. The model's re-run rules come from
+GitHub's documentation and have not been observed on this workflow. `test_push_images_scan_only.py` holds `--scan-only` to moving
 nothing, which is what exempts the pre-approval scan.
 
 The test finds prod-facing steps by reading each `run:` as text, and it errs

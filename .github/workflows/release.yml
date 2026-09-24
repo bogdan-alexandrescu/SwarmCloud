@@ -45,6 +45,18 @@
 #      a protected environment for its own approval, so naming prod on the
 #      apply and the deploy as well would ask the reviewer three times.
 #
+#      A PROD APPROVAL CLEARS ONE ATTEMPT, NOT THE RUN. A partial re-run --
+#      "Re-run failed jobs", "Re-run this job" -- starts a job and its
+#      dependants again and keeps every other job's result, so re-running a
+#      failed prod apply leaves `approval` out, keeps its old 'success', and
+#      (naming no environment) nobody is asked: up to 30 days later, a fresh
+#      plan of the shared project, applied. So `approval` outputs the attempt
+#      it ran in, and on prod `promote`, `infrastructure` and `deploy` run
+#      only in THAT attempt. A partial re-run of prod skips them and
+#      `stale-approval` fails the run saying so; "Re-run all jobs" runs the
+#      approval again, which waits for its reviewer. dev has no reviewer, so
+#      its re-runs are not tied (owner: keep dev un-gated).
+#
 #      A CANCEL IS A "NO" TOO, after the approval as well as before it. So
 #      nothing here that promotes, applies or deploys is conditioned on
 #      `always()`: GitHub still starts an `always()` job after the run is
@@ -286,6 +298,13 @@ jobs:
     # skipped, and a cancelled run asks nobody to approve anything.
     if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
     environment: ${{ github.event.inputs.environment || 'dev' }}
+    # THE ATTEMPT THIS APPROVAL CLEARED. A partial re-run keeps this job, and
+    # this output with it, from the attempt it ran in; every prod job after
+    # it compares the output with the attempt now running and does not start
+    # on a mismatch (see the header). Rendered by GitHub at the end of the
+    # job, from `github`, so no step can write the wrong number.
+    outputs:
+      attempt: ${{ github.run_attempt }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       RELEASE_TAG: ${{ needs.build.outputs.tag }}
@@ -299,7 +318,12 @@ jobs:
             echo "### ${ENVIRONMENT}: cleared to promote, apply and deploy"
             echo
             echo "Images: ${RELEASE_TAG:-none built -- a redeploy of the digests :${ENVIRONMENT} holds}."
-            echo "Commit \`${GITHUB_SHA}\`, started by ${GITHUB_TRIGGERING_ACTOR}."
+            echo "Commit \`${GITHUB_SHA}\`, started by ${GITHUB_TRIGGERING_ACTOR}, attempt ${GITHUB_RUN_ATTEMPT}."
+            if [ "${ENVIRONMENT}" = prod ]; then
+              echo
+              echo "This clears attempt ${GITHUB_RUN_ATTEMPT} only. A partial re-run of this release does not ask"
+              echo "again and so changes nothing in prod; \"Re-run all jobs\" asks again."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
@@ -312,8 +336,9 @@ jobs:
     needs: [build, approval]
     # No status function, so GitHub also requires every job upstream to have
     # succeeded; the explicit test is what a reader checks. A `skip_build`
-    # redeploy skips `build`, and with it this job: it promotes nothing.
-    if: needs.build.result == 'success' && needs.approval.result == 'success'
+    # redeploy skips `build`, and with it this job: it promotes nothing. On
+    # prod, only in the attempt the approval cleared (see the header).
+    if: needs.build.result == 'success' && needs.approval.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt)
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -400,8 +425,12 @@ jobs:
     # tests).
     #
     # NO `environment:` HERE, deliberately: `approval` holds this release's
-    # one approval, and naming prod again would make GitHub ask again.
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
+    # one approval, and naming prod again would make GitHub ask again. The
+    # price is that GitHub no longer asks on a RE-RUN of this job, so on prod
+    # it runs only in the attempt the approval cleared: "Re-run failed jobs"
+    # after a lock timeout skips it, and `stale-approval` says to re-run all
+    # jobs (see the header).
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -505,16 +534,22 @@ jobs:
   deploy:
     name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
-    needs: [build, infrastructure]
+    needs: [build, approval, infrastructure]
     # Runs only after the apply succeeded, and the apply runs only after the
     # approval succeeded -- so this is behind the same one approval. No
     # `environment:` of its own, for the reason given on `infrastructure`: it
     # used to name prod as well, which asked the reviewer a second time AFTER
     # the apply had already changed prod.
     #
+    # Tied to the approved attempt on its own, not only through the apply:
+    # "Re-run this job" on a deploy whose smoke test failed keeps the apply's
+    # old 'success', and would otherwise run the in-VPC smoke suite and the
+    # GKE dispatch against prod with nobody asked. `approval` is in `needs`
+    # only so this condition can read its output.
+    #
     # !cancelled() rather than always(), for the reason on `infrastructure`:
     # it runs past a `build` that skip_build skipped, and a cancel stops it.
-    if: ${{ !cancelled() && needs.infrastructure.result == 'success' }}
+    if: ${{ !cancelled() && needs.infrastructure.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -627,3 +662,39 @@ jobs:
             jq -r '.images[] | "| \(.name) | `\(.digest)` |"' \
               "build/deployed-images-${ENVIRONMENT}.json" 2>/dev/null || echo "| (no manifest) | |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # A PARTIAL RE-RUN OF PROD GOES RED, AND SAYS WHY. On prod, `promote`,
+  # `infrastructure` and `deploy` run only in the attempt `approval` cleared
+  # (see the header), so "Re-run failed jobs" or "Re-run this job" skips
+  # them. A run whose re-run jobs are all skipped ends GREEN, and an operator
+  # who re-ran a failed prod apply would read success for a release that
+  # changed nothing. This job needs all of them, so any partial re-run of
+  # them re-runs it too, and it fails the run with what to do instead.
+  #
+  # It never runs on a first attempt, on "Re-run all jobs" (the approval runs
+  # again and outputs the new attempt), on dev, or after a cancel.
+  # tests/unit/scripts/test_release_prod_gate.py holds all of that.
+  # -------------------------------------------------------------------------
+  stale-approval:
+    name: prod approval is from an earlier attempt
+    runs-on: ubuntu-24.04
+    needs: [approval, promote, infrastructure, deploy]
+    if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
+    env:
+      APPROVED_ATTEMPT: ${{ needs.approval.outputs.attempt }}
+    steps:
+      - name: say what to do instead
+        # The message never names the apply by its command, for the reason on
+        # `build`'s summary step: the gate test reads every run: as text.
+        run: |
+          echo "::error title=Nothing was released -- re-run ALL jobs::The prod approval was given in attempt ${APPROVED_ATTEMPT}; this is attempt ${GITHUB_RUN_ATTEMPT}, a partial re-run, which GitHub does not ask anyone to approve. So promote, the apply and the deploy were skipped and this attempt changed nothing in prod. Use 'Re-run all jobs': the approval runs again and waits for its reviewer."
+          {
+            echo "### Nothing was released"
+            echo
+            echo "The prod approval cleared attempt ${APPROVED_ATTEMPT}. This is attempt ${GITHUB_RUN_ATTEMPT}, a partial"
+            echo "re-run, which GitHub does not ask anyone to approve, so promote, the apply and the deploy"
+            echo "were skipped and this attempt changed nothing in prod. **Re-run all jobs** to release: the"
+            echo "approval runs again and waits for its reviewer."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
