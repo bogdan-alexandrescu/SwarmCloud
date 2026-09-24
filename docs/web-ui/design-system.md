@@ -691,7 +691,12 @@ greyscale.
 > paints the same grey as its bar, which is the pixel both had before #26.
 > `test_a_projected_reading_is_not_drawn_in_the_absence_colour` holds every
 > mark of a projected reading at least dE76 10 from `--ctl-absent`, in both
-> themes.
+> themes. It finds the marks the way the fill guard finds a fill: the element
+> as the JSX renders it (tag, classes, parent), every rule in every sheet
+> matched against it, through the cascade. Its first version looked rules up
+> by exact selector text, so only a rule written `.ov-tilde` was measured and
+> `.ctl-util-figure .ov-tilde { color: var(--ctl-absent) }` passed (CI run
+> 36040434721, on a mutation of `Overview.tsx` alone).
 >
 > **"A second grey" is only true in the dark theme.** The projected bar's
 > `--text-faint` is 1.27:1 (dE76 7.2) from the live bar's `--text-dim` in the
@@ -700,7 +705,13 @@ greyscale.
 > visible step", so in the light theme the bar alone does not tell a projected
 > reading from a live one. The `~` does. What
 > `test_a_documented_grey_is_not_the_default_grey` holds is that the two greys
-> are different, not that they are visibly different. Separating them visibly
+> are different, not that they are visibly different, and it holds it of what
+> the sheets paint on a fill carrying `ov-projected`, not of the test's own
+> table. Its first version compared `DOCUMENTED_GREYS` with the default and
+> never read a sheet: pointing only the shipped rule at `var(--text-dim)`
+> passed (CI run 36040434721). `test_a_documented_grey_is_what_the_sheet_paints`
+> now also fails whenever the table and the sheet disagree, so the checks that
+> read the table are checks of the product. Separating the two greys visibly
 > without a hue would take a texture or another grey, and that has not been
 > decided.
 >
