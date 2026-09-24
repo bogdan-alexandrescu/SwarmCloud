@@ -303,11 +303,54 @@ test('the standing-rules legend is a footer of links, not a screen of prose', ()
 
 test('the `?` sits after a label and never after a value', () => {
   const markup = surface()
-  // The glyph is inside `.ctl-metric-label`. A `?` button inside a value span
-  // would read as a footnote marker on the figure itself.
+  // A `?` button inside a value span would read as a footnote marker on the
+  // figure itself, which is how a measured number becomes one nobody trusts.
+  // This half of the rule is unchanged and unconditional.
   assert.ok(
     !/<span class="ctl-metric-value">[^<]*<button/.test(markup),
     'a help glyph is attached to a value',
   )
-  assert.match(markup, /<span class="ctl-metric-label"[^>]*>[^<]*<span[^>]*><button/)
+  // B7.4 RE-POINTED THE SECOND HALF, AND IT GOT STRONGER.
+  //
+  // WHAT MOVED. This asserted the glyph was inside `.ctl-metric-label` --
+  // which it was, on six tiles, because every tile whose value was an absence
+  // carried one. This screen held twenty-two help anchors, the most in the
+  // console, and the tiles were most of them. The ration is one per screen, so
+  // the tiles keep the SENTENCE and lose the button: `explain` publishes the
+  // topic's short form at the label through `aria-describedby`, drawn nowhere.
+  //
+  // WHY THIS IS NOT A WEAKENING. The old assertion proved a glyph existed
+  // SOMEWHERE in a label. It could not tell a label that explains itself from
+  // one that merely has a button, and it said nothing about the screen's other
+  // sixteen anchors. The two below pin the property the glyph was standing in
+  // for -- that a label carrying an explanation actually publishes it -- and
+  // pin it on EVERY such label rather than on the first one a regex finds.
+  const labels = [
+    ...markup.matchAll(/<span class="ctl-metric-label"([^>]*)>(.*?)<\/span><span class="ctl-metric-value"/gs),
+  ]
+  assert.ok(labels.length >= 4, `only ${labels.length} metric labels were examined`)
+  let explained = 0
+  for (const [, attrs, body] of labels) {
+    const described = /aria-describedby="([^"]+)"/.exec(attrs ?? '')
+    if (described === null) continue
+    explained++
+    // The id it points at is IN this label, and it is the help copy.
+    assert.ok(
+      new RegExp(`<span id="${described[1]!.replace(/[$.*+?^{}()|[\]\\]/g, '\\$&')}" data-help-description=""`).test(body ?? ''),
+      'a metric label points aria-describedby at nothing it contains',
+    )
+    // ...and it draws no button, which is the whole of what B7.4 changed here.
+    // If a `?` comes back to these tiles, `tests/help.test.ts` fails on the
+    // per-screen ration and this fails on the same diff.
+    assert.ok(!(body ?? '').includes('<button'), 'a metric label draws a help glyph again')
+  }
+  assert.ok(explained >= 3, `only ${explained} metric labels publish an explanation`)
+  // AND THE SCREEN'S ONE GLYPH IS STILL ON A LABEL, NOT A VALUE. It sits in
+  // the run heading, after the state chip it qualifies -- which is a label in
+  // every sense the rule means: it names the thing, it is not the thing.
+  assert.match(
+    markup,
+    /<span class="ctl-chip [^"]*"><i aria-hidden="true"><\/i>[A-Z_]+<\/span><span style="[^"]*"><button/,
+    'the run heading no longer carries the screen ?',
+  )
 })

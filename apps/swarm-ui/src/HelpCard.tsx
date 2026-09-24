@@ -10,6 +10,43 @@ import { HELP, type TopicId } from './help'
  * never after a value -- a glyph tucked against a number reads as a footnote
  * marker on the number, which is how "12 ?" becomes a figure nobody trusts.
  *
+ * ------------------------------------------------------------------------
+ * A `?` IS RATIONED. THERE IS AT MOST ONE PER RENDERED SCREEN (B7.4).
+ * ------------------------------------------------------------------------
+ * Counted 2026-09-24 across the fifteen routes: 139 help anchors in the source
+ * and 82 of them on screen at once, nineteen on Runtimes alone. That is not a
+ * well-documented console, it is a console whose labels were not carrying their
+ * weight -- every one of those glyphs is something a reader has to notice, hover
+ * and read to learn what the layout could have said outright. Three of them
+ * explained a column whose own header already carried the unit.
+ *
+ * So an explanation now goes to whichever of these fits, in this order, and
+ * only reaches the last one if the first three genuinely cannot hold it:
+ *
+ *   1. THE LABEL. "Capacity holders" became "Holders" the moment its section
+ *      was named Capacity, and the same move was available nearly everywhere.
+ *   2. THE COLUMN HEAD, when the thing being explained is a unit or a basis.
+ *      `In use (units)` and `Could start (min across pools)` cannot be scrolled
+ *      away from the figures they govern, which a `?` beside them could not
+ *      improve on -- it could only repeat.
+ *   3. THE SCREEN'S FOOTER INDEX -- `<HelpLinks>` below, or `.ctl-card-foot`.
+ *      A platform concept (the quota windows, absent vs zero, fencing
+ *      generations, all-or-nothing reservation) is one topic with one
+ *      destination, `#help/<id>`, linked once per screen rather than pinned to
+ *      every figure that happens to obey it.
+ *   4. A `?`. One per screen, on the screen's own subject, in the same place
+ *      every time so it is learnable rather than hunted for.
+ *
+ * `tests/help.test.ts` counts the anchors and fails over the ceiling, because
+ * the last four passes at this each reintroduced a handful and nothing noticed.
+ * WHAT IS NOT NEGOTIABLE while doing any of the above: this console draws THREE
+ * marks -- a measured value, a stale one (`~12%`, the last reading, too old to
+ * trust) and an unmeasured one (`—`) -- and no label may be shortened in a way
+ * that lets "nobody measured this" read as "this is zero". Where a shorter
+ * label would blur that, the `?` stays and the label does not change.
+ *
+ * A label that gives up its `?` keeps its SENTENCE: see `HelpNote` below.
+ *
  * IT OPENS ON HOVER, ON FOCUS, AND ON CLICK, AND THE LAST TWO ARE NOT
  * OPTIONAL. Hover does not exist on a touch device and does not survive a
  * screenshot. An operator pasting a screen into an incident channel at 3am
@@ -442,6 +479,44 @@ const HIDDEN: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
+/**
+ * THE EXPLANATION WITHOUT THE WIDGET.
+ *
+ * A `<span>` that is never drawn, carrying one topic's short form at the id a
+ * label points its `aria-describedby` at. It renders no `?`, opens nothing and
+ * holds no state.
+ *
+ * IT EXISTS BECAUSE THE `?` WAS RATIONED AND THE SCREEN READER WAS NOT. B7.4
+ * cut this console from 139 help anchors to under twenty, and the honest cost
+ * of deleting a `?` from a label is that the label loses the sentence it was
+ * publishing to assistive technology -- the sighted reader keeps the mark, the
+ * unit in the column head and the footer link, and the screen-reader user was
+ * the only one who lost anything. So the button goes and the description stays:
+ * `<HelpNote>` is what a label carries once its `?` is gone.
+ *
+ * ONE RENDERER FOR THE HIDDEN NODE, which is the other reason this is a
+ * component rather than a copied `<span>`. `HelpCardView` below renders this
+ * same element, so the attribute every prose test strips by
+ * (`data-help-description`) is written in exactly one place. A second spelling
+ * of it would be invisible until a word-count gate started counting the whole
+ * help corpus as screen text and passing for the wrong reason -- which is the
+ * failure `honesty.prose.test.tsx` was written against.
+ *
+ * `data-help-description` MARKS IT, and that attribute is not decoration. This
+ * node is in `document.body.textContent` whether any card is open or shut, so a
+ * test asking "what can a reader see with every card closed" reads the whole
+ * explanation back out of it and passes for the wrong reason. `visibleText()`
+ * in `src/__tests__/honesty.prose.test.tsx` strips it by this attribute, and so
+ * does every `prose.budget*` ceiling.
+ */
+export function HelpNote({ topic, id }: { topic: TopicId; id: string }) {
+  return (
+    <span id={id} data-help-description="" style={HIDDEN}>
+      {HELP[topic].short}
+    </span>
+  )
+}
+
 export interface HelpCardViewProps {
   topic: TopicId
   state: HelpState
@@ -665,20 +740,7 @@ export function HelpCardView({
         ?
       </button>
 
-      {/* ALWAYS PRESENT, never drawn. `aria-describedby` on the label points
-          here, so the explanation is available to assistive technology at the
-          label without any interaction at all.
-
-          `data-help-description` MARKS IT, and that attribute is not
-          decoration. This node is in `document.body.textContent` whether the
-          card is open or shut, so a test asking "what can a reader see with
-          every card closed" reads the whole explanation back out of it and
-          passes for the wrong reason -- the exact shape of failure the prose
-          migration is most at risk of. `visibleText()` in
-          `src/__tests__/honesty.prose.test.tsx` strips it by this attribute. */}
-      <span id={descriptionId} data-help-description="" style={HIDDEN}>
-        {t.short}
-      </span>
+      <HelpNote topic={topic} id={descriptionId} />
 
       {/* PORTALLED ONLY WHERE THERE IS A DOCUMENT TO PORTAL INTO.
           `tests/run.mjs` renders this component to a STRING with no DOM, and

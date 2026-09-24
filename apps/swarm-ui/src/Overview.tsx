@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
   loadCapacity,
@@ -12,7 +12,7 @@ import {
 } from './api'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
-import { HelpCard } from './HelpCard'
+import { HelpCard, HelpNote } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { timeAgo } from './Shell'
 import {
@@ -118,6 +118,10 @@ export function OverviewScreen() {
   // says how old it is, and the one that goes stale is denominated in dollars.
   const [live, setLive] = useState(0)
   const [heavy, setHeavy] = useState(0)
+  // The id the subscription-account group's heading publishes its explanation
+  // at. It is here rather than inside the group because the group is inline
+  // JSX in this component's return, not a component of its own.
+  const accountsHelpId = useId()
   const refresh = useCallback(() => {
     setLive((n) => n + 1)
     setHeavy((n) => n + 1)
@@ -243,7 +247,25 @@ export function OverviewScreen() {
             className="ctl-fact ov-tally"
             aria-label={readTally(reads.length, landed, pending, refused, broken)}
           >
-            <b>reads</b>
+            {/* THIS SCREEN'S ONE `?` (B7.4), AND IT IS ON THE READS TALLY ON
+                PURPOSE. Overview carried twelve help anchors -- nine on empty
+                states whose marks already spell themselves out, one on a `20s`
+                that is the cadence it was explaining, one on a card title and
+                one on a fraction. All twelve are gone except this, and the
+                sentence each of them published is still at its own label, as a
+                hidden description, for a screen reader.
+                The tally is where the key belongs because it is the figure that
+                says HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of the eight
+                reads behind the cards below did not land, and every em dash
+                further down the page is one of those two. `absent-vs-zero` is
+                the rule that makes that readable -- a figure nobody measured is
+                never drawn as a zero -- and it is the one rule this whole
+                console is built around, so it is the one worth a glyph at the
+                top of the screen somebody lands on first. */}
+            <b>
+              reads
+              <HelpCard topic="absent-vs-zero" />
+            </b>
             {/* THE DOT IS THE SEVERITY AND THE FRACTION IS THE FACT. "8/8"
                 with a green disc and "6/8" with a red diamond are different
                 pictures before either is read, and the sentence that used to
@@ -259,9 +281,13 @@ export function OverviewScreen() {
             // "every 20 seconds" three hundred lines from the constant.
             aria-label={`re-read every ${POLL_MS / 1000} seconds`}
           >
+            {/* NO `?`. `poll 20s` IS `poll-cadence` -- the topic said the page
+                re-reads on a fixed timer and named the interval, and the label
+                and the figure beside it say both, in three characters, without
+                anything to open. The accessible name above states it as a
+                sentence for a reader who gets the strip read to them. */}
             <b>poll</b>
             <span className="ov-num">{POLL_MS / 1000}s</span>
-            <HelpCard topic="poll-cadence" />
           </li>
           <li className="ctl-fact">
             <button className="ctl-link ov-refresh" onClick={refresh}>
@@ -326,7 +352,7 @@ export function OverviewScreen() {
           </section>
 
           <section className="ctl-card ov-spend">
-            <CardHead title="Spend" href="#history/timeline" cta="history" help="token-cost" />
+            <CardHead title="Spend" href="#history/timeline" cta="history" explain="token-cost" />
             <SpendBody state={spend} tasks={tasks} />
           </section>
 
@@ -351,7 +377,7 @@ export function OverviewScreen() {
               note={tenant === null ? undefined : `tenant ${tenant}`}
               href="#capacity/profiles"
               cta="pools"
-              help="pools-all-at-once"
+              explain="pools-all-at-once"
             />
             <div className="ov-groups">
               <div className="ov-group">
@@ -359,9 +385,14 @@ export function OverviewScreen() {
                 <CapacityBody state={capacity} />
               </div>
               <div className="ov-group">
-                <h3 className="ov-grouphead">
+                {/* WHICH WINDOW A UTILISATION FIGURE IS OF is `binding-window`,
+                    and it is published here as a description rather than as a
+                    `?`: the rows underneath already print the window each
+                    figure belongs to, so the glyph was opening a card to say
+                    what the row beside it says. */}
+                <h3 className="ov-grouphead" aria-describedby={accountsHelpId}>
                   By subscription account
-                  <HelpCard topic="binding-window" />
+                  <HelpNote topic="binding-window" id={accountsHelpId} />
                 </h3>
                 <AccountsBody state={accounts} />
               </div>
@@ -1004,18 +1035,24 @@ function CardHead({
   note,
   href,
   cta,
-  help,
+  explain,
 }: {
   title: string
   note?: string | undefined
   /**
-   * The topic that used to be a paragraph under this card.
+   * The topic that used to be a paragraph under this card, and then a `?` on
+   * this title, and is now NEITHER on the glass (B7.4).
    *
-   * ON THE TITLE, NEVER ON A FIGURE. A `?` tucked against a number reads as a
-   * footnote marker on the number, which is how a measured figure becomes one
-   * nobody trusts.
+   * IT PUBLISHES THE SENTENCE WITHOUT DRAWING A WIDGET. `<HelpNote>` renders a
+   * visually hidden node and the title points `aria-describedby` at it, so a
+   * screen reader still gets the explanation at the title while a sighted
+   * reader gets a card head with nothing extra in it. This screen carried
+   * twelve help anchors for four cards; the count is what the density pass was
+   * about, and deleting the glyph without keeping the description would have
+   * taken the explanation away from the one reader who could not get it from
+   * the layout instead.
    */
-  help?: TopicId
+  explain?: TopicId
   /**
    * Omitted by exactly one card, "Needs attention", and the reason is that
    * there is no screen that is a deeper version of it.
@@ -1023,11 +1060,15 @@ function CardHead({
   href?: string | undefined
   cta?: string | undefined
 }) {
+  const descId = useId()
   return (
     <div className="ctl-card-head">
-      <h2 className="ctl-card-title">
+      <h2
+        className="ctl-card-title"
+        aria-describedby={explain === undefined ? undefined : descId}
+      >
         {title}
-        {help !== undefined && <HelpCard topic={help} />}
+        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h2>
       {note !== undefined && <span className="ctl-card-note">{note}</span>}
       {href !== undefined && cta !== undefined && (
@@ -1046,28 +1087,37 @@ function CardHead({
  * `is-partial` and `is-admin` are colour, and colour is not a distinction a
  * screenshot in an incident channel preserves; the mark is two words, a border
  * style and a fill, and it survives both. The heading is the FACT, three or
- * four words of it. The explanation is the mark's accessible name and the `?`.
+ * four words of it. The explanation is the mark's accessible name, and it is
+ * ALREADY A WHOLE SENTENCE -- `say` is written out at every call site below.
+ *
+ * WHICH IS WHY THE `?` HERE IS GONE (B7.4). Nine of this screen's twelve help
+ * anchors were on these empty states, each one opening a card beside a mark
+ * whose own accessible name said the same thing in more detail. A reader with a
+ * screen reader heard it twice; a reader without one saw a glyph that repeated
+ * the two words next to it. `explain` keeps the topic's sentence published at
+ * the heading for assistive technology and draws nothing.
  */
 function Absent({
   kind,
   heading,
   say,
-  help,
+  explain,
 }: {
   kind: 'zero' | 'failed' | 'partial' | 'admin'
   heading: string
   say: string
-  help?: TopicId
+  explain?: TopicId
 }) {
   const cls = kind === 'zero' ? '' : ` is-${kind}`
+  const descId = useId()
   const mark: MarkKind =
     kind === 'zero' ? 'zero' : kind === 'failed' ? 'unread' : kind === 'partial' ? 'partial' : 'admin'
   return (
     <div className={`ctl-empty ov-empty${cls}`}>
       <Mark kind={mark} say={say} />
-      <h3>
+      <h3 aria-describedby={explain === undefined ? undefined : descId}>
         {heading}
-        {help !== undefined && <HelpCard topic={help} />}
+        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h3>
     </div>
   )
@@ -1124,7 +1174,7 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
           kind={b.admin ? 'admin' : 'failed'}
           heading="Pool state unread"
           say={`${b.why} No figure here is a claim about room.`}
-          help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+          explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
         />
       </div>
     )
@@ -1136,7 +1186,7 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
           kind="zero"
           heading="No pools exist"
           say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
-          help="capacity"
+          explain="capacity"
         />
       </div>
     )
@@ -1406,7 +1456,7 @@ function RunningBody({
           kind={b.admin ? 'admin' : 'failed'}
           heading="Task list unread"
           say={`${b.why} This card is blind; it is not reporting that nothing is running.`}
-          help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+          explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
         />
       </div>
     )
@@ -1418,7 +1468,7 @@ function RunningBody({
           kind="zero"
           heading="No task exists"
           say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
-          help="absent-vs-zero"
+          explain="absent-vs-zero"
         />
       </div>
     )
@@ -1615,7 +1665,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           kind="failed"
           heading="No attempt read completed"
           say={`${errorHeading(state.error)} — ${state.error.message} No figure is shown.`}
-          help="read-failed"
+          explain="read-failed"
         />
       </div>
     )
@@ -1631,7 +1681,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
             kind="zero"
             heading="No task exists"
             say="The task read succeeded and returned nothing — a real zero, so there are no attempts to sum."
-            help="absent-vs-zero"
+            explain="absent-vs-zero"
           />
         </div>
       )
@@ -1642,7 +1692,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           kind="zero"
           heading="No task has run"
           say="Every task on the page has an attempt count of 0 — a real zero."
-          help="attempt-documents"
+          explain="attempt-documents"
         />
       </div>
     )
@@ -1715,7 +1765,11 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
             >
               {s.failedReads} of {s.tasksSampled} reads failed
             </span>
-            <HelpCard topic="partial-read" />
+            {/* NO `?` (B7.4). The accessible name above is `partial-read`,
+                written out longer than the topic and with THIS response's
+                numbers and THIS failure's message in it, which a shared topic
+                cannot have. A glyph here would open a generic version of the
+                sentence already attached to the figure. */}
           </>
         )}
       </p>
@@ -2080,7 +2134,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
           kind={b.admin ? 'admin' : 'failed'}
           heading="Account pool unread"
           say={`${b.why} This says nothing about whether the accounts have room.`}
-          help={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
+          explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
         />
       </div>
     )
@@ -2092,7 +2146,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
           kind="zero"
           heading="No account registered"
           say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
-          help="park-on-missing-credential"
+          explain="park-on-missing-credential"
         />
       </div>
     )
@@ -2421,7 +2475,7 @@ function AttentionLead({ checks }: { checks: Check[] }) {
                 ? `All ${clear.length} checks ran and all ${clear.length} came back clear. This is a real all-clear over the population each check examined, not silence.`
                 : `${blind.length} of ${checks.length} checks could not run, so this is a partial all-clear: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`
             }
-            help="all-clear-basis"
+            explain="all-clear-basis"
           />
         )}
 

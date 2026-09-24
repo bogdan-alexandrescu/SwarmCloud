@@ -64,17 +64,27 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  // `#work/workflows`, NOT `#agents/workflows`. The section id was renamed and
-  // `checks.ts` moved with it; this expectation did not, and it is the only
-  // place in this file that names a route. `nav.links.test.tsx` requires every
-  // internal href to use the CANONICAL id rather than an alias, so the value
-  // the check now emits is the one it is REQUIRED to emit -- this assertion was
-  // holding it to the spelling that rule forbids.
+  // `#work/workflows`, NOT `#agents/workflows`.
   //
-  // IT WAS ALSO INVISIBLE. This was the second red in the node runner, behind
-  // route.test.ts, and that runner stops at the first failing file -- so the TAP
+  // This has been failing on this branch since the rename moved the section to
+  // `work`. SECTION_ALIASES keeps the old href WORKING, which is why nothing in
+  // the app looked broken, and this assertion is the only thing that noticed --
+  // it is the one place in this file that names a route.
+  //
+  // IT WAS ALSO INVISIBLE. It was the second red in the node runner, behind
+  // route.test.ts, and that runner stops at the first failing file: the TAP
   // output ended at `# fail 1` there and never reached this line. Two greps of
   // the same rename found both; one CI run found one.
+  //
+  // ASSERTED AS EXACT EQUALITY rather than as a pattern. The help-density lane
+  // reached this file independently and proposed `/^#[a-z-]+\/workflows$/` plus
+  // a "not #agents/" guard, to avoid pinning a spelling. Equality is stronger
+  // here and the reason is that the pattern admits `#capacity/workflows` -- a
+  // link to a pane that does not exist in that section, which is the mistake
+  // most likely to be made. The generic rule the pattern was reaching for is
+  // already enforced globally: `nav.links.test.tsx` reads every internal href in
+  // the app and fails on any that uses a retired id or names a pane that does
+  // not exist. One exact value here, one general rule there.
   assert.equal(p.href, '#work/workflows')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.

@@ -5,7 +5,7 @@ import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
-import { HelpCard } from './HelpCard'
+import { HelpCard, HelpNote } from './HelpCard'
 import { LivenessBadge } from './Liveness'
 import { RunFiles } from './RunFiles'
 import { Screen, timeAgo } from './Shell'
@@ -263,7 +263,9 @@ export function Em() {
  * no keyboard route at all.
  *
  * The REASONING -- why this figure can be absent, what would have written it --
- * is neither of those. It is the `?` and `#help/<topic>`.
+ * is neither of those. It is `#help/<topic>`: published at the label by
+ * `explain`, indexed in the card foot, and on this screen behind exactly one
+ * `?` rather than the twenty-two it had before B7.4.
  */
 export type MarkKind = 'zero' | 'absent' | 'unread' | 'partial' | 'admin' | 'pending'
 
@@ -300,8 +302,17 @@ export function Mark({ kind, say }: { kind: MarkKind; say: string }) {
  * wrong -- see `tests/agentdetail.test.tsx`, which renders this screen with
  * every card CLOSED and asserts exactly that.
  *
- * The glyph sits INSIDE the label and after it, never after the value: a `?`
- * tucked against a figure reads as a footnote marker on the figure.
+ * B7.4: THE TILE NO LONGER DRAWS A `?`, AND IT STILL PUBLISHES THE SENTENCE.
+ * This screen carried twenty-two help anchors, more than any other, and most of
+ * them were here -- a glyph on every tile whose value was an absence, which is
+ * most tiles on a run that recorded little. The tile ALREADY tells an absence
+ * from a zero without any of them: the value is a phrase ("not recorded"), the
+ * tone is `is-absent` or `is-unread`, and `tests/agentdetail.test.tsx` renders
+ * this screen with every card closed and asserts exactly that. So the glyph was
+ * the one part that could go, and `explain` keeps what it was publishing -- the
+ * topic's short form, at the label, behind `aria-describedby`, drawn nowhere.
+ * The paragraphs are the card foot's link row (`AttemptLegend`) and the rail's
+ * Help section.
  */
 function Metric({
   label,
@@ -310,7 +321,7 @@ function Metric({
   sub,
   foot,
   tone,
-  help,
+  explain,
 }: {
   label: string
   value: ReactNode
@@ -318,14 +329,17 @@ function Metric({
   sub?: ReactNode
   foot?: string
   tone?: 'absent' | 'unread' | 'alert' | 'good'
-  help?: TopicId
+  explain?: TopicId
 }) {
   const descId = useId()
   return (
     <div className={`ctl-metric${tone ? ` is-${tone}` : ''}`}>
-      <span className="ctl-metric-label" aria-describedby={help === undefined ? undefined : descId}>
+      <span
+        className="ctl-metric-label"
+        aria-describedby={explain === undefined ? undefined : descId}
+      >
         {label}
-        {help !== undefined && <HelpCard topic={help} describedById={descId} />}
+        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </span>
       <span className="ctl-metric-value">
         {value}
@@ -414,8 +428,8 @@ function Util({
  * passes no children at all and renders no paragraph, rather than padding one
  * out to fill the slot.
  *
- * `say` is the sentence, on the mark's accessible name. `help` is the
- * reasoning, behind the `?`.
+ * `say` is the sentence, on the mark's accessible name. `explain` is the
+ * standing reasoning, published at the heading and drawn nowhere.
  */
 const EMPTY_MARK: Readonly<Record<'zero' | 'failed' | 'partial' | 'admin', MarkKind>> = {
   zero: 'zero',
@@ -430,7 +444,7 @@ function Absent({
   say,
   children,
   foot,
-  help,
+  explain,
 }: {
   kind: 'zero' | 'failed' | 'partial' | 'admin'
   heading: string
@@ -439,16 +453,22 @@ function Absent({
   /** At most one sentence. Omitted when the heading already carries the fact. */
   children?: ReactNode
   foot?: string
-  help?: TopicId
+  /**
+   * The topic, published at the heading and drawn nowhere (B7.4). `say` above
+   * is already a full sentence on the mark beside this heading, so a `?` here
+   * opened a shorter, more general version of the words the empty state was
+   * saying -- six times over on one screen.
+   */
+  explain?: TopicId
 }) {
   const cls = kind === 'zero' ? '' : ` is-${kind}`
   const descId = useId()
   return (
     <div className={`ctl-empty${cls}`} role={kind === 'zero' ? undefined : 'status'}>
-      <h3 aria-describedby={help === undefined ? undefined : descId}>
+      <h3 aria-describedby={explain === undefined ? undefined : descId}>
         <Mark kind={EMPTY_MARK[kind]} say={say} />{' '}
         {heading}
-        {help !== undefined && <HelpCard topic={help} describedById={descId} />}
+        {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h3>
       {children !== undefined && <p>{children}</p>}
       {foot !== undefined && <span className="ctl-empty-foot">{foot}</span>}
@@ -529,6 +549,22 @@ function Headline({
             here and in Agents.tsx. Colour is still not the only signal: the
             `<i>` carries the silhouette and the WORD carries the state. */}
         <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+        {/* THIS SCREEN'S ONE `?` (B7.4), on the state chip it qualifies.
+            The agent detail carried twenty-two help anchors, the most in the
+            console -- one on almost every metric tile and empty state, each
+            opening a general sentence beside a mark whose own accessible name
+            said the same thing about THIS run with this run's figures in it.
+            Those are `explain` now: published at the label for a screen reader,
+            drawn nowhere, indexed in the card foot below.
+            What stays is the one thing the chip cannot say. A state word tells
+            a reader WHICH state this is; it cannot tell them that only four of
+            the twelve hold a pool slot, so a task sitting at a state that looks
+            idle may be the one costing capacity and a task that looks stuck may
+            be costing nothing. That is invariant 1, it is the first question
+            anyone opens this screen with, and no chip can carry it.
+            `tests/agentdetail.test.tsx` asserts a `?` renders on this surface
+            with every card closed. */}
+        <HelpCard topic="capacity" />
         <LivenessBadge task={task} events={events} now={now} />
         {/* B28. The route has existed and worked since it was written and
             nothing in this app called it, so an operator watching an agent
@@ -604,8 +640,8 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         />
         {/* No number may appear for anything that came from the attempt read.
             A reassuring zero on a failed read is the worst output available. */}
-        <Metric label="Peak memory" value="read failed" tone="unread" sub="attempt query" help="read-failed" />
-        <Metric label="Spend" value="read failed" tone="unread" sub="attempt query" help="read-failed" />
+        <Metric label="Peak memory" value="read failed" tone="unread" sub="attempt query" explain="read-failed" />
+        <Metric label="Spend" value="read failed" tone="unread" sub="attempt query" explain="read-failed" />
       </div>
     )
   }
@@ -653,8 +689,9 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         // tile, in the faint colour, beside neighbours that are digits --
         // three signals, none of them hover, none of them colour alone.
         // The sentence that used to sit under it explained WHY it can be
-        // absent, which is the `?`'s job now.
-        <Metric label="Peak memory" value="not recorded" tone="absent" help="peak-memory" />
+        // absent, which `explain` publishes at the label and the card foot
+        // links; B7.4 took the glyph, not the sentence.
+        <Metric label="Peak memory" value="not recorded" tone="absent" explain="peak-memory" />
       ) : (
         <Metric
           label="Peak memory"
@@ -667,11 +704,11 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           }
           foot={nearMiss ? 'OOM near miss' : undefined}
           tone={nearMiss ? 'alert' : undefined}
-          help="oom-near-miss"
+          explain="oom-near-miss"
         />
       )}
       {tokIn === null && tokOut === null ? (
-        <Metric label="Tokens" value="not reported" tone="absent" help="tokens-reported" />
+        <Metric label="Tokens" value="not reported" tone="absent" explain="tokens-reported" />
       ) : (
         <Metric
           label="Tokens"
@@ -687,7 +724,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         />
       )}
       {cost === null ? (
-        <Metric label="Token cost" value="not reported" tone="absent" help="token-cost" />
+        <Metric label="Token cost" value="not reported" tone="absent" explain="token-cost" />
       ) : (
         <Metric
           label="Token cost"
@@ -698,7 +735,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           // infrastructure cost to add is a fact about the platform, and moved.
           sub={`${spent.length} of ${attempts.length} reported`}
           tone={spent.length === attempts.length ? undefined : 'unread'}
-          help="token-cost"
+          explain="token-cost"
         />
       )}
       {/* A DIGIT, INCLUDING WHEN IT IS 0, AND THAT IS THE POINT. This zero was
@@ -711,7 +748,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         label="Checkpoints"
         value={`${ckpts}`}
         sub={ckpts === 0 ? undefined : `across ${attempts.length}`}
-        help="checkpoints"
+        explain="checkpoints"
       />
     </div>
   )
@@ -805,7 +842,6 @@ function Alerts({ task }: { task: Task }) {
           {task.next_eligible_at && (
             <> · eligible {new Date(task.next_eligible_at).toLocaleString()}</>
           )}
-          <HelpCard topic="park-on-missing-credential" />
           {REASON_COPY[task.park_reason] === undefined && (
             <span className="blocker-copy">{reasonText(task.park_reason)}</span>
           )}
@@ -840,7 +876,6 @@ function Alerts({ task }: { task: Task }) {
               )}
             </div>
           ))}
-          <HelpCard topic="blockers-at-an-instant" />
         </div>
       )}
 
@@ -850,7 +885,6 @@ function Alerts({ task }: { task: Task }) {
       {task.cancel_requested && live && (
         <div className="bar red">
           Cancellation requested
-          <HelpCard topic="lease-and-pool-are-two-records" />
         </div>
       )}
     </>
@@ -939,7 +973,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           kind="failed"
           heading="Attempt history"
           say="The attempt history could not be read. This is a failed read, not a task with no attempts."
-          help="read-failed"
+          explain="read-failed"
         >
           {/* The DETAIL is the fact -- which read failed and how -- and §8.4
               keeps it as the empty state's one allowed sentence. What may not
@@ -974,7 +1008,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
             heading={`counts ${task.attempt_count} · returned 0`}
             say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${task.state}.`}`}
             foot={finished ? undefined : task.state}
-            help="attempt-documents"
+            explain="attempt-documents"
           />
         ) : (
           // "REAL ZERO" is the mark, always rendered, in words -- so the one
@@ -984,7 +1018,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
             kind="zero"
             heading={`no attempt yet · ${task.state}`}
             say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
-            help="attempt-documents"
+            explain="attempt-documents"
           />
         )}
       </section>
@@ -1067,6 +1101,15 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
  * argued twice, and are one topic here.
  */
 function AttemptLegend() {
+  // B7.4 ADDED THE LAST THREE, and they are the ones this screen's deleted `?`
+  // glyphs were carrying: what a dispatch strategy publishes, when an attempt
+  // document exists at all, and that a missing credential parks rather than
+  // fails. Each was drawn beside a figure that already states its own case;
+  // as an entry here each is stated once, for the whole screen, in a row the
+  // reader passes in their own reading order rather than one they have to
+  // hover to find. The other ten topics this screen names are published at
+  // their own labels by `explain` and live in the rail's Help section --
+  // putting all thirteen here would rebuild the essay the row replaced.
   const topics: TopicId[] = [
     'requests-are-ceilings',
     'workspace-memory',
@@ -1074,6 +1117,9 @@ function AttemptLegend() {
     'cpu-not-sampled',
     'token-cost',
     'checkpoints',
+    'attempt-documents',
+    'dispatch-strategies',
+    'park-on-missing-credential',
   ]
   // IT IS THE CARD FOOT NOW, not a hand-built inline row. `.ctl-card-foot` is
   // the provenance strip design-system.md §6.1 gives every card, and it draws
@@ -1620,7 +1666,6 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
             }
           />{' '}
           {a.started_at === null ? 'never started' : 'none written'}
-          <HelpCard topic="checkpoints" />
         </p>
       ) : (
         <div className="ctl-table">
@@ -1795,14 +1840,14 @@ function Output({ run }: { run: AgentRun }) {
           kind="zero"
           heading={`nothing written yet · ${task.state}`}
           say="A result summary is written only when an attempt finishes. This agent has not finished, so there is nothing here — which is not the same as producing nothing."
-          help="attempt-documents"
+          explain="attempt-documents"
         />
       ) : summary === null ? (
         <Absent
           kind="partial"
           heading={`finished with no summary · ${task.state}`}
           say="This agent reached a terminal state without a result summary. A parked attempt puts its summary in the event detail and in blocked_by instead, so the timeline below is where to look."
-          help="attempt-documents"
+          explain="attempt-documents"
         />
       ) : (
         <>
@@ -2121,14 +2166,14 @@ function SummaryUsage({ task, attempts }: { task: Task; attempts: AttemptRow[] |
 function DispatchPanel({ task }: { task: Task }) {
   // WHAT A DISPATCH IS -- chosen at submission, decides what happens to the
   // work rather than how it runs -- is true of every task there has ever been
-  // and is `#help/dispatch-strategies`. The panel shows what THIS task chose.
+  // and is `#help/dispatch-strategies`, in the card foot below. The panel shows
+  // what THIS task chose, and B7.4 took the `?` off this heading: the facts
+  // under it name the strategy and print what it published, which is the topic
+  // instantiated for this run rather than described in general.
   return (
     <section className="section panel">
       <div className="ctl-toolbar">
-        <h2>
-          Dispatch
-          <HelpCard topic="dispatch-strategies" />
-        </h2>
+        <h2>Dispatch</h2>
       </div>
       <DispatchFacts task={task} />
     </section>
@@ -2419,7 +2464,7 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
         heading="pushed · no pull request, by request"
         say="This step is a contributor in an integrate workflow. Its branch is on the forge and the integrating step merges it into the single pull request the whole workflow opens."
         foot={reason ?? undefined}
-        help="dispatch-strategies"
+        explain="dispatch-strategies"
       >
         <strong>Do not open one from this branch</strong> — that is the second
         pull request this strategy exists to prevent.
@@ -2461,7 +2506,7 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
         heading="nothing pushed · collect"
         say="collect is the default strategy: the agent's work is harvested into this task's patch and artifacts and the repository is never written to. Nothing failed, and no token or forge setting changes this."
         foot={reason ?? undefined}
-        help="dispatch-strategies"
+        explain="dispatch-strategies"
       />
     )
   }
@@ -2599,14 +2644,17 @@ function Input({ run }: { run: AgentRun }) {
       {/* WHAT THE PROFILE NAME MEANS IS NOT ON THIS PAGE, and saying so was a
           five-line paragraph under every run. It is a standing fact about the
           platform -- the runner-profile catalogue is frozen and no route
-          serves it -- so it is `#help/runner-profile-by-name` beside the
-          profile it qualifies. The SIZING behind the resource class IS served,
-          and stays, as figures rather than as a sentence about figures. */}
+          serves it -- so it is `#help/runner-profile-by-name`. B7.4 took the
+          `?` that sat beside the profile: the fact a reader needs HERE is which
+          profile this run used, and that is the value itself; that no route
+          serves the catalogue is a property of the platform, indexed in the
+          card foot and in the rail's Help section rather than repeated on every
+          run. The SIZING behind the resource class IS served, and stays, as
+          figures rather than as a sentence about figures. */}
       <ul className="ctl-facts">
         <li className="ctl-fact">
           <b>profile</b>
           {task.runner_profile}
-          <HelpCard topic="runner-profile-by-name" />
         </li>
         <li className="ctl-fact">
           <b>class</b>
@@ -2668,7 +2716,6 @@ function Input({ run }: { run: AgentRun }) {
               }
             />{' '}
             {record === null ? 'input is not an object' : 'no prompt key'}
-            <HelpCard topic="input-is-opaque" />
           </p>
         ) : (
           <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>

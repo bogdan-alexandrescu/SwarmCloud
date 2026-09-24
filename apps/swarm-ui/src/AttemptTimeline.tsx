@@ -78,12 +78,13 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
         // ONE SENTENCE. Which states have no attempt document, and why, is
         // `#help/attempt-documents` -- a topic that already exists and says it
         // better than a two-clause sentence with a parenthetical in it.
-        body: (
-          <>
-            The attempts query succeeded and returned nothing.{' '}
-            <HelpCard topic="attempt-documents" />
-          </>
-        ),
+        // NO `?` (B7.4). "succeeded and returned nothing" is already the
+        // distinction `attempt-documents` exists to protect -- a measured zero
+        // rather than a read that did not land. Which states never write an
+        // attempt document is in the rail's Help section; this screen keeps its
+        // one glyph for the PARTIAL case below, which is the one a reader
+        // cannot resolve from the surface.
+        body: <>The attempts query succeeded and returned nothing.</>,
       }}
     >
       {(t) => <Body t={t} />}
@@ -199,9 +200,19 @@ function Body({ t }: { t: AttemptTimeline }) {
                 {blind.length} blind
               </>
             )}
-            <HelpCard topic="partial-read" />
           </span>
         )}
+        {/* THIS SCREEN'S ONE `?` (B7.4), HOISTED OUT OF THE BRANCH IT USED TO
+            SIT IN. It was inside the "events were read" arm, so the reader who
+            most needed it -- the one looking at `events unread` -- was the one
+            it was not drawn for. On the toolbar it renders on every path, in
+            the same place, beside every mark this screen can draw.
+            It stays a glyph because what it holds cannot be a label: the events
+            endpoint pages oldest-first and returns no page token, so "this is
+            everything" is a claim this screen is never entitled to make and a
+            reader has no way to derive that from the counts in front of them.
+            `prose.runs.test.tsx` pins it to this toolbar. */}
+        <HelpCard topic="partial-read" />
       </div>
       {groups.map((g) => (
         <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} />

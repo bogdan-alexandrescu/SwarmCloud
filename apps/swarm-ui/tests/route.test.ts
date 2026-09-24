@@ -43,6 +43,23 @@ test('the bare #help route reaches the Help section', () => {
   assert.equal(r.tab, '')
 })
 
+/**
+ * A CANONICAL ROUTE IS UNCHANGED BY `canonical`; AN ALIAS IS NOT, AND MUST NOT BE.
+ *
+ * This list held `agents/running` and asserted it round-tripped untouched. That
+ * was true when it was written and stopped being true when the nav rename made
+ * `agents` an alias of `work` -- so the assertion has been failing on this
+ * branch since the rename, pinning a SPELLING that the rename deliberately
+ * retired rather than the RULE the spelling was an example of.
+ *
+ * The rule has two halves and they are opposite, which is why one list could
+ * not hold both. A canonical route must survive `canonical` untouched, or the
+ * address bar drifts from the address people paste. An ALIAS must NOT: the
+ * whole point of SECTION_ALIASES is that a link someone saved before the rename
+ * still lands, and that the address bar then teaches them the new spelling. An
+ * alias that round-tripped would be a second permanent name for one screen,
+ * which is the two-spellings defect the rename existed to remove.
+ */
 test('a route round-trips through its canonical spelling', () => {
   // CANONICAL SPELLINGS ONLY, and `work/running` replacing `agents/running`
   // here was not a typo fix -- it was a round trip being asked of a spelling
@@ -78,6 +95,19 @@ test('a retired spelling is rewritten to the current one, not merely accepted', 
   // Including the drawer, whose id must survive the rewrite intact.
   at('#agents/task/task_abc123')
   assert.equal(canonical(fromHash()), 'work/task/task_abc123')
+
+  // AND THE REWRITE IS IDEMPOTENT, which is the property that stops the two
+  // names ping-ponging. Following a corrected address has to SETTLE: if the
+  // canonical form of `work/running` were anything but itself, the normalise
+  // effect in App.tsx would rewrite the hash on every resolve, and back/forward
+  // would walk a chain of corrections instead of the routes someone visited.
+  // (From the help-density lane, which found this file red independently.)
+  for (const old of ['agents/running', 'pools/holders', 'agents/task/task_abc123']) {
+    at(`#${old}`)
+    const once = canonical(fromHash())
+    at(`#${once}`)
+    assert.equal(canonical(fromHash()), once, `#${once} is rewritten again`)
+  }
 })
 
 test('an unknown topic is carried to the screen, not rewritten away', () => {
