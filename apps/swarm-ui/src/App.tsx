@@ -280,7 +280,8 @@ export const SECTIONS: SectionDef[] = [
       // agent and a page explaining you have not got one is the contradiction,
       // and the tab is the side that was wrong. `task` is also the noun the
       // API uses (`POST /v1/tasks`, `TaskCreate`), the same test that named
-      // the Runtimes section after `/v1/runtimes`.
+      // the Runtimes TAB after `/v1/runtimes` (it was a section of its own
+      // until the collapse to three; the name came from the route either way).
       { id: 'new', label: 'Submit a task' },
       { id: 'new-workflow', label: 'Submit a workflow' },
     ],
