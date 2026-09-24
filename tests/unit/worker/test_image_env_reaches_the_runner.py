@@ -26,9 +26,15 @@ first GKE browser proof would fail on exactly this variable. NOT OBSERVED: no
 browser task has yet run under the lifecycle on GKE; the failure is derived
 from reading the code, and these tests hold the derivation.
 
-The last test here is the one that stops the next variable going the same way:
-it reads every ENV the browser image sets and requires each to be either
-carried to the runner verbatim or listed below with the reason it is not.
+The last two tests are the ones that stop the next variable going the same
+way. The browser image's environment has three layers: the upstream
+`python:3.11-slim-bookworm` the base is built FROM, the base's runtime stage,
+and the browser Dockerfile. The two Dockerfiles are parsed; the upstream layer
+is written in no file here, so its ENV is RECORDED below from the registry and
+pinned to the digest it was read from. Every variable from the three is
+required to be either carried to the runner verbatim or listed below with the
+reason it is not, and a bump of the upstream digest fails until the recording
+is re-read.
 """
 
 from __future__ import annotations
@@ -50,6 +56,45 @@ BASE_DOCKERFILE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
 BROWSER_DOCKERFILE = REPO / "images" / "agent-runtime-browser" / "Dockerfile"
 
 TENANT_KEY = "sk-ant-api03-tenant-own-key"
+
+#: The digest `images/agent-runtime-base/Dockerfile` pins its `PYTHON_IMAGE`
+#: to, as of the reading below. `test_the_recorded_upstream_env_is_for_the_pinned_base`
+#: fails the moment the Dockerfile pins anything else.
+UPSTREAM_PYTHON_DIGEST = "sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84"
+
+#: The ENV the UPSTREAM image sets -- `python:3.11-slim-bookworm` at the digest
+#: above, which the base's runtime stage is built FROM. The browser image
+#: inherits it through the base exactly as it inherits the base's own ENV, but
+#: it is written in no file in this repository, so it cannot be parsed like the
+#: other two layers. It is RECORDED here instead, and pinned to the digest it
+#: was read from, so a bump of the base cannot leave it describing an image
+#: nobody builds any more.
+#:
+#: Read 2026-09-24 from Docker Hub, for linux/amd64 -- the only platform
+#: `scripts/build-images.sh` and the browser's cloudbuild.yaml build: manifest
+#: sha256:b1add8a6f2aca6bcfcf0b9c9b522352f7ce0d62a3d556a2f2f32511aa0cca250,
+#: config sha256:9356cb064a7cbecce9a3ccba46e7fd5459d3a3e939db884ef7fbf3f757cc5ec8.
+#: linux/arm64 under the same index carries the identical list. To re-read
+#: after a bump (read-only, anonymous, no credentials):
+#:
+#:     T=$(curl -fsS 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull' | jq -r .token)
+#:     R=https://registry-1.docker.io/v2/library/python
+#:     M=$(curl -fsS -H "Authorization: Bearer $T" \
+#:           -H 'Accept: application/vnd.oci.image.index.v1+json' "$R/manifests/<digest>" \
+#:         | jq -r '.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest')
+#:     C=$(curl -fsS -H "Authorization: Bearer $T" \
+#:           -H 'Accept: application/vnd.oci.image.manifest.v1+json' "$R/manifests/$M" | jq -r .config.digest)
+#:     curl -fsSL -H "Authorization: Bearer $T" "$R/blobs/$C" | jq -r '.config.Env[]'
+#:
+#: PATH and LANG are overridden by the base's runtime stage; the layering in
+#: `_browser_image_env` applies that, the same way Docker does.
+UPSTREAM_PYTHON_ENV: dict[str, str] = {
+    "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "LANG": "C.UTF-8",
+    "GPG_KEY": "A035C8C19219BA821ECEA86B64E628F8D684696D",
+    "PYTHON_VERSION": "3.11.16",
+    "PYTHON_SHA256": "91bcdebfdde239a003ae93738a7fce0f9230fee5c4bc2b86f6e6e8c6f98aabe8",
+}
 
 #: Set by the image and deliberately NOT given to the runner. A variable the
 #: image gains that is neither carried nor listed here fails
@@ -171,13 +216,39 @@ def _stage_env(dockerfile: Path, stage: str) -> dict[str, str]:
     return env
 
 
-def _browser_image_env() -> dict[str, str]:
-    """What a process in `agent-runtime-browser` starts with, from the images.
+def _pinned_upstream() -> tuple[str, str]:
+    """The upstream image the base's runtime stage is built FROM: (ref, digest).
 
-    The browser image is built FROM the base (its `BASE_IMAGE` default and its
-    cloudbuild both say so), so its environment is the base's runtime stage
-    with the browser's own ENV on top. The base's `builder` stage is not
-    included: nothing it sets survives into the runtime image.
+    Read from the Dockerfile rather than assumed, and the runtime stage is
+    required to be `FROM ${PYTHON_IMAGE}` -- otherwise the recorded upstream ENV
+    would be attached to an image that is not the base's parent at all.
+    """
+    text = BASE_DOCKERFILE.read_text()
+    arg = re.search(r"^ARG PYTHON_IMAGE=(\S+)@(sha256:[0-9a-f]{64})\s*$", text, re.M)
+    assert arg, (
+        f"{BASE_DOCKERFILE.relative_to(REPO)} no longer pins PYTHON_IMAGE by "
+        "digest; the upstream ENV below cannot be tied to an image"
+    )
+    runtime_from = re.search(r"^FROM\s+(\S+)\s+[Aa][Ss]\s+runtime\s*$", text, re.M)
+    assert runtime_from and runtime_from.group(1) == "${PYTHON_IMAGE}", (
+        "the base's runtime stage is no longer built FROM ${PYTHON_IMAGE}; "
+        f"it is FROM {runtime_from.group(1) if runtime_from else '<not found>'}"
+    )
+    return arg.group(1), arg.group(2)
+
+
+def _browser_image_env() -> dict[str, str]:
+    """What a process in `agent-runtime-browser` starts with.
+
+    Three layers, later wins, as Docker applies them: the upstream python
+    image's ENV (recorded above, pinned by digest), the base's `runtime`
+    stage, then the browser Dockerfile's own. The browser image is built FROM
+    the base (its `BASE_IMAGE` default and its cloudbuild both say so). The
+    base's `builder` stage is not included: nothing it sets survives into the
+    runtime image.
+
+    NOT INCLUDED, because it is not the image: the Job definition's `env:`.
+    That is the worker's configuration, and this test does not classify it.
     """
     parent = re.search(
         r"^ARG BASE_IMAGE=agent-runtime-base\b", BROWSER_DOCKERFILE.read_text(), re.M
@@ -186,7 +257,8 @@ def _browser_image_env() -> dict[str, str]:
         "the browser image no longer builds FROM agent-runtime-base; this test "
         "reads the wrong parent's ENV"
     )
-    env = _stage_env(BASE_DOCKERFILE, "runtime")
+    env = dict(UPSTREAM_PYTHON_ENV)
+    env.update(_stage_env(BASE_DOCKERFILE, "runtime"))
     env.update(_stage_env(BROWSER_DOCKERFILE, "runtime"))
     return env
 
@@ -264,19 +336,22 @@ def test_a_secret_on_the_worker_still_does_not_reach_the_runner(
 def test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason(
     db, worker_factory, tmp_path, monkeypatch
 ):
-    """Read the images, start from exactly what they set, and follow each
-    variable to the runner.
+    """Take the image's environment -- all three layers -- start the worker
+    from exactly that, and follow each variable to the runner.
 
     Carried means the runner sees the image's value unchanged. Anything else
     must be in NOT_FOR_THE_RUNNER or REPLACED_FOR_THE_RUNNER, with the reason.
-    A new ENV in either Dockerfile therefore fails here until someone decides,
-    in writing, whether the runner needs it -- which is the decision nobody
-    made for PLAYWRIGHT_BROWSERS_PATH.
+    A new ENV in either Dockerfile, or in the upstream base once its new digest
+    is re-read, therefore fails here until someone decides, in writing, whether
+    the runner needs it -- which is the decision nobody made for
+    PLAYWRIGHT_BROWSERS_PATH.
     """
     image_env = _browser_image_env()
-    # Guards against passing vacuously on a parser that found nothing.
+    # Guards against passing vacuously on a parser that found nothing, and on
+    # a layering that dropped the upstream layer.
     assert "PLAYWRIGHT_BROWSERS_PATH" in image_env, sorted(image_env)
     assert "PATH" in image_env and "HOME" in image_env, sorted(image_env)
+    assert "PYTHON_VERSION" in image_env, sorted(image_env)
 
     for name, value in image_env.items():
         monkeypatch.setenv(name, value)
@@ -311,4 +386,18 @@ def test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason(
     stale = sorted(
         (set(NOT_FOR_THE_RUNNER) | set(REPLACED_FOR_THE_RUNNER)) - set(image_env)
     )
-    assert not stale, f"listed but no longer set by either image: {stale}"
+    assert not stale, f"listed but no longer set by any layer of the image: {stale}"
+
+
+def test_the_recorded_upstream_env_is_for_the_pinned_base():
+    """UPSTREAM_PYTHON_ENV is a reading of ONE image. If the base pins another,
+    the reading describes nothing that is built, and the test above would go on
+    passing against it -- which is how a mirrored value goes stale silently.
+    """
+    ref, digest = _pinned_upstream()
+    assert digest == UPSTREAM_PYTHON_DIGEST, (
+        f"{BASE_DOCKERFILE.relative_to(REPO)} now builds FROM {ref}@{digest}, "
+        f"but UPSTREAM_PYTHON_ENV was read from {UPSTREAM_PYTHON_DIGEST}. "
+        "Re-read that image's ENV with the commands next to UPSTREAM_PYTHON_ENV, "
+        "update both, and classify anything new."
+    )
