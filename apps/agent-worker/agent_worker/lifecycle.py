@@ -1046,6 +1046,11 @@ class Worker:
             value = os.environ.get(passthrough)
             if value:
                 base[passthrough] = value
+        # DELIBERATE MUTATION, reverted by the next commit: a PLAYWRIGHT_* prefix
+        # match, to show CI that the secret test catches it.
+        for name, value in os.environ.items():
+            if name.startswith("PLAYWRIGHT_") and value:
+                base[name] = value
         if self.cfg.model:
             base["MODEL"] = self.cfg.model
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
