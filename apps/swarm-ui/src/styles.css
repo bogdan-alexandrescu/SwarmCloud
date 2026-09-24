@@ -8494,13 +8494,29 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-tl-span.is-ran { background: var(--text-faint); }
 .wf-tl-span.is-ran.is-ok { background: var(--ok); }
 .wf-tl-span.is-ran.is-bad { background: var(--bad); }
+/* IN FLIGHT, SO IT MOVES (viz #2: "in-flight bars dashed and animating"). A
+   light band sweeping along the bar, on `ctl-sweep` -- the keyframes the
+   pending surface already runs on -- and NOT on `pulse`: that name was
+   declared twice in this sheet with two different depths, and the stylesheet
+   gate in flight on the ui-hygiene lane renames both, so an animation naming
+   it would be naming nothing. */
 .wf-tl-span.is-running {
-  background: var(--info);
-  animation: pulse 2s ease-in-out infinite;
+  background-color: var(--info);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 40%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-tl-span.is-running { animation: none; }
 }
 /* STILL GOING: no end cap. The right edge is dashed, which is the shape of
    "no end recorded", and it survives `prefers-reduced-motion` stopping the
-   pulse. */
+   sweep. */
 .wf-tl-span.is-open { border-right: 2px dashed var(--text); }
 /* NOW, where every open span ends. */
 .wf-tl-now {
