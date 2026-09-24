@@ -450,11 +450,12 @@ class TestSegments:
     def test_a_cancel_that_was_only_requested_does_not_end_the_total(self):
         """Contract request 17, accepted 2026-09-24: a request is not an ending.
 
-        The collectors read events straight out of Firestore, so they see the
-        history as stored. Before the change the API wrote a flag-only cancel as
-        `type: cancelled, phase: cancel_requested`; taking that as terminal ends
-        the total at the moment somebody PRESSED cancel, while the task went on
-        holding its lease until the worker or the reconciler finished it.
+        The collector reads events through the API, and a `swarm-api` from
+        before the change serves them as stored. Before the change the API
+        wrote a flag-only cancel as `type: cancelled, phase: cancel_requested`.
+        Taking that as terminal ends the total at the moment somebody PRESSED
+        cancel, while the task went on holding its lease until the worker or
+        the reconciler finished it.
         """
         stored_before = [
             {"type": "submitted", "at": "2026-09-24T07:30:00Z"},

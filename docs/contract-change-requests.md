@@ -1632,24 +1632,65 @@ did not cause that incident.
   `phase: cancelled` or with no phase is a real cancel and is untouched. No
   migration was written: this lane writes no live data, and the read is one
   line where a migration is a write to every task's history.
-* Readers that do not go through the API apply the same reading to the raw
-  row: `swarm_mcp.follow.event_type` (the plugin can meet an API older than
-  itself; used by `swarm_follow` and `swarm tail`), `scripts/benchstat.py`
-  and `scripts/load-test.sh` (both read Firestore directly), and the console's
-  `apps/swarm-ui/src/events.ts` (the console can meet an older API mid-rollout;
-  used by the Timeline's end-of-history check and its type labels).
+* Four readers can see the raw legacy row, and each applies the same reading to
+  it. Only one reads Firestore directly: `scripts/load-test.sh`, through
+  `testlib.sh`'s `task_events`. The other three read through the API. They
+  carry their own copy because they can meet a `swarm-api` image from before
+  this change, which serves the legacy row as stored:
+  * `swarm_mcp.follow.event_type`, called by `swarm_follow` (`_event_row`) and
+    `swarm tail` (`cli.cmd_tail`);
+  * `scripts/benchstat.py`, whose one collector, `bench-dispatch.sh`, reads
+    `GET /v1/tasks/{id}/events`. (Corrected 2026-09-24: this record first said
+    benchstat reads Firestore directly. It does not.)
+  * the console's `apps/swarm-ui/src/events.ts`, used by the Timeline's
+    end-of-history check and its type labels.
 * Tests: `tests/unit/control_plane/test_cancel_request_is_not_a_cancel.py`,
   plus additions to `test_request_cancel_is_transactional.py`,
   `tests/unit/mcp/test_follow_cursor.py`, `tests/unit/scripts/test_benchstat.py`
-  and `apps/swarm-ui/src/__tests__/cancel.request.timeline.test.tsx`.
+  and `apps/swarm-ui/src/__tests__/cancel.request.timeline.test.tsx`. Every
+  copy of the legacy reading except `load-test.sh`'s jq is pinned by a test
+  that feeds it the raw row. For the plugin, two tests run the real application
+  with its decoder put back to the pre-change `EventType(data["type"])`: through
+  the current API, which already reads the legacy shape, removing either call
+  site stayed green.
 
 ### What is still true after it (the breakage the request predicted)
 
-The rolling-deploy window described below is real and was not engineered away:
-an API instance still on the previous image that lists a task's events after a
-new instance has written `cancel_requested` raises `ValueError` in
-`EventType(data["type"])` for that page. It lasts one rollout of `swarm-api`,
-the only writer.
+The breakage predicted below is real and was not engineered away. A
+`swarm-api` image from before this change decodes a stored event with
+`EventType(data["type"])`, and `cancel_requested` is not in its enum. So when
+such an image serves a page of `GET /v1/tasks/{id}/events` that holds a
+`cancel_requested` event, it raises `ValueError` inside `_keyset_page`. There is
+no per-row handling, so the whole page is a 500. `swarm-api` is the only
+decoder of stored events; the scheduler, reconciler and worker never decode
+one.
+
+That happens in two situations, and only the first one ends by itself:
+
+* **During the rollout.** An instance still on the old image serves the page
+  after a new instance has written the event. This lasts until the rollout
+  completes.
+* **After a rollback past this change.** The documented recovery for a broken
+  control-plane service is to deploy the previous manifest
+  ([operations.md §7](operations.md#7-deploying-a-change),
+  [disaster-recovery.md §3](disaster-recovery.md#3-a-control-plane-service-is-broken)).
+  The `cancel_requested` events written since the deploy are permanent. A
+  pre-change image fails on them for as long as it serves, on every task that
+  was cancelled while it held capacity. The console Timeline, `swarm_follow`
+  and `swarm tail` then report that task's history as unreadable, during an
+  incident, which is when it is needed most. Reverting this change has the
+  same effect. (Corrected 2026-09-24: this record first said the crash "lasts
+  one rollout of `swarm-api`", which holds only if nobody rolls back.)
+
+Both runbooks now say this: do not roll `swarm-api` back to a build from before
+this change, and do not revert it. Roll forward instead, and check a rollback
+target with `git grep CANCEL_REQUESTED <tag> -- apps/common/swarm_common/states.py`.
+
+Not done, because it is the owner's choice: shipping the reader (the enum
+member and `stored_event_type`) as a release of its own before the writer
+(`request_cancel`). That would make a one-step rollback after the writer safe.
+It would not make a rollback past the reader safe, so the runbook constraint
+is needed either way.
 
 ### The claim that is false
 
@@ -1693,7 +1734,9 @@ finishes it:
   previous image that lists the events of a task holding a `cancel_requested`
   event raises `ValueError` for that page. `swarm-api` is both the only writer
   and a reader, so the exposure is one rolling deploy. It is still a window in
-  which a task's event page can fail.
+  which a task's event page can fail. (Corrected after acceptance: a rollback
+  to an image from before the change reopens it, for as long as the rollback
+  lasts. See "What is still true after it" above.)
 * **History keeps the old shape.** Events already written stay
   `type: cancelled, phase: cancel_requested`. A reader that wants the truth
   about old tasks must keep reading `detail.phase`, unless a one-off migration

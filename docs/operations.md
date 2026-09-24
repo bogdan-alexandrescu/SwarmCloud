@@ -236,6 +236,13 @@ silently moves that service forward again. `scripts/plan.sh` warns when
 swarm-api is serving something other than what terraform applied, which is
 what an out-of-band change looks like from there.
 
+**Not to a manifest from before PR #44, and never a revert of #44.** Any
+`swarm-api` image built before #44 cannot decode the `cancel_requested` events
+written since. It returns 500 on those tasks' event pages for as long as it
+serves, not just one rollout. Roll forward instead.
+[disaster-recovery.md §3](disaster-recovery.md#3-a-control-plane-service-is-broken)
+says why, and gives the one-line check for a rollback target.
+
 ---
 
 ## 8. Verification suite

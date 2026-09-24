@@ -101,11 +101,15 @@ TERMINAL_EVENTS: tuple[str, ...] = ("succeeded", "failed", "cancelled", "dead_le
 def event_type(event: dict[str, Any]) -> Any:
     """The type an event records, reading one legacy shape as what it was.
 
-    The collectors read events straight out of Firestore, so they see history
-    as STORED. Until 2026-09-24 the API stored a flag-only cancel as `type:
-    cancelled` with `detail.phase: cancel_requested`; it was a request, and
-    counting it as terminal ended `dispatch.total` when somebody pressed cancel
-    rather than when the task ended. The same reading as
+    The one collector that feeds this, `bench-dispatch.sh`, reads events
+    through the API (`GET /v1/tasks/{id}/events`). A current API already
+    serves the legacy shape as `cancel_requested`. A `swarm-api` from before
+    2026-09-24 does not: it serves the row as stored, and until then a
+    flag-only cancel was stored as `type: cancelled` with `detail.phase:
+    cancel_requested`. That was a request, and counting it as terminal ended
+    `dispatch.total` when somebody pressed cancel rather than when the task
+    ended. The benchmark can run against whatever API is deployed, so it
+    applies the reading itself. It is the same reading as
     `swarm_api.codec.stored_event_type`, restated because this runs with no
     swarm-api installed; tests/unit/scripts/test_benchstat.py pins it.
     """
