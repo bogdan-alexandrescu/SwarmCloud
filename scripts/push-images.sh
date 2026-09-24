@@ -20,7 +20,13 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler)
+# The same eight build-images.sh builds. This list had six -- no swarm-ui, no
+# swarm-verify -- and it is the fallback whenever build/images-<env>.json is
+# absent. That used to cost only an unpromoted image; now terraform deploys
+# every image by digest from the manifest this writes and refuses to plan one
+# with no digest, so a promotion that silently skips two images is a deploy
+# that fails naming them. Better to promote them.
+ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"

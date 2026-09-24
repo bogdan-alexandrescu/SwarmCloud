@@ -234,6 +234,18 @@ jobs:
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="prefix=infra/${ENVIRONMENT}"
 
+      - name: pin the images terraform last applied
+        # terraform/infra takes every image by digest (`image_refs`) and
+        # refuses to plan an image with none. A plan of main is a plan of the
+        # infrastructure, not a deploy, so it pins exactly what is applied --
+        # the `image_refs` output in state, or what the channel points at when
+        # the state predates that output -- and shows no image churn at all.
+        # (It used to plan with the tfvars alone, i.e. every service and job
+        # onto `image_tag = "bootstrap"`, which does not exist.)
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: ./scripts/lib/image-refs.sh --applied --out "${GITHUB_WORKSPACE}/build/image-refs.tfvars.json"
+
       - name: terraform plan
         id: plan
         env:
@@ -244,6 +256,7 @@ jobs:
           # derived files are written explicitly under the root.
           terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=120s \
             -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
+            -var-file="${GITHUB_WORKSPACE}/build/image-refs.tfvars.json" \
             -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
           terraform -chdir=${{ env.TF_ROOT }} show -json plan.tfplan > "${TF_ROOT}/plan.json"
 

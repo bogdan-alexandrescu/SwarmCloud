@@ -13,10 +13,56 @@ safety tick) picks up where it left off.
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
+
+#: `<registry path>@sha256:<64 hex>`, and nothing before the `@` that could be a
+#: tag. The same shape terraform/infra/variables.tf validates `image_refs`
+#: against: the runtime ignores a tag when a digest is present, so a tag there
+#: is only a label that can disagree with what runs.
+_DIGEST_REF = re.compile(r"^[^@:\s]+@sha256:[0-9a-f]{64}$")
+
+
+def check_worker_image_refs(refs: object) -> None:
+    """Refuse a worker image map that is not digest-pinned, naming the entry.
+
+    A scheduler configured with a tag must fail when it STARTS, not at its
+    first dispatch -- by then admission has taken a lease, and the failure
+    surfaces as a task stuck behind a pull of the wrong thing.
+    """
+    if not isinstance(refs, dict):
+        raise ValueError(
+            f"WORKER_IMAGE_REFS must be a JSON object of image name -> digest ref, "
+            f"got {type(refs).__name__}"
+        )
+    for name, ref in refs.items():
+        if not isinstance(name, str) or not isinstance(ref, str) or not _DIGEST_REF.match(ref):
+            raise ValueError(
+                f"WORKER_IMAGE_REFS[{name!r}] = {ref!r} is not pinned by digest; every "
+                "value must be `<registry>/<image>@sha256:<64 hex>` with no tag"
+            )
+        if not ref.split("@", 1)[0].endswith(f"/{name}"):
+            raise ValueError(
+                f"WORKER_IMAGE_REFS[{name!r}] = {ref!r} is the digest of a different "
+                "image; each key must be the image's own name"
+            )
+
+
+def parse_worker_image_refs(raw: str) -> dict[str, str]:
+    """WORKER_IMAGE_REFS -> {image name: digest ref}. Empty means none."""
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        refs = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_IMAGE_REFS is not valid JSON: {exc}") from exc
+    check_worker_image_refs(refs)
+    return dict(refs)
 
 
 def _int(name: str, default: int) -> int:
@@ -127,12 +173,20 @@ class SchedulerSettings:
     project_id: str = ""
     region: str = "us-central1"
     artifact_registry_host: str = ""
-    #: Tag for the agent runtime images. Defaults to the same immutable tag the
-    #: control plane itself was deployed with, because "latest" is not pushed by
-    #: scripts/build-images.sh -- every image carries a git SHA. Dispatch failed
-    #: with `404 Image '...agent-runtime-base:latest' not found` on every task
-    #: until this was wired, and the spec requires immutable tags in prod anyway.
+    #: Tag for the agent runtime images, used ONLY when `worker_image_refs` is
+    #: empty -- which a terraform-managed deployment never is. It remains for
+    #: the local emulator loop, which has no promotion manifest to pin from.
+    #: "latest" is not pushed by scripts/build-images.sh, so a deployed
+    #: scheduler that somehow lost its digest map fails loudly on a 404 rather
+    #: than quietly running whatever a tag points at.
     worker_image_tag: str = "latest"
+    #: Runner image name -> `<registry>/<name>@sha256:<64 hex>`, from
+    #: WORKER_IMAGE_REFS (terraform/infra/locals.tf writes it from the
+    #: promotion manifest). When non-empty it is the ONLY source of a worker
+    #: image: a tag is resolved when the image is pulled, so what an agent ran
+    #: used to be whatever the tag pointed at on that node at that moment.
+    #: Excluded from the hash: a dict is unhashable and the settings are frozen.
+    worker_image_refs: dict[str, str] = field(default_factory=dict, hash=False)
     dispatch_topic: str = ""
 
     @classmethod
@@ -169,6 +223,7 @@ class SchedulerSettings:
                 or os.environ.get("IMAGE_TAG")
                 or "latest"
             ),
+            worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
         )
 
@@ -187,3 +242,6 @@ class SchedulerSettings:
             raise ValueError("aging_interval_seconds must be positive")
         if self.aging_max_bonus < 0:
             raise ValueError("aging_max_bonus cannot be negative")
+        # Checked here as well as when parsed, so a settings object built
+        # directly -- as every test does -- cannot carry a tag either.
+        check_worker_image_refs(self.worker_image_refs)

@@ -293,19 +293,31 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   agent that could reach one would escape every boundary above it.
 * `trivy image` runs in `push-images.sh` **before** a digest is allowed a channel
   tag, and failing the scan refuses promotion.
-* The **control plane** deploys by digest (`image@sha256:...`):
-  `scripts/lib/deploy.sh` reads the promotion manifest and hands Terraform or
-  `gcloud run services update` an immutable reference, so the deployed digest is
-  recorded in state and cannot drift.
-* The **worker** path does not, and that is worth knowing rather than glossing.
-  `apps/scheduler/scheduler/dispatch.py` builds `…/<image>:<worker_image_tag>` —
-  a channel tag. The tag is pinned to a digest that `trivy image` passed, by
-  `push-images.sh`, so the content is vetted; but the reference resolved at pull
-  time is mutable, and the GKE Job template sets `imagePullPolicy: IfNotPresent`,
-  so a node with a cached `:dev` layer can run the previous digest. This is why
-  the checkov image-reference checks (CKV_K8S_14/15/43) are skipped over the
-  rendered manifests: they are asking about a reference this repository's
-  manifests do not decide. Closing it means the dispatcher naming a digest.
+* **Everything deploys by digest** (`image@sha256:...`), and nothing can deploy
+  a tag. `terraform/infra` takes `image_refs` — one digest per image, written by
+  `scripts/lib/image-refs.sh` from the promotion manifest — and refuses to plan
+  while any image it deploys has none; a tag, another image's digest, or an
+  image from another registry is refused by the variable's validation. That
+  covers every Cloud Run service, every worker job and the verification job, and
+  the deployed digest is recorded in state. There is no `gcloud run services
+  update` path any more: it moved four services and no job, and the next apply
+  reverted it.
+* **The worker path deploys by digest too**, which it used not to.
+  `apps/scheduler/scheduler/dispatch.py` built `…/<image>:<worker_image_tag>`,
+  resolved at pull time, and the GKE Job template pulls `IfNotPresent` — so a
+  node holding a cached layer for an older push of that tag ran the older code.
+  The scheduler now receives `WORKER_IMAGE_REFS` (image name → digest, from the
+  same manifest), refuses to start if any value is not digest-pinned, and
+  refuses to dispatch a profile whose image has no digest rather than fall back
+  to a tag. A Cloud Run job the dispatcher created earlier — for a tenant
+  terraform does not know — is moved to the current digest before it next runs;
+  terraform's own jobs are never rewritten by the dispatcher.
+  `scripts/lib/deploy.sh --verify-only` checks, after every release, that every
+  service, every terraform-managed job and the scheduler's map name the promoted
+  digests. The checkov image-reference checks (CKV_K8S_14/15/43) are still
+  skipped over the rendered manifests, because those are templates rendered with
+  a placeholder image; the reference that actually dispatches is the
+  dispatcher's, and it is a digest.
 * CI builds in Cloud Build with `--platform linux/amd64`, never on a developer
   machine.
 
