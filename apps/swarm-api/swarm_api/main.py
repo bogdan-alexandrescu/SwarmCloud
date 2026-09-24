@@ -21,7 +21,17 @@ from swarm_common.states import InvalidTransition
 
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
-from .routes import accounts, admin, checkpoints, health, platform, tasks, tenants, workflows
+from .routes import (
+    accounts,
+    admin,
+    attempts,
+    checkpoints,
+    health,
+    platform,
+    tasks,
+    tenants,
+    workflows,
+)
 from .validation import FORBIDDEN_CALLER_FIELDS
 
 from swarm_common.logging_setup import configure_logging
@@ -69,6 +79,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.include_router(tasks.router)
     # What is INSIDE a checkpoint: listing, one file, the whole archive.
     app.include_router(checkpoints.router)
+    # Attempts across every task of the caller's tenant. Tenant-scoped like
+    # the per-task attempts route, not admin-gated: they are the caller's own.
+    app.include_router(attempts.router)
     app.include_router(workflows.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is

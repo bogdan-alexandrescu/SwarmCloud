@@ -45,7 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .oauth import (
     Credential,
@@ -503,7 +503,12 @@ class CredentialRefresher:
             extra={"tenant_id": tenant_id, "provider": provider, "error": detail},
         )
 
-    def sweep_accounts(self, secrets: list[tuple[str, str]]) -> list[RefreshOutcome]:
+    def sweep_accounts(
+        self,
+        secrets: list[tuple[str, str]],
+        *,
+        keep_going: Callable[[], bool] | None = None,
+    ) -> list[RefreshOutcome]:
         """Refresh every account given, INCLUDING ones nobody is using.
 
         The omission of any "in use" filter is the feature. A refresh token that
@@ -513,9 +518,17 @@ class CredentialRefresher:
 
         One account's failure never stops the sweep: the others are exactly what
         the fleet falls back on when one goes bad.
+
+        `keep_going` DOES stop it. It is the sweep lease's fence, asked before
+        every account; False means another sweep holds the lease now, and
+        exchanging one more refresh token is exactly the race the lease exists
+        to prevent. The accounts not reached are the next tick's, and are not
+        reported as outcomes -- nothing happened to them.
         """
         outcomes: list[RefreshOutcome] = []
         for secret_base, label in secrets:
+            if keep_going is not None and not keep_going():
+                break
             try:
                 outcomes.append(self.refresh_secret(secret_base, label=label))
             except Exception as exc:
@@ -526,10 +539,20 @@ class CredentialRefresher:
                 outcomes.append(RefreshOutcome(label, "account", False, "error"))
         return outcomes
 
-    def sweep(self, tenants: list[tuple[str, str]]) -> list[RefreshOutcome]:
-        """Refresh every (tenant, provider) pair that is due."""
+    def sweep(
+        self,
+        tenants: list[tuple[str, str]],
+        *,
+        keep_going: Callable[[], bool] | None = None,
+    ) -> list[RefreshOutcome]:
+        """Refresh every (tenant, provider) pair that is due.
+
+        `keep_going` is the sweep lease's fence, as for `sweep_accounts`.
+        """
         outcomes: list[RefreshOutcome] = []
         for tenant_id, provider in tenants:
+            if keep_going is not None and not keep_going():
+                break
             try:
                 outcomes.append(self.refresh_tenant(tenant_id, provider))
             except Exception as exc:  # one tenant must not stop the sweep

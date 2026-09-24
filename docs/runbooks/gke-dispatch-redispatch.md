@@ -351,8 +351,10 @@ kubectl describe job -n swarm-tenant-eng <job-name>
 
   Anything printed is carrying the short form. Re-run
   `scripts/register-tenant.sh` for that tenant and it writes the derived value.
-  The old namespace, if it was ever created, is empty and the reconciler
-  collects it once `empty_namespace_ttl_seconds` has passed.
+  The old namespace, if it was ever created, is empty. The reconciler does
+  **not** collect it: a Namespace is cluster-scoped and the reconciler holds no
+  ClusterRole (see `GkeBackend.list_job_resources`), so it stays until it is
+  removed out of band.
 * **Rolling back.** Deleting the RBAC returns you to the broken state; there is
   nothing to roll back to. If the apply itself is wrong, fix the manifest and
   re-apply — `kubectl apply` converges.

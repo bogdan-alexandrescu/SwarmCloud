@@ -21,12 +21,14 @@ reader can tell the sweep's own words from the corrections:
 * The logo grew. §2 carries the figures.
 * **Three of the items below were being worked by other lanes as this was
   filed**, not waiting for a decision: §1.1 (the canvas), §1.3 (the help count)
-  and the overflow list in §3. Each is marked `IN FLIGHT` where it appears, or
-  `DONE` where it has since landed, because a proposal, a thing half-built and a
-  thing shipped are read differently and this document would otherwise invite a
-  second lane onto the same file. **§1.1 is now `DONE` on both counts** —
-  stage-collapsing and then semantic zoom — and the section carries what each
-  one cost.
+  and the overflow list in §3. Each was marked `IN FLIGHT` where it appears, and
+  is marked `DONE` now that it has landed, because a proposal, a thing half-built
+  and a thing shipped are read differently and this document would otherwise
+  invite a second lane onto the same file. **As of 2026-09-24 none of the three
+  is in flight**: §1.1 is `DONE` on both counts (stage-collapsing, then semantic
+  zoom), §1.3 is `DONE` (#5), and the overflow list is done in source for eleven
+  of its twelve findings and partly for the twelfth (#4, #3). What each did NOT
+  verify is said where it is marked.
 * One number was corrected rather than re-measured: §1.4 said "four top-level
   sections", and `SECTIONS` in `App.tsx` holds **six**. The 21 rail elements and
   the 24–67 per screen are the sweep's own measurements and are untouched.
@@ -135,12 +137,24 @@ primary creation flow. It is already rebuilt in the structural pass; what
 remains is verifying the rebuilt flow against the required-keys path, which
 that lane reported it could not reach because the fixture does not serve it.
 
+> **The fixture serves it now (PR #25, 2026-09-24).** `fixtureCapacity` carried
+> no `input_contract` on any runner profile, so `requiredInputKeys` read null for
+> all of them and a fixture session could only ever show the *unread* mark.
+> `FIXTURE_INPUT_CONTRACTS` in `api.ts` is `swarm_api.runnerinputs.input_contract()`
+> over the frozen catalogue — `claude-code` and `codex` require `prompt`, the
+> other three require nothing, as a measured empty list — held to the server's
+> function by `tests/unit/control_plane/test_ui_fixture_input_contract.py` and
+> shown served by `src/__tests__/submit.fixture.test.ts`. **The verification
+> itself has still not been done**: nobody has driven the rebuilt form against
+> that fixture in a browser. That is §3 item 2, and it is now unblocked rather
+> than finished.
+
 The two tabs are now called **Submit a task** and **Submit a workflow**, not
 "New agent" and "New workflow" — a task at `READY` is not a running agent, and
 invariant 1 is that neither state holds capacity, so the old tab promised
 something the page it opened had to take back.
 
-### 1.3 Help is a widget, and it should mostly be a layout — `IN FLIGHT`
+### 1.3 Help is a widget, and it should mostly be a layout — `DONE`
 
 82 help widgets. On Runtimes, 19 — on a single screen. Every one is a `?`
 someone has to notice, hover, and read, to learn something the layout could
@@ -154,9 +168,19 @@ concept that belongs in docs with a link.
 
 Target: **under 20**, by fixing (a) and (b) and linking (c).
 
-> `IN FLIGHT`. A lane is driving the count down now. The 82 is the baseline it
-> is measured against; do not re-derive it from a later HEAD and conclude the
-> finding was wrong.
+> `DONE` — #5 (`350c2e1`, merged 2026-09-23). **139 help anchors in the source
+> became 16**, at most two in any one file; the 82 `?` widgets on screen are what
+> those 139 anchors drew across the fifteen routes, and 82 remains the baseline —
+> do not re-derive it from a later HEAD and conclude the finding was wrong. The
+> rule is written down in [`help-density.md`](help-density.md): an explanation
+> goes to the label, then the column head, then the screen's footer index, and
+> only then a `?`, at most one per screen. `apps/swarm-ui/tests/help.test.ts`
+> holds it — it fails over **20 glyphs in total or 2 in any file**, with a floor
+> of 10 so deleting every explanation does not pass.
+>
+> **Not measured:** the on-screen count after the change. 139 → 16 is a count of
+> source anchors, read by the same grep the finding used; nobody has re-run the
+> 15-route sweep to count the `?` a reader actually sees.
 
 ### 1.4 The information architecture makes you hunt
 
@@ -277,11 +301,18 @@ density argument the whole header is held to.
 
 **Now, because they are defects rather than design:**
 
-1. `IN FLIGHT` — the 12 findings in
+1. `DONE` in source for eleven of the 12, **partly** for F11 — the findings in
    [`overflow-inventory.md`](../audits/2026-09-23/overflow-inventory.md), of
    which the worst truncate measurements — `mock · 15 can start` rendering
-   `mock · 1…` is a prefix of a number standing where the number was.
-2. Verify the rebuilt submit flow against the required-keys path.
+   `mock · 1…` is a prefix of a number standing where the number was. Ten were
+   closed by #4 (`9d23b82`), F9 by #3 (`c440e68`), and F11's escape and its
+   progress string by #3 and `styles.css`; whether F11's `state not derived`
+   still ellipses is open. The inventory's §7 is the per-finding record. **Not
+   re-measured**: every row was established by reading source, and
+   `overflow/probe.js` has not been re-run against any of it.
+2. Verify the rebuilt submit flow against the required-keys path. **Unblocked,
+   not done** — the fixture serves the required-keys path as of PR #25 (§1.2);
+   the form has not been driven against it.
 
 **Next, the decision above:**
 
@@ -293,14 +324,18 @@ density argument the whole header is held to.
    different to use rather than merely look different. `LANDED 2026-09-24` —
    the nav is Overview plus Work, Capacity and Admin, and no screen was merged
    to get there. See the note in §1.4 for what that did and did not include.
-5. `IN FLIGHT` — drive the help count under 20 (§1.3) — every one removed is a
-   label that started carrying its own weight.
+5. `DONE` — drive the help count under 20 (§1.3) — every one removed is a
+   label that started carrying its own weight. 139 source anchors → 16, held by
+   a CI ceiling of 20; see §1.3 for what was not re-measured.
 6. `DONE` — semantic zoom for the canvas (§1.1, option 1). See §1.1 for the
    tiers, what they cost and the one thing it does not fix (a 13-wide stage is
    still a band).
 
-The one that is neither in flight, nor done, nor blocked is **4**: a product
-decision. **2** remains a verification the fixture does not currently support.
+This paragraph used to say that **4** was the one item neither in flight, nor
+done, nor blocked, and that **2** was a verification the fixture did not
+support. As of 2026-09-24 neither is true: **4** has landed (see §1.4), and **2**
+is the only item left, unblocked by the fixture and waiting on someone to drive
+the form.
 
 ---
 

@@ -10,10 +10,10 @@
 # the entire Autopilot path.
 #
 # `find_recipe()` prefers `images/<target>/cloudbuild.yaml` over the Dockerfile,
-# so this file is what runs. `build-images.sh` passes `_IMAGE`, `_TAG`,
-# `_TARGET` and `_DOCKERFILE`; the base image ref is DERIVED from `_IMAGE`
-# rather than restated, so it cannot drift from whatever registry and project
-# the caller is building into.
+# so this file is what runs. `build-images.sh` passes `_IMAGE`, `_TAG` and
+# `_TARGET` -- not `_DOCKERFILE`, which this file defaults below. The base image
+# ref is DERIVED from `_IMAGE` rather than restated, so it cannot drift from
+# whatever registry and project the caller is building into.
 #
 # BASE_IMAGE is passed BY DIGEST, which is what the Dockerfile's header claims.
 # The digest is read back from the image that was just pulled, so it is the
@@ -21,8 +21,11 @@
 # reported.
 #
 # ORDERING: this build pulls `agent-runtime-base:${_TAG}`, so the base must
-# already be pushed. `ALL_TARGETS` lists `agent-runtime-base` first and
-# `build-images.sh` submits builds in order, so a plain `make build` is correct.
+# already be pushed. `build-images.sh` submits builds CONCURRENTLY, so list
+# order no longer guarantees that; its `build_after()` holds this image back
+# until agent-runtime-base has FINISHED building in the same run, and does not
+# submit it at all if the base failed. A unit test reads this file for the
+# base it pulls and fails if `build_after()` does not say so.
 # A targeted `scripts/build-images.sh agent-runtime-browser` at a tag whose base
 # was never built fails in step 1, loudly, naming the ref it could not find --
 # which is the failure worth having, rather than a `FROM` error deep in a layer.

@@ -91,18 +91,28 @@ REACHES: dict[Tier, tuple[str, ...]] = {
 WHY_NOT: dict[tuple[Tier, str], str] = {
     (Tier.PROXY, "team"): (
         "a team deployment keeps Cloud Run open to `allUsers` and gates at the "
-        "load balancer, so its ingress refuses the direct call the proxy makes. "
-        "Set SWARM_IAP_CLIENT_ID and SWARM_IMPERSONATE_SA instead."
+        "load balancer, so its ingress refuses the direct call the proxy makes -- "
+        "and the load balancer will not take a USER credential either: measured "
+        "2026-09-24 against the live front door, a gcloud user access token is "
+        "answered 401 with IAP error code 900. No OAuth client a user credential "
+        "can be minted from is one a Google-managed IAP client accepts, and "
+        "SWARM_IAP_CLIENT_ID helps only where the deployment configured its own. "
+        "Set SWARM_IMPERSONATE_SA to a service account that holds "
+        "roles/iap.httpsResourceAccessor instead."
     ),
     (Tier.IMPERSONATE, "team"): (
-        "this tier mints a token for the API's OWN URL, and it is only reached "
-        "when there is no metadata server -- so the caller is outside the VPC, "
-        "where a team deployment's ingress answers an HTML 404 before reading "
-        "any token (measured 2026-09-22 against swarm-api, with and without an "
-        "Authorization header). Its load balancer will take the call, but IAP "
-        "accepts only a token whose audience is the IAP OAuth client id. Set "
-        "SWARM_IAP_CLIENT_ID as well -- that is the IAP tier, and it uses this "
-        "same service account."
+        "this tier reaches the front door and IAP ACCEPTS its credential -- "
+        "measured 2026-09-24, IAP answered 403 'Access denied. For user "
+        "swarm-verify@...', and a 403 that NAMES the caller is authentication "
+        "having succeeded. What is missing is the authorisation: "
+        "roles/iap.httpsResourceAccessor, granted through frontend_iap_members in "
+        "terraform/bootstrap/terraform.tfvars, which the owner applies and CI does "
+        "not (moved out of terraform/infra on 2026-09-24). That list now holds "
+        "domain:saga.xyz and swarm-verify; a service account not on it gets the "
+        "same named 403 until it is added there. SWARM_IAP_CLIENT_ID is NOT the "
+        "answer here: terraform/modules/frontend sets no oauth2_client_id on "
+        "purpose, so IAP uses a Google-managed client and there is no audience to "
+        "mint an ID token for at all."
     ),
     (Tier.IAP, "solo"): (
         "a solo deployment has no load balancer and no IAP, so there is nothing "

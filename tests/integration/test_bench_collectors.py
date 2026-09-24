@@ -51,8 +51,17 @@ BENCH_UI = ROOT / "scripts" / "bench-ui.sh"
 #: gate must notice, or a process that must still be running when it is looked
 #: at. Both premises are about how long real work takes, so under `-n auto`
 #: they compete with seven other workers for the CPU and the thing they measure
-#: moves. They failed exactly that way and pass alone, which is the signature.
-#: `make test` runs `-m "not serial" -n auto` first, then these on their own.
+#: moves. `make test` runs `-m "not serial" -n auto` first, then these on their
+#: own.
+#:
+#: A CORRECTION, 2026-09-24. This used to say these cases "failed exactly that
+#: way and pass alone, which is the signature". Passing alone was real; the
+#: mechanism was not load. Every collector run wrote one shared file,
+#: build/bench-<suite>-<env>.jsonl, and `bench_init` truncates it -- so two of
+#: these cases in two workers erased each other's samples. That is fixed in
+#: scripts/lib/benchlib.sh and pinned by TestTwoRunsInOneCheckout below. The
+#: serial mark stays for the timing premise, which is still true; it is no
+#: longer what stands between this file and a red gate.
 pytestmark = [
     pytest.mark.skipif(
         shutil.which("jq") is None or shutil.which("curl") is None,
@@ -92,16 +101,47 @@ _BODIES = {
 }
 
 
+class _Hold:
+    """Let the first `after` requests for /v1/stats through, then hold the rest.
+
+    `bench-api.sh` measures /v1/stats twice: ROUNDS x CONCURRENCY times in the
+    per-route latency loop, then ROUNDS times, one at a time, for the
+    history-normalised figure. Holding request `after + 1` therefore parks the
+    collector at a known instant -- every latency sample already written, none
+    of the normalised ones yet -- which is the window the flake needed a busy
+    machine to land in.
+    """
+
+    def __init__(self, after: int) -> None:
+        self.after = after
+        self._seen = 0
+        self._lock = threading.Lock()
+        self.holding = threading.Event()
+        self.release = threading.Event()
+
+    def arrive(self) -> None:
+        with self._lock:
+            self._seen += 1
+            seen = self._seen
+        if seen > self.after:
+            self.holding.set()
+            # Bounded, so a test that dies before releasing cannot hang CI.
+            self.release.wait(timeout=120)
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Set per-server by _serve().
     delay_ms = 0.0
     delay_route = ""
     fail_route = ""
+    hold: _Hold | None = None
 
     def do_GET(self):  # noqa: N802
         route = self.path.split("?", 1)[0]
         time.sleep(BASE_MS / 1000.0)
+        if self.hold is not None and route == "/v1/stats":
+            self.hold.arrive()
         if self.delay_ms and route == self.delay_route:
             time.sleep(self.delay_ms / 1000.0)
         if self.fail_route and route == self.fail_route:
@@ -369,6 +409,90 @@ class TestApiCollector:
         # It stopped before measuring anything: no verdict table, no metrics.
         assert "api.latency" not in result.stdout, result.stdout
         assert "failing" not in result.stdout, result.stdout
+
+
+class TestTwoRunsInOneCheckout:
+    """The cause of the flake in docs/audits/2026-09-23/two-flaky-gate-tests.md #1.
+
+    The recorded failure was precise: a healthy run's baseline held ONLY
+    `api.stats.history_tasks` and `api.stats.ms_per_1k_history`. Every
+    `api.latency` and `api.ttfb` sample was gone, while the two metrics the
+    collector writes LAST survived. The collector cannot produce that: every
+    branch of its reader loop writes a sample. Something else has to delete
+    the first half of the file after it is written -- and `bench_init` does
+    exactly that, `: >` on a path built only from the suite and ENVIRONMENT, in
+    the checkout's shared build/ directory.
+
+    So two collectors for the same suite and environment -- two gates in one
+    checkout, or this file under `pytest -n`, which is what it ran under before
+    it was marked serial -- share one sample file, and the second one's
+    `bench_init` truncates the first one's measurements mid-run. It never
+    showed in CI because CI runs this file in one process, one case at a time.
+
+    This drives that collision deterministically rather than hoping for load:
+    the first run is held at the start of its normalised phase, a second run
+    for the same suite and environment is run to completion, and then the
+    first is released.
+    """
+
+    def test_a_second_run_does_not_erase_the_first_runs_measurements(self, tmp_path):
+        rounds, concurrency = 5, 2
+        hold = _Hold(after=rounds * concurrency)
+        first = _Server(hold=hold)
+        second = _Server()
+        a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+        a_dir.mkdir()
+        b_dir.mkdir()
+        # Same ENVIRONMENT for both, deliberately: that is the collision. Only
+        # the baselines are kept apart, because those paths are the test's own.
+        a_env = dict(
+            _env(first.url, a_dir / "baseline.json", a_dir),
+            BENCH_RECORD_BASELINE="1",
+            # Longer than the hold, so the held request is a slow answer and
+            # not a curl timeout recorded as not-measured.
+            HTTP_TIMEOUT="150",
+        )
+        b_env = dict(_env(second.url, b_dir / "baseline.json", b_dir), BENCH_RECORD_BASELINE="1")
+
+        a = subprocess.Popen(
+            [str(BENCH_API), "--rounds", str(rounds), "--concurrency", str(concurrency),
+             "--route", "/readyz", "--route", "/v1/stats"],
+            env=a_env, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            try:
+                assert hold.holding.wait(timeout=120), (
+                    "the first run never reached its normalised /v1/stats phase"
+                )
+                b = _run(
+                    BENCH_API, "--rounds", str(rounds), "--concurrency", str(concurrency),
+                    "--route", "/v1/capacity", env=b_env,
+                )
+                assert b.returncode == 0, b.stderr[-3000:]
+            finally:
+                hold.release.set()
+            a_out, a_err = a.communicate(timeout=300)
+        finally:
+            if a.poll() is None:
+                a.kill()
+                a.communicate()
+            first.close()
+            second.close()
+
+        assert a.returncode == 0, a_err[-3000:]
+        recorded = json.loads((a_dir / "baseline.json").read_text())["metrics"]
+        for route in ("/readyz", "/v1/stats"):
+            key = f"api.latency{{route={route}}}"
+            assert key in recorded, (
+                f"{key} is missing from the first run's baseline. A second collector "
+                "for the same suite and environment truncated the sample file this one "
+                f"was still writing. Recorded: {sorted(recorded)}"
+            )
+        foreign = sorted(m for m in recorded if "/v1/capacity" in m)
+        assert not foreign, (
+            "the first run's baseline carries measurements of a route it never "
+            f"requested -- the second run's samples, read out of a shared file: {foreign}"
+        )
 
 
 class TestBenchlibGuards:

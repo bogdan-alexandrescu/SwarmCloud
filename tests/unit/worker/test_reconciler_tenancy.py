@@ -135,7 +135,7 @@ def test_a_gke_job_cannot_claim_a_tenant_its_namespace_does_not_name():
     )
     backend = GkeBackend(batch_api=batch, core_api=FakeCoreApi([]), logger=build_logger())
 
-    view = backend.list_executions()[0]
+    view = backend.list_executions_in([TENANT_NS]).executions[0]
 
     assert view.tenant_id == TENANT          # the namespace, not the env
     assert view.namespace == TENANT_NS

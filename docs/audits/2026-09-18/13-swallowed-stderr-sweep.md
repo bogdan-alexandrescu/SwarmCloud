@@ -38,7 +38,105 @@ already routing through them were excluded rather than reported.
   digest now fatal, and the probe changed from `images describe` (which needs
   `containeranalysis.occurrences.list`) to `tags list`, which does not.
 
-## Confirmed, not yet fixed
+## Re-checked against `b0fff1b`, 2026-09-24
+
+Every one of the 55 findings below was read again against the code at `b0fff1b`
+(main after #17), at the line it now lives on, and its state recorded here with
+the commit that settled it. **By reading, not by running**: the suites these
+findings live in run against a deployed platform, and nothing here was.
+
+Where a fix commit is named without a PR, it is on
+`fix/silent-failures-env-parity-and-audits` and reached main in the squash
+`0857b46` (#1). `a1239b5` and `da6bf54` are on `lane/docs-ci`, PR #25.
+
+**Summary: 55 findings. 46 were fixed before this re-check and 2 are moot
+(`account.sh`, deleted). 7 were not fixed, and are fixed in PR #25:**
+register-tenant.sh's three -- the one file the 2026-09-19 fan-out never landed;
+its agent was reclaimed three times -- and four that an earlier fix had
+narrowed but not closed (`failure-test.sh:111` and `:125`, `smoke-test.sh:100`,
+`configure-kubectl.sh:134`). PARTIAL below means the earlier fix removed the
+named cause and left the consequence reachable another way; the row says which.
+
+Five residuals of the same class turned up in rows already fixed, and are fixed
+in `a1239b5` too, each noted in its row: a `use-context ... || true` in
+configure-kubectl.sh that could leave another team's context current; a
+superseded-version disable in create-secrets.sh whose failure still ended `ok`;
+a `not found` match in purge-data.sh that read a missing BUCKET as an empty
+prefix, and its dry-run preview listing, silent on failure; and race-test.sh's
+generation check, which still passed `0 == 0` over zero attempts read.
+
+| finding | state | settled by |
+|---|---|---|
+| **high** | | |
+| `account.sh:119` | moot | the file is deleted (`6b7a3dd`): account provisioning moved into the quota broker, whose `ensure_secret` creates and binds in one call |
+| `account.sh:133` | moot | fixed in `1c1a762`, then the file was deleted in `6b7a3dd` |
+| `concurrency-test.sh:45` | fixed | `a51143d` -- a failed read dies naming it a failed read |
+| `concurrency-test.sh:82` | fixed | `9c639af` (the readers propagate an error), `a51143d` (`holding_capacity` refuses a failed count) |
+| `create-secrets.sh:222` | fixed | `1c1a762`. Residual: a failed `versions disable` still ended `ok` -- `a1239b5` |
+| `destroy.sh:340` | fixed | `f9eee2f` -- tri-state `shared_resource_present`/`_listed`; "could not look" has its own exit code |
+| `failure-test.sh:111` | PARTIAL → fixed | `1c1a762` narrowed "any non-2xx" to "any 4xx", which still counted 401/403/404 -- `a1239b5` (`validation_rejected`: 400, 422) |
+| `lib/common.sh:481` | fixed | `9c639af` -- `api_url` prints gcloud's reason and refuses to call a failed lookup an absence |
+| `lib/common.sh:544` | fixed | `9c639af` -- `fs_request` checks the status; 404 is an answer only where a caller opts in |
+| `lib/common.sh:569` | fixed | `9c639af` |
+| `lib/common.sh:603` | fixed | `9c639af` |
+| `lib/common.sh:656` | fixed | `9c639af` |
+| `lib/deploy.sh:80` | fixed | `a51143d` -- skips are collected and the run dies naming them |
+| `lib/testlib.sh:96` | fixed | `a51143d` -- transport, 401/403 and 404 each named |
+| `lib/testlib.sh:107` | fixed | `a51143d` -- `api_post` redirected to a file, not a subshell |
+| `lib/testlib.sh:122` | fixed | `9c639af`, `a51143d` (`task_doc ... \|\| return 1`) |
+| `pause-swarm.sh:74` | fixed | `9c639af` (`fs_get` propagates; the bare assignment aborts under `set -e`), `a51143d` |
+| `pause-swarm.sh:87` | fixed | `9c639af` -- `fs_patch` returns non-zero on a non-2xx, as a bare statement |
+| `purge-data.sh:108` | fixed | `9c639af`. Declined by the `2d06f26` agent, correctly: a bare assignment under `set -e` |
+| `purge-data.sh:168` | fixed | `9c639af`. Declined by the `2d06f26` agent, correctly, for the same reason |
+| `purge-data.sh:210` | fixed | `2d06f26` |
+| `purge-data.sh:261` | fixed | `2d06f26`. Residual: `not found` also matched a missing bucket, reported "already empty"; and the dry-run preview listing was silent on failure -- `a1239b5` |
+| `purge-data.sh:274` | fixed | `2d06f26` |
+| `resume-swarm.sh:68` | fixed | `9c639af` |
+| `smoke-test.sh:78` | fixed | `f8415f5` -- only 400/422 pass; now through `validation_rejected` (`a1239b5`) |
+| `smoke-test.sh:100` | PARTIAL → fixed | `f8415f5` accepted any 4xx, so a 401 still printed PASS for invariant 10 -- `a1239b5` |
+| `status.sh:59` | fixed | `86b161f` |
+| `status.sh:68` | fixed | `86b161f` |
+| `status.sh:74` | fixed | `86b161f`, `9c639af` |
+| `status.sh:104` | fixed | `86b161f` |
+| `status.sh:129` | fixed | `86b161f` -- reachable, listing-failed and unreachable are separate states |
+| **medium** | | |
+| `configure-kubectl.sh:64` | fixed | `1c1a762` |
+| `configure-kubectl.sh:134` | PARTIAL → fixed | `1c1a762` showed the real error but still ended "ok kubectl configured", exit 0 -- the harm this finding names. `a1239b5` exits 1. Residual in the same file: both `use-context` calls behind `\|\| true` could leave the previous context current (under `--merge`, the operator's own -- on the reference workstation, agents-staging) and the `/readyz` probe then ran through it; now checked with `kube_context_is_swarm` -- `a1239b5` |
+| `configure-kubectl.sh:137` | fixed | `1c1a762` |
+| `create-secrets.sh:246` | fixed | `1c1a762` |
+| `failure-test.sh:125` | PARTIAL → fixed | as `:111` -- `1c1a762`, then `a1239b5` |
+| `lib/deploy.sh:76` | fixed | `a51143d` |
+| `lib/deploy.sh:113` | fixed | `a51143d`, `6a76aa2` (the readiness probe itself had never worked) |
+| `lib/deploy.sh:115` | fixed | `a51143d` |
+| `lib/deploy.sh:117` | fixed | `a51143d` -- curl's exit status is read; no more `000000` |
+| `lib/plan-guard.sh:84` | fixed | `11740ca` -- the verdict is validated before anything is counted |
+| `lib/resolve.sh:40` | fixed | `a51143d` |
+| `pause-swarm.sh:96` | fixed | `a51143d` |
+| `purge-data.sh:235` | fixed | `2d06f26` |
+| `race-test.sh:117` | fixed | `f8415f5` -- each submission's stderr is kept |
+| `race-test.sh:159` | fixed | `f8415f5`. Residual: `0 == 0` over zero attempts read still passed -- `a1239b5` requires at least one |
+| `register-tenant.sh:419` | **was open** → fixed | `a1239b5` -- the bucket policy read keeps its stderr and says the check did not happen |
+| `register-tenant.sh:434` | **was open** → fixed | `a1239b5` -- tri-state lookup; only a NOT_FOUND says `make infra`. The same shape at the Firestore role and the bucket itself fixed with it |
+| `register-tenant.sh:528` | **was open** → fixed | `a1239b5` -- a swarm context whose API server did not answer is named as that, with kubectl's error |
+| `resume-swarm.sh:84` | fixed | `f8415f5` |
+| `smoke-test.sh:39` | fixed | `f8415f5`; REST since `9638f06` |
+| `smoke-test.sh:50` | fixed | `f8415f5` |
+| `smoke-test.sh:69` | fixed | `f8415f5` |
+| `smoke-test.sh:159` | fixed | `f8415f5`; REST since `9638f06` |
+| `status.sh:325` | fixed | `86b161f` |
+
+**How the seven were proved.** Tests committed before their fixes and red in CI
+first: `tests/integration/test_register_tenant_probe_failures.py` (four cases,
+red on `47d36e2`, run 35975231470) and
+`tests/integration/test_suite_rejection_status.py` (red on the same run). The
+configure-kubectl.sh, race-test.sh, purge-data.sh and create-secrets.sh changes
+have no test: each is a message or an exit code on a path that needs a live
+cluster, bucket or secret to reach, and none was exercised.
+
+## Confirmed findings, as filed 2026-09-18
+
+The original record, unchanged. **Its heading used to say "not yet fixed"; the
+state of each is in the table above.**
 
 
 ### high (31)

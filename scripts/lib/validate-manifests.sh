@@ -203,7 +203,36 @@ fi
 # granting capabilities or leaving its uid implicit fails here. The one thing
 # this must never become is "skip the checks when the word gvisor appears",
 # which would turn the gate off for the template that most needs one.
-step "Worker template security posture"
+#
+# PER CONTAINER, PARSED -- NOT PER FILE, GREPPED. The first version grepped each
+# file, so a field set on ONE container satisfied the check for EVERY container
+# in it. docs/audits/2026-09-23/worker-job-v2-fails-the-posture-gate.md recorded
+# that as a known residual, and tests/unit/scripts/test_posture_is_per_container.py
+# measured what it let through, all of it green:
+#
+#   * worker-job-v2's init container losing allowPrivilegeEscalation: false or
+#     drop: ["ALL"] -- the main container's lines satisfied the grep;
+#   * an unhardened sidecar beside a hardened worker;
+#   * `runAsNonRoot: true` at POD level while the container overrode it to
+#     false -- and the container's value is the one the kubelet enforces;
+#   * a COMMENT reading `runtimeClassName: gvisor` in an unsandboxed template,
+#     which moved it onto the relaxed rules.
+#
+# So each template is parsed and every container -- init, regular and
+# ephemeral -- is judged on its EFFECTIVE settings: its own securityContext,
+# falling back to the pod's only for the fields Kubernetes actually inherits
+# (runAsNonRoot, runAsUser). allowPrivilegeEscalation, capabilities,
+# privileged and readOnlyRootFilesystem exist only on a container, so a pod
+# cannot supply them. The class is the pod's runtimeClassName, not a string
+# anywhere in the file.
+#
+# The templates are parsed with every `__TOKEN__` filled by a dummy scalar.
+# That works because every placeholder in kubernetes/worker-templates sits in a
+# scalar position; render.py's tenant files are the ones with structural
+# placeholders, and they are not worker templates. The files on disk are what
+# is judged, rather than render.py's output, so that a template no profile
+# renders is still judged -- the coverage the grep had, kept.
+step "Worker template security posture (per container)"
 
 TEMPLATES="${REPO_ROOT}/kubernetes/worker-templates"
 if [[ ! -d "${TEMPLATES}" ]]; then
@@ -216,39 +245,121 @@ else
   for f in "${TEMPLATES}"/*.yaml; do
     [[ -e "${f}" ]] || continue
     posture_found=$((posture_found + 1))
-    name="$(basename "${f}")"
+    # Written to a file and read back in THIS shell, never piped into a loop:
+    # see the NOTE ON SHAPE in this file's header for the subshell that once
+    # swallowed a failure count here.
+    posture_rc=0
+    python3 - "${f}" >"${WORK}/posture" 2>&1 <<'POSTURE' || posture_rc=$?
+import re
+import sys
 
-    # Required of EVERY template, whatever isolates it.
-    grep -q 'allowPrivilegeEscalation: false' "${f}" \
-      || { err "${name}: missing allowPrivilegeEscalation: false"; FAILED=1; }
-    grep -q 'drop: \["ALL"\]' "${f}" \
-      || { err "${name}: does not drop ALL capabilities"; FAILED=1; }
-    if grep -q 'restartPolicy' "${f}"; then
-      grep -q 'restartPolicy: Never' "${f}" \
-        || { err "${name}: restartPolicy must be Never"; FAILED=1; }
-    fi
+import yaml
 
-    if grep -q 'runtimeClassName: gvisor' "${f}"; then
-      # SANDBOXED CLASS. Root is permitted because the kernel boundary is not
-      # the host's. What is required instead is that the privilege is
-      # DELIBERATE and STATED: an implicit uid here is indistinguishable from
-      # an oversight, and that is the thing review has to be able to see.
-      grep -qE 'runAsUser: [0-9]+' "${f}" \
-        || { err "${name}: gvisor template must state runAsUser explicitly"; FAILED=1; }
-      ok "${name}: sandboxed class (gvisor), privilege stated explicitly"
-    else
-      # UNSANDBOXED CLASS. Shares the node's kernel, so it gets the full
-      # posture the gate has always required.
-      grep -q 'runAsNonRoot: true' "${f}" \
-        || { err "${name}: missing runAsNonRoot: true (no gvisor sandbox)"; FAILED=1; }
-      grep -q 'readOnlyRootFilesystem: true' "${f}" \
-        || { err "${name}: missing readOnlyRootFilesystem: true (no gvisor sandbox)"; FAILED=1; }
-      ok "${name}: unsandboxed class, non-root and read-only"
+path = sys.argv[1]
+name = path.rsplit("/", 1)[-1]
+text = re.sub(r"__[A-Z0-9_]+__", "placeholder", open(path).read())
+
+try:
+    docs = [d for d in yaml.safe_load_all(text) if d]
+except yaml.YAMLError as exc:
+    print(f"FAIL {name}: not parseable as YAML once its placeholders are filled: {exc}")
+    raise SystemExit(1)
+
+
+def pod_specs(doc):
+    kind = doc.get("kind")
+    spec = doc.get("spec") or {}
+    if kind == "Pod":
+        yield kind, spec
+    elif kind == "CronJob":
+        job = (spec.get("jobTemplate") or {}).get("spec") or {}
+        yield kind, ((job.get("template") or {}).get("spec") or {})
+    elif kind in ("Job", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"):
+        yield kind, ((spec.get("template") or {}).get("spec") or {})
+
+
+problems = []
+report = []
+pods = 0
+for doc in docs:
+    if not isinstance(doc, dict):
+        continue
+    for kind, pod in pod_specs(doc):
+        pods += 1
+        gvisor = pod.get("runtimeClassName") == "gvisor"
+        pod_sc = pod.get("securityContext") or {}
+        if "restartPolicy" in pod and pod["restartPolicy"] != "Never":
+            problems.append(f"{name}: restartPolicy is {pod['restartPolicy']!r}; it must be Never")
+        if not pod.get("containers"):
+            problems.append(f"{name}: the {kind} declares no containers")
+        containers = [
+            (group, c)
+            for group in ("initContainers", "containers", "ephemeralContainers")
+            for c in (pod.get(group) or [])
+        ]
+        for group, container in containers:
+            cname = container.get("name") or f"<unnamed entry in {group}>"
+            where = f"{name}: container {cname!r}"
+            sc = container.get("securityContext") or {}
+
+            # Required of EVERY container, whatever isolates the pod. These
+            # four exist only on a container; there is no pod value to inherit.
+            if sc.get("allowPrivilegeEscalation") is not False:
+                problems.append(f"{where} does not set allowPrivilegeEscalation: false")
+            if "ALL" not in ((sc.get("capabilities") or {}).get("drop") or []):
+                problems.append(f"{where} does not drop ALL capabilities")
+            if sc.get("privileged") is True:
+                problems.append(f"{where} is privileged")
+
+            if gvisor:
+                # SANDBOXED CLASS. Root is permitted because the kernel boundary
+                # is not the host's. What is required instead is that the
+                # privilege is DELIBERATE and STATED: an implicit uid here is
+                # indistinguishable from an oversight, and that is the thing
+                # review has to be able to see.
+                uid = sc.get("runAsUser", pod_sc.get("runAsUser"))
+                if isinstance(uid, bool) or not isinstance(uid, int):
+                    problems.append(f"{where} (gvisor) leaves runAsUser implicit; a deliberately root pod must state it")
+            else:
+                # UNSANDBOXED CLASS. Shares the node's kernel, so it gets the
+                # full posture the gate has always required.
+                non_root = sc.get("runAsNonRoot", pod_sc.get("runAsNonRoot"))
+                if non_root is not True:
+                    problems.append(
+                        f"{where} does not run with runAsNonRoot: true (no gvisor sandbox; "
+                        f"container sets {sc.get('runAsNonRoot')!r}, pod sets {pod_sc.get('runAsNonRoot')!r})"
+                    )
+                if sc.get("readOnlyRootFilesystem") is not True:
+                    problems.append(f"{where} does not set readOnlyRootFilesystem: true (no gvisor sandbox)")
+        label = "sandboxed class (gvisor)" if gvisor else "unsandboxed class"
+        report.append(f"{name}: {kind}, {label}, {len(containers)} container(s) judged")
+
+if pods == 0:
+    problems.append(f"{name}: no pod spec found; a template the gate cannot read is not a template it passed")
+
+for line in problems:
+    print(f"FAIL {line}")
+if problems:
+    raise SystemExit(1)
+for line in report:
+    print(f"OK {line}")
+POSTURE
+    while IFS= read -r line; do
+      case "${line}" in
+        "OK "*)   ok "${line#OK }" ;;
+        "FAIL "*) err "${line#FAIL }" ;;
+        *)        [[ -z "${line}" ]] || err "$(basename "${f}"): ${line}" ;;
+      esac
+    done <"${WORK}/posture"
+    if [[ "${posture_rc}" -ne 0 ]]; then
+      FAILED=1
     fi
   done
   if [[ "${posture_found}" -eq 0 ]]; then
     err "no worker templates found under kubernetes/worker-templates"
     FAILED=1
+  else
+    info "${posture_found} worker template(s) judged per container"
   fi
 fi
 

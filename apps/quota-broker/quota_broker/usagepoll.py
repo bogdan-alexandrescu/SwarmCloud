@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from . import usage
 from .accounts import Account
@@ -73,8 +73,17 @@ class UsagePoller:
         # stays the only place that knows the endpoint's shape.
         self._fetch = fetch or usage.fetch
 
-    def poll_round(self, accounts: list[Account]) -> list[PollOutcome]:
-        """One round, oldest reading first, stopping on a 429."""
+    def poll_round(
+        self,
+        accounts: list[Account],
+        *,
+        keep_going: Callable[[], bool] | None = None,
+    ) -> list[PollOutcome]:
+        """One round, oldest reading first, stopping on a 429.
+
+        And stopping when `keep_going` says so: the sweep lease's fence, asked
+        before each poll, because two concurrent rounds spend one budget twice.
+        """
         outcomes: list[PollOutcome] = []
         if self._max_polls <= 0 or not accounts:
             return outcomes
@@ -90,6 +99,8 @@ class UsagePoller:
         )
 
         for account in ordered[: self._max_polls]:
+            if keep_going is not None and not keep_going():
+                break
             try:
                 token = self._store.access(account.secret)
             except Exception as exc:
