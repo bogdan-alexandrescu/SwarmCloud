@@ -389,14 +389,16 @@ def finished_browser_task(
     lease_released: bool,
     ended_seconds_ago: int = 1200,
     heartbeat_seconds_ago: int = 1200,
+    began_minutes_ago: int = 60,
 ) -> dict[str, str]:
     """A browser task that ended 20 minutes ago, as `ControlPlane.finish` leaves it.
 
-    `ended_seconds_ago` moves the end inside `LEFT_RUNNING_GRACE_SECONDS`, and
-    `heartbeat_seconds_ago` says when the worker last heartbeated its lease.
+    `ended_seconds_ago` moves the end inside `LEFT_RUNNING_GRACE_SECONDS`,
+    `heartbeat_seconds_ago` says when the worker last heartbeated its lease,
+    and `began_minutes_ago` when the lease was written.
     """
     seed_tenant(db, ENG, record_namespace=True)
-    ids = seed_stranded(db, task_id, state="RUNNING", minutes_ago=60,
+    ids = seed_stranded(db, task_id, state="RUNNING", minutes_ago=began_minutes_ago,
                         heartbeat_seconds_ago=heartbeat_seconds_ago)
     ended = utcnow() - timedelta(seconds=ended_seconds_ago)
     db.docs[f"tasks/{ids['task']}"].update(
@@ -757,6 +759,71 @@ def test_a_job_found_by_name_whose_kill_is_refused_keeps_its_lease():
     assert delete_attempts(batch), f"the kill was never tried: {_outcomes(report)}"
     assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None, _outcomes(report)
     assert set(pool_actives(db).values()) == {2}, pool_actives(db)
+
+
+def test_a_job_too_young_to_judge_still_holds_its_lease():
+    """A fast browser task: leased two minutes ago, its Job created a minute
+    ago, FAILED thirty seconds ago, and the worker hung before releasing.
+
+    The orphan rule judges no Job younger than `ORPHAN_EXECUTION_GRACE_SECONDS`
+    (120s), and with eviction off nothing defers to the left-running rule
+    either -- so no rule that kills acts on this Job in this pass, and no kill
+    is tried that could fail. The orphan-lease rule, which never looks for
+    compute, released the lease anyway. Only a rule that kills may return it,
+    and none has yet.
+    """
+    db = FakeFirestore()
+    ids = finished_browser_task(
+        db, "task_young000000000001", state="FAILED", lease_released=False,
+        ended_seconds_ago=30, heartbeat_seconds_ago=40, began_minutes_ago=2,
+    )
+    job = k8s_job(task_id=ids["task"])
+    job.metadata.creation_timestamp = utcnow() - timedelta(seconds=60)
+    batch = RbacBatchApi(jobs=[job], listable={ENG_NS})
+    rec, _ = reconciler(db, gke(batch), enable_gke_eviction=False)
+
+    report = rec.run_once()
+
+    assert delete_attempts(batch) == [], (
+        f"a Job younger than the orphan grace was judged: {_outcomes(report)}"
+    )
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None, (
+        f"capacity came back while the pod holding it still ran: {_outcomes(report)}"
+    )
+    assert set(pool_actives(db).values()) == {2}, pool_actives(db)
+
+
+def test_a_left_running_job_with_no_finish_time_is_not_waited_on_for_ever():
+    """Nothing records when the task finished -- no `completed_at`, no
+    `updated_at` -- and the Job carries no creation time.
+
+    The orphan rule stands aside for this Job because the left-running rule
+    owns it, and its lease is held while it runs. A left-running rule that
+    waited for a clock that never comes would therefore hold both for ever.
+    With nothing to say it finished recently, it is past the grace: killed,
+    and only then released.
+    """
+    db = FakeFirestore()
+    ids = finished_browser_task(db, "task_noclock00000000001", state="SUCCEEDED",
+                                lease_released=False, heartbeat_seconds_ago=60)
+    for name in ("completed_at", "updated_at"):
+        db.docs[f"tasks/{ids['task']}"].pop(name)
+    job = k8s_job(task_id=ids["task"])
+    job.metadata.creation_timestamp = None
+    at_kill: dict[str, Any] = {}
+    batch = RbacBatchApi(
+        jobs=[job], listable={ENG_NS}, on_delete=_capture_release_at_kill(db, ids, at_kill)
+    )
+    rec, _ = reconciler(db, gke(batch))
+
+    report = rec.run_once()
+
+    assert batch.deleted == [job_name(ids)], _outcomes(report)
+    assert at_kill == {"released_at": None}, f"released before the kill: {at_kill}"
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is not None, _outcomes(report)
+    assert set(pool_actives(db).values()) == {0}, pool_actives(db)
+    left = [o for o in report.outcomes if o.kind == "left_running"]
+    assert left and "nothing records when it finished" in left[0].reason, _outcomes(report)
 
 
 # ---------------------------------------------------------------------------
