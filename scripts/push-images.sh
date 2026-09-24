@@ -31,7 +31,18 @@
 # Nothing downstream ever deploys a mutable tag. `:dev` exists for humans;
 # scripts and Terraform use `image@sha256:...`.
 #
+# WHICH DIGESTS. By default each image's digest is whatever `:<tag>` points at
+# when this runs. With --manifest it is the digest the BUILD RECORDED in that
+# build manifest (build/images-<env>.json), and the tag is not consulted at
+# all. The release uses --manifest, because it promotes the build CI made for
+# its commit (docs/ci.md): a tag can be moved by a later build of the same
+# commit, and what is scanned and promoted must be what that build produced.
+# Every recorded digest is confirmed to be in Artifact Registry before anything
+# moves, and a manifest built for another environment is refused outright --
+# swarm-ui bakes its environment into the bundle when it is compiled.
+#
 # Usage: scripts/push-images.sh [TARGET...] [--tag SHA] [--channel dev] [--scan|--no-scan]
+#        scripts/push-images.sh --manifest build/images-dev.json --channel dev --scan
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -50,38 +61,77 @@ TAG=""
 CHANNEL="${ENVIRONMENT}"
 SCAN="${SCAN_IMAGES:-1}"
 SEVERITY="${TRIVY_SEVERITY:-HIGH,CRITICAL}"
+FROM_MANIFEST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --tag)     TAG="$2"; shift 2 ;;
-    --channel) CHANNEL="$2"; shift 2 ;;
-    --scan)    SCAN=1; shift ;;
-    --no-scan) SCAN=0; shift ;;
-    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
-    -*)        die "unknown flag: $1" ;;
-    *)         TARGETS+=("$1"); shift ;;
+    --tag)      TAG="$2"; shift 2 ;;
+    --channel)  CHANNEL="$2"; shift 2 ;;
+    --scan)     SCAN=1; shift ;;
+    --no-scan)  SCAN=0; shift ;;
+    --manifest) FROM_MANIFEST="$2"; shift 2 ;;
+    -h|--help)  sed -n '2,45p' "$0"; exit 0 ;;
+    -*)         die "unknown flag: $1" ;;
+    *)          TARGETS+=("$1"); shift ;;
   esac
 done
 
 require_cmd gcloud jq
 
-MANIFEST="${BUILD_DIR}/images-${ENVIRONMENT}.json"
-if [[ -z "${TAG}" && -f "${MANIFEST}" ]]; then
-  TAG="$(jq -r '.tag // ""' "${MANIFEST}")"
-fi
-TAG="${TAG:-$(git_sha)}"
-
-if [[ "${#TARGETS[@]}" -eq 0 ]]; then
-  if [[ -f "${MANIFEST}" ]]; then
+if [[ -n "${FROM_MANIFEST}" ]]; then
+  # -------------------------------------------------------------------------
+  # Promote what a build RECORDED. Everything checkable without the registry is
+  # checked here, before a single call is made.
+  # -------------------------------------------------------------------------
+  [[ -f "${FROM_MANIFEST}" ]] || die "no build manifest at ${FROM_MANIFEST}"
+  jq -e 'type == "object" and ((.images // null) | type) == "array"' "${FROM_MANIFEST}" >/dev/null 2>&1 \
+    || die "${FROM_MANIFEST} is not a build manifest (it has no images array)"
+  BUILT_FOR="$(jq -r '.environment // ""' "${FROM_MANIFEST}")"
+  if [[ "${BUILT_FOR}" != "${CHANNEL}" ]]; then
+    die "${FROM_MANIFEST} was built for '${BUILT_FOR:-no environment}' and this promotes to :${CHANNEL}. swarm-ui bakes its environment into the bundle when it is compiled, so those images would tell every ${CHANNEL} user they are on ${BUILT_FOR:-an unknown environment}; build for ${CHANNEL} instead"
+  fi
+  BUILT_TAG="$(jq -r '.tag // ""' "${FROM_MANIFEST}")"
+  [[ -n "${BUILT_TAG}" ]] || die "${FROM_MANIFEST} records no tag"
+  if [[ -n "${TAG}" && "${TAG}" != "${BUILT_TAG}" ]]; then
+    die "${FROM_MANIFEST} records build ${BUILT_TAG}, not ${TAG}"
+  fi
+  TAG="${BUILT_TAG}"
+  if [[ "${#TARGETS[@]}" -eq 0 ]]; then
     while IFS= read -r line; do
       [[ -n "${line}" ]] && TARGETS+=("${line}")
-    done < <(jq -r '.images[].name' "${MANIFEST}")
+    done < <(jq -r '.images[] | .name // empty' "${FROM_MANIFEST}")
   fi
-  [[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=("${ALL_TARGETS[@]}")
+  [[ "${#TARGETS[@]}" -gt 0 ]] || die "${FROM_MANIFEST} lists no images"
+  # Artifact Registry's own coordinates for IMAGE_REPO, parsed from it rather
+  # than rebuilt from REGION and PROJECT_ID: the version confirmed must be in
+  # the repository whose tags are about to move.
+  if [[ "${IMAGE_REPO}" =~ ^([a-z0-9-]+)-docker\.pkg\.dev/([^/]+)/([^/]+)$ ]]; then
+    REG_LOCATION="${BASH_REMATCH[1]}"
+    REG_PROJECT="${BASH_REMATCH[2]}"
+    REG_REPOSITORY="${BASH_REMATCH[3]}"
+  else
+    die "IMAGE_REPO '${IMAGE_REPO}' is not <location>-docker.pkg.dev/<project>/<repository>, so a recorded digest cannot be confirmed in it"
+  fi
+else
+  MANIFEST="${BUILD_DIR}/images-${ENVIRONMENT}.json"
+  if [[ -z "${TAG}" && -f "${MANIFEST}" ]]; then
+    TAG="$(jq -r '.tag // ""' "${MANIFEST}")"
+  fi
+  TAG="${TAG:-$(git_sha)}"
+
+  if [[ "${#TARGETS[@]}" -eq 0 ]]; then
+    if [[ -f "${MANIFEST}" ]]; then
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && TARGETS+=("${line}")
+      done < <(jq -r '.images[].name' "${MANIFEST}")
+    fi
+    [[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=("${ALL_TARGETS[@]}")
+  fi
 fi
 
 step "Promotion plan"
 info "tag      ${TAG}"
+info "digests  $([[ -n "${FROM_MANIFEST}" ]] && echo "as recorded in ${FROM_MANIFEST}" || echo "what :${TAG} points at now")"
 info "channel  ${CHANNEL}"
 info "repo     ${IMAGE_REPO}"
 info "scan     $([[ "${SCAN}" -eq 1 ]] && echo "trivy, fail on ${SEVERITY}" || echo "disabled")"
@@ -145,11 +195,63 @@ refuse() {
   REFUSED+=("$1"); REFUSED_WHY+=("$2")
 }
 
+# The digest FROM_MANIFEST records for image $1, in DIGEST, once Artifact
+# Registry has confirmed it holds exactly that version. Refuses the image and
+# returns non-zero otherwise.
+#
+# `versions describe`, not `docker images describe`: the latter reads Container
+# Analysis and needs containeranalysis.occurrences.list (see digest_for). This
+# is Artifact Registry alone. Measured against the live registry on
+# 2026-09-24 (gcloud 483.0.0): a present version exits 0 with its resource
+# name; an absent one exits 1 with "NOT_FOUND: Requested entity was not found".
+recorded_digest() {
+  local target="$1" image="${IMAGE_REPO}/$1" rows recorded reason
+  DIGEST=""
+  rows="$(jq --arg n "${target}" '[.images[] | select(.name == $n)] | length' "${FROM_MANIFEST}")"
+  if [[ "${rows}" -ne 1 ]]; then
+    err "${target}: the build manifest lists it ${rows} times, not once"
+    refuse "${target}" "listed ${rows} times in the build manifest"
+    return 1
+  fi
+  recorded="$(jq -r --arg n "${target}" '.images[] | select(.name == $n) | .image // ""' "${FROM_MANIFEST}")"
+  DIGEST="$(jq -r --arg n "${target}" '.images[] | select(.name == $n) | .digest // ""' "${FROM_MANIFEST}")"
+  if [[ "${recorded}" != "${image}" ]]; then
+    err "${target}: the build manifest records ${recorded:-no image}, not ${image}"
+    refuse "${target}" "recorded in ${recorded:-no repository}, not ${IMAGE_REPO}"
+    return 1
+  fi
+  if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    err "${target}: the build manifest records '${DIGEST}', which is not a sha256 digest"
+    refuse "${target}" "recorded digest is not a sha256 digest"
+    return 1
+  fi
+  if gcloud artifacts versions describe "${DIGEST}" --package="${target}" \
+       --repository="${REG_REPOSITORY}" --location="${REG_LOCATION}" --project="${REG_PROJECT}" \
+       --format='value(name)' >"${LOOKUP_OUT}" 2>"${LOOKUP_ERR}"; then
+    return 0
+  fi
+  reason="$(lookup_error)"
+  die_if_auth_failure "${reason}"
+  if grep -q 'NOT_FOUND' "${LOOKUP_ERR}"; then
+    err "${image}@${DIGEST}: the build recorded it, and Artifact Registry does not have it"
+    refuse "${target}" "recorded digest is not in Artifact Registry"
+  else
+    # Unreadable is not absent: a denial here and a deleted image need opposite
+    # responses, and only one of them is fixed by building again.
+    err "${image}@${DIGEST}: could not confirm it is in Artifact Registry"
+    [[ -z "${reason}" ]] || printf '%s\n' "${reason}" | redact | sed -n '1,3s/^/     /p' >&2
+    refuse "${target}" "could not confirm the recorded digest (registry unreadable)"
+  fi
+  return 1
+}
+
 for target in "${TARGETS[@]}"; do
   step "Resolve ${target}"
   image="${IMAGE_REPO}/${target}"
 
-  if ! digest_for "${image}" "${TAG}"; then
+  if [[ -n "${FROM_MANIFEST}" ]]; then
+    recorded_digest "${target}" || continue
+  elif ! digest_for "${image}" "${TAG}"; then
     reason="$(lookup_error)"
     # An expired session reaches here too, and "build it first" is the worst
     # possible advice for it -- the rebuild fails the same way, at a different
@@ -161,8 +263,7 @@ for target in "${TARGETS[@]}"; do
     [[ -z "${reason}" ]] || printf '%s\n' "${reason}" | redact | sed -n '1,3s/^/     /p' >&2
     refuse "${target}" "could not resolve :${TAG} (registry unreadable)"
     continue
-  fi
-  if [[ -z "${DIGEST}" ]]; then
+  elif [[ -z "${DIGEST}" ]]; then
     err "${image}:${TAG} not found in Artifact Registry -- build it first"
     refuse "${target}" ":${TAG} not found in Artifact Registry"
     continue
