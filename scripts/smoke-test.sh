@@ -323,8 +323,10 @@ while read -r BACKEND BPROFILE <&3; do
   fi
   t_case "Backend ${BACKEND}: submit a ${BPROFILE} task and run it to completion"
   B_RUN_ID="$(test_run_id)"
-  if ! B_TASK_ID="$(submit_task "${BPROFILE}" \
-      "$(jq -nc --arg r "${B_RUN_ID}" '{message:"smoke", run_id:$r}')" \
+  # profile_input, not a generic {message, run_id}: the browser runner refuses
+  # an input with neither url nor actions, so this row -- the only GKE one --
+  # failed at the runner even when dispatch worked. See testlib.sh.
+  if ! B_TASK_ID="$(submit_task "${BPROFILE}" "$(profile_input "${BPROFILE}" "${B_RUN_ID}")" \
       '{"priority":10,"metadata":{"source":"smoke-test-backend"}}')"; then
     t_fail "${BACKEND}: submission failed for profile ${BPROFILE}"
     continue
@@ -360,8 +362,7 @@ fi
 # ---------------------------------------------------------------------------
 t_case "Submit a ${PROFILE} task and run it to completion"
 RUN_ID="$(test_run_id)"
-TASK_ID="$(submit_task "${PROFILE}" \
-  "$(jq -nc --arg r "${RUN_ID}" '{message:"smoke", run_id:$r}')" \
+TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}")" \
   '{"priority":10,"metadata":{"source":"smoke-test"}}')" || die "submission failed"
 t_info "task ${TASK_ID}"
 
@@ -391,15 +392,18 @@ if wait_until "capacity to return to ${BASE_HOLDING}" 120 holding_at_most "${BAS
 else
   assert_le "$(holding_capacity)" "${BASE_HOLDING}" "tasks holding capacity after completion"
 fi
-LEASE_ID="$(task_field "${TASK_ID}" '.current_lease_id // ""')"
-if [[ -n "${LEASE_ID}" && "${LEASE_ID}" != "null" ]]; then
-  RELEASED="$(fs_get "leases/${LEASE_ID}" | jq -r "${FS_JQ} if .fields then (doc.released_at // \"null\") else \"missing\" end")"
-  if [[ "${RELEASED}" != "null" && "${RELEASED}" != "missing" ]]; then
-    t_pass "lease ${LEASE_ID} released at ${RELEASED}"
-  else
-    t_fail "lease ${LEASE_ID} is still holding capacity (released_at=${RELEASED})"
-  fi
-fi
+# Every lease the task held, named by its events. This read
+# `current_lease_id`, which the worker clears as the task ends, so it was
+# always empty and the check skipped itself without a word (task_lease_ids in
+# testlib.sh has the detail).
+case "${final:-}" in
+  SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED)
+    t_check_leases_released "${TASK_ID}" 60 fail || true
+    ;;
+  *)
+    t_skip "the task did not finish (at ${final:-unknown}), so its lease cannot be expected back yet"
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 t_case "Artifacts landed in the tenant's own prefix"

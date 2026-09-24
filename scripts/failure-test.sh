@@ -60,19 +60,19 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "The failed task released its lease"
+# Every lease it held (max_attempts=2, so up to two), named by its events. This
+# read `current_lease_id`, which the worker clears as the task ends, so it was
+# always empty and this printed PASS "nothing to release" without looking at a
+# lease (task_lease_ids in testlib.sh has the detail).
 if [[ -n "${FAIL_ID:-}" ]]; then
-  LEASE_ID="$(task_field "${FAIL_ID}" '.current_lease_id // ""')"
-  if [[ -n "${LEASE_ID}" && "${LEASE_ID}" != "null" ]]; then
-    RELEASED="$(fs_get "leases/${LEASE_ID}" | jq -r "${FS_JQ} if .fields then (doc.released_at // \"null\") else \"missing\" end")"
-    if [[ "${RELEASED}" != "null" && "${RELEASED}" != "missing" ]]; then
-      t_pass "lease released (${RELEASED})"
-    else
-      t_fail "lease ${LEASE_ID} still holds capacity after the task failed"
-    fi
-  else
-    t_info "no lease recorded (the task may have failed before admission)"
-    t_pass "nothing to release"
-  fi
+  case "${final:-}" in
+    FAILED|DEAD_LETTERED|SUCCEEDED)
+      t_check_leases_released "${FAIL_ID}" 60 pass || true
+      ;;
+    *)
+      t_skip "the task did not finish (at ${final:-unknown}), so its leases cannot be expected back yet"
+      ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------
