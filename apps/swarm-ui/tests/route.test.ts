@@ -44,10 +44,36 @@ test('the bare #help route reaches the Help section', () => {
 })
 
 test('a route round-trips through its canonical spelling', () => {
-  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'agents/running']) {
+  // CANONICAL SPELLINGS ONLY. `agents/running` was in this list and cannot be:
+  // `agents` is an alias now, and an alias that round-tripped would mean the
+  // address bar never gets corrected, which is the opposite of what
+  // `canonical` is for. The alias's own property is the test below.
+  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'work/running']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)
   }
+})
+
+test('a retired spelling is rewritten to the current one, not merely accepted', () => {
+  // THE HALF OF THE RENAME THAT IS EASY TO GET WRONG. Resolving an old hash is
+  // not enough: if the address bar keeps saying `#agents/running`, then every
+  // link copied out of it is a new link in the retired spelling, and the alias
+  // outlives the rename by propagating itself. `App.tsx` normalises the hash
+  // without adding history for exactly this reason, so the NEXT copy of a
+  // pasted link is the current one.
+  for (const [old, current] of [
+    ['agents/running', 'work/running'],
+    ['agents/workflows', 'work/workflows'],
+    ['pools/holders', 'capacity/holders'],
+    ['capacity/holders', 'capacity/holders'], // the middle spelling, now real again
+  ] as const) {
+    at(`#${old}`)
+    assert.equal(canonical(fromHash()), current, `#${old} is not rewritten to #${current}`)
+  }
+
+  // Including the drawer, whose id must survive the rewrite intact.
+  at('#agents/task/task_abc123')
+  assert.equal(canonical(fromHash()), 'work/task/task_abc123')
 })
 
 test('an unknown topic is carried to the screen, not rewritten away', () => {

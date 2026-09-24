@@ -64,7 +64,12 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  assert.equal(p.href, '#agents/workflows')
+  // `#work/workflows`. This was `#agents/workflows` and was the SECOND red in
+  // this runner behind route.test.ts, which is worth recording: the node test
+  // runner stops at the first failing file, so a single stale assertion there
+  // hid this one completely. Two greps of the same rename found them; one CI
+  // run found only one.
+  assert.equal(p.href, '#work/workflows')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.
   assert.match(p.detail, /wf_5e5ad3b6f7da4299a839/)
