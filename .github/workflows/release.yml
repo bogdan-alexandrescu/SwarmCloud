@@ -72,13 +72,13 @@ jobs:
     name: verify
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -105,7 +105,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -119,6 +119,11 @@ jobs:
         run: echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: build (Cloud Build, linux/amd64)
+        # Concurrent, at most 4 builds at a time (build-images.sh says why 4).
+        # Run 35969538707 spent nineteen minutes here submitting eight builds
+        # one after another. Each image's output is printed with its name on
+        # every line, and a failure names every image that failed rather than
+        # stopping at the first.
         run: ./scripts/build-images.sh --tag "${{ steps.tag.outputs.tag }}"
 
       # INSTALLED BECAUSE THE PROMOTION GATE NEEDS IT, and it was not.
@@ -148,8 +153,16 @@ jobs:
           trivy --version
 
       - name: scan and promote by digest
-        # push-images.sh runs trivy against each digest and REFUSES to attach a
-        # channel tag to an image with fixable HIGH/CRITICAL findings.
+        # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
+        # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
+        # none of them. Run 35969538707 scanned and tagged one image at a time,
+        # so seven images were already on :dev when swarm-ui was refused, and
+        # :dev described a release nobody built. A tag that fails to move
+        # part-way is put back, and the manifest below is written only after
+        # every tag has moved -- so on failure there is no artifact to upload.
+        # If the put-back itself fails, the step's last line says the channel
+        # is MIXED and names the images; a `skip_build` redeploy reads the
+        # channel, so put those back (the commands are in the log) first.
         run: ./scripts/push-images.sh --tag "${{ steps.tag.outputs.tag }}" --channel "${ENVIRONMENT}" --scan
 
       - uses: actions/upload-artifact@v4
@@ -176,7 +189,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -245,7 +258,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2
