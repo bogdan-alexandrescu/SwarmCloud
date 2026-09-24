@@ -1,0 +1,314 @@
+"""What the image sets for the runner must reach the runner.
+
+WHY THIS FILE EXISTS. The browser runner is started as the worker LIFECYCLE's
+child, with an environment the lifecycle BUILDS rather than inherits
+(`lifecycle._build_child_env`, then `workspace.child_env`). That is deliberate:
+the worker's own environment carries control-plane identifiers and the service
+account it authenticates as, and "an environment variable is a command in
+disguise" (see `test_runners.py::test_the_child_environment_is_built_not_inherited`).
+
+The cost of building it is that a variable the IMAGE sets for the runner's
+benefit is dropped unless someone names it. `agent-runtime-browser` sets
+
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+because that is where its Chromium is installed, read-only, outside every
+writable path. Without it Playwright looks under `$HOME/.cache/ms-playwright`,
+and HOME in the runner child is the attempt's own work dir -- which holds no
+browser. So every browser attempt would fail at launch.
+
+Nobody saw it because nothing ran the browser runner under the lifecycle.
+Cloud Run always started the lifecycle, but the browser profile is pinned to
+GKE, and the scheduler's GKE Job replaced the lifecycle with the bare runner --
+which inherited the container's environment whole and so found its browsers.
+PR #31 makes the GKE Job start the lifecycle, and its reviewer predicted the
+first GKE browser proof would fail on exactly this variable. NOT OBSERVED: no
+browser task has yet run under the lifecycle on GKE; the failure is derived
+from reading the code, and these tests hold the derivation.
+
+The last test here is the one that stops the next variable going the same way:
+it reads every ENV the browser image sets and requires each to be either
+carried to the runner verbatim or listed below with the reason it is not.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+from pathlib import Path
+
+import pytest
+
+from agent_worker import workspace as workspace_mod
+
+from conftest import TENANT, seed_attempt, seed_tenant
+from fakes import FakeSecretClient
+
+REPO = Path(__file__).resolve().parents[3]
+BASE_DOCKERFILE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
+BROWSER_DOCKERFILE = REPO / "images" / "agent-runtime-browser" / "Dockerfile"
+
+TENANT_KEY = "sk-ant-api03-tenant-own-key"
+
+#: Set by the image and deliberately NOT given to the runner. A variable the
+#: image gains that is neither carried nor listed here fails
+#: `test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason`
+#: until someone decides which it is.
+NOT_FOR_THE_RUNNER: dict[str, str] = {
+    "DEBIAN_FRONTEND": (
+        "silences apt's prompts during the image build; the runner is uid 10001 "
+        "and cannot run apt"
+    ),
+    "PIP_NO_CACHE_DIR": "keeps pip's download cache out of the image layers at build time",
+    "NPM_CONFIG_PREFIX": (
+        "where the build's `npm install -g` put the agent CLIs; they are found "
+        "through PATH, which IS carried, and the prefix is root-owned so nothing "
+        "in the runner could install into it anyway"
+    ),
+    "NPM_CONFIG_UPDATE_NOTIFIER": "quietens the build's npm install",
+    "NPM_CONFIG_FUND": "quietens the build's npm install",
+    "WORKSPACE_ROOT": (
+        "the LIFECYCLE's setting: the directory it creates every attempt's "
+        "workspace under. The runner is told its own workspace as "
+        "SWARM_WORKSPACE and has no business with the parent"
+    ),
+    "PLAYWRIGHT_SKIP_BROWSER_GC": (
+        "read only by `playwright install`, which the image build runs and the "
+        "runner never does; the bundle under /opt/playwright is read-only to "
+        "uid 10001 regardless"
+    ),
+}
+
+#: Set by the image and given to the runner with a DIFFERENT value, on purpose.
+REPLACED_FOR_THE_RUNNER: dict[str, str] = {
+    "HOME": (
+        "`workspace.child_env` points HOME at the attempt's own work dir, so "
+        "whatever the agent writes to its home is checkpointed with the attempt "
+        "and destroyed with it rather than shared across attempts"
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _browser_worker(db, worker_factory, tmp_path):
+    """A worker for the `browser` profile, one step before it starts its runner.
+
+    The browser profile declares the anthropic credential, so the tenant has to
+    have registered it and Secret Manager has to answer -- the same fixture shape
+    `test_lifecycle.py::test_worker_env_does_not_leak_into_the_runner` uses for
+    claude-code.
+    """
+    seed_attempt(db, runner_profile="browser")
+    seed_tenant(db, credentials=["anthropic"])
+    secrets = FakeSecretClient({f"swarm-tenant-{TENANT}-anthropic": TENANT_KEY})
+    worker, _, _ = worker_factory(runner_profile="browser", secret_client=secrets)
+    worker.ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    return worker
+
+
+def _instructions(text: str) -> list[str]:
+    """A Dockerfile's instructions, one string each.
+
+    Continuation lines are joined, comment lines dropped (Docker drops them
+    inside a continued instruction too) and heredoc bodies skipped, so a line
+    of an inline script that happens to start with `ENV` is not read as one.
+    """
+    out: list[str] = []
+    pending = ""
+    heredoc_end: str | None = None
+    for raw in text.splitlines():
+        if heredoc_end is not None:
+            if raw.strip() == heredoc_end:
+                heredoc_end = None
+            continue
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.endswith("\\"):
+            pending += stripped[:-1] + " "
+            continue
+        line = pending + stripped
+        pending = ""
+        out.append(line)
+        heredoc = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line)
+        if heredoc:
+            heredoc_end = heredoc.group(1)
+    assert not pending, "Dockerfile ends inside a continued instruction"
+    return out
+
+
+def _stage_env(dockerfile: Path, stage: str) -> dict[str, str]:
+    """Every ENV the named build stage sets, in order, later wins."""
+    env: dict[str, str] = {}
+    current: str | None = None
+    for line in _instructions(dockerfile.read_text()):
+        keyword, _, rest = line.partition(" ")
+        keyword = keyword.upper()
+        if keyword == "FROM":
+            named = re.search(r"\s[Aa][Ss]\s+(\S+)\s*$", " " + rest)
+            current = named.group(1) if named else None
+            continue
+        if keyword != "ENV" or current != stage:
+            continue
+        tokens = shlex.split(rest)
+        if tokens and "=" not in tokens[0]:
+            pairs = [(tokens[0], " ".join(tokens[1:]))]  # legacy `ENV KEY value`
+        else:
+            pairs = [tuple(token.split("=", 1)) for token in tokens]
+        for key, value in pairs:
+            if "$" in value:
+                pytest.fail(
+                    f"{dockerfile.relative_to(REPO)} sets {key}={value!r}, which "
+                    "references another variable. This parser does not expand "
+                    "them; extend it rather than guess the value."
+                )
+            env[key] = value
+    return env
+
+
+def _browser_image_env() -> dict[str, str]:
+    """What a process in `agent-runtime-browser` starts with, from the images.
+
+    The browser image is built FROM the base (its `BASE_IMAGE` default and its
+    cloudbuild both say so), so its environment is the base's runtime stage
+    with the browser's own ENV on top. The base's `builder` stage is not
+    included: nothing it sets survives into the runtime image.
+    """
+    parent = re.search(
+        r"^ARG BASE_IMAGE=agent-runtime-base\b", BROWSER_DOCKERFILE.read_text(), re.M
+    )
+    assert parent, (
+        "the browser image no longer builds FROM agent-runtime-base; this test "
+        "reads the wrong parent's ENV"
+    )
+    env = _stage_env(BASE_DOCKERFILE, "runtime")
+    env.update(_stage_env(BROWSER_DOCKERFILE, "runtime"))
+    return env
+
+
+# ---------------------------------------------------------------------------
+# the defect
+# ---------------------------------------------------------------------------
+
+
+def test_playwright_browsers_path_set_on_the_worker_reaches_the_runner(
+    db, worker_factory, tmp_path, monkeypatch
+):
+    """The browser image installs Chromium under PLAYWRIGHT_BROWSERS_PATH; the
+    runner has to be told where, or Playwright looks in $HOME -- the attempt's
+    empty work dir -- and fails at launch."""
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/opt/playwright")
+    worker = _browser_worker(db, worker_factory, tmp_path)
+
+    env = worker._build_child_env()
+
+    assert env.get("PLAYWRIGHT_BROWSERS_PATH") == "/opt/playwright", (
+        "the runner child was built without PLAYWRIGHT_BROWSERS_PATH; the "
+        "browser runner cannot find the Chromium the image installed"
+    )
+    # And HOME is still the workspace -- which is exactly why the default
+    # browser location cannot be relied on.
+    assert env["HOME"] == str(worker.ws.work)
+
+
+def test_a_secret_on_the_worker_still_does_not_reach_the_runner(
+    db, worker_factory, tmp_path, monkeypatch
+):
+    """Carrying the browser path must not open the door to anything else.
+
+    PLAYWRIGHT_SERVICE_ACCESS_TOKEN is a real Playwright credential (the hosted
+    browser service reads it), and is here to prove the passthrough matches
+    exact names: a `PLAYWRIGHT_*` prefix would hand it over. ANTHROPIC_API_KEY
+    in the worker's environment must not win over the tenant's own key either:
+    the runner gets the one Secret Manager returned for THIS tenant.
+    """
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/opt/playwright")
+    planted = {
+        "PLAYWRIGHT_SERVICE_ACCESS_TOKEN": "pw-service-token-must-not-leak",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/var/secrets/worker-sa.json",
+        "OPENAI_API_KEY": "sk-proj-worker-env-must-not-leak",
+        "GIT_TOKEN": "ghp_worker_env_must_not_leak",
+        "GITHUB_TOKEN": "ghs_worker_env_must_not_leak",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret-must-not-leak",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-worker-env-must-not-win",
+    }
+    for name, value in planted.items():
+        monkeypatch.setenv(name, value)
+    worker = _browser_worker(db, worker_factory, tmp_path)
+
+    env = worker._build_child_env()
+
+    assert env.get("PLAYWRIGHT_BROWSERS_PATH") == "/opt/playwright"
+    for name in planted:
+        if name == "ANTHROPIC_API_KEY":
+            continue
+        assert name not in env, f"{name} from the worker's environment reached the runner"
+    assert env["ANTHROPIC_API_KEY"] == TENANT_KEY
+    # Not under ANY name: a value copied into a differently named variable
+    # leaks just as well.
+    rendered = json.dumps(env)
+    for name, value in planted.items():
+        assert value not in rendered, f"the worker's {name} value reached the runner"
+
+
+# ---------------------------------------------------------------------------
+# the class of defect
+# ---------------------------------------------------------------------------
+
+
+def test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason(
+    db, worker_factory, tmp_path, monkeypatch
+):
+    """Read the images, start from exactly what they set, and follow each
+    variable to the runner.
+
+    Carried means the runner sees the image's value unchanged. Anything else
+    must be in NOT_FOR_THE_RUNNER or REPLACED_FOR_THE_RUNNER, with the reason.
+    A new ENV in either Dockerfile therefore fails here until someone decides,
+    in writing, whether the runner needs it -- which is the decision nobody
+    made for PLAYWRIGHT_BROWSERS_PATH.
+    """
+    image_env = _browser_image_env()
+    # Guards against passing vacuously on a parser that found nothing.
+    assert "PLAYWRIGHT_BROWSERS_PATH" in image_env, sorted(image_env)
+    assert "PATH" in image_env and "HOME" in image_env, sorted(image_env)
+
+    for name, value in image_env.items():
+        monkeypatch.setenv(name, value)
+    worker = _browser_worker(db, worker_factory, tmp_path)
+
+    env = worker._build_child_env()
+
+    problems: list[str] = []
+    for name, value in sorted(image_env.items()):
+        if name in NOT_FOR_THE_RUNNER:
+            if name in env:
+                problems.append(
+                    f"{name} reaches the runner, but is listed as not for it: "
+                    f"{NOT_FOR_THE_RUNNER[name]}"
+                )
+        elif name in REPLACED_FOR_THE_RUNNER:
+            if env.get(name) == value:
+                problems.append(
+                    f"{name} reaches the runner with the image's value {value!r}, "
+                    f"but is listed as replaced: {REPLACED_FOR_THE_RUNNER[name]}"
+                )
+        elif env.get(name) != value:
+            problems.append(
+                f"the image sets {name}={value!r} and the runner sees "
+                f"{env.get(name)!r}. Either carry it in "
+                f"lifecycle._build_child_env or record in NOT_FOR_THE_RUNNER why "
+                f"the runner must not have it."
+            )
+    assert not problems, "\n".join(problems)
+
+    # And the lists describe the images as they are, not as they were.
+    stale = sorted(
+        (set(NOT_FOR_THE_RUNNER) | set(REPLACED_FOR_THE_RUNNER)) - set(image_env)
+    )
+    assert not stale, f"listed but no longer set by either image: {stale}"
