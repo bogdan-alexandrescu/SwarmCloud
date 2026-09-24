@@ -82,6 +82,34 @@ GUARD="${REPO_ROOT}/scripts/lib/plan-guard.sh"
 GUARD_JQ="${SWARM_LIB_DIR}/destroy-guard.jq"
 [[ -f "${GUARD_JQ}" ]] || die "missing ${GUARD_JQ}"
 UNLABELABLE_TYPES="$(jq -c '.types' "${SWARM_LIB_DIR}/unlabelable-types.json")"
+# The token list the guard is really given: `guard_deny_json` removes the bare
+# `default` and adds Firestore's `(default)`.
+DENY_TOKENS="$(guard_deny_json)"
+
+# judge_plan PLAN -> the verdict on stdout, with the FOUR arguments
+# destroy-guard.jq requires. `--arg prefix` is one of them: `is_ours` references
+# it, so jq refuses to compile the filter without it, which is how `make destroy`
+# came to exit 3 on a jq compile error instead of judging a plan. One helper here
+# for the same reason common.sh holds one `guard_name_prefix`.
+judge_plan() {
+  jq -f "${GUARD_JQ}" \
+    --argjson deny "${DENY_TOKENS}" \
+    --argjson allow_types "${UNLABELABLE_TYPES}" \
+    --arg project "${PROJECT_ID}" \
+    --arg prefix "$(guard_name_prefix)" \
+    "$1"
+}
+
+# The summary of a verdict that the recording carries, so a redaction that
+# changed the judgement is visible. Every key the shells actually gate on.
+verdict_summary() {
+  judge_plan "$1" | jq -c '{ deletions, offenders: (.offenders|length),
+      denylist_hits: (.denylist_hits|length), wrong_project: (.wrong_project|length),
+      unexpected_mutations: (.unexpected_mutations|length),
+      foreign_touches: (.foreign_touches|length),
+      unlabelable_allowed: (.unlabelable_allowed|length),
+      labelled_ok: (.labelled_ok|length), data_bearing: (.data_bearing|length) }'
+}
 
 PLAN="${PLAN:-${BUILD_DIR}/destroy-${ENVIRONMENT}.plan.json}"
 if [[ ! -f "${PLAN}" ]]; then
@@ -181,10 +209,7 @@ expect_refusal() {
 expect_denylist_hit() {
   local label="$1" plan="$2" addr="$3" hit
   CHECKS=$((CHECKS + 1))
-  hit="$(jq -f "${GUARD_JQ}" \
-           --argjson deny "${DENY_TOKENS}" \
-           --argjson allow_types "${UNLABELABLE_TYPES}" \
-           --arg project "${PROJECT_ID}" "${plan}" \
+  hit="$(judge_plan "${plan}" \
          | jq -r --arg a "${addr}" '[.denylist_hits[].address] | index($a) != null')"
   if [[ "${hit}" == "true" ]]; then
     ok "${label}"
@@ -275,9 +300,8 @@ kind_field() {
   jq -er --arg k "$1" --arg f "$2" '.kinds[$k][$f]' "${CASES_JSON}"
 }
 
-# The token list the guard is really given, so the entry `default` (removed) and
-# the entry `(default)` (added) are both accounted for here rather than assumed.
-DENY_TOKENS="$(guard_deny_json)"
+# The entry `default` (removed from the token list) and `(default)` (added) are
+# both accounted for here rather than assumed; DENY_TOKENS is built once above.
 ENTRIES=()
 for entry in "${SHARED_DENY_LIST[@]}"; do ENTRIES+=("${entry}"); done
 ENTRIES+=("(default)")
@@ -465,6 +489,87 @@ fi
 info "$(jq -r '"\(.types) distinct resource type(s) classified"' "${CARVE_REPORT}")"
 
 # ---------------------------------------------------------------------------
+# 4b. The ownership predicate, measured -- which is what it was waiting for.
+# ---------------------------------------------------------------------------
+#
+# `foreign_touches` / `is_ours($prefix)` arrived on 2026-09-23 as WARN-ONLY, and
+# the comment in lib/plan-guard.sh says exactly what it is waiting for: "once a
+# real plan reports this empty, set abort=1 in the branch below. That is the
+# entire change." This script is the first thing that can answer that, so it
+# answers it rather than leaving the promotion to be decided on a fixture.
+#
+# MEASURED on the dev destroy plan of 2026-09-24: 178 of 264 deletions flagged,
+# and every one of them is OURS. Two distinct causes, both printed below because
+# they need different fixes:
+#
+#   * 114 have NO `name` FIELD AT ALL in `terraform show -json` --
+#     google_project_iam_member, google_project_service,
+#     google_storage_bucket_iam_member and the other IAM edges. `name_of` reads
+#     `after.name // before.name`, yields "", and `"" | startswith("swarm-")` is
+#     false. These are precisely the unlabelable types, which cannot carry
+#     managed-by either, so they have nothing left to identify themselves with;
+#
+#   * 64 DO have a name and it is simply not prefixed, because this platform
+#     does not name everything that way: the Firestore database is `swarm` with
+#     no separator, the IAM custom roles are camelCase (`swarmImagePuller`), the
+#     Firestore documents are keyed by pool id (`provider:anthropic:tenant:eng`),
+#     the log-based metrics by event (`checkpoint-completed`) and the Firestore
+#     indexes by server-generated id.
+#
+# The second class is why this is a design question and not a bug to fix in an
+# afternoon: `is_ours` asks whether a name starts with the prefix, and 64 of our
+# own resources answer no truthfully.
+#
+# This is therefore reported, with the counts and the types, and NOT asserted to
+# be zero: a proof that demanded zero today would be demanding a design change
+# from whoever ran it. What IS asserted is that the guard still behaves the way
+# its own comment says -- warn, not abort -- so that flipping abort=1 while a real
+# plan still flags 178 of our own resources fails here instead of in a deploy.
+step "4b. The ownership predicate (foreign_touches) on a real plan"
+
+FOREIGN_JSON="${WORK}/foreign.json"
+judge_plan "${PLAN}" | jq -c '{ n: (.foreign_touches | length),
+    by_type: ([.foreign_touches[].type] | group_by(.) | map({type: .[0], count: length})
+              | sort_by(-.count)),
+    nameless: ([.foreign_touches[] | select(.name == "")] | length),
+    named: [.foreign_touches[] | select(.name != "") | .name] }' >"${FOREIGN_JSON}"
+N_FOREIGN="$(jq -r '.n' "${FOREIGN_JSON}")"
+N_NAMELESS="$(jq -r '.nameless' "${FOREIGN_JSON}")"
+N_NAMED="$(jq -r '.named | length' "${FOREIGN_JSON}")"
+
+if [[ "${N_FOREIGN}" -eq 0 ]]; then
+  CHECKS=$((CHECKS + 1))
+  ok "every change in this plan identifies itself as ours (foreign_touches empty)"
+  info "the promotion condition in scripts/lib/plan-guard.sh is now met: it can be made fatal"
+else
+  info "${N_FOREIGN} of ${DELETIONS} deletion(s) do not identify themselves as ours"
+  info "${N_NAMELESS} carry no name at all in the real plan; ${N_NAMED} carry a name"
+  info "this repository really gives its own resources. All of them, by type:"
+  jq -r '.by_type[] | "    \(.count)x \(.type)"' "${FOREIGN_JSON}" >&2
+  if [[ "${N_NAMED}" -gt 0 ]]; then
+    info "named, but not beginning with '$(guard_name_prefix)' -- first five:"
+    jq -r '.named[0:5][] | "    \(.)"' "${FOREIGN_JSON}" >&2
+  fi
+  warn "these are OUR resources. Do NOT set abort=1 on foreign_touches until"
+  warn "is_ours can recognise BOTH a type whose real output carries no .name and"
+  warn "a name this repository really uses -- see the comment at 4b in this script."
+
+  # The stance its own comment claims, asserted. If someone promotes the check
+  # while a real plan still reports this, the promotion fails HERE.
+  CHECKS=$((CHECKS + 1))
+  _run_guard "${PLAN}" || FOREIGN_RC=$?
+  FOREIGN_RC="${FOREIGN_RC:-0}"
+  if [[ "${FOREIGN_RC}" -eq 0 ]] && grep -qF "NOT FATAL YET" "${WORK}/guard.out"; then
+    ok "the guard warns and does not abort on it, as lib/plan-guard.sh says it does"
+  else
+    err "foreign_touches is non-empty (${N_FOREIGN}) and the guard exited ${FOREIGN_RC}"
+    err "A real plan flags OUR OWN resources here, so aborting on it refuses every"
+    err "plan this platform produces. Fix is_ours first; see 4b in this script."
+    FAILED=$((FAILED + 1))
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 5. A destroy plan that is not a destroy plan.
 # ---------------------------------------------------------------------------
 step "5. A create or update inside a destroy plan is refused"
@@ -506,15 +611,7 @@ if [[ -n "${RECORD}" ]]; then
 
   VALUE_FIELDS='["name","id","email","account_id","bucket","cluster","cluster_id","network","subnetwork","repository","secret_id","service","job","database","topic","subscription","member","project","collection","document_id","labels","effective_labels","terraform_labels","resource_labels","user_labels","metadata"]'
 
-  VERDICT_SUMMARY="$(jq -f "${GUARD_JQ}" \
-      --argjson deny "${DENY_TOKENS}" \
-      --argjson allow_types "${UNLABELABLE_TYPES}" \
-      --arg project "${PROJECT_ID}" "${PLAN}" \
-    | jq -c '{ deletions, offenders: (.offenders|length), denylist_hits: (.denylist_hits|length),
-               wrong_project: (.wrong_project|length),
-               unexpected_mutations: (.unexpected_mutations|length),
-               unlabelable_allowed: (.unlabelable_allowed|length),
-               labelled_ok: (.labelled_ok|length), data_bearing: (.data_bearing|length) }')"
+  VERDICT_SUMMARY="$(verdict_summary "${PLAN}")"
 
   jq --argjson keep "${VALUE_FIELDS}" \
      --argjson verdict "${VERDICT_SUMMARY}" \
@@ -550,15 +647,7 @@ if [[ -n "${RECORD}" ]]; then
   # The recording must reach the SAME verdict as the plan it came from, or the
   # redaction changed the judgement and the offline suite is testing a different
   # thing from the one that runs at teardown.
-  RECORDED_VERDICT="$(jq -f "${GUARD_JQ}" \
-      --argjson deny "${DENY_TOKENS}" \
-      --argjson allow_types "${UNLABELABLE_TYPES}" \
-      --arg project "${PROJECT_ID}" "${WORK}/recording.json" \
-    | jq -c '{ deletions, offenders: (.offenders|length), denylist_hits: (.denylist_hits|length),
-               wrong_project: (.wrong_project|length),
-               unexpected_mutations: (.unexpected_mutations|length),
-               unlabelable_allowed: (.unlabelable_allowed|length),
-               labelled_ok: (.labelled_ok|length), data_bearing: (.data_bearing|length) }')"
+  RECORDED_VERDICT="$(verdict_summary "${WORK}/recording.json")"
 
   CHECKS=$((CHECKS + 1))
   if [[ "${RECORDED_VERDICT}" == "${VERDICT_SUMMARY}" ]]; then

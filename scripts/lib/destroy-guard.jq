@@ -128,8 +128,12 @@ def data_bearing:
 # ---------------------------------------------------------------------------
 #
 # Everything above this point is a BLOCKLIST -- it refuses a change that names
-# one of 21 resources someone wrote down. That leaves two holes, and the second
-# is the one that matters:
+# one of the resources someone wrote down in SHARED_DENY_LIST. (No count here on
+# purpose: this comment said 21 while the array held 20, and a number restated in
+# prose is the drift this whole file keeps paying for. common.sh holds the list;
+# scripts/lib/destroy-guard-proof-cases.json holds the inventory floors that make
+# the list SHRINKING a test failure.) That leaves two holes, and the second is
+# the one that matters:
 #
 #   1. anything the other team creates TOMORROW is not on the list;
 #   2. `offenders` only reads DELETIONS, and unlabelable types (IAM bindings,

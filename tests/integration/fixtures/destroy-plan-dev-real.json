@@ -874,6 +874,7 @@
       "data_bearing": 3,
       "deletions": 264,
       "denylist_hits": 0,
+      "foreign_touches": 178,
       "labelled_ok": 41,
       "offenders": 0,
       "unexpected_mutations": 0,

@@ -187,6 +187,40 @@ the shared function. A divergence there means CI passes a plan that `make
 destroy` refuses, or — the direction that costs something — CI passes a plan that
 touches another team's resource because its copy lost an entry the other kept.
 
+### The same defect one level up: the guard's ARGUMENT LIST
+
+The deny-list and its transformation are derived now. The next morning the thing
+that broke was not a value inside the guard — it was the list of arguments the
+guard has to be *called* with.
+
+`scripts/lib/destroy-guard.jq` gained an ownership predicate, `is_ours($prefix)`,
+on 2026-09-23. `scripts/lib/plan-guard.sh` was taught to pass
+`--arg prefix "${SWARM_NAME_PREFIX:-swarm-}"`. The same filter is invoked from
+four other places — twice in `scripts/destroy.sh`, once in
+`scripts/verify-destroy-guard.sh`, twice in `tests/integration/test_destroy_guard.py`
+— and none of them was. **jq refuses to compile a filter that references an
+undefined variable**, so this is not a lenient default:
+
+```
+jq: error: $prefix is not defined at <top-level>, line 217
+```
+
+Exit 3, no verdict, no judgement. `destroy.sh --self-test` failed in CI
+(run `35959558515`, 56 cases) and `make destroy` could not reach a safety
+assertion at all — the teardown path was dead, and the one check that tells an
+operator whether a plan touches another team's resources could not produce an
+answer. It failed *closed*, which is the right direction and is not the same as
+working.
+
+The answer is (a) DERIVED, twice over: `guard_name_prefix` in `common.sh` is the
+only spelling of the value, and `GUARD_ARGS` in
+`tests/integration/test_destroy_guard.py` is the only spelling of the argument
+list on the Python side. What holds it is
+`test_every_caller_of_the_guard_passes_every_argument_it_requires`: it parses the
+variables `destroy-guard.jq` declares and requires every caller — comments
+stripped, so prose about the flag cannot stand in for the flag — to pass all of
+them.
+
 ## Covered elsewhere, deliberately not moved here
 
 These are compared, just not by `check-contract-parity.sh`. Each is listed so

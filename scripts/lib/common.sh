@@ -290,6 +290,32 @@ guard_deny_json() {
     | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]'
 }
 
+# The platform name prefix `destroy-guard.jq` judges OWNERSHIP by, in the one
+# spelling every caller has to use.
+#
+# THIS IS A FUNCTION FOR THE REASON THE ONE ABOVE IT IS. `destroy-guard.jq` grew
+# a `$prefix` argument on 2026-09-23 (`is_ours`, `foreign_touches`) and
+# `scripts/lib/plan-guard.sh` was taught to pass it -- but `scripts/destroy.sh`
+# invokes the SAME filter in two places and was not, so jq refused to compile it:
+#
+#     jq: error: $prefix is not defined at <top-level>, line 217
+#
+# Both of those places are load-bearing:
+#
+#   * `destroy.sh --self-test`, the CI step that exists so the guard is verified
+#     on every run rather than before use. It failed with exit 3
+#     (github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/35959558515);
+#   * the real assertion in `destroy.sh`, which means `make destroy` could not
+#     run AT ALL. It fails closed, so nothing was at risk of deletion -- the
+#     teardown path was simply dead, and the one check that tells an operator
+#     whether a plan touches another team's resources could not reach a verdict.
+#
+# A jq filter with a required argument and three call sites needs one place that
+# says what the argument is. SWARM_NAME_PREFIX stays overridable because a second
+# platform in this project would need its own; the default is what
+# terraform/infra names every resource with.
+guard_name_prefix() { printf '%s' "${SWARM_NAME_PREFIX:-swarm-}"; }
+
 # ---------------------------------------------------------------------------
 # Is a shared resource still there?
 # ---------------------------------------------------------------------------

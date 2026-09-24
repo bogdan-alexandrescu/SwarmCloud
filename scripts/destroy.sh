@@ -133,8 +133,14 @@ FIXTURE_JSON
   # other teams in this shared project, and the self-test of the guard that
   # protects it could not exercise that protection, because its own list did not
   # contain it. `theirs.default_db` above exists to exercise it now.
+  # `--arg prefix` is NOT optional, and leaving it out is not a silent default:
+  # destroy-guard.jq's `is_ours` references $prefix, so jq refuses to COMPILE the
+  # filter without it and this step exits 3 before judging anything. That is
+  # exactly what happened when the argument was added to lib/plan-guard.sh and not
+  # here. `guard_name_prefix` is in common.sh so the three call sites cannot drift.
   SELF_VERDICT="$(jq -f "${GUARD_JQ}" --argjson deny "$(guard_deny_json)" \
-    --argjson allow_types "${UNLABELABLE_TYPES}" --arg project "${PROJECT_ID}" "${FIXTURE}")"
+    --argjson allow_types "${UNLABELABLE_TYPES}" --arg project "${PROJECT_ID}" \
+    --arg prefix "$(guard_name_prefix)" "${FIXTURE}")"
 
   expect() {
     local label="$1" expr="$2" want="$3" got
@@ -359,10 +365,17 @@ step "Safety assertions"
 # why `default` comes out and `(default)` goes in.
 DENY_JSON="$(guard_deny_json)"
 
+# THE ARGUMENT THAT BROKE THIS PATH ENTIRELY. destroy-guard.jq's `is_ours` reads
+# $prefix, and jq refuses to compile a filter with an undefined variable -- so
+# without this line the command below exits 3, `set -e` ends the script, and
+# `make destroy` cannot run at all. It fails closed, which is the right direction,
+# but the operator gets a jq compile error instead of a verdict about another
+# team's resources. Spelled once, in common.sh, for the three callers.
 jq -f "${GUARD_JQ}" \
    --argjson deny "${DENY_JSON}" \
    --argjson allow_types "${UNLABELABLE_TYPES}" \
    --arg project "${PROJECT_ID}" \
+   --arg prefix "$(guard_name_prefix)" \
    "${PLAN_JSON}" >"${VERDICT_JSON}"
 
 DELETIONS="$(jq -r '.deletions' "${VERDICT_JSON}")"

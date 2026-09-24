@@ -65,12 +65,14 @@ import pytest
 # The deny-list, parsed out of scripts/lib/common.sh EXACTLY ONCE for this
 # directory. Importing the sibling rather than re-parsing is the whole lesson of
 # the defect above: a second reader of the same list is a second list.
-from test_destroy_guard import DENY, SHARED, UNLABELABLE  # noqa: E402
+from test_destroy_guard import GUARD_ARGS, PREFIX, SHARED, UNLABELABLE  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.json"
 CASES_FILE = REPO / "scripts" / "lib" / "destroy-guard-proof-cases.json"
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
+PLAN_GUARD = REPO / "scripts" / "lib" / "plan-guard.sh"
+COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 DESTROY = REPO / "scripts" / "destroy.sh"
 PROJECT = "saga-agents-staging"
 
@@ -132,16 +134,15 @@ def _jq(args: list[str], stdin: str | None = None) -> str:
 
 
 def _verdict(plan_path: Path) -> dict:
-    """The guard's verdict, with the arguments both real callers pass."""
-    out = _jq(
-        [
-            "-f", str(GUARD_JQ),
-            "--argjson", "deny", json.dumps(DENY),
-            "--argjson", "allow_types", json.dumps(UNLABELABLE),
-            "--arg", "project", PROJECT,
-            str(plan_path),
-        ]
-    )
+    """The guard's verdict, with every argument the filter declares.
+
+    `GUARD_ARGS` is imported, not rebuilt: when `destroy-guard.jq` grew a
+    required `$prefix` on 2026-09-23, four invocations across three files each
+    had to learn it separately and three did not, so jq refused to COMPILE the
+    filter (exit 3, no verdict) and `make destroy` could not run at all. One
+    list, built where the deny-list is already parsed.
+    """
+    out = _jq(["-f", str(GUARD_JQ), *GUARD_ARGS, str(plan_path)])
     return json.loads(out)
 
 
@@ -683,3 +684,191 @@ def test_a_resource_in_another_project_aborts_make_destroy(replay, tmp_path):
     assert proc.returncode == 2, transcript
     assert "live in a different project" in transcript, transcript
     assert address in transcript, transcript
+
+
+# ---------------------------------------------------------------------------
+# The two defects a real plan found in the guard itself
+# ---------------------------------------------------------------------------
+
+
+def test_every_caller_of_the_guard_passes_every_argument_it_requires():
+    """The defect that made `make destroy` impossible to run.
+
+    `destroy-guard.jq` declares four arguments, and jq refuses to COMPILE a
+    filter that references an undefined variable -- so a caller missing one does
+    not get a lenient default, it gets exit 3 and no verdict at all. On
+    2026-09-23 `$prefix` was added to the filter and to `plan-guard.sh`;
+    `scripts/destroy.sh` invokes the same filter TWICE and got neither, so
+    `destroy.sh --self-test` (a CI step) failed with
+
+        jq: error: $prefix is not defined at <top-level>, line 217
+
+    and `make destroy` could not reach a safety assertion at all. It failed
+    closed, which is the right direction and is not a substitute for running.
+
+    MUTATION: delete one `--arg prefix` from destroy.sh or plan-guard.sh and this
+    fails, naming the file -- instead of the failure arriving at teardown, in
+    front of another team's production.
+    """
+    required = set(re.findall(r"\$(deny|allow_types|project|prefix)\b", GUARD_JQ.read_text()))
+    assert required == {"deny", "allow_types", "project", "prefix"}, (
+        f"destroy-guard.jq's argument set is now {sorted(required)}; every caller below "
+        f"must pass all of them, because jq will not compile the filter otherwise"
+    )
+
+    # The Python half, checked on the LIST rather than on the text: both test
+    # modules build their invocation from one `GUARD_ARGS`, so this is the
+    # statement that the list is complete.
+    passed = {GUARD_ARGS[i] for i in range(1, len(GUARD_ARGS), 3)}
+    assert passed == required, (
+        f"GUARD_ARGS passes {sorted(passed)} but destroy-guard.jq declares "
+        f"{sorted(required)}. jq will not compile the filter, so every case in "
+        f"both of these files fails with '$X is not defined' -- which is how "
+        f"CI run 35959558515 reported 56 failures for one missing argument."
+    )
+    assert str(COMMON_SH.read_text()).count("guard_name_prefix()") == 1, (
+        f"{COMMON_SH.relative_to(REPO)} no longer defines exactly one "
+        f"guard_name_prefix; the argument that broke every caller is back to "
+        f"having more than one spelling"
+    )
+
+    flags = {
+        "deny": "--argjson deny",
+        "allow_types": "--argjson allow_types",
+        "project": "--arg project",
+        "prefix": "--arg prefix",
+    }
+    callers = (DESTROY, PLAN_GUARD, REPO / "scripts" / "verify-destroy-guard.sh")
+    for caller in callers:
+        # COMMENTS STRIPPED FIRST. All three of these files now explain the
+        # argument in prose next to the call -- house style, and correct -- and a
+        # count that included those lines would let a comment stand in for the
+        # flag it is describing. destroy.sh mentions `--arg prefix` three times
+        # and passes it twice.
+        source = "\n".join(
+            line for line in caller.read_text().splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        invocations = source.count('jq -f "${GUARD_JQ}"')
+        assert invocations >= 1, (
+            f"{caller.relative_to(REPO)} no longer invokes the guard filter directly; "
+            f"if it moved, move this assertion with it rather than deleting it"
+        )
+        for arg, flag in flags.items():
+            assert source.count(flag) >= invocations, (
+                f"{caller.relative_to(REPO)} runs destroy-guard.jq {invocations} time(s) "
+                f"but passes `{flag}` only {source.count(flag)} time(s). The invocation "
+                f"that misses it exits 3 with '${arg} is not defined' and judges nothing."
+            )
+
+    # And the two Python callers, which are where the 56 failures actually
+    # landed. Every `-f <guard>` here must be followed by the shared list; a
+    # hand-rolled invocation is how one of these two came to pass three of the
+    # four arguments.
+    for module in (Path(__file__), REPO / "tests" / "integration" / "test_destroy_guard.py"):
+        source = module.read_text()
+        invocations = source.count('"-f", str(GUARD_JQ)')
+        assert invocations >= 1, (
+            f"{module.relative_to(REPO)} no longer runs the guard filter; if the "
+            f"invocation moved, move this assertion with it"
+        )
+        assert source.count("*GUARD_ARGS") >= invocations, (
+            f"{module.relative_to(REPO)} runs destroy-guard.jq {invocations} time(s) "
+            f"but spreads GUARD_ARGS only {source.count('*GUARD_ARGS')} time(s); the "
+            f"hand-rolled invocation is the one that will miss the next argument"
+        )
+
+
+def test_the_ownership_predicate_is_still_warn_only_while_a_real_plan_flags_our_own_resources():
+    """`foreign_touches` against a real destroy plan: 178 of 264, all of them ours.
+
+    The predicate arrived warn-only on 2026-09-23 with its promotion condition
+    written into scripts/lib/plan-guard.sh: "once a real plan reports this empty,
+    set abort=1". A real dev destroy plan was judged on 2026-09-24 and reports
+    178 of 264, in TWO classes, both measured rather than reasoned:
+
+      * 114 have NO `name` in `terraform show -json` at all -- IAM members, API
+        enablements, bucket IAM edges. `is_ours` falls back to `name_of`, which
+        yields "", and `"" | startswith("swarm-")` is false. These are also
+        exactly the unlabelable types, which cannot carry managed-by either, so
+        they have nothing left to identify themselves with;
+      * 64 DO have a name, and it simply is not `swarm-`-prefixed: the platform's
+        own Firestore database is named `swarm` (no dash), its custom roles are
+        camelCase (`swarmImagePuller`), its Firestore documents are keyed by pool
+        id (`provider:anthropic:tenant:eng`), its log-based metrics by event
+        (`checkpoint-completed`), and its Firestore indexes carry
+        server-generated ids.
+
+    The second class is the one that makes this a design question rather than a
+    bug: `is_ours` asks whether a name starts with the prefix, and this platform
+    does not name everything that way. Promoting the check would refuse every
+    plan it produces.
+
+    This does not demand the count be zero -- that would demand a design change
+    from whoever runs it. It fails if the check is made FATAL while a real plan
+    still flags our own resources.
+    """
+    verdict = _verdict(FIXTURE)
+    foreign = verdict["foreign_touches"]
+    if not foreign:
+        pytest.skip(
+            "foreign_touches is empty on the recorded real plan: the promotion "
+            "condition in scripts/lib/plan-guard.sh is met and this case is moot"
+        )
+
+    nameless = [entry for entry in foreign if entry["name"] == ""]
+    named = [entry for entry in foreign if entry["name"] != ""]
+    assert nameless, (
+        "foreign_touches flags resources but none of them lack a name, so the cause "
+        "measured on 2026-09-24 has changed; re-read is_ours before trusting this"
+    )
+    assert named, (
+        "foreign_touches flags only nameless resources now, so the SECOND half of "
+        "the 2026-09-24 measurement is gone; re-read is_ours before trusting this"
+    )
+    # The sharpest single fact, and the one a reader will not believe without it:
+    # our own resources whose names begin with the prefix MINUS its separator.
+    # `swarm-` is not how this platform names a Firestore database or an IAM
+    # custom role, so no amount of tightening the prefix rescues them.
+    stem = PREFIX.rstrip("-_")
+    near_miss = sorted(
+        entry["name"] for entry in named
+        if entry["name"].startswith(stem) and not entry["name"].startswith(PREFIX)
+    )
+    assert near_miss, (
+        f"no flagged resource is named like ours-but-not-{PREFIX!r} any more. On "
+        f"2026-09-24 the Firestore database {stem!r} and eight camelCase custom "
+        f"roles were exactly that, and they are the reason a prefix test cannot "
+        f"express ownership here. Re-measure before relying on this case."
+    )
+
+    guard = subprocess.run(
+        [str(PLAN_GUARD), "--mode", "destroy", "--plan", str(FIXTURE)],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={
+            **os.environ,
+            "NO_COLOR": "1",
+            "PROJECT_ID": PROJECT,
+            "REGION": "us-central1",
+            "ENVIRONMENT": "dev",
+        },
+    )
+    transcript = guard.stdout + guard.stderr
+    assert guard.returncode == 0, (
+        f"the plan guard now REFUSES a real, legitimate destroy plan. "
+        f"{len(foreign)} of {verdict['deletions']} deletions are flagged as not ours: "
+        f"{len(nameless)} have no name in real provider output at all (our own IAM "
+        f"edges, API enablements and bucket bindings) and {len(named)} are named in a "
+        f"way this platform genuinely uses, e.g. {near_miss[:3]}. Making "
+        f"foreign_touches fatal refuses every plan this platform produces; teach "
+        f"is_ours to recognise a type whose real output carries no .name, and a "
+        f"name this repository really gives its own resources, first.\n"
+        + transcript
+    )
+    assert "NOT FATAL YET" in transcript, (
+        "plan-guard.sh no longer says the ownership check is warn-only, but it also "
+        "did not abort. Say which it is:\n" + transcript
+    )
