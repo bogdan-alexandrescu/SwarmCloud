@@ -44,10 +44,12 @@ write. The dangerous neighbours of it did not:
     failed, it says it about a live pool left pinned at one slot.
 
 THE NARROW GOES THROUGH THE ADMIN API NOW, NOT FIRESTORE (owner decision,
-2026-09-24; docs/audits/2026-09-22/race-test-needs-a-write.md). swarm-verify
-was made a platform admin, and race-test narrows and restores with
-`PUT /v1/admin/limits/runner/mock` -- a route that validates the pool name,
-bounds the value and CANNOT write `active`. So the fake below speaks that route
+2026-09-24; docs/audits/2026-09-22/race-test-needs-a-write.md). race-test
+narrows and restores with `PUT /v1/admin/limits/runner/mock` -- a route that
+validates the pool name, bounds the value and CANNOT write `active`. swarm-verify
+reaches that route, and no other admin route, through `admin_pool_users`: the
+owner reversed the first form of the decision, which made it a full platform
+admin, later the same day. So the fake below speaks that route
 and keeps its Firestore write paths only as tripwires: the cases here also
 prove the suite made no Firestore write at all, because a raw PATCH is the
 capability the decision removed, and the one whose mistake (a clobbered
@@ -449,8 +451,9 @@ def test_a_refused_narrow_stops_the_suite(tmp_path: Path) -> None:
     """HTTP 403 on the narrowing write -- the case seen in the VPC on 2026-09-22.
 
     Then it was a Firestore PATCH refused to roles/datastore.viewer. Now it is
-    the admin route refusing a caller that is not in ADMIN_USERS -- which is
-    what every environment that has not granted swarm-verify admin will see.
+    the admin route refusing a caller that is on neither ADMIN_POOL_USERS nor
+    ADMIN_USERS -- which is what every environment that has not given
+    swarm-verify the runner-ceiling route will see.
     Nothing downstream can mean anything after that, and in particular no task
     may be submitted: twelve mock tasks against an un-narrowed pool is a load
     test wearing a race test's assertions.
@@ -466,11 +469,32 @@ def test_a_refused_narrow_stops_the_suite(tmp_path: Path) -> None:
         f"the refusal was not reported as a 403:\n{proc.transcript}"
     )
     # A 403 from swarm-api here has exactly one fix, and it is in a tfvars file
-    # a reader of this transcript would not otherwise think to open.
-    assert "admin_users" in proc.transcript, (
+    # a reader of this transcript would not otherwise think to open. It is the
+    # NARROW list: the transcript used to send the reader to admin_users, and
+    # following that makes the gate a full platform admin -- able to disable
+    # any tenant -- which the owner reversed on 2026-09-24.
+    assert "admin_pool_users" in proc.transcript, (
         "a refused narrow did not name the grant that fixes it:\n"
         f"{proc.transcript}"
     )
+    # The ADDRESS as well as the name, for the reason given on the IAP repair
+    # below: a remedy naming a file that does not set the variable survives
+    # every textual merge. The ENVIRONMENT here is dev, as `_run` writes it.
+    named = re.findall(
+        r"admin_pool_users in[\s\S]{0,60}?(terraform/[\w<>./-]+\.tfvars)",
+        proc.transcript,
+    )
+    assert named, (
+        "the 403 names admin_pool_users but not the file that sets it:\n"
+        f"{proc.transcript}"
+    )
+    for relative in named:
+        path = REPO / relative
+        assert path.is_file(), f"the 403 sends the reader to {relative}, which does not exist"
+        assert re.search(r"^\s*admin_pool_users\s*=", path.read_text(), re.M), (
+            f"the 403 sends the reader to {relative}, which does not set "
+            "admin_pool_users"
+        )
     assert not _firestore_writes(proc.requests), (
         "the admin route refused the narrow and the suite fell back to writing "
         f"Firestore directly:\n{proc.requests}"
@@ -593,8 +617,8 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
     record of the incident denied it had happened.
 
     The restore goes through the same admin route as the narrow, so a refusal
-    here is the gate losing admin mid-run (a redeploy that dropped it from
-    ADMIN_USERS), a 429, or a dropped connection.
+    here is the gate losing the route mid-run (a redeploy that dropped it from
+    ADMIN_POOL_USERS), a 429, or a dropped connection.
     """
     proc = _run(
         tmp_path,
@@ -618,10 +642,11 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
     # The admin route is the one the suite used, so it is as bounded and as
     # attributed as the change it undoes. But the front door refuses every user
     # credential (api.sh: SWARM_IMPERSONATE_SA is REQUIRED there), so from a
-    # workstation it only works as an identity that is BOTH an admin and
-    # admitted by IAP. pool-limit.sh works today, as an operator, over a
-    # Firestore updateMask naming hard_limit alone. Printing only the first sent
-    # the person reading this at 3am to a 403 with nothing else on screen.
+    # workstation it only works as an identity that may call the route (on
+    # admin_pool_users or admin_users) AND is admitted by IAP. pool-limit.sh
+    # works today, as an operator, over a Firestore updateMask naming
+    # hard_limit alone. Printing only the first sent the person reading this at
+    # 3am to a 403 with nothing else on screen.
     assert "scripts/api.sh PUT /admin/limits/runner/mock '{\"limit\":20}'" in (
         proc.transcript
     ), (
@@ -644,7 +669,7 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
     # the same property for the client's remedies). Whatever tfvars file this
     # repair sends the reader to must exist and must SET the list. Only the
     # path that follows the variable's name is read: the transcript can name
-    # other tfvars files for other reasons (admin_users is in the
+    # other tfvars files for other reasons (admin_pool_users is in the
     # environment's), and those are not this claim. The window spans the line
     # break and the ` fail ` prefix `err` puts on the next line.
     named = re.findall(

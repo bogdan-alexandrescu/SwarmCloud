@@ -17,9 +17,19 @@ docs/audits/2026-09-22/race-test-needs-a-write.md):
    under its strict xfail for the wrong reason -- the variable was no longer in
    the file, not the member missing from the list.
 
-2. `swarm-verify` is a platform admin in dev, so race-test narrows
-   `runner:mock` through `PUT /v1/admin/limits/runner/mock` instead of a raw
-   Firestore PATCH.
+2. race-test narrows `runner:mock` through `PUT /v1/admin/limits/runner/mock`
+   instead of a raw Firestore PATCH, so `swarm-verify` needs that one route.
+
+   CORRECTED 2026-09-24 by the owner. The first form of this decision made
+   swarm-verify a FULL platform admin (`admin_users`), and review showed that
+   one boolean also lets it disable any tenant through
+   `PUT /v1/admin/tenants/{id}/limits` and rewrite any tenant's workflow state.
+   It is now on `admin_pool_users` instead: swarm-api lets that list call an
+   explicit allow-list of admin routes -- the runner ceiling and nothing else
+   -- and `admin_users` is back to operators. What the narrow capability can
+   and cannot reach is asserted over the whole router in
+   tests/unit/control_plane/test_pool_admin_is_narrow.py; this file asserts
+   that the deployment puts the gate on the right list.
 
 WHAT IS ASSERTED IS THE IDENTITY, NOT A STRING. The email is DERIVED here the way
 terraform derives it -- `account_id` from `google_service_account.verify` and
@@ -33,9 +43,9 @@ this shape invites:
   * `frontend_iap_members` is IAM: `serviceAccount:<email>`. The module refuses
     anything without a member-type prefix, and `user:` on a service account is
     a different principal that IAP will never match.
-  * `admin_users` is compared by swarm-api against the BARE email from the
-    verified token (`auth.py`: `email.lower() in admin_users`). A prefixed
-    entry there is accepted by terraform and matches nobody.
+  * `admin_pool_users`, like `admin_users`, is compared by swarm-api against
+    the BARE email from the verified token (`auth.py`). A prefixed entry there
+    is accepted by terraform and matches nobody.
 """
 
 from __future__ import annotations
@@ -50,6 +60,8 @@ DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
 BOOTSTRAP_TFVARS = ROOT / "terraform" / "bootstrap" / "terraform.tfvars"
 VERIFY_TF = ROOT / "terraform" / "infra" / "verify.tf"
 LOCALS_TF = ROOT / "terraform" / "infra" / "locals.tf"
+VARIABLES_TF = ROOT / "terraform" / "infra" / "variables.tf"
+API_SETTINGS = ROOT / "apps" / "swarm-api" / "swarm_api" / "settings.py"
 
 
 def _strip_comments(text: str) -> str:
@@ -132,18 +144,76 @@ def test_the_verify_identity_can_pass_iap_on_the_front_door() -> None:
     assert "domain:saga.xyz" in members, members
 
 
-def test_the_verify_identity_is_a_platform_admin_in_dev() -> None:
-    """Decision 2: ADMIN_USERS names swarm-verify, as a bare email."""
+def test_the_verify_identity_holds_the_narrow_pool_capability_in_dev() -> None:
+    """Decision 2, as corrected: ADMIN_POOL_USERS names swarm-verify, bare."""
     email = _verify_identity()
-    admins = _string_list(DEV_TFVARS, "admin_users")
+    pool_admins = _string_list(DEV_TFVARS, "admin_pool_users")
 
-    assert email in admins, (
-        f"admin_users is {admins}; PUT /v1/admin/limits/runner/mock answers 403 "
-        f"to {email} until it is in it, and race-test cannot narrow the pool"
+    assert email in pool_admins, (
+        f"admin_pool_users is {pool_admins}; PUT /v1/admin/limits/runner/mock "
+        f"answers 403 to {email} until it is in it, and race-test cannot narrow "
+        "the pool"
     )
-    prefixed = [a for a in admins if ":" in a]
+    prefixed = [a for a in pool_admins if ":" in a]
     assert not prefixed, (
         f"{prefixed} carry an IAM member prefix. swarm-api compares the bare email "
         "from the verified token against this list, so a prefixed entry matches "
         "nobody -- the grant would plan, apply and do nothing."
     )
+
+
+def test_the_verify_identity_is_not_a_platform_admin_in_dev() -> None:
+    """The owner's correction, 2026-09-24: NOT a full admin.
+
+    Every entry in `admin_users` opens every /v1/admin route, tenant disable
+    included. Matched on the address anywhere in an entry, so a prefixed or
+    differently-cased copy of the gate cannot slip back in unnoticed.
+    """
+    email = _verify_identity()
+    admins = _string_list(DEV_TFVARS, "admin_users")
+
+    reinstated = [a for a in admins if email.lower() in a.lower()]
+    assert not reinstated, (
+        f"admin_users names the verification gate again ({reinstated}). That makes "
+        "it a full platform admin -- it could disable any tenant -- which the "
+        "owner reversed on 2026-09-24. The gate's one admin route comes from "
+        "admin_pool_users."
+    )
+
+
+def _live_lines(path: Path) -> list[str]:
+    return [line for line in _strip_comments(path.read_text()).splitlines() if line.strip()]
+
+
+def test_admin_pool_users_reaches_swarm_api_under_the_name_it_reads() -> None:
+    """The tfvars list is only a grant if it arrives as the variable swarm-api
+    reads. The name is DERIVED from settings.py rather than restated here, so a
+    rename on either side fails this test instead of the list silently reaching
+    nobody -- the WAKE_TOPIC/DISPATCH_TOPIC class of defect
+    (scripts/lib/check-env-parity.sh catches a read nobody sets; this catches a
+    set that carries the wrong list).
+    """
+    m = re.search(
+        r"admin_pool_users\s*=\s*_csv\(\s*\"([A-Z0-9_]+)\"\s*\)", API_SETTINGS.read_text()
+    )
+    assert m, "ApiSettings.from_env does not read admin_pool_users from the environment"
+    env_name = m.group(1)
+
+    setters = [
+        line for line in _live_lines(LOCALS_TF)
+        if re.match(rf"^\s*{re.escape(env_name)}\s*=", line)
+    ]
+    assert setters, f"terraform/infra/locals.tf never sets {env_name}"
+    for line in setters:
+        assert "var.admin_pool_users" in line, (
+            f"{env_name} is set from something other than var.admin_pool_users: {line.strip()}"
+        )
+        # Derived the way ADMIN_USERS is -- from the environment's tfvars AS IS
+        # -- and never by appending google_service_account.verify here, which
+        # would hand the capability to the gate in every environment at once.
+        assert "google_service_account" not in line, (
+            f"{env_name} appends a service account in locals.tf: {line.strip()}"
+        )
+    assert re.search(
+        r'^variable\s+"admin_pool_users"', VARIABLES_TF.read_text(), re.M
+    ), "terraform/infra/variables.tf declares no admin_pool_users"
