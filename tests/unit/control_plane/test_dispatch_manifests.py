@@ -180,7 +180,12 @@ def test_cloud_run_job_is_sized_from_the_catalogue_with_requests_equal_to_limits
     rc = RESOURCE_CLASSES[profile.resource_class]
     assert container.resources.limits["cpu"] == str(int(rc.cpu))
     assert container.resources.limits["memory"] == f"{rc.memory_gib}Gi"
-    assert list(container.command) == list(profile.command)
+    # INVERTED 2026-09-24. This line used to assert
+    # `list(container.command) == list(profile.command)` -- it pinned the very
+    # override that replaced the image ENTRYPOINT (the worker lifecycle) with
+    # the bare runner. See test_no_backend_overrides_the_image_entrypoint below.
+    assert list(container.command) == []
+    assert list(container.args) == []
     assert container.image.endswith(f"/{profile.image}:{settings.worker_image_tag}")
 
 
@@ -348,6 +353,140 @@ def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
     assert body["spec"]["backoffLimit"] == 0
     assert body["spec"]["template"]["spec"]["restartPolicy"] == "Never"
     assert body["spec"]["activeDeadlineSeconds"] == task.timeout_seconds
+
+
+# -- the image ENTRYPOINT is the worker lifecycle; nothing may replace it ------
+#
+# Incident wf_ebb3ab2d65664707a559 (2026-09-24). Every GKE Job the scheduler
+# created carried `command: ["python", "-m", "agent_worker.runners.browser"]`
+# -- `RunnerProfile.command`, copied onto the CONTAINER. A Kubernetes `command`
+# replaces the image ENTRYPOINT, and the ENTRYPOINT of both worker images is
+# `tini -- python -m agent_worker`: the worker LIFECYCLE, which checks the
+# fencing generation, honours a cancel, heartbeats, checkpoints, starts the
+# runner as a supervised child, writes the terminal state and releases the
+# lease. With the override none of that ran. The pods printed a bare runner
+# traceback, never wrote to the control plane, and left five leases holding
+# every browser slot on the platform.
+#
+# `RunnerProfile.command` is the lifecycle's CHILD argv (`lifecycle._runner_argv`),
+# never a container command. The lifecycle learns which runner to start from
+# RUNNER_PROFILE in its environment, which both dispatchers set.
+#
+# `kubernetes/worker-templates/worker-job.yaml` already said this in its header,
+# and `tests/unit/worker/test_kubernetes_manifests.py` already asserted it -- of
+# the rendered YAML, which nothing dispatches. Nothing asserted it of the code
+# that does. These do, for every profile in the catalogue, on both backends,
+# because a profile that is on Cloud Run today is one catalogue edit away from
+# GKE and the reverse.
+
+ALL_PROFILES = sorted(RUNNER_PROFILES)
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_gke_manifest_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
+    """THE ONE THAT WOULD HAVE CAUGHT IT: `GkeJobDispatcher._manifest` itself.
+
+    MUTATION: put `"command": list(profile.command)` back into the container
+    dict in `GkeJobDispatcher._manifest` and this fails for every profile.
+    """
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+    assert [c["name"] for c in containers] == ["worker"]
+    worker = containers[0]
+    assert "command" not in worker, (
+        f"the GKE container for {profile_name!r} sets command={worker.get('command')!r}, "
+        "which REPLACES the image ENTRYPOINT (tini -- python -m agent_worker) -- the "
+        "worker lifecycle. The runner then runs bare: no fencing check, no cancel, no "
+        "heartbeat, no checkpoint, no terminal state, no lease release."
+    )
+    assert "args" not in worker, (
+        "`args` replaces the image CMD and is appended to the ENTRYPOINT; the worker "
+        "images declare no CMD and the lifecycle takes no arguments"
+    )
+    # And the lifecycle is told WHICH runner to start, by name, in the
+    # environment -- the only channel it reads (WorkerConfig.from_env).
+    env = {e["name"]: e["value"] for e in worker["env"]}
+    assert env["RUNNER_PROFILE"] == profile_name
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_cloud_run_job_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
+    """The same defect, latent on Cloud Run.
+
+    Terraform's Jobs carry `command = null` (modules/cloud_run_jobs/main.tf),
+    which is why Cloud Run tasks ran the lifecycle and GKE tasks did not. But
+    `ensure_job` creates a Job ITSELF whenever `get_job` returns NotFound -- a
+    new tenant, a new profile, a smaller resource class -- and `_build_job` put
+    the override on every one of those. The first task on such a Job would have
+    run exactly as the GKE pods did.
+
+    Both halves are checked: the Job the scheduler creates, and the
+    per-execution override it sends with `run_job`. A ContainerOverride can
+    carry `args`, which would be appended to the ENTRYPOINT.
+
+    MUTATION: put `command=list(profile.command)` back into `_build_job`.
+    """
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert len(client.created) == 1, "the fake starts with no Job, so the scheduler creates one"
+    container = client.created[0]["job"].template.template.containers[0]
+    assert list(container.command) == [], (
+        f"the Cloud Run Job the scheduler creates for {profile_name!r} sets "
+        f"command={list(container.command)!r}, replacing the worker lifecycle"
+    )
+    assert list(container.args) == []
+    job_env = {e.name: e.value for e in container.env}
+    assert job_env["RUNNER_PROFILE"] == profile_name
+
+    override = client.runs[0]["overrides"].container_overrides[0]
+    assert list(override.args) == [], "an execution override must not append to the ENTRYPOINT"
+    run_env = {e.name: e.value for e in override.env}
+    assert run_env["RUNNER_PROFILE"] == task.runner_profile
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_lifecycle_resolves_its_runner_from_the_environment_the_dispatcher_sets(
+    settings, tenant, profile_name, monkeypatch
+):
+    """The other half of removing the override: the runner still gets started.
+
+    Taking `command` off the container is only safe if the lifecycle, reading
+    nothing but the environment the dispatcher built, arrives at the runner the
+    frozen catalogue names. This feeds the GKE manifest's own env entries to
+    `WorkerConfig.from_env` and asks `lifecycle._runner_argv` what it would
+    start. It is green today and must stay green: it is the guard that the fix
+    above did not quietly stop the agent from running at all.
+    """
+    import sys
+
+    from agent_worker.config import WorkerConfig
+    from agent_worker.lifecycle import _runner_argv
+
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=profile, tenant=tenant
+    )
+    for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]:
+        monkeypatch.setenv(entry["name"], entry["value"])
+
+    config = WorkerConfig.from_env()
+    assert config.runner_profile == profile_name
+    argv = _runner_argv(config)
+    assert argv[1:] == list(profile.command[1:])
+    assert argv[0] in (profile.command[0], sys.executable)
 
 
 def test_gke_without_configuration_refuses_rather_than_guessing(settings, tenant):
