@@ -105,7 +105,7 @@ refs_from_channel() {
     die_if_auth_failure "$(cat "${WORK}/tags.err")"
     err "could not list the tags in ${IMAGE_REPO}:"
     redact <"${WORK}/tags.err" | head -n 5 | sed 's/^/     /' >&2
-    return 3 # MUTATION: reverted in the next commit
+    die "a registry that cannot be read is not an empty one; refusing to treat this as a fresh project"
   fi
   # `version` is the digest; the last path segment is taken so that a
   # resource-name spelling (".../versions/sha256:...") reads the same.

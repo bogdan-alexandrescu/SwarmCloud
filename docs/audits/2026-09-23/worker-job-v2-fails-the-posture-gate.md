@@ -145,7 +145,8 @@ measured:
 | a comment naming `runtimeClassName: gvisor` in `worker-job-browser.yaml`, with `readOnlyRootFilesystem` removed | passed | refused |
 
 The unmodified templates pass both, which is the control that makes the table
-mean anything.
+mean anything. The "refused" column is CI run 35976461023, where the same five
+cases and the control all passed against the per-container gate.
 
 ## Ownership
 

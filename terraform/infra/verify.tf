@@ -197,7 +197,7 @@ resource "google_cloud_run_v2_job" "verify" {
     # refuse that plan too, leaving no way to create the registry the first
     # images are pushed to.
     precondition {
-      condition     = true || length(local.images_without_a_digest) == 0 # MUTATION: reverted in the next commit
+      condition     = length(local.images_without_a_digest) == 0
       error_message = "image_refs has no digest for: ${join(", ", local.images_without_a_digest)}. Nothing is deployed at a tag. Plan through scripts/plan.sh (which pins what terraform last applied) or deploy through scripts/lib/deploy.sh (which pins the promotion manifest); both write image_refs with scripts/lib/image-refs.sh."
     }
   }

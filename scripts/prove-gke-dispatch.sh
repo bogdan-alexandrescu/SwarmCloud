@@ -138,7 +138,7 @@ if [[ -z "${DISPATCHED_TO}" ]]; then
   t_fail "never dispatched: no Job was created for it${LAST_ERROR:+ (last_error: ${LAST_ERROR})}"
   t_info "a 'jobs.batch is forbidden' here is the 403-that-means-404: check the namespace, then the"
   t_info "RoleBinding's two subject spellings, in the order docs/incidents/2026-09-24-gke-dispatch.md section 4 gives"
-elif false && [[ "${DISPATCHED_TO}" != "${BACKEND}" ]]; then # MUTATION: reverted in the next commit
+elif [[ "${DISPATCHED_TO}" != "${BACKEND}" ]]; then
   t_fail "dispatched to ${DISPATCHED_TO}, not ${BACKEND}: this run proves nothing about GKE, however it ended"
 else
   t_pass "dispatched to ${BACKEND}${EXECUTION:+ as ${EXECUTION}}"

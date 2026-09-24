@@ -269,7 +269,7 @@ require_platform() {
 profile_input() {
   local profile="$1" run_id="$2"
   case "${profile}" in
-    browser-MUTATION-reverted-in-the-next-commit)
+    browser)
       jq -nc --arg r "${run_id}" '{
         message: "smoke", run_id: $r,
         actions: [{type: "screenshot", name: "proof.png", full_page: false}],

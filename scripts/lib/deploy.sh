@@ -189,7 +189,7 @@ for pair in "${API_SERVICE}:swarm-api" "${SCHEDULER_SERVICE}:swarm-scheduler" \
   if [[ -z "${expected}" ]]; then
     warn "${service}: the manifest promoted no ${image_name}"
     SKIPPED+=("${service}: the manifest promoted no ${image_name}, so what it runs is unverified")
-  elif false && [[ "${actual}" != "${expected}" ]]; then # MUTATION: reverted in the next commit
+  elif [[ "${actual}" != "${expected}" ]]; then
     # THE CHECK THE 2026-09-20 AUDIT FOUND NOTHING COULD MAKE. A service
     # serving an older digest reports healthy with ready == created, and
     # every other line of this script passes it.

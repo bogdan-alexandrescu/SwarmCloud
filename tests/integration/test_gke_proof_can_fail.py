@@ -288,6 +288,27 @@ def run_proof(tmp_path: Path, *extra: str, **deviations) -> tuple[int, str, dict
     return proc.returncode, proc.stdout + proc.stderr, state
 
 
+def verdicts(out: str, kind: str) -> list[str]:
+    """The PASS or FAIL lines of a run -- what the proof is judged on.
+
+    Asserting on these, not on "exit non-zero and the word appears somewhere",
+    is what makes each case below about ONE check. The first mutation round
+    showed why: with two checks broken at once, the backend case still went
+    red for an unrelated failure while mentioning the right backend in a
+    diagnostic line, and so proved nothing about the backend check itself.
+    """
+    return [line.strip()[len(kind):].strip() for line in out.splitlines()
+            if line.strip().startswith(kind + " ")]
+
+
+def failed_on(out: str, *needles: str) -> bool:
+    return any(all(n in line for n in needles) for line in verdicts(out, "FAIL"))
+
+
+def passed_on(out: str, *needles: str) -> bool:
+    return any(all(n in line for n in needles) for line in verdicts(out, "PASS"))
+
+
 # ---------------------------------------------------------------------------
 # the control
 # ---------------------------------------------------------------------------
@@ -296,7 +317,11 @@ def run_proof(tmp_path: Path, *extra: str, **deviations) -> tuple[int, str, dict
 def test_a_browser_task_that_runs_on_gke_is_proven(tmp_path):
     code, out, state = run_proof(tmp_path)
     assert code == 0, out
-    assert "GKE_AUTOPILOT" in out, out
+    assert not verdicts(out, "FAIL"), out
+    assert passed_on(out, "dispatched to GKE_AUTOPILOT"), out
+    assert passed_on(out, "SUCCEEDED"), out
+    assert passed_on(out, "object(s) under"), out
+    assert passed_on(out, "released"), out
 
     sent = state.get("submitted") or {}
     assert sent.get("runner_profile") == "browser", sent
@@ -314,9 +339,14 @@ def test_a_browser_task_that_runs_on_gke_is_proven(tmp_path):
 
 
 def test_a_task_dispatched_to_another_backend_is_not_a_gke_proof(tmp_path):
+    # Everything else about this run is healthy -- it SUCCEEDED, left
+    # artifacts and released its lease -- so the backend check is the only
+    # thing standing between it and a green proof of a path it never took.
     code, out, _ = run_proof(tmp_path, dispatched_backend="CLOUD_RUN_JOB")
     assert code != 0, out
-    assert "CLOUD_RUN_JOB" in out and "GKE_AUTOPILOT" in out, out
+    assert failed_on(out, "CLOUD_RUN_JOB", "GKE_AUTOPILOT"), out
+    assert passed_on(out, "SUCCEEDED"), out
+    assert len(verdicts(out, "FAIL")) == 1, out
 
 
 def test_a_task_that_was_never_dispatched_fails_and_says_why(tmp_path):
@@ -327,8 +357,7 @@ def test_a_task_that_was_never_dispatched_fails_and_says_why(tmp_path):
         last_error="gke_create_job_forbidden",
     )
     assert code != 0, out
-    assert "never dispatched" in out, out
-    assert "gke_create_job_forbidden" in out, out
+    assert failed_on(out, "never dispatched", "gke_create_job_forbidden"), out
 
 
 def test_a_parked_task_proves_nothing_and_fails_fast(tmp_path):
@@ -342,7 +371,7 @@ def test_a_parked_task_proves_nothing_and_fails_fast(tmp_path):
     )
     elapsed = time.monotonic() - started
     assert code != 0, out
-    assert "CREDENTIAL_MISSING" in out, out
+    assert failed_on(out, "PARKED on CREDENTIAL_MISSING"), out
     assert elapsed < 120, (
         f"took {elapsed:.0f}s: a CREDENTIAL_MISSING park does not resolve itself, "
         "so waiting out the timeout only delays the same answer"
@@ -357,23 +386,29 @@ def test_a_worker_that_dies_on_start_fails_with_its_error(tmp_path):
         last_error="OSError: [Errno 30] Read-only file system: '/artifacts'",
     )
     assert code != 0, out
+    # Dispatched fine; it is the RUN that failed, and the worker's own words
+    # must reach the reader.
+    assert passed_on(out, "dispatched to GKE_AUTOPILOT"), out
+    assert failed_on(out, "ended FAILED"), out
     assert "Read-only file system" in out, out
 
 
 def test_a_success_that_left_no_artifact_is_not_a_proof(tmp_path):
     code, out, _ = run_proof(tmp_path, artifacts=0)
     assert code != 0, out
-    assert "no artifacts" in out, out
+    assert failed_on(out, "no artifacts under"), out
+    assert len(verdicts(out, "FAIL")) == 1, out
 
 
 def test_a_task_that_never_finishes_fails_at_the_timeout(tmp_path):
     code, out, state = run_proof(tmp_path, "--timeout", "3", final_state="RUNNING")
     assert code != 0, out
-    assert "RUNNING" in out, out
+    assert failed_on(out, "no terminal state", "RUNNING"), out
     assert state.get("cancelled"), "a proof task still running at the timeout must be cancelled"
 
 
 def test_a_lease_that_is_never_released_fails(tmp_path):
     code, out, _ = run_proof(tmp_path, lease_released=False)
     assert code != 0, out
-    assert "still holding capacity" in out, out
+    assert failed_on(out, "still holding capacity"), out
+    assert len(verdicts(out, "FAIL")) == 1, out
