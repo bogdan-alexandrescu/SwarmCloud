@@ -92,7 +92,7 @@ _FAILED_STEPS_NAMED = 10
 
 
 @dataclass(frozen=True)
-class _FailedWorkflow:
+class FailedWorkflow:
     """A `fail_workflow` workflow with at least one FAILED or DEAD_LETTERED step."""
 
     tenant_id: str
@@ -100,6 +100,47 @@ class _FailedWorkflow:
     #: [{"step_id", "task_id", "state"}], in a stable order. This is what every
     #: cancel event carries, so a cancelled step's own record names the failure.
     failed_steps: tuple[dict[str, Any], ...]
+
+
+def read_workflow_failure(
+    store: SchedulerStore,
+    tenant_id: str,
+    workflow_id: str,
+    *,
+    enforced_since: datetime | None,
+) -> FailedWorkflow | None:
+    """Is this workflow failed under `fail_workflow`? One read of the answer.
+
+    THE ONE STATEMENT OF THE VERDICT. The drain calls it (through its per-drain
+    cache) and so does the read-only `on_step_failure_audit`, so what the audit
+    says the next drain will cancel cannot drift from what the drain cancels.
+
+    Costs one point read for the policy. Only under `fail_workflow` does it
+    also cost one equality query per failing state. A `continue` workflow, and
+    one created before `enforced_since`, is never asked about its failures,
+    because nothing is done with the answer.
+    """
+    policy = store.workflow_on_step_failure(
+        tenant_id, workflow_id, enforced_since=enforced_since
+    )
+    if policy != FAIL_WORKFLOW:
+        return None
+    failed: list[Task] = []
+    for state in _WORKFLOW_FAILING_STATES:
+        failed.extend(
+            store.workflow_steps_in_state(tenant_id, workflow_id, state, _FAILED_STEPS_NAMED)
+        )
+    if not failed:
+        return None
+    failed.sort(key=lambda step: (step.step_id or "", step.id))
+    return FailedWorkflow(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        failed_steps=tuple(
+            {"step_id": step.step_id, "task_id": step.id, "state": step.state.value}
+            for step in failed[:_FAILED_STEPS_NAMED]
+        ),
+    )
 
 
 @dataclass
@@ -157,9 +198,20 @@ class Scheduler:
         self._tenant_cache: dict[str, Tenant | None] = {}
         # Per drain as well, keyed by (tenant_id, workflow_id). A verdict is at
         # most one drain old, except that a failure the drain itself writes
-        # evicts it at once (see the DispatchError branch of `_admit_one`).
-        self._workflow_verdicts: dict[tuple[str, str], _FailedWorkflow | None] = {}
+        # evicts it at once (see the DispatchError branch of `_admit_one`). A
+        # failure a WORKER or the reconciler writes mid-drain is not seen until
+        # the next drain, so a sibling admitted in between starts, holds
+        # capacity and runs to completion (docs/workflows.md says so).
+        self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
+        cutoff = settings.on_step_failure_enforced_since
+        log.info(
+            "on_step_failure: fail_workflow applies to %s",
+            "every workflow, whenever it was submitted"
+            if cutoff is None
+            else f"workflows created at or after {cutoff.isoformat()} "
+            "(ON_STEP_FAILURE_ENFORCED_SINCE); older ones keep the dependency rule",
+        )
         self._admission = AdmissionConfig(
             dispatch_timeout_seconds=settings.core.dispatch_timeout_seconds,
             lease_timeout_seconds=settings.core.lease_timeout_seconds,
@@ -329,10 +381,11 @@ class Scheduler:
             self._count_cancel(report, reason="cancel_requested")
             return False
 
-        # THE ADMISSION GATE for `on_step_failure: fail_workflow`, and the one
-        # place the rule cannot be skipped. Every step that starts passes
-        # through here, and an independent READY sibling of a failed step shares
-        # no dependency edge with it, so no dependency check would ever stop it.
+        # THE ADMISSION GATE for `on_step_failure: fail_workflow`. Every step
+        # that starts passes through here, and an independent READY sibling of
+        # a failed step shares no dependency edge with it, so no dependency
+        # check would ever stop it. It sees failures as of this drain's verdict
+        # (see `_stop_for_failed_workflow` for the window that leaves).
         if self._stop_for_failed_workflow(task, report):
             return False
 
@@ -590,6 +643,16 @@ class Scheduler:
         of those steps is promoted and reaches admission. Until then it holds no
         capacity, so it costs nothing (invariant 1). Only the derived state
         lags: it reads PARKED rather than FAILED.
+
+        WHAT IT DOES NOT PROMISE: that nothing starts after the failure. The
+        verdict is cached for the drain, so a failure a worker or the reconciler
+        writes while a drain is running is not seen until the next drain, and
+        no read can close the gap between reading the verdict and taking the
+        lease anyway. A sibling admitted in that window holds capacity, so it
+        is left to run to completion like any other running step. The window
+        is the rest of the drain that was running when the failure was
+        written, which `max_run_seconds` bounds. A failure the drain writes
+        itself is seen at once (the DispatchError branch of `_admit_one`).
         """
         if not task.workflow_id:
             return False
@@ -605,45 +668,22 @@ class Scheduler:
         self._sweep_failed_workflow(failed, report)
         return True
 
-    def _workflow_failure(self, task: Task) -> _FailedWorkflow | None:
-        """The workflow's failure verdict, read at most once per drain.
-
-        Costs one point read for the policy. Only under `fail_workflow` does it
-        also cost one equality query per failing state. A `continue` workflow is
-        never asked about its failures, because it has nothing to do with the
-        answer.
-        """
+    def _workflow_failure(self, task: Task) -> FailedWorkflow | None:
+        """The workflow's failure verdict (`read_workflow_failure`), read at most once per drain."""
         workflow_id = task.workflow_id
         if not workflow_id:
             return None
         key = (task.tenant_id, workflow_id)
-        if key in self._workflow_verdicts:
-            return self._workflow_verdicts[key]
+        if key not in self._workflow_verdicts:
+            self._workflow_verdicts[key] = read_workflow_failure(
+                self._store,
+                task.tenant_id,
+                workflow_id,
+                enforced_since=self._settings.on_step_failure_enforced_since,
+            )
+        return self._workflow_verdicts[key]
 
-        verdict: _FailedWorkflow | None = None
-        policy = self._store.workflow_on_step_failure(task.tenant_id, workflow_id)
-        if policy == FAIL_WORKFLOW:
-            failed: list[Task] = []
-            for state in _WORKFLOW_FAILING_STATES:
-                failed.extend(
-                    self._store.workflow_steps_in_state(
-                        task.tenant_id, workflow_id, state, _FAILED_STEPS_NAMED
-                    )
-                )
-            if failed:
-                failed.sort(key=lambda step: (step.step_id or "", step.id))
-                verdict = _FailedWorkflow(
-                    tenant_id=task.tenant_id,
-                    workflow_id=workflow_id,
-                    failed_steps=tuple(
-                        {"step_id": step.step_id, "task_id": step.id, "state": step.state.value}
-                        for step in failed[:_FAILED_STEPS_NAMED]
-                    ),
-                )
-        self._workflow_verdicts[key] = verdict
-        return verdict
-
-    def _sweep_failed_workflow(self, failed: _FailedWorkflow, report: DrainReport) -> None:
+    def _sweep_failed_workflow(self, failed: FailedWorkflow, report: DrainReport) -> None:
         """Cancel every step of `failed` that has not started, and nothing else.
 
         "Has not started" is SUBMITTED, QUEUED, READY or PARKED, and each

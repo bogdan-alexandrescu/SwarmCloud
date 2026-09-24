@@ -379,7 +379,8 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "What one step's failure does to the rest of the "
                         "workflow. Applied by the scheduler on its next drain, "
-                        "not at the instant of the failure.\n"
+                        "not at the instant of the failure, so a step it admits "
+                        "before it has seen the failure counts as started.\n"
                         "`fail_workflow` (default): as soon as any step is FAILED "
                         "or DEAD_LETTERED, every step that has not started yet "
                         "(queued, ready or parked) is cancelled, including "

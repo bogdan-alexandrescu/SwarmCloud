@@ -83,13 +83,39 @@ nothing alerts on it.
 | `fail_workflow` (default) | every step of the workflow that has not started (SUBMITTED, QUEUED, READY, PARKED) is CANCELLED, dependent on the failure or not |
 | `continue` | only the transitive dependents of the failed step are CANCELLED; independent branches keep starting |
 
-The scheduler honours the field since 2026-09-24. Before that nothing read it,
-and both rows behaved like `continue`. The rules that are not obvious:
+The scheduler honours the field from the release that carries PR #42. Before
+that nothing read it, and both rows behaved like `continue`. The rules that
+are not obvious:
 
+* **Workflows submitted before that release are covered too, unless a cutoff
+  is set.** Every one of them stores `fail_workflow`, because that was the API
+  default, and each was submitted while this page said the setting was not
+  honoured. With `ON_STEP_FAILURE_ENFORCED_SINCE` unset (the default), the
+  first drain after the deploy cancels the not-started steps of any in-flight
+  workflow that already has a FAILED or DEAD_LETTERED step. A cancelled step
+  cannot return to READY, so its checkpoint becomes reclaimable and its partial
+  work is gone. Set `ON_STEP_FAILURE_ENFORCED_SINCE` on the scheduler (ISO-8601
+  with a UTC offset, for example `2026-09-25T14:00:00Z`) and only workflows
+  created at or after that instant get the rule. Older ones keep the
+  dependency rule they were submitted under. A value without an offset refuses
+  to start. To see what the next drain would cancel, run the read-only audit
+  before deploying. It exits 3 if a page came back full:
+
+  ```bash
+  PROJECT_ID=saga-agents-staging FIRESTORE_DATABASE=swarm \
+    uv run --project . python -m scheduler.on_step_failure_audit
+  ```
 * **It happens on the scheduler's next drain, not at the instant of failure.**
   That is a Pub/Sub push or the one-minute safety tick. A failure the drain
   itself writes, when a step exhausts its attempts on a failed dispatch, stops
-  its siblings in that same drain.
+  its siblings in that same drain. A failure a worker or the reconciler writes
+  while a drain is running is seen by the next drain, because the verdict is
+  read once per drain. So a sibling can still START after the failure: one
+  that drain admits in the meantime. The window is the rest of that drain,
+  which `MAX_RUN_SECONDS` bounds (45 s by default). No read closes it
+  completely, because a failure can land between reading the verdict and
+  taking the lease. A step that starts in that window holds capacity, so it
+  runs to completion like any other running step.
 * **Every cancel names the failure.** The step's CANCELLED event carries
   `workflow_id`, `on_step_failure` and `failed_steps` (step id, task id,
   state), and its `last_error` names the failed step. The metric is
@@ -103,7 +129,10 @@ and both rows behaved like `continue`. The rules that are not obvious:
 * **A step that has not started is found through the scheduler's existing
   touch points,** not by scanning failures: the dependency sweep, the
   credential sweep, the prewarm sweep, and admission, which every step passes
-  through before it can start. So nothing can START after the failure. A
+  through before it can start. A step parked for a missing key is cancelled
+  where it is parked, by the credential sweep. So is one parked for provider
+  quota, cooldown or outage, by the prewarm sweep, while prewarm is enabled
+  (the default; with it off, those reasons join the list below). A
   workflow whose only remaining steps are PARKED on a reason the scheduler never
   reads (MANUAL_PAUSE, BUDGET_EXHAUSTED, SCHEDULED_RETRY) is swept when one of
   them is promoted. Until then it holds no capacity, and its derived state reads

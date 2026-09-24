@@ -14,8 +14,9 @@ these exist today as `tasks-state-priority-created` and
 
 `parked_tasks` and `task_states` use equality filters only, which Firestore
 serves from single-field indexes by merge join, so they need no composite index.
-So do `workflow_steps_in_state` (tenant_id, workflow_id, state, all `==`) and the
-point read in `workflow_on_step_failure`.
+So do `workflow_steps_in_state` (tenant_id, workflow_id, state, all `==`), the
+point read in `workflow_on_step_failure`, and `tasks_in_state` (state `==`),
+which only the read-only `on_step_failure_audit` uses.
 """
 
 from __future__ import annotations
@@ -54,7 +55,13 @@ from swarm_common.states import (
     assert_transition,
 )
 
-from .codec import pool_from_dict, quota_from_dict, task_from_dict, tenant_from_dict
+from .codec import (
+    as_datetime,
+    pool_from_dict,
+    quota_from_dict,
+    task_from_dict,
+    tenant_from_dict,
+)
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +181,13 @@ class SchedulerStore:
                 states[task_id] = TaskState(snap.to_dict()["state"])
         return states
 
-    def workflow_on_step_failure(self, tenant_id: str, workflow_id: str) -> str | None:
+    def workflow_on_step_failure(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        enforced_since: datetime | None = None,
+    ) -> str | None:
         """The workflow's `on_step_failure`, or None when there is no policy to act on.
 
         None when the document is missing, and when it belongs to a different
@@ -182,6 +195,14 @@ class SchedulerStore:
         corrupt or forged task. The caller falls back to the rule that needs no
         policy (cancel the dependents of a failed parent) rather than guessing
         `fail_workflow`, because a cancel cannot be undone.
+
+        None as well, under a cutoff (`enforced_since`, from
+        ON_STEP_FAILURE_ENFORCED_SINCE), for a workflow created before it. Such
+        a workflow was submitted while the setting was documented as not
+        honoured, so it keeps the dependency rule it was submitted under. A
+        document with no readable `created_at` is treated the same way under a
+        cutoff: when it was submitted cannot be told, and a cancel cannot be
+        undone.
 
         A document that exists but has no field reads as the frozen default,
         which is what the API shows the tenant for the same document.
@@ -201,10 +222,36 @@ class SchedulerStore:
                 tenant_id,
             )
             return None
+        if enforced_since is not None:
+            try:
+                created_at = as_datetime(data.get("created_at"))
+            except (TypeError, ValueError):
+                created_at = None
+            if created_at is None or created_at < enforced_since:
+                log.debug(
+                    "workflow %s was created at %s, before on_step_failure was "
+                    "enforced (%s); only the dependency rule applies to it",
+                    workflow_id, created_at, enforced_since.isoformat(),
+                )
+                return None
         value = data.get("on_step_failure")
         if value is None:
             return _ON_STEP_FAILURE_DEFAULT
         return str(value).strip().lower()
+
+    def tasks_in_state(self, state: TaskState, limit: int) -> list[Task]:
+        """Every tenant's tasks in one state, up to `limit`. Equality filter only.
+
+        Used by the read-only `on_step_failure_audit`, never by a drain: a drain
+        reaches waiting work through the queries above, each scoped to the one
+        thing it is looking for.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("state", "==", state.value))
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
 
     def workflow_steps_in_state(
         self, tenant_id: str, workflow_id: str, state: TaskState, limit: int
