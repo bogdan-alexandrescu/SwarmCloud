@@ -7,6 +7,7 @@ import {
   canBeStopped,
   stoppingEndsALiveAttempt,
   type Task,
+  type TaskState,
   type Workflow,
   type WorkflowStep,
 } from './types'
@@ -29,7 +30,9 @@ import {
  *      `Store.request_cancel` sets `cancel_requested` and leaves the state
  *      alone -- releasing the lease from the API would decrement a pool that a
  *      live container still occupies. The agent keeps running, and keeps
- *      spending, until its next heartbeat.
+ *      spending, until its next heartbeat -- WHEN A WORKER IS RUNNING IT. See
+ *      `workerHasStarted` for the case where none is, which is the one this
+ *      file got wrong (incident wf_ebb3ab2d65664707a559, F-8).
  *   2. DEPENDENTS FALL OVER AFTERWARDS, NOT AT THE SAME TIME. The scheduler's
  *      `_FAILED_PARENT_STATES` tests the parent's STATE, not the flag, so
  *      nothing downstream moves until the worker has actually finished the
@@ -76,6 +79,40 @@ export function dependentsOf(
     .filter((s): s is WorkflowStep => s !== undefined)
 }
 
+/**
+ * Whether a worker is running THIS attempt, so that "at its next heartbeat"
+ * is a promise something will keep.
+ *
+ * Every sentence below used to promise the heartbeat for any task holding
+ * capacity. In incident wf_ebb3ab2d65664707a559, five DISPATCHED tasks whose
+ * GKE pods never ran the worker lifecycle were stopped under that promise and
+ * stayed DISPATCHED for hours: nothing was ever going to heartbeat.
+ *
+ * TWO SIGNALS, because either alone is wrong:
+ *
+ *   * `started_at` is written by the worker's DISPATCHED -> STARTING
+ *     transition (`control.py:412`). Null means no worker has ever started
+ *     this task;
+ *   * but nothing clears it on a retry, so a second attempt waiting
+ *     DISPATCHED carries the first attempt's value. The STATE is what says
+ *     whether this attempt's worker has started: it moves the task to
+ *     STARTING before it runs anything.
+ *
+ * What is true when this is false, and so what the copy says instead: a worker
+ * that does start sees `cancel_requested` before it runs anything, finishes
+ * the attempt as CANCELLED and exits (`lifecycle.py:269-278`). If none starts,
+ * the reconciler reclaims the attempt once its dispatch deadline passes. No
+ * time is given for that. On GKE the reclaim depends on the reconciler being
+ * able to read GKE at all, and a number on screen would be a second promise
+ * the platform cannot always keep.
+ */
+export function workerHasStarted(task: {
+  state: TaskState
+  started_at?: string | null
+}): boolean {
+  return (task.state === 'STARTING' || task.state === 'RUNNING') && Boolean(task.started_at)
+}
+
 /** Steps that share the workflow and do not depend on the one being stopped. */
 export function survivorsOf(
   step: WorkflowStep,
@@ -110,6 +147,7 @@ export function StopRun({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [outcome, setOutcome] = useState<'requested' | 'released' | null>(null)
+  const started = workerHasStarted(task)
 
   // A button that 409s is a button that should not have been drawn:
   // `request_cancel` refuses every terminal state. `cancel_requested` already
@@ -117,7 +155,15 @@ export function StopRun({
   // would imply the first one had not taken.
   if (!canBeStopped(task)) {
     return task.cancel_requested === true && !TERMINAL_STATES.has(task.state) ? (
-      <span className="stop-pending" title="The request is recorded. The worker acts on it at its next heartbeat.">
+      <span
+        className="stop-pending"
+        title={
+          started
+            ? 'The request is recorded. The worker acts on it at its next heartbeat.'
+            : 'The request is recorded. No worker has started this attempt: one that starts ' +
+              'stops before running anything, and if none does, the reconciler finishes it.'
+        }
+      >
         stop requested
       </span>
     ) : null
@@ -155,17 +201,27 @@ export function StopRun({
         aria-label={
           outcome === 'released'
             ? 'Stopped. It held no capacity, so it went straight to CANCELLED. No attempt had started, so there is nothing to harvest.'
-            : 'Stop requested. It is recorded on the task. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
+            : started
+              ? 'Stop requested. It is recorded on the task. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
+              : 'Stop requested. It is recorded on the task. No worker has started this attempt, so ' +
+                'nothing is running to act on it yet: a worker that starts sees the request before it ' +
+                'runs anything and stops, and if none starts, the reconciler reclaims the attempt and ' +
+                'finishes it. Until one of those happens the slot stays held.'
         }
       >
         {outcome === 'released' ? (
           <>
             <strong>Stopped.</strong> It held no capacity, so nothing to harvest.
           </>
-        ) : (
+        ) : started ? (
           <>
             <strong>Stop requested.</strong> Still running until the next
             heartbeat.
+          </>
+        ) : (
+          <>
+            <strong>Stop requested.</strong> No worker has started; the reconciler
+            finishes it if none does.
           </>
         )}
       </p>
@@ -200,6 +256,13 @@ export function StopRun({
   // heartbeat` makes the same promise in four words and cannot be skimmed past
   // the way the fourth line of a paragraph can. The full sentences are the
   // strip's accessible name, so nothing is lost to a screen reader either.
+  //
+  // THREE CASES, NOT TWO. That four-word promise, and "the work so far is
+  // kept", are true only while a worker is running this attempt. For an
+  // attempt no worker has started (`workerHasStarted`) nothing will heartbeat
+  // and nothing has been done, so that case gets its own values, and they name
+  // the two things that can actually finish it: a worker that starts, or the
+  // reconciler. Neither is given a time.
   const stops =
     step === null ? task.id : `${task.id} — step ${step.step_id}`
   return (
@@ -211,15 +274,21 @@ export function StopRun({
         aria-label={
           `Stopping ${stops} is irreversible for this attempt: a stopped attempt is not resumed, ` +
           `though the task's remaining retries are unaffected by this button. ` +
-          (live
-            ? 'The work so far is kept: before it exits the worker takes a checkpoint and uploads ' +
-              "this attempt's artifacts and logs, so stopping costs the rest of this attempt and not " +
-              'what it has already done. It does not stop instantly — the API records the request and ' +
-              'the worker acts on it at its next heartbeat; until then the agent keeps running and the ' +
-              'slot stays held, because releasing the lease from here would free capacity a live ' +
-              'container still occupies.'
-            : 'Nothing is executing and no capacity is held, so this takes effect at once and there is ' +
-              'no attempt to harvest.')
+          (!live
+            ? 'Nothing is executing and no capacity is held, so this takes effect at once and there is ' +
+              'no attempt to harvest.'
+            : started
+              ? 'The work so far is kept: before it exits the worker takes a checkpoint and uploads ' +
+                "this attempt's artifacts and logs, so stopping costs the rest of this attempt and not " +
+                'what it has already done. It does not stop instantly — the API records the request and ' +
+                'the worker acts on it at its next heartbeat; until then the agent keeps running and the ' +
+                'slot stays held, because releasing the lease from here would free capacity a live ' +
+                'container still occupies.'
+              : 'Nothing has run yet: no worker has started this attempt, so there is no work to ' +
+                'harvest. It does not stop instantly — the API records the request, and the slot stays ' +
+                'held until a worker starts and stops before running anything or, if none starts, the ' +
+                'reconciler reclaims the attempt and finishes it. Releasing the lease from here would ' +
+                'free capacity a starting container may still occupy.')
         }
       >
         <li className="ctl-fact">
@@ -240,11 +309,19 @@ export function StopRun({
         )}
         <li className="ctl-fact">
           <b>work so far</b>
-          {live ? 'kept — checkpoint, artifacts and logs are uploaded first' : 'none to harvest'}
+          {!live
+            ? 'none to harvest'
+            : started
+              ? 'kept — checkpoint, artifacts and logs are uploaded first'
+              : 'none — no worker has started'}
         </li>
         <li className="ctl-fact">
           <b>takes effect</b>
-          {live ? "at the worker's next heartbeat, not now" : 'at once'}
+          {!live
+            ? 'at once'
+            : started
+              ? "at the worker's next heartbeat, not now"
+              : 'when a worker starts, or when the reconciler finishes it — not now'}
         </li>
       </ul>
 
