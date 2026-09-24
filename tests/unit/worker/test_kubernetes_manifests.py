@@ -904,14 +904,52 @@ def test_the_reconciler_may_delete_but_never_create(tenant_docs):
 
 def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
     """A RoleBinding to a subject that does not exist applies cleanly and
-    grants nothing, so a typo here fails looking exactly like success."""
-    for binding_name, expected in (
+    grants nothing, so a typo here fails looking exactly like success.
+
+    THIS ASSERTION WAS WRITTEN FOR EXACTLY THE DEFECT THAT LATER HAPPENED, AND
+    ITS LITERAL FORM BLOCKED THE FIX. It required the subject list to be
+    `== [expected]` -- exactly one entry. On 2026-09-24 every GKE dispatch was
+    found to be failing because the binding named the scheduler by EMAIL while
+    GKE, for a service account authenticating with an OAuth access token,
+    presents the caller as its numeric uniqueId. The fix binds both names, so the
+    list is two entries, and this test went red on the change it had been written
+    to demand.
+
+    Re-pointed at the property it was always about: no subject that is not a
+    known control-plane identity, and nothing but `User`. The COUNT was never the
+    thing -- a second subject naming the same account cannot grant anything the
+    first did not, because RBAC subjects are a list.
+    """
+    for binding_name, account in (
         ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
         ("swarm-reaper", f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"),
     ):
         binding = one(tenant_docs, "RoleBinding", binding_name)
         subjects = binding["subjects"]
-        assert [s["name"] for s in subjects] == [expected]
+        names = [s["name"] for s in subjects]
+
+        assert account in names, (
+            f"{binding_name} does not name {account}; a binding to an identity "
+            f"that does not exist applies cleanly and authorises nobody"
+        )
+
+        # THE SET IS CLOSED. Every subject must be either the account's email or
+        # its numeric uniqueId -- nothing else may appear in a binding that
+        # decides who can create a Job in a tenant's namespace. This is the half
+        # of the original `== [expected]` that mattered, kept.
+        uid = SCHEDULER_UID if binding_name == "swarm-dispatcher" else RECONCILER_UID
+        unexpected = [n for n in names if n not in {account, uid}]
+        assert not unexpected, (
+            f"{binding_name} names {unexpected}, which is neither {account} nor "
+            f"its uniqueId. Nothing else belongs in this binding."
+        )
+
+        # And no placeholder survived substitution -- a literal `__X__` subject
+        # applies cleanly and grants nothing, the same failure by another route.
+        assert not [n for n in names if "__" in n], (
+            f"{binding_name} has an unsubstituted placeholder subject: {names}"
+        )
+
         # `User`, not `ServiceAccount`: the scheduler runs on Cloud Run as a
         # Google identity and has no Kubernetes ServiceAccount of its own.
         assert {s["kind"] for s in subjects} == {"User"}
