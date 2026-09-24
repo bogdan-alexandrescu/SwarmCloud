@@ -375,7 +375,11 @@ describe('Agents, with every help card closed', () => {
       fetchedAt: Date.now(),
     })
     render(<AgentsScreen onOpen={() => {}} />)
-    await screen.findByText('claude-code')
+    // The screen LANDS on Recent now -- the first tab with rows -- so the empty
+    // Live tab is the one a reader asks for. Asked for, it still says so.
+    // (It waited on the text `claude-code` before, which was unique only
+    // because the Live landing drew no row; the Recent row draws it too.)
+    fireEvent.click(await screen.findByRole('tab', { name: /^Live/ }))
     // The `live` tab holds nothing, and its emptiness is a MEASURED zero.
     // WHAT MOVED: "No agent is holding a pool slot right now -- a real zero
     // from a successful read" was a sentence in the middle of the screen. The
@@ -421,8 +425,9 @@ describe('Agents, with every help card closed', () => {
     })
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(container.querySelector('.ctl-seg')).not.toBeNull())
-    // A PARKED agent is in the `waiting` tab, not the default `live` one --
-    // parked work holds no slot, which is the whole point of the split.
+    // A PARKED agent is in the `waiting` tab, not the `live` one -- parked
+    // work holds no slot, which is the whole point of the split. (The screen
+    // lands on Waiting here by itself; the click says which tab is meant.)
     fireEvent.click(screen.getByRole('tab', { name: /Waiting/ }))
     // UNCHANGED BY THE PASS, and asserted so it stays that way: the "why" line
     // is the one piece of running text a row is allowed, because it is the

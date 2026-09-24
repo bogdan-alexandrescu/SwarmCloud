@@ -133,10 +133,16 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
 /**
  * One agent, with its event timeline.
  *
- * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is deliberately NOT
- * called: it reads a Firestore subcollection nothing writes, so it returns []
- * for every task forever. Artifacts come off `task.result_summary`, which the
- * worker really populates. See ResultSummary in types.ts.
+ * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is not called because
+ * it would be a second copy of something the first read already carries. The
+ * route used to read a Firestore subcollection nothing writes, and answered
+ * [] for every task; it has since been pointed at the real writer, and
+ * `store.list_artifacts` now serves the manifest out of `task.result_summary`
+ * (`artifacts`, `artifacts_skipped`, and a `complete` flag that is simply
+ * whether `result_summary` exists). That is the same field this screen reads
+ * off the task document, so a third request would fetch the same manifest
+ * again -- one more read that could fail on its own and disagree with the
+ * first. See ResultSummary in types.ts.
  */
 export interface AgentDetail {
   task: Task

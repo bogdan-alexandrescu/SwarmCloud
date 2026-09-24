@@ -666,12 +666,21 @@ greyscale.
 >
 > **One named exception, and it is a grey.** Overview draws a *projected*
 > utilisation reading (real, but its window reset or its poll is stale) with
-> `.ctl-util-fill.ov-projected { background: var(--ctl-absent) }`. That rule
+> `.ctl-util-fill.ov-projected { background: var(--text-faint) }`. That rule
 > shipped before this decision and the first guard never saw it. It is now
 > listed by name in the test's `DOCUMENTED_GREYS`, and
-> `test_a_documented_grey_is_a_grey` resolves `--ctl-absent` through
-> `--text-faint` to a text grey. So "grey like every other proportion" holds
-> for it, in a second grey that means "not current".
+> `test_a_documented_grey_is_a_grey` resolves it to a text grey. So "grey like
+> every other proportion" holds for it, in a second grey that means "not
+> current".
+>
+> It was spelled `var(--ctl-absent)` while `--ctl-absent` was
+> `var(--text-faint)`. The ui-hygiene lane (PR #26) then split `--ctl-absent`
+> into its own warm stone so an absence no longer matches the CANCELLED fill,
+> and on merge that would have turned this bar warm: a colour picked to differ
+> from grey by its hue, on a fill this decision says is grey.
+> `test_a_documented_grey_is_a_grey` failed on exactly that. The bar now names
+> `--text-faint`, the pixel it always painted, and the tilde beside it (text,
+> not a fill) keeps `--ctl-absent`.
 >
 > **What this does not cover, found while answering it.** The decision was
 > framed as "grey like every other proportion", and three bar fills outside the
