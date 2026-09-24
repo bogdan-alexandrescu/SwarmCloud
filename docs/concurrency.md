@@ -252,6 +252,9 @@ make failure-test        # every failure path returns its capacity
 make test                # the pure admission logic, exhaustively, no emulator
 ```
 
-`race-test.sh` narrows a **narrow** pool (`runner:<profile>`) rather than the
-global pool, so the rest of the platform keeps working while it runs, and it
-restores the original limit on every exit path.
+`race-test.sh` narrows a **narrow** pool (`runner:mock`, and only that one)
+rather than the global pool, so the rest of the platform keeps working while it
+runs, and it restores the original limit on every exit path. Both the narrow and
+the restore go through `PUT /v1/admin/limits/runner/mock`, the same route an
+operator uses, so the suite never writes `active` — the counter only admission
+and release may move.

@@ -12,81 +12,71 @@
 #     workspace. Fencing generations exist to make the stale one exit without
 #     running (CONTRACT.md invariant 5).
 #
-# The last-slot test narrows a NARROW pool (runner:<profile>), never the global
+# The last-slot test narrows a NARROW pool (runner:mock), never the global
 # pool, so the rest of the platform keeps working while it runs. The original
 # limit is restored on every exit path.
 #
 # ---------------------------------------------------------------------------
-# THIS SUITE CANNOT RUN IN-VPC TODAY, AND THE REASON IS A DECISION NOBODY HAS
-# TAKEN YET.
+# HOW THIS SUITE IS ALLOWED TO NARROW A POOL -- owner decision, 2026-09-24
 # ---------------------------------------------------------------------------
 #
-# Narrowing the pool is a WRITE. `swarm-verify` -- the identity that runs the
-# in-VPC gate, because swarm-api's ingress refuses a laptop -- holds
-# roles/datastore.viewer (terraform/infra/verify.tf), so `fs_patch` below is
-# refused and this is the one target of the four that fails. It is not broken;
-# it is unauthorised, and which authority to grant is a security question with
-# three real answers. They are written out here, next to the code that needs the
-# permission, rather than in a document somebody has to find.
+# Through the admin API, and through nothing else:
 #
-# terraform/ is TRACK C. Whichever option is chosen, the grant is Track C's to
-# make; this comment is a request, not a change.
+#     PUT /v1/admin/limits/runner/mock   {"limit": N}
 #
-# OPTION A -- grant swarm-verify a Firestore write role.
-#   Cost: Firestore IAM cannot scope below the DATABASE. This repository already
-#   established that and pays for it elsewhere: Firestore does not evaluate IAM
-#   Conditions on the data plane (tests/integration/test_register_tenant_grants.py),
-#   so there is no such thing as a grant scoped to `pools/*`. roles/datastore.user
-#   therefore means create, update and DELETE on every document in the `swarm`
-#   database -- every tenant's tasks, leases, attempts and secrets metadata, and
-#   the `pools/*` documents the whole platform admits against. It is also
-#   unattributed: a direct REST PATCH writes no event, increments no metric and
-#   names no actor, so nothing afterwards can say the test did it.
-#   And it keeps alive the exact capability this file's own comment (below, at
-#   "Narrow ${POOL_NAME}") says must never be exercised: writing `active`
-#   outside the admission transaction, which silently inflates capacity on a
-#   live deployment and makes the oversubscription assertion pass on a platform
-#   that is oversubscribed.
+# `swarm-verify` -- the identity the in-VPC gate runs as, because swarm-api's
+# ingress refuses a laptop -- is a platform admin in dev (`admin_users` in
+# terraform/environments/dev/dev.tfvars). Until then it held
+# roles/datastore.viewer alone, the narrowing Firestore PATCH was refused 403,
+# and this was the one target of the gate that could not run. The three
+# options weighed and why this one won are in
+# docs/audits/2026-09-22/race-test-needs-a-write.md. The part worth keeping
+# next to the code, so nobody drifts back to a direct write:
 #
-# OPTION B (RECOMMENDED) -- make swarm-verify an admin and narrow through
-#   `PUT /v1/admin/limits/runner/{profile}`.
-#   The capability is shaped like the operation, in four ways that A is not:
-#     * BOUNDED. `LimitRequest.limit` is `ge=0, le=100000` and `_check_runner`
-#       refuses any profile not in the frozen catalogue, so the request cannot
-#       name a pool that does not exist.
-#     * INCAPABLE OF THE DANGEROUS WRITE. `Store.upsert_pool` sets `hard_limit`
-#       and `enabled` and touches nothing else -- there is no value of this
-#       request that writes `active`. The field this file warns about becomes
-#       unreachable rather than merely unwritten.
-#     * ATTRIBUTED AND AUDITED. The route runs under `admin_auth`, the actor is
-#       the verified identity from the token, and it increments
-#       `admin_actions{action="limit_runner"}`.
-#     * ALREADY THE SUPPORTED PATH. It is what an operator uses during an
-#       incident, so the test exercises the interface the platform actually
-#       offers instead of reaching behind it.
-#   Cost, stated rather than minimised: `admin_auth` is ONE boolean. Admin is
-#   not scoped to one pool, so this identity would also gain pause/resume
-#   dispatch, provider and resource drains, tenant limits, and the admin read
-#   surfaces. That is a genuine widening. It is still far narrower than A --
-#   every one of those operations is bounded, validated and recorded, none of
-#   them reads a secret or another tenant's artifact, and all of them are
-#   reversible through the same API. The grant is one line:
-#   `admin_users` in terraform/environments/<env>/<env>.tfvars gaining
-#   `swarm-verify@<project>.iam.gserviceaccount.com`, which
-#   terraform/infra/locals.tf already wires to ADMIN_USERS. Grant it in dev and
-#   staging; there is no reason for the gate to be an admin in prod.
+#   * A Firestore write role cannot be scoped below the DATABASE. It would be
+#     create/update/delete over every tenant's tasks, leases and attempts and
+#     over the `pools/*` documents admission counts against -- and it would keep
+#     alive the one write this file must never make: `active` outside the
+#     admission transaction (see "Narrow" below for what that did once).
+#   * The admin route is shaped like the operation. It refuses a pool name
+#     outside the frozen catalogue, bounds the value (LimitRequest: 0..100000),
+#     has no parameter that reaches `active`, runs as the verified caller, and
+#     stamps that caller on the pool document as `admin_changed_by`.
 #
-# OPTION C -- add no permission and race the pool at its real limit.
-#   Submit `effective_limit + N` tasks and race those. Needs no grant at all,
-#   and is the wrong trade here: the limit on a real deployment is large, so
-#   forcing contention means saturating a pool with test work in a project
-#   SHARED with another team, and the contention window stops being
-#   deterministic -- which is the whole property this suite exists to pin.
+# The cost, stated rather than minimised: admin is ONE boolean. The gate can
+# also pause dispatch, drain a provider for every tenant and set any ceiling.
+# All of those are reversible in one call, and none can touch `active`, a tenant
+# document or a secret. It is granted in dev only.
 #
-# Until one is chosen, `make verify-remote` reports race-test as FAILED. That is
-# the correct reading: the property is unverified. Do not make it skip.
+# FOUR REFUSALS FOLLOW FROM USING THE API, all checked before the first write,
+# because in each case the API could not undo what the suite would do:
 #
-# Usage: scripts/race-test.sh [--profile mock] [--parallel 12] [--timeout 300]
+#   * `--profile` must be `mock`. mock has no provider, so a narrowed runner:mock
+#     holds up nothing but this suite's own tasks, and the verify tenant
+#     (`providers = []`) cannot run anything else anyway. Narrowing
+#     runner:claude-code to one slot would serialise every tenant's real agents
+#     behind a single lease on a shared, live platform.
+#   * The pool must EXIST. Store.upsert_pool creates a pool it cannot find, and
+#     no admin route deletes one -- so a narrow would leave behind a ceiling on a
+#     pool that admission used to treat as unlimited.
+#   * The pool must be ENABLED. The runner route never touches `enabled`, there
+#     is no undrain route for a runner pool, and a drained pool admits nothing,
+#     so there would be nothing to race for. The old PATCH silently re-enabled
+#     it, undoing an operator's drain.
+#   * Its ceiling must be within LimitRequest's bound (API_LIMIT_MAX below), or
+#     the narrow succeeds and the restoring PUT is a 422.
+#
+# The restore goes through the same route, runs from the EXIT trap on every path
+# (INT and TERM re-raise), and reports what the pool READS afterwards rather
+# than what the write returned.
+#
+# OBSERVATIONS still read Firestore directly, as in every suite
+# (scripts/lib/testlib.sh): a broken API must not be able to report its own
+# success, so the readback that decides whether the narrow landed is not the
+# PUT's response body.
+#
+# Usage: scripts/race-test.sh [--parallel 12] [--limit 1] [--timeout 300]
+#        --profile is still accepted, and anything but `mock` is refused.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -102,15 +92,22 @@ PARALLEL=12
 TIMEOUT=300
 SLOT_LIMIT=1
 
+# The largest ceiling PUT /v1/admin/limits/* accepts: `LimitRequest.limit` is
+# `Field(ge=0, le=100_000)` in apps/swarm-api/swarm_api/schemas.py. A MIRRORED
+# VALUE, and tests/unit/scripts/test_race_test_limit_bound.py fails the moment
+# the two disagree -- a stale copy here would either refuse a restorable pool or,
+# worse, narrow one whose restore the API then rejects.
+API_LIMIT_MAX=100000
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)  PROFILE="$2"; shift 2 ;;
     --parallel) PARALLEL="$2"; shift 2 ;;
     --limit)    SLOT_LIMIT="$2"; shift 2 ;;
     --timeout)  TIMEOUT="$2"; shift 2 ;;
-    # Through the permission section: an operator running --help on a target
-    # that fails needs to read WHY it fails, not just what its flags are.
-    -h|--help)  sed -n '2,89p' "$0"; exit 0 ;;
+    # Through the permission section: an operator running --help needs to read
+    # HOW this suite is allowed to change a live ceiling, not just its flags.
+    -h|--help)  sed -n '2,79p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -134,25 +131,45 @@ done
 [[ "${SLOT_LIMIT}" =~ ^[0-9]+$ ]] || die "--limit must be a whole number, not '${SLOT_LIMIT}'"
 [[ "${SLOT_LIMIT}" -lt "${PARALLEL}" ]] || die "--limit ${SLOT_LIMIT} is not below --parallel ${PARALLEL}: every task would be admitted and nothing would contend"
 
+# Before require_platform, so a refused profile costs no request at all. See the
+# header for why this is a refusal and not a warning.
+if [[ "${PROFILE}" != "mock" ]]; then
+  die "race-test only runs against the mock profile, not '${PROFILE}': it narrows runner:${PROFILE} to ${SLOT_LIMIT} slot(s) on a live, shared platform, and every other profile is backed by a provider whose tenants' real agents would queue behind that slot for the whole run"
+fi
+
 step "Race conditions: ${PROJECT_ID} / ${ENVIRONMENT}"
 require_platform
 
 POOL_NAME="runner:${PROFILE}"
+# Relative to API_PREFIX, which api_send prepends -- and exactly what
+# scripts/api.sh takes, so the fix printed below can be pasted as it stands.
+LIMIT_ROUTE="/admin/limits/runner/${PROFILE}"
 TASK_IDS=()
-POOL_EXISTED=0
-ORIGINAL_LIMIT=""
-ORIGINAL_ENABLED="true"
 
-ORIGINAL_POOL="$(pool_doc "${POOL_NAME}")"
-if [[ "${ORIGINAL_POOL}" != "null" && -n "${ORIGINAL_POOL}" ]]; then
-  POOL_EXISTED=1
-  ORIGINAL_LIMIT="$(jq -r '.hard_limit // 0' <<<"${ORIGINAL_POOL}")"
-  ORIGINAL_ENABLED="$(jq -r 'if .enabled == false then "false" else "true" end' <<<"${ORIGINAL_POOL}")"
+# ---------------------------------------------------------------------------
+# What the pool is BEFORE anything changes, and whether the API could put it
+# back. Every refusal here happens before the first write, so a refused run
+# leaves the platform exactly as it found it.
+# ---------------------------------------------------------------------------
+if ! ORIGINAL_POOL="$(pool_doc "${POOL_NAME}")"; then
+  die "could not read pools/${POOL_NAME}; the Firestore error is above. The ceiling this suite restores has to be known before it is changed."
+fi
+if [[ -z "${ORIGINAL_POOL}" || "${ORIGINAL_POOL}" == "null" ]]; then
+  die "${POOL_NAME} has no pool document. Provisioning creates pools (terraform/modules/firestore); this suite does not. The admin API would CREATE it, and no admin route can delete it afterwards, so the narrow could not be undone."
+fi
+ORIGINAL_LIMIT="$(jq -r '.hard_limit // empty' <<<"${ORIGINAL_POOL}")"
+[[ "${ORIGINAL_LIMIT}" =~ ^[0-9]+$ ]] \
+  || die "${POOL_NAME} has no readable hard_limit ('${ORIGINAL_LIMIT}'), so there is nothing to restore it to"
+[[ "${ORIGINAL_LIMIT}" -le "${API_LIMIT_MAX}" ]] \
+  || die "${POOL_NAME} hard_limit is ${ORIGINAL_LIMIT}, above the ${API_LIMIT_MAX} the admin API accepts. The narrow would land and its restore would be refused 422, leaving the pool at ${SLOT_LIMIT} slot(s). Set a ceiling the API can express first."
+# `== false`, not `// true`: jq's alternative operator reads false as absent.
+if [[ "$(jq -r 'if .enabled == false then "drained" else "open" end' <<<"${ORIGINAL_POOL}")" == "drained" ]]; then
+  die "${POOL_NAME} is drained (enabled = false): somebody stopped admissions into it, and a drained pool admits nothing, so there is nothing to race for. The runner-limit route does not touch enabled and this suite will not undo a drain. Re-enable it deliberately, then re-run."
 fi
 
 # `restored` USED TO BE PRINTED WHETHER OR NOT ANYTHING WAS RESTORED, and the
 # in-VPC run on 2026-09-22 is the proof. The narrowing PATCH was refused 403
-# (the verify identity holds roles/datastore.viewer, so it cannot write
+# (the verify identity held roles/datastore.viewer, so it could not write
 # Firestore at all), the script died on it under `set -e`, this trap fired, the
 # restoring PATCH was refused 403 by exactly the same IAM -- and the log said
 #
@@ -165,14 +182,15 @@ fi
 # indistinguishable from the condition it checks.
 #
 # It matters beyond the log. The case this line exists for is the one where the
-# narrow SUCCEEDED and the restore then failed -- a 429, a dropped connection, a
-# role revoked mid-run. Then runner:mock is left pinned at one slot on a live
-# deployment, every mock task after this run serialises behind a single lease,
-# and the only record of it says it was put back.
+# narrow SUCCEEDED and the restore then failed -- a 429, a dropped connection,
+# admin revoked mid-run by a redeploy. Then runner:mock is left pinned at one
+# slot on a live deployment, every mock task after this run serialises behind a
+# single lease, and the only record of it says it was put back.
 #
 # So: say nothing when nothing was changed, verify the restore by READING the
 # pool back rather than trusting the write's status, and when it did not take,
-# print the exact command that fixes it.
+# print the exact command that fixes it -- through the same admin route, so the
+# repair is as bounded and as attributed as the change it undoes.
 NARROWED=0
 RESTORED=0
 
@@ -195,6 +213,15 @@ _pool_hard_limit() {
   fi
 }
 
+# _set_limit N OUTFILE -- the one write this suite makes, in one place.
+#
+# api_send is called DIRECTLY, not inside "$(...)": a command substitution runs
+# in a subshell, and the API_STATUS the caller reads afterwards would be
+# whatever the previous request left behind (CLAUDE.md, "Writing scripts").
+_set_limit() {
+  api_send PUT "${LIMIT_ROUTE}" "$(jq -nc --argjson l "$1" '{limit:$l}')" "$2"
+}
+
 restore() {
   # Idempotent: the INT and TERM handlers below call this and then exit, which
   # fires the EXIT trap and would otherwise run the whole thing a second time --
@@ -204,44 +231,35 @@ restore() {
 
   # THE VERDICT COMES FROM THE POOL, NOT FROM THE WRITE. Whether this suite is
   # finished with the platform is a question about what the pool document says
-  # now; the status of the PATCH meant to change it is at best evidence.
+  # now; the status of the PUT meant to change it is at best evidence.
   # Reading first also keeps the common case silent: when the narrowing write
   # was itself refused there is nothing to undo, and a restoring write refused
-  # by the same IAM would print an error about a problem that does not exist.
-  local before="" after=""
+  # for the same reason would print an error about a problem that does not
+  # exist.
+  local before="" after="" out="" answered=""
   if [[ "${NARROWED}" -eq 1 ]]; then
     before="$(_pool_hard_limit)"
-    if [[ "${POOL_EXISTED}" -eq 1 ]]; then
-      if [[ "${before}" == "${ORIGINAL_LIMIT}" ]]; then
-        : # Already where it belongs -- the narrow never landed. Say nothing.
+    if [[ "${before}" != "${ORIGINAL_LIMIT}" ]]; then
+      out="$(mktemp "${TMPDIR:-/tmp}/swarm-race-restore.XXXXXX")"
+      # The status is KEPT, not discarded: it is the second line of the report
+      # below when the readback disagrees. api_send has already printed the
+      # redacted body of a refusal.
+      if _set_limit "${ORIGINAL_LIMIT}" "${out}"; then
+        answered="HTTP ${API_STATUS}"
       else
-        fs_patch "pools/${POOL_NAME}" "hard_limit,enabled,updated_at" \
-          "$(jq -nc --argjson l "${ORIGINAL_LIMIT:-0}" --argjson e "${ORIGINAL_ENABLED}" --arg t "$(iso_now)" \
-            '{hard_limit:{integerValue:($l|tostring)},enabled:{booleanValue:$e},updated_at:{timestampValue:$t}}')" \
-          >/dev/null 2>&1 || true
-        after="$(_pool_hard_limit)"
-        if [[ "${after}" == "${ORIGINAL_LIMIT}" ]]; then
-          info "restored ${POOL_NAME} hard_limit to ${ORIGINAL_LIMIT} (confirmed by readback)"
-        else
-          err "COULD NOT RESTORE ${POOL_NAME}. It is still narrowed, and every ${PROFILE} task"
-          err "on this deployment will serialise behind ${SLOT_LIMIT} slot(s) until it is put back."
-          err "  hard_limit now reads: ${after}    it should be: ${ORIGINAL_LIMIT}"
-          err "  fix with: scripts/pool-limit.sh --pool ${POOL_NAME} --limit ${ORIGINAL_LIMIT}"
-        fi
+        answered="HTTP ${API_STATUS}, error above"
       fi
-    else
-      if [[ "${before}" == "absent" ]]; then
-        : # The pool this run would have created is not there. Nothing to remove.
+      rm -f "${out}"
+      after="$(_pool_hard_limit)"
+      if [[ "${after}" == "${ORIGINAL_LIMIT}" ]]; then
+        info "restored ${POOL_NAME} hard_limit to ${ORIGINAL_LIMIT} (confirmed by readback)"
       else
-        fs_delete "pools/${POOL_NAME}" >/dev/null 2>&1 || true
-        after="$(_pool_hard_limit)"
-        if [[ "${after}" == "absent" ]]; then
-          info "removed the temporary ${POOL_NAME} pool"
-        else
-          err "COULD NOT REMOVE the temporary ${POOL_NAME} pool (hard_limit ${after})."
-          err "  An unconfigured pool is unlimited; this one is not, so it now caps ${PROFILE}."
-          err "  fix by deleting the document pools/${POOL_NAME}"
-        fi
+        err "COULD NOT RESTORE ${POOL_NAME}. It is still narrowed, and every ${PROFILE} task"
+        err "on this deployment will serialise behind ${SLOT_LIMIT} slot(s) until it is put back."
+        err "  the restoring PUT ${API_PREFIX}${LIMIT_ROUTE} answered ${answered}"
+        err "  hard_limit now reads: ${after}    it should be: ${ORIGINAL_LIMIT}"
+        err "  fix with:  scripts/api.sh PUT ${LIMIT_ROUTE} '{\"limit\":${ORIGINAL_LIMIT}}'"
+        err "  (as a platform admin; through the front door that means SWARM_IMPERSONATE_SA)"
       fi
     fi
   fi
@@ -261,15 +279,16 @@ trap 'restore; exit 130' INT
 trap 'restore; exit 143' TERM
 
 # ---------------------------------------------------------------------------
-t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s)"
+t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s) through the admin API"
 #
-# `active` IS NOT IN THE FIELD MASK, and must never be.
+# `active` IS NEVER WRITTEN, and now CANNOT be.
 #
-# It used to be: this read `active`, then wrote it back in a plain PATCH,
-# milliseconds before launching the concurrent submissions this test exists to
-# race. Firestore's REST PATCH is not transactional, so an admission committing
-# between the read and the write was silently clobbered -- the pool's `active`
-# dropped below its true value and capacity was inflated on a live deployment.
+# It used to be: this read `active`, then wrote it back in a plain Firestore
+# PATCH, milliseconds before launching the concurrent submissions this test
+# exists to race. Firestore's REST PATCH is not transactional, so an admission
+# committing between the read and the write was silently clobbered -- the pool's
+# `active` dropped below its true value and capacity was inflated on a live
+# deployment.
 #
 # Worse, it broke the test's own purpose: the clobber lowers `active`, so the
 # "narrowed pool is never over its limit" assertion below would PASS on a
@@ -277,28 +296,30 @@ t_case "Narrow ${POOL_NAME} to ${SLOT_LIMIT} slot(s)"
 # oversubscription could mask it.
 #
 # swarm_common.models.SlotPool says `active` is mutated ONLY inside the admission
-# and release transactions. Every sibling script honours that -- register-tenant
-# patches only hard_limit, pause-swarm only enabled -- and so does this now. A
-# pool that does not exist yet is created with active=0, which is safe because
-# no lease can be holding a pool document that has never existed.
+# and release transactions. The field mask was the first fix; the admin route is
+# the second and the structural one: Store.upsert_pool has no parameter that
+# reaches `active`, so there is no value of this request that can write it.
 #
-# ARMED BEFORE THE WRITE, not after. A PATCH that times out may still have been
+# ARMED BEFORE THE WRITE, not after. A PUT that times out may still have been
 # applied by the server, so "the write failed" is not the same as "nothing
 # changed"; only a read settles it, and `restore` above does exactly that. Set
 # afterwards, an ambiguous write would leave the pool narrowed and the trap
 # would skip it.
 NARROWED=1
-if [[ "${POOL_EXISTED}" -eq 1 ]]; then
-  fs_patch "pools/${POOL_NAME}" "hard_limit,enabled,updated_at" \
-    "$(jq -nc --argjson l "${SLOT_LIMIT}" --arg t "$(iso_now)" \
-      '{hard_limit:{integerValue:($l|tostring)},enabled:{booleanValue:true},
-        updated_at:{timestampValue:$t}}')"
-else
-  fs_patch "pools/${POOL_NAME}" "name,hard_limit,active,enabled,updated_at" \
-    "$(jq -nc --arg n "${POOL_NAME}" --argjson l "${SLOT_LIMIT}" --arg t "$(iso_now)" \
-      '{name:{stringValue:$n},hard_limit:{integerValue:($l|tostring)},
-        active:{integerValue:"0"},enabled:{booleanValue:true},updated_at:{timestampValue:$t}}')"
+NARROW_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-race-narrow.XXXXXX")"
+if ! _set_limit "${SLOT_LIMIT}" "${NARROW_OUT}"; then
+  rm -f "${NARROW_OUT}"
+  if [[ "${API_STATUS}" == "403" ]]; then
+    # An IAP refusal has already been explained by api_request. This is the
+    # other 403: swarm-api knew the caller and the caller is not an admin.
+    t_info "A 403 from swarm-api here means the caller is not a platform admin."
+    t_info "The gate's identity is made one through admin_users in"
+    t_info "terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars (bare email, no"
+    t_info "serviceAccount: prefix) and the release that applies it."
+  fi
+  t_fatal "could not narrow ${POOL_NAME}: PUT ${API_PREFIX}${LIMIT_ROUTE} answered HTTP ${API_STATUS}"
 fi
+rm -f "${NARROW_OUT}"
 
 # THE READBACK IS THE TEST, AND IT HAS TO BE FATAL.
 #
@@ -330,7 +351,7 @@ if ! NARROW_DOC="$(pool_doc "${POOL_NAME}")"; then
   t_fatal "could not read ${POOL_NAME} back after narrowing it; the error is above. An unread ceiling is not a narrowed one."
 fi
 if [[ -z "${NARROW_DOC}" || "${NARROW_DOC}" == "null" ]]; then
-  t_fatal "${POOL_NAME} does not exist after the write that was supposed to create it"
+  t_fatal "${POOL_NAME} does not exist after the write that was supposed to narrow it"
 fi
 NARROW_EFFECTIVE="$(printf '%s' "${NARROW_DOC}" | jq -r "${FS_JQ} effective_limit")"
 if [[ "${NARROW_EFFECTIVE}" != "${SLOT_LIMIT}" ]]; then
@@ -338,6 +359,15 @@ if [[ "${NARROW_EFFECTIVE}" != "${SLOT_LIMIT}" ]]; then
   t_fatal "${POOL_NAME} effective_limit is ${NARROW_EFFECTIVE}, not ${SLOT_LIMIT}: there is nothing for the tasks below to race for"
 fi
 t_pass "${POOL_NAME} effective_limit: ${NARROW_EFFECTIVE}"
+# Who the API says made the change. Reported, not asserted: a swarm-api older
+# than the attribution on the limit routes writes no admin_changed_by, and that
+# is a fact about the deployment rather than a failure of this race.
+NARROWED_BY="$(printf '%s' "${NARROW_DOC}" | jq -r '.admin_changed_by // empty')"
+if [[ -n "${NARROWED_BY}" ]]; then
+  t_info "swarm-api recorded the narrow as made by ${NARROWED_BY}"
+else
+  t_info "the pool carries no admin_changed_by: this swarm-api does not yet attribute limit changes"
+fi
 
 # ---------------------------------------------------------------------------
 t_case "${PARALLEL} tasks race for ${SLOT_LIMIT} slot(s)"

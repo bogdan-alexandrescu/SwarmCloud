@@ -20,11 +20,13 @@
 # and an out-of-date statement of what an identity can do is how the next
 # permission gets granted without anyone weighing it.
 #
-# ONE TARGET CANNOT RUN WITH THOSE GRANTS. race-test narrows a pool to force
-# contention, which is a WRITE, and roles/datastore.viewer cannot make it. That
-# is a deliberate open question about which permission to add, not an oversight;
-# the options, their blast radius and the recommendation are written out at the
-# top of scripts/race-test.sh, next to the code that needs the permission.
+# ONE TARGET NEEDS MORE THAN THOSE GRANTS. race-test narrows a pool to force
+# contention, which is a WRITE, and roles/datastore.viewer cannot make it. The
+# owner decided on 2026-09-24 that it goes through the admin API rather than a
+# Firestore write role: in dev the job's identity is also in `admin_users`, and
+# race-test narrows runner:mock with PUT /v1/admin/limits/runner/mock. Of the
+# default targets below, that is the only write made outside the job's own
+# tenant. Why, and what admin costs, is at the top of scripts/race-test.sh.
 #
 # Exit code is the job's exit code. A gate that swallows the failure it was
 # built to catch is worse than no gate, so nothing here uses `|| true` and the
