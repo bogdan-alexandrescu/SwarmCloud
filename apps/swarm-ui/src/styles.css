@@ -1382,9 +1382,10 @@ body {
      * `.is-unknown` -- hatched, no fill, NO AXIS, because there is no scale to
        start. That is the untrusted-rollup case, which used to draw no track at
        all and lean on amber words that vanish at 560px;
-     * the fill in `--info` rather than `--ok`. Nothing is coloured for being
-       healthy (§6.7): a board of green bars spends the eye's whole severity
-       budget on the workflows that are fine. */
+     * the fill in the monochrome `--text-dim` rather than `--ok`. Nothing is
+       coloured for being healthy (§6.7): a board of green bars spends the
+       eye's whole severity budget on the workflows that are fine. (It was
+       `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
 .wf-meter { flex: none; width: 54px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
@@ -5372,25 +5373,17 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    beside a number -- keeps `--info`; `.ctl-util-fill` -- the bar that is a
    row of its own -- does not. */
 .ctl-util-fill { background: var(--text-dim); }
-/* WORKFLOWS IS FROZEN, AND THIS IS THE ONE LINE THAT PROVES IT WAS CHECKED
-   RATHER THAN ASSUMED.
+/* THE WORKFLOWS METER IS GREY TOO, AND THERE IS NO LINE HERE SAYING OTHERWISE.
    ---------------------------------------------------------------------------
-   `.wf-meter`'s fill carries `ctl-util-fill wf-meter-fill` -- deliberately, so
-   the drawing is the shared primitive's -- which means the monochrome default
-   above reached straight into the one screen the owner named as ALREADY
-   CORRECT and turned its 54px meter grey. That was found by screenshotting
-   Workflows after the change, not by reasoning about selectors, and it is
-   exactly the kind of blast radius a token pass is supposed to have and a
-   token pass is supposed to check.
-
-   So the meter keeps `--info` and Workflows renders pixel-identically to the
-   version the owner approved. THIS IS AN EXEMPTION, NOT A SECOND RULE: it
-   leaves the product with one blue proportion and every other proportion grey,
-   which is an inconsistency held open ON PURPOSE because resolving it means
-   changing a screen that was explicitly frozen. design-system.md sec 6.4
-   records it as a question for the owner rather than a decision this pass
-   made. */
-.ctl-util-fill.wf-meter-fill { background: var(--info); }
+   `.wf-meter`'s fill carries `ctl-util-fill wf-meter-fill`, so the default
+   above reaches it. It used to be exempted back to `--info` by one rule,
+   `.ctl-util-fill.wf-meter-fill`, held open as a question because Workflows
+   had been frozen. OWNER DECISION, 2026-09-24 (design-system.md sec 6.4): the
+   meter goes grey like every other proportion. One rule, and colour on a bar
+   is a verdict -- "three of five steps done" is not one. The verdict fills
+   below keep their hue and texture. Do not add a screen-scoped exemption
+   back: `test_a_proportion_fill_takes_a_hue_only_from_a_verdict` fails on any
+   un-verdicted `.ctl-util-fill` rule that paints a hue, whatever it is named. */
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,
