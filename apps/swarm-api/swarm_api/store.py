@@ -29,12 +29,21 @@ processes. Two tasks created in the same microsecond would collapse a page
 boundary; ids are generated with microsecond-resolution timestamps and random
 suffixes, so that is a theoretical rather than an operational concern, and the
 `id` tiebreak below makes it deterministic anyway.
+
+The EVENTS and cross-task ATTEMPTS pages use a (timestamp, document id) keyset
+instead -- `_keyset_page` -- because for them a collapsed boundary is not
+theoretical to their callers: `swarm_mcp.follow` gave up on a timestamp cursor
+precisely because "two events written in the same microsecond ... a timestamp
+cursor would either duplicate or drop". Both still order on ONE field, so both
+are served by the single-field index on it (events) or by the composite index
+already declared (`attempts-tenant-created`); no index is added.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +52,7 @@ from typing import Any, Callable, Iterable, Sequence
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from swarm_common.admission import _snapshot
 from swarm_common.models import (
     Attempt,
     Lease,
@@ -56,7 +66,13 @@ from swarm_common.models import (
     new_id,
     utcnow,
 )
-from swarm_common.states import EventType, TaskState, assert_transition
+from swarm_common.states import (
+    PENDING_STATES,
+    TERMINAL_STATES,
+    EventType,
+    TaskState,
+    assert_transition,
+)
 
 from .codec import (
     attempt_from_dict,
@@ -72,7 +88,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
-from .errors import Conflict, NotFound, ValidationFailed
+from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +121,16 @@ _STEP_READ_BUDGET = 500
 #: Writing 0 there instead would turn "drain this resource class" into "cap it at
 #: zero forever", and undraining would silently leave it blocked.
 UNLIMITED_HARD_LIMIT = 1_000_000
+
+#: Documents one keyset page may read because they share a single instant.
+#:
+#: A page boundary that falls inside a run of equal timestamps is placed by
+#: document id, which means reading the whole run. Every writer of an event or
+#: an attempt stamps `utcnow()` at microsecond resolution, so a run is one
+#: document nearly always and a handful at worst. 1000 is far past anything
+#: those writers produce and still a bounded read; past it the page refuses
+#: (`Unpageable`) rather than guessing -- see `_same_instant`.
+_TIE_READ_LIMIT = 1000
 
 
 #: Google caps a service account id at 30 characters. Provisioning truncates to
@@ -159,9 +185,100 @@ def decode_cursor(token: str | None) -> datetime | None:
 
 
 @dataclass(frozen=True)
+class KeysetCursor:
+    """Where a keyset page stopped: the last row's timestamp and document id."""
+
+    at: datetime
+    doc_id: str
+
+
+def encode_keyset(*, scope: str, order: str, at: datetime, doc_id: str) -> str:
+    """An opaque token for the row a keyset page ended on.
+
+    `scope` and `order` travel inside the token so that a token is refused,
+    rather than reinterpreted, when it is sent back to a different listing or
+    in the other direction. Both misuses would otherwise produce a page that
+    looks right: an ascending cursor read descending serves the rows BEFORE it.
+
+    Nothing in it is a credential. It names a timestamp and a document id the
+    caller was already served, and every read it continues re-applies the
+    tenant check before the cursor is used.
+    """
+    payload = json.dumps(
+        {"v": 1, "s": scope, "o": order, "at": at.isoformat(), "id": doc_id},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def decode_keyset(token: str | None, *, scope: str, order: str) -> KeysetCursor | None:
+    if not token:
+        return None
+    try:
+        raw = json.loads(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
+        version, token_scope, token_order = raw["v"], raw["s"], raw["o"]
+        at = datetime.fromisoformat(raw["at"])
+        doc_id = raw["id"]
+        if version != 1 or not isinstance(doc_id, str) or not doc_id:
+            raise ValueError("not a keyset cursor")
+    except (binascii.Error, UnicodeError, ValueError, KeyError, TypeError, AttributeError):
+        # 422, as for `decode_cursor`: a bad token is a bad request, and a 404
+        # would say the caller's rows had disappeared.
+        raise ValidationFailed("page_token is not a valid cursor") from None
+    if token_scope != scope:
+        raise ValidationFailed(
+            "page_token was issued by a different listing; start again without it",
+            detail={"page_token_scope": token_scope},
+        )
+    if token_order != order:
+        raise ValidationFailed(
+            f"page_token was issued for order={token_order}; continue with the same "
+            "order, or start again without a token",
+            detail={"page_token_order": token_order, "requested_order": order},
+        )
+    return KeysetCursor(
+        at=at if at.tzinfo else at.replace(tzinfo=timezone.utc), doc_id=doc_id
+    )
+
+
+@dataclass(frozen=True)
 class Page:
     items: list[Any]
     next_page_token: str | None
+
+
+@dataclass(frozen=True)
+class LeaseScan:
+    """A lease listing plus what the read behind it actually covered.
+
+    The question this exists to answer is the accounting-drift check's: is
+    there a LIVE lease that is not in these rows? Only when there is none can
+    `units_held` against `pool.active` be read as evidence of a leak
+    (docs/audits/2026-09-20/data-gaps-found-by-fanout.md, section 1).
+
+    `active_beyond_window` is that answer: unreleased leases, under the same
+    tenant filter, that the window left out. It is the field to read.
+
+    `truncated` is only whether the window was full with more behind it. For
+    an active-only read that means more live leases than `limit`; for a
+    history read it means older documents exist, which after an
+    environment's 201st admission is true for ever -- lease documents are
+    never deleted and carry no TTL. It is kept for a pager, not for the
+    drift check.
+
+    `examined` is how many rows the route's `state` and `overdue_only`
+    filters ran over.
+
+    Computed HERE, where the query runs, and not inferred by a caller from the
+    page length: `len(leases) == limit` is false in exactly the case that
+    matters -- a window of released leases filtered down to nothing.
+    """
+
+    leases: list[Lease]
+    examined: int
+    truncated: bool
+    active_beyond_window: int
 
 
 @dataclass(frozen=True)
@@ -242,6 +359,124 @@ class Store:
     def _chunks(self, items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
         for start in range(0, len(items), size):
             yield items[start : start + size]
+
+    def _same_instant(
+        self,
+        base: Any,
+        field: str,
+        at: datetime,
+        decode: Callable[[dict[str, Any]], Any],
+    ) -> list[Any]:
+        """Every document under `base` whose `field` is exactly `at`.
+
+        An equality filter on the ordering field, which the same index serves.
+        BOUNDED, and loud past the bound: a run longer than `_TIE_READ_LIMIT`
+        cannot be ordered by id without reading all of it, and the alternative
+        to refusing is serving a page that skips or repeats rows with a 200.
+        """
+        query = base.where(filter=FieldFilter(field, "==", at)).limit(_TIE_READ_LIMIT + 1)
+        snaps = list(query.stream())
+        if len(snaps) > _TIE_READ_LIMIT:
+            log.error(
+                "more than %d documents share %s=%s; refusing to place a page boundary",
+                _TIE_READ_LIMIT, field, at.isoformat(),
+            )
+            raise Unpageable(
+                f"more than {_TIE_READ_LIMIT} records share one {field} timestamp, so "
+                "this page's boundary cannot be placed exactly; no writer on this "
+                "platform should produce that",
+                detail={"field": field, "at": at.isoformat()},
+            )
+        return [decode(snap.to_dict()) for snap in snaps]
+
+    def _keyset_page(
+        self,
+        base: Any,
+        *,
+        field: str,
+        decode: Callable[[dict[str, Any]], Any],
+        key: Callable[[Any], tuple[datetime, str]],
+        limit: int,
+        after: KeysetCursor | None,
+        descending: bool,
+        mint: Callable[[datetime, str], str],
+        lower: datetime | None = None,
+        upper: datetime | None = None,
+    ) -> Page:
+        """One page ordered by (`field`, document id), continuing from `after`.
+
+        WHY NOT A TIMESTAMP CURSOR. `at > t` drops the rest of a run of equal
+        timestamps at a boundary and `at >= t` serves it again. The order here
+        is (timestamp, id), which is total, and the token names both halves.
+
+        WHY NOT ORDER BY TWO FIELDS. `order_by(field).order_by(id)` needs a
+        composite index nobody has declared. So the query orders on `field`
+        alone -- served by the index that already exists -- and the id half of
+        the order is applied here, in the two places it can matter:
+
+          * the run AT the cursor's own instant is read whole
+            (`_same_instant`) and filtered by id; the window query then starts
+            strictly past that instant;
+          * when the window came back full and the page ends inside the run at
+            the window's far edge, that run is read whole too, because which of
+            its members the window happened to return is the backend's choice,
+            not the (timestamp, id) order the next token continues from.
+
+        Neither extra read happens on the first page of an untied history.
+
+        `lower` (inclusive) and `upper` (exclusive) bound `field`, so windows
+        with a shared edge tile without overlap. `base` must carry EQUALITY
+        filters only: the run reads add an equality on `field` to it.
+        """
+        mark = (after.at, after.doc_id) if after is not None else None
+
+        def inside(row: Any) -> bool:
+            at, doc_id = key(row)
+            if lower is not None and at < lower:
+                return False
+            if upper is not None and at >= upper:
+                return False
+            if mark is None:
+                return True
+            return (at, doc_id) < mark if descending else (at, doc_id) > mark
+
+        found: dict[str, Any] = {}
+
+        def keep(rows: Iterable[Any]) -> None:
+            for row in rows:
+                if inside(row):
+                    found.setdefault(key(row)[1], row)
+
+        window_query = base
+        if lower is not None:
+            window_query = window_query.where(filter=FieldFilter(field, ">=", lower))
+        if upper is not None:
+            window_query = window_query.where(filter=FieldFilter(field, "<", upper))
+        if after is not None:
+            keep(self._same_instant(base, field, after.at, decode))
+            window_query = window_query.where(
+                filter=FieldFilter(field, "<" if descending else ">", after.at)
+            )
+        window_query = window_query.order_by(
+            field,
+            direction=firestore.Query.DESCENDING if descending else firestore.Query.ASCENDING,
+        ).limit(limit + 1)
+        window = [decode(snap.to_dict()) for snap in window_query.stream()]
+        keep(window)
+
+        rows = sorted(found.values(), key=key, reverse=descending)
+        if len(window) > limit:
+            # Full window: every instant before its far edge was read whole,
+            # the edge's own run may not have been.
+            edges = [key(row)[0] for row in window]
+            edge = min(edges) if descending else max(edges)
+            if key(rows[limit - 1])[0] == edge:
+                keep(self._same_instant(base, field, edge, decode))
+                rows = sorted(found.values(), key=key, reverse=descending)
+
+        page = rows[:limit]
+        token = mint(*key(page[-1])) if len(rows) > limit else None
+        return Page(items=page, next_page_token=token)
 
     # -- tenants ----------------------------------------------------------
 
@@ -384,8 +619,12 @@ class Store:
         max_active: int | None = None,
         capacity_units: int | None = None,
         enabled: bool | None = None,
+        by: str | None = None,
     ) -> Tenant:
         """Change a tenant's limits, and move the pool that enforces them with it.
+
+        `by` is passed through to `upsert_pool` as the admin who made the
+        change; see there.
 
         Both `max_active` and `capacity_units` are ceilings on the SAME thing.
         `acquire_lease_in_transaction` increments every pool by the task's
@@ -420,7 +659,7 @@ class Store:
                     else current.capacity_units
                 ),
             )
-            self.upsert_pool(f"tenant:{tenant_id}", hard_limit=effective)
+            self.upsert_pool(f"tenant:{tenant_id}", hard_limit=effective, by=by)
         return tenant_from_dict(ref.get().to_dict())
 
     def register_credential(self, tenant_id: str, provider: str) -> Tenant:
@@ -521,43 +760,91 @@ class Store:
         straight to CANCELLED. A task that does hold capacity keeps it until the
         worker or the reconciler releases the lease, because releasing it from
         here would decrement a pool that the running container still occupies.
+
+        ONE TRANSACTION, AND THE STATE READ INSIDE IT IS THE PRECONDITION. The
+        branch -- cancel outright, flag only, or refuse -- is chosen from the
+        state this transaction read, and the write commits only if nobody has
+        changed the document since. This used to be a plain read, then a blind
+        `update`. Two things could land between them, and each was overwritten
+        by a decision about a document that no longer existed (incident
+        wf_ebb3ab2d65664707a559, F-9; latent, never observed):
+
+          * the scheduler admits the task. Read QUEUED, write CANCELLED over a
+            DISPATCHED task: a terminal task still holding a live lease, with
+            every pool it reserved still counted;
+          * the worker finishes the task. Read RUNNING, write the flag and a
+            `cancelled` event onto a SUCCEEDED task, and answer 200 where one
+            read later the answer is 409.
+
+        Inside a transaction Firestore serialises this against both writers.
+        Admission is itself transactional and re-reads the task, so it either
+        commits first (and this re-runs, sees LEASED/DISPATCHED and only flags)
+        or it reads CANCELLED / `cancel_requested` and denies. The worker's
+        terminal write works the same way. `test_request_cancel_is_
+        transactional.py` drives both interleavings through the real route.
+
+        The event is written in the same transaction as the flag, so a retried
+        attempt records it once, and an event never exists for a write that
+        did not commit.
+
+        WHAT THIS STILL DOES NOT DO, deliberately: release a lease or touch a
+        pool. Serialising the read does not make it safe to give capacity back
+        from here (CONTRACT invariant 1). Only the worker, which knows its
+        container has stopped, or the reconciler, which fences the generation
+        first, may do that.
         """
         ref = self._db.collection(TASKS).document(task_id)
-        snap = ref.get()
-        if not snap.exists or snap.to_dict().get("tenant_id") != tenant_id:
-            raise NotFound(f"task {task_id!r} not found")
-        task = task_from_dict(snap.to_dict())
-        now = self._now()
-        if task.state in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED,
-                          TaskState.DEAD_LETTERED}:
-            raise Conflict(
-                f"task {task_id!r} is already terminal ({task.state.value})",
-                detail={"state": task.state.value},
-            )
+        transaction = self._db.transaction()
 
-        patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
-        if task.state in {TaskState.SUBMITTED, TaskState.QUEUED, TaskState.READY,
-                          TaskState.PARKED}:
-            assert_transition(task.state, TaskState.CANCELLED)
-            patch["state"] = TaskState.CANCELLED.value
-            patch["completed_at"] = now
-            patch["park_reason"] = None
-            patch["blocked_by"] = []
-        ref.update(patch)
-        immediate = "state" in patch
-        self.append_event(
-            task_id=task_id,
-            tenant_id=tenant_id,
-            type=EventType.CANCELLED,
-            detail={
-                "requested_by": by,
-                "from_state": task.state.value,
-                # "cancel_requested" means the flag is set but the task still
-                # holds capacity: the worker or reconciler releases the lease.
-                "phase": "cancelled" if immediate else "cancel_requested",
-            },
-        )
-        return task_from_dict(ref.get().to_dict())
+        @firestore.transactional
+        def _apply(txn: Any) -> Task:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                raise NotFound(f"task {task_id!r} not found")
+            task = task_from_dict(data)
+            if task.state in TERMINAL_STATES:
+                raise Conflict(
+                    f"task {task_id!r} is already terminal ({task.state.value})",
+                    detail={"state": task.state.value},
+                )
+
+            now = self._now()
+            patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
+            if task.state in PENDING_STATES:
+                assert_transition(task.state, TaskState.CANCELLED)
+                patch["state"] = TaskState.CANCELLED.value
+                patch["completed_at"] = now
+                patch["park_reason"] = None
+                patch["blocked_by"] = []
+            txn.update(ref, patch)
+
+            immediate = "state" in patch
+            event = TaskEvent(
+                event_id=new_id("ev"),
+                task_id=task_id,
+                tenant_id=tenant_id,
+                type=EventType.CANCELLED,
+                at=now,
+                detail={
+                    "requested_by": by,
+                    "from_state": task.state.value,
+                    # "cancel_requested" means the flag is set but the task
+                    # still holds capacity: the worker or reconciler releases
+                    # the lease.
+                    "phase": "cancelled" if immediate else "cancel_requested",
+                },
+            )
+            txn.set(
+                ref.collection(EVENTS).document(event.event_id),
+                event_to_firestore(event),
+            )
+            # What THIS call committed, not a re-read afterwards: the route
+            # derives `released_immediately` from the returned state, and a
+            # re-read would report a worker's later CANCELLED as ours.
+            return task_from_dict({**data, **patch})
+
+        return _apply(transaction)
 
     def append_event(
         self,
@@ -590,16 +877,48 @@ class Store:
         )
         return event
 
-    def list_events(self, tenant_id: str, task_id: str, *, limit: int = 200) -> list[TaskEvent]:
+    def list_events(
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        limit: int = 200,
+        page_token: str | None = None,
+        descending: bool = False,
+    ) -> Page:
+        """One page of a task's events, oldest first unless `descending`.
+
+        THIS USED TO RETURN THE HEAD AND NOTHING ELSE: `order_by(at).limit(n)`
+        with no cursor, so a history longer than one page had an unreachable
+        tail -- the end of a long run, which is the part anybody opens it for.
+
+        THE DEFAULT IS UNCHANGED. No token and ascending is still "the oldest
+        `limit` events", and row N is still row N for every limit that reaches
+        it. `swarm_mcp.follow` keeps a COUNT as its cursor and depends on
+        exactly that, so the id tie-break below is the one Firestore already
+        applied implicitly (`__name__`, and an event's document id IS its
+        `event_id`) -- made explicit, not changed.
+
+        `descending` is the end of the run in one request.
+        """
         self.get_task(tenant_id, task_id)         # tenant check before any read
-        query = (
-            self._db.collection(TASKS)
-            .document(task_id)
-            .collection(EVENTS)
-            .order_by("at", direction=firestore.Query.ASCENDING)
-            .limit(limit)
+        order = "desc" if descending else "asc"
+        # Bound to the task: a token from another task's history would be a
+        # timestamp that means nothing here, served as though it did.
+        scope = f"events:{task_id}"
+        after = decode_keyset(page_token, scope=scope, order=order)
+        return self._keyset_page(
+            self._db.collection(TASKS).document(task_id).collection(EVENTS),
+            field="at",
+            decode=event_from_dict,
+            key=lambda event: (event.at, event.event_id),
+            limit=limit,
+            after=after,
+            descending=descending,
+            mint=lambda at, doc_id: encode_keyset(
+                scope=scope, order=order, at=at, doc_id=doc_id
+            ),
         )
-        return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
     @staticmethod
     def artifact_manifest(task: Task) -> "ArtifactManifest":
@@ -841,10 +1160,28 @@ class Store:
         enabled: bool | None = None,
         adaptive_target: int | None = None,
         quota_derived_limit: int | None = None,
+        by: str | None = None,
     ) -> SlotPool:
+        """Create or patch a pool's ceilings and switch. Never `active`.
+
+        `by` is the VERIFIED caller of an admin route, and only an admin route
+        passes it. It lands as `admin_changed_by` / `admin_changed_at`, not as
+        `updated_by`: `updated_at` on a pool is rewritten by the admission and
+        release transactions on every lease, so a name beside it would pair
+        one writer's timestamp with another writer's identity. Before this, a
+        ceiling the verification gate narrowed could not be told apart from
+        one an operator narrowed -- the only record was a counter with no
+        caller (docs/audits/2026-09-22/race-test-needs-a-write.md).
+
+        Internal writers (tenant creation, the quota broker) pass nothing, and
+        leave the last admin's name in place.
+        """
         ref = self._db.collection(POOLS).document(name)
         snap = ref.get()
         now = self._now()
+        attribution: dict[str, Any] = (
+            {"admin_changed_by": by, "admin_changed_at": now} if by else {}
+        )
         if not snap.exists:
             pool = SlotPool(
                 name=name,
@@ -866,10 +1203,11 @@ class Store:
                     "active": 0,
                     "enabled": pool.enabled,
                     "updated_at": now,
+                    **attribution,
                 }
             )
             return pool
-        patch: dict[str, Any] = {"updated_at": now}
+        patch: dict[str, Any] = {"updated_at": now, **attribution}
         if hard_limit is not None:
             patch["hard_limit"] = int(hard_limit)
         if enabled is not None:
@@ -905,26 +1243,106 @@ class Store:
         "which agents are holding capacity right now" unanswerable -- the
         single highest-value gap in the operator UI.
 
-        `active_only` filters to leases that have not been released. It is a
-        CLIENT-SIDE filter on purpose: `released_at == None` plus an ordered
-        `created_at` would need a third composite index for a predicate that
-        is true of almost every row in the window anyway. If that stops being
-        true, add the index rather than paging blindly.
+        `active_only` returns the newest `limit` UNRELEASED leases. It used to
+        read the newest `limit` documents of any state and drop the released
+        ones afterwards, so a live lease older than `limit` newer released
+        ones never reached the page -- and lease documents are never deleted,
+        so every environment past `limit` admissions was exposed to that. See
+        `scan_leases` for how the live set is read without a new index.
 
         `tenant_id` None means every tenant, which is why the route is
-        admin-gated. Passing a tenant id uses the declared composite index;
-        passing None orders on created_at alone, which a single-field index
-        already covers.
+        admin-gated. The history read (`active_only=False`) orders on
+        `created_at`: with a tenant id the declared `leases-tenant-created`
+        composite index serves it, and without one a single-field index does.
+
+        The listing alone cannot say whether a live lease was left out;
+        `scan_leases` returns the same rows with that answer, and is what the
+        admin route uses.
         """
+        return self.scan_leases(tenant_id, active_only=active_only, limit=limit).leases
+
+    def _live_leases(self, tenant_id: str | None) -> list[Lease]:
+        """Every unreleased lease, under the tenant filter, newest first.
+
+        `released_at == None` is the query the reconciler already runs in full
+        on every pass (reconciler/store.py, `snapshot`), and
+        `acquire_lease_in_transaction` (swarm_common/admission.py) writes the
+        field as an explicit null, so a live lease matches. With the tenant
+        equality added it is two equality filters and no ordering, which
+        Firestore serves by merging single-field indexes -- no composite index.
+        Ordering on `created_at` in the query would need one
+        (`released_at`, `created_at DESC`), and the set is small enough not
+        to: it is what holds capacity NOW, not history. Every unreleased lease
+        holds units of the `global` pool until it is released or the
+        reconciler reclaims it, so its size follows that pool's limit rather
+        than the number of admissions ever made -- and the reconciler already
+        pays for reading all of it once a pass.
+
+        Sorted here instead. `lease_id` breaks ties so two leases admitted in
+        the same microsecond keep a stable order between calls.
+        """
+        query: Any = self._db.collection(LEASES).where(
+            filter=FieldFilter("released_at", "==", None)
+        )
+        if tenant_id is not None:
+            query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        live = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
+        live.sort(key=lambda lease: (lease.created_at, lease.lease_id), reverse=True)
+        return live
+
+    def scan_leases(
+        self,
+        tenant_id: str | None = None,
+        *,
+        active_only: bool = True,
+        limit: int = 200,
+    ) -> LeaseScan:
+        """`list_leases`, plus how many live leases the rows left out.
+
+        ACTIVE ONLY reads the live set itself (`_live_leases`) and keeps the
+        newest `limit`. One read, so the rows and the count come from the same
+        snapshot; a live lease is outside the rows only when more live leases
+        exist than `limit`.
+
+        HISTORY (`active_only=False`) reads the newest `limit` documents of
+        any state -- one past `limit` to say whether older ones exist, then
+        dropped -- and then the live set, and counts the live leases whose id
+        is not in the window. Window FIRST, and by id rather than by
+        subtracting two counts: a lease admitted between the reads is counted
+        as beyond (true, and the safe direction), and a lease released
+        between them is counted nowhere. Subtracting a count from the
+        window's live rows would instead undercount whenever a lease in the
+        window was released between the reads -- turning a real cut into
+        "nothing was cut", the one wrong answer the drift check cannot absorb.
+        """
+        if active_only:
+            live = self._live_leases(tenant_id)
+            window = live[:limit]
+            return LeaseScan(
+                leases=window,
+                examined=len(window),
+                truncated=len(live) > limit,
+                active_beyond_window=len(live) - len(window),
+            )
+
         query: Any = self._db.collection(LEASES)
         if tenant_id is not None:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
         query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
-        query = query.limit(limit)
-        leases = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
-        if active_only:
-            leases = [lease for lease in leases if not lease.is_released]
-        return leases
+        query = query.limit(limit + 1)
+        documents = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
+        truncated = len(documents) > limit
+        documents = documents[:limit]
+        in_window = {lease.lease_id for lease in documents}
+        beyond = sum(
+            1 for lease in self._live_leases(tenant_id) if lease.lease_id not in in_window
+        )
+        return LeaseScan(
+            leases=documents,
+            examined=len(documents),
+            truncated=truncated,
+            active_beyond_window=beyond,
+        )
 
     def list_attempts(
         self,
@@ -952,18 +1370,62 @@ class Store:
         query = query.limit(limit)
         return [attempt_from_dict(snap.to_dict()) for snap in query.stream()]
 
-    def set_provider_enabled(self, provider: str, enabled: bool) -> None:
+    def page_attempts(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 50,
+        page_token: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Page:
+        """A tenant's attempts across every task, newest first, paged.
+
+        `list_attempts(task_id=None)` answered the same question with no
+        cursor, and nothing called it: the only route passed a task id, so "what
+        did this tenant's runs cost" was one request per task. This is the paged
+        form `GET /v1/attempts` serves.
+
+        THE TENANT FILTER IS THE FIRST CLAUSE, an equality on `tenant_id`, as
+        on every list in this module; the caller's tenant comes from
+        `deps.tenant_scope` and never from the request (invariant 9).
+
+        Served by `attempts-tenant-created` (tenant_id ASC, created_at DESC):
+        `since`/`until` and the cursor are all ranges on `created_at`, the
+        index's ordered field, and the run read at a boundary is two equalities.
+        """
+        after = decode_keyset(page_token, scope="attempts", order="desc")
+        return self._keyset_page(
+            self._db.collection(ATTEMPTS).where(
+                filter=FieldFilter("tenant_id", "==", tenant_id)
+            ),
+            field="created_at",
+            decode=attempt_from_dict,
+            key=lambda attempt: (attempt.created_at, attempt.attempt_id),
+            limit=limit,
+            after=after,
+            descending=True,
+            mint=lambda at, doc_id: encode_keyset(
+                scope="attempts", order="desc", at=at, doc_id=doc_id
+            ),
+            lower=since,
+            upper=until,
+        )
+
+    def set_provider_enabled(
+        self, provider: str, enabled: bool, *, by: str | None = None
+    ) -> None:
         """Enable/disable a provider platform-wide.
 
         Flips the provider pool and every per-tenant provider pool, because a
         provider-wide disable that left the per-tenant pools open would still
-        admit work.
+        admit work. `by` attributes every pool it flips; see `upsert_pool`.
         """
-        self.upsert_pool(f"provider:{provider}", enabled=enabled)
+        self.upsert_pool(f"provider:{provider}", enabled=enabled, by=by)
         prefix = f"provider:{provider}:tenant:"
         for pool in self.list_pools():
             if pool.name.startswith(prefix):
-                self.upsert_pool(pool.name, enabled=enabled)
+                self.upsert_pool(pool.name, enabled=enabled, by=by)
 
     def set_provider_quota_state(self, provider: str, state: ProviderState) -> int:
         """Force every (provider, tenant) quota document to one state.

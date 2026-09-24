@@ -31,6 +31,7 @@ from reconciler.backends import (
     CloudRunBackend,
     GkeBackend,
     is_gc_eligible,
+    is_namespace_gc_eligible,
     is_swarm_managed,
     managed_label_selector,
 )
@@ -199,35 +200,51 @@ def k8s_job(
 
 
 class FakeBatchApi:
+    """BatchV1Api, namespaced calls only -- the only ones the reconciler holds.
+
+    There is deliberately no `list_job_for_all_namespaces` here any more. It is
+    cluster-scope, the reconciler's Role grants nothing cluster-scope, and a
+    fake that answered it is how the old listing passed every test here while
+    returning 403 on every live pass. tests/unit/control_plane/
+    test_reconciler_gke_namespaced.py models the refusal itself.
+    """
+
     def __init__(self, jobs: list[Any]) -> None:
         self.jobs = jobs
         self.selectors: list[str] = []
+        self.namespaces_listed: list[str] = []
 
-    def list_job_for_all_namespaces(self, label_selector: str) -> Any:
-        self.selectors.append(label_selector)
-        return SimpleNamespace(items=list(self.jobs))
-
-    def list_namespaced_job(self, namespace: str) -> Any:
+    def list_namespaced_job(self, namespace: str, label_selector: str | None = None) -> Any:
+        self.namespaces_listed.append(namespace)
+        if label_selector is not None:
+            self.selectors.append(label_selector)
         return SimpleNamespace(
             items=[j for j in self.jobs if j.metadata.namespace == namespace]
         )
 
 
 class FakeCoreApi:
+    """CoreV1Api. Namespace objects are cluster-scoped, so every call is recorded
+    -- and the tests below assert there are none."""
+
     def __init__(self, namespaces: list[Any]) -> None:
         self.namespaces = namespaces
         self.deleted: list[str] = []
+        self.calls: list[str] = []
 
     def list_namespace(self, label_selector: str) -> Any:
+        self.calls.append("list_namespace")
         return SimpleNamespace(items=list(self.namespaces))
 
     def read_namespace(self, name: str) -> Any:
+        self.calls.append("read_namespace")
         for ns in self.namespaces:
             if ns.metadata.name == name:
                 return ns
         raise KeyError(name)
 
     def delete_namespace(self, name: str) -> None:
+        self.calls.append("delete_namespace")
         self.deleted.append(name)
 
 
@@ -381,19 +398,26 @@ def test_gke_reads_identifiers_from_the_pod_environment():
     batch = FakeBatchApi([job])
     backend = GkeBackend(batch_api=batch, core_api=FakeCoreApi([]))
 
-    views = backend.list_executions()
+    listing = backend.list_executions_in([TENANT_NS])
+    views = listing.executions
     assert len(views) == 1
     assert views[0].task_id == "task_9f3a"
     assert views[0].attempt_id == "att_7b21"
     assert views[0].generation == 4
     assert views[0].namespace == TENANT_NS
+    assert listing.readable == frozenset({TENANT_NS})
     assert batch.selectors == [managed_label_selector()]
 
 
 def test_gke_skips_a_job_in_a_namespace_that_is_not_ours():
+    """Never even asked for: a namespace outside the prefix is not read at all."""
     job = k8s_job(namespace="finance-prod", labels={"managed-by": "swarm-scheduler"})
-    backend = GkeBackend(batch_api=FakeBatchApi([job]), core_api=FakeCoreApi([]))
-    assert backend.list_executions() == []
+    batch = FakeBatchApi([job])
+    backend = GkeBackend(batch_api=batch, core_api=FakeCoreApi([]))
+    listing = backend.list_executions_in(["finance-prod"])
+    assert listing.executions == []
+    assert batch.namespaces_listed == []
+    assert "finance-prod" in listing.unreadable
 
 
 def test_gke_skips_a_job_in_a_namespace_that_only_looks_like_ours():
@@ -414,8 +438,11 @@ def test_gke_skips_a_job_in_a_namespace_that_only_looks_like_ours():
         labels={"managed-by": "swarm-scheduler", "swarm-tenant": TENANT},
         env={"TASK_ID": "task_9f3a", "TENANT_ID": TENANT, "GENERATION": "4"},
     )
-    backend = GkeBackend(batch_api=FakeBatchApi([job]), core_api=FakeCoreApi([]))
-    assert backend.list_executions() == []
+    batch = FakeBatchApi([job])
+    backend = GkeBackend(batch_api=batch, core_api=FakeCoreApi([]))
+    listing = backend.list_executions_in([job.metadata.namespace])
+    assert listing.executions == []
+    assert batch.namespaces_listed == [], "a namespace outside the prefix is never read"
 
 
 def test_a_tenant_namespace_is_collectable_whichever_marker_created_it():
@@ -423,35 +450,57 @@ def test_a_tenant_namespace_is_collectable_whichever_marker_created_it():
     every run, yet no terraform state holds a namespace -- there is no
     kubernetes provider in `terraform/`. So the namespace rule keys on the pair
     (recognised marker, tenant label) instead, which nothing outside this
-    platform sets."""
+    platform sets.
+
+    The reconciler no longer applies this rule itself -- a Namespace is
+    cluster-scoped and it holds no ClusterRole -- so the rule is asserted as the
+    predicate out-of-band deprovisioning must honour, and the backend is
+    asserted to offer nothing and to call nothing cluster-scoped.
+    """
     runtime = k8s_namespace(f"{NS}finance", {"managed-by": "swarm", "swarm-tenant": "finance"})
     scripted = k8s_namespace(TENANT_NS, {"managed-by": "swarm-terraform", "swarm-tenant": TENANT})
-    backend = GkeBackend(
-        batch_api=FakeBatchApi([]), core_api=FakeCoreApi([runtime, scripted])
-    )
-    by_name = {r.name: r for r in backend.list_job_resources()}
-    assert by_name[f"{NS}finance"].managed is True
-    assert by_name[TENANT_NS].managed is True
+    assert is_namespace_gc_eligible(runtime.metadata.labels)
+    assert is_namespace_gc_eligible(scripted.metadata.labels)
+
+    core = FakeCoreApi([runtime, scripted])
+    backend = GkeBackend(batch_api=FakeBatchApi([]), core_api=core)
+    assert backend.list_job_resources() == []
+    assert core.calls == []
 
 
 def test_a_namespace_without_a_tenant_label_is_never_collectable():
     """A shared project holds other teams' namespaces. A marker alone is not
-    enough of a claim to delete one."""
+    enough of a claim to delete one -- and the reconciler deletes none at all."""
     stray = k8s_namespace(f"{NS}shared-tools", {"managed-by": "swarm-terraform"})
-    backend = GkeBackend(batch_api=FakeBatchApi([]), core_api=FakeCoreApi([stray]))
-    resources = backend.list_job_resources()
-    assert resources[0].managed is False
-    # With no `swarm-tenant` label the tenant id is recovered by slicing the
-    # prefix off the namespace name, which is why the prefix has to be the
-    # scheduler's exactly. THE MUTATION THIS CATCHES: with
-    # `namespace_prefix = "swarm-"` this reads `tenant-shared-tools`, and every
-    # finding the reconciler files about an unlabelled namespace is attributed
-    # to a tenant that does not exist.
-    assert resources[0].tenant_id == "shared-tools"
+    assert not is_namespace_gc_eligible(stray.metadata.labels)
 
+    core = FakeCoreApi([stray])
+    backend = GkeBackend(batch_api=FakeBatchApi([]), core_api=core)
+    view = JobResourceView(
+        name=f"{NS}shared-tools", tenant_id="shared-tools", runner_profile=None,
+        created_at=None, last_execution_at=None, managed=True, active_executions=0,
+    )
     with pytest.raises(PermissionError):
-        backend.delete_job_resource(replace(resources[0], managed=True))
-    assert backend._core.deleted == []
+        backend.delete_job_resource(view)
+    assert core.deleted == []
+    assert core.calls == [], "the refusal is made without a cluster-scope call"
+
+
+def test_an_unlabelled_job_is_attributed_to_the_tenant_its_namespace_names():
+    """With no `swarm-tenant` label and no TENANT_ID in the environment the
+    tenant id is recovered by slicing the prefix off the namespace name, which
+    is why the prefix has to be the scheduler's exactly. THE MUTATION THIS
+    CATCHES: with `namespace_prefix = "swarm-"` this reads `tenant-shared-tools`,
+    and every finding the reconciler files about that Job is attributed to a
+    tenant that does not exist."""
+    job = k8s_job(
+        namespace=f"{NS}shared-tools",
+        labels={"managed-by": "swarm-scheduler"},
+        env={"TASK_ID": "task_9f3a", "GENERATION": "1"},
+    )
+    backend = GkeBackend(batch_api=FakeBatchApi([job]), core_api=FakeCoreApi([]))
+    views = backend.list_executions_in([f"{NS}shared-tools"]).executions
+    assert [v.tenant_id for v in views] == ["shared-tools"]
 
 
 # ---------------------------------------------------------------------------

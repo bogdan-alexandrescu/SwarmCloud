@@ -25,8 +25,32 @@ Tokens never appear in logs, exception messages or error responses. The only
 loggable form is a non-reversible fingerprint (`tok:` + 12 hex chars of SHA-256)
 for correlating requests.
 
-Admin routes are gated on membership in `ADMIN_GROUPS`, separate from
-`TENANT_GROUPS` so an admin still has a normal tenant for their own work.
+Admin routes are gated on admin: membership in an `ADMIN_GROUPS` group, or an
+address on `ADMIN_USERS`, the by-email escape hatch for a deployment whose
+service account cannot read groups (`ApiSettings.admin_users`). Both are kept
+separate from `TENANT_GROUPS` so an admin still has a normal tenant for their
+own work. Either makes the caller a **full** admin: every `/v1/admin/*` route,
+including disabling any tenant (`PUT /v1/admin/tenants/{id}/limits`) and
+rewriting any tenant's workflow state (`POST /v1/admin/workflows/rollup`).
+
+There is one narrower way onto the admin surface, and it is not admin.
+A caller on **`ADMIN_POOL_USERS`** may call the routes in
+`swarm_api.auth.POOL_ADMIN_ROUTES` and nothing else: today only
+`PUT /v1/admin/limits/runner/{runner_profile}`, for any runner profile. Every
+other admin route answers it 403, and `is_admin` stays false for it, so no
+operator screen and no cross-tenant field on `/v1/stats` or `/v1/capacity`
+opens. It exists for the verification gate (`swarm-verify`), which narrows
+`runner:mock` for race-test and puts it back.
+
+It is an **allow-list** of (method, route template), not a deny-list of the
+dangerous routes, because a deny-list is silently wrong the day an admin route
+is added: the new route would be open to the gate until somebody thought to
+deny it. With the allow-list a new admin route is admin-only until it is
+deliberately added, in a diff a reviewer sees. Two things would undo it
+without touching that list: putting the gate on `ADMIN_USERS`, or in an
+`ADMIN_GROUPS` group (a Google group can hold a service account as a member).
+Either makes it a full admin. The decision, dated 2026-09-24, is recorded in
+[`docs/audits/2026-09-22/race-test-needs-a-write.md`](audits/2026-09-22/race-test-needs-a-write.md).
 
 ### Handling an ID token on the operator side
 
@@ -293,19 +317,31 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   agent that could reach one would escape every boundary above it.
 * `trivy image` runs in `push-images.sh` **before** a digest is allowed a channel
   tag, and failing the scan refuses promotion.
-* The **control plane** deploys by digest (`image@sha256:...`):
-  `scripts/lib/deploy.sh` reads the promotion manifest and hands Terraform or
-  `gcloud run services update` an immutable reference, so the deployed digest is
-  recorded in state and cannot drift.
-* The **worker** path does not, and that is worth knowing rather than glossing.
-  `apps/scheduler/scheduler/dispatch.py` builds `…/<image>:<worker_image_tag>` —
-  a channel tag. The tag is pinned to a digest that `trivy image` passed, by
-  `push-images.sh`, so the content is vetted; but the reference resolved at pull
-  time is mutable, and the GKE Job template sets `imagePullPolicy: IfNotPresent`,
-  so a node with a cached `:dev` layer can run the previous digest. This is why
-  the checkov image-reference checks (CKV_K8S_14/15/43) are skipped over the
-  rendered manifests: they are asking about a reference this repository's
-  manifests do not decide. Closing it means the dispatcher naming a digest.
+* **Everything deploys by digest** (`image@sha256:...`), and nothing can deploy
+  a tag. `terraform/infra` takes `image_refs` — one digest per image, written by
+  `scripts/lib/image-refs.sh` from the promotion manifest — and refuses to plan
+  while any image it deploys has none; a tag, another image's digest, or an
+  image from another registry is refused by the variable's validation. That
+  covers every Cloud Run service, every worker job and the verification job, and
+  the deployed digest is recorded in state. There is no `gcloud run services
+  update` path any more: it moved four services and no job, and the next apply
+  reverted it.
+* **The worker path deploys by digest too**, which it used not to.
+  `apps/scheduler/scheduler/dispatch.py` built `…/<image>:<worker_image_tag>`,
+  resolved at pull time, and the GKE Job template pulls `IfNotPresent` — so a
+  node holding a cached layer for an older push of that tag ran the older code.
+  The scheduler now receives `WORKER_IMAGE_REFS` (image name → digest, from the
+  same manifest), refuses to start if any value is not digest-pinned, and
+  refuses to dispatch a profile whose image has no digest rather than fall back
+  to a tag. A Cloud Run job the dispatcher created earlier — for a tenant
+  terraform does not know — is moved to the current digest before it next runs;
+  terraform's own jobs are never rewritten by the dispatcher.
+  `scripts/lib/deploy.sh --verify-only` checks, after every release, that every
+  service, every terraform-managed job and the scheduler's map name the promoted
+  digests. The checkov image-reference checks (CKV_K8S_14/15/43) are still
+  skipped over the rendered manifests, because those are templates rendered with
+  a placeholder image; the reference that actually dispatches is the
+  dispatcher's, and it is a digest.
 * CI builds in Cloud Build with `--platform linux/amd64`, never on a developer
   machine.
 

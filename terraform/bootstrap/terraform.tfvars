@@ -32,3 +32,15 @@ github_allowed_refs = ["refs/heads/main"]
 # roles/container.admin, roles/datastore.owner, roles/logging.configWriter,
 # roles/resourcemanager.projectIamAdmin, swarmSecretProvisioner.
 deployer_scoped_roles = []
+
+# Who may pass IAP on the front door (wif.tf, frontend_accessors).
+#   domain:saga.xyz -- people; swarm-api still enforces the tenant boundary.
+#   swarm-verify    -- owner decision 2026-09-24: the in-VPC checks, PR #15's
+#                      end-to-end check, and operator scripts through
+#                      SWARM_IMPERSONATE_SA reach the API through the load
+#                      balancer. Before this IAP answered 403 "Access denied.
+#                      For user swarm-verify@...".
+frontend_iap_members = [
+  "domain:saga.xyz",
+  "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+]

@@ -50,6 +50,7 @@ failed with CreateContainerConfigError.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import re
 import sys
@@ -80,11 +81,28 @@ REPO = HERE.parent
 # builds no client, and reads no environment. Both paths are added explicitly
 # because this file is run by a bare `python3` (see the Makefile and
 # `kubernetes/apply.sh`), not from inside the uv workspace venv.
+#
+# `scheduler.dispatch` is imported for ONE function, the Job's deadline, and is
+# importable here for the same reason: at import it needs only the standard
+# library and swarm_common, and it builds no client (google.cloud and kubernetes
+# are imported inside the methods that use them). The deadline is a formula over
+# the lifecycle's own timeout, and a second copy of it here would be the next
+# value stated twice -- see `backend_deadline_seconds`.
 sys.path.insert(0, str(REPO / "apps" / "common"))
 sys.path.insert(0, str(REPO / "apps" / "quota-broker"))
+sys.path.insert(0, str(REPO / "apps" / "scheduler"))
 from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
+from scheduler.dispatch import backend_deadline_seconds  # noqa: E402
+from swarm_common.config import Settings  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
+
+#: The frozen contract's default, read from the dataclass rather than restated.
+#: A deployment that sets DISPATCH_TIMEOUT_SECONDS passes the same value as
+#: `--dispatch-timeout-seconds`.
+DEFAULT_DISPATCH_TIMEOUT_SECONDS = {
+    f.name: f.default for f in dataclasses.fields(Settings)
+}["dispatch_timeout_seconds"]
 
 #: THE TENANT NAMESPACE PREFIX, and it must equal the scheduler's.
 #:
@@ -228,6 +246,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
+    "ACTIVE_DEADLINE_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "CHECKPOINT_INTERVAL_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "MAX_IN_WORKER_RETRY_DELAY_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "FIRESTORE_DATABASE": re.compile(r"^[A-Za-z0-9._-]{1,64}$"),
@@ -305,8 +324,9 @@ JOB_FILES_GVISOR = {
 def sanitize_name(*parts: str, max_length: int = 63) -> str:
     """The same shape the dispatcher's `sanitize_name` produces.
 
-    The BODY is reproduced because `apps/scheduler` is not a dependency of this
-    directory, but the character class is no longer a third copy of
+    The BODY is reproduced -- it predates this file importing `scheduler.dispatch`
+    for the Job deadline, and it raises ValueError where the dispatcher's raises
+    DispatchError -- but the character class is no longer a third copy of
     `[^a-z0-9-]+`: it is `swarm_common.identity._TENANT_SAFE`, imported above, so
     the part most likely to be edited in one place and not the others cannot be.
     `test_kubernetes_manifests.py` asserts the whole function still agrees with
@@ -421,6 +441,7 @@ def render_job(args: argparse.Namespace) -> str:
     rc = RESOURCE_CLASSES[profile.resource_class]
     values = tenant_values(args)
     generation = str(args.generation)
+    timeout = args.timeout or profile.timeout_seconds
     values.update(
         {
             "RUNNER_PROFILE": profile.name,
@@ -437,7 +458,18 @@ def render_job(args: argparse.Namespace) -> str:
             "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
             "DISK": f"{rc.disk_gib}Gi",
-            "TIMEOUT_SECONDS": str(args.timeout or profile.timeout_seconds),
+            # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are
+            # two tokens, because they were one and the Job always won: see
+            # WORKER_FINALISE_BUDGET_SECONDS in apps/scheduler/scheduler/dispatch.py.
+            "TIMEOUT_SECONDS": str(timeout),
+            "ACTIVE_DEADLINE_SECONDS": str(
+                backend_deadline_seconds(
+                    timeout,
+                    dispatch_timeout_seconds=getattr(
+                        args, "dispatch_timeout_seconds", DEFAULT_DISPATCH_TIMEOUT_SECONDS
+                    ),
+                )
+            ),
             "CHECKPOINT_INTERVAL_SECONDS": str(profile.checkpoint_interval_seconds),
             "MAX_IN_WORKER_RETRY_DELAY_SECONDS": str(args.max_in_worker_retry_delay_seconds),
             "FIRESTORE_DATABASE": args.firestore_database,
@@ -594,6 +626,17 @@ def main(argv: list[str] | None = None) -> int:
     job.add_argument("--bucket", default="")
     job.add_argument("--firestore-database", default="swarm")
     job.add_argument("--timeout", type=int, default=0)
+    job.add_argument(
+        "--dispatch-timeout-seconds",
+        type=int,
+        default=DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+        help=(
+            "the platform's DISPATCH_TIMEOUT_SECONDS: how late a worker may start "
+            "before the reconciler reclaims it. Part of the Job's "
+            "activeDeadlineSeconds, which must outlast the worker's own timeout. "
+            "Defaults to the frozen contract's value."
+        ),
+    )
     job.add_argument("--max-in-worker-retry-delay-seconds", type=int, default=45)
     job.add_argument(
         "--runtime",

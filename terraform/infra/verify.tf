@@ -32,7 +32,13 @@ resource "google_service_account" "verify" {
   project      = var.project_id
   account_id   = "swarm-verify"
   display_name = "SwarmCloud verification job"
-  description  = "Runs the smoke, concurrency and race targets from inside the VPC. Reads Firestore, Cloud Run executions and artifact objects; invokes swarm-api. Writes nothing outside its own tenant."
+  # 256 characters at most -- the provider refuses a longer description at
+  # plan time, which is how an earlier wording of this line failed CI. This one
+  # is 245. It names what the identity CAN do (any runner ceiling, through
+  # admin_pool_users) rather than what race-test does with it (mock's), and it
+  # says it is not an admin: the wording before 2026-09-24's correction said it
+  # was one.
+  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -48,8 +54,20 @@ resource "google_service_account" "verify" {
 #
 # So the grants below are the ones the suites actually exercise, and no more.
 # All three are READ-ONLY at the project level; everything the gate writes, it
-# writes through swarm-api as its own tenant, which is the property the
-# original comment was protecting and which still holds.
+# writes through swarm-api, which is the property the original comment was
+# protecting and which still holds.
+#
+# NOT EVERY WRITE IS AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
+# this identity is also on `admin_pool_users`, because race-test narrows
+# runner:mock with PUT /v1/admin/limits/runner/mock rather than through a
+# Firestore write role. That list reaches an allow-list of admin routes in
+# swarm-api (swarm_api.auth.POOL_ADMIN_ROUTES) holding that one route; every
+# other /v1/admin route, tenant disable included, answers it 403. It is NOT a
+# platform admin: the first form of the decision put it in `admin_users`, and
+# the owner reversed that the same day. It is an application-level list in
+# tfvars, not IAM, and it is deliberately not granted here -- this file is the
+# same in every environment, and the gate has no reason to hold it in prod.
+# docs/audits/2026-09-22/race-test-needs-a-write.md has the comparison.
 #
 # Secret access is deliberately still absent. Nothing in the suites reads a
 # secret, and the mock runner profile this tenant uses needs no provider key.
@@ -141,7 +159,7 @@ resource "google_cloud_run_v2_job" "verify" {
       }
 
       containers {
-        image = "${local.image_base}/swarm-verify:${var.image_tag}"
+        image = local.image["swarm-verify"]
 
         resources {
           limits = {
@@ -178,10 +196,28 @@ resource "google_cloud_run_v2_job" "verify" {
     }
   }
 
-  # The image tag moves on every deploy and the job is executed on demand, so
-  # an in-flight execution must not be interrupted by an apply.
   lifecycle {
     ignore_changes = [client, client_version]
+
+    # EVERY IMAGE THIS ROOT DEPLOYS HAS A DIGEST, OR NOTHING PLANS.
+    #
+    # It is checked HERE, on the one image consumer declared in this root,
+    # because a module call cannot carry a precondition -- and a failed
+    # precondition fails the whole plan, so no service and no worker job is
+    # planned either. The alternative, a fall back to a tag for a missing
+    # entry, is exactly how a tag used to get deployed without anybody
+    # choosing it (see var.image_refs).
+    #
+    # A precondition, not a validation on var.image_refs, for one case: a
+    # FRESH project has no images yet, so its first plan targets the registry
+    # alone (scripts/plan.sh does this when there is nothing to pin), and a
+    # targeted plan does not evaluate this resource. A variable validation would
+    # refuse that plan too, leaving no way to create the registry the first
+    # images are pushed to.
+    precondition {
+      condition     = length(local.images_without_a_digest) == 0
+      error_message = "image_refs has no digest for: ${join(", ", local.images_without_a_digest)}. Nothing is deployed at a tag. Plan through scripts/plan.sh (which pins what terraform last applied) or deploy through scripts/lib/deploy.sh (which pins the promotion manifest); both write image_refs with scripts/lib/image-refs.sh."
+    }
   }
 }
 

@@ -352,3 +352,58 @@ variable "deployer_storage_buckets_exact" {
   type        = list(string)
   default     = ["saga-agents-staging_cloudbuild"]
 }
+
+variable "frontend_iap_backends" {
+  description = <<-EOT
+    The IAP-protected backend services whose accessor list this root manages
+    (wif.tf, frontend_accessors). terraform/infra's frontend module creates them
+    and turns IAP on; it no longer sets who may pass.
+
+    The names follow modules/frontend/main.tf for name_prefix "swarm". A rename
+    there makes this plan fail at the data source lookup.
+
+    Set to [] for the first bootstrap apply on a fresh project, before
+    terraform/infra has created the backends.
+  EOT
+  type        = list(string)
+  default     = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+
+  # Nine of the ten backend services in saga-agents-staging belong to another
+  # team, including their Keycloak and ArgoCD. The prefix check keeps any of them
+  # out of this list.
+  validation {
+    condition     = alltrue([for b in var.frontend_iap_backends : startswith(b, "swarm")])
+    error_message = "frontend_iap_backends may only name the platform's own backends (prefix 'swarm'); the others in this project belong to another team."
+  }
+}
+
+variable "frontend_iap_members" {
+  description = <<-EOT
+    Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant
+    boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
+    read to the caller's own tenant.
+
+    `domain:saga.xyz` is the intended shape for people: it matches what the API
+    already enforces, so there is no second list to drift. Service accounts are
+    listed individually, each with the reason it needs the front door.
+
+    Moved here from terraform/infra (where it was `frontend_iap_members` in
+    environments/<env>/<env>.tfvars) on 2026-09-24; see wif.tf.
+  EOT
+  type        = list(string)
+
+  validation {
+    condition     = length(var.frontend_iap_members) > 0
+    error_message = "frontend_iap_members may not be empty: an IAP-protected backend with no members is unreachable by everyone, which reads as an outage rather than a configuration mistake."
+  }
+
+  validation {
+    condition     = alltrue([for m in var.frontend_iap_members : can(regex("^(user|group|domain|serviceAccount):", m))])
+    error_message = "every IAP member must be a fully qualified IAM member, e.g. domain:saga.xyz or group:eng@saga.xyz."
+  }
+
+  validation {
+    condition     = !contains(var.frontend_iap_members, "allUsers") && !contains(var.frontend_iap_members, "allAuthenticatedUsers")
+    error_message = "allUsers and allAuthenticatedUsers defeat IAP entirely: allAuthenticatedUsers means ANY Google account on the internet, not any account in your organisation."
+  }
+}

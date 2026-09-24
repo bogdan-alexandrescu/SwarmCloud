@@ -21,10 +21,13 @@
 /**
  * One point of a series.
  *
- * `at` is an epoch-milliseconds instant. It is present on BOTH arms on
- * purpose: when a cost was not reported, the *time* of the attempt is still a
- * measurement, and drawing the absence at its real position on the time axis
- * is honest. What is unknown is the value, and only the value.
+ * `at` is a position in milliseconds on the chart's time axis: an epoch
+ * instant for `TimeSeries`, whose axis is wall-clock UTC, or milliseconds
+ * since a stated origin for a T+n chart (`PeakMemory.tsx` measures from the
+ * attempt's `started_at`, and says so on its axis). It is present on BOTH
+ * arms on purpose: when a cost was not reported, the *time* of the attempt is
+ * still a measurement, and drawing the absence at its real position on the
+ * time axis is honest. What is unknown is the value, and only the value.
  */
 export type ChartPoint =
   | {
@@ -217,4 +220,44 @@ export function measuredRuns(points: readonly ChartPoint[]): ChartPoint[][] {
 /** Sorted oldest-first. Charts are drawn in time order, never in array order. */
 export function inTimeOrder(points: readonly ChartPoint[]): ChartPoint[] {
   return [...points].sort((a, b) => a.at - b.at)
+}
+
+/**
+ * The vertices of a STEP-AFTER line through a running maximum.
+ *
+ * WHY STEP, AND WHY AFTER. `peak_rss_bytes` on a heartbeat is a high-water
+ * mark that never resets (agent_worker/metrics.py: `merge_rss` is `max()`).
+ * Between two readings the true peak is at least the earlier one and at most
+ * the later one. A straight line between them claims it rose smoothly, which
+ * nothing measured; a step that HOLDS the earlier value until the next reading
+ * draws the lower bound, which is exactly what is known -- "the peak reached
+ * by T+n was at least this". redesign-v2 §4 row 4: monotonic step, never
+ * smoothed.
+ *
+ * WHY THIS IS DONE HERE, as data, rather than with a curve factory. The step
+ * corner is inserted only between two MEASURED neighbours. Next to an absence
+ * no corner is added, so the absence still ends the subpath and the hard-coded
+ * `defined` accessor in `TimeSeries.tsx` still breaks the line there -- the
+ * step cannot be used to carry a stroke across a gap. It also keeps the chart
+ * layer to the four visx packages `package.json` declares: the library's curve
+ * package arrives only transitively, and importing a package nobody declared
+ * is how a lockfile refresh breaks a build. (It is not named here with its
+ * scope on purpose: `chart.tokenspend.test.tsx` fails on any module outside
+ * `TimeSeries.tsx` whose text contains the library's import prefix, comments
+ * included.)
+ *
+ * The corner is labelled with the reading it holds, so its tooltip says what
+ * it is -- the earlier value, carried forward -- and not a new measurement.
+ */
+export function stepAfter(points: readonly ChartPoint[]): ChartPoint[] {
+  const ordered = inTimeOrder(points)
+  const out: ChartPoint[] = []
+  ordered.forEach((p, i) => {
+    out.push(p)
+    const next = ordered[i + 1]
+    if (next !== undefined && p.measured && next.measured && next.at > p.at) {
+      out.push(measured(next.at, `${p.label} (held)`, p.value))
+    }
+  })
+  return out
 }

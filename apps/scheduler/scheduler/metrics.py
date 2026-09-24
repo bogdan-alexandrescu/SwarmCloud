@@ -70,6 +70,22 @@ class SchedulerMetrics:
             ["kind"],
             registry=self.registry,
         )
+        #: Every cancel a drain makes, on every path, and the same number
+        #: `DrainReport.cancelled` carries. There was no cancel counter at all
+        #: until 2026-09-24, and the report missed the dependency sweep's
+        #: cancels: the drain that cancelled a workflow's `synthesis` step at
+        #: 07:40:11Z (incident wf_ebb3ab2d65664707a559) reported `cancelled: 0`.
+        #: `reason` is `cancel_requested` (the caller asked, before admission)
+        #: or `failed_parent` (an upstream step FAILED, was CANCELLED or was
+        #: DEAD_LETTERED). The scheduler only ever cancels work that holds no
+        #: capacity, so none of these released a lease.
+        self.cancelled = Counter(
+            "swarm_scheduler_cancelled_total",
+            "Tasks the scheduler cancelled during a drain, by why. Only READY or "
+            "PARKED work is cancelled here, so no capacity is involved.",
+            ["reason"],
+            registry=self.registry,
+        )
         self.candidates = Histogram(
             "swarm_scheduler_candidates_per_pass",
             "READY tasks examined per pass.",

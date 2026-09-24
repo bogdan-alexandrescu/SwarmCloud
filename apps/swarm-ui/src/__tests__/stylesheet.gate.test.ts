@@ -1,0 +1,166 @@
+// THE STYLESHEET GATE: one selector, one place; one keyframes name, one
+// definition; and a sheet a browser parses the way this suite does.
+//
+// WHY THIS IS A SOURCE SCAN, when most of this suite refuses to be one. The
+// claim "no selector is declared twice non-adjacently" is a property of the
+// TEXT, and no DOM question answers it: `getComputedStyle` sees only the
+// winner of a collision, never that there was one. The loading skeleton is the
+// proof. It declared `pulse` as .5 <-> .85 and the liveness dot declared a
+// second `pulse` as 1 <-> .35 two and a half thousand lines later; every
+// computed style in the suite was internally consistent, and every skeleton in
+// the product flashed at the dot's depth.
+//
+// THE PARSE CHECK IS NOT OPTIONAL, and it is the finding that justifies the
+// gate. `§B6 — THE DENSE AND OPERATOR SCREENS` lost its opening `/*`, so its
+// seventeen lines of prose became the selector of the `@media (max-width:
+// 899px)` block under it. A browser drops a rule with an invalid selector,
+// block and all: the stacked-table layout written for every dense screen below
+// 900px has never reached a phone. jsdom recovers from the same text and parses
+// the block, which is why nothing here noticed. See `cssgate.ts`.
+//
+// `?raw`, as typescale.test.ts does: Vite's own loader resolves the path the
+// bundle uses, so a moved sheet fails to import here instead of a stale copy
+// being read quietly from disk.
+
+import STYLES from '../styles.css?raw'
+import OVERVIEW from '../Overview.tsx?raw'
+import { describe, expect, it } from 'vitest'
+
+import { gate } from './cssgate'
+
+/** The `<style>` Overview injects after `styles.css`, read out of its source. */
+function overviewSheet(): string {
+  const m = /const OVERVIEW_CSS = `([\s\S]*?)`/.exec(OVERVIEW)
+  expect(m, 'Overview.tsx no longer declares OVERVIEW_CSS as a template literal').not.toBeNull()
+  return m![1]!
+}
+
+// ---------------------------------------------------------------------------
+// The gate, run against sheets whose answer is known. A gate that has only
+// ever been run against a clean input has only ever been shown to say "clean".
+// ---------------------------------------------------------------------------
+
+describe('the gate, against fixtures', () => {
+  it('flags an accidental duplicate and not an intentional adjacent split', () => {
+    // `.nav button` is written as two consecutive rules in the real sheet, on
+    // purpose, and the reader of one is looking at the other. `.b` is the
+    // defect: the same selector reopened after another rule intervened.
+    const r = gate(
+      `.a { color: red }
+       .a { margin: 0 }
+       .b { color: red }
+       .c { color: blue }
+       .b { margin: 0 }`,
+      'fixture',
+    )
+    expect(r.duplicates).toHaveLength(1)
+    expect(r.duplicates[0]).toContain('`.b`')
+  })
+
+  it('compares rules by their conditions, across separate blocks', () => {
+    // §12.6 of design-system.md: two `@media (max-width: 560px)` blocks both
+    // styling `.row`. Two blocks, one context -- a duplicate.
+    const same = gate(
+      `@media (max-width: 560px) { .row { gap: 0 } }
+       .x { color: red }
+       @media (max-width: 560px) { .row { padding: 0 } }`,
+    )
+    expect(same.duplicates).toHaveLength(1)
+    // A selector restated under a DIFFERENT condition is a breakpoint, which
+    // is what a media query is for.
+    const other = gate(
+      `.row { gap: 4px }
+       @media (max-width: 560px) { .row { gap: 0 } }`,
+    )
+    expect(other.duplicates).toEqual([])
+  })
+
+  it('flags a keyframes name declared twice, wherever the second one sits', () => {
+    const r = gate(
+      `@keyframes pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
+       .skeleton { animation: pulse 1.4s ease-in-out infinite }
+       @media (min-width: 1px) { @keyframes pulse { 50% { opacity: .35 } } }`,
+    )
+    expect(r.keyframes).toHaveLength(1)
+    expect(r.animations).toEqual([])
+  })
+
+  it('flags an animation that names no keyframes', () => {
+    const r = gate(`.dot { animation: pluse 2s ease-in-out infinite !important }`)
+    expect(r.animations).toHaveLength(1)
+    expect(r.animations[0]).toContain('`pluse`')
+  })
+
+  it('flags a comment that lost its opener in front of an at-rule', () => {
+    // The shape of the real defect: prose, an orphan `*/`, then a block.
+    const r = gate(
+      `.before { color: red }
+
+         SECTION HEADING -- a paragraph that lost its opener; it goes on
+         -------------------------------------------------------------- */
+
+       /* a comment that is fine */
+       @media (max-width: 899px) { .inside { display: block } }
+       .after { color: blue }`,
+    )
+    expect(r.problems).toHaveLength(1)
+    expect(r.problems[0]).toMatch(/not a selector/)
+    // And a sheet with every comment intact reads clean.
+    expect(gate(`/* ok */ @media (max-width: 899px) { .inside { display: block } }`).problems).toEqual([])
+  })
+
+  it('lets :root repeat but not a token inside it', () => {
+    const r = gate(
+      `:root { --measure: 78ch; --a: 1px }
+       .x { color: red }
+       :root { --measure: 74ch }
+       @media (prefers-color-scheme: light) { :root:not([data-theme='dark']) { --a: 2px } }`,
+    )
+    // `:root` twice is the sheet's own pattern and is not a duplicate...
+    expect(r.duplicates).toEqual([])
+    // ...but `--measure` twice in one context is a silent override. `--a`
+    // under the light-theme condition is a theme, not a collision.
+    expect(r.rootTokens).toHaveLength(1)
+    expect(r.rootTokens[0]).toContain('--measure')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The shipped sheets.
+// ---------------------------------------------------------------------------
+
+describe('the shipped stylesheets', () => {
+  const sheets: ReadonlyArray<readonly [string, () => string]> = [
+    ['styles.css', () => STYLES],
+    ['OVERVIEW_CSS', overviewSheet],
+  ]
+
+  for (const [label, read] of sheets) {
+    describe(label, () => {
+      it('parses the way a browser parses it', () => {
+        expect(gate(read(), label).problems).toEqual([])
+      })
+
+      it('declares no selector twice non-adjacently', () => {
+        expect(gate(read(), label).duplicates).toEqual([])
+      })
+
+      it('declares no custom property in two :root blocks of one context', () => {
+        expect(gate(read(), label).rootTokens).toEqual([])
+      })
+
+      it('declares each @keyframes name once, and every animation names one', () => {
+        const r = gate(read(), label)
+        expect(r.keyframes).toEqual([])
+        expect(r.animations).toEqual([])
+      })
+    })
+  }
+
+  it('actually read the sheet it passed', () => {
+    // The precondition, so none of the above can pass against a sheet that
+    // failed to load: an empty string has no duplicates either.
+    expect(STYLES.length).toBeGreaterThan(100_000)
+    expect(overviewSheet()).toContain('.ov-mix')
+  })
+})

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -70,17 +71,127 @@ def _run(argv: list[str], *, timeout: int = 60) -> str:
     return done.stdout.strip()
 
 
+def _repo_root() -> Any:
+    """This repository's root, when the package is installed from it.
+
+    `swarm-mcp` is an EDITABLE workspace member (`[tool.uv.sources]` in the root
+    `pyproject.toml`), so in the case that matters -- an operator running
+    `uv run sc` in a checkout -- `__file__` is
+    `<root>/apps/swarm-mcp/swarm_mcp/client.py` and the root is four parents up.
+    Installed any other way it is not, and every caller here treats "no root"
+    as "nothing to read", never as an error: the front door is then simply not
+    discovered and the behaviour is exactly what it was before.
+    """
+    from pathlib import Path
+
+    override = os.environ.get("SWARM_REPO_ROOT", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parents[3]
+
+
+def front_door_host() -> str:
+    """The load balancer's hostname, or `""` when this deployment has no front door.
+
+    THIS IS THE HALF THE BRIDGE WAS MISSING, and it is why `swarm doctor` called
+    a healthy control plane UNREACHABLE. Measured from this laptop on
+    2026-09-24, before the change:
+
+        uv run swarm doctor
+          api       UNREACHABLE
+                    GET /v1/tenants/me -> 404: an HTML 404 from Google's edge
+
+    while the same API answered `GET /v1/runtimes` with 200 and five profiles
+    over the front door at https://swarm.saga.xyz. `resolve_api_url` only ever
+    asked Cloud Run, and Cloud Run's answer for a `team` deployment is the
+    *.run.app address, whose ingress is `internal-and-cloud-load-balancing` --
+    an address that answers a byte-identical HTML 404 to every path, healthy or
+    not. `scripts/lib/common.sh` has known this since 2026-09-22 and documents
+    it at length; the Python bridge did not, so the two halves of this
+    repository disagreed about where the API is, and the half a Claude Code
+    session uses was the wrong one.
+
+    THREE SOURCES, IN THE SAME ORDER `scripts/lib/common.sh::front_door_host`
+    uses them, because a second order would be a second answer:
+
+      1. `SWARM_API_HOST` or `API_HOST` -- the operator, or a test. Both
+         spellings, for the same reason `resolve_api_url` takes both `SWARM_`
+         and bare `API_` names: a shell already configured for `make smoke`
+         needs nothing extra.
+      2. `terraform/environments/<env>/<env>.tfvars` -- Track C's INPUT, READ
+         rather than copied. `frontend_hostname` is where the hostname is
+         decided, and reading it is the "change your side to match theirs" move
+         rather than a third place for the name to drift. `enable_frontend =
+         false` means the load balancer is not deployed, and the hostname is
+         usually still written down next to it -- using it then would send
+         every call at a name that resolves to nothing.
+
+    `terraform output frontend_url` is the source `common.sh` puts SECOND and
+    is deliberately absent here: it does not exist yet (Track C's
+    `terraform/infra/outputs.tf` exports `frontend_iap_audiences` and
+    `quota_broker_url`, not the URL), and shelling out to `terraform` from a
+    bridge whose whole design note is "no third-party dependency, urllib and
+    subprocess only" would put a 30-second `terraform init` in the path of
+    `sc`. When that output lands, `common.sh` picks it up and this reads the
+    same tfvars it is generated from.
+
+    DELIBERATELY NOT CACHED, where `common.sh` caches in `_FRONT_DOOR_HOST`.
+    There the cache buys a forked `terraform` and a `sed`; here it is one small
+    file read, called at most twice per client, and a process-lifetime cache in
+    a module a test suite imports once is a value that outlives the environment
+    it was computed from -- the first test to set `API_HOST` would decide the
+    answer for every test after it.
+    """
+    for name in ("SWARM_API_HOST", "API_HOST"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value.removeprefix("https://").removeprefix("http://").rstrip("/")
+
+    environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
+    tfvars = _repo_root() / "terraform" / "environments" / environment / f"{environment}.tfvars"
+    try:
+        text = tfvars.read_text()
+    except OSError:
+        # Not a checkout, or no such environment. ABSENT, not an error: a
+        # `solo` deployment has no front door at all and must keep working.
+        return ""
+    if re.search(r"^\s*enable_frontend\s*=\s*false", text, re.MULTILINE):
+        return ""
+    match = re.search(r'^\s*frontend_hostname\s*=\s*"([^"]*)"', text, re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def is_front_door(url: str) -> bool:
+    """Is this address the IAP load balancer rather than Cloud Run?
+
+    It asks about the address IN USE rather than about configuration, exactly
+    as `scripts/lib/common.sh::api_is_front_door` does, so an operator who sets
+    `SWARM_API_URL` to the load balancer by hand gets the IAP credential too --
+    and one who sets it to the *.run.app address from inside the VPC does not.
+    """
+    host = front_door_host()
+    if not host or not url:
+        return False
+    return url == f"https://{host}" or url.startswith(f"https://{host}/")
+
+
 def resolve_api_url() -> str:
     """Where the control plane is.
 
     `SWARM_API_URL` wins, then `API_URL` -- the same variable the scripts read,
     so a shell that is already configured for `make smoke` needs nothing extra.
+    Then the FRONT DOOR, when this deployment has one: on a `team` deployment
+    the load balancer is the only address that serves anybody outside the VPC,
+    so asking Cloud Run there hands back an address that cannot answer.
     Otherwise Cloud Run is asked, which is the one answer that cannot be stale.
     """
     for name in ("SWARM_API_URL", "API_URL"):
         value = os.environ.get(name, "").strip()
         if value:
             return value.rstrip("/")
+    host = front_door_host()
+    if host:
+        return f"https://{host}"
     project = os.environ.get("PROJECT_ID", "").strip()
     region = os.environ.get("REGION", "").strip() or "us-central1"
     service = os.environ.get("API_SERVICE", "").strip() or "swarm-api"
@@ -88,13 +199,39 @@ def resolve_api_url() -> str:
         raise SwarmError(
             "set SWARM_API_URL, or PROJECT_ID so the URL can be read from Cloud Run"
         )
-    url = _run([
+    # THE INGRESS IS READ IN THE SAME CALL AS THE URL, for the reason
+    # `common.sh` gives: a Cloud Run URL whose service refuses external traffic
+    # is an address that answers 404 to everything, and 404 is the one status a
+    # reader takes for "wrong path" rather than "wrong host". Handing it back
+    # silently is what sent `swarm doctor` -- the command whose entire job is to
+    # explain this -- to print UNREACHABLE about a healthy deployment.
+    described = _run([
         "gcloud", "run", "services", "describe", service,
-        "--project", project, "--region", region, "--format=value(status.url)",
+        "--project", project, "--region", region,
+        '--format=value[separator="|"](status.url,'
+        'metadata.annotations."run.googleapis.com/ingress")',
     ])
+    url, _, ingress = described.partition("|")
+    url = url.strip().rstrip("/")
+    ingress = ingress.strip()
     if not url:
         raise SwarmError(f"Cloud Run has no URL for {service} in {region}")
-    return url.rstrip("/")
+    # `all` is the only ingress that serves the run.app hostname publicly.
+    # An empty ingress annotation means the default, which IS `all`.
+    if ingress and ingress != "all":
+        environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
+        raise SwarmError(
+            f"{service} resolves to {url}, and that address cannot serve you: its "
+            f"ingress is '{ingress}', so Google's frontend refuses external requests "
+            "before they reach the container and renders the refusal as HTTP 404 -- "
+            "which reads exactly like a missing route on a broken deployment. The "
+            "service is fine. Reach it through the load balancer instead: set "
+            "API_HOST to the frontend_hostname in "
+            f"terraform/environments/{environment}/{environment}.tfvars, or set "
+            "SWARM_API_URL explicitly if you are inside the VPC, where the run.app "
+            "address does work"
+        )
+    return url
 
 
 
@@ -176,10 +313,15 @@ def _explain(status: int, body: str) -> str:
         # the remedy does not; the remedy says what to do about it, which
         # Google's does not. Both, or the reader has half an answer.
         return (
-            f"IAP refused this before the API saw it -- {stripped[:200]}. A bearer "
-            "token minted for anything other than the IAP OAuth client id reads as "
-            "`Invalid JWT audience`; set SWARM_IAP_CLIENT_ID and SWARM_IMPERSONATE_SA, "
-            "and check your account is on the IAP access list"
+            f"IAP refused this before the API saw it -- {stripped[:200]}. THE FRONT "
+            "DOOR TAKES AN OAUTH ACCESS TOKEN, not a Google ID token: an ID token "
+            "minted for anything other than the IAP OAuth client id reads as "
+            "`Invalid JWT audience`, and a deployment whose `iap` block sets no "
+            "oauth2_client_id has a Google-managed client and therefore no audience "
+            "to mint one for at all -- which is this repository's own frontend "
+            "module. Set SWARM_IMPERSONATE_SA to a service account holding "
+            "roles/iap.httpsResourceAccessor; SWARM_IAP_CLIENT_ID applies only where "
+            "the deployment configured its own OAuth client"
         )
 
     if 300 <= status < 400:
@@ -208,9 +350,15 @@ def _explain(status: int, body: str) -> str:
     if status in (401, 403):
         return (
             "an HTML sign-in page, so IAP rejected this before the API saw it. "
-            "A bearer token minted for anything other than the IAP OAuth client "
-            "id reads as `Invalid JWT audience`; set SWARM_IAP_CLIENT_ID and "
-            "SWARM_IMPERSONATE_SA, and check your account is on the IAP list"
+            "The front door takes an OAuth ACCESS token, and a 403 that NAMES the "
+            "caller means the credential was accepted and the principal is not on "
+            "the list -- roles/iap.httpsResourceAccessor, granted through "
+            "frontend_iap_members in terraform/bootstrap/terraform.tfvars, which "
+            "the owner applies and CI does not. A 401 means the token itself was not "
+            "accepted: set SWARM_IMPERSONATE_SA, since no OAuth client a user "
+            "credential can mint from is one a Google-managed IAP client takes. "
+            "SWARM_IAP_CLIENT_ID applies only where the deployment configured its "
+            "own OAuth client"
         )
     return f"an HTML error page from Google's edge (HTTP {status}), not from the API"
 
@@ -346,6 +494,7 @@ class SwarmClient:
             self._audience = audience or os.environ.get("API_AUDIENCE", "").strip() or None
 
         self.base_url = ""
+        self.front_door = False
         if connect:
             self.connect()
 
@@ -353,11 +502,24 @@ class SwarmClient:
     def connect(self) -> None:
         from . import auth as _auth
 
-        if self.tier is _auth.Tier.PROXY and not self._explicit_url:
+        # THE FRONT DOOR BEATS THE PROXY, and the order is the whole fix.
+        # `gcloud run services proxy` calls the *.run.app address directly, and
+        # on a `team` deployment that address refuses everything outside the VPC
+        # -- so on the proxy tier this object used to spend 25 seconds starting a
+        # subprocess in order to reach a host that cannot answer, while the load
+        # balancer that CAN was sitting in Track C's tfvars unread.
+        front_door = "" if self._explicit_url else front_door_host()
+        if front_door:
+            self.base_url = f"https://{front_door}"
+        elif self.tier is _auth.Tier.PROXY and not self._explicit_url:
             self._proxy = _auth.Proxy(service_name(), region(), project_id())
             self.base_url = self._proxy.start().rstrip("/")
         else:
             self.base_url = (self._explicit_url or resolve_api_url()).rstrip("/")
+        #: Decided from the ADDRESS, not from configuration, so an operator who
+        #: points SWARM_API_URL at the load balancer by hand gets the IAP
+        #: credential too.
+        self.front_door = is_front_door(self.base_url)
         if not self._audience:
             self._audience = self.base_url
 
@@ -375,12 +537,78 @@ class SwarmClient:
     # -- identity ----------------------------------------------------------
     @property
     def sends_own_token(self) -> bool:
-        """False on the proxy tier, where gcloud supplies the Authorization
-        header itself. Sending a second one would replace the only credential
-        Cloud Run will accept with one it will not."""
+        """False when a gcloud PROXY is in use, because gcloud supplies the
+        Authorization header itself. Sending a second one would replace the only
+        credential Cloud Run will accept with one it will not.
+
+        Asked of the PROXY OBJECT rather than of the tier. Those are no longer
+        the same question: `connect` now prefers the front door over the proxy,
+        so a machine on the user-credentials tier talking to a load balancer is
+        on that tier and has no proxy -- and would have sent no credential at
+        all, which IAP answers with a 302 to a sign-in page.
+        """
+        return self._proxy is None
+
+    def credential(self) -> str:
+        """The bearer THIS address expects. Two doors, two credentials.
+
+        `scripts/lib/common.sh::api_credential` makes exactly this decision and
+        records the measurements behind it; this is the same decision on the
+        Python side, and it did not exist. The bridge sent a Google ID token
+        everywhere, including at the load balancer, where IAP answers
+
+            401 Invalid IAP credentials: Invalid JWT audience.
+
+        -- a sentence that sends a reader to their IAM policy when the problem
+        is the KIND of token. Re-measured on 2026-09-24 against the live front
+        door at https://swarm.saga.xyz, as bogdan@saga.xyz:
+
+            user OAuth access token        -> 401, IAP error code 900
+            impersonated SA access token   -> 403 "Access denied. For user
+                                              swarm-verify@..."
+
+        The 403 is the useful one: it NAMES the caller, which is IAP saying "I
+        authenticated you and you are not on the list" -- one
+        `roles/iap.httpsResourceAccessor` grant away from working, and that
+        grant is `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
+        (moved out of terraform/infra by #23; the owner applies it, CI does
+        not, and it now lists swarm-verify). The 401 is not:
+        no OAuth client this laptop can mint a user token from is one IAP will
+        accept, because `iap { enabled = true }` in
+        `terraform/modules/frontend/main.tf` deliberately sets no
+        `oauth2_client_id` and Google manages the client. So at the front door
+        this presents a service account's access token when one is configured,
+        and the operator's own otherwise -- which is what `common.sh` does, and
+        it is the caller's business to read the refusal, not this function's to
+        pre-empt it.
+
+        Nothing is lost by sending an access token: IAP forwards the backend NO
+        Authorization header of its own and swarm-api authenticates the caller
+        from `X-Goog-IAP-JWT-Assertion` instead
+        (apps/swarm-api/swarm_api/deps.py, `current_auth`).
+
+        ONE EXCEPTION, AND WITHOUT IT `Tier.IAP` BECOMES DEAD CODE. That tier
+        exists for the other shape of IAP deployment: one that configured its
+        OWN OAuth client, where `oauth2_client_id` is set on the backend service
+        and an ID token minted for that client id is the documented programmatic
+        path. `detect()` finds the tier, `swarm doctor` prints it, and
+        `id_token_for` already mints with `--audiences=<client id>` -- so
+        sending an access token there regardless would detect a tier, announce
+        it, and then never use it, which is exactly the "declared but not
+        implemented" shape this bridge is supposed to catch rather than commit.
+
+        `scripts/lib/common.sh::api_credential` has no equivalent branch because
+        it was written for THIS deployment, which has no client id. That is a
+        deliberate divergence and not drift: the shell serves one cluster, and
+        this package is what someone else deploys.
+        """
         from . import auth as _auth
 
-        return self.tier is not _auth.Tier.PROXY
+        if self.front_door:
+            if self.tier is _auth.Tier.IAP:
+                return self._id_token()
+            return self.access_token()
+        return self._id_token()
 
     def _id_token(self) -> str:
         from . import auth as _auth
@@ -395,11 +623,31 @@ class SwarmClient:
         return value
 
     def access_token(self) -> str:
-        """An OAuth access token, for GCS. Distinct from the ID token above:
-        one proves WHO you are to IAP, the other authorises a bucket read."""
+        """An OAuth access token: for GCS, and for IAP at the front door.
+
+        Distinct from the ID token above -- an ID token says who you are to a
+        Cloud Run service that verifies it itself, an access token authorises a
+        bucket read and is what IAP takes.
+
+        SWARM_IMPERSONATE_SA IS HONOURED HERE, which it was not, and that was
+        the gap that made the variable a lie on this path: `swarm doctor` tells
+        an operator to set it to reach a team deployment, the shell's
+        `access_token()` has minted an impersonated token since 2026-09-22, and
+        this one ignored it and handed back the operator's own -- so setting the
+        variable changed the ID-token path only and the front-door path
+        presented a credential IAP refuses with a different error than the one
+        the operator was told to expect. Same three sources as `common.sh`, in
+        the same order.
+        """
         override = os.environ.get("SWARM_ACCESS_TOKEN", "").strip()
         if override:
             return override
+        impersonate = os.environ.get("SWARM_IMPERSONATE_SA", "").strip()
+        if impersonate:
+            return _run([
+                "gcloud", "auth", "print-access-token",
+                f"--impersonate-service-account={impersonate}",
+            ])
         return _run(["gcloud", "auth", "print-access-token"])
 
     # -- transport ---------------------------------------------------------
@@ -415,7 +663,7 @@ class SwarmClient:
         body = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(url, data=body, method=method)
         if self.sends_own_token:
-            req.add_header("Authorization", f"Bearer {self._id_token()}")
+            req.add_header("Authorization", f"Bearer {self.credential()}")
         req.add_header("Accept", "application/json")
         if body is not None:
             req.add_header("Content-Type", "application/json")

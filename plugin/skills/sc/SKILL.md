@@ -28,7 +28,7 @@ cancels anything, so it is always safe to run.
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
 for a terminal without the bar glyphs.
 
-`swarm profiles` is the odd one out and is listed here because it is read-only
+`uv run swarm profiles` is the odd one out, listed here because it is read-only
 and because it is the question people ask next. It reads the frozen catalogue
 rather than the cluster, so it makes **no network call** and still answers when
 nothing else does — which is exactly when someone is guessing at a profile name
@@ -110,6 +110,35 @@ is down, and reporting either as the other sends someone to the wrong place.
 look like a reading. Run `uv run swarm doctor` — it reports which of the four
 auth tiers this machine is on and what that tier can reach, which is almost
 always the real answer.
+
+### "I cannot reach it" is not "it is down" — say the first one
+
+This is the single most likely wrong report from this plugin, so it is worth
+being exact. On a **team** deployment the API is behind IAP at a load balancer,
+and `uv run swarm doctor` prints which door it used and what it presents:
+
+```
+front door  https://swarm.saga.xyz  (IAP; takes an OAuth ACCESS token)
+api         UNREACHABLE
+            GET /v1/tenants/me -> 401: ... Error code 900
+```
+
+Read the refusal, because the three of them mean three different things:
+
+| What comes back | What it means |
+|---|---|
+| **401, IAP error code 900** | IAP did not accept the token at all. A *user* credential cannot pass here: this deployment sets no `oauth2_client_id`, so IAP uses a Google-managed OAuth client and there is no audience a laptop can mint against. Set `SWARM_IMPERSONATE_SA` |
+| **403 that NAMES the caller** | IAP **authenticated** you and the principal is not on the list. One `roles/iap.httpsResourceAccessor` grant away — `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, which the owner applies and CI does not |
+| **an HTML 404** | the wrong ADDRESS, not a missing route. Cloud Run's `*.run.app` hostname refuses everyone outside the VPC and renders the refusal as 404 |
+
+None of those is the cluster being down. **Say "I cannot reach the API from
+here, and this is why", never "SwarmCloud is broken"** — and if someone needs
+the numbers now, the console at the front-door host is signed in to the same
+API in a browser, where the session cookie is a credential this bridge does not
+have and must not go looking for.
+
+Exit code 1 is exactly this case, and exit code 3 is the other one. That is the
+whole reason they are different numbers.
 
 If accounts specifically are unreadable while everything else works, this
 deployment's swarm-api has no `/v1/accounts` route: the pool is **unknown from

@@ -135,7 +135,11 @@ CLAUDE.md states the rule plainly: "The deny-list lives once, in
 The test proving the guard works did not. `tests/integration/test_destroy_guard.py`
 carried its own hand-written list of "the real neighbours in the shared project"
 and passed it to the guard as `--argjson deny`. It had **fourteen entries where
-`SHARED_DENY_LIST` has twenty-one**. Absent from it entirely: the three shared
+`SHARED_DENY_LIST` has twenty** — one cluster, one VPC, two subnets, the shared
+default network, three buckets and twelve service accounts, counted on
+2026-09-24 by walking the array rather than by restating a remembered number,
+which is how this paragraph and the test's own docstring both came to say
+twenty-one. Absent from it entirely: the three shared
 buckets — `saga-agents-crawled-media-staging`, `saga-agents-files-staging`,
 `saga-agents-terraform-state-staging` — and the other team's Compute Engine
 default service account. A plan deleting any of those had never been shown to be
@@ -183,6 +187,52 @@ the shared function. A divergence there means CI passes a plan that `make
 destroy` refuses, or — the direction that costs something — CI passes a plan that
 touches another team's resource because its copy lost an entry the other kept.
 
+### The same defect one level up: the guard's ARGUMENT LIST
+
+The deny-list and its transformation are derived now. The next morning the thing
+that broke was not a value inside the guard — it was the list of arguments the
+guard has to be *called* with.
+
+`scripts/lib/destroy-guard.jq` gained an ownership predicate, `is_ours($prefix)`,
+on 2026-09-23. `scripts/lib/plan-guard.sh` was taught to pass
+`--arg prefix "${SWARM_NAME_PREFIX:-swarm-}"`. The same filter is invoked from
+four other places — twice in `scripts/destroy.sh`, once in
+`scripts/verify-destroy-guard.sh`, twice in `tests/integration/test_destroy_guard.py`
+— and none of them was. **jq refuses to compile a filter that references an
+undefined variable**, so this is not a lenient default:
+
+```
+jq: error: $prefix is not defined at <top-level>, line 217
+```
+
+Exit 3, no verdict, no judgement. `destroy.sh --self-test` failed in CI
+(run `35959558515`, 56 cases) and `make destroy` could not reach a safety
+assertion at all — the teardown path was dead, and the one check that tells an
+operator whether a plan touches another team's resources could not produce an
+answer. It failed *closed*, which is the right direction and is not the same as
+working.
+
+The answer is (a) DERIVED, twice over: `guard_name_prefix` in `common.sh` is the
+only spelling of the value, and `GUARD_ARGS` in
+`tests/integration/test_destroy_guard.py` is the only spelling of the argument
+list on the Python side. What holds it is
+`test_every_caller_of_the_guard_passes_every_argument_it_requires`: it parses the
+variables `destroy-guard.jq` declares and requires every caller — comments
+stripped, so prose about the flag cannot stand in for the flag — to pass all of
+them.
+
+**The same outage was also fixed a second way, and the two fixes met in one
+merge.** Main (#17) made the argument optional inside the filter:
+`platform_prefix` reads `$ARGS.named.prefix // "swarm-"`, which compiles whether
+or not a caller passes it. Both fixes stay. The filter's default means the next
+caller to forget the argument still gets a verdict; the callers passing
+`guard_name_prefix` mean nobody is judged by that default. But the default is a
+second spelling of `guard_name_prefix`'s, so
+`test_the_filters_fallback_prefix_is_guard_name_prefix` runs the filter over the
+recorded real plan with and without `--arg prefix` and requires identical
+verdicts — the `reason` of every foreign touch names the prefix, so any drift in
+the value is a difference the comparison sees.
+
 ## Covered elsewhere, deliberately not moved here
 
 These are compared, just not by `check-contract-parity.sh`. Each is listed so
@@ -196,6 +246,8 @@ that "not in the parity checker" is never read as "not covered".
 | the tenant KSA the renderer creates | `render.py` vs `GkeJobDispatcher.ksa_for` | the same file |
 | the Cloud Run Job id | `dispatch.py` vs `job_matrix.key` in terraform | `tests/unit/control_plane/test_job_name_matches_terraform.py` |
 | every environment variable the control plane reads | the readers vs what terraform sets | `scripts/lib/check-env-parity.sh` |
+| the pool-admin allow-list | each `POOL_ADMIN_ROUTES` entry in `swarm_api.auth` restates a route template from `swarm_api/routes/admin.py`, method included; a renamed route leaves the entry naming nothing, which fails closed — the gate is refused the route race-test needs. The template is the path in the *declaring* router, so an `include_router(prefix=...)` added in `main.py` has the same effect | `tests/unit/control_plane/test_pool_admin_is_narrow.py` requires every entry to be an admin-gated route a router serves and a path the app publishes in its OpenAPI document, the set to equal the owner's decision, and a pool admin's `PUT /v1/admin/limits/runner/mock` to succeed |
+| the admin API's ceiling bound | `API_LIMIT_MAX` in `scripts/race-test.sh` mirrors the `le=` on `LimitRequest.limit` in `swarm_api.schemas`; the script cannot ask the API, and refuses before its first write to narrow a pool whose ceiling it could not restore | `tests/unit/scripts/test_race_test_limit_bound.py` imports `LimitRequest` and requires equality — higher strands a narrowed pool behind a 422, lower refuses pools the API could restore |
 | the shared deny-list and the unlabelable-type list | `SHARED_DENY_LIST` in `common.sh`, and `unlabelable-types.json` | nothing — both were restated in `tests/integration/test_destroy_guard.py` and neither was compared; now derived there, with the derivation itself asserted. See below |
 
 ## (c) Not compared, and why

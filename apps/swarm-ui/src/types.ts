@@ -700,7 +700,109 @@ export interface ResultSummary {
   git?: GitSummary
   /** Token and cost numbers live at `runner.usage`, untyped. See the note below. */
   runner?: { usage?: Record<string, number | string[]>; [k: string]: unknown }
+  /**
+   * The files the worker staged into this step's workspace before the agent
+   * ran. Read it through `stagedInputsOf`, which is where the three things an
+   * absence here can mean are kept apart.
+   */
+  staged_inputs?: StagedInputRef[]
   [k: string]: unknown
+}
+
+/**
+ * ONE FILE THE WORKER STAGED INTO A STEP'S WORKSPACE, as it is sent.
+ *
+ * `agent_worker/inputs.py::StagedInput.as_dict`, written into
+ * `result_summary.staged_inputs` by the summary block in `lifecycle.py` -- and
+ * ONLY there, which is the fact every reader of it has to hold:
+ *
+ *  - `result_summary` is written by `finish()`. A step that is still running
+ *    HAS staged its inputs (staging happens before the agent starts) and has not
+ *    REPORTED them. Absence on a live step is "not reported yet", never "not
+ *    staged".
+ *  - the key is written only when something was staged. A finished step that
+ *    declared no `input_from` has no key at all, and that is not a missing
+ *    report.
+ *  - a declared input that cannot be staged FAILS the attempt (`inputs.py`:
+ *    "fails the attempt instead of warning"), so a step never silently ran
+ *    without one.
+ *
+ * `task_id` IS THE UPSTREAM TASK, NOT A STEP. `service.py` rewrites the
+ * workflow's `{upstream_step: filename}` into `metadata.input_from` keyed by the
+ * upstream step's TASK id, so drawing this back into the graph (viz #9) is a
+ * join through `WorkflowStep.task_id`. It is optional because viz #9 names the
+ * case where it is missing: such an input came from the submission, not from
+ * nowhere.
+ */
+export interface StagedInputRef {
+  task_id?: string | null
+  filename: string
+  /** Relative to the work directory, which is the agent's current directory. */
+  path: string
+  bytes: number
+  uri?: string
+  /** A restored checkpoint already held the file, so this attempt did not fetch it. */
+  from_checkpoint?: boolean
+}
+
+/** One staged input, after `stagedInputsOf` has checked its shape. */
+export interface StagedInput {
+  /** The upstream TASK id, or null when the input came from the submission. */
+  upstreamTaskId: string | null
+  filename: string
+  path: string
+  /** Null when the entry carried no finite size -- never a zero. */
+  bytes: number | null
+  uri: string | null
+  fromCheckpoint: boolean
+}
+
+/**
+ * What a task's result says it staged.
+ *
+ * TWO ARMS, NOT ONE ARRAY, because `[]` and "no key" are different sentences:
+ * `reported` with an empty list is a worker that wrote the key and staged
+ * nothing; `unreported` is a task with no result yet, or a worker that had
+ * nothing to write, or one older than the field -- and which of those it is
+ * depends on the step's own state and declaration, which only the caller has.
+ *
+ * `malformed` counts entries that could not be read as a staged file. They are
+ * COUNTED rather than dropped: `result_summary` is untyped JSON, and an entry
+ * this reader skipped without a trace would be a file that arrived and was
+ * never shown.
+ */
+export type StagedInputs =
+  | { kind: 'unreported' }
+  | { kind: 'reported'; inputs: StagedInput[]; malformed: number }
+
+export function stagedInputsOf(task: Task): StagedInputs {
+  const summary = task.result_summary
+  if (summary === null || typeof summary !== 'object') return { kind: 'unreported' }
+  const raw: unknown = (summary as ResultSummary).staged_inputs
+  if (raw === undefined || raw === null) return { kind: 'unreported' }
+  if (!Array.isArray(raw)) return { kind: 'reported', inputs: [], malformed: 1 }
+  const inputs: StagedInput[] = []
+  let malformed = 0
+  for (const entry of raw as unknown[]) {
+    if (entry === null || typeof entry !== 'object') {
+      malformed += 1
+      continue
+    }
+    const e = entry as Record<string, unknown>
+    if (typeof e.filename !== 'string' || e.filename === '') {
+      malformed += 1
+      continue
+    }
+    inputs.push({
+      upstreamTaskId: typeof e.task_id === 'string' && e.task_id !== '' ? e.task_id : null,
+      filename: e.filename,
+      path: typeof e.path === 'string' && e.path !== '' ? e.path : e.filename,
+      bytes: typeof e.bytes === 'number' && Number.isFinite(e.bytes) ? e.bytes : null,
+      uri: typeof e.uri === 'string' && e.uri !== '' ? e.uri : null,
+      fromCheckpoint: e.from_checkpoint === true,
+    })
+  }
+  return { kind: 'reported', inputs, malformed }
 }
 
 export interface GitCommit {

@@ -158,8 +158,7 @@ observing through the API under test would let a broken API report success —
 does not transfer: these timestamps are written by the control plane into the
 event log, and a broken API produces a transport failure or a non-2xx, both of
 which are recorded as not-measured. What it buys is that this collector needs
-no `roles/datastore.viewer`, which is the exact permission the verify service
-account lacks today and the reason `race-test.sh` cannot run.
+no Firestore access at all, so it runs as any identity that can call the API.
 
 ### `admission` — throughput under a backlog
 

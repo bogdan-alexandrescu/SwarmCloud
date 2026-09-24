@@ -171,10 +171,57 @@ variable "bootstrap_firestore_documents" {
 # Images
 # ---------------------------------------------------------------------------
 
-variable "image_tag" {
-  description = "Tag used on the FIRST apply only; the deploy pipeline owns the image afterwards (see ignore_changes in the cloud_run modules)."
-  type        = string
-  default     = "bootstrap"
+# EVERY IMAGE BY DIGEST, AND NO TAG ANYWHERE.
+#
+# This replaces `image_tag`, which stamped one tag on every service and job.
+# A tag is resolved to a digest when a revision is created (Cloud Run) or when
+# an image is pulled (the worker jobs, GKE), so a tag rebuilt to new content
+# planned NO change and the old digest kept serving, healthy, through every
+# check -- measured on swarm-ui on 2026-09-19, written up in
+# docs/audits/2026-09-20/tag-vs-digest.md. A digest changes when the content
+# does, so terraform sees the change and the stale revision cannot happen.
+#
+# Written by scripts/lib/image-refs.sh from the promotion manifest
+# (build/deployed-images-<env>.json, which push-images.sh writes only for
+# digests that passed the trivy scan), never by hand and never from tfvars.
+#
+# DEFAULT {} AND STILL REQUIRED. An image with no entry here fails the plan --
+# see the precondition on google_cloud_run_v2_job.verify -- rather than falling
+# back to anything, because a fallback is how a tag gets deployed without
+# anybody choosing it. The default exists only so that a `-target`ed plan of
+# the registry, on a fresh project with nothing built yet, can run at all.
+variable "image_refs" {
+  description = "Image name -> `<region>-docker.pkg.dev/<project>/<repository>/<name>@sha256:<64 hex>`, for every image this root deploys. Written by scripts/lib/image-refs.sh from the promotion manifest."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    # No tag, not even beside a digest: the runtime ignores a tag when a digest
+    # is present, so it is only ever a label that can disagree with what runs.
+    condition = alltrue([
+      for name, ref in var.image_refs : can(regex("^[^@:[:space:]]+@sha256:[0-9a-f]{64}$", ref))
+    ])
+    error_message = "every image_refs value must be `<registry path>@sha256:<64 hex>` with no tag. A tag is resolved at deploy or pull time, which is the mutability this variable exists to remove."
+  }
+
+  validation {
+    # The digest of swarm-scheduler under the name swarm-api would plan cleanly
+    # and deploy the wrong service's code.
+    condition = alltrue([
+      for name, ref in var.image_refs : endswith(split("@", ref)[0], "/${name}")
+    ])
+    error_message = "an image_refs entry names a different image than its key. Each key must be the image's own name, the last path segment before the @."
+  }
+
+  validation {
+    # Pinned is not the same as ours: only this registry holds images the
+    # pipeline built, scanned and promoted, and only it is readable by the
+    # pull roles terraform grants.
+    condition = alltrue([
+      for name, ref in var.image_refs : startswith(ref, "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repository}/")
+    ])
+    error_message = "an image_refs entry is not in this environment's Artifact Registry repository. Only images this pipeline built and promoted may be deployed."
+  }
 }
 
 variable "artifact_registry_repository" {
@@ -316,20 +363,6 @@ variable "quota_broker_url" {
   }
 }
 
-variable "frontend_iap_members" {
-  description = <<-EOT
-    Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant
-    boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
-    read to the caller's own tenant.
-
-    `domain:saga.xyz` is the intended shape: it matches what the API already
-    enforces, so there is no second list to drift. An enumeration of individual
-    users is the shape that rots.
-  EOT
-  type        = list(string)
-  default     = []
-}
-
 variable "groups_impersonate_user" {
   description = <<-EOT
     The Workspace user swarm-api acts AS when it reads Cloud Identity groups.
@@ -373,9 +406,68 @@ variable "admin_users" {
 
     Empty this in the same change that grants swarm-api a Workspace Group
     Reader role. See docs/audits/2026-09-20/session-handover.md.
+
+    EVERY ENTRY IS A FULL PLATFORM ADMIN, whatever it was added for. Admin is
+    one boolean: it can pause dispatch, set any ceiling, drain or disable a
+    provider for every tenant, write any tenant's document (max_active,
+    capacity_units and `enabled`, so it can disable a tenant), rewrite any
+    tenant's workflow state, and read every tenant's leases and records.
+
+    SO IT IS FOR OPERATORS, NOT FOR THE VERIFICATION GATE. swarm-verify was
+    put here on 2026-09-24 so race-test could narrow runner:mock, and the
+    owner reversed that the same day because of the reach above. An identity
+    that needs one admin route belongs in `admin_pool_users`, not here. See
+    docs/audits/2026-09-22/race-test-needs-a-write.md.
+
+    Bare emails, never IAM members: swarm-api compares each entry with the
+    email in the verified token, so `serviceAccount:x@y` matches nobody.
   EOT
   type        = list(string)
   default     = []
+}
+
+variable "admin_pool_users" {
+  description = <<-EOT
+    Email addresses allowed ONE part of the admin surface: the routes in
+    swarm-api's POOL_ADMIN_ROUTES allow-list (apps/swarm-api/swarm_api/auth.py),
+    which today is PUT /v1/admin/limits/runner/{runner_profile} and nothing
+    else. Every other /v1/admin route stays admin-only, and so does any admin
+    route added later until it is deliberately allow-listed. Membership does
+    not make the caller an admin anywhere else.
+
+    Exists for the verification gate. scripts/race-test.sh narrows runner:mock
+    to one slot, and restores it, through that route rather than a Firestore
+    write role (owner decision, 2026-09-24). The first form of the decision
+    put the gate in `admin_users`, which would also have let it disable any
+    tenant; this list replaced that the same day. See
+    docs/audits/2026-09-22/race-test-needs-a-write.md.
+
+    What an entry CAN still do, stated rather than minimised: set the ceiling
+    of ANY runner profile's pool, not only mock's -- the route takes the
+    profile as a path parameter and the allow-list is by route. It cannot
+    write `active`, create a pool outside the frozen catalogue, or reach a
+    tenant, a provider switch or dispatch.
+
+    Unaffected by emptying `admin_users` for a Group Reader role: there is no
+    group form of this capability. Membership of an ADMIN_GROUPS group would
+    make an identity a FULL admin, so the gate must not be added to any admin
+    group -- a Google group can hold a service account as a member, where the
+    group allows external members.
+
+    Taken from the environment's tfvars as is; locals.tf appends nothing, so
+    an identity holds this only where an environment names it.
+
+    Bare emails, never IAM members: swarm-api compares each entry with the
+    email in the verified token, so `serviceAccount:x@y` would plan, apply
+    and match nobody. The validation below refuses that shape at plan time.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for u in var.admin_pool_users : can(regex("^[^@:]+@[^@:]+$", u))])
+    error_message = "admin_pool_users takes bare email addresses, not IAM members: swarm-api compares each entry with the email in the verified token, so a serviceAccount: prefix would match nobody."
+  }
 }
 
 variable "admin_groups" {
@@ -601,4 +693,24 @@ variable "custom_role_suffix" {
   description = "Disambiguates custom role ids when a previous one is still in its 7-day soft-delete window."
   type        = string
   default     = ""
+}
+
+variable "deployer_service_account" {
+  description = <<-EOT
+    Email of the CI identity that runs this root's applies (the release's
+    swarm-tf-deployer, created by terraform/bootstrap and named to GitHub as the
+    GCP_DEPLOY_SA repository variable). It is granted actAs on each service
+    account this root attaches to a service or job -- deployer.tf explains why and
+    why individually.
+
+    Empty means no such grants: correct for an owner applying from a workstation,
+    who needs none.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.deployer_service_account == "" || can(regex("^[a-z][a-z0-9-]+@[a-z0-9-]+\\.iam\\.gserviceaccount\\.com$", var.deployer_service_account))
+    error_message = "deployer_service_account must be a service account email, or empty."
+  }
 }

@@ -146,25 +146,53 @@ class FakeOperation:
 
 
 class FakeJobsClient:
-    def __init__(self, existing: set[str] | None = None) -> None:
-        self.existing = set(existing or ())
+    """Cloud Run's JobsClient, holding real `run_v2.Job` messages.
+
+    `get_job` returns a real Job, as the API does, because the dispatcher now
+    READS the Job it fetches: a Job created before 2026-09-24 still carries the
+    `command` override that replaced the worker lifecycle, and `ensure_job` has
+    to see it to remove it. `jobs` seeds such a Job; a name in `existing` with no
+    seeded Job gets an empty one, which has no container to override anything.
+    `calls` records the order of API calls, so a test can tell "cleared, then
+    ran" from "ran, then cleared".
+    """
+
+    def __init__(self, existing: set[str] | None = None, *, jobs: dict | None = None) -> None:
+        self.jobs: dict = dict(jobs or {})
+        self.existing = set(existing or ()) | set(self.jobs)
         self.created: list[dict] = []
+        self.updated: list = []
         self.runs: list[dict] = []
+        self.calls: list[str] = []
 
     def get_job(self, request):
         from google.api_core import exceptions as gexc
+        from google.cloud import run_v2
 
+        self.calls.append("get_job")
         if request.name not in self.existing:
             raise gexc.NotFound(request.name)
-        return object()
+        if request.name in self.jobs:
+            return self.jobs[request.name]
+        return run_v2.Job(name=request.name)
 
     def create_job(self, request):
+        self.calls.append("create_job")
         self.created.append({"job_id": request.job_id, "job": request.job,
                              "parent": request.parent})
-        self.existing.add(f"{request.parent}/jobs/{request.job_id}")
+        name = f"{request.parent}/jobs/{request.job_id}"
+        self.existing.add(name)
+        self.jobs[name] = request.job
+        return FakeOperation()
+
+    def update_job(self, request):
+        self.calls.append("update_job")
+        self.updated.append(request.job)
+        self.jobs[request.job.name] = request.job
         return FakeOperation()
 
     def run_job(self, request):
+        self.calls.append("run_job")
         self.runs.append({"name": request.name, "overrides": request.overrides})
         return FakeOperation()
 
@@ -180,7 +208,12 @@ def test_cloud_run_job_is_sized_from_the_catalogue_with_requests_equal_to_limits
     rc = RESOURCE_CLASSES[profile.resource_class]
     assert container.resources.limits["cpu"] == str(int(rc.cpu))
     assert container.resources.limits["memory"] == f"{rc.memory_gib}Gi"
-    assert list(container.command) == list(profile.command)
+    # INVERTED 2026-09-24. This line used to assert
+    # `list(container.command) == list(profile.command)` -- it pinned the very
+    # override that replaced the image ENTRYPOINT (the worker lifecycle) with
+    # the bare runner. See test_no_backend_overrides_the_image_entrypoint below.
+    assert list(container.command) == []
+    assert list(container.args) == []
     assert container.image.endswith(f"/{profile.image}:{settings.worker_image_tag}")
 
 
@@ -267,7 +300,14 @@ def test_execution_overrides_carry_the_attempt_identity(settings, tenant):
     assert env["LEASE_ID"] == "lease_1"
     assert env["ATTEMPT_ID"] == "att_1"
     assert env["GENERATION"] == "3"
-    assert client.runs[0]["overrides"].timeout.seconds == task.timeout_seconds
+    # CHANGED 2026-09-24: this asserted `== task.timeout_seconds`, which pinned
+    # the race in which Cloud Run's timeout and the lifecycle's own deadline
+    # fire together and the lifecycle's SIGTERM path parks the task instead of
+    # failing it. The lifecycle's deadline is still the task's (TASK_TIMEOUT_SECONDS
+    # below); the backend's is later. See
+    # test_the_cloud_run_timeout_lets_the_lifecycle_time_out_on_its_own.
+    assert env["TASK_TIMEOUT_SECONDS"] == str(task.timeout_seconds)
+    assert client.runs[0]["overrides"].timeout.seconds > task.timeout_seconds
 
 
 def test_a_cloud_run_api_error_becomes_a_dispatch_error(settings, tenant):
@@ -347,7 +387,410 @@ def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
     )
     assert body["spec"]["backoffLimit"] == 0
     assert body["spec"]["template"]["spec"]["restartPolicy"] == "Never"
-    assert body["spec"]["activeDeadlineSeconds"] == task.timeout_seconds
+    # CHANGED 2026-09-24 from `== task.timeout_seconds`: that equality is the
+    # race in which the Job controller kills the pod before the lifecycle's own
+    # timeout fires. See test_the_gke_deadline_lets_the_lifecycle_time_out_on_its_own.
+    assert body["spec"]["activeDeadlineSeconds"] > task.timeout_seconds
+
+
+# -- the image ENTRYPOINT is the worker lifecycle; nothing may replace it ------
+#
+# Incident wf_ebb3ab2d65664707a559 (2026-09-24). Every GKE Job the scheduler
+# created carried `command: ["python", "-m", "agent_worker.runners.browser"]`
+# -- `RunnerProfile.command`, copied onto the CONTAINER. A Kubernetes `command`
+# replaces the image ENTRYPOINT, and the ENTRYPOINT of both worker images is
+# `tini -- python -m agent_worker`: the worker LIFECYCLE, which checks the
+# fencing generation, honours a cancel, heartbeats, checkpoints, starts the
+# runner as a supervised child, writes the terminal state and releases the
+# lease. With the override none of that ran. The pods printed a bare runner
+# traceback, never wrote to the control plane, and left five leases holding
+# every browser slot on the platform.
+#
+# `RunnerProfile.command` is the lifecycle's CHILD argv (`lifecycle._runner_argv`),
+# never a container command. The lifecycle learns which runner to start from
+# RUNNER_PROFILE in its environment, which both dispatchers set.
+#
+# `kubernetes/worker-templates/worker-job.yaml` already said this in its header,
+# and `tests/unit/worker/test_kubernetes_manifests.py` already asserted it -- of
+# the rendered YAML, which nothing dispatches. Nothing asserted it of the code
+# that does. These do, for every profile in the catalogue, on both backends,
+# because a profile that is on Cloud Run today is one catalogue edit away from
+# GKE and the reverse.
+
+ALL_PROFILES = sorted(RUNNER_PROFILES)
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_gke_manifest_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
+    """THE ONE THAT WOULD HAVE CAUGHT IT: `GkeJobDispatcher._manifest` itself.
+
+    MUTATION: put `"command": list(profile.command)` back into the container
+    dict in `GkeJobDispatcher._manifest` and this fails for every profile.
+    """
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+    assert [c["name"] for c in containers] == ["worker"]
+    worker = containers[0]
+    assert "command" not in worker, (
+        f"the GKE container for {profile_name!r} sets command={worker.get('command')!r}, "
+        "which REPLACES the image ENTRYPOINT (tini -- python -m agent_worker) -- the "
+        "worker lifecycle. The runner then runs bare: no fencing check, no cancel, no "
+        "heartbeat, no checkpoint, no terminal state, no lease release."
+    )
+    assert "args" not in worker, (
+        "`args` replaces the image CMD and is appended to the ENTRYPOINT; the worker "
+        "images declare no CMD and the lifecycle takes no arguments"
+    )
+    # And the lifecycle is told WHICH runner to start, by name, in the
+    # environment -- the only channel it reads (WorkerConfig.from_env).
+    env = {e["name"]: e["value"] for e in worker["env"]}
+    assert env["RUNNER_PROFILE"] == profile_name
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_cloud_run_job_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
+    """The same defect, latent on Cloud Run.
+
+    Terraform's Jobs carry `command = null` (modules/cloud_run_jobs/main.tf),
+    which is why Cloud Run tasks ran the lifecycle and GKE tasks did not. But
+    `ensure_job` creates a Job ITSELF whenever `get_job` returns NotFound -- a
+    new tenant, a new profile, a smaller resource class -- and `_build_job` put
+    the override on every one of those. The first task on such a Job would have
+    run exactly as the GKE pods did.
+
+    Both halves are checked: the Job the scheduler creates, and the
+    per-execution override it sends with `run_job`. A ContainerOverride can
+    carry `args`, which would be appended to the ENTRYPOINT.
+
+    MUTATION: put `command=list(profile.command)` back into `_build_job`.
+    """
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert len(client.created) == 1, "the fake starts with no Job, so the scheduler creates one"
+    container = client.created[0]["job"].template.template.containers[0]
+    assert list(container.command) == [], (
+        f"the Cloud Run Job the scheduler creates for {profile_name!r} sets "
+        f"command={list(container.command)!r}, replacing the worker lifecycle"
+    )
+    assert list(container.args) == []
+    job_env = {e.name: e.value for e in container.env}
+    assert job_env["RUNNER_PROFILE"] == profile_name
+
+    override = client.runs[0]["overrides"].container_overrides[0]
+    assert list(override.args) == [], "an execution override must not append to the ENTRYPOINT"
+    run_env = {e.name: e.value for e in override.env}
+    assert run_env["RUNNER_PROFILE"] == task.runner_profile
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_lifecycle_resolves_its_runner_from_the_environment_the_dispatcher_sets(
+    settings, tenant, profile_name, monkeypatch
+):
+    """The other half of removing the override: the runner still gets started.
+
+    Taking `command` off the container is only safe if the lifecycle, reading
+    nothing but the environment the dispatcher built, arrives at the runner the
+    frozen catalogue names. This feeds the GKE manifest's own env entries to
+    `WorkerConfig.from_env` and asks `lifecycle._runner_argv` what it would
+    start. It is green today and must stay green: it is the guard that the fix
+    above did not quietly stop the agent from running at all.
+    """
+    import sys
+
+    from agent_worker.config import WorkerConfig
+    from agent_worker.lifecycle import _runner_argv
+
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=profile, tenant=tenant
+    )
+    for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]:
+        monkeypatch.setenv(entry["name"], entry["value"])
+
+    config = WorkerConfig.from_env()
+    assert config.runner_profile == profile_name
+    argv = _runner_argv(config)
+    assert argv[1:] == list(profile.command[1:])
+    assert argv[0] in (profile.command[0], sys.executable)
+
+
+# -- the backend's deadline is a backstop; the lifecycle's own must fire first --
+#
+# Review of PR #31, 2026-09-24. With the lifecycle running on GKE, the Job's
+# `activeDeadlineSeconds` was `task.timeout_seconds` -- counted from Job
+# CREATION, so it includes Autopilot node provisioning and the image pull. The
+# lifecycle's deadline is the same number of seconds counted from
+# `Worker.__init__` (lifecycle.py), which is minutes later. So the Job
+# controller always won: it SIGTERMed the pod, and the lifecycle's SIGTERM path
+# (`_handle_interruption`) parked the task PARKED/SCHEDULED_RETRY instead of
+# its timeout path failing it. Nothing in the platform promotes a
+# SCHEDULED_RETRY park, so the task -- and its workflow -- never finished.
+# Cloud Run had the same race with a margin of seconds.
+#
+# The property: even a lifecycle that starts as LATE as the platform allows
+# (the reconciler reclaims any attempt with no heartbeat by the dispatch
+# deadline, `dispatch_timeout_seconds` after the lease) reaches its own
+# deadline, stops its child and does its bounded after-deadline work (the
+# child's termination grace and the git harvest) before the backend's deadline.
+# The worker's numbers come from `WorkerConfig.from_env` fed the environment the
+# dispatcher built, not from this file.
+
+
+def _lifecycle_config(env: dict[str, str], monkeypatch):
+    from agent_worker.config import WorkerConfig
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return WorkerConfig.from_env()
+
+
+def _assert_the_backend_outlasts_the_lifecycle(deadline, config, settings, where):
+    latest_start = settings.core.dispatch_timeout_seconds
+    after_deadline = config.termination_grace_seconds + config.git_harvest_timeout_seconds
+    needed = config.timeout_seconds + latest_start + after_deadline
+    assert deadline > needed, (
+        f"{where} is {deadline}s; the lifecycle's own timeout path needs more than "
+        f"{needed}s from dispatch ({config.timeout_seconds}s task timeout + "
+        f"{latest_start}s latest start before the reconciler reclaims + "
+        f"{after_deadline}s to stop the child and harvest). Anything shorter and the "
+        "backend SIGTERMs the pod first, and the lifecycle PARKS the task as "
+        "SCHEDULED_RETRY -- which nothing promotes -- instead of failing it."
+    )
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_gke_deadline_lets_the_lifecycle_time_out_on_its_own(
+    settings, tenant, profile_name, monkeypatch
+):
+    """MUTATION: set `activeDeadlineSeconds` back to `task.timeout_seconds`."""
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    pod = manifest["spec"]["template"]["spec"]
+    env = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
+    config = _lifecycle_config(env, monkeypatch)
+    deadline = manifest["spec"]["activeDeadlineSeconds"]
+
+    # The lifecycle's deadline is still exactly the task's: the headroom is the
+    # BACKEND's, never extra run time for the agent.
+    assert config.timeout_seconds == task.timeout_seconds
+    assert deadline > config.timeout_seconds + pod["terminationGracePeriodSeconds"]
+    _assert_the_backend_outlasts_the_lifecycle(
+        deadline, config, settings, f"the {profile_name!r} Job's activeDeadlineSeconds"
+    )
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_cloud_run_timeout_lets_the_lifecycle_time_out_on_its_own(
+    settings, tenant, profile_name, monkeypatch
+):
+    """Both the per-execution override the scheduler sends, and the Job's own
+    template timeout, which is what an execution started by hand gets.
+
+    MUTATION: set the override's `timeout` back to `task.timeout_seconds`.
+    """
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    overrides = client.runs[0]["overrides"]
+    env = {e.name: e.value for e in overrides.container_overrides[0].env}
+    config = _lifecycle_config(env, monkeypatch)
+    assert config.timeout_seconds == task.timeout_seconds
+    _assert_the_backend_outlasts_the_lifecycle(
+        overrides.timeout.seconds, config, settings,
+        f"the {profile_name!r} execution override's timeout",
+    )
+
+    # A hand-run execution carries no TASK_TIMEOUT_SECONDS, so the lifecycle
+    # falls back to the profile's own timeout.
+    monkeypatch.delenv("TASK_TIMEOUT_SECONDS")
+    hand_run = _lifecycle_config({}, monkeypatch)
+    assert hand_run.timeout_seconds == profile.timeout_seconds
+    _assert_the_backend_outlasts_the_lifecycle(
+        client.created[0]["job"].template.template.timeout.seconds, hand_run, settings,
+        f"the {profile_name!r} Cloud Run Job's template timeout",
+    )
+
+
+# -- a Job created BEFORE the fix still overrides the ENTRYPOINT ------------
+#
+# Review of PR #31, 2026-09-24. Removing `command=` from `_build_job` only
+# changes Jobs created from now on. `ensure_job` returned as soon as `get_job`
+# succeeded and never looked at the Job, and a per-execution
+# `ContainerOverride` has `args`, `env` and `clear_args` but no `command`, so
+# `run_job` cannot clear it either. Every Job the scheduler created before the
+# fix -- any non-default resource class (`swarm-job-<t>-<p>-<class>`), any
+# provider outside a tenant's terraform `providers` -- would have gone on
+# running the bare runner: no fencing, no checkpoint, no heartbeat, no lease
+# release.
+
+
+def _job_with_the_old_override(settings, tenant, profile_name, *, command=True, args=False):
+    """The Job `_build_job` created before the fix: its own shape, plus the
+    override it used to carry."""
+    profile = RUNNER_PROFILES[profile_name]
+    builder = CloudRunJobDispatcher(settings, client=object())
+    job = builder._build_job(profile, tenant)
+    job.name = builder.job_name(job_id_for(tenant.tenant_id, profile_name))
+    container = job.template.template.containers[0]
+    if command:
+        container.command = list(profile.command)
+    if args:
+        container.args = ["--verbose"]
+    assert list(container.command) == (list(profile.command) if command else [])
+    return job
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_an_existing_job_that_overrides_the_entrypoint_is_cleared_before_it_runs(
+    settings, tenant, profile_name
+):
+    """MUTATION: make `ensure_job` return straight after `get_job` again."""
+    seeded = _job_with_the_old_override(settings, tenant, profile_name)
+    before = seeded.template.template.containers[0]
+    image, env_names = before.image, [e.name for e in before.env]
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task(profile_name)
+
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+
+    assert client.calls == ["get_job", "update_job", "run_job"], (
+        f"the pre-fix Job for {profile_name!r} still carries the command override; it "
+        f"must be cleared BEFORE an execution starts. Calls made: {client.calls}"
+    )
+    assert client.created == [], "the Job exists; it is corrected, not recreated"
+    updated = client.updated[0]
+    assert updated.name == seeded.name
+    for container in updated.template.template.containers:
+        assert list(container.command) == []
+        assert list(container.args) == []
+    # Nothing else about the Job is touched: same image, same environment
+    # (including the tenant's own secret references), same identity.
+    worker = updated.template.template.containers[0]
+    assert worker.image == image
+    assert [e.name for e in worker.env] == env_names
+    assert updated.template.template.service_account == tenant.service_account
+
+    # Corrected once, not on every dispatch.
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    assert client.calls.count("update_job") == 1
+
+
+def test_an_existing_job_that_only_sets_args_is_cleared_too(settings, tenant):
+    """`args` is appended to the ENTRYPOINT, and the lifecycle takes none."""
+    seeded = _job_with_the_old_override(settings, tenant, "mock", command=False, args=True)
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("mock")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+    )
+    assert client.calls == ["get_job", "update_job", "run_job"]
+    assert list(client.updated[0].template.template.containers[0].args) == []
+
+
+def test_an_existing_job_that_cannot_be_corrected_is_refused_not_run(settings, tenant):
+    """Running the bare runner is never the fallback.
+
+    MUTATION: swallow the update_job error in `ensure_job` and carry on.
+    """
+    from google.api_core import exceptions as gexc
+
+    class RefusesUpdate(FakeJobsClient):
+        def update_job(self, request):
+            self.calls.append("update_job")
+            raise gexc.PermissionDenied("run.jobs.update denied")
+
+    seeded = _job_with_the_old_override(settings, tenant, "mock")
+    client = RefusesUpdate(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("mock")
+
+    with pytest.raises(DispatchError) as exc:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+        )
+    assert exc.value.code == "cloud_run_job_overrides_entrypoint"
+    assert "run_job" not in client.calls, "a Job that runs the bare runner must never run"
+
+
+def test_an_existing_job_with_no_override_is_not_rewritten(settings, tenant):
+    """The common case -- every terraform Job -- costs no write at all.
+
+    Green before and after the fix by design: it guards the fix against
+    turning into an update on every dispatch.
+    """
+    seeded = _job_with_the_old_override(settings, tenant, "mock", command=False)
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("mock")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+    )
+    assert client.calls == ["get_job", "run_job"]
+
+
+def test_a_pre_fix_scheduler_job_at_an_old_image_is_rewritten_once_for_both_fixes(
+    settings, tenant
+):
+    """A Job the scheduler created before 2026-09-24 is usually BOTH at once.
+
+    It carries the `command` override (this fix) AND an image from before the
+    digest map (PR #24, whose `_refresh_image` moves a `managed-by=swarm-scheduler`
+    Job to the digest before it runs). The rebuild comes from `_build_job`, which
+    sets no command, so that ONE write fixes both. Clearing the override on the
+    Job as FETCHED afterwards would be a second write carrying the pre-rebuild
+    Job: its old image, and against the real API its now-stale etag.
+
+    MUTATION: in `ensure_job`, call `_clear_entrypoint_override` whatever
+    `_refresh_image` returned.
+    """
+    profile = RUNNER_PROFILES["mock"]
+    seeded = _job_with_the_old_override(settings, tenant, "mock")
+    assert seeded.labels["managed-by"] == "swarm-scheduler"
+    old_image = seeded.template.template.containers[0].image
+    digest = f"{settings.artifact_registry_host}/{profile.image}@sha256:{'c' * 64}"
+    pinned = scheduler_settings(worker_image_refs={profile.image: digest})
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(pinned, client=client)
+    task = make_task("mock")
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert client.calls == ["get_job", "update_job", "run_job"], (
+        "one write moves the image to the digest AND drops the override; "
+        f"calls made: {client.calls}"
+    )
+    worker = client.jobs[seeded.name].template.template.containers[0]
+    assert worker.image == digest, (
+        f"the Job runs {worker.image!r}; it was at {old_image!r} and must end at the digest"
+    )
+    assert list(worker.command) == []
+    assert list(worker.args) == []
 
 
 def test_gke_without_configuration_refuses_rather_than_guessing(settings, tenant):

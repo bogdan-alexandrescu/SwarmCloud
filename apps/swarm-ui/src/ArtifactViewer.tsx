@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { Mark } from './AgentDetail'
 import { loadArtifactContent } from './api'
-import { errorHeading, num, type ApiError } from './fetch'
+import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import {
   artifactKind,
@@ -43,10 +43,16 @@ export function ArtifactViewer({
   taskId,
   artifact,
   onClose,
+  load: loadContent,
 }: {
   taskId: string
   artifact: ArtifactRef
   onClose: () => void
+  /** Where the content comes from, when it is not the artifact-content route.
+   *  CheckpointBrowser passes the checkpoint per-file read, which answers in
+   *  the same shape, so one viewer renders both. Must be stable (useCallback):
+   *  a new function is a new read. */
+  load?: () => Promise<Result<ArtifactContent>>
 }) {
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -56,7 +62,7 @@ export function ArtifactViewer({
 
   const load = useCallback(async () => {
     setState({ kind: 'loading' })
-    const res = await loadArtifactContent(taskId, artifact.name)
+    const res = await (loadContent ? loadContent() : loadArtifactContent(taskId, artifact.name))
     if (res.status === 'ok' || res.status === 'stale') {
       setState({ kind: 'ok', data: res.data })
     } else if (res.status === 'error') {
@@ -75,7 +81,7 @@ export function ArtifactViewer({
         },
       })
     }
-  }, [taskId, artifact.name])
+  }, [taskId, artifact.name, loadContent])
 
   useEffect(() => {
     void load()

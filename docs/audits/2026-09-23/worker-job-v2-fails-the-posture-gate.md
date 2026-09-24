@@ -122,6 +122,32 @@ form; `validate-manifests.sh` already requires `python3` and the job already
 installs PyYAML, so the cost is small and it is not done here only because it
 is a separate piece of work from the class distinction.
 
+**Resolved, 2026-09-24.** The gate now parses each template (every
+`__TOKEN__` filled with a dummy scalar — every worker-template placeholder sits
+in a scalar position) and judges every container, init and ephemeral ones
+included, on its EFFECTIVE settings: its own `securityContext`, falling back to
+the pod's only for the two fields Kubernetes inherits (`runAsNonRoot`,
+`runAsUser`). The class is the pod's `runtimeClassName`, not a string anywhere
+in the file. A container with `privileged: true` is also refused, in both
+classes.
+
+`tests/unit/scripts/test_posture_is_per_container.py` runs the real validator
+over a copy of the tree with one container weakened at a time. Against the
+grep gate, CI run 35975032966 showed all five passing — this residual,
+measured:
+
+| mutation | grep gate | per-container gate |
+|---|---|---|
+| v2 init container loses `allowPrivilegeEscalation: false` | passed | refused |
+| v2 init container loses `drop: ["ALL"]` | passed | refused |
+| `worker-job.yaml` container sets `runAsNonRoot: false` under a pod that sets `true` | passed | refused |
+| an unhardened sidecar added to `worker-job.yaml` | passed | refused |
+| a comment naming `runtimeClassName: gvisor` in `worker-job-browser.yaml`, with `readOnlyRootFilesystem` removed | passed | refused |
+
+The unmodified templates pass both, which is the control that makes the table
+mean anything. The "refused" column is CI run 35976461023, where the same five
+cases and the control all passed against the per-container gate.
+
 ## Ownership
 
 `kubernetes/` is **Track C**. `.github/` is **Track D**. Whichever answer is
