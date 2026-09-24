@@ -29,8 +29,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
-| 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | open |
-| 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | open |
+| 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
+| 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | ACCEPTED 2026-09-24 (the owner's "#14"), rename applied in PR #44 |
 
 ---
 
@@ -1600,9 +1600,56 @@ the tests fail rather than production.
 
 ## 17. `states.py`: a cancel that is only requested is recorded as `cancelled`
 
-**Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
-(where it was filed as CR-1). Found while the incident's stuck tasks were read
-event by event. It did not cause that incident.
+**Status: ACCEPTED — accepted by the owner in session, 2026-09-24 — and applied
+in PR #44.** This edits `apps/common/swarm_common/states.py`, which is frozen,
+and is recorded here as such. The owner accepted it as "#13" together with
+request 18 as "#14": those were the session's numbers for the two incident
+requests, not this file's. **Requests 13 and 14 in this file (the pool account
+on `Attempt`, a sub-agent's parent) are NOT accepted by this and are still
+open.**
+
+Recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559` (where it was filed
+as CR-1). Found while the incident's stuck tasks were read event by event. It
+did not cause that incident.
+
+### What was applied
+
+* `EventType.CANCEL_REQUESTED = "cancel_requested"`, documented in `states.py`
+  as NOT terminal, next to `CANCELLED`, which is documented as "the task
+  reached CANCELLED".
+* `swarm_api.store.request_cancel` writes `CANCEL_REQUESTED` when it only sets
+  the flag and `CANCELLED` only for the transition it makes itself (SUBMITTED,
+  QUEUED, READY, PARKED to CANCELLED). `detail.phase` is still written on both,
+  so a reader of the old discriminator keeps working.
+* The terminal `cancelled` for a task that held capacity was already written by
+  whoever finishes it, and is unchanged: the worker (`control.finish`), the
+  reconciler (F-3, `repair.py`), the scheduler (`SchedulerStore.cancel`).
+* **History is read, not rewritten.** Events stored before this change keep
+  `type: cancelled, phase: cancel_requested`. `swarm_api.codec.stored_event_type`
+  (called by `event_from_dict`, the decoder behind every event route) serves
+  exactly that shape as `cancel_requested`, with the detail as stored, so a
+  served legacy request is the same shape as a new one. A `cancelled` with
+  `phase: cancelled` or with no phase is a real cancel and is untouched. No
+  migration was written: this lane writes no live data, and the read is one
+  line where a migration is a write to every task's history.
+* Readers that do not go through the API apply the same reading to the raw
+  row: `swarm_mcp.follow.event_type` (the plugin can meet an API older than
+  itself; used by `swarm_follow` and `swarm tail`), `scripts/benchstat.py`
+  and `scripts/load-test.sh` (both read Firestore directly), and the console's
+  `apps/swarm-ui/src/events.ts` (the console can meet an older API mid-rollout;
+  used by the Timeline's end-of-history check and its type labels).
+* Tests: `tests/unit/control_plane/test_cancel_request_is_not_a_cancel.py`,
+  plus additions to `test_request_cancel_is_transactional.py`,
+  `tests/unit/mcp/test_follow_cursor.py`, `tests/unit/scripts/test_benchstat.py`
+  and `apps/swarm-ui/src/__tests__/cancel.request.timeline.test.tsx`.
+
+### What is still true after it (the breakage the request predicted)
+
+The rolling-deploy window described below is real and was not engineered away:
+an API instance still on the previous image that lists a task's events after a
+new instance has written `cancel_requested` raises `ValueError` in
+`EventType(data["type"])` for that page. It lasts one rollout of `swarm-api`,
+the only writer.
 
 ### The claim that is false
 
@@ -1666,10 +1713,36 @@ incident's operators were in.
 
 ## 18. `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command
 
-**Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
-(where it was filed as CR-2). The code defect it describes is fixed outside the
-frozen package, in `apps/scheduler/scheduler/dispatch.py`. This request is about
-the field that made the defect easy to write.
+**Status: ACCEPTED — accepted by the owner in session, 2026-09-24 — in its
+stronger form, and applied in PR #44.** This edits
+`apps/common/swarm_common/profiles.py`, which is frozen, and is recorded here as
+such. The owner's "#14" (see request 17's status for the numbering): the field
+is RENAMED to `runner_argv` and documented as the argv the worker lifecycle
+starts as its child, never a container command.
+
+Recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559` (where it was filed
+as CR-2). The code defect it describes is fixed outside the frozen package, in
+`apps/scheduler/scheduler/dispatch.py`. This request is about the field that
+made the defect easy to write.
+
+### What was applied
+
+* `RunnerProfile.command` is now `RunnerProfile.runner_argv`, with the comment
+  proposed below on the field itself (plus a note of the old name and why it
+  changed). Values are unchanged.
+* Every reader moved: `agent_worker.lifecycle._runner_argv`,
+  `swarm_api.runnerinputs.runner_module`, the comments in
+  `scheduler/dispatch.py`, and the tests listed below plus
+  `test_runtime_catalogue.py`, `test_runtimes_screen.py`,
+  `test_dispatch_manifests.py` and `tests/unit/mcp/test_profiles.py` (whose
+  leak list named `command` and now names `runner_argv`, with an assertion
+  that every name on it is a real field).
+* `tests/unit/control_plane/test_runner_argv_is_the_lifecycles_child.py` pins
+  that no field is called `command`, that every profile's `runner_argv` names a
+  real runner module, and that the warning stays on the field.
+* Not a wire change and not a data change, as predicted: no route serialises
+  the field and no stored document holds it. `scripts/lib/check-contract-parity.sh`
+  restates nothing about it (checked).
 
 ### What happened
 
