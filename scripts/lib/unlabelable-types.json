@@ -39,7 +39,15 @@
     "read swarm-verify's transcript from), checked the same way against the pinned",
     "provider 6.50.0: its attributes are bucket_id, description, enable_analytics,",
     "id, lifecycle_state, location, locked, name, project and retention_days -- no",
-    "labels. google_logging_project_sink, the sink feeding it, was already here."
+    "labels. google_logging_project_sink, the sink feeding it, was already here.",
+    "That bucket was never applied and was replaced the same day by a log view on",
+    "_Default; the entry stays, because this list states what the provider cannot",
+    "label, not what is in use.",
+    "",
+    "google_logging_log_view was added on 2026-09-24 for that view (the release's",
+    "deployer reads swarm-verify's logs through it), checked the same way against",
+    "the pinned provider 6.50.0: its attributes are bucket, create_time,",
+    "description, filter, id, location, name, parent and update_time -- no labels."
   ],
   "types": [
     "google_cloud_scheduler_job",
@@ -63,6 +71,7 @@
     "google_firestore_index",
     "google_iam_workload_identity_pool",
     "google_iam_workload_identity_pool_provider",
+    "google_logging_log_view",
     "google_logging_metric",
     "google_logging_project_bucket_config",
     "google_logging_project_sink",

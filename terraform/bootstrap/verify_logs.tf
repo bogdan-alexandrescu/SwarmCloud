@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# swarm-verify's transcript, readable by the identity that runs the release
+# swarm-verify's logs, readable by the identity that runs the release -- and
+# no other log
 # ---------------------------------------------------------------------------
 #
 # WHY THIS EXISTS
@@ -11,115 +12,177 @@
 # the two failing cases were found by a second person reading the execution's
 # log by hand.
 #
-# verify-remote.sh now prints that log when a target fails. The deployer cannot
-# read it. Its only logging role is roles/logging.configWriter, which can list
-# log NAMES (logging.logs.list) but cannot read an entry. This was measured on
-# 2026-09-24 with `gcloud projects get-iam-policy` and
-# `gcloud iam roles describe`. So until this is applied, the release log prints
-# the refusal and a command to run by hand.
+# verify-remote.sh prints that log when a target fails. The deployer cannot
+# read it: none of its 18 project roles carries logging.logEntries.list,
+# logging.privateLogEntries.list, logging.views.access or
+# logging.logEntries.download (each role's permissions listed with
+# `gcloud iam roles describe`, 2026-09-24). Its one logging role,
+# roles/logging.configWriter, administers configuration and reads no entry.
+#
+# OWNER DECISION, 2026-09-24: the deployer may read the swarm-verify job's logs
+# ONLY. It gets:
+#
+#   * a log view on the project's _Default bucket -- where Cloud Run already
+#     writes the job's stdout and stderr -- whose filter selects that job and
+#     nothing else;
+#   * roles/logging.viewAccessor, conditioned on that view's resource name.
 #
 # WHY NOT roles/logging.viewer. This project is SHARED. A project-wide log read
 # would let any workflow on an allowed ref read every log the other team's
 # cluster, services and jobs write, and a transcript is where a secret turns up.
-# The gate needs one job's stdout.
+# variables.tf refuses every role that reads log entries project-wide on
+# var.deployer_roles, so this stays the deployer's only log read.
 #
-# WHY NOT A VIEW ON _Default. A log view there could be filtered to this job.
-# But _Default is the project's one default bucket and it holds the other
-# team's logs, so it is not ours to hang things off. The deployer-scoping
-# work in PR #34 conditions CI's configWriter to refuse every bucket and view
-# operation there. A bucket of our own touches nothing shared.
+# WHAT THIS REPLACES. PR #50 wrote the same grant against a copy: a sink routing
+# the job's lines into a swarm-verify-logs bucket, and the grant on that
+# bucket's _AllLogs view. It was never applied -- on 2026-09-24
+# `gcloud logging buckets list` and `gcloud logging sinks list` showed only
+# _Default and _Required, and the owner's bootstrap state held no logging
+# resource -- so replacing it destroys nothing. The view is the better shape for
+# three reasons:
 #
-# SO: a sink copies the job's stdout, stderr and the platform's exit line into
-# a bucket of its own. The sink's filter can name the job, and does. The
-# deployer may read that bucket's _AllLogs view and nothing else:
-# roles/logging.viewAccessor, conditioned on the view's resource name in the
-# format the Logging documentation gives for exactly this grant. The entries
-# also stay in _Default, as they always have. This is a copy, not a move.
+#   * no second copy of a transcript, which would be a second, separately
+#     retained home for whatever a transcript leaked;
+#   * every execution still inside _Default's 30-day retention is readable the
+#     moment the view exists, not only those after a sink was created;
+#   * a view is a resource IAM can name (logging.googleapis.com/LogView), so
+#     scoping roles/logging.configWriter (deployer_conditions.tf) stops CI
+#     editing it. A sink is not, and CI can rewrite a sink's filter under any
+#     condition this project could write. See WHAT THIS DOES NOT BOUND.
+#
+# PR #50's own objection to a view on _Default was that _Default holds the other
+# team's logs and is "not ours to hang things off". A view adds nothing to the
+# bucket and changes nothing its owners read; it is a filter the deployer reads
+# through. It is created by this root, which the OWNER applies, and CI is kept
+# from touching it by the configWriter condition that objection pointed to.
 #
 # WHY HERE AND NOT IN terraform/infra. This is a grant TO the deployer. Grants to
 # the deployer come from this root, which the owner applies (`make bootstrap`),
-# and never from the root the deployer applies to itself. It is also the only
-# place it could work once PR #34's conditions land: they stop CI creating a log
-# bucket, and stop it modifying the grants of any role outside the list
-# terraform/infra hands out.
+# and never from the root the deployer applies to itself.
 #
-# WHAT IS NOT VERIFIED. Nothing here has been applied. The following are what
-# Google documents, and nobody has yet watched them happen in this project:
-#   * a sink into a bucket in its own project is "automatically authorized"
-#     and needs no writer grant;
-#   * Logging creates an _AllLogs view for every bucket;
-#   * viewAccessor on that view is enough for `gcloud logging read --view`,
-#     with no logging.logEntries.list.
-# The first failed gate after `make bootstrap` either prints the transcript
-# or prints the refusal. Either way, the release log says which.
+# ---------------------------------------------------------------------------
+# WHAT GOOGLE DOCUMENTS, AND WHERE. Each of these is copied, not inferred.
+# ---------------------------------------------------------------------------
+#
+# THE CONDITION. Two Google pages give the same form:
+#
+#   docs.cloud.google.com/logging/docs/logs-views, "Control access to a log
+#   view" -- project-level roles/logging.viewAccessor with
+#       expression: "resource.name == \"projects/PROJECT_ID/locations/LOCATION/
+#                    buckets/BUCKET_NAME/views/LOG_VIEW_ID\""
+#   docs.cloud.google.com/iam/docs/conditions-resource-attributes, the
+#   resource.name table -- "Cloud Logging log views:
+#   projects/project-id/locations/location-id/buckets/bucket-id/views/view-id"
+#   (the project ID, not the number), resource type
+#   logging.googleapis.com/LogView.
+#
+# THE READ. entries.list takes a view as its resource and "requires one or more
+# of these permissions on the specified resource: logging.logEntries.list,
+# logging.privateLogEntries.list, logging.views.access"
+# (docs.cloud.google.com/logging/docs/reference/v2/rest/v2/entries/list).
+# roles/logging.viewAccessor is logging.views.access, views.listLogs,
+# views.listResourceKeys, views.listResourceValues and logEntries.download
+# (`gcloud iam roles describe`, 2026-09-24). `gcloud logging read --bucket B
+# --location L --view V` sends exactly
+# projects/<p>/locations/L/buckets/B/views/V as that resource
+# (googlecloudsdk surface/logging/read.py, Cloud SDK 483.0.0), and that is the
+# form verify-remote.sh uses. So viewAccessor alone should be enough.
+#
+# THE FILTER. A view filter that tests a label is what the Logging guide calls
+# a FLEXIBLE filter (docs.cloud.google.com/logging/docs/logs-views, "Filters for
+# log views"), and its release notes list label support as added on
+# 2026-04-02. Two older texts still say a view filter may use only SOURCE(),
+# resource.type and LOG_ID(): the REST reference for LogView.filter, and the
+# `filter` description in the pinned provider (6.50.0,
+# `terraform providers schema -json`). If the service holds to the older
+# rule, it is the APPLY that fails -- INVALID_ARGUMENT on the view, at the
+# owner's terminal -- and nothing is left half-made, because the grant
+# depends on the view.
+#
+# MEASURED, 2026-09-24, over 30 days: the filter's two clauses matched, in
+# _Default, 331 run.googleapis.com/stderr, 34 stdout and 29 varlog/system
+# entries and nothing else. The job's audit events are not in _Default: its 39
+# activity and 62 system_event entries are in _Required, which Cloud Logging
+# routes those two audit logs to and which this view is not on.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS NOT VERIFIED -- THE CONDITION IS PROVEN ONLY WHEN A FAILED RELEASE
+# PRINTS THE LOG.
+# ---------------------------------------------------------------------------
+#
+# This repository has twice shipped an IAM condition written from
+# documentation that matched nothing: the iap.admin condition on
+# ".../services/swarm", which IAP names by project NUMBER and numeric id
+# (release 35972131246, wif.tf "WHO MAY PASS IAP"), and storage.admin on an
+# exact bucket name, which admitted the bucket and refused the object `gcloud
+# builds submit` uploads (wif.tf, "storage.admin, SCOPED"). This condition is
+# in the documented form, from two pages that agree, and that is ALL that can
+# be said for it until it has been exercised. Nothing here has been applied.
+#
+# The first failed gate after `make bootstrap` settles it. verify-remote.sh
+# either prints the execution's transcript -- the view exists, the filter was
+# accepted, IAM evaluated the condition as documented, and viewAccessor was
+# enough -- or prints the refusal with gcloud's own error, which says which of
+# those was wrong. A failed gate stays failed either way.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS DOES NOT BOUND
+# ---------------------------------------------------------------------------
+#
+# The view is only as narrow as the deployer's ability to edit it. While
+# roles/logging.configWriter is granted to the deployer unconditioned --
+# deployer_scoped_roles is [] in terraform.tfvars on 2026-09-24 -- it holds
+# logging.views.update project-wide, so a workflow on an allowed ref could
+# rewrite this view's filter to anything and then read that through the grant.
+# Naming roles/logging.configWriter in deployer_scoped_roles refuses CI every
+# LogBucket and LogView operation (deployer_conditions.tf), and that is what
+# makes "swarm-verify ONLY" hold against the deployer itself. Likewise, an
+# unconditioned roles/resourcemanager.projectIamAdmin lets CI grant itself
+# roles/logging.viewer outright; its scoped form refuses that role.
+#
+# ---------------------------------------------------------------------------
 #
 # logging.googleapis.com is not in var.prerequisite_services. It is enabled by
 # default in every project, and terraform/infra enables it too.
 
 locals {
-  # verify-remote.sh reads the view at these two values (LOG_BUCKET and
-  # LOG_LOCATION there). tests/integration/test_verify_remote_prints_the_job_log.py
-  # reads the grant's view and the sink's filter out of THIS file and lets its
-  # fake release identity read that one view, so a rename here that the script
-  # does not follow fails that test rather than a release.
+  # verify-remote.sh reads the view at these values (LOG_BUCKET, LOG_LOCATION
+  # and LOG_VIEW there). tests/integration/test_verify_remote_prints_the_job_log.py
+  # reads the grant's view and the view's filter out of THIS file, checks that
+  # the view granted is the view created, and lets its fake release identity
+  # read that one view -- so a rename here that the script does not follow
+  # fails that test rather than a release.
   #
-  # A literal rather than "${var.name_prefix}-...": it belongs to the job, and
-  # the job's name is a literal in terraform/infra/verify.tf.
-  verify_log_bucket_id = "swarm-verify-logs"
-  verify_log_location  = "global"
-  verify_log_view      = "projects/${var.project_id}/locations/${local.verify_log_location}/buckets/${local.verify_log_bucket_id}/views/_AllLogs"
+  # Literals rather than "${var.name_prefix}-...": the view belongs to the job,
+  # and the job's name is a literal in terraform/infra/verify.tf. _Default's
+  # location is global in this project (`gcloud logging buckets describe
+  # _Default --location=global`, 2026-09-24).
+  verify_log_location = "global"
+  verify_log_bucket   = "projects/${var.project_id}/locations/${local.verify_log_location}/buckets/_Default"
+  verify_log_view_id  = "swarm-verify"
+  verify_log_view     = "${local.verify_log_bucket}/views/${local.verify_log_view_id}"
 
-  # The job's stdout, its stderr and run.googleapis.com/varlog/system, which
-  # carries "Container called exit(1)." It does NOT include the job's audit
-  # events. They share the job's labels, they are a JSON blob per state change,
-  # and they say nothing about which case failed. `logName:` keeps them out.
-  #
-  # `swarm-verify` is the name terraform/infra/verify.tf gives
-  # google_cloud_run_v2_job.verify. The integration test above builds its log
-  # entries from that name, so a sink filter naming any other job routes
-  # nothing there.
-  #
-  # MEASURED on 2026-09-24. The same three clauses plus the execution label
-  # matched swarm-verify-m9prt's 41 transcript lines: 40 stderr and 1
-  # varlog/system. The only entry they left out was its one
-  # cloudaudit system_event.
-  verify_log_sink_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-verify\" AND logName:\"run.googleapis.com%2F\""
+  # The owner's filter, as decided. `swarm-verify` is the name
+  # terraform/infra/verify.tf gives google_cloud_run_v2_job.verify; the
+  # integration test above builds its log entries from that name, so a filter
+  # naming any other job shows the deployer nothing.
+  verify_log_view_filter = "resource.type=\"cloud_run_job\""
 }
 
-# No labels: google_logging_project_bucket_config has no labels attribute in the
-# pinned provider (6.50.0, `terraform providers schema -json`, 2026-09-24), and
-# is listed in scripts/lib/unlabelable-types.json for that reason. Its id begins
-# with the platform prefix, which is how the guards recognise an unlabelable
-# resource as ours.
+# No labels: google_logging_log_view has none in the pinned provider (6.50.0,
+# `terraform providers schema -json`, 2026-09-24: bucket, create_time,
+# description, filter, id, location, name, parent, update_time), and is listed
+# in scripts/lib/unlabelable-types.json for that reason. Its id begins with the
+# platform prefix, which is how the guards recognise an unlabelable resource as
+# ours, and its description says who manages it.
 #
-# A deleted log bucket is not gone at once. It waits 7 days in DELETE_REQUESTED,
-# where it can be undeleted. Plan a re-create of the same id with that in mind.
-resource "google_logging_project_bucket_config" "verify" {
-  project   = var.project_id
-  location  = local.verify_log_location
-  bucket_id = local.verify_log_bucket_id
-
-  # 30 days is what _Default keeps the same entries for, and a failed gate is
-  # diagnosed within the release that failed. A longer copy would only be a
-  # second, longer-lived home for whatever a transcript leaked.
-  retention_days = 30
-
-  description = "swarm-verify's stdout/stderr, copied by the swarm-verify-logs sink so the release's deployer can read one job's transcript and no other log."
-}
-
-resource "google_logging_project_sink" "verify" {
-  project = var.project_id
-  name    = local.verify_log_bucket_id
-
-  # Built from the same locals rather than from the bucket's computed id, so a
-  # plan against an empty project -- and the mock provider in tests/terraform --
-  # knows it. depends_on supplies the ordering the reference would have.
-  destination = "logging.googleapis.com/projects/${var.project_id}/locations/${local.verify_log_location}/buckets/${local.verify_log_bucket_id}"
-  filter      = local.verify_log_sink_filter
-
-  description = "Copies the swarm-verify job's transcript into its own bucket; see terraform/bootstrap/verify_logs.tf."
-
-  depends_on = [google_logging_project_bucket_config.verify]
+# `bucket` is the bucket's full name, the form the provider's own example uses;
+# it derives `parent` and `location` from it.
+resource "google_logging_log_view" "verify" {
+  name        = local.verify_log_view_id
+  bucket      = local.verify_log_bucket
+  filter      = local.verify_log_view_filter
+  description = "managed-by=swarm-terraform; the swarm-verify job's logs and no other, read by the release's deployer (terraform/bootstrap/verify_logs.tf)."
 }
 
 resource "google_project_iam_member" "deployer_reads_verify_logs" {
@@ -130,8 +193,12 @@ resource "google_project_iam_member" "deployer_reads_verify_logs" {
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 
   condition {
-    title       = "swarm-verify transcript only"
-    description = "The _AllLogs view of swarm-verify-logs, which holds only the verification job's stdout and stderr."
-    expression  = "resource.name == \"${local.verify_log_view}\""
+    title       = "swarm-verify log view only"
+    description = "The swarm-verify view on _Default, which selects only the verification job's logs. Owner decision 2026-09-24."
+    expression  = "resource.name == \"${local.verify_log_bucket}/views/_AllLogs\""
   }
+
+  # A grant naming a view that does not exist yet reads nothing; created in
+  # this order, it never names one.
+  depends_on = [google_logging_log_view.verify]
 }
