@@ -56,6 +56,12 @@ env:
   TERRAFORM_VERSION: "1.16.2"
   PYTHON_VERSION: "3.11"
   TF_ROOT: terraform/infra
+  # PINNED, AND THE SAME PIN security.yml USES. `push-images.sh --scan` refuses
+  # to attach a channel tag to an image with fixable HIGH/CRITICAL findings, so
+  # the scanner is part of the promotion gate rather than a report -- and a
+  # scanner whose version floats is a gate that can change its mind between two
+  # runs of the same commit.
+  TRIVY_VERSION: "0.74.0"
 
 jobs:
   # -------------------------------------------------------------------------
@@ -114,6 +120,32 @@ jobs:
 
       - name: build (Cloud Build, linux/amd64)
         run: ./scripts/build-images.sh --tag "${{ steps.tag.outputs.tag }}"
+
+      # INSTALLED BECAUSE THE PROMOTION GATE NEEDS IT, and it was not.
+      #
+      # `push-images.sh --scan` runs trivy against each digest and refuses to
+      # attach a channel tag to an image with fixable HIGH/CRITICAL findings.
+      # This job authenticated, built every image through Cloud Build -- about
+      # eighteen minutes of work -- and then failed on:
+      #
+      #     fail trivy not found but scanning is on; install it or pass --no-scan
+      #
+      # measured on run 35954830712, the first release run that ever got past
+      # authentication. The script's message is exactly right and names both
+      # remedies; `--no-scan` is the wrong one, because the scan is what stands
+      # between a fixable CRITICAL and a channel tag pointing at it.
+      #
+      # security.yml reaches trivy through `aquasecurity/trivy-action`, which is
+      # the right shape there -- it scans and uploads SARIF. Here a SCRIPT needs
+      # the binary on PATH, so it is installed with the project's own installer
+      # at the same pinned version rather than by a second action whose output
+      # nothing would read.
+      - name: install trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
 
       - name: scan and promote by digest
         # push-images.sh runs trivy against each digest and REFUSES to attach a
