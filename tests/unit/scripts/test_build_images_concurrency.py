@@ -571,7 +571,8 @@ BASH4_ONLY = {
 }
 
 
-@pytest.mark.parametrize("name", ["build-images.sh", "push-images.sh"])
+# lib/ci-built-images.sh is what `build-images.sh --reuse-ci` runs first.
+@pytest.mark.parametrize("name", ["build-images.sh", "push-images.sh", "lib/ci-built-images.sh"])
 def test_nothing_bash_3_2_lacks(name):
     """A SHAPE check, and labelled as one. These scripts target the bash 3.2.57
     that macOS ships, and CI runs bash 5, so CI cannot show they run on 3.2.
