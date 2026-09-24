@@ -32,7 +32,9 @@ resource "google_service_account" "verify" {
   project      = var.project_id
   account_id   = "swarm-verify"
   display_name = "SwarmCloud verification job"
-  description  = "Runs the smoke, concurrency and race targets from inside the VPC. Reads Firestore, Cloud Run executions and artifact objects; invokes swarm-api. Writes only through swarm-api: its own tenant's tasks, and, where admin_users names it, the runner:mock ceiling race-test narrows."
+  # 256 characters at most -- the provider refuses a longer description at
+  # plan time, which is how the first wording of this line failed CI.
+  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: its own tenant's tasks, and the runner:mock ceiling where admin_users names it."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
