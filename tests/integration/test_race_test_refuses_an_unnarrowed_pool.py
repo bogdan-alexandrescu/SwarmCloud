@@ -244,6 +244,19 @@ case "${url}" in
     # fs_query/fs_count_where index into it. An object here made jq say
     # "Cannot index string with string" halfway through the suite.
     body='[]'
+    # A SETTLED platform leased the tasks, and the scheduler writes an attempt
+    # in the same step it leases. race-test's generation case reads each task's
+    # attempts and, since main's #25, FAILS a run that read none ("a generation
+    # check over none proves nothing"). Without this the complete-run cases
+    # below failed on that floor rather than on what they test, which is how the
+    # merge of #25 into this branch first showed up. One attempt per task, at
+    # generation 1: distinct, so the duplicate check has nothing to report.
+    if [[ -n "${FAKE_SETTLE:-}" && "${url}" == *:runQuery ]] \
+      && [[ "$(printf '%s' "${data}" | jq -r '.structuredQuery.from[0].collectionId // empty' 2>/dev/null)" == "attempts" ]]; then
+      body="$(jq -nc --arg p "${FAKE_PROJECT}" '
+        [{document: {name: ("projects/" + $p + "/databases/swarm/documents/attempts/att-fake-1"),
+                     fields: {generation: {integerValue: "1"}}}}]')"
+    fi
     ;;
   *"/documents/tasks/"*)
     if [[ -n "${FAKE_SETTLE:-}" ]]; then
@@ -1246,12 +1259,29 @@ def test_the_fixture_settles_only_after_a_cancel(tmp_path: Path) -> None:
     assert read(pool_url)["active"] == {"integerValue": "0"}
     assert read(task_url)["state"] == {"stringValue": "CANCELLED"}
 
+    # A settled platform has attempts to read, or the generation case's floor
+    # fails the complete run for the fixture's reasons (see the fake's
+    # runQuery branch). Asserted through the same decoding race-test uses.
+    query = (
+        "-X", "POST", "--data-binary",
+        json.dumps({"structuredQuery": {"from": [{"collectionId": "attempts"}], "limit": 50}}),
+        f"{base}:runQuery",
+    )
+    body, status = _fake_curl(tmp_path, *query, FAKE_SETTLE="1")
+    assert status == "200", (status, body)
+    rows = [row["document"] for row in json.loads(body) if row.get("document")]
+    assert rows and all(
+        "generation" in doc["fields"] for doc in rows
+    ), f"a settled platform answered an attempts query with no generation: {body}"
+
     # And without the knob, nothing changes for the cases that rely on an idle
     # pool and an unreadable task.
     body, _ = _fake_curl(tmp_path / "unsettled", pool_url)
     assert json.loads(body)["fields"]["active"] == {"integerValue": "0"}
     body, _ = _fake_curl(tmp_path / "unsettled", task_url)
     assert json.loads(body) == {"documents": []}
+    body, _ = _fake_curl(tmp_path / "unsettled", *query)
+    assert json.loads(body) == []
 
 
 def test_the_fixture_speaks_the_shapes_common_sh_uses(tmp_path: Path) -> None:
