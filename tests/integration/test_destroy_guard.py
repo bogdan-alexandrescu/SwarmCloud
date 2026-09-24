@@ -34,9 +34,12 @@ def _shared_deny_list() -> list[str]:
     DERIVED, NOT RESTATED, and that is a defect fixed rather than a tidy-up.
 
     This file used to carry its own fourteen-entry list of "the real neighbours
-    in the shared project", written by hand. `SHARED_DENY_LIST` has twenty-one
-    entries, so the suite proving `make destroy` refuses to touch another team's
-    resources was proving it for fourteen of them. Missing entirely: the three
+    in the shared project", written by hand. `SHARED_DENY_LIST` has TWENTY
+    entries -- counted on 2026-09-24 by walking the array, after the prose here
+    and in docs/mirrored-values.md had both said twenty-one: one cluster, one
+    VPC, two subnets, the shared default network, three buckets and twelve
+    service accounts. So the suite proving `make destroy` refuses to touch
+    another team's resources was proving it for fourteen of twenty. Missing entirely: the three
     shared buckets (`saga-agents-crawled-media-staging`,
     `saga-agents-files-staging`, `saga-agents-terraform-state-staging`) and the
     other team's Compute Engine default service account. A plan deleting any of
@@ -84,6 +87,58 @@ DENY = [entry for entry in SHARED if entry != "default"] + ["(default)"]
 #: types, so the exemption logic was proved over a sixth of its input.
 UNLABELABLE = json.loads(TYPES_JSON.read_text())["types"]
 
+
+def _name_prefix() -> str:
+    """`guard_name_prefix` from common.sh -- ASKED FOR, never restated.
+
+    `destroy-guard.jq`'s `is_ours` references `$prefix`, and jq refuses to
+    COMPILE a filter with an undefined variable. So a caller that omits the
+    argument does not get a lenient default; it gets exit 3 and no verdict at
+    all. On 2026-09-23 `$prefix` was added to the filter and to
+    `scripts/lib/plan-guard.sh`, and `scripts/destroy.sh` (twice) and this file
+    (twice) were not taught to pass it: CI run 35959558515 failed 56 cases with
+
+        jq: error: $prefix is not defined at <top-level>, line 217
+
+    and `make destroy` could not reach a safety assertion at all. (main later
+    fixed the same outage inside the filter, reading `$ARGS.named.prefix` with a
+    default; the callers still pass this value so nobody is judged by the
+    fallback, and test_destroy_guard_real_plan.py asserts the two agree.)
+
+    Reading the value from the shell function production calls is the point: a
+    literal "swarm-" here would keep passing after somebody changed the real
+    one, which is the fixture-drift failure this whole pair of files exists
+    about.
+    """
+    proc = subprocess.run(
+        ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, (
+        f"guard_name_prefix is not callable in {COMMON_SH}: {proc.stderr}"
+    )
+    prefix = proc.stdout.strip()
+    assert prefix, (
+        "guard_name_prefix printed nothing, so `is_ours` would judge EVERY name "
+        "as ours -- startswith(\"\") is true for every string"
+    )
+    return prefix
+
+
+#: The ownership prefix the guard judges by, in the one spelling that exists.
+PREFIX = _name_prefix()
+
+#: Every argument `destroy-guard.jq` declares, in the shape jq takes them. Both
+#: this file and its sibling build their invocations from this list, so a fifth
+#: argument added to the filter is added here once rather than in four places
+#: that each fail with a compile error the day they are missed.
+GUARD_ARGS = [
+    "--argjson", "deny", json.dumps(DENY),
+    "--argjson", "allow_types", json.dumps(UNLABELABLE),
+    "--arg", "project", PROJECT,
+    "--arg", "prefix", PREFIX,
+]
+
 pytestmark = pytest.mark.skipif(
     not GUARD_JQ.exists(), reason="scripts/lib/destroy-guard.jq not built yet"
 )
@@ -93,11 +148,7 @@ def run_guard(resource_changes: list[dict], tmp_path: Path) -> dict:
     fixture = tmp_path / "plan.json"
     fixture.write_text(json.dumps({"resource_changes": resource_changes}))
     proc = subprocess.run(
-        ["jq", "-f", str(GUARD_JQ),
-         "--argjson", "deny", json.dumps(DENY),
-         "--argjson", "allow_types", json.dumps(UNLABELABLE),
-         "--arg", "project", PROJECT,
-         str(fixture)],
+        ["jq", "-f", str(GUARD_JQ), *GUARD_ARGS, str(fixture)],
         capture_output=True, text=True, timeout=60,
     )
     assert proc.returncode == 0, f"guard jq failed: {proc.stderr}"
@@ -225,15 +276,42 @@ def test_every_real_neighbour_is_caught_even_if_mislabelled(protected, tmp_path)
 
 
 def test_guard_fails_closed_on_unparseable_plan(tmp_path):
+    """Invalid JSON must be a refusal -- and must be refused for THAT reason.
+
+    This case used to assert only `returncode != 0`, and on 2026-09-24 it was
+    green while the guard was refusing everything: the invocation had no
+    `--arg prefix`, so jq exited 3 on a compile error before it ever looked at
+    the file. "Non-zero" and "rejected the input" are not the same statement,
+    and a guard that cannot compile refuses a GOOD plan too -- `make destroy`
+    was dead for exactly that reason.
+
+    MUTATION: drop `--arg project` from GUARD_ARGS and the second assertion
+    fails, naming the compile error, instead of this passing for the wrong
+    reason. (It used to say `--arg prefix`; since the merge with main's #17 the
+    filter reads that one as `$ARGS.named.prefix` with a default, so dropping it
+    no longer stops the filter compiling. `$project` is still a compile-time
+    binding.)
+    """
     bad = tmp_path / "bad.json"
     bad.write_text("{ not valid json")
     proc = subprocess.run(
-        ["jq", "-f", str(GUARD_JQ), "--argjson", "deny", json.dumps(DENY),
-         "--argjson", "allow_types", json.dumps(UNLABELABLE),
-         "--arg", "project", PROJECT, str(bad)],
+        ["jq", "-f", str(GUARD_JQ), *GUARD_ARGS, str(bad)],
         capture_output=True, text=True, timeout=60,
     )
     assert proc.returncode != 0, "guard parsed invalid JSON as a safe plan"
+    assert "is not defined" not in proc.stderr, (
+        f"the guard failed to COMPILE rather than rejecting the input, so this "
+        f"case proves nothing about bad input and every good plan is refused "
+        f"too:\n{proc.stderr}"
+    )
+    assert "parse error" in proc.stderr, (
+        f"the refusal came from somewhere other than the plan being unreadable:"
+        f"\n{proc.stderr}"
+    )
+    # The exit CODE is deliberately not asserted: jq 1.6 exits 2 on a parse
+    # error and jq 1.7.1 exits 5, and this suite runs on whichever the runner
+    # has. The message is the stable half, and "which failure" is the whole
+    # point of the case.
 
 
 @pytest.mark.skipif(not DESTROY.exists(), reason="destroy.sh not built yet")

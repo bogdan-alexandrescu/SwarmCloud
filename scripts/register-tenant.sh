@@ -353,13 +353,35 @@ step "IAM"
 #   by an id already known, and ids are `<prefix>_<20 hex>`.
 FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
 
-if ! gcloud iam roles describe "swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}" \
-     --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
-  die "custom role ${FIRESTORE_ROLE} does not exist. Run \`make infra\` first:
+# THREE ANSWERS, NOT TWO. This was `describe >/dev/null 2>&1`, so a denied
+# iam.roles.get or a dead session printed "does not exist. Run make infra" --
+# a terraform apply against a shared project, to fix a permission. It is the
+# first of the three findings the 2026-09-19 sweep fan-out never landed for
+# this script (docs/audits/2026-09-18/13-swallowed-stderr-sweep.md).
+# `shared_resource_present` is common.sh's tri-state describe: 0 present, 1 a
+# genuine NOT_FOUND, 2 could not tell -- with gcloud's own error printed. It is
+# named for the deny-list checks in destroy.sh; the question it answers is the
+# same one this asks.
+FS_ROLE_RC=0
+shared_resource_present "custom role ${FIRESTORE_ROLE}" \
+  gcloud iam roles describe "swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}" \
+  --project "${PROJECT_ID}" --format='value(name)' || FS_ROLE_RC=$?
+case "${FS_ROLE_RC}" in
+  0) ;;
+  1)
+    die "custom role ${FIRESTORE_ROLE} does not exist. Run \`make infra\` first:
   terraform/modules/tenancy creates it, and granting roles/datastore.user instead
   would hand this tenant entities.delete and entities.list over every other
   tenant's control-plane documents."
-fi
+    ;;
+  *)
+    die "stopping: this tenant's Firestore grant needs ${FIRESTORE_ROLE##*/}, and whether it
+  is there could not be established (gcloud's answer is above). That is a failure
+  to LOOK -- fix the session or the caller's iam.roles.get before anything else;
+  \`make infra\` will not help. Falling back to roles/datastore.user is not an
+  option: it hands entities.delete and entities.list over every tenant."
+    ;;
+esac
 
 # `--condition None` is how gcloud spells "an unconditional binding", and it is
 # not the same as omitting the flag: when the policy already holds a CONDITIONAL
@@ -443,8 +465,13 @@ fi
 #     condition can never match the bucket resource name. legacyBucketReader
 #     would hand over objects.list across the whole bucket instead.
 BUCKET_METADATA_ROLE_ID="swarmBucketMetadataReader${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
-if gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
-     --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+# Tri-state, for the reason given at the Firestore role above: a denied
+# storage.buckets.get used to print "does not exist yet; run 'make infra'".
+BUCKET_RC=0
+shared_resource_present "artifact bucket gs://${ARTIFACT_BUCKET}" \
+  gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" \
+  --project "${PROJECT_ID}" --format='value(name)' || BUCKET_RC=$?
+if [[ "${BUCKET_RC}" -eq 0 ]]; then
   # --condition-from-file, NOT --condition. gcloud parses --condition as
   # comma-separated key=value pairs, and this expression contains a comma
   # inside api.getAttribute(..., '') -- so gcloud split it mid-expression and
@@ -476,10 +503,25 @@ CONDEOF
   # An empty file is that first answer, and it makes both checks below fall
   # through to the add -- which either succeeds or fails out loud. The one
   # outcome this must never produce is a skipped grant reported as a present one.
+  #
+  # Its stderr used to go to /dev/null, so falling through was silent: the
+  # operator saw two grants attempted and no word that the "already granted?"
+  # check never happened, or why. When the add then failed -- a policy gcloud
+  # cannot render at version 1 is refused with "Specified policy version (1)
+  # must be at least 3" -- that error was the only one on screen, and it is not
+  # the cause. The reason is shown now, before the grants.
+  BUCKET_POLICY_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-bucket-policy-err.XXXXXX")"
   if ! gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
-       --project "${PROJECT_ID}" --format=json >"${BUCKET_POLICY_FILE}" 2>/dev/null; then
+       --project "${PROJECT_ID}" --format=json >"${BUCKET_POLICY_FILE}" 2>"${BUCKET_POLICY_ERR}"; then
     : >"${BUCKET_POLICY_FILE}"
+    policy_err="$(cat "${BUCKET_POLICY_ERR}")"
+    rm -f "${BUCKET_POLICY_ERR}"
+    die_if_auth_failure "${policy_err}"
+    warn "could NOT read the IAM policy on gs://${ARTIFACT_BUCKET}, so whether this tenant"
+    warn "already holds its two grants there is UNKNOWN -- attempting both; each lands or fails loudly:"
+    printf '%s\n' "${policy_err}" | redact | head -n 3 | sed 's/^/     /' >&2
   fi
+  rm -f "${BUCKET_POLICY_ERR}"
   # Skip if the binding is already there. terraform/modules/tenancy grants this
   # same conditioned binding for every tenant it manages, and adding it twice is
   # not merely redundant: gcloud reads the bucket policy at version 1, the
@@ -506,8 +548,13 @@ CONDEOF
     ok "storage.objectUser (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, listing included)"
   fi
 
-  if gcloud iam roles describe "${BUCKET_METADATA_ROLE_ID}" \
-       --project "${PROJECT_ID}" --format='value(name)' >/dev/null 2>&1; then
+  # Tri-state, as at the Firestore role: a denied iam.roles.get used to print
+  # "does not exist yet; run 'make infra'" below.
+  META_ROLE_RC=0
+  shared_resource_present "custom role ${BUCKET_METADATA_ROLE_ID}" \
+    gcloud iam roles describe "${BUCKET_METADATA_ROLE_ID}" \
+    --project "${PROJECT_ID}" --format='value(name)' || META_ROLE_RC=$?
+  if [[ "${META_ROLE_RC}" -eq 0 ]]; then
     # This role is bound on ONE bucket for EVERY tenant
     # (terraform/modules/tenancy/main.tf, `for_each = var.tenants`), so asking
     # whether the policy mentions the role id at all is answered by the first
@@ -529,19 +576,34 @@ CONDEOF
         --condition None >/dev/null
       ok "${BUCKET_METADATA_ROLE_ID} (storage.buckets.get only -- enough to mount, not to enumerate)"
     fi
-  else
+  elif [[ "${META_ROLE_RC}" -eq 1 ]]; then
     warn "custom role ${BUCKET_METADATA_ROLE_ID} does not exist yet; run 'make infra'"
     warn "without it the worker can reach its objects but cannot read the bucket's own metadata,"
     warn "which Cloud Storage FUSE needs in order to mount"
+  else
+    warn "the ${BUCKET_METADATA_ROLE_ID} grant was NOT made: whether the role is there could not"
+    warn "be established (gcloud's answer is above). That is a failure to look, not a missing role --"
+    warn "fix the session or iam.roles.get and re-run; until then this tenant's worker cannot mount the bucket"
   fi
 
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    printf 'tenant %s registered %s\n' "${TENANT_ID}" "$(iso_now)" \
+    # stderr kept: "could not write" alone does not say whether it was a
+    # permission, a session or the bucket.
+    MARKER_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-prefix-marker.XXXXXX")"
+    if ! printf 'tenant %s registered %s\n' "${TENANT_ID}" "$(iso_now)" \
       | gcloud storage cp - "gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/.tenant" \
-        --project "${PROJECT_ID}" >/dev/null 2>&1 || warn "could not write the prefix marker object"
+        --project "${PROJECT_ID}" >/dev/null 2>"${MARKER_ERR}"; then
+      warn "could not write the prefix marker object:"
+      redact <"${MARKER_ERR}" | head -n 3 | sed 's/^/     /' >&2
+    fi
+    rm -f "${MARKER_ERR}"
   fi
-else
+elif [[ "${BUCKET_RC}" -eq 1 ]]; then
   warn "artifact bucket gs://${ARTIFACT_BUCKET} does not exist yet; run 'make infra' then re-run this"
+else
+  warn "this tenant's storage grants were NOT made: whether gs://${ARTIFACT_BUCKET} exists could not"
+  warn "be established (gcloud's answer is above). That is a failure to look -- fix it and re-run;"
+  warn "\`make infra\` will not help"
 fi
 
 # Logging and metrics cannot be conditioned per tenant; they are write-only and
@@ -604,10 +666,32 @@ if [[ "${SKIP_K8S}" -eq 0 ]]; then
   # kubeconfig can reach other teams' clusters, production included. apply.sh
   # refuses on its own too; checking here keeps "not connected" a skip rather
   # than a failure, because the Cloud Run path does not need the cluster.
+  # THREE DIFFERENT FAILURES, which used to be one: no usable kubectl, a context
+  # that is not the swarm's, and a swarm context whose API server did not
+  # answer. The last was `get --raw=/readyz >/dev/null 2>&1`, so an allowlist
+  # miss or a dropped connection printed "not connected to the swarm cluster"
+  # and sent the operator to configure-kubectl.sh -- which rewrites a
+  # kubeconfig that was already right, and then this prints the same thing
+  # again. status.sh separates the same three the same way.
+  READYZ_ERR=""
+  K8S_REACHABLE=0
+  if [[ -n "${KUBECTL_BIN}" ]] && kube_context_is_swarm; then
+    READYZ_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-register-readyz.XXXXXX")"
+    if "${KUBECTL_BIN}" get --raw='/readyz' >/dev/null 2>"${READYZ_ERR_FILE}"; then
+      K8S_REACHABLE=1
+    else
+      # sed, not head: under pipefail a head that closes early can SIGPIPE the
+      # writer, and a failing assignment here would end the script under set -e.
+      READYZ_ERR="$(redact <"${READYZ_ERR_FILE}" | sed -n '1,3p')"
+      # A readyz that failed with nothing on stderr still failed; say so
+      # rather than printing an empty reason.
+      [[ -n "${READYZ_ERR}" ]] || READYZ_ERR="kubectl exited non-zero and printed nothing"
+    fi
+    rm -f "${READYZ_ERR_FILE}"
+  fi
   if [[ ! -f "${APPLY_SH}" ]]; then
     warn "kubernetes/apply.sh is missing; cannot create the tenant namespace"
-  elif [[ -n "${KUBECTL_BIN}" ]] && kube_context_is_swarm \
-     && "${KUBECTL_BIN}" get --raw='/readyz' >/dev/null 2>&1; then
+  elif [[ "${K8S_REACHABLE}" -eq 1 ]]; then
     APPLY_ARGS=(--tenant "${TENANT_ID}" --gsa "${GSA_EMAIL}")
     [[ "${DRY_RUN}" -eq 1 ]] || APPLY_ARGS+=(--confirm)
     if "${APPLY_SH}" "${APPLY_ARGS[@]}"; then
@@ -631,6 +715,12 @@ if [[ "${SKIP_K8S}" -eq 0 ]]; then
         --quiet >/dev/null
       ok "workload identity: ${NAMESPACE}/${ksa} -> ${GSA_ID}"
     done
+  elif [[ -n "${READYZ_ERR}" ]]; then
+    warn "context $(kube_current_context || echo none) IS the swarm cluster, but its API server did not answer /readyz:"
+    printf '%s\n' "${READYZ_ERR}" | sed 's/^/     /' >&2
+    dim "  most likely the master authorized-networks allowlist (your IP changed) or a dropped connection --"
+    dim "  NOT a wrong context, so scripts/configure-kubectl.sh will not fix it. Re-run once the API server answers."
+    warn "until then this tenant has NO GKE namespace: browser-class runners cannot be dispatched for it"
   else
     info "not connected to the swarm cluster (context: $(kube_current_context || echo none)); skipping the GKE namespace"
     dim "  run scripts/configure-kubectl.sh and re-run, or pass --skip-k8s if this tenant never needs browser/GPU runners"

@@ -39,6 +39,15 @@ def get_me(
             # this screen during an incident has to be able to tell.
             "is_admin_unresolved": auth.admin_unresolved,
         },
+        # WHICH ENVIRONMENT THIS API RUNS AS, for the badge every screen draws
+        # (apps/swarm-ui/src/Brand.tsx; ui-audit §B9.S5 specifies the plain
+        # string). It is the value this process ACTS on -- `hardened` is derived
+        # from it -- not a label kept for display.
+        "environment": ctx.settings.core.environment,
+        # False when nobody declared it and the frozen default "dev" filled
+        # in. A client must treat that as unknown, not as dev: see
+        # `ApiSettings.environment_declared`.
+        "environment_declared": ctx.settings.environment_declared,
     }
 
 

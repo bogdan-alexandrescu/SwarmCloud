@@ -176,6 +176,43 @@ run "the_alerts_page_on_what_a_human_would_act_on" {
     condition     = google_monitoring_dashboard.control_plane.project == "saga-agents-staging"
     error_message = "the dashboard belongs to the swarm project"
   }
+
+  # The reconciler held five dead leases for hours on 2026-09-24 because it
+  # could not read GKE, said so in two log lines on every pass, and reported
+  # `findings=0` -- and nothing watched those lines. This policy is what does.
+  assert {
+    condition = (
+      length(google_monitoring_alert_policy.reconciler_blind) == 1 &&
+      google_monitoring_alert_policy.reconciler_blind[0].user_labels["managed-by"] == "swarm-terraform" &&
+      google_monitoring_alert_policy.reconciler_blind[0].display_name == "swarm-dev-reconciler-cannot-see-a-backend"
+    )
+    error_message = "the reconciler-blindness policy must exist, be named for its environment and carry managed-by=swarm-terraform"
+  }
+
+  # The filters match the reconciler's messages verbatim. The Python side of the
+  # same pin (test_reconciler_gke_namespaced.py) checks the emitter spells them
+  # identically; a filter that matches nothing is an alert that never fires.
+  assert {
+    condition = (
+      strcontains(google_logging_metric.reconciler_backend_unavailable.filter, "jsonPayload.message=\"backend unavailable; skipping its findings\"") &&
+      strcontains(google_logging_metric.reconciler_not_repairing.filter, "jsonPayload.message=\"not repairing: the backend that would hold this execution was unreadable\"") &&
+      strcontains(google_logging_metric.reconciler_not_repairing.filter, "resource.labels.service_name=(\"swarm-reconciler\")")
+    )
+    error_message = "the reconciler log metrics must match the exact lines reconciler/repair.py writes, from the swarm-reconciler service only"
+  }
+
+  # Sustained, not a blip: three blind passes in fifteen minutes, grouped by
+  # backend; and the same lease held back for thirty minutes, grouped by lease.
+  assert {
+    condition = (
+      google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].threshold_value == 2 &&
+      google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].aggregations[0].alignment_period == "900s" &&
+      contains(google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].aggregations[0].group_by_fields, "metric.labels.backend") &&
+      google_monitoring_alert_policy.reconciler_blind[0].conditions[1].condition_threshold[0].duration == "1800s" &&
+      contains(google_monitoring_alert_policy.reconciler_blind[0].conditions[1].condition_threshold[0].aggregations[0].group_by_fields, "metric.labels.lease_id")
+    )
+    error_message = "the reconciler policy fires on 3+ blind passes per backend and on one lease held back for more than 30 minutes"
+  }
 }
 
 run "alerts_can_be_deferred_until_the_apps_emit_anything" {
@@ -196,6 +233,11 @@ run "alerts_can_be_deferred_until_the_apps_emit_anything" {
   assert {
     condition     = length(google_monitoring_alert_policy.safety_tick_absent) == 0
     error_message = "a first apply before any image exists should not page anybody"
+  }
+
+  assert {
+    condition     = length(google_monitoring_alert_policy.reconciler_blind) == 0
+    error_message = "the reconciler-blindness policy follows create_alerts like every other policy"
   }
 
   assert {

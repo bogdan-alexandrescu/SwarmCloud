@@ -1,0 +1,14 @@
+# What `gcloud builds submit` (scripts/build-images.sh) uploads from the repo
+# root. Without this file gcloud generates one that is exactly the first four
+# rules below; it is checked in so the last rule cannot be lost with it.
+.gcloudignore
+.git
+.gitignore
+#!include:.gitignore
+
+# The credential file google-github-actions/auth writes into the checkout
+# ($GITHUB_WORKSPACE) before the build step runs. It is a live credential for
+# as long as the job runs, and without this rule it went up with every build's
+# source. build-images.sh refuses to submit while one would still be uploaded,
+# so losing this rule fails the build instead of shipping the file.
+gha-creds-*.json
