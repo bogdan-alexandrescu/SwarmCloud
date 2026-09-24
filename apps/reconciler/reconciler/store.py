@@ -137,6 +137,35 @@ class ControlStore:
             attempts.append(AttemptView.from_doc(doc.to_dict() or {}, doc.id))
         return task, attempts
 
+    def task_by_id(self, task_id: str) -> TaskView | None:
+        """One task, whatever its state, or None if the document does not exist.
+
+        For an active execution naming a task that `snapshot()` did not return
+        -- which is every task outside the four concurrency states, finished
+        ones included. A READ THAT FAILS raises: "this task does not exist" and
+        "I could not look" must never lead to the same termination.
+        """
+        snap = self._db.collection("tasks").document(task_id).get()
+        return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
+    def attempt_events(self, task_id: str, attempt_id: str) -> list[dict[str, Any]]:
+        """Every event one attempt has written to its task's stream.
+
+        A single-field equality on `attempt_id`, which Firestore's automatic
+        index serves without a composite one (`terraform/modules/firestore`
+        declares none for it). Ordering is done by the caller, in memory: an
+        attempt writes a heartbeat event every 150s and two checkpoint events
+        every 120s, so even a 90-minute browser attempt is under 150 documents,
+        and it is read only when the stuck rule could act on it.
+        """
+        query = (
+            self._db.collection("tasks")
+            .document(task_id)
+            .collection("events")
+            .where(filter=self._filter("attempt_id", "==", attempt_id))
+        )
+        return [doc.to_dict() or {} for doc in query.stream()]
+
     #: Where the checkpoint sweep records that it ran. A single document, read
     #: and written inside one transaction, because swarm-reconciler scales to
     #: zero and an in-process timer would reset on every cold start -- the same

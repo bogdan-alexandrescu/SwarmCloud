@@ -31,30 +31,22 @@ variable "dead_letter_subscription" {
 
 variable "enable_safety_tick_alert" {
   description = <<-EOT
-    Create the safety-tick-stopped alert.
+    Create the safety-tick-stopped alert. A kill switch; on by default.
 
-    Separate from `create_alerts` because this one policy depends on a metric
-    that must EXIST before it can be referenced, and terraform cannot express a
-    dependency on runtime telemetry:
+    HISTORY, because the reason this flag exists has changed. The policy used to
+    watch `cloudscheduler.googleapis.com/job/attempt_count`, and creating it
+    failed with
 
         Error 404: Cannot find metric(s) that match type =
         "cloudscheduler.googleapis.com/job/attempt_count"
 
-    Verified on 2026-09-19 in saga-agents-staging: the scheduler tick job is
-    ENABLED and attempting every minute, and the project still has ZERO
-    cloudscheduler.googleapis.com metric descriptors -- checked against
-    run.googleapis.com, which returns 49, so the query is sound and the absence
-    is real.
-
-    Until that changes, creating this policy fails the apply. Leaving it enabled
-    means every `make deploy` exits non-zero, which teaches everyone to ignore
-    the exit code -- a worse outcome than a missing alert, and exactly the habit
-    the rest of this repository is trying to break.
-
-    Check before flipping it back on:
-
-        curl -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-          "https://monitoring.googleapis.com/v3/projects/<project>/metricDescriptors?filter=metric.type%3Dstarts_with%28%22cloudscheduler.googleapis.com%22%29"
+    so dev turned it off on 2026-09-19 "until the metric appears". It could not
+    appear: Google publishes no Cloud Scheduler metric at all (checked
+    2026-09-24 against the published metric list and the project's own
+    descriptors -- zero, against 49 for run.googleapis.com). The policy now
+    watches a logs-based metric this module creates from Cloud Scheduler's
+    attempt logs (metrics.tf, safety_tick_attempts), which exists as soon as the
+    apply that creates the alert has created it.
   EOT
   type        = bool
   default     = true

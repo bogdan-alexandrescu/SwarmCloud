@@ -24,6 +24,16 @@ output "github_deployer_service_account" {
   value = var.enable_github_wif ? google_service_account.deployer[0].email : ""
 }
 
+output "deployer_conditions" {
+  description = "role -> the IAM condition its grant carries once the role is named in deployer_scoped_roles. Read the one you are about to switch before you switch it."
+  value       = local.deployer_conditions
+}
+
+output "deployer_grantable_project_roles" {
+  description = "The only project-level roles CI may grant or revoke once roles/resourcemanager.projectIamAdmin is scoped. tests/terraform/deployer_iam.tftest.hcl holds terraform/infra's grants to this list."
+  value       = local.deployer_grantable_project_roles
+}
+
 output "github_principals" {
   description = "ref -> the principalSet permitted to assume the deployer SA. One per allowed ref: the binding pins the ref as well as the repository, so the provider's attribute_condition is not the only thing holding the boundary."
   value       = local.github_principals
