@@ -69,7 +69,8 @@ export function peakReadings(
       unplaced += 1
       continue
     }
-    const at = t - origin
+    const elapsed = e.detail?.['elapsed_seconds']
+    const at = typeof elapsed === 'number' ? elapsed * 1000 : t - origin
     points.push(reading(at, `T+${spanText(at)}`, peakOf(e), NO_READING))
   }
   return { points, unplaced, origin }
@@ -209,7 +210,11 @@ function PeakPlot({
           </rect>
         ),
       )}
-      <StepLine points={points} x={(at) => x(at)} y={(v) => y(v)} />
+      <StepLine
+        points={exit ? [...points, { at: exit.at, label: 'at exit', measured: true, value: exit.value }] : points}
+        x={(at) => x(at)}
+        y={(v) => y(v)}
+      />
       {points.map((p) =>
         p.measured ? (
           <circle
