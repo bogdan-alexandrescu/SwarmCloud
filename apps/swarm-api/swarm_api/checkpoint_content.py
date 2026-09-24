@@ -328,7 +328,7 @@ def member_path(name: str) -> tuple[str | None, bool]:
     shown = name
     while shown.startswith("./"):
         shown = shown[2:]
-    shown = shown.rstrip("/")
+    shown = displayable(shown.rstrip("/"))
     if shown in ("", "."):
         return None, False
     unsafe = (
@@ -1085,7 +1085,7 @@ class CheckpointContent:
         row["member"] = {"type": kind, "mode": int(member.mode or 0) & 0o7777, "size": size}
         if kind != "file":
             link = (
-                redact(displayable(member.linkname or "")).text
+                redact(member.linkname or "").text
                 if kind in ("symlink", "hardlink")
                 else None
             )
@@ -1262,8 +1262,8 @@ class CheckpointContent:
             "X-Checkpoint-Manifest": str(manifest["status"]),
         }
         digest = manifest["archive_sha256"]
-        if isinstance(digest, str) and _SHA256_HEX.fullmatch(digest):
-            headers["X-Checkpoint-Sha256"] = digest
+        if digest:
+            headers["X-Checkpoint-Sha256"] = str(digest)
 
         def chunks() -> Iterator[bytes]:
             if first.data:
