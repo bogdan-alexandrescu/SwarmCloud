@@ -296,9 +296,11 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # Served by the api-seams lane (data-gaps audit 2026-09-20 section 1)
         # ahead of the client. The Holders screen's drift check is what reads
         # them, and declaring them in types.ts is the UI lane's change; delete
-        # these two lines in that change.
+        # these three lines in that change. `active_beyond_window` is the one
+        # the drift check needs: a delta is evidence only when it is 0.
         "truncated": "served ahead of the UI lane; types.ts declares it there",
         "examined": "served ahead of the UI lane; types.ts declares it there",
+        "active_beyond_window": "served ahead of the UI lane; types.ts declares it there",
     },
     "Me": {
         # ui-audit §B9.S5, served by the api-seams lane for Brand.tsx's badge.
