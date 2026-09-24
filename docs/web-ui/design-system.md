@@ -615,13 +615,43 @@ untouched — they are the one place on a proportion where colour earns its keep
 and `test_state_colour_discriminability.py` holds the textures apart in
 greyscale.
 
-> **An open question for the owner, held open on purpose.** `.wf-meter`'s fill
-> carries `ctl-util-fill wf-meter-fill`, so the monochrome default reached
-> straight into the frozen screen and turned its 54px meter grey. It is exempted
-> back to `--info` by one line, because Workflows was explicitly frozen. That
-> leaves the product with **one blue proportion and every other proportion
-> grey**. Resolving the inconsistency means changing a screen the owner said not
-> to change, so it is recorded here rather than decided.
+> **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
+> held open here was this: `.wf-meter`'s fill carries
+> `ctl-util-fill wf-meter-fill`, so the monochrome default reached straight
+> into the frozen Workflows screen and turned its 54px meter grey, and one line
+> (`.ctl-util-fill.wf-meter-fill { background: var(--info) }`) exempted it
+> back to blue. That left the utilisation fills with one blue member and the
+> rest grey, and resolving it meant changing a screen the owner had frozen.
+>
+> **The decision: the exemption is removed and the meter takes the monochrome
+> default (`--text-dim`) like every other `.ctl-util-fill`.** `.is-warn` /
+> `.is-bad` / `.is-paused` keep their hue and their texture. **Why:** one rule,
+> not a rule and an exception; and **colour on a bar is a verdict.** A
+> workflow's progress ("three of five steps done") is a fact, not a verdict, so
+> painting it blue spent a hue on a bar for being a bar, which is exactly what
+> this section exists to stop. Workflows therefore no longer renders
+> pixel-identically to the version the owner froze; that is the accepted cost
+> of the decision.
+>
+> **How it is held.** `test_state_colour_discriminability.py::
+> test_a_proportion_fill_takes_a_hue_only_from_a_verdict` asserts the
+> property, not the selector: any rule whose subject is a `.ctl-util-fill`
+> and which carries no verdict class may not paint a background other than
+> `--text-dim`, so a second exemption under a new name fails as the old one
+> did. It was pushed red against the exemption before the exemption was
+> removed.
+>
+> **What this does not cover, found while answering it.** The decision was
+> framed as "grey like every other proportion", and three bar fills outside the
+> `.ctl-util-fill` family were still `--info` at `b0fff1b`: `.sr-bar > i`
+> (the per-state split in `PlatformCounts.tsx` and the runner-profile split in
+> `Activity.tsx`), `.coverage > i` (the usage-coverage strip in
+> `Activity.tsx`), and `.ctl-track > i`, which the comment beside the default
+> rule keeps `--info` on purpose as "the meter beside a number" (no screen
+> currently renders a bare `<i>` inside `.ctl-track`). They share the
+> `background: var(--info)` rule in `styles.css`. Whether the same "colour on a
+> bar is a verdict" rule extends to them is a question for the owner and was
+> not decided here.
 
 
 Four track states, and they must not converge:
@@ -1250,9 +1280,10 @@ Stated here rather than discovered at 3am.
 it is already the target — 13 boxes, 1 shadow, 11 colours, zero type at or above
 24px, state as a plain lowercase word beside an 8px dot, a 37px row carrying ten
 facts. The DAG, the collapsed one-line row and the absence of a mini-map on that
-row are settled owner decisions. The one line in `styles.css` that exempts
-`.wf-meter-fill` from the monochrome default exists to keep that promise, and
-§6.4 records the inconsistency it leaves rather than hiding it.
+row are settled owner decisions. The one line in `styles.css` that exempted
+`.wf-meter-fill` from the monochrome default existed to keep that promise;
+on 2026-09-24 the owner chose consistency over it and the meter went grey
+(§6.4 records the decision and why).
 
 ### 11.5 What no gate can see, and how each claim here was proved
 
@@ -1882,7 +1913,8 @@ same, but the `.ctl-table` inside still draws its own border, so a reader
 toggling between them sees one boundary appear and disappear. Both are
 defensible and the toggle is an owner-facing control, so which one is right is
 a product judgement rather than a system one. Recorded, not decided — the same
-way §6.4 records `.wf-meter`'s blue.
+way §6.4 recorded `.wf-meter`'s blue until the owner answered it on
+2026-09-24.
 
 ---
 
@@ -2124,14 +2156,29 @@ move every neighbour by a pixel at the moment the strip most needs to hold still
   place they could be changed. It is the one edit this pass made outside the
   token and primitive layer, and it is five string literals with no styling
   attached.
-* **`Brand.tsx`'s environment badge still shouts, deliberately not fixed here.**
-  `label: 'ENVIRONMENT UNKNOWN'` and `label: env.name.toUpperCase()` render
-  `LOCAL` and `PRODUCTION` in capitals from the source. Under §13.2 that is
-  emphasis on a string we author and should go — but the prod badge is a
-  **safety** signal with its own full-width bar, `brand.test.tsx` asserts the
-  exact string `'ENVIRONMENT UNKNOWN'` twice, and whether the production banner
-  is allowed to shout is a product judgement rather than a typographic one.
-  Recorded for the owner, not decided here.
+* **`Brand.tsx`'s environment badge still shouted, deliberately not fixed in
+  this pass — and answered by the owner on 2026-09-24.** The question as it
+  was left: `label: 'ENVIRONMENT UNKNOWN'` and `label: env.name.toUpperCase()`
+  rendered `DEV`, `LOCAL` and `PRODUCTION` in capitals from the source. Under
+  §13.2 that is emphasis on a string we author and should go — but the prod
+  badge is a **safety** signal with its own full-width bar, and whether the
+  production banner is allowed to shout is a product judgement rather than a
+  typographic one.
+
+  **The decision (2026-09-24): `dev` and `local` render in sentence case like
+  every other authored string; the PRODUCTION banner and ENVIRONMENT UNKNOWN
+  stay in capitals, because they are safety signals.** In `Brand.tsx`,
+  `envTreatment` upper-cases `env.name` only for `kind: 'production'`, keeps
+  the literal `'ENVIRONMENT UNKNOWN'`, and writes every non-production
+  declared name and the loopback case through `sentenceCase` — so the deployed
+  dev console reads `Dev`, a laptop reads `Local`, and a `staging` build reads
+  `Staging`. The rule that falls out is that **capitals are spent exactly where
+  the header draws its full-width bar**: the two kinds where a mistake is
+  expensive shout in both channels, and nothing else shouts in either.
+  `brand.test.tsx` holds it as a property over `classifyEnvironment`'s inputs
+  (loud kinds print in capitals, quiet kinds in sentence case, capitals
+  coincide with the bar), not as a list of literal strings; it was pushed red
+  against the old casing before `Brand.tsx` changed.
 * **Screen-private boxes are untouched.** `.tile` (`border: 1px solid var(--line)`),
   `.wf-bar`'s row border and the other 38 screen namespaces still draw their own.
   §13.3 is the rule they collapse into; applying it is the build lanes' job, and

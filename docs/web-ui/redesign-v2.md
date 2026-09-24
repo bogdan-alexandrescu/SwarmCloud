@@ -1,7 +1,90 @@
 # SwarmCloud UI — redesign v2
 
-**Status:** proposal. Nothing here is implemented. No `.tsx`, `.css` or route was
-changed to write it.
+## Status, 2026-09-24
+
+**Most of this is built. This block is the status; the body below it is the
+design record.** The body is kept as written at `f0154b4`: what was believed,
+measured and proposed then, including claims that are now false. It is not
+edited to match what shipped. That form (a dated status block, and no
+"Superseded" rewrite of the body) is the owner's answer of 2026-09-24 to
+`ui-audit-and-build-prompt.md` §B13 **D6**.
+
+Every row below was checked against the code at `b0fff1b`, and the file:line
+references are to that commit. Other lanes were changing
+`AgentDetail.tsx`, `AttemptTimeline.tsx`, `RunFiles.tsx`, `charts/`, `api.ts`
+and `Workflows.tsx` while this was written, so some of those line numbers will
+move.
+
+**Shipped**
+
+| Proposed in | What | Where it is at `b0fff1b` |
+|---|---|---|
+| §2.2 (1) | **Rail** | `App.tsx:849`, the `nav.ctl-rail` fed from `SECTIONS` |
+| §2.2 (2) | **Full-bleed work area** | `.app` is capped by `--app-max` (≥ 1600px, held by `brand.test.tsx` B19) instead of 1100px; prose alone is clamped to `--measure` |
+| §2.2 (3) | **Inspector** | `App.tsx:730` and `:761` (`has-inspector`), `panes.ts:36` `INSPECTOR`, the resize grip at `App.tsx:1323` |
+| §2.2 (4), §2.4 | **Dock with provenance** | `Dock.tsx:63`: the DataSources strip collapsed to one line that expands on click. The dock carries provenance only. Logs render in the inspector (below), not in the dock |
+| §1.0, §6 F0 | **F0 decoder** | `apps/swarm-api/swarm_api/codec.py:278-282`: `attempt_from_dict` now passes all five spend fields |
+| §6 S2, dock | **Logs route** | `GET /v1/tasks/{id}/logs` at `apps/swarm-api/swarm_api/routes/tasks.py:291`, redacted at read time. UI: `RunFiles.tsx:284` through `api.ts:444` `loadTaskLogs` |
+| §6 S3 (artifact half), Panel 3 | **Artifact content route** | `GET /v1/tasks/{id}/artifacts/content` at `routes/tasks.py:200`. It resolves an artifact by manifest name, never by path. UI: `api.ts:648` `loadArtifactContent` |
+| Panel 4 | **Checkpoint list** | `GET /v1/tasks/{id}/checkpoints` at `routes/tasks.py:246`, across attempts and read-only. UI: `RunFiles.tsx:96` through `api.ts:408` `loadCheckpoints` |
+| Panel 1 | **Fencing fields** | `task_to_api` serves `current_generation` and `current_lease_id` (`codec.py:168-199`), typed at `types.ts:406-427`. `gen N` is drawn per attempt (`AgentDetail.tsx:1187`) and per event (`AgentDetail.tsx:2962`, `AttemptTimeline.tsx:324`). No screen reads `current_generation` itself yet |
+| §4, §5.8, Panel 7 | **visx charts and TokenSpend** | `charts/TimeSeries.tsx:94` is the only module that imports visx. It uses four `@visx/*` 4.0.0 packages from `package.json`. `charts/TokenSpend.tsx:86` is mounted at `AgentDetail.tsx:1058` |
+| §4 #5, Panel 6 | **Requested vs peak memory** | a `Util` bar with the resource class's `memory_gib` as its ceiling, at `AgentDetail.tsx:1430-1438` |
+| §9 | **Help section and `?` cards** | `HelpSection.tsx:33` is mounted at `App.tsx:772`; `HelpCard.tsx:813`; the topics are in `help.ts` |
+| (not in the body) | **StopRun** | `StopRun.tsx:101`, on an agent (`AgentDetail.tsx:575`) and on a workflow (`Workflows.tsx:1990`) |
+| Panel 3 | **ArtifactViewer** | `ArtifactViewer.tsx:42` (`Markdown` at `:361`, `Transcript` at `:563`), opened from `AgentDetail.tsx:2000` |
+| (not in the body) | **Brand** | `Brand.tsx` `ProductHeader`, mounted at `App.tsx:760`: the mark, the wordmark, an environment badge that is measured rather than hardcoded, and the identity |
+| (not in the body) | **Submit form inputs** | `Submit.tsx:543` `InputFields` and `:340` `buildInput` replace the JSON textarea; `SubmitWorkflow.tsx:530` reuses them |
+| §2.4 Overview | **Overview workflow and parked checks** | `checks.ts:566` `workflowCheck` and `checks.ts:706` `parkedCheck`, both run by `deriveChecks` (`checks.ts:133`) |
+| §4 #1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
+| §2.1, §2.4 | **Three-section nav** | `App.tsx:214-404` `SECTIONS`: Overview as the landing screen, then Work · Capacity · Admin. Runtimes and History became panes, not sections. The fifteen screens keep their own routes. This replaces §2.4's six sections |
+
+**Still open at `b0fff1b`**
+
+- **The workflow timeline and table views** (§2.3; §4 #2). The board offers
+  Rows and Graph only (`Workflows.tsx:350-365`). `Work ▸ Timeline`
+  (`App.tsx:275`) is the history of past runs, not §2.3's timeline mode.
+- **The duration bar** (§4 #3; §9's measured example). No screen has the
+  queued → leased → dispatched → starting → running segmented bar. Durations
+  are shown as figures.
+- **Peak RSS over time** (§4 #4). No step line has been built. Peak RSS is shown as a
+  figure per attempt (`AttemptTimeline.tsx:286`) and as the requested-vs-peak
+  bar listed above.
+- **The checkpoint strip** (§4 #6). Checkpoints are a list in `RunFiles.tsx`,
+  not a dot strip on the attempt timeline.
+- **The diffstat** (§4 #7). Per-commit `+N −M` is printed as table figures
+  (`AgentDetail.tsx:2413`), not as diverging bars.
+- **`input_from` edges** (§4 #1, #9). The DAG draws edges from `depends_on`
+  only (`dag.ts:1290`).
+- **Scrubbers** (§2.3). Not built.
+- **Events paging** (§6 S1). `GET /v1/tasks/{id}/events` takes `limit` and
+  no cursor (`routes/tasks.py:136-144`), so the tail-truncation risk in §4
+  still stands.
+- **Cross-task attempts** (§6 S4). No route aggregates attempts across tasks.
+- **Checkpoint content** (§6 S3, the checkpoint half). The route serves a
+  listing and no bytes. The decision on its shape is recorded below.
+
+**The six questions in §8 are all answered**
+
+- **Q4, the chart library: visx.** The owner decided it on 2026-09-22 (the
+  decision is recorded in `apps/swarm-ui/src/charts/README.md`). Four
+  `@visx/*` packages are used, and only `charts/TimeSeries.tsx` imports them.
+  dagre was not taken: the DAG is hand-rolled (design-system.md §0).
+- **Q1, Q2 and Q3 were answered by what got built, not by a recorded choice.**
+  Q1: the shell (rail, full-bleed, inspector, dock) landed around the existing
+  screens. Q2: F0 shipped as its own fix (`codec.py:278-282`). Q3: both routes
+  were built, logs and artifact contents.
+- **Q5 was answered by the §9 owner directive** (2026-09-22). Prose comes off the
+  data surfaces and the explanation moves into Help and the `?` cards. The
+  fact itself stays on the surface.
+- **Q6: both themes survive** (design-system.md §1.1).
+- **S3 checkpoint content: the owner decided on 2026-09-24 that it is a
+  listing, per-file content, and a whole-checkpoint download.** The listing is
+  built. Per-file content and the whole download are not yet.
+
+---
+
+*The design record, unchanged from here down.*
 **Base commit:** `f0154b4`.
 **Supersedes:** nothing. `docs/web-ui/redesign.md` decided the *navigation* and the
 owner amended it on 2026-09-21; that decision stands and is defended, not reopened,
