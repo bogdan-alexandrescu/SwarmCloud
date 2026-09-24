@@ -101,6 +101,27 @@ describe('the one-line wait reason on a READY task', () => {
       'This resource class is busy platform-wide. (resource:browser) -- 4 of 4 in use',
     )
   })
+
+  /**
+   * THE LINE HAS ROOM FOR ONE POOL, SO IT NAMES THE ONE WAITING CANNOT CLEAR.
+   * Admission lists every refusing pool in the order the profile names them,
+   * so `global` at its ceiling comes before `resource:browser` at zero. The
+   * first entry would say "waiting is the answer" about a task that no amount
+   * of waiting will start. MUTATION: read `blocked_by[0]` again.
+   */
+  it('names the pool somebody has to act on, even when it is not the first to refuse', () => {
+    const task_ = task({
+      state: 'READY',
+      started_at: null,
+      completed_at: null,
+      blocked_by: [
+        { pool: 'global', reason: 'GLOBAL_CONCURRENCY_LIMIT', limit: 50, active: 50 },
+        ZERO,
+      ],
+    })
+    expect(whyAgent(task_)).toMatch(/resource:browser is paused by operator \(limit 0\)/)
+    expect(whyNotRunning(task_) ?? '').toMatch(/resource:browser is paused by operator \(limit 0\)/)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -148,5 +169,35 @@ describe('the profile-headroom list draws the same pool the same way', () => {
     const el = renderBlockers(blocker({}))
     expect(el.querySelector('.blocker-group.no-room .tag.full')).not.toBeNull()
     expect(el.querySelector('.blocker-group.needs-action')).toBeNull()
+  })
+
+  /**
+   * A drained pool carries the unlimited sentinel as its `limit`, and "0 of
+   * 1000000 units in use" beside a `paused` tag is a ceiling nobody set.
+   * MUTATION: print `active of limit` for a paused row again.
+   */
+  it('prints no sentinel ceiling beside a drained pool', () => {
+    const el = renderBlockers(
+      blocker({ reason: 'MANUAL_PAUSE', limit: 1_000_000, active: 0, group: 'needs_action' }),
+    )
+    expect(el.querySelector('.blocker-group.needs-action .tag.paused')).not.toBeNull()
+    expect(el.textContent).not.toMatch(/1000000|1,000,000/)
+  })
+
+  /**
+   * A provider pool at zero may be its quota state rather than a person, and
+   * a cooldown ends by itself -- so the server's grouping stands, and the row
+   * says `limit 0` rather than `full` or anybody's name. MUTATION: file every
+   * zero under "somebody has to act", or tag it `full`.
+   */
+  it('leaves a provider pool at zero where the server filed it, tagged limit 0 and not full', () => {
+    const el = renderBlockers(
+      blocker({ pool: 'provider:anthropic', reason: 'PROVIDER_CONCURRENCY_LIMIT', limit: 0, active: 0 }),
+    )
+    const room = el.querySelector('.blocker-group.no-room')
+    expect(room, 'a provider pool at zero was refiled').not.toBeNull()
+    expect(room!.textContent).toMatch(/limit 0/)
+    expect(el.querySelector('.tag.full')).toBeNull()
+    expect(el.textContent).not.toMatch(/operator/i)
   })
 })

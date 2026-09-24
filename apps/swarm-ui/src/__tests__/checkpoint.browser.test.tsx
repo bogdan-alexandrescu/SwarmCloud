@@ -509,6 +509,21 @@ describe('a file row opens the viewer', () => {
     expect(l.file).toHaveBeenCalledWith('task_a', 'att_1', 'ckpt-00001', 'result.json')
   })
 
+  /**
+   * A DIRECTORY ROW IS THE SAME KIND OF CONTROL. Its entry count is the part
+   * of the row beside the name, and a click there was dropped the same way.
+   * MUTATION: leave the toggle on the name button alone.
+   */
+  it('opens and closes a directory on a click anywhere on its row', async () => {
+    mount(loaders(ok(listing({ files: FLAT, count: FLAT.length }))))
+    const tree = await screen.findByRole('tree', { name: 'Files in this checkpoint' })
+    const meta = rowOf(tree, '▾ progress/').querySelector<HTMLElement>('.ckb-meta')
+    expect(meta, 'the directory row lost its entry count').not.toBeNull()
+    fireEvent.click(meta!)
+    expect(within(tree).getByRole('button', { name: '▸ progress/' })).toBeTruthy()
+    expect(within(tree).queryByRole('button', { name: 'step-0001.txt' })).toBeNull()
+  })
+
   it('reads a nested member by its full path, not by the name the row shows', async () => {
     const l = loaders(ok(listing({ files: FLAT, count: FLAT.length })), (p) =>
       ok(content(p, `step one of ${p}\n`)),

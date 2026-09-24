@@ -28,7 +28,7 @@ import { render, waitFor } from '@testing-library/react'
 
 import type { AgentRun } from '../api'
 import type { Result } from '../fetch'
-import type { CheckpointsPage, LatestCheckpointPointer } from '../types'
+import type { CheckpointRecord, CheckpointsPage, LatestCheckpointPointer } from '../types'
 import { attempt, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -163,4 +163,66 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
     expect(section.textContent).not.toMatch(/real zero/i)
     expect(section.textContent).not.toMatch(/has written no checkpoint/i)
   })
+
+  /**
+   * THE ZERO IS ALSO A CLAIM ABOUT THE ATTEMPT RECORDS, so it needs them read.
+   * With the attempt read failed, an empty listing is a zero of objects and
+   * nothing more: a checkpoint written and since reclaimed would look exactly
+   * like this. MUTATION: decide "real zero" from the listing alone.
+   */
+  it('withholds the zero when the attempt records could not be read', async () => {
+    const section = await checkpointsSection(
+      agentRun({ attempts: null, attemptsDetail: 'The attempt read failed.' }),
+      emptyPage(),
+    )
+    expect(section.textContent).not.toMatch(/real zero/i)
+    expect(section.textContent).not.toMatch(/has written no checkpoint/i)
+    expect(section.textContent).toMatch(/attempt records could not be read/i)
+  })
+
+  /**
+   * ONE OF SEVERAL GONE. The listing still holds ckpt-00002, the attempt
+   * document records ckpt-00001 as well, and the listing is whole -- so the
+   * section has to account for the one it lost rather than draw a list one
+   * shorter than the figure above it. Ids restart per attempt, so the match is
+   * attempt AND id. MUTATION: only explain an absence when the list is empty.
+   */
+  it('names a recorded checkpoint the listing lost even when others remain', async () => {
+    const section = await checkpointsSection(
+      agentRun({ attempts: [attempt(1, { checkpoints: ['ckpt-00001', 'ckpt-00002'] })] }),
+      emptyPage({ checkpoints: [record('att_1', 'ckpt-00002')], count: 1, total_found: 1 }),
+    )
+    const lost = section.querySelector('.ckpt-lost')
+    expect(lost, 'the lost checkpoint was not accounted for').not.toBeNull()
+    expect(lost!.textContent).toMatch(/written, then reclaimed/i)
+    expect(lost!.textContent).toContain('ckpt-00001')
+    expect(lost!.textContent).not.toContain('ckpt-00002')
+  })
 })
+
+/** One checkpoint the listing found. Only the identity matters here. */
+function record(attemptId: string, checkpointId: string): CheckpointRecord {
+  return {
+    checkpoint_id: checkpointId,
+    attempt_id: attemptId,
+    attempt_known: true,
+    attempt_created_at: null,
+    attempt_completed_at: null,
+    prefix: `${PREFIX}${attemptId}/checkpoints/${checkpointId}/`,
+    uri: `gs://swarm-artifacts/${PREFIX}${attemptId}/checkpoints/${checkpointId}/`,
+    is_latest_pointer: false,
+    objects: [],
+    stored_bytes: 0,
+    manifest: 'present',
+    manifest_detail: null,
+    created_at: null,
+    seq: null,
+    generation: null,
+    label: null,
+    archive_bytes: null,
+    archive_sha256: null,
+    file_count: null,
+    resumable: null,
+    resumable_detail: null,
+  }
+}
