@@ -19,11 +19,14 @@ reader can tell the sweep's own words from the corrections:
   has nothing to do with this plan; see the note in §1.4 before reading it as
   progress on the merge.
 * The logo grew. §2 carries the figures.
-* **Three of the items below are being worked right now by other lanes**, not
-  waiting for a decision: §1.1 (the canvas), §1.3 (the help count) and the
-  overflow list in §3. Each is marked `IN FLIGHT` where it appears, because a
-  proposal and a thing already half-built are read differently and this
-  document would otherwise invite a second lane onto the same file.
+* **Three of the items below were being worked by other lanes as this was
+  filed**, not waiting for a decision: §1.1 (the canvas), §1.3 (the help count)
+  and the overflow list in §3. Each is marked `IN FLIGHT` where it appears, or
+  `DONE` where it has since landed, because a proposal, a thing half-built and a
+  thing shipped are read differently and this document would otherwise invite a
+  second lane onto the same file. **§1.1 is now `DONE` on both counts** —
+  stage-collapsing and then semantic zoom — and the section carries what each
+  one cost.
 * One number was corrected rather than re-measured: §1.4 said "four top-level
   sections", and `SECTIONS` in `App.tsx` holds **six**. The 21 rail elements and
   the 24–67 per screen are the sweep's own measurements and are untouched.
@@ -35,7 +38,7 @@ part of the document and the easiest to quietly soften.
 
 ## 1. What is actually wrong, in order of how much it costs a user
 
-### 1.1 The console cannot show a real workflow — `IN FLIGHT`
+### 1.1 The console cannot show a real workflow — `DONE`
 
 Measured on `wf_7e2ee6c3075d43228e5a`, 30 steps, widest stage 13 nodes:
 
@@ -54,25 +57,75 @@ wider than any monitor.
 
 **This needs a decision, not a tweak.** Three honest options:
 
-1. **Fit-to-width with semantic zoom.** The canvas scales to the column and
-   nodes shed fields as they shrink — name and state at every size, profile and
+1. **Fit-to-width with semantic zoom.** `DONE`. The canvas fits the column and
+   nodes shed fields as they narrow — name and state at every size, profile and
    duration above a threshold, figures only when there is room. A minimap for
    position. This is what Railway does.
-2. **Stage-collapsing.** A stage wider than N renders as one band —
+2. **Stage-collapsing.** `DONE`. A stage wider than N renders as one band —
    "8 scanning · 6 done · 2 running" — that expands on click. The graph stays
    the shape of the workflow rather than the shape of its widest moment.
 3. **Two views.** A list that is always readable, and a canvas for when the
    shape matters. The collapsed row already is view one; the question is
-   whether the canvas should try to be complete.
+   whether the canvas should try to be complete. **Not taken**, and no longer
+   needed for this defect: 1 and 2 together make the canvas readable, and the
+   collapsed row remains the always-readable list.
 
-Recommendation: **2, then 1.** Collapsing is the smaller change and addresses
-the actual complaint — that a fan-out destroys the view — while semantic zoom
-is the larger project that makes the canvas good rather than merely possible.
+Recommendation was **2, then 1**, and that is the order they landed in.
 
-> `IN FLIGHT`. A lane is building the canvas fix now, so the figures above are
-> the *before* side of a comparison rather than a standing description. Read the
-> three options as the argument that lane is implementing, and read its own
-> report for which one it took and what it measured after.
+### What 1 and 2 actually do, and what they cost
+
+The recommendation called semantic zoom "the larger project that makes the
+canvas good rather than merely possible", and the distinction held up: stage
+collapsing replaced a 3,651px row with a band you have to open, and **opening
+one put you straight back into the 3,651px row**. Semantic zoom is what makes
+the stage drawable instead of summarised.
+
+**It shrinks nothing.** The option above says "the canvas scales"; that half was
+refused. Scaling shrinks type, `typescale.test.ts` holds a 12px floor under six
+steps, and the owner has twice said this console is hard to read — a node scaled
+to fit is texture. What narrows is the node, by dropping whole fields:
+
+| tier | what a node says | width | steps per stage |
+|---|---|---|---|
+| `figures` | name, state, profile, duration, four run figures | 255px | 3 |
+| `details` | name, state, profile, duration | 144px | 6 |
+| `names` | name, state | 138px | 6 |
+
+Widths are **derived, not chosen**: a tier's width is the widest row it still
+draws, at a character advance taken from `measureText` in the browser
+(`dag.ts`'s `MONO_ADVANCE_EM`, cross-checked against four separately measured
+figures). They move with the workflow's own step names, so a long name widens
+the node rather than wrapping onto a second line — which, on a card whose height
+the layout has already committed to, overlapped the node beneath it.
+
+Two things a reader should know about the table:
+
+* `details` and `names` come out nearly the same width here because the **state
+  word** (`dead_lettered`, 13 characters) is what sets both. That is information
+  rather than a defect: it says no further zoom will help, and the two diverge
+  as soon as a workflow's names or runner profiles are the binding constraint.
+* **Thirteen steps still do not fit any tier** — 2,150px at the narrowest — so
+  the measured run's widest stage is still a band. Zoom happens *instead of*
+  collapsing, not instead of the band.
+
+**What it cost, stated plainly.** A `details` node has no cost, token or
+checkpoint figures on it; those are one click away on the step's own page, and a
+mark beside the zoom control names what the current tier is not drawing so that
+a missing field reads as a decision about the zoom rather than a fact about the
+step. A four-segment control (`Auto · Figures · Details · Names`) puts any of
+them back.
+
+**One correction fell out of the arithmetic**, and it predates this pass:
+`NODE_W` was 248, derived from the node's 24px of padding without its 4px of
+border, and nothing had measured the row carrying the state word beside the
+duration. At 248 the string `99.9k in · 99.9k out` ellipsed by 2.6px — an F1
+truncation, a prefix of a number standing where the number was, in the very cell
+that width was chosen to protect. It is 255 and computed now.
+
+**Not measured.** jsdom has no layout engine, so the gate for this work asserts
+the widths the components *emit* and which elements exist — it cannot see
+overlap, wrapping or real text measurement. The before-figures at the top of
+this section were taken in a browser; there is no matching after-sweep yet.
 
 ### 1.2 The submit flows ask for JSON
 
@@ -220,7 +273,7 @@ density argument the whole header is held to.
 
 **Next, the decision above:**
 
-3. `IN FLIGHT` — stage-collapsing for wide fan-outs (§1.1, option 2).
+3. `DONE` — stage-collapsing for wide fan-outs (§1.1, option 2).
 
 **Then, the larger work:**
 
@@ -229,11 +282,12 @@ density argument the whole header is held to.
    the section rename did not start it — see the note in §1.4.
 5. `IN FLIGHT` — drive the help count under 20 (§1.3) — every one removed is a
    label that started carrying its own weight.
-6. Semantic zoom for the canvas (§1.1, option 1).
+6. `DONE` — semantic zoom for the canvas (§1.1, option 1). See §1.1 for the
+   tiers, what they cost and the one thing it does not fix (a 13-wide stage is
+   still a band).
 
-Three of those six are being built as this is filed. The two that are not in
-flight and not blocked are **2** and **4**: one is a verification the fixture
-does not currently support, and one is a product decision.
+The one that is neither in flight, nor done, nor blocked is **4**: a product
+decision. **2** remains a verification the fixture does not currently support.
 
 ---
 
