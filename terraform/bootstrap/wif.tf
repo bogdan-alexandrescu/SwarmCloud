@@ -104,12 +104,28 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   #                ref -- an environment or a pull_request subject -- and is
   #                the form CKV_GCP_125 reads (see `sub_condition` above).
   #
-  # UNVERIFIED UNTIL A RUN AUTHENTICATES. The `sub` format below is GitHub's
-  # documented `repo:<owner>/<name>:ref:<git-ref>` for a branch run. If a
-  # workflow ever fails at google-github-actions/auth with the token rejected
-  # rather than absent, print the run's OIDC claims and compare them here
-  # before widening anything -- and never widen this to `refs/pull/*`, for the
-  # reason application.yml's `build` job spends twenty lines on.
+  # WHAT IS MEASURED AND WHAT IS NOT, as of 2026-09-24.
+  #
+  # REJECT DIRECTION: VERIFIED. A pull_request run on
+  # fix/silent-failures-env-parity-and-audits was refused with
+  #
+  #     unauthorized_client: The given credential is rejected by the
+  #     attribute condition.
+  #
+  # which is the ref clause doing its job on `refs/pull/<n>/merge`.
+  #
+  # ACCEPT DIRECTION: VERIFIED FOR repository+ref, NOT YET FOR sub. A push to
+  # main authenticated successfully as swarm-tf-deployer@ -- but that ran
+  # against the condition BEFORE the sub clause was applied, so what it proves
+  # is the first two clauses. The `sub` format is GitHub's documented
+  # `repo:<owner>/<name>:ref:<git-ref>` for a branch run and the next main run
+  # is what confirms it.
+  #
+  # IF THAT RUN IS REJECTED: the sub format is wrong, not the pin. Read the
+  # run's OIDC claims and correct the format here. Do NOT widen the condition,
+  # and never to `refs/pull/*` -- application.yml's `build` job spends twenty
+  # lines on why, and this repository has already had one required check that
+  # existed only to create pressure for that change.
   attribute_condition = "assertion.repository == \"${var.github_repository}\" && (${local.ref_condition}) && (${local.sub_condition})"
 
   oidc {
@@ -173,6 +189,38 @@ resource "google_project_iam_member" "deployer_secrets" {
   project = var.project_id
   role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.secret_provisioner[0].role_id}"
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
+}
+
+# ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.
+#
+# `gcloud builds submit` runs the build as a service account, so the caller
+# needs `iam.serviceAccounts.actAs` on it. The one-line way to grant that is
+# `roles/iam.serviceAccountUser` at the PROJECT, and that is the wrong line to
+# write here: saga-agents-staging is SHARED, and project-level actAs would let
+# any CI run on an allowed ref impersonate every service account in it --
+# including the twelve on this repository's deny-list (promptlab-runner,
+# api-service, publisher and the rest). CI would be able to become another
+# team's production identity, which is a strictly larger authority than
+# anything else on the deployer and is not needed to build an image.
+#
+# Bound on the resource instead, the same way state access is granted on the
+# bucket rather than on the project. The scope is then a property of WHERE the
+# binding lives rather than of an expression somebody has to get right.
+#
+# The legacy Cloud Build service account is `<project-number>@cloudbuild`, which
+# is why the project NUMBER is read rather than spelled: the id is
+# saga-agents-staging and the number is not derivable from it.
+data "google_project" "this" {
+  count      = local.wif_enabled
+  project_id = var.project_id
+}
+
+resource "google_service_account_iam_member" "deployer_acts_as_cloudbuild" {
+  count = local.wif_enabled
+
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${data.google_project.this[0].number}-compute@developer.gserviceaccount.com"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
 # State access is granted on the bucket, not on the project, so the deployer

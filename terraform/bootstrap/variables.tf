@@ -152,6 +152,16 @@ variable "deployer_roles" {
   type        = list(string)
   default = [
     "roles/artifactregistry.admin",
+    # MEASURED, NOT ASSUMED. Without this the first main-ref CI build failed at
+    # `gcloud builds submit` with PERMISSION_DENIED, naming
+    # swarm-tf-deployer@ as the caller -- so WIF had worked and the identity
+    # simply could not create a build. `build-images.sh` submits one Cloud Build
+    # per image; this is the role that grants `cloudbuild.builds.create`.
+    #
+    # It is about BUILDS, not identities: it confers no ability to act as any
+    # service account, which is why it can be project-level here while
+    # `iam.serviceAccountUser` deliberately cannot (see wif.tf).
+    "roles/cloudbuild.builds.editor",
     "roles/cloudscheduler.admin",
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
