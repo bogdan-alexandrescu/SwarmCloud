@@ -282,6 +282,28 @@ cancel_task() {
   api_post "/tasks/$1/cancel" '{}' >/dev/null
 }
 
+# validation_rejected STATUS -- true only when the API's VALIDATOR refused.
+#
+# The suites prove the API refuses things -- malformed bodies, oversized input,
+# a caller-supplied image -- and the proof is a status code. Only two mean the
+# request reached validation and was turned away: 422 (`ValidationFailed`, and
+# FastAPI's own request-validation answer) and 400 (the `ApiError` base), per
+# apps/swarm-api/swarm_api/errors.py and main.py.
+#
+# NOT "any 4xx". That was the 2026-09-19 fix to "any non-2xx", and it still
+# counted 401 (an expired session), 403 (no run.invoker, or IAP refusing the
+# credential) and 404 (the wrong address) as the validator having spoken -- so
+# the suite passed loudest for a caller the API never evaluated. One definition,
+# here, because the three call sites had already drifted apart once:
+# smoke-test.sh had `400|422` in one place and a 4xx window in another.
+# tests/integration/test_suite_rejection_status.py holds it to exactly this set.
+validation_rejected() {
+  case "$1" in
+    400|422) return 0 ;;
+    *)       return 1 ;;
+  esac
+}
+
 # api_fetch PATH OUTFILE -- a GET whose failure is a failure.
 #
 # The one correct spelling of `api_get`, wrapped once so no suite has to get it

@@ -286,7 +286,19 @@ if [[ "${WITH_ARTIFACTS}" -eq 1 ]]; then
   [[ -n "${TENANT}" ]] && PREFIX="gs://${ARTIFACT_BUCKET}/tenants/${TENANT}"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     info "would recursively delete ${PREFIX}/"
-    gcloud storage ls "${PREFIX}/" --project "${PROJECT_ID}" 2>/dev/null | head -n 20 >&2 || true
+    # The preview used to be `2>/dev/null ... || true`: a denied listing and an
+    # empty prefix both printed nothing under "would recursively delete", and a
+    # dry run is precisely where an operator decides whether the real run is
+    # needed. Say which one it was.
+    ls_out="${WORK}/artifacts-ls.log"
+    if gcloud storage ls "${PREFIX}/" --project "${PROJECT_ID}" >"${ls_out}" 2>&1; then
+      head -n 20 "${ls_out}" | redact >&2
+    elif grep -qi 'matched no objects\|One or more URLs matched no objects' "${ls_out}"; then
+      dim "  (nothing under ${PREFIX}/ today)"
+    else
+      warn "could not list ${PREFIX}/ for the preview; that is not proof it is empty:"
+      redact <"${ls_out}" | head -n 3 | sed 's/^/     /' >&2
+    fi
   else
     info "deleting ${PREFIX}/"
     rm_out="${WORK}/artifacts-rm.log"
@@ -300,7 +312,12 @@ if [[ "${WITH_ARTIFACTS}" -eq 1 ]]; then
       # expired session, missing storage.objects.delete, a wrong project, a
       # retryable 503 -- must not be reported as a completed purge.
       die_if_auth_failure "$(cat "${rm_out}")"
-      if grep -qi 'matched no objects\|no objects or files\|not found' "${rm_out}"; then
+      # NOT a bare 'not found'. That also matched "404 ... bucket not found" --
+      # a wrong ARTIFACT_BUCKET, or a bucket in another project, reported as
+      # "already empty" while the tenant's artifacts sat untouched in the
+      # bucket this run never reached. Only gcloud's wording for an empty
+      # match is an empty prefix; anything else fails below.
+      if grep -qi 'matched no objects\|no objects or files' "${rm_out}"; then
         warn "nothing to delete under ${PREFIX}/ (already empty)"
       else
         err "gcloud storage rm failed under ${PREFIX}/; this is NOT confirmation the artifacts are gone"

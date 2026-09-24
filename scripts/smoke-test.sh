@@ -178,12 +178,16 @@ if api_post "/tasks" '{"runner_profile":"definitely-not-a-profile","input":{}}' 
 else
   # 401/403 sit inside the 4xx window but prove nothing about profile
   # validation -- they are an expired token or a missing IAM binding. Only
-  # 400/422 demonstrate the profile catalogue actually rejected the name.
-  case "${API_STATUS}" in
-    400|422) t_pass "rejected with HTTP ${API_STATUS}" ;;
-    401|403) t_fail "got HTTP ${API_STATUS} -- that is an auth/permission failure, not proof the unknown profile was validated" ;;
-    *)       t_fail "expected HTTP 400 or 422, got HTTP ${API_STATUS}" ;;
-  esac
+  # what `validation_rejected` accepts demonstrates the profile catalogue
+  # actually rejected the name.
+  if validation_rejected "${API_STATUS}"; then
+    t_pass "rejected with HTTP ${API_STATUS}"
+  else
+    case "${API_STATUS}" in
+      401|403) t_fail "got HTTP ${API_STATUS} -- that is an auth/permission failure, not proof the unknown profile was validated" ;;
+      *)       t_fail "expected the validator's refusal (HTTP 400 or 422), got HTTP ${API_STATUS}" ;;
+    esac
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -213,14 +217,16 @@ if api_post "/tasks" "${injected}" >"${evil_body}"; then
   fi
 else
   rm -f "${evil_body}"
-  # Rejecting the whole request outright is equally correct -- but only a
-  # clean 4xx is evidence of that. A 5xx or a transport failure (API_STATUS=0)
-  # proves nothing about whether the injected fields were honoured; the API
-  # may equally have accepted them and then crashed.
-  if [[ "${API_STATUS}" -ge 400 && "${API_STATUS}" -lt 500 ]]; then
+  # Rejecting the whole request outright is equally correct -- but only the
+  # validator's refusal is evidence of that (`extra="forbid"` answers 422). A
+  # 5xx or a transport failure (API_STATUS=0) proves nothing about whether the
+  # injected fields were honoured; the API may equally have accepted them and
+  # then crashed. Nor does a 401/403/404: that request was never evaluated, and
+  # this line used to accept any 4xx and print PASS for invariant 10 anyway.
+  if validation_rejected "${API_STATUS}"; then
     t_pass "request carrying an image/command was rejected outright (HTTP ${API_STATUS})"
   else
-    t_fail "request carrying an image/command failed with HTTP ${API_STATUS}, not a clean 4xx rejection"
+    t_fail "request carrying an image/command failed with HTTP ${API_STATUS}, not the validator's refusal (400 or 422)"
   fi
 fi
 
