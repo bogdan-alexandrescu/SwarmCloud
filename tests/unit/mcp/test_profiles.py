@@ -34,7 +34,24 @@ from swarm_mcp.client import SwarmError
 #: than WHICH profile it is. None of these may reach a caller through this
 #: bridge, and the list is spelled out so a new one added to the frozen
 #: dataclass has to be considered here rather than inherited silently.
-_EXECUTION_DETAIL = ("image", "command", "secrets", "secrets_any_of", "spot")
+_EXECUTION_DETAIL = ("image", "runner_argv", "secrets", "secrets_any_of", "spot")
+
+
+def test_every_execution_detail_named_here_is_a_real_runner_profile_field():
+    """A name here that is not a field guards nothing, and says it does.
+
+    This list said `command` until contract request 18 renamed the field to
+    `runner_argv` (2026-09-24). Left stale, the leak check below would go on
+    looking for a key the dataclass no longer has, and a `runner_argv` served
+    to a caller would pass it.
+    """
+    import dataclasses
+
+    from swarm_common.profiles import RunnerProfile
+
+    fields = {f.name for f in dataclasses.fields(RunnerProfile)}
+    stale = sorted(set(_EXECUTION_DETAIL) - fields)
+    assert not stale, f"_EXECUTION_DETAIL names fields RunnerProfile does not have: {stale}"
 
 
 def test_the_catalogue_is_the_frozen_one_and_not_a_copy_of_it():

@@ -8,6 +8,7 @@ import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
 import { attemptEnd } from './duration'
+import { eventKind, isTerminalEvent } from './events'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
@@ -2704,19 +2705,6 @@ interface Group {
 }
 
 /**
- * The event each terminal transition writes -- `control.py`'s state-to-event
- * map, plus the scheduler's cascade cancel and the API's own. A terminal task
- * has one by construction, so a terminal task whose page carries none is proof
- * the page ends before the run did.
- */
-const TERMINAL_EVENTS: ReadonlySet<string> = new Set([
-  'succeeded',
-  'failed',
-  'cancelled',
-  'dead_lettered',
-])
-
-/**
  * The event stream, grouped under the attempt that wrote it.
  *
  * A flat list interleaves three attempts into one column where only the
@@ -2785,9 +2773,12 @@ function Timeline({
   // there is no proof, the caveat is stated as a limit of the route rather
   // than as a claim about this task -- a count of 50 is not evidence either
   // way, and pretending otherwise is how the 200 got here.
+  //
+  // A CANCEL REQUEST IS NOT THE END (contract request 17). `isTerminalEvent`
+  // reads a stored `cancelled` with phase `cancel_requested` as the request it
+  // was, so a cancelled task whose real ending is off the page still says so.
   const lastEvent = events[events.length - 1]
-  const endMissing =
-    TERMINAL_STATES.has(task.state) && !events.some((e) => TERMINAL_EVENTS.has(e.type))
+  const endMissing = TERMINAL_STATES.has(task.state) && !events.some(isTerminalEvent)
   const groups = grouped(events, attempts)
 
   return (
@@ -2817,7 +2808,7 @@ function Timeline({
           {endMissing
             ? lastEvent === undefined
               ? 'ends early'
-              : `ends at ${lastEvent.type}, ${timeAgo(lastEvent.at)}`
+              : `ends at ${eventKind(lastEvent)}, ${timeAgo(lastEvent.at)}`
             : 'oldest first · cap unknown'}
         </span>
       </div>
@@ -2840,7 +2831,7 @@ function Timeline({
             <ol className="timeline">
               {g.events.map((e) => (
                 <li key={e.event_id}>
-                  <span className="ev-type">{e.type}</span>
+                  <span className="ev-type">{eventKind(e)}</span>
                   <span className="ev-at">{timeAgo(e.at)}</span>
                   {/* The fencing generation the event was written under. A
                       stale worker's events carry the OLD one -- that is how a

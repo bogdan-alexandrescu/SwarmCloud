@@ -143,6 +143,12 @@ outside `kubernetes/` to close properly.
 
 ### 1. The dispatcher overrides the container command (severity: critical)
 
+**Closed 2026-09-24.** Neither dispatcher sets a container `command` or `args`
+(incident `wf_ebb3ab2d65664707a559`, PR #31), and the field is no longer called
+`command`: it is `RunnerProfile.runner_argv`, the argv the worker lifecycle
+starts as its child (contract request 18, accepted by the owner, PR #44). The
+text below is the finding as it was recorded.
+
 `apps/scheduler/scheduler/dispatch.py` sets `command=list(profile.command)` on
 both the Cloud Run container and the GKE pod template. `profile.command` is the
 **runner's** entrypoint — `python -m agent_worker.runners.browser` — and the

@@ -92,8 +92,32 @@ EVENT_CHAIN: tuple[str, ...] = (
     "running",
 )
 
-#: Terminal events, any of which ends the chain.
+#: Terminal events, any of which ends the chain. `cancel_requested` is NOT one:
+#: a cancel that was only requested leaves the task holding its lease until the
+#: worker or the reconciler finishes it (contract request 17).
 TERMINAL_EVENTS: tuple[str, ...] = ("succeeded", "failed", "cancelled", "dead_lettered")
+
+
+def event_type(event: dict[str, Any]) -> Any:
+    """The type an event records, reading one legacy shape as what it was.
+
+    The one collector that feeds this, `bench-dispatch.sh`, reads events
+    through the API (`GET /v1/tasks/{id}/events`). A current API already
+    serves the legacy shape as `cancel_requested`. A `swarm-api` from before
+    2026-09-24 does not: it serves the row as stored, and until then a
+    flag-only cancel was stored as `type: cancelled` with `detail.phase:
+    cancel_requested`. That was a request, and counting it as terminal ended
+    `dispatch.total` when somebody pressed cancel rather than when the task
+    ended. The benchmark can run against whatever API is deployed, so it
+    applies the reading itself. It is the same reading as
+    `swarm_api.codec.stored_event_type`, restated because this runs with no
+    swarm-api installed; tests/unit/scripts/test_benchstat.py pins it.
+    """
+    kind = event.get("type")
+    detail = event.get("detail")
+    if kind == "cancelled" and isinstance(detail, dict) and detail.get("phase") == "cancel_requested":
+        return "cancel_requested"
+    return kind
 
 #: Segment name -> (from_event, to_event). Named for the OWNER of the delay,
 #: because "dispatch is slow" is three different teams' problem depending on
@@ -284,7 +308,7 @@ def first_event_times(events: Iterable[dict[str, Any]]) -> dict[str, float]:
     """
     out: dict[str, float] = {}
     for event in events:
-        etype = event.get("type")
+        etype = event_type(event)
         if not isinstance(etype, str):
             continue
         at = _epoch(event.get("at"))

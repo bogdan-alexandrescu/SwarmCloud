@@ -20,7 +20,7 @@ and each test below drives one of them through the real route:
 
   2. FLAG-ONLY AGAINST THE WORKER FINISHING. The API reads RUNNING, so it
      decides "flag it". The worker then commits SUCCEEDED. The API writes
-     `cancel_requested=true` onto a SUCCEEDED task, records a `cancelled`
+     `cancel_requested=true` onto a SUCCEEDED task, records a cancel
      event against it, and answers 200. A caller is told a stop was requested
      for work that had already finished, which is the claim the 409 exists to
      refuse.
@@ -141,10 +141,17 @@ def db() -> ContendedFirestore:
 
 
 def cancelled_events(db: FakeFirestore, task_id: str) -> list[dict[str, Any]]:
+    """Every event a cancel POST can write, of either kind.
+
+    Both kinds, since contract request 17 (accepted 2026-09-24): the flag-only
+    branch writes `cancel_requested` and the immediate branch `cancelled`. A
+    filter on one type would let the other be written twice, or onto a
+    finished task, and still pass.
+    """
     return [
         event
         for event in db.collection_docs(f"tasks/{task_id}/events")
-        if event.get("type") == "cancelled"
+        if event.get("type") in ("cancelled", "cancel_requested")
     ]
 
 
@@ -209,8 +216,12 @@ def test_a_cancel_that_loses_the_race_to_admission_becomes_a_request(
 
     events = cancelled_events(db, task_id)
     assert len(events) == 1, (
-        f"{len(events)} cancelled events; a retried transaction must write its "
+        f"{len(events)} cancel events; a retried transaction must write its "
         "event once, with the flag, not once per attempt"
+    )
+    assert events[0]["type"] == "cancel_requested", (
+        "the cancel that lost the race to admission only set the flag, so its "
+        f"event must say a cancel was REQUESTED, not {events[0]['type']!r}"
     )
     assert events[0]["detail"]["phase"] == "cancel_requested"
     assert events[0]["detail"]["from_state"] == "DISPATCHED", (
@@ -228,7 +239,7 @@ def test_a_cancel_that_loses_the_race_to_the_worker_finishing_is_a_conflict(
     """The worker commits SUCCEEDED between the API's read and its write.
 
     Once the task is terminal the API answers 409 for it, and a late request
-    must end the same way: no flag on a finished task and no `cancelled` event
+    must end the same way: no flag on a finished task and no cancel event
     in its history.
     """
     seed_tenant(db, "eng")
@@ -257,7 +268,7 @@ def test_a_cancel_that_loses_the_race_to_the_worker_finishing_is_a_conflict(
     assert response.json()["detail"]["state"] == "SUCCEEDED"
     assert db.docs["tasks/task_live"]["cancel_requested"] is False
     assert cancelled_events(db, "task_live") == [], (
-        "a `cancelled` event was recorded on a task that finished SUCCEEDED"
+        "a cancel event was recorded on a task that finished SUCCEEDED"
     )
 
 
