@@ -1060,13 +1060,18 @@ class Worker:
         # browser attempt had run under the lifecycle before that PR made it
         # the entrypoint there.
         # Its sibling PLAYWRIGHT_SKIP_BROWSER_GC is deliberately NOT carried:
-        # only `playwright install` reads it, and the runner never installs.
+        # only Playwright's browser-install path reads it (checked in the 1.63.0
+        # driver), and the runner never installs.
         #
         # NEVER A PREFIX. `PLAYWRIGHT_*` would also carry
         # PLAYWRIGHT_SERVICE_ACCESS_TOKEN, a real Playwright credential.
-        # tests/unit/worker/test_image_env_reaches_the_runner.py reads every ENV
-        # the browser image sets and holds each one to either this list or a
-        # recorded reason the runner must not have it.
+        # tests/unit/worker/test_image_env_reaches_the_runner.py takes every ENV
+        # in the browser image -- both Dockerfiles, plus the upstream python
+        # base's, recorded there and pinned by digest -- and holds each one to
+        # either this list or a recorded reason the runner must not have it.
+        # The image's pip/npm settings are among the refused: no runner process
+        # runs pip or npm. Whether the AGENTS the runners start should get them
+        # is an open owner decision, recorded in that file.
         for passthrough in (
             "PYTHONPATH",
             "VIRTUAL_ENV",

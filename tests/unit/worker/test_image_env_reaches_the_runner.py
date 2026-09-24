@@ -60,7 +60,7 @@ TENANT_KEY = "sk-ant-api03-tenant-own-key"
 #: The digest `images/agent-runtime-base/Dockerfile` pins its `PYTHON_IMAGE`
 #: to, as of the reading below. `test_the_recorded_upstream_env_is_for_the_pinned_base`
 #: fails the moment the Dockerfile pins anything else.
-UPSTREAM_PYTHON_DIGEST = "sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf85"
+UPSTREAM_PYTHON_DIGEST = "sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84"
 
 #: The ENV the UPSTREAM image sets -- `python:3.11-slim-bookworm` at the digest
 #: above, which the base's runtime stage is built FROM. The browser image
@@ -96,32 +96,93 @@ UPSTREAM_PYTHON_ENV: dict[str, str] = {
     "PYTHON_SHA256": "91bcdebfdde239a003ae93738a7fce0f9230fee5c4bc2b86f6e6e8c6f98aabe8",
 }
 
+# NONE OF THESE IS A BUILD-TIME SETTING. Every ENV here is set in a RUNTIME
+# stage, or by the upstream image under it, so it is in the environment of
+# every process the container starts, not only of the build's own RUN steps.
+# The runner is the exception, because the lifecycle builds its environment.
+# So each reason says why the RUNNER does not need the variable, not what the
+# build gained by setting it.
+#
+# "The runner" is the process the lifecycle starts and whatever inherits ITS
+# environment -- for `browser`, Playwright's node driver and Chromium. The
+# claude-code, codex and generic runners start the agent CLI or the catalogue
+# command with an environment they BUILD AGAIN (`runners/cliagent.py`,
+# `generic._build_env`), so nothing carried at this hop reaches an agent's own
+# processes unless that runner forwards it as well.
+#
+# OPEN OWNER DECISION, raised on PR #37 and NOT taken here. An agent's own
+# `pip install` -- a claude-code or codex tool call -- runs in the environment
+# `cliagent.py` builds, which has no PIP_NO_CACHE_DIR. pip therefore caches
+# under $HOME/.cache/pip; HOME is the attempt's work dir; and every checkpoint
+# archives the work dir whole (`checkpoint._write_archive`), so that cache is
+# uploaded with each checkpoint, restored with it, and counts toward the 2 GiB
+# checkpoint cap. The image's PIP_NO_CACHE_DIR=1 reaches no agent today, on
+# either backend. Carrying it at THIS hop would not change that: if it is
+# wanted, it belongs in `cliagent.py`'s environment, the way
+# `generic._build_env` already sets npm's two settings for its own commands.
+# Those two, NPM_CONFIG_UPDATE_NOTIFIER and NPM_CONFIG_FUND, are the same
+# question at smaller stakes: `cliagent.py` does not set them either.
+
 #: Set by the image and deliberately NOT given to the runner. A variable the
 #: image gains that is neither carried nor listed here fails
 #: `test_every_env_the_browser_image_sets_is_carried_or_refused_for_a_reason`
 #: until someone decides which it is.
 NOT_FOR_THE_RUNNER: dict[str, str] = {
     "DEBIAN_FRONTEND": (
-        "silences apt's prompts during the image build; the runner is uid 10001 "
-        "and cannot run apt"
+        "read only by apt and debconf when a package is installed or configured. "
+        "The runner is uid 10001 and the image has no sudo, so nothing it can "
+        "run installs a package"
     ),
-    "PIP_NO_CACHE_DIR": "keeps pip's download cache out of the image layers at build time",
+    "PIP_NO_CACHE_DIR": (
+        "no runner process runs pip: the browser runner's subprocesses are "
+        "Playwright's driver and Chromium, and the other runners give their "
+        "commands a rebuilt environment this hop does not reach. Nor is the "
+        "build relying on it: its two `pip install` steps pass --no-cache-dir "
+        "themselves. Whether AGENTS should have it is the open decision above"
+    ),
     "NPM_CONFIG_PREFIX": (
         "where the build's `npm install -g` put the agent CLIs; they are found "
-        "through PATH, which IS carried, and the prefix is root-owned so nothing "
-        "in the runner could install into it anyway"
+        "through PATH, which IS carried. No runner process runs npm, and an npm "
+        "without it falls back to node's own prefix, /usr/local -- root-owned, "
+        "exactly as /usr/local/share/npm-global is, so a global install by uid "
+        "10001 fails either way"
     ),
-    "NPM_CONFIG_UPDATE_NOTIFIER": "quietens the build's npm install",
-    "NPM_CONFIG_FUND": "quietens the build's npm install",
+    "NPM_CONFIG_UPDATE_NOTIFIER": (
+        "no runner process runs npm. The generic runner, whose catalogue does, "
+        "sets it for its own commands (`generic._build_env`); the claude-code "
+        "and codex runners build their CLI's environment without it, which is "
+        "part of the open decision above, not of this hop"
+    ),
+    "NPM_CONFIG_FUND": (
+        "no runner process runs npm. The generic runner sets it for its own "
+        "commands (`generic._build_env`) and its `npm ci` passes --no-fund as "
+        "well; the claude-code and codex runners build their CLI's environment "
+        "without it, as for NPM_CONFIG_UPDATE_NOTIFIER"
+    ),
     "WORKSPACE_ROOT": (
         "the LIFECYCLE's setting: the directory it creates every attempt's "
         "workspace under. The runner is told its own workspace as "
         "SWARM_WORKSPACE and has no business with the parent"
     ),
     "PLAYWRIGHT_SKIP_BROWSER_GC": (
-        "read only by `playwright install`, which the image build runs and the "
-        "runner never does; the bundle under /opt/playwright is read-only to "
-        "uid 10001 regardless"
+        "read only on Playwright's browser-INSTALL path (`registry.install` in "
+        "the 1.63.0 driver's coreBundle.js, which `playwright install` runs); "
+        "launching a browser never reaches it. The image build installs, the "
+        "runner never does, and /opt/playwright is read-only to uid 10001"
+    ),
+    "GPG_KEY": (
+        "the upstream python image's own build input: the key its Dockerfile "
+        "verified the CPython source tarball with. It describes how the image's "
+        "CPython was built, and nothing at runtime verifies anything with it"
+    ),
+    "PYTHON_VERSION": (
+        "the upstream python image's own build input: the CPython version its "
+        "Dockerfile downloaded. The interpreter reports its own version, and "
+        "nothing in agent_worker reads this variable"
+    ),
+    "PYTHON_SHA256": (
+        "the upstream python image's own build input: the checksum of the "
+        "CPython source tarball its Dockerfile downloaded"
     ),
 }
 
