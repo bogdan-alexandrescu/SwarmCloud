@@ -31,6 +31,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
 | 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | open |
 | 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | open |
+| 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 
 ---
 
@@ -1731,3 +1732,67 @@ dispatcher sets `command` or `args`.
 `tests/unit/worker/test_kubernetes_manifests.py` asserts that the dispatcher's
 Job and the rendered YAML agree field by field. Those catch a reintroduction.
 Nothing warns the next reader of `profiles.py` before they write it.
+
+---
+
+## 19. `states.py`: no `EventType` says "the reconciler evicted this execution"
+
+**Status:** open, recorded 2026-09-24 by the browser-eviction lane. The owner
+asked for browser pods that are stuck without progress, or left running after
+their task finished, to be evicted "with an event naming the reason". The event
+is written. Its type is borrowed.
+
+### What is there now, without the contract
+
+The reconciler's two GKE eviction rules (`apps/reconciler/reconciler/detect.py`,
+runbook `docs/runbooks/browser-eviction.md`) write these events:
+
+* **`stuck_no_progress`.** The reconciler only fences in that pass, so
+  `generation_fenced`, with `detail.finding` and `detail.reason`, is accurate.
+  The rules that finish the job on a later pass write their usual
+  `lease_released`, then `ready`, `failed` or `cancelled`.
+* **`left_running`.** The task is already terminal, and nothing is fenced. The
+  event is `generation_fenced` with `detail.phase: "left_running"`. That type is
+  the nearest the frozen `EventType` offers: the reconciler stopped an
+  execution of this generation that had no right to run. It is still a
+  borrowed word. A reader of the task timeline sees "generation fenced" after
+  "succeeded" and must open `detail` to learn it was an eviction.
+
+`EventType` cannot be extended from outside: `swarm_api.codec` parses every
+stored event with `EventType(data["type"])`, so writing an unknown type string
+would break the read path for that task.
+
+### The requested change
+
+Add one member to `swarm_common/states.py`:
+
+```python
+class EventType(str, Enum):
+    ...
+    EXECUTION_EVICTED = "execution_evicted"
+```
+
+The `left_running` rule would write it instead of `generation_fenced`. The
+stuck rule would keep `generation_fenced`, because fencing is what it does.
+
+### What breaks if it is made
+
+Nothing stored. Old events keep their types. The costs:
+
+* **An old reader crashes on the new value.** This is the same window request
+  17 describes. `swarm_api.codec` decodes with `EventType(data["type"])`, so an
+  API instance on the previous image fails the event page of any task holding
+  an `execution_evicted` event until the rolling deploy finishes. Request 17
+  and this one both add a member to `EventType`, so they are cheapest applied
+  together, in one release.
+* **The UI.** `AgentDetail.tsx` and `AttemptTimeline.tsx` render `e.type` as
+  text, so the new type shows as its own name. `TERMINAL_EVENTS` does not list
+  it, which is correct, because an eviction is not a terminal transition.
+* **Closed-list consumers.** Anything that assumes the list of types is closed
+  needs a case for the new one. None was found in `apps/`.
+
+### What is left to live with if it is declined
+
+The `generation_fenced` events with `phase: left_running` stay as they are.
+They are accurate about what was stopped, but not about why. The pass report
+and the `evicted a GKE job` log line name the kind exactly either way.
