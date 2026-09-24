@@ -872,6 +872,70 @@ Unblocks the "way to inspect the outputs" ask, which is currently impossible fro
 browser at four independent layers (bucket policy, load balancer routing, no signed
 URLs, no GCS client).
 
+#### S3 decision — owner, 2026-09-24 (item A3): checkpoints get all three
+
+The open question above — a *listing* read out of the tarball, or only whole-object
+download — was answered **both, and a per-file read as well**. Built in
+`apps/swarm-api/swarm_api/checkpoint_content.py` (service) and
+`apps/swarm-api/swarm_api/routes/checkpoints.py` (routes), with the browser in
+`apps/swarm-ui/src/CheckpointBrowser.tsx`, opened from each row of the checkpoint
+list in `RunFiles.tsx`:
+
+| Route | Serves | Bound |
+|---|---|---|
+| `GET /v1/tasks/{id}/checkpoints/{n}/files` | `[{path, size, mode, type}]` (+ `link`, `unsafe`), in archive order, read server-side from `archive.tar.gz` | 5000 entries, 256 MiB read, 1 GiB inflated — each reported as `truncated_reason` when hit |
+| `GET /v1/tasks/{id}/checkpoints/{n}/files/{path}` | one member as text, in the artifact-content shape | the artifact route's own window and cap (512 KiB default, 4 MiB ceiling), read off the same `InspectionService` |
+| `GET /v1/tasks/{id}/checkpoints/{n}/content` | the whole archive, `Content-Disposition: attachment` | streamed in 1 MiB windows; `Content-Length` set |
+
+The constraints behind the shape, so they are not quietly undone:
+
+- **`{n}` is the checkpoint id the listing returns (`ckpt-00001`), plus `attempt_id`.**
+  Ids restart per attempt, so `ckpt-00001` exists once for every attempt that
+  checkpointed. Without `attempt_id` the server resolves the id across attempts and
+  refuses (422, naming the candidates) when more than one matches, rather than guess
+  and serve another attempt's working tree under the right name. A bare sequence
+  number was rejected for the same reason, and because it would have meant restating
+  the worker's `ckpt-%05d` format — a second copy of a rule, which is how this
+  repository's outages have started.
+- **The tenant boundary is the artifact route's, called rather than copied**
+  (`InspectionService._scoped`, `_segment`, `_reader`). Another tenant's task is the
+  404 a missing task gets, and the tests assert the stronger fact that *no object is
+  read or listed* on the way to it.
+- **`{path}` never becomes an object key.** It is matched for exact equality against
+  member names inside an archive whose key was rebuilt from validated segments. It is
+  still refused (422, before any read) if absolute or carrying `..`, `.`, an empty
+  segment, a backslash or a control character. A member the *archive* names `../x` is
+  listed with `unsafe: true` — it is exactly what `checkpoint._safe_members` refuses
+  on restore, so hiding it would hide why the checkpoint cannot resume — and cannot be
+  opened.
+- **Content-type allowlist, by name, before a byte is read**, then the same NUL sniff
+  the artifact route uses. Extensionless files (`Makefile`, `.env`) are text
+  candidates. Everything served per-file is redacted at read time and windowed on
+  whitespace by the artifact route's `_align`.
+- **The whole-archive download is NOT redacted.** It is gzip; no rule runs over
+  compressed bytes. This was chosen knowing that: the archive is the tenant's own
+  working tree, served only inside the tenant boundary above. The response says
+  `X-Swarm-Redaction: not-applied` so no caller assumes the per-file guarantee
+  extends to it, and carries the manifest's digest as `X-Checkpoint-Sha256`.
+- **Streamed, never held.** A checkpoint may be 2 GiB. The listing pulls the object
+  through ranged reads one window at a time, inflates incrementally and walks the tar
+  forward-only; a tar has no index, so listing costs inflating everything before the
+  last header reported — which is why the budgets exist and why each one *says* it was
+  hit rather than returning a shorter list that looks complete.
+- **Absence and failure are not an empty checkpoint.** `status: absent` has
+  `files: null`; an unreadable archive is a 503 with no `files` key; a truncated object
+  is `status: corrupt` (the gzip end marker is required — `tarfile` alone stops
+  quietly at a short stream); `files: []` appears only for a real, fully read, empty
+  workspace. `file_count_agrees` cross-checks the listing against the manifest's
+  `file_count`, which is what catches a tar malformed *inside* a valid gzip stream.
+
+Not verified against a deployed environment: every claim above is proven by
+`tests/unit/control_plane/test_checkpoint_content.py` (in-memory reader, archives
+built by `tarfile` and one by `CheckpointManager` itself) and
+`apps/swarm-ui/src/__tests__/checkpoint.browser.test.tsx`, both run in CI. Real GCS
+read throughput against the 256 MiB budget, and IAP carrying the session cookie on
+the download link, are expectations, not measurements.
+
 ### S4 — cross-task attempt aggregation · medium · unblocks "what did it cost"
 
 There is no route that sums cost across tasks. `Store.list_attempts` already accepts
