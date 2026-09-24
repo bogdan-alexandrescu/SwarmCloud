@@ -11,7 +11,10 @@ from __future__ import annotations
 class ExitCode:
     OK = 0
     FAILED = 1
-    #: Fencing generation was stale. The agent was NOT run.
+    #: Fencing generation was stale. The worker wrote neither the task nor the
+    #: lease. The agent did not run if the fence was found at startup. If it
+    #: was found later (mid-run, on SIGTERM, or at the terminal write), the
+    #: agent was stopped and its result was not written.
     GENERATION_FENCED = 70
     #: Task was cancelled while running.
     CANCELLED = 71
@@ -48,6 +51,25 @@ class FencedError(WorkerError):
         )
         self.expected = expected
         self.actual = actual
+
+
+class FencedWriteRefused(FencedError):
+    """A write that would end or record this attempt found it fenced, and was not made.
+
+    Raised by `ControlPlane` from inside the transaction that would have made
+    the write, so nothing is committed: no task state, no checkpoint pointer,
+    no event, no lease release. It is distinct from a plain FencedError
+    because the two need different exits. A plain FencedError comes from the
+    startup gate, before the attempt has done anything. This one comes from a
+    worker already on its way out, and the only document it may still write
+    is its own attempt (invariant 5).
+
+    `write` names what was refused, for the log line an operator reads.
+    """
+
+    def __init__(self, expected: int, actual: int, detail: str = "", *, write: str = "") -> None:
+        super().__init__(expected, actual, detail)
+        self.write = write
 
 
 class CancelledError(WorkerError):

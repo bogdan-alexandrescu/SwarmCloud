@@ -17,7 +17,8 @@ screen did to every workflow it ever created, because it sent no `input` at all.
 
 WHY THE TABLE IS KEYED BY RUNNER MODULE AND NOT BY PROFILE NAME. The frozen
 catalogue already answers "which module does this profile run": it is
-`RunnerProfile.command`, e.g. ("python", "-m", "agent_worker.runners.codex").
+`RunnerProfile.runner_argv`, e.g. ("python", "-m", "agent_worker.runners.codex")
+-- the argv the worker lifecycle starts as its child.
 Keying on the module means a new profile pointed at an existing runner inherits
 that runner's requirement with no edit here, and only a genuinely NEW runner
 needs a line. A table of profile names would have to be revisited every time the
@@ -57,14 +58,14 @@ REQUIRED_INPUT_KEYS_BY_MODULE: dict[str, tuple[str, ...]] = {
 
 
 def runner_module(profile: RunnerProfile) -> str | None:
-    """The module a profile's `command` runs, or None if it is not `python -m`.
+    """The module a profile's `runner_argv` runs, or None if it is not `python -m`.
 
     Read off the frozen catalogue rather than mapped from the profile name, so
     this stays correct for a profile that is renamed or added.
     """
-    command = tuple(profile.command)
-    if len(command) >= 3 and command[1] == "-m":
-        return command[2]
+    argv = tuple(profile.runner_argv)
+    if len(argv) >= 3 and argv[1] == "-m":
+        return argv[2]
     return None
 
 

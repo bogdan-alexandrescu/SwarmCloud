@@ -350,15 +350,15 @@ frontend_hostname = "swarm.saga.xyz"
 # deleted, so terraform could create one and never remove it. It is a
 # once-per-project manual step, documented in terraform/modules/frontend/main.tf.
 
-# OFF because the metric it watches does not exist in this project. Verified
-# 2026-09-19: the tick job is ENABLED and attempting every minute, and the
-# project has zero cloudscheduler.googleapis.com metric descriptors. Creating
-# the policy therefore fails the apply, and leaving it on made every
-# `make deploy` exit 2 -- which teaches everyone to ignore the exit code.
-#
-# Turn it back on once the metric appears; the check is in the module variable's
-# description.
-enable_safety_tick_alert = false
+# ON again, 2026-09-24. It was off because the metric it watched,
+# cloudscheduler.googleapis.com/job/attempt_count, did not exist here -- and it
+# never would have: Google publishes no Cloud Scheduler metric, so "wait for it
+# to appear" had no end. The alert now watches a logs-based metric the
+# monitoring module creates from Cloud Scheduler's own attempt logs, counting
+# the tick's delivered attempts (read live that day: one per minute, every
+# minute). The metric and the policy are created in the same apply, the metric
+# first. See terraform/modules/monitoring/metrics.tf.
+enable_safety_tick_alert = true
 
 # The audiences IAP mints for this deployment's two backend services. Read from
 # `terraform output frontend_iap_audiences` after the load balancer was created;
