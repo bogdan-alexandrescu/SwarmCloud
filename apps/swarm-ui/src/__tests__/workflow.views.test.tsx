@@ -41,7 +41,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
-const { layoutOf } = await import('../dag')
+const { layoutOf, stepDuration } = await import('../dag')
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -491,6 +491,26 @@ describe('U2: the view modes', () => {
       // Running, then waiting, then succeeded; the step with no task last.
       expect(rowOrder(c)).toEqual(['build', 'scan', 'plan', 'ship'])
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The node's own duration line agrees with the timeline
+// ---------------------------------------------------------------------------
+
+describe('a step waiting for its next attempt', () => {
+  it('is waiting on the node too, not "running" off a start time that belongs to an attempt that is over', () => {
+    // LEASED for attempt 2: `started_at` is attempt 1's, and it survived the
+    // reclaim. The node's line read `running 7m 30s` about a step holding
+    // nothing -- the same misreading the timeline refuses.
+    const retry = task('t_retry', 'LEASED', { started_at: iso(-450), attempt_count: 2 })
+    const d = stepDuration({ kind: 'state', state: 'LEASED', task: retry }, T0)
+    expect(d.kind).toBe('queued')
+    expect(d.text).toBe('waiting 10m 0s')
+    expect(d.text).not.toMatch(/running/)
+    // A step that really is running still says so.
+    const live = task('t_live', 'RUNNING', { started_at: iso(-60) })
+    expect(stepDuration({ kind: 'state', state: 'RUNNING', task: live }, T0).text).toBe('running 1m 0s')
   })
 })
 
