@@ -265,8 +265,37 @@ class TestJson:
         # first if the broker's shape ever widened.
         _, out = run(sc.cmd_accounts, ["accounts", "--json"], FakeClient(routes=dict(HEALTHY, **{"/v1/accounts": SMUGGLED})))
         assert "sk-ant-secret" not in out
-        assert "108" not in out
         payload = json.loads(out)
+
+        # SCOPED TO THE ACCOUNTS, not to the whole dump, and that is a bug fix
+        # rather than a weakening.
+        #
+        # This read `assert "108" not in out`, over the entire document -- which
+        # also contains `generated_at`, and `_dump` builds that from
+        # `datetime.now(timezone.utc).isoformat()`. A timestamp whose digits
+        # happen to contain the sequence 108 (microseconds `.108399`, say, or
+        # any three-digit window across the date and time) failed this
+        # assertion with nothing wrong, at roughly a couple of percent of runs
+        # -- and it did, on `fix/silent-failures-env-parity-and-audits`:
+        #
+        #     FAILED tests/unit/mcp/test_sc.py::TestJson::
+        #       test_it_dumps_no_key_material_even_if_the_payload_carries_some
+        #       - assert '108' not in '{\n  "api_u...
+        #
+        # A test that fails on the clock is a test people learn to re-run, and
+        # a leak test nobody believes is worse than no leak test. The smuggled
+        # fields are in `accounts`, so `accounts` is what must not carry them;
+        # asserting it there is both stable and stricter, because a length that
+        # only coincidentally matched a timestamp digit would previously have
+        # been missed anyway.
+        accounts_json = json.dumps(payload["accounts"])
+        assert "sk-ant-secret" not in accounts_json
+        assert "108" not in accounts_json
+        # By name too, so a token whose length is not 108 cannot slip through
+        # on the substring check alone. `render.public_account` is an
+        # allow-list, and these two are what it must be excluding.
+        assert "access_token" not in payload["accounts"][0]
+        assert "access_token_len" not in payload["accounts"][0]
         assert payload["accounts"][0]["account_id"] == "acme:main"
         assert payload["accounts"][0]["windows"]["five_hour"]["utilization"] == 0.12
 

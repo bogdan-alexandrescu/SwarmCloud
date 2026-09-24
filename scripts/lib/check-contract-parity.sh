@@ -714,8 +714,15 @@ ADVISORY_PREFIX = "apps/swarm-ui/"
 # looks for the closing paren, so a single one here truncates the script -- the
 # note in section 5 above records the unhelpful error that produces.
 _Q = chr(39)
+# The optional `[...]` is what lets this see an HCL assertion such as
+# `output.namespaces["eng"] == "swarm-tenant-eng"`, which is a restatement
+# exactly as much as a Python fixture is -- it pins what terraform must emit.
 LITERAL = re.compile(
-    r"namespaces?[\"\]]*\s*(?:==|=|:)\s*f?[\"" + _Q + r"]([a-z0-9][a-z0-9.\-{}_]*)[\"" + _Q + r"]"
+    r"namespaces?(?:\[[^\]]*\])?[\"\]]*\s*(?:==|=|:)\s*f?[\""
+    + _Q
+    + r"]([a-z0-9][a-z0-9.\-{}_]*)[\""
+    + _Q
+    + r"]"
 )
 
 literals = []
