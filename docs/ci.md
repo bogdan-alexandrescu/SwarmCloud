@@ -320,12 +320,22 @@ two holes followed from it:
 
 `!cancelled()` runs past a skipped job or a failed step exactly as `always()`
 does, and it stops on a cancel. Only the read-only `status` and `report`
-steps keep `always()`. The window a cancel has is still real, and it is
-GitHub's: a job that is already running when the cancel lands is stopped
-wherever it has got to. A cancel during `promote` leaves the put-back to
-`push-images.sh`, and nothing may run it (see "ALL OR NOTHING" in that
+steps keep `always()`. A cancel can still land in the middle of a job. That
+is GitHub's behaviour, not something this file can change: a job that is
+already running when the cancel lands stops wherever it has got to. A cancel
+during `promote` can stop `push-images.sh` between two tag moves, before its
+put-back runs, and leave `:prod` mixed (see "ALL OR NOTHING" in that
 script). A cancel during `terraform apply` leaves whatever Terraform had
 finished.
+
+**GitHub's Deployments list shows the approval, not the deploy.** GitHub
+records a deployment against a job that names an environment, and here that
+is only `approval`. So the repository's Deployments page lists prod as
+deployed at the commit once the approval passes, and it keeps saying so if
+the promotion or the apply then fails. The release run's own result is what
+says whether prod changed. Its `deploy and smoke` summary lists the digests
+the apply pinned, and that job's verify step fails unless every service runs
+them.
 
 **What that changes about the other jobs.** Measured 2026-09-24 with
 `gh api`:
