@@ -22,15 +22,25 @@ Registering a tenant creates every boundary at once — there is no
 | Control-plane data | custom role `swarmTenantWorkerFirestore`, **unconditioned** | IAM, on the shape of the access only — **see the caveat below** |
 | Artifacts & checkpoints | GCS prefix `tenants/<id>/`, granted by IAM condition | IAM condition on the binding |
 | Provider keys | `swarm-tenant-<id>-<provider>`, secret-level IAM | Secret Manager resource policy |
-| GKE workloads | namespace `swarm-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
+| GKE workloads | namespace `swarm-tenant-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
 | Capacity | `tenant:<id>` and `provider:<p>:tenant:<id>` slot pools | admission transaction |
 | Record | `tenants/<id>` document | control plane |
+
+Removing a tenant is the same list in reverse, in an order that matters, and
+the namespace is removed by hand: the reconciler holds no ClusterRole and does
+not collect namespaces (owner decision, 2026-09-24). See
+[the tenant offboarding runbook](runbooks/tenant-offboarding.md), which also
+lists what a tenant accumulates at runtime and this table does not show.
+
+The namespace is `swarm-tenant-<id>`. The GKE row said `swarm-<id>` until
+2026-09-24, which is the spelling behind the 2026-09-23 dispatch outage
+([the dispatch 403 note](gke-dispatch-403.md)).
 
 The service account name is `swarm-agent-worker-<id>`, and it is the one name to
 grant or audit against. It is what `terraform/modules/tenancy` creates, what
 `terraform/modules/cloud_run_jobs` binds to each `(tenant, profile)` Job, and
 what `kubernetes/render.py` puts in the Workload Identity annotation. Two other
-spellings used to appear — this table said `swarm-tenant-<id>` and
+spellings used to appear — the Identity row said `swarm-tenant-<id>` and
 `register-tenant.sh` created `swarm-t-<id>` — and neither existed in a deployed
 project, so an operator checking a boundary found nothing and concluded
 registration had failed.
@@ -271,17 +281,32 @@ single change that undoes this table.
 # then, once nothing is using it:
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
 
-# Limits
+# Limits. monthly_budget_usd is refused (422): nothing attributes cost, so it
+# could be stored but never enforced -- see routes/admin.py.
 ./scripts/api.sh PUT /admin/tenants/eng/limits \
-    '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
+    '{"max_active": 25, "capacity_units": 50}'
 
-# Pause one tenant without touching anyone else
-./scripts/pause-swarm.sh --tenant eng
+# Pause one tenant without touching anyone else. --keep-scheduler is what makes
+# that true: without it pause-swarm.sh also pauses swarm-scheduler-tick, the
+# one-minute backstop that keeps admission moving for every tenant when a wake
+# message is missed.
+./scripts/pause-swarm.sh --tenant eng --keep-scheduler
 ./scripts/resume-swarm.sh --tenant eng
 
 # Remove a tenant's data (never their infrastructure)
 ./scripts/purge-data.sh --tenant eng --dry-run
+
+# Offboard a tenant entirely -- identity, keys, jobs, namespace, records:
+#   docs/runbooks/tenant-offboarding.md
 ```
+
+Offboarding is a runbook rather than a script because three of its steps are
+decisions or waits, not commands: whether the tenant's data is kept, whether
+its people also lose access, and draining its running work. Its terraform half
+is one tfvars edit; its GKE half — deleting `swarm-tenant-<id>` — is manual by
+design, because the reconciler holds no ClusterRole and no longer tries to
+collect namespaces (owner decision, 2026-09-24).
+[The runbook](runbooks/tenant-offboarding.md) has the order and the checks.
 
 New tenants start small — `default_tenant_max_active` 20, `capacity_units` 40 —
 and an admin raises them. The failure mode of starting large is a new tenant
