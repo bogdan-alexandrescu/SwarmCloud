@@ -43,6 +43,28 @@ write. The dangerous neighbours of it did not:
     case it actually exists for, where the narrow succeeded and the restore
     failed, it says it about a live pool left pinned at one slot.
 
+THE NARROW GOES THROUGH THE ADMIN API NOW, NOT FIRESTORE (owner decision,
+2026-09-24; docs/audits/2026-09-22/race-test-needs-a-write.md). swarm-verify
+was made a platform admin, and race-test narrows and restores with
+`PUT /v1/admin/limits/runner/mock` -- a route that validates the pool name,
+bounds the value and CANNOT write `active`. So the fake below speaks that route
+and keeps its Firestore write paths only as tripwires: the cases here also
+prove the suite made no Firestore write at all, because a raw PATCH is the
+capability the decision removed, and the one whose mistake (a clobbered
+`active`) once inflated live capacity.
+
+Four refusals come with that, each because the API cannot undo what the suite
+would otherwise do:
+
+  * a profile other than `mock` -- narrowing a provider-backed runner pool
+    serialises every tenant's real agents behind one slot;
+  * a pool that does not exist -- `upsert_pool` would CREATE it, and there is
+    no admin route that deletes one;
+  * a drained pool -- a runner pool has no undrain route, and a drained pool
+    admits nothing, so there would be nothing to race;
+  * a ceiling above `LimitRequest`'s bound -- the restoring PUT would be a 422
+    and the pool would stay narrowed.
+
 The scripts are driven end to end with a fake `curl` and a fake `gcloud` on
 PATH, exactly as tests/integration/test_register_tenant_grants.py drives
 register-tenant.sh. Nothing is created, no credentials are used and no cloud is
@@ -52,6 +74,7 @@ whether a write lands.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import shutil
@@ -133,7 +156,14 @@ printf '%s %s\n' "${method}" "${url}" >>"${FAKE_CURL_LOG}"
 
 STATE="${FAKE_STATE_DIR}/hard_limit"
 PATCH_N="${FAKE_STATE_DIR}/patch_n"
-[[ -f "${STATE}" ]] || printf '%s' "${FAKE_POOL_BEFORE:-20}" >"${STATE}"
+LIMIT_N="${FAKE_STATE_DIR}/limit_n"
+# Seeded ONCE, on the first request, so FAKE_POOL_ABSENT can describe a pool
+# that does not exist yet while a later write could still create it -- which is
+# exactly what the admin route would do, and what the suite must never ask for.
+if [[ ! -f "${FAKE_STATE_DIR}/seeded" ]]; then
+  : >"${FAKE_STATE_DIR}/seeded"
+  [[ -n "${FAKE_POOL_ABSENT:-}" ]] || printf '%s' "${FAKE_POOL_BEFORE:-20}" >"${STATE}"
+fi
 
 status=200
 body='{}'
@@ -141,13 +171,21 @@ body='{}'
 pool_document() {
   local hl="$1"
   jq -nc --arg name "projects/${FAKE_PROJECT}/databases/swarm/documents/pools/runner:mock" \
-         --arg hl "${hl}" --arg qd "${FAKE_QUOTA_DERIVED:-}" '
+         --arg hl "${hl}" --arg qd "${FAKE_QUOTA_DERIVED:-}" \
+         --argjson en "${FAKE_POOL_ENABLED:-true}" '
     {name: $name,
      fields: ({ "name":       {stringValue: "runner:mock"},
                 "hard_limit": {integerValue: $hl},
                 "active":     {integerValue: "0"},
-                "enabled":    {booleanValue: true}}
+                "enabled":    {booleanValue: $en}}
               + (if $qd == "" then {} else {"quota_derived_limit": {integerValue: $qd}} end))}'
+}
+
+# The admin API's answer for a pool, in pool_to_api's shape.
+pool_api() {
+  jq -nc --argjson hl "$1" --argjson en "${FAKE_POOL_ENABLED:-true}" \
+    '{pool: {name: "runner:mock", hard_limit: $hl, effective_limit: $hl,
+             active: 0, enabled: $en}}'
 }
 
 case "${url}" in
@@ -199,6 +237,34 @@ case "${url}" in
     # and `task_is_terminal` is false -- which keeps the sampling loop running,
     # and is what the interrupt test needs.
     body='{"documents":[]}'
+    ;;
+  */v1/admin/limits/runner/*)
+    # PUT /v1/admin/limits/runner/{profile} -- the ONLY write the suite is
+    # entitled to make. One status per PUT, in order, exactly as
+    # FAKE_PATCH_STATUS above: "200,403" accepts the narrow and refuses the
+    # restore. FAKE_LIMIT_IGNORED answers 200 and changes nothing.
+    if [[ "${method}" != "PUT" ]]; then
+      status=405
+      body='{"code":"method_not_allowed","message":"PUT only"}'
+    else
+      n=1
+      [[ -f "${LIMIT_N}" ]] && n=$(( $(cat "${LIMIT_N}") + 1 ))
+      printf '%s' "${n}" >"${LIMIT_N}"
+      # Every body, in order, whatever the answer: the restore has to send the
+      # ORIGINAL ceiling, and only the body can show that it did.
+      printf '%s\n' "${data}" >>"${FAKE_STATE_DIR}/limit_bodies"
+      status="$(printf '%s' "${FAKE_LIMIT_STATUS:-200}" | awk -F, -v n="${n}" \
+        '{print (n <= NF ? $n : $NF)}')"
+      if [[ "${status}" == 2* ]]; then
+        hl="$(printf '%s' "${data}" | jq -r '.limit // .hard_limit // empty')"
+        if [[ -z "${FAKE_LIMIT_IGNORED:-}" && -n "${hl}" ]]; then
+          printf '%s' "${hl}" >"${STATE}"
+        fi
+        body="$(pool_api "$(cat "${STATE}" 2>/dev/null || printf '%s' "${hl:-0}")")"
+      else
+        body='{"code":"forbidden","message":"admin group membership is required for this operation"}'
+      fi
+    fi
     ;;
   */v1/tasks)
     # Submission. An id here is what makes TASK_IDS non-empty and the suite
@@ -304,19 +370,62 @@ def _submitted_a_task(requests: str) -> bool:
     )
 
 
+LIMIT_ROUTE = f"{API_URL}/v1/admin/limits/runner/mock"
+
+#: Firestore's two READ endpoints that happen to be POSTs. Everything else sent
+#: to Firestore with a method other than GET is a write.
+_FIRESTORE_READ_POSTS = (":runQuery", ":runAggregationQuery")
+
+
+def _firestore_writes(requests: str) -> list[str]:
+    """Every request that could have changed a Firestore document directly.
+
+    The property the 2026-09-24 decision buys is that this suite has NO direct
+    write path into the database: a narrow is a ceiling change, and the admin
+    route is the only thing that makes one. A PATCH, a DELETE or a commit here
+    is the capability that once clobbered `active` on a live deployment.
+    """
+    writes = []
+    for line in requests.splitlines():
+        method, _, url = line.partition(" ")
+        if "firestore.googleapis.com" not in url or method == "GET":
+            continue
+        if method == "POST" and url.rstrip().endswith(_FIRESTORE_READ_POSTS):
+            continue
+        writes.append(line)
+    return writes
+
+
+def _limit_puts(requests: str) -> list[str]:
+    """The narrows and restores, as sent to the admin API."""
+    return [
+        line for line in requests.splitlines()
+        if line.rstrip() == f"PUT {LIMIT_ROUTE}"
+    ]
+
+
+def _any_limit_write(requests: str) -> bool:
+    """Any attempt at all to change a runner ceiling, by either path."""
+    return bool(_limit_puts(requests)) or any(
+        "/v1/admin/limits/" in line for line in requests.splitlines()
+    ) or bool(_firestore_writes(requests))
+
+
 # ---------------------------------------------------------------------------
 # The narrow is load-bearing: not reaching it must stop the run.
 # ---------------------------------------------------------------------------
 
 def test_a_refused_narrow_stops_the_suite(tmp_path: Path) -> None:
-    """HTTP 403 on the narrowing PATCH -- the case seen in the VPC on 2026-09-22.
+    """HTTP 403 on the narrowing write -- the case seen in the VPC on 2026-09-22.
 
-    The verify identity holds roles/datastore.viewer, so the write that creates
-    the contention is refused. Nothing downstream can mean anything after that,
-    and in particular no task may be submitted: twelve mock tasks against an
-    un-narrowed pool is a load test wearing a race test's assertions.
+    Then it was a Firestore PATCH refused to roles/datastore.viewer. Now it is
+    the admin route refusing a caller that is not in ADMIN_USERS -- which is
+    what every environment that has not granted swarm-verify admin will see.
+    Nothing downstream can mean anything after that, and in particular no task
+    may be submitted: twelve mock tasks against an un-narrowed pool is a load
+    test wearing a race test's assertions.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="403")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="403")
 
     assert proc.returncode != 0, f"a refused narrow exited 0:\n{proc.transcript}"
     assert not _submitted_a_task(proc.requests), (
@@ -326,6 +435,16 @@ def test_a_refused_narrow_stops_the_suite(tmp_path: Path) -> None:
     assert "403" in proc.transcript, (
         f"the refusal was not reported as a 403:\n{proc.transcript}"
     )
+    # A 403 from swarm-api here has exactly one fix, and it is in a tfvars file
+    # a reader of this transcript would not otherwise think to open.
+    assert "admin_users" in proc.transcript, (
+        "a refused narrow did not name the grant that fixes it:\n"
+        f"{proc.transcript}"
+    )
+    assert not _firestore_writes(proc.requests), (
+        "the admin route refused the narrow and the suite fell back to writing "
+        f"Firestore directly:\n{proc.requests}"
+    )
 
 
 def test_an_accepted_write_that_did_not_move_the_ceiling_stops_the_suite(
@@ -333,14 +452,15 @@ def test_an_accepted_write_that_did_not_move_the_ceiling_stops_the_suite(
 ) -> None:
     """HTTP 200, and the pool still reads its old limit.
 
-    This is the shape the 403 case hid. `fs_patch` succeeds, so `set -e` never
+    This is the shape the 403 case hid. The write succeeds, so `set -e` never
     fires; the readback disagrees, so `assert_eq` fails -- and then the suite
     carried on and sampled a pool at its original ceiling while asserting
     `active <= 1`. On an idle platform the peak is zero and that assertion
     PASSES, which is a green claim of no oversubscription over an experiment
-    that never ran.
+    that never ran. The admin route's 200 is no more a measurement than the
+    PATCH's was; the Firestore readback is.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="200", FAKE_PATCH_IGNORED="1")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_LIMIT_IGNORED="1")
 
     assert proc.returncode != 0, f"an ineffective narrow exited 0:\n{proc.transcript}"
     assert not _submitted_a_task(proc.requests), (
@@ -363,7 +483,7 @@ def test_a_ceiling_capped_below_the_narrow_stops_the_suite(tmp_path: Path) -> No
     NOTHING: every task queues, the peak stays at zero, and `active <= 1` is
     satisfied by an experiment with no participants.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="200", FAKE_QUOTA_DERIVED="0")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_QUOTA_DERIVED="0")
 
     assert proc.returncode != 0, (
         "a pool whose effective_limit is 0 was accepted as narrowed to 1:\n"
@@ -386,17 +506,16 @@ def test_the_narrow_is_reported_against_the_effective_limit(tmp_path: Path) -> N
     positive half of the test above: without it, changing the assertion to
     always fail would pass all three negative cases.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="200", FAKE_SUBMIT_STATUS="503")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_SUBMIT_STATUS="503")
 
     assert "effective_limit: 1" in proc.transcript, (
         f"a successful narrow did not report the effective limit:\n{proc.transcript}"
     )
     # The narrow really landed on the fake platform, and the trap then put it
     # back -- so the final state is 20 and the evidence that it was ever 1 is
-    # the pair of PATCHes and the confirmed restore.
-    methods = [line.split()[0] for line in proc.requests.splitlines()]
-    assert methods.count("PATCH") == 2, (
-        f"expected a narrow and a restore:\n{proc.requests}"
+    # the pair of admin PUTs and the confirmed restore.
+    assert len(_limit_puts(proc.requests)) == 2, (
+        f"expected a narrow and a restore through the admin API:\n{proc.requests}"
     )
     assert proc.final_limit == "20", (
         f"the pool was left narrowed: {proc.final_limit}"
@@ -416,7 +535,7 @@ def test_a_race_needs_at_least_two_contenders(tmp_path: Path) -> None:
     script now rejects `--parallel 1` outright -- see the argument-check test
     below.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="200", FAKE_SUBMIT_STATUS="503")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_SUBMIT_STATUS="503")
 
     assert proc.returncode != 0, (
         f"a race with no contenders exited 0:\n{proc.transcript}"
@@ -442,10 +561,14 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
     The trap used to print "restored runner:mock hard_limit to 20" here, because
     it discarded the write's status and never read the pool back -- so the only
     record of the incident denied it had happened.
+
+    The restore goes through the same admin route as the narrow, so a refusal
+    here is the gate losing admin mid-run (a redeploy that dropped it from
+    ADMIN_USERS), a 429, or a dropped connection.
     """
     proc = _run(
         tmp_path,
-        FAKE_PATCH_STATUS="200,403",  # narrow accepted, restore refused
+        FAKE_LIMIT_STATUS="200,403",  # narrow accepted, restore refused
         FAKE_SUBMIT_STATUS="503",  # stop the run early; the restore is the subject
     )
 
@@ -460,9 +583,17 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
     assert "COULD NOT RESTORE" in proc.transcript, (
         f"a failed restore was not reported at all:\n{proc.transcript}"
     )
-    assert "pool-limit.sh --pool runner:mock --limit 20" in proc.transcript, (
+    # The fix it names is the SAME route the suite used, so the repair is as
+    # bounded and as attributed as the change it undoes.
+    assert "scripts/api.sh PUT /admin/limits/runner/mock '{\"limit\":20}'" in (
+        proc.transcript
+    ), (
         "the failure did not name the command that fixes it, which is the only "
         f"thing a person reading this at 3am needs:\n{proc.transcript}"
+    )
+    assert not _firestore_writes(proc.requests), (
+        "a refused restore fell back to writing Firestore directly:\n"
+        f"{proc.requests}"
     )
 
 
@@ -473,7 +604,7 @@ def test_a_successful_restore_is_confirmed_by_reading_the_pool_back(
 
     Without this, "never claim a restore" would pass the test above.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="200", FAKE_SUBMIT_STATUS="503")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_SUBMIT_STATUS="503")
 
     assert proc.final_limit == "20", (
         f"the pool was not actually restored by the fixture: {proc.final_limit}"
@@ -491,15 +622,15 @@ def test_nothing_is_claimed_restored_when_the_narrow_never_landed(
 ) -> None:
     """The 403 run again, this time for what the trap says afterwards.
 
-    The narrowing PATCH was refused, so the pool was never touched and there is
+    The narrowing write was refused, so the pool was never touched and there is
     nothing to put back. The log said "restored runner:mock hard_limit to 20"
     anyway -- about a write that had also been refused. Two untrue statements in
     one line, and it is the line the session handover quoted as evidence the
     cleanup path worked.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="403")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="403")
 
-    assert proc.final_limit == "20", "the fixture let a refused PATCH change the pool"
+    assert proc.final_limit == "20", "the fixture let a refused write change the pool"
     assert "restored" not in proc.transcript.lower(), (
         "the suite reported a restore after a narrow that was refused:\n"
         f"{proc.transcript}"
@@ -604,7 +735,7 @@ def test_an_interrupted_run_restores_and_stops_rather_than_carrying_on(
     env["FAKE_PROJECT"] = PROJECT
     env["FAKE_STATE_DIR"] = str(state)
     env["FAKE_CURL_LOG"] = str(log)
-    env["FAKE_PATCH_STATUS"] = "200"
+    env["FAKE_LIMIT_STATUS"] = "200"
 
     # --timeout 20 bounds the case where the signal is swallowed: the loop then
     # samples for twenty seconds and reaches its verdict, which is exactly the
@@ -659,38 +790,235 @@ def test_an_interrupted_run_restores_and_stops_rather_than_carrying_on(
     assert transcript.count("restored runner:mock hard_limit") == 1, (
         "the restore reported itself more than once:\n" + transcript
     )
+    assert not _firestore_writes(requests), (
+        f"the interrupted run wrote Firestore directly on its way out:\n{requests}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The write path is the admin API, and only the admin API (2026-09-24).
+# ---------------------------------------------------------------------------
+
+def test_the_narrow_and_the_restore_go_through_the_admin_api_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """Two PUTs to the runner-limit route -- 1, then the original 20 -- and no
+    Firestore write of any kind.
+
+    This is the decision itself, asserted. The admin route validates the pool
+    name against the frozen catalogue, bounds the value, runs under
+    `admin_auth` as the verified caller, and has no parameter that reaches
+    `active`. A Firestore PATCH has none of those properties, and the one time
+    this suite used a wider field mask it clobbered `active` on a live
+    deployment and inflated capacity.
+    """
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_SUBMIT_STATUS="503")
+
+    assert not _firestore_writes(proc.requests), (
+        f"the suite wrote Firestore directly:\n{proc.requests}"
+    )
+    assert len(_limit_puts(proc.requests)) == 2, (
+        f"expected exactly a narrow and a restore on {LIMIT_ROUTE}:\n{proc.requests}"
+    )
+    bodies = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "limit_bodies").read_text().splitlines()
+    ]
+    assert [b.get("limit") for b in bodies] == [1, 20], (
+        "the narrow must send the requested slot count and the restore the "
+        f"ORIGINAL ceiling read before the run; sent {bodies}"
+    )
+    assert proc.final_limit == "20", f"the pool was left at {proc.final_limit}"
+
+
+@pytest.mark.parametrize("profile", ["claude-code", "generic", "codex"])
+def test_a_profile_other_than_mock_is_refused_before_anything_is_written(
+    tmp_path: Path, profile: str
+) -> None:
+    """Only `runner:mock` may be narrowed, and the refusal comes before any write.
+
+    `mock` has no provider: narrowing it holds up nothing but this suite's own
+    tasks, and the verify tenant (`providers = []`) can only run it anyway.
+    Narrowing `runner:claude-code` to one slot on the live shared platform would
+    serialise EVERY tenant's real agents behind a single lease for as long as
+    the run lasts -- a platform-wide incident started by a flag.
+    """
+    proc = _run(tmp_path, "--profile", profile)
+
+    assert proc.returncode != 0, f"--profile {profile} was accepted:\n{proc.transcript}"
+    assert not _any_limit_write(proc.requests), (
+        f"--profile {profile} changed a ceiling before being refused:\n{proc.requests}"
+    )
+    assert not _submitted_a_task(proc.requests), (
+        f"--profile {profile} submitted tasks:\n{proc.requests}"
+    )
+    assert "only runs against the mock profile" in proc.transcript, (
+        f"the refusal did not say what is allowed:\n{proc.transcript}"
+    )
+
+
+def test_a_pool_that_does_not_exist_is_refused_rather_than_created(
+    tmp_path: Path,
+) -> None:
+    """No `pools/runner:mock` document: stop, do not invent one.
+
+    `Store.upsert_pool` CREATES a pool it cannot find, and no admin route
+    deletes one -- so a narrow here would leave behind a document the restore
+    could not remove, capping a pool that admission used to treat as
+    unlimited. The old Firestore path created it with a PATCH and deleted it
+    afterwards; the admin API cannot express the second half.
+    """
+    proc = _run(tmp_path, FAKE_POOL_ABSENT="1")
+
+    assert proc.returncode != 0, f"an absent pool was accepted:\n{proc.transcript}"
+    assert not _any_limit_write(proc.requests), (
+        f"the suite created or changed a pool it had to refuse:\n{proc.requests}"
+    )
+    assert proc.final_limit == "absent", (
+        f"the pool now exists with hard_limit {proc.final_limit}"
+    )
+    assert "has no pool document" in proc.transcript, (
+        f"the refusal did not say why:\n{proc.transcript}"
+    )
+
+
+def test_a_drained_pool_is_refused_rather_than_reopened(tmp_path: Path) -> None:
+    """`enabled = false`: somebody drained runner:mock on purpose.
+
+    The old narrow wrote `enabled: true` in the same PATCH, silently undoing an
+    operator's drain. The runner-limit route never touches `enabled` and there
+    is no undrain route for a runner pool, so the only honest move is to stop:
+    a drained pool admits nothing, and there would be nothing to race for.
+    """
+    proc = _run(tmp_path, FAKE_POOL_ENABLED="false")
+
+    assert proc.returncode != 0, f"a drained pool was accepted:\n{proc.transcript}"
+    assert not _any_limit_write(proc.requests), (
+        f"the suite changed a drained pool:\n{proc.requests}"
+    )
+    assert "drained" in proc.transcript, (
+        f"the refusal did not say the pool is drained:\n{proc.transcript}"
+    )
+
+
+def test_a_ceiling_the_api_cannot_restore_is_refused_before_narrowing(
+    tmp_path: Path,
+) -> None:
+    """A ceiling above `LimitRequest`'s bound cannot be put back through the API.
+
+    `LimitRequest.limit` is `le=100_000`, and `Store.upsert_pool` writes
+    1,000,000 for a pool it creates without a limit. Narrowing such a pool
+    would succeed and its restore would be a 422 -- a pool left pinned at one
+    slot by the suite that promised to put it back. So the restore has to be
+    expressible BEFORE the narrow is sent.
+    """
+    proc = _run(tmp_path, FAKE_POOL_BEFORE="1000000")
+
+    assert proc.returncode != 0, (
+        f"an unrestorable ceiling was accepted:\n{proc.transcript}"
+    )
+    assert not _any_limit_write(proc.requests), (
+        f"the suite narrowed a pool it could not restore:\n{proc.requests}"
+    )
+    assert proc.final_limit == "1000000", f"the pool now reads {proc.final_limit}"
+    assert "100000" in proc.transcript, (
+        f"the refusal did not name the bound:\n{proc.transcript}"
+    )
+
+
+def test_a_failure_after_the_narrow_still_restores_the_pool(tmp_path: Path) -> None:
+    """The narrow landed and the suite then died: the trap must put it back.
+
+    Here the readback shows an effective ceiling of 0 (the provider is
+    exhausted), which is fatal to the experiment -- and the pool must still be
+    returned to 20 through the admin route on the way out, not left at 1.
+    """
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="200", FAKE_QUOTA_DERIVED="0")
+
+    assert proc.returncode != 0
+    assert len(_limit_puts(proc.requests)) == 2, (
+        f"expected the narrow and the restoring PUT:\n{proc.requests}"
+    )
+    assert proc.final_limit == "20", (
+        f"a failed run left runner:mock at {proc.final_limit}"
+    )
+    assert "restored runner:mock hard_limit to 20 (confirmed by readback)" in (
+        proc.transcript
+    ), f"the restore after a failure was not confirmed:\n{proc.transcript}"
 
 
 # ---------------------------------------------------------------------------
 # The fake is a fixture, so it gets checked too.
 # ---------------------------------------------------------------------------
 
+def _fake_curl(tmp: Path, *args: str, **fakes: str) -> tuple[str, str]:
+    """Call the fake curl DIRECTLY, the way api_request does.
+
+    Not through race-test.sh: these checks are about the fixture, so they must
+    pass whatever the script does -- a fixture test that fails with the script
+    is measuring the script.
+    """
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    curl = bin_dir / "curl"
+    curl.write_text(FAKE_CURL)
+    curl.chmod(0o755)
+    state = tmp / "state"
+    state.mkdir(exist_ok=True)
+    env = dict(os.environ)
+    env.update(
+        FAKE_PROJECT=PROJECT,
+        FAKE_STATE_DIR=str(state),
+        FAKE_CURL_LOG=str(tmp / "requests.log"),
+    )
+    env.update(fakes)
+    out = subprocess.run(
+        [str(curl), "-sS", "-K", "-", "-w", "\n%{http_code}", *args],
+        input="header = \"Authorization: Bearer fake\"\n",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    body, _, status = out.rpartition("\n")
+    return body, status
+
+
 def test_the_fixture_really_applies_and_refuses_writes(tmp_path: Path) -> None:
     """A fake platform that accepts everything proves nothing.
 
     Every assertion above rests on this fake distinguishing an applied write
-    from a refused one, so that distinction is asserted directly rather than
-    inferred from the scripts' behaviour.
+    from a refused one, so that distinction is asserted directly -- against the
+    admin route the suite now uses -- rather than inferred from the script.
     """
-    refused = _run(tmp_path / "refused", FAKE_PATCH_STATUS="403")
-    assert refused.final_limit == "20"
+    put = ("-X", "PUT", "--data-binary", '{"limit":1}', LIMIT_ROUTE)
 
-    applied = _run(tmp_path / "applied", FAKE_PATCH_STATUS="200", FAKE_SUBMIT_STATUS="503")
-    # Narrowed to 1 and then restored to 20 by the trap: two PATCHes, both
-    # applied, the second undoing the first.
-    assert applied.final_limit == "20"
-    methods = [line.split()[0] for line in applied.requests.splitlines()]
-    assert methods.count("PATCH") == 2, (
-        f"expected a narrow and a restore, got: {applied.requests}"
-    )
+    _, status = _fake_curl(tmp_path / "refused", *put, FAKE_LIMIT_STATUS="403")
+    assert status == "403"
+    assert (tmp_path / "refused" / "state" / "hard_limit").read_text() == "20"
 
-    ignored = _run(
-        tmp_path / "ignored", FAKE_PATCH_STATUS="200", FAKE_PATCH_IGNORED="1"
+    body, status = _fake_curl(tmp_path / "applied", *put, FAKE_LIMIT_STATUS="200")
+    assert status == "200"
+    assert json.loads(body)["pool"]["hard_limit"] == 1
+    assert (tmp_path / "applied" / "state" / "hard_limit").read_text() == "1"
+
+    _, status = _fake_curl(
+        tmp_path / "ignored", *put, FAKE_LIMIT_STATUS="200", FAKE_LIMIT_IGNORED="1"
     )
-    assert ignored.final_limit == "20", (
-        "FAKE_PATCH_IGNORED must answer 200 and change nothing; without that the "
+    assert status == "200"
+    assert (tmp_path / "ignored" / "state" / "hard_limit").read_text() == "20", (
+        "FAKE_LIMIT_IGNORED must answer 200 and change nothing; without that the "
         "silent-failure case is not being exercised at all"
     )
+
+    doc_url = (
+        f"https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/swarm"
+        "/documents/pools/runner:mock"
+    )
+    _, status = _fake_curl(tmp_path / "absent", doc_url, FAKE_POOL_ABSENT="1")
+    assert status == "404", "FAKE_POOL_ABSENT must make the pool document a 404"
+    body, _ = _fake_curl(tmp_path / "drained", doc_url, FAKE_POOL_ENABLED="false")
+    assert json.loads(body)["fields"]["enabled"] == {"booleanValue": False}
 
 
 def test_the_fixture_speaks_the_shapes_common_sh_uses(tmp_path: Path) -> None:
@@ -701,7 +1029,7 @@ def test_the_fixture_speaks_the_shapes_common_sh_uses(tmp_path: Path) -> None:
     moment fs_request started checking status codes, and every test in that file
     errored in its fixture for 95 commits.
     """
-    proc = _run(tmp_path, FAKE_PATCH_STATUS="403")
+    proc = _run(tmp_path, FAKE_LIMIT_STATUS="403")
 
     # require_platform got past fs_database_exists (body on stdout, no -w) and
     # past the /readyz probe (-o /dev/null -w '%{http_code}'), which it can only
@@ -716,7 +1044,7 @@ def test_the_fixture_speaks_the_shapes_common_sh_uses(tmp_path: Path) -> None:
     # And the typed Firestore document decodes. `{"integerValue":"20"}` has to
     # come back through FS_JQ as the number 20 for the script to know what the
     # ceiling was; a run that gets as far as restoring it says so out loud.
-    applied = _run(tmp_path / "applied", FAKE_PATCH_STATUS="200", FAKE_SUBMIT_STATUS="503")
+    applied = _run(tmp_path / "applied", FAKE_LIMIT_STATUS="200", FAKE_SUBMIT_STATUS="503")
     assert "hard_limit to 20" in applied.transcript, (
         "the typed Firestore document did not decode; the script never learned "
         f"the original ceiling:\n{applied.transcript}"
