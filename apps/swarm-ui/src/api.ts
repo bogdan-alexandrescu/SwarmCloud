@@ -1308,6 +1308,12 @@ async function fixtureMe(): Promise<Result<Me>> {
         email: 'bogdan@saga.xyz', domain: 'saga.xyz',
         groups: ['eng@saga.xyz'], is_admin: false,
       },
+      // UNDECLARED, ON PURPOSE. There is no API behind the fixtures, so there
+      // is no environment it runs as; this is the shape of an API whose
+      // ENVIRONMENT is unset (the frozen default fills in "dev"). Brand.tsx
+      // then falls back to the build and the host, and a laptop reads Local.
+      environment: 'dev',
+      environment_declared: false,
     },
   }
 }
@@ -1425,6 +1431,12 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
       active_only: true,
       tenant_id: null,
       units_held: 4,
+      // Every live lease is in the four rows above, so the drift check on the
+      // Holders screen is evidence -- the shape `/v1/admin/leases` serves for
+      // a fleet smaller than its limit.
+      active_beyond_window: 0,
+      truncated: false,
+      examined: 4,
     },
   }
 }
@@ -1539,7 +1551,16 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
   if (USE_FIXTURES) return fixtureHolders()
 
   const [leases, capacity] = await Promise.all([
-    read<LeasePage>('/v1/admin/leases?active_only=true&limit=200', (d) => d.leases.length === 0),
+    // EMPTY ONLY WHEN THE ROUTE VOUCHES FOR IT. `empty` is drawn as a real
+    // zero ("no lease holds capacity"), and no rows is only that when no live
+    // lease was left out of the window. An API older than
+    // `active_beyond_window` cannot say so, and its empty page goes to the
+    // screen as a page, where Holders.tsx marks the coverage unreported
+    // rather than calling it a zero.
+    read<LeasePage>(
+      '/v1/admin/leases?active_only=true&limit=200',
+      (d) => d.leases.length === 0 && d.active_beyond_window === 0 && d.truncated !== true,
+    ),
     read<Capacity>('/v1/capacity', () => false),
   ])
 

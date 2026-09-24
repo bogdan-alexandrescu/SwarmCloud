@@ -19,33 +19,44 @@
 // ever allowed to say something that was actually measured.
 //
 // WHERE THE ENVIRONMENT COMES FROM, AND WHAT IT DOES WHEN IT DOES NOT KNOW.
-// There is no server answer to "which environment is this": the API serves 41
-// routes and none of them report `Settings.core.environment`
-// (apps/swarm-api/swarm_api/settings.py:222 has it; nothing exposes it).
-// docs/web-ui/ui-audit-and-build-prompt.md §B9.S8 records that as an unbuilt
-// seam and it is still unbuilt. So the two honest sources are:
+// Three honest sources, in the order they are believed:
 //
-//   1. THE BUILD DECLARES IT -- `VITE_SWARM_ENV`, baked into the bundle by
-//      whoever built it. Declared, not inferred.
-//   2. THE BROWSER IS ON A LOOPBACK HOST -- which is a fact about this tab,
+//   1. THE API DECLARES IT -- `GET /v1/tenants/me` serves `environment` and
+//      `environment_declared` (PR #19; ui-audit §B9.S5). That is the
+//      environment the process this console is TALKING TO acts on --
+//      `hardened` derives from it -- which is the thing a pool change will
+//      actually reach. Only when `environment_declared` is true: the frozen
+//      `Settings.from_env` fills in "dev" when ENVIRONMENT is unset, and a
+//      defaulted dev is the badge this file exists not to draw.
+//   2. THE BUILD DECLARES IT -- `VITE_SWARM_ENV`, baked into the bundle by
+//      whoever built it (scripts/build-images.sh passes it). Declared, not
+//      inferred.
+//   3. THE BROWSER IS ON A LOOPBACK HOST -- which is a fact about this tab,
 //      not a guess about a deployment.
 //
-// and when neither answers, the badge says ENVIRONMENT UNKNOWN and prints the
-// host, LOUDLY -- the same treatment production gets. Not knowing which
+// WHY THE API OUTRANKS THE BUILD AND THE HOST. The build says what the bundle
+// was built for and the host says where the tab is; neither says where the
+// requests go. `SWARM_API_ORIGIN=… VITE_LIVE=1 npm run dev` serves a console
+// from localhost that proxies every /v1 call to a deployed API, and before
+// this the badge there said `Local` -- quiet, dashed -- over a console whose
+// pool ceilings were a deployed environment's. The API's own answer is the one
+// source that cannot be pointed somewhere else. When the build disagrees with
+// it, the badge follows the API and the tooltip names both.
+//
+// Until `/v1/tenants/me` lands, or when it fails, or when the API did not
+// declare, the badge is exactly what it was: the build, then the host.
+//
+// And when none of them answers, the badge says ENVIRONMENT UNKNOWN and prints
+// the host, LOUDLY -- the same treatment production gets. Not knowing which
 // environment you are in is not permission to relax; it is the one case where
 // a quiet badge would be actively dangerous. A `swarm.saga.xyz -> dev` table
-// in this file was the obvious third option and is deliberately NOT here: it
+// in this file was the obvious fourth option and is deliberately NOT here: it
 // would be a TypeScript restatement of
 // terraform/environments/dev/dev.tfvars:339, in a file nothing checks against
 // it, and every restatement of another track's value in this repository has
 // since drifted. A wrong environment badge is the exact failure this file
 // exists to prevent, so it may not be produced by a copy of somebody else's
 // variable.
-//
-// CROSS-TRACK: making the deployed console say `Dev` rather than
-// `ENVIRONMENT UNKNOWN` is one flag on the build -- `VITE_SWARM_ENV=dev npm
-// run build` -- and the build lives in scripts/ and .github/, which are Track
-// D. That change is reported, not made here.
 
 import { useEffect, useState } from 'react'
 import { loadMe } from './api'
@@ -161,10 +172,31 @@ export function SwarmMark({ size = 28, title }: { size?: number; title?: string 
  * same reason: both mean "assume a mistake here is expensive".
  */
 export type Environment =
-  | { kind: 'production'; name: string; source: 'build' }
-  | { kind: 'nonprod'; name: string; source: 'build' }
+  | { kind: 'production'; name: string; source: 'build' | 'api'; build?: string }
+  | { kind: 'nonprod'; name: string; source: 'build' | 'api'; build?: string }
   | { kind: 'local'; name: string; source: 'host'; host: string }
   | { kind: 'unknown'; host: string }
+
+/**
+ * What the API said about the environment it runs as, or null when it has not
+ * said -- still loading, failed, or an API older than the fields.
+ */
+export interface ServedEnvironment {
+  name: string
+  declared: boolean
+}
+
+/**
+ * The API's answer, read DEFENSIVELY. `Me` declares both fields because the
+ * API serves them, but a console served beside an older API gets neither, and
+ * a missing `environment_declared` is not `true`.
+ */
+export function servedEnvironment(me: Me): ServedEnvironment | null {
+  const name: unknown = me.environment
+  const declared: unknown = me.environment_declared
+  if (typeof name !== 'string' || typeof declared !== 'boolean') return null
+  return { name, declared }
+}
 
 /**
  * The names that mean "this is the one you cannot undo".
@@ -181,14 +213,36 @@ const PRODUCTION_NAMES = ['prod', 'production', 'live'] as const
 /** Hosts that are this machine. A fact about the tab, not a guess. */
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'] as const
 
-export function classifyEnvironment(declared: string | undefined, host: string): Environment {
+/** The two kinds a DECLARED name can be. */
+type DeclaredEnvironment = Extract<Environment, { kind: 'production' | 'nonprod' }>
+
+/** A declared name as production or not, by its leading word. */
+function named(name: string, source: 'build' | 'api'): DeclaredEnvironment {
+  // The leading word, so `prod-eu` and `production_2` are still production.
+  const head = name.split(/[-_.\s]/)[0] ?? name
+  const loud = PRODUCTION_NAMES.some((p) => head === p)
+  return loud ? { kind: 'production', name, source } : { kind: 'nonprod', name, source }
+}
+
+export function classifyEnvironment(
+  declared: string | undefined,
+  host: string,
+  served: ServedEnvironment | null = null,
+): Environment {
   const name = (declared ?? '').trim().toLowerCase()
-  if (name !== '') {
-    // The leading word, so `prod-eu` and `production_2` are still production.
-    const head = name.split(/[-_.\s]/)[0] ?? name
-    const loud = PRODUCTION_NAMES.some((p) => head === p)
-    return loud ? { kind: 'production', name, source: 'build' } : { kind: 'nonprod', name, source: 'build' }
+
+  // THE API'S OWN ANSWER FIRST, and only a DECLARED one: a defaulted "dev" is
+  // an absence wearing a name. See the header of this file for why it
+  // outranks the build and the host.
+  const api = served !== null && served.declared ? served.name.trim().toLowerCase() : ''
+  if (api !== '') {
+    const env = named(api, 'api')
+    // A build that said something else is kept, for the tooltip. It does not
+    // change the badge: the API is what the requests reach.
+    return name !== '' && name !== api ? { ...env, build: name } : env
   }
+
+  if (name !== '') return named(name, 'build')
 
   const h = host.trim().toLowerCase()
   const local =
@@ -248,6 +302,17 @@ function sentenceCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
+/**
+ * Who said which environment this is, as the tooltip's first sentence. When
+ * the API and the build disagree, both are named: the badge follows the API,
+ * and a reader looking at a surprising badge is owed the reason.
+ */
+function declaredBy(env: DeclaredEnvironment): string {
+  if (env.source === 'build') return `Environment ${env.name}, declared by the build.`
+  const also = env.build === undefined ? '' : ` The build declared ${env.build}; the API is what these requests reach.`
+  return `Environment ${env.name}, reported by the API this console is talking to.${also}`
+}
+
 export function envTreatment(env: Environment): EnvTreatment {
   switch (env.kind) {
     case 'production':
@@ -255,14 +320,14 @@ export function envTreatment(env: Environment): EnvTreatment {
         className: 'is-prod',
         // A SAFETY SIGNAL, and the only declared name that shouts.
         label: env.name.toUpperCase(),
-        explain: `Environment ${env.name}, declared by the build. Changes here are real.`,
+        explain: `${declaredBy(env)} Changes here are real.`,
         bar: true,
       }
     case 'nonprod':
       return {
         className: 'is-nonprod',
         label: sentenceCase(env.name),
-        explain: `Environment ${env.name}, declared by the build.`,
+        explain: declaredBy(env),
         bar: false,
       }
     case 'local':
@@ -280,9 +345,10 @@ export function envTreatment(env: Environment): EnvTreatment {
         label: 'ENVIRONMENT UNKNOWN',
         // Named rather than vague: someone has to be able to act on it.
         explain:
-          `Nothing told this console which environment it is. The build did not ` +
-          `declare VITE_SWARM_ENV and ${env.host || 'the host'} is not this ` +
-          `machine, so treat it as production until you know otherwise.`,
+          `Nothing told this console which environment it is. The API has not ` +
+          `declared one, the build did not declare VITE_SWARM_ENV, and ` +
+          `${env.host || 'the host'} is not this machine, so treat it as ` +
+          `production until you know otherwise.`,
         bar: true,
       }
   }
@@ -338,9 +404,13 @@ export function ProductHeader({
     }
   }, [load])
 
+  // The identity read carries the API's environment too, so the badge needs no
+  // read of its own -- and the badge follows it the moment it lands. Until
+  // then, and whenever it fails, the build and the host answer as before.
   const env = classifyEnvironment(
     declaredEnv,
     host ?? (typeof window === 'undefined' ? '' : window.location.hostname),
+    me.status === 'ok' || me.status === 'stale' ? servedEnvironment(me.data) : null,
   )
   const t = envTreatment(env)
 

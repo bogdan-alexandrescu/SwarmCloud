@@ -87,11 +87,12 @@ const FLOOR_PX = 12
  * Every file that is allowed to say how big type is.
  *
  * Overview.tsx, HelpCard.tsx, HelpSection.tsx and AgentDetail.tsx are here
- * because they carry their own type -- Overview injects a stylesheet as a
+ * because they carried their own type -- Overview injected a stylesheet as a
  * template literal and the other three set React inline styles -- so scanning
  * only `styles.css` would have declared victory with 23 of the 240 still
  * shipping: 11 in Overview, 5 each in HelpCard and HelpSection, 2 in
- * AgentDetail.
+ * AgentDetail. Overview's sheet is part of `styles.css` since U8; the file
+ * stays in the list so an inline size written there is still caught.
  */
 const SOURCES: ReadonlyArray<readonly [string, string]> = [
   ['src/styles.css', STYLES],
