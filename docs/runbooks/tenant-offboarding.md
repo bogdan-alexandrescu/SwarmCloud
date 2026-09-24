@@ -16,16 +16,27 @@ each lose the member `serviceAccount:swarm-agent-worker-<id>@...`; `swarm-api`'s
 `TENANT_GROUPS` loses the tenant's group; and other tenants' `accounts/*`
 documents lose `<id>` from their `lend_to` lists.
 
-**The decision this runbook exists for.** Owner decision, 2026-09-24: the
-reconciler does **not** garbage-collect GKE tenant namespaces, and it is not
-getting a ClusterRole so that it could. PR #32 (commit `8a533b0`) removed the
-reconciler's cluster-scope list and delete calls; `GkeBackend.list_job_resources`
-in `apps/reconciler/reconciler/backends.py` now returns nothing, by design. A
-Namespace is a cluster-scoped object, so collecting one needs cluster-scope
-rights, and the policy that the platform's service accounts hold only namespaced
-Roles is kept. So deleting `swarm-tenant-<id>` is a person's job, and
-[step 8](#8-delete-the-gke-namespace-by-hand) is where it happens. Nothing else
-in this repository will ever do it.
+**The two decisions this runbook exists for.**
+
+* Owner decision, 2026-09-24: the reconciler does **not** garbage-collect GKE
+  tenant namespaces, and it is not getting a ClusterRole so that it could. PR
+  #32 (commit `8a533b0`) removed the reconciler's cluster-scope list and delete
+  calls; `GkeBackend.list_job_resources` in
+  `apps/reconciler/reconciler/backends.py` now returns nothing, by design. A
+  Namespace is a cluster-scoped object, so collecting one needs cluster-scope
+  rights, and the policy that the platform's service accounts hold only
+  namespaced Roles is kept. So deleting `swarm-tenant-<id>` is a person's job,
+  and [step 9](#9-delete-the-gke-namespace-by-hand) is where it happens.
+  Nothing else in this repository will ever do it.
+* Owner decision, 2026-09-24: **everything the tenant left is deleted at
+  offboarding** (its artifacts and checkpoints, its Firestore records, its
+  pools and its tenant document), so that a later registration deriving the
+  same tenant id can read nothing of the old tenant. Keeping the data, or
+  letting it expire, is no longer an option. `scripts/offboard-tenant.sh` does
+  the deleting in [step 6](#6-delete-everything-the-tenant-left), and proves it
+  before it releases the id. Provider secrets stay terraform's to delete, when
+  the tenant leaves tfvars in step 7; the owner chose not to add deletion
+  protection to them.
 
 > **The deny-list.** `saga-agents-staging` is a shared project. It holds
 > another team's live GKE cluster `agents-staging`, their VPC, their buckets
@@ -134,21 +145,35 @@ Three things about this half that are easy to get wrong:
 
 | # | Resource | Created by | Why it is manual | Step |
 |---|---|---|---|---|
-| B1 | GKE namespace `swarm-tenant-<id>` on `swarm-autopilot`, and everything in it: ResourceQuota `swarm-tenant-quota`, LimitRange `swarm-worker-limits`, ServiceAccounts `swarm-worker`, `swarm-agent-worker` and `default`, Role and RoleBinding `swarm-worker`, `swarm-dispatcher` and `swarm-reaper`, NetworkPolicies `swarm-default-deny`, `swarm-deny-cross-tenant-ingress` and `swarm-allow-worker-egress`, and any Job or Pod the dispatcher created | `scripts/register-tenant.sh` via `kubernetes/apply.sh` | `terraform/` has no kubernetes provider, and the reconciler holds no ClusterRole (the owner decision above) | [8](#8-delete-the-gke-namespace-by-hand) |
-| B2 | A second namespace, if the tenant document's `namespace` field names one other than `swarm-tenant-<id>`. Tenants registered before 2026-09-24 may carry the old spelling `swarm-<id>` | an older `register-tenant.sh` | same as B1 | [8](#8-delete-the-gke-namespace-by-hand) |
-| B3 | Cloud Run Jobs the dispatcher created itself: `swarm-job-<id>-<profile>-<class>` for a smaller resource class, or any job for a tenant terraform did not know. Labels `managed-by=swarm-scheduler`, `swarm-tenant=<id>` | `CloudRunJobDispatcher.ensure_job` | the reconciler deletes them after 7 days idle (`UNUSED_JOB_TTL_SECONDS`), not straight away | [9](#9-remove-what-the-platform-created-at-runtime) |
-| B4 | Account pool: Firestore `accounts/<id>:<label>`; secrets `swarm-account-<id>--<label>` and `...-refresh` (labels `component=swarm-account`, `tenant=<id>`, `managed-by=swarm-secrets`); pending sign-ins in `account_auth`; `<id>` in the `lend_to` list of other tenants' accounts | the quota broker | removing an account deletes its document and **keeps its secret on purpose** (`remove_account` in `quota_broker/main.py`) | [5](#5-take-the-tenant-out-of-the-account-pool), [9](#9-remove-what-the-platform-created-at-runtime) |
-| B5 | Runtime records: `tasks` (and each task's `events` subcollection), `attempts`, `leases`, `workflows`, `quota/<p>:<id>`; ledger entries `credential_publications/<secret name>` | the API, scheduler, workers and broker | runtime data, never in terraform state | [9](#9-remove-what-the-platform-created-at-runtime) |
-| B6 | Artifacts and checkpoints under `gs://swarm-artifacts-<project>/tenants/<id>/`, including the `.tenant` marker `register-tenant.sh` writes | workers | the bucket is shared; only the prefix is the tenant's | [9](#9-remove-what-the-platform-created-at-runtime) |
-| B7 | A provider secret added out of band for a provider that is *not* in the tenant's tfvars `providers` list (labels `component=tenant-credential`, `managed-by=swarm-secrets`) | `scripts/create-secrets.sh` | outside terraform's `for_each` | [9](#9-remove-what-the-platform-created-at-runtime) |
+| B1 | GKE namespace `swarm-tenant-<id>` on `swarm-autopilot`, and everything in it: ResourceQuota `swarm-tenant-quota`, LimitRange `swarm-worker-limits`, ServiceAccounts `swarm-worker`, `swarm-agent-worker` and `default`, Role and RoleBinding `swarm-worker`, `swarm-dispatcher` and `swarm-reaper`, NetworkPolicies `swarm-default-deny`, `swarm-deny-cross-tenant-ingress` and `swarm-allow-worker-egress`, and any Job or Pod the dispatcher created | `scripts/register-tenant.sh` via `kubernetes/apply.sh` | `terraform/` has no kubernetes provider, and the reconciler holds no ClusterRole (the owner decision above) | [9](#9-delete-the-gke-namespace-by-hand) |
+| B2 | A second namespace, if the tenant document's `namespace` field names one other than `swarm-tenant-<id>`. Tenants registered before 2026-09-24 may carry the old spelling `swarm-<id>` | an older `register-tenant.sh` | same as B1 | [9](#9-delete-the-gke-namespace-by-hand) |
+| B3 | Cloud Run Jobs the dispatcher created itself: `swarm-job-<id>-<profile>-<class>` for a smaller resource class, or any job for a tenant terraform did not know. Labels `managed-by=swarm-scheduler`, `swarm-tenant=<id>` | `CloudRunJobDispatcher.ensure_job` | the reconciler deletes them after 7 days idle (`UNUSED_JOB_TTL_SECONDS`), not straight away | [10](#10-remove-what-the-platform-created-at-runtime) |
+| B4 | Account pool: Firestore `accounts/<id>:<label>`; secrets `swarm-account-<id>--<label>` and `...-refresh` (labels `component=swarm-account`, `tenant=<id>`, `managed-by=swarm-secrets`); pending sign-ins in `account_auth`; `<id>` in the `lend_to` list of other tenants' accounts | the quota broker | removing an account deletes its document and **keeps its secret on purpose** (`remove_account` in `quota_broker/main.py`) | [5](#5-take-the-tenant-out-of-the-account-pool) (lends, owned accounts), [6](#6-delete-everything-the-tenant-left) (any account document or sign-in left), [10](#10-remove-what-the-platform-created-at-runtime) (secrets) |
+| B5 | Runtime records: `tasks` (and each task's `events` subcollection), `attempts`, `leases`, `workflows`, `quota/<p>:<id>`; ledger entries `credential_publications/<secret name>`; pools terraform does not hold | the API, scheduler, workers and broker | runtime data, never in terraform state | [6](#6-delete-everything-the-tenant-left) |
+| B6 | Artifacts and checkpoints under `gs://swarm-artifacts-<project>/tenants/<id>/`, every version, including the `.tenant` marker `register-tenant.sh` writes | workers | the bucket is shared; only the prefix is the tenant's | [6](#6-delete-everything-the-tenant-left) |
+| B7 | A provider secret added out of band for a provider that is *not* in the tenant's tfvars `providers` list (labels `component=tenant-credential`, `managed-by=swarm-secrets`) | `scripts/create-secrets.sh` | outside terraform's `for_each` | [10](#10-remove-what-the-platform-created-at-runtime) |
 
 What stays whatever you do, and is worth saying so nobody reports it deleted:
-Cloud Logging entries written by the tenant's workers (the log bucket's
-retention decides), the Firestore export `scripts/purge-data.sh` writes to
-`gs://<bucket>/backups/purge-<timestamp>` before it deletes (the whole
-database, every tenant; the bucket's age rule expires it after
-`artifact_retention_days`), and soft-deleted objects, which the bucket keeps for
-7 days.
+
+* Cloud Logging entries written by the tenant's workers. The log bucket's
+  retention decides.
+* Soft-deleted objects. Every object version step 6 deletes is *soft*-deleted,
+  and the bucket keeps it for its soft-delete retention: 604800 seconds, 7
+  days, read from `gcloud storage buckets describe` on 2026-09-24. Nothing
+  deletes a soft-deleted object before that. **They can be restored by anyone
+  holding `storage.objects.restore` on the prefix, and `roles/storage.objectUser`
+  includes it** (`gcloud iam roles describe roles/storage.objectUser`, the same
+  day). That is the role a tenant's worker service account holds on
+  `tenants/<id>/`. So a registration of the same id that gets a worker service
+  account within 7 days of step 6 could restore the old tenant's objects. The
+  script prints how many there are.
+* Firestore exports that `scripts/purge-data.sh` wrote earlier, for some other
+  purge, to `gs://<bucket>/backups/purge-<timestamp>`. Each holds the whole
+  database, every tenant included, until the bucket's age rule expires it after
+  `artifact_retention_days`. A tenant's worker cannot read `backups/`. This
+  runbook no longer calls `purge-data.sh`, and step 6 takes no backup, because
+  a backup would be a copy of exactly what the owner decision says must not
+  survive.
 
 ---
 
@@ -156,17 +181,18 @@ database, every tenant; the bucket's age rule expires it after
 
 | Step | What | Why it cannot move |
 |---|---|---|
-| 0 | Decide | steps 6 and 9 cannot be undone, and what they delete depends on these answers |
+| 0 | Decide | steps 6, 7 and 10 cannot be undone, and which path step 7 takes depends on these answers |
 | 1 | Point the tools at the right places | everything after this deletes things |
-| 2 | Record what exists | the GSA's `uniqueId` is the only handle `undelete` takes, and it is hard to find once the account is gone |
-| 3 | Stop new work | otherwise step 4 never ends |
-| 4 | Drain | step 6 deletes the GSA and the jobs running work uses, and the pool documents its leases give capacity back to |
-| 5 | Account pool | must follow 4 (no account assigned to a running agent); do it before 6 so lenders and borrowers find out while the tenant still exists |
-| 6 | Remove the tenant from terraform | removes `tenants/<id>`, which is what stops the reconciler reading the namespace |
-| 7 | Verify terraform's half | |
-| 8 | Delete the namespace by hand | **after** 6: the reconciler reads the namespace of every registered tenant on every pass (`_look_namespaced` in `apps/reconciler/reconciler/repair.py`), so a namespace deleted while `tenants/<id>` exists is reported unreadable, as a 403, on every pass |
-| 9 | Runtime leftovers | after 4, because deleting an unreleased lease loses the capacity it holds; after 6, because nothing can dispatch for the tenant once its document is gone |
-| 10 | Final verification | |
+| 2 | Record what exists | the GSA's `uniqueId` is the only handle `undelete` takes, and it is hard to find once the account is gone; and step 11 checks the publication ledger against the secret names recorded here |
+| 3 | Stop new work | otherwise step 4 never ends, and step 6 refuses a tenant that is still enabled |
+| 4 | Drain | step 6 refuses a tenant that holds any capacity; step 7 deletes the GSA and the jobs running work uses, and the pool documents its leases give capacity back to |
+| 5 | Account pool | must follow 4 (no account assigned to a running agent); before 6, which refuses while another tenant still lends to this id, so lenders and borrowers find out while the tenant still exists |
+| 6 | Delete everything the tenant left | **before** 7: it runs while `tenants/<id>` still holds the id, so nobody can register the id while its data exists, and the script deletes the tenant document itself only after proving everything else gone. After 3, 4 and 5 for the reasons above; the script checks all three itself |
+| 7 | Remove the tenant from terraform | removes `tenants/<id>` and its terraform pools, which is what stops the reconciler reading the namespace, and the provider secrets |
+| 8 | Verify terraform's half | |
+| 9 | Delete the namespace by hand | **after** 7: the reconciler reads the namespace of every registered tenant on every pass (`_look_namespaced` in `apps/reconciler/reconciler/repair.py`), so a namespace deleted while `tenants/<id>` exists is reported unreadable, as a 403, on every pass |
+| 10 | Runtime leftovers | after 7, because nothing can dispatch for the tenant once its document is gone, and because before 7 a provider secret found by label may still be terraform's |
+| 11 | Final verification | |
 
 ---
 
@@ -187,29 +213,30 @@ sed -n '/^tenants = {/,/^}/p' terraform/environments/dev/dev.tfvars | grep -E '^
 # on 2026-09-24:  eng = {   smoke = {   u-sw-c90291 = {   u-bogdan = {
 ```
 
-Terraform-declared tenants follow steps 0 to 10. A tenant made by
+Terraform-declared tenants follow steps 0 to 11. A tenant made by
 `scripts/register-tenant.sh` or created self-service by the API on first sign-in
-is not in tfvars; for those, replace step 6 with
+is not in tfvars; for those, replace step 7 with
 [the manual section](#if-the-tenant-was-never-in-terraform).
 
-**Keep the tenant's data, or delete it now?** Choose per tenant, and write the
-choice down in the PR that removes it:
+**The tenant's data is deleted. That is decided, not asked.** Owner decision,
+2026-09-24: everything the tenant left goes at offboarding, in step 6. This
+section used to offer *delete now* or *let it expire*. It no longer does, for
+this reason:
 
-* *Delete now* (step 9 with `--artifacts`): records, artifacts and checkpoints
-  go today. There is no undo beyond the purge script's Firestore export and
-  GCS soft delete (7 days).
-* *Let it expire*: the bucket's lifecycle deletes live objects after
-  `artifact_retention_days` (14 in dev, 180 in prod) and noncurrent versions 30
-  days after that; Firestore records stay until purged.
+**Anything kept is readable by the next tenant with the same id.** A tenant id
+is derived from its principal (`swarm_common.identity`), GCS access is granted
+by an IAM condition on `tenants/<id>/`, and the API's principal-collision check
+compares against `tenants/<id>`, which offboarding deletes. A later
+registration that derives the same id, whether the same group coming back or a
+different principal that slugs the same way, would get the old prefix, its old
+objects (the noncurrent versions too) and every account still lent to that id.
+Letting data expire did not close that: live objects expired after
+`artifact_retention_days` (14 in dev, 180 in prod), noncurrent versions 30 days
+after that, and Firestore records never.
 
-  **Whatever you keep stays readable by the next tenant with the same id.** A
-  tenant id is derived from its principal (`swarm_common.identity`), GCS access
-  is granted by an IAM condition on `tenants/<id>/`, and step 6 deletes
-  `tenants/<id>`, which is the record that the API's principal-collision check
-  compares against. A later registration that derives the same id, whether the
-  same group coming back or a different principal that slugs the same way,
-  gets the old prefix, its old objects and every account still lent to that id.
-  If the id may ever be reused, delete.
+What deleting does **not** close is the soft-delete window described under
+[the inventory](#the-inventory-everything-a-tenant-has): 7 days in which the
+old objects can still be restored. Nothing in this runbook shortens it.
 
 **Offboarding a tenant is not revoking people.** Who may pass IAP is
 `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, and today it
@@ -227,7 +254,7 @@ separate change to `frontend_iap_members`, `allowed_domains` and, in prod,
 exist and none has a protection rule, and there is no `prod` environment. So
 merging the tfvars change to `main` *is* the apply: `release.yml`'s
 `terraform apply (dev)` job plans and applies in one go with nobody asked. The
-pre-merge plan in [step 6](#6-remove-the-tenant-from-terraform) is therefore the
+pre-merge plan in [step 7](#7-remove-the-tenant-from-terraform) is therefore the
 only chance to read what will be deleted. `terraform.yml`'s header describes an
 environment approval; for dev, that approval does not exist.
 
@@ -236,12 +263,12 @@ environment approval; for dev, that approval does not exist.
 tfvars files leave `name_prefix` at its default `swarm`, so prod would reuse
 every name here; check them before running this against a prod that exists.
 
-**Verify.** Before step 1, the PR description you will open in step 6 already
+**Verify.** Before step 1, the PR description you will open in step 7 already
 says, in writing: the tenant id, and that it is neither `u-sw-c90291` nor
 `smoke` (or that the owner approved it); whether the id is in the tfvars
-listing above (terraform path) or not (the manual section); delete now or let
-expire; and whether anyone must also lose access. If any of the four is
-unanswered, do not start.
+listing above (terraform path) or not (the manual section); and whether
+anyone must also lose access. If any of the three is unanswered, do not start.
+The data is not one of the questions: it is deleted (above).
 
 ---
 
@@ -268,8 +295,10 @@ esac
 ```
 
 **The check unsets instead of warning.** A check that only prints leaves the
-next command free to run with an empty `TENANT`, and `scripts/purge-data.sh`
-given `--tenant ""` has no tenant filter at all: it would delete every
+next command free to run with an empty `TENANT`. `scripts/offboard-tenant.sh`
+refuses an empty or malformed id itself, but not every command does:
+`scripts/purge-data.sh`, which this runbook used to call, given
+`--tenant ""` has no tenant filter at all: it would delete every
 tenant's records, every tenant's provider keys (measured 2026-09-24: six
 secrets across `eng` and `u-bogdan` carry `component=tenant-credential`) and
 everything under `tenants/` in the bucket. So a failed check here removes
@@ -357,7 +386,8 @@ gcloud-generated name for `swarm-autopilot`, read-only commands included.
 ## 2. Record what exists
 
 Saved under `build/` (git-ignored) so the offboarding has a record, and so step
-10 has something to compare against.
+11 has something to compare against. Step 6's script writes its inventory and
+proof to the same directory.
 
 ```bash
 ( : "${TENANT:?run step 1 in this shell}" "${GSA:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
@@ -422,7 +452,7 @@ cat "$OUT/firestore.txt"
 ```
 
 Read the `namespace` field of `tenants/<id>`. If it is anything other than
-`swarm-tenant-<id>`, that namespace is B2 and step 8 deletes it too.
+`swarm-tenant-<id>`, that namespace is B2 and step 9 deletes it too.
 
 **Verify.** The record is complete and names the tenant you meant:
 
@@ -508,9 +538,10 @@ these print the field rather than defaulting it.
 
 ## 4. Drain
 
-Nothing may hold capacity for the tenant before step 6. Capacity is held from
-`LEASED`, not `RUNNING` (invariant 3), so this counts all four
-capacity-holding states and the leases themselves:
+Nothing may hold capacity for the tenant before step 6, whose script refuses
+otherwise, or before step 7. Capacity is held from `LEASED`, not `RUNNING`
+(invariant 3), so this counts all four capacity-holding states and the leases
+themselves:
 
 ```bash
 bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
@@ -568,8 +599,7 @@ SH
 ends the heredoc when nothing precedes it on its line.)
 
 Pending tasks (`SUBMITTED`, `QUEUED`, `READY`, `PARKED`) do not block anything
-and cost nothing; step 9 deletes them with the rest of the records, or they stay
-parked if you are keeping the history.
+and cost nothing; step 6 deletes them with the rest of the records.
 
 **Verify the backends agree**, because the reconciler releases a lease only when
 it can see the execution is gone:
@@ -632,7 +662,7 @@ running on it, which means step 4 is not finished. Finish step 4 and run this
 again until nothing is skipped.
 
 Their secrets (`swarm-account-<id>--<label>` and `-refresh`) are deleted in
-step 9, after the tenant's GSA is gone.
+step 10, after the tenant's GSA is gone.
 
 **Accounts other tenants lend to this one.** Take `<id>` out of each `lend_to`.
 Preferably the owning tenant does it (Settings in the UI, or
@@ -660,8 +690,8 @@ info "$n lending list(s) edited"
 SH
 ```
 
-Pending sign-ins in `account_auth` expire after 15 minutes and are cleared in
-step 9.
+Pending sign-ins in `account_auth` expire after 15 minutes, and step 6 deletes
+any that are left.
 
 **Verify.** Run this even if you skipped the step; it is what shows the skip was
 right:
@@ -681,12 +711,100 @@ SH
 
 Expect `0` on both lines. A non-zero owned count is an account that was
 skipped (still `assigned`) or added since; a non-zero lending count is a lender
-whose edit failed or who re-added the id. Neither may be left for step 6: once
-`tenants/<id>` is gone, a lend to `<id>` still names it.
+whose edit failed or who re-added the id. Step 6 refuses both: an assigned
+account holds capacity, and once `tenants/<id>` is gone a lend to `<id>` still
+names it.
 
 ---
 
-## 6. Remove the tenant from terraform
+## 6. Delete everything the tenant left
+
+This is the step the second owner decision adds. `scripts/offboard-tenant.sh`
+deletes, for one tenant:
+
+* every object version under `gs://swarm-artifacts-<project>/tenants/<id>/`:
+  artifacts, logs, checkpoints and the `.tenant` marker (B6). Every version,
+  because the bucket is versioned and a noncurrent version is as readable
+  through the tenant's IAM grant as a live one;
+* its Firestore records (B5): each task's `events`, then the `tasks`
+  themselves; `attempts`, `leases`, `workflows` and `quota`; the `accounts`
+  and `account_auth` documents it owns; the `credential_publications` entries
+  for the secrets labelled `tenant=<id>`; and its pools;
+* `tenants/<id>` itself, **last**, and only after a second, independent count
+  of everything above has come back zero.
+
+It leaves two things alone. Provider secrets belong to step 7 (terraform's) and
+step 10 (the rest). And any tenant or pool document carrying
+`managed_by=swarm-terraform` is left for step 7: for a tenant declared in
+tfvars, that is its `tenants/<id>` and its `tenant:<id>` and
+`provider:<p>:tenant:<id>` pools. `terraform/modules/firestore` created those
+with `enabled = true` and holds them in state, so deleting them here would let
+any release on `main` recreate them, **enabled**, before your tfvars PR
+merges. They hold limits and counters, not the tenant's data, and while they
+exist the id stays held. The script names each one `left for terraform`.
+
+It refuses, and deletes nothing, when any of the earlier steps is not done. It
+checks before it prints the inventory and again after you type the
+confirmation, because the prompt can wait for an hour:
+
+| Refusal | Step that fixes it |
+|---|---|
+| `tenants/<id>` does not exist: not a registered tenant | 0 (the id) |
+| the tenant is still enabled | 3 |
+| a task in `LEASED`, `DISPATCHED`, `STARTING` or `RUNNING`, an unreleased lease, a pool with `active > 0`, or an account with an agent assigned | 4 (and 5 for the account) |
+| another tenant's account still lends to this id | 5 |
+
+**Run it before the step-7 merge.** After the merge, terraform has deleted
+`tenants/<id>` and the script refuses the id as unregistered. That refusal is
+deliberate: a typo must find nothing to delete, not a prefix.
+
+Dry run first. It is the default, and it prints the capacity table and the
+inventory and deletes nothing:
+
+```bash
+scripts/offboard-tenant.sh --tenant "${TENANT:?run step 1 in this shell}"
+```
+
+Read the inventory: the number of object versions and bytes under the prefix,
+and a count per collection. Every number is this tenant's alone. Each listing
+is filtered on the tenant's own field, and each document's field and name are
+checked again before anything is deleted, so a neighbour whose id starts with
+this one (`eng-x` for `eng`) is not counted and not touched.
+
+Then the real run. It asks you to type the tenant id, and it ignores
+`SWARM_ASSUME_YES`:
+
+```bash
+scripts/offboard-tenant.sh --tenant "${TENANT:?run step 1 in this shell}" --apply
+```
+
+For prod, add `--allow-prod`. It then also asks for the project id.
+
+The script deletes the objects first, then the records in batches of 200 with
+a running count, then prints `== Proof: what is left of tenant <id> ==`. That
+table is a fresh count of every row, taken by a different call from the one
+that listed it: a server-side aggregation per collection, a GET per ledger
+entry, a new `gcloud storage ls --all-versions` for the prefix. **Any non-zero
+row prints `VERIFICATION FAILED`, exits non-zero and does not delete
+`tenants/<id>`**, so the id stays held and you can run the same command again.
+Running it again is always safe: every delete is of something it has just
+listed.
+
+The inventory and the proof are also written to
+`build/offboard-<id>/offboard-tenant-<timestamp>.txt`, next to step 2's
+record. Put that file in the step-7 PR.
+
+Its last lines report the soft-deleted object versions, and the 7-day window
+in which they can be restored (see [the inventory](#the-inventory-everything-a-tenant-has)).
+
+**Verify.** The proof ends `(11 checks)`, and every row reads `0` or
+`left for terraform`. The line after the table reads `tenants/<id>  absent`
+for a tenant terraform never held, or `left for terraform` for one it does.
+The exit code is 0.
+
+---
+
+## 7. Remove the tenant from terraform
 
 **Edit** `terraform/environments/<env>/<env>.tfvars`: delete the tenant's
 `<id> = { ... }` block, and the comment above it. If the tenant's principal also
@@ -759,11 +877,11 @@ updated in place in the same apply. Those updates are the release's. A
 *destroyed* count that differs from yours is not, and means the state moved
 between your plan and the merge. An `Error:` line means a partial apply, with
 some of A1 to A11 gone and some not: plan again from this step and read what is
-left before going on. Step 7 then checks the result resource by resource.
+left before going on. Step 8 then checks the result resource by resource.
 
 ---
 
-## 7. Verify terraform's half
+## 8. Verify terraform's half
 
 Every check in this step is read-only and guarded anyway. With `TENANT` empty,
 a filter such as `bindings.members:swarm-agent-worker-@` matches no member at
@@ -838,11 +956,11 @@ group. Return to the access question in step 0 before going on.
 
 ---
 
-## 8. Delete the GKE namespace by hand
+## 9. Delete the GKE namespace by hand
 
 This is the step the owner decision leaves to a person. The reconciler will not
 do it: a Namespace is cluster-scoped, and the platform's identities hold only
-namespaced Roles, by policy. Do it after step 7 has shown `tenants/<id>` is
+namespaced Roles, by policy. Do it after step 8 has shown `tenants/<id>` is
 gone, for the reason in [the order table](#the-order-and-why-it-is-this-order).
 Done the other way round, every reconciler pass logs the namespace as
 unreadable; and if it was the only tenant namespace on the cluster, every
@@ -911,12 +1029,12 @@ platform marker (one of `MANAGED_VALUES` in the same `backends.py`), the block
 refuses it; stop and take it to the owner rather than loosening the check.
 
 The Workload Identity bindings that pointed pods in this namespace at the GSA
-(A6, and `register-tenant.sh`'s `swarm-worker` one) went with the GSA in step 6.
+(A6, and `register-tenant.sh`'s `swarm-worker` one) went with the GSA in step 7.
 There is nothing to remove on the GCP side.
 
 ---
 
-## 9. Remove what the platform created at runtime
+## 10. Remove what the platform created at runtime
 
 Every block in this step deletes something irreversible, and each is one
 guarded command (step 1 says why). Paste each one whole.
@@ -967,131 +1085,59 @@ label, then checked by name:
 )
 ```
 
-**Records, leftover provider secrets and artifacts (B5 to B7).** One script,
-which exports the whole database to the bucket first, asks for a typed
-confirmation, and ignores `SWARM_ASSUME_YES`. It does **not** refuse an empty
-`--tenant`: given `--tenant ""` it runs with no tenant filter, over every
-tenant. The guard inside the argument is what stops that here. Dry run first:
+**Provider secrets terraform did not hold (B7).** The tenant's records and
+objects went in step 6. What is left here is secrets. After step 7, every
+secret still labelled `component=tenant-credential,tenant=<id>` is one that
+`scripts/create-secrets.sh` added out of band, for a provider that is not in
+the tenant's tfvars. Deleting one is irreversible. The block lists them by the
+exact labels. It stops if any of them is still terraform's, because that means
+step 7 has not applied, and the next apply would then recreate the secret
+empty. It checks each name as well:
 
 ```bash
-scripts/purge-data.sh --tenant "${TENANT:?run step 1 in this shell}" \
-  --collections tasks,attempts,leases,workflows,quota --secrets --artifacts --dry-run
+( set -eu
+  : "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.component=tenant-credential AND labels.tenant=${TENANT}" \
+    --format='value(name.basename(),labels.managed-by)' > "$OUT/provider-secrets-left.txt"
+  cat "$OUT/provider-secrets-left.txt"
+  if grep -q 'swarm-terraform' "$OUT/provider-secrets-left.txt"; then
+    echo "STOP: a secret above is still terraform's, so step 7 has not applied"; exit 1
+  fi
+  n=0
+  while read -r s _; do
+    [ -n "$s" ] || continue
+    case "$s" in "swarm-tenant-${TENANT}-"*) ;; *) echo "skipping $s"; continue ;; esac
+    gcloud secrets delete "$s" --project "$PROJECT_ID" --quiet
+    n=$((n + 1))
+  done < "$OUT/provider-secrets-left.txt"
+  echo "$n provider secret(s) deleted of $(grep -c . "$OUT/provider-secrets-left.txt" || true) listed"
+)
 ```
 
-Name the collections. `--all` adds `pools` and `tenants`, and with `--tenant`
-it would match `tenants/<id>` (already gone) but never a pool, because pool
-documents carry no `tenant_id`. Leave out `--artifacts` if step 0 chose to let
-them expire. `--secrets` deletes every secret labelled
-`component=tenant-credential,tenant=<id>`, which after step 6 is only B7; run
-before step 6, it would delete terraform's secrets and the next apply would
-recreate them empty.
-
-**Read the scope before the counts.** Only these lines of the output say which
-tenant the run covers. Check every one against the id you set in step 1:
-
-| Where | Must read | If it reads this instead, the scope is every tenant |
-|---|---|---|
-| `== Scope ==` (dry run and real run) | `==> tenant       <id>` | no `tenant` line at all |
-| `== Artifacts ==` (dry run) | `would recursively delete gs://swarm-artifacts-saga-agents-staging/tenants/<id>/` | `.../tenants/` with nothing after it |
-| `== Tenant credentials ==` (dry run) | only `would delete secret swarm-tenant-<id>-...` lines, or `no matching secrets` | a secret named for any other tenant |
-| `== Confirmation ==` (real run) | `artifacts:   gs://swarm-artifacts-saga-agents-staging/tenants/<id>` | `.../tenants/*` |
-| `== Confirmation ==` (real run) | `secrets:     tenant provider keys for <id>` | `tenant provider keys`, with no `for <id>` |
-
-**If any line is missing or names another id, do not type `purge-dev`.** Type
-anything else, or press Enter: the script answers `confirmation did not match;
-aborted` and deletes nothing. The Firestore export it has already written is
-harmless.
-
-The numbers under `== Counting ==`, repeated as `counts:` at the confirmation,
-cannot tell you the scope either way. They are whole-collection counts for
-every tenant, taken before any filter, so they read the same for a correct run
-and for a run with no tenant. The filtered numbers are the dry run's
-`would delete <n> document(s) from <collection>` lines. Compare them with step
-10's count block for this tenant, which you can run now: each must be equal, or
-1000 when the tenant has more.
-
-Then the real run, the same command without `--dry-run` (add `--allow-prod`
-for prod):
-
-```bash
-scripts/purge-data.sh --tenant "${TENANT:?run step 1 in this shell}" \
-  --collections tasks,attempts,leases,workflows,quota --secrets --artifacts
-```
-
-It selects at most 1000 documents per collection per run, so **repeat the dry
-run until every collection says `nothing matched`**, and the real run while one
-does not.
-
-`purge-data.sh --artifacts` removes the *live* objects. The bucket is versioned,
-so every checkpoint it removed is still there as a noncurrent version, and the
-lifecycle rule keeps those for 30 days. If step 0 chose delete, remove them too:
-
-```bash
-gcloud storage rm --recursive --all-versions "gs://${ARTIFACT_BUCKET:?run step 1 in this shell}/tenants/${TENANT:?run step 1 in this shell}/"
-```
-
-Soft delete still keeps them for 7 days (the storage module's
-`soft_delete_retention_seconds`), restorable by anyone holding
-`storage.objects.restore` on the bucket.
-
-**The small Firestore leftovers.** Pools terraform did not own (a tenant created
-by `register-tenant.sh` or the API, or a per-provider pool an admin created with
-`PUT /v1/admin/limits/provider/<p>/tenant/<id>`), pending sign-ins, and the
-publication ledger for this tenant's secrets. The ledger is keyed by secret
-name, and a name prefix is ambiguous (`swarm-tenant-eng-` is also the start of
-tenant `eng-x`'s secrets), so it is matched against the exact names step 2
-recorded from their labels:
-
-```bash
-bash -s -- "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}/secrets.txt" <<'SH'
-set -euo pipefail
-source scripts/lib/common.sh
-t="$1"; recorded="$2"
-eq() { jq -nc --arg f "$1" --arg v "$2" '{fieldFilter:{field:{fieldPath:$f},op:"EQUAL",value:{stringValue:$v}}}'; }
-n=0
-pools="$(fs_list_docs pools | jq -c --arg t "$t" 'select(.id == ("tenant:" + $t) or (.id | endswith(":tenant:" + $t)))')" \
-  || die "could not list pools"
-while IFS= read -r p; do
-  [[ -n "$p" ]] || continue
-  [[ "$(jq -r '.active // 0' <<<"$p")" == "0" ]] || die "$(jq -r .id <<<"$p") still has active capacity; step 4 is not done"
-  fs_delete "pools/$(jq -r .id <<<"$p")"; n=$((n + 1))
-done <<<"$pools"
-names="$(fs_query account_auth "$(eq owner_tenant "$t")" | jq -r '.name | split("/") | last')" \
-  || die "could not list pending sign-ins"
-while IFS= read -r id; do [[ -n "$id" ]] || continue; fs_delete "account_auth/$id"; n=$((n + 1)); done <<<"$names"
-while read -r secret _; do
-  case "$secret" in swarm-tenant-*|swarm-account-*) ;; *) continue ;; esac
-  case "$secret" in *-refresh) continue ;; esac
-  doc="$(fs_get "credential_publications/$secret")" || die "could not read credential_publications/$secret"
-  jq -e '.fields' <<<"$doc" >/dev/null || continue
-  fs_delete "credential_publications/$secret"; n=$((n + 1))
-done < "$recorded"
-info "$n leftover document(s) deleted"
-SH
-```
+This used to be `scripts/purge-data.sh --secrets --artifacts`, which also
+deleted the records and the live objects. Step 6 does both now, for every
+object version rather than only the live ones. And `purge-data.sh` first
+exports the whole database into the bucket, which would be a copy of the data
+the owner decision says must not survive.
 
 **Verify.** Nothing this step deletes is left:
 
 ```bash
-( : "${TENANT:?run step 1 in this shell}" "${ARTIFACT_BUCKET:?run step 1 in this shell}"
+( : "${TENANT:?run step 1 in this shell}"
   gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
     --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)'
   gcloud secrets list --project "$PROJECT_ID" --filter="labels.tenant=${TENANT}" --format='value(name)'
-  gcloud storage ls --all-versions "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" 2>&1 | head -3
 )
-scripts/purge-data.sh --tenant "${TENANT:?run step 1 in this shell}" \
-  --collections tasks,attempts,leases,workflows,quota --dry-run
 ```
 
-Expect no job and no secret. For the bucket, `One or more URLs matched no
-objects` if step 0 chose delete (if it chose to let them expire, what is listed
-is what was kept). From the dry run, the `==> tenant` scope line naming `<id>`,
-and `nothing matched` for every collection you purged. Step 10 then checks the
-pools, the account pool, the pending sign-ins and the publication ledger.
+Expect no job and no secret. Step 6's proof already showed the prefix and the
+records empty. Step 11 checks them once more, with the pools, the account pool
+and the publication ledger.
 
 ---
 
-## 10. Final verification
+## 11. Final verification
 
 Everything below should print nothing, or an explicit absence. It is all
 read-only and all guarded: with `TENANT` empty, most of these filters match
@@ -1105,7 +1151,7 @@ nothing and would report a clean tenant without having looked for one.
     --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)'
   gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
     --filter="bindings.members:swarm-agent-worker-${TENANT}@" --format='value(bindings.role)'
-  gcloud storage ls --all-versions "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" 2>&1 | head -3   # only if step 0 chose delete
+  gcloud storage ls --all-versions "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" 2>&1 | head -3   # matched no objects
   k get namespace "swarm-tenant-${TENANT}" 2>&1                                                   # NotFound
 )
 ```
@@ -1113,8 +1159,10 @@ nothing and would report a clean tenant without having looked for one.
 Then every Firestore record the tenant had, including the ones that live
 outside its own documents: other tenants' `lend_to` lists (step 5), pending
 sign-ins in `account_auth`, and the publication ledger in
-`credential_publications` (both step 9). The ledger is checked against the
-exact secret names step 2 recorded, for the prefix reason step 9 gives.
+`credential_publications` (both deleted in step 6). The ledger is keyed by
+secret name and a name prefix is ambiguous (`swarm-tenant-eng-` also starts
+every secret of tenant `eng-x`), so it is checked against the exact names step
+2 recorded from their labels.
 
 ```bash
 bash -s -- "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}/secrets.txt" <<'SH'
@@ -1152,7 +1200,7 @@ printf '(%s checks)\n' "$checks"
 SH
 ```
 
-Expect `tenants/<id> absent`; `0` for every collection you purged; `0` for
+Expect `tenants/<id> absent`; `0` for every collection; `0` for
 accounts owned, accounts lending to it, pending sign-ins and pools;
 `publication ledger 0 (of <k> recorded secret names)`, where `<k>` is the
 number of names in `"$OUT/secrets.txt"` that do not end in `-refresh`; and
@@ -1161,7 +1209,7 @@ nothing and looks like success.
 
 Last, the reconciler must have stopped looking for the namespace. Every pass
 logs each namespace it wanted and could not read (`_look_namespaced` in
-`apps/reconciler/reconciler/repair.py`); a few minutes after step 8 there must
+`apps/reconciler/reconciler/repair.py`); a few minutes after step 9 there must
 be no such line for this tenant:
 
 ```bash
@@ -1171,21 +1219,25 @@ gcloud logging read \
   --format='value(timestamp,jsonPayload.namespace,jsonPayload.error)'
 ```
 
-Expect nothing timestamped after step 8. A line means `tenants/<id>` or a live
-attempt still names the namespace: go back to step 7 or step 4.
+Expect nothing timestamped after step 9. A line means `tenants/<id>` or a live
+attempt still names the namespace: go back to step 8 or step 4.
 [Troubleshooting](../troubleshooting.md#a-task-is-stuck-in-leased-or-dispatched)
 explains how the reconciler reads GKE one namespace at a time.
 
 Put the contents of `build/offboard-<id>/` and the decisions from step 0 in the
-PR from step 6 or a follow-up comment on it. That is the record.
+PR from step 7 or a follow-up comment on it. That is the record.
 
 ---
 
 ## If the tenant was never in terraform
 
 A tenant made by `scripts/register-tenant.sh`, or created self-service by the API
-on first sign-in, has no terraform state, so step 6 deletes nothing. Do steps 0
-to 5 as written, then these in place of step 6, then steps 7 to 10.
+on first sign-in, has no terraform state, so step 7 deletes nothing. Do steps 0
+to 6 as written, then these in place of step 7, then steps 8 to 11.
+
+On this path step 6 has already deleted `tenants/<id>` and its pools: nothing
+holds them in state, so they carry no `managed_by=swarm-terraform` and the
+script deletes them itself, the tenant document last, after its proof.
 
 A self-service tenant created by the API has only `tenants/<id>` and
 `pools/tenant:<id>`: no GSA, no secrets, no namespace (the API writes
@@ -1228,14 +1280,14 @@ the GSA is deleted, a binding that names it can only be removed by its
 No `set -e` here on purpose: a role that was never bound fails its remove, and
 the others must still be tried.
 
-**Verify.** Re-run step 7's project and bucket checks: both must print nothing
+**Verify.** Re-run step 8's project and bucket checks: both must print nothing
 for the member.
 
 **Secrets and jobs.** A tenant terraform never held has no A7 or A8. Its
 provider secrets came from `scripts/create-secrets.sh`
 (`component=tenant-credential`, `managed-by=swarm-secrets`, including the
-`-refresh` twins), which makes them B7, and step 9's `purge-data.sh --secrets`
-deletes them. Its jobs, if any, are the dispatcher's (B3), and step 9 deletes
+`-refresh` twins), which makes them B7, and step 10's provider-secret block
+deletes them. Its jobs, if any, are the dispatcher's (B3), and step 10 deletes
 those too. What to check here is that the record agrees:
 
 ```bash
@@ -1245,7 +1297,7 @@ those too. What to check here is that the record agrees:
 ```
 
 Expect `0` for both files. Any `swarm-terraform` line means terraform does hold
-this tenant, and this is the wrong section: go back to step 6.
+this tenant, and this is the wrong section: go back to step 7.
 
 Then the account:
 
@@ -1258,24 +1310,11 @@ Workload Identity bindings `register-tenant.sh` added for `swarm-worker` and
 `swarm-agent-worker`. There are no A9 or A10 bindings to remove: only terraform
 makes those.
 
-Finally the documents terraform would have removed (A11). Only after step 4
-showed `active: 0`:
+The documents terraform would have removed (A11) need nothing here: step 6
+deleted them.
 
-```bash
-bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
-set -euo pipefail
-source scripts/lib/common.sh
-fs_delete "tenants/$1" && ok "tenants/$1 deleted"
-SH
-```
-
-The pools go in step 9's leftovers block, which checks `active` before each
-delete.
-
-**Verify.** Step 7, in full: this section stands in for step 6, and step 7
-checks it the same way, down to `tenants/<id> absent`. The one difference is the
-pools: on this path they are deleted in step 9, so step 7 still listing
-`tenant:<id>` here is expected.
+**Verify.** Step 8, in full: this section stands in for step 7, and step 8
+checks it the same way, down to `tenants/<id> absent` and no pool ids.
 
 ---
 
@@ -1286,9 +1325,11 @@ pools: on this path they are deleted in step 9, so step 7 still listing
 * **Bringing the tenant back.** Re-add it to tfvars (or re-run
   `scripts/register-tenant.sh`), then `kubernetes/apply.sh --tenant <id> --confirm`
   for the namespace. Secret versions are gone for good; the tenant registers new
-  keys with `scripts/create-secrets.sh`. Anything kept under `tenants/<id>/` is
-  readable by it again, which is the point for a returning tenant and the hazard
-  for a different one.
+  keys with `scripts/create-secrets.sh`. Nothing under `tenants/<id>/` or in
+  Firestore survives step 6, so a returning tenant starts empty, exactly as a
+  different principal with the same id would. The exception is the soft-deleted
+  objects, which can be restored for 7 days
+  ([the inventory](#the-inventory-everything-a-tenant-has) says why).
 * **Several tenants at once.** There is no bulk path. Run it once per tenant;
-  step 6 can remove several tenants in one PR if the plan lists exactly their
+  step 7 can remove several tenants in one PR if the plan lists exactly their
   resources.

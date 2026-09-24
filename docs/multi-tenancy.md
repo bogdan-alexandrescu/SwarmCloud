@@ -30,7 +30,13 @@ Removing a tenant is the same list in reverse, in an order that matters, and
 the namespace is removed by hand: the reconciler holds no ClusterRole and does
 not collect namespaces (owner decision, 2026-09-24). See
 [the tenant offboarding runbook](runbooks/tenant-offboarding.md), which also
-lists what a tenant accumulates at runtime and this table does not show.
+lists what a tenant accumulates at runtime and this table does not show. All
+of that is deleted at offboarding, not kept (owner decision, 2026-09-24), by
+`scripts/offboard-tenant.sh`
+([step 6](runbooks/tenant-offboarding.md#6-delete-everything-the-tenant-left)).
+A tenant id is derived from its principal and the GCS grant is a prefix
+condition on that id, so anything kept would be readable by the next
+registration that derives the same id.
 
 The namespace is `swarm-tenant-<id>`. The GKE row said `swarm-<id>` until
 2026-09-24, which is the spelling behind the 2026-09-23 dispatch outage
@@ -307,17 +313,28 @@ described above. See [security.md](security.md#authentication) and
 ./scripts/pause-swarm.sh --tenant eng --keep-scheduler
 ./scripts/resume-swarm.sh --tenant eng
 
-# Remove a tenant's data (never their infrastructure)
+# Purge runtime data by collection or age (never infrastructure). Not the
+# offboarding path: it exports the whole database first, and removes only the
+# live version of each object.
 ./scripts/purge-data.sh --tenant eng --dry-run
+
+# Offboarding a tenant's DATA: every object version under tenants/<id>/, every
+# Firestore record, then the tenant document, with a proof that each is gone.
+# Dry run by default. Refuses a tenant that is enabled, holds capacity or is
+# still lent an account.
+./scripts/offboard-tenant.sh --tenant eng
+./scripts/offboard-tenant.sh --tenant eng --apply     # type "eng" to confirm
 
 # Offboard a tenant entirely -- identity, keys, jobs, namespace, records:
 #   docs/runbooks/tenant-offboarding.md
 ```
 
-Offboarding is a runbook rather than a script because three of its steps are
-decisions or waits, not commands: whether the tenant's data is kept, whether
-its people also lose access, and draining its running work. Its terraform half
-is one tfvars edit; its GKE half — deleting `swarm-tenant-<id>` — is manual by
+Offboarding is a runbook rather than a script because two of its steps are
+decisions or waits, not commands: whether its people also lose access, and
+draining its running work. Whether its data is kept is not a decision any
+more. The owner decided on 2026-09-24 that it is deleted, and
+`scripts/offboard-tenant.sh` is the runbook's step for that. Its terraform half
+is one tfvars edit. Its GKE half, deleting `swarm-tenant-<id>`, is manual by
 design, because the reconciler holds no ClusterRole and no longer tries to
 collect namespaces (owner decision, 2026-09-24).
 [The runbook](runbooks/tenant-offboarding.md) has the order and the checks.
