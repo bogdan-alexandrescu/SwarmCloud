@@ -206,10 +206,16 @@ module "tenancy" {
   tenants = var.tenants
 
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
-  dispatcher_members = {
-    scheduler  = module.iam.service_account_members["swarm-scheduler"]
-    reconciler = module.iam.service_account_members["swarm-reconciler"]
-  }
+  # The deployer is here because it DEPLOYS the tenant jobs that run as these
+  # accounts, which needs actAs on each (see deployer.tf). Static key, so a new
+  # tenant gets the grant in the same apply that creates its account.
+  dispatcher_members = merge(
+    {
+      scheduler  = module.iam.service_account_members["swarm-scheduler"]
+      reconciler = module.iam.service_account_members["swarm-reconciler"]
+    },
+    var.deployer_service_account == "" ? {} : { deployer = local.deployer_member },
+  )
 
   labels = local.labels
 }
@@ -267,7 +273,7 @@ module "cloud_run" {
   services = {
     "swarm-api" = {
       service_account_email = module.iam.service_account_emails["swarm-api"]
-      image                 = "${local.image_base}/swarm-api:${var.image_tag}"
+      image                 = local.image["swarm-api"]
       max_instances         = var.service_max_instances["swarm-api"]
       cpu                   = "1"
       memory                = "1Gi"
@@ -309,7 +315,7 @@ module "cloud_run" {
     }
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
-      image                 = "${local.image_base}/swarm-scheduler:${var.image_tag}"
+      image                 = local.image["swarm-scheduler"]
       max_instances         = var.service_max_instances["swarm-scheduler"]
       cpu                   = "2"
       memory                = "2Gi"
@@ -324,7 +330,7 @@ module "cloud_run" {
     }
     "swarm-quota-broker" = {
       service_account_email = module.iam.service_account_emails["swarm-quota-broker"]
-      image                 = "${local.image_base}/swarm-quota-broker:${var.image_tag}"
+      image                 = local.image["swarm-quota-broker"]
       max_instances         = var.service_max_instances["swarm-quota-broker"]
       cpu                   = "1"
       memory                = "512Mi"
@@ -361,7 +367,7 @@ module "cloud_run" {
     }
     "swarm-ui" = {
       service_account_email = module.iam.service_account_emails["swarm-api"]
-      image                 = "${local.image_base}/swarm-ui:${var.image_tag}"
+      image                 = local.image["swarm-ui"]
       max_instances         = var.service_max_instances["swarm-ui"]
       cpu                   = "1"
       memory                = "512Mi"
@@ -381,7 +387,7 @@ module "cloud_run" {
     }
     "swarm-reconciler" = {
       service_account_email = module.iam.service_account_emails["swarm-reconciler"]
-      image                 = "${local.image_base}/swarm-reconciler:${var.image_tag}"
+      image                 = local.image["swarm-reconciler"]
       max_instances         = var.service_max_instances["swarm-reconciler"]
       cpu                   = "1"
       memory                = "1Gi"
@@ -491,8 +497,6 @@ module "frontend" {
   service_name    = "swarm-api"
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname
-
-  iap_members = var.frontend_iap_members
 
   labels = local.labels
 

@@ -102,3 +102,43 @@ make push deploy                            # no diff, no new revision
 gcloud run revisions describe <serving> --format='value(status.imageDigest)'
 # prints D1
 ```
+
+## Resolved, 2026-09-24
+
+The fix above, and the two places it did not reach.
+
+**terraform/infra takes `image_refs` and nothing else.** `image_tag` is gone.
+Every Cloud Run service, every worker job and the verification job name
+`<registry>/<name>@sha256:<digest>` from that map, and the root refuses to plan
+while any image it deploys has no entry — a precondition on
+`google_cloud_run_v2_job.verify`, because a module call cannot carry one. There
+is no fallback to a tag, because a fallback is how a tag gets deployed without
+anybody choosing it. The variable's validation refuses a tag, a tag beside a
+digest, a truncated digest, another image's digest under this name, and an
+image from another registry.
+
+**The worker path, which this audit did not cover.** The scheduler built every
+GKE Job and every Cloud Run job it created from `WORKER_IMAGE_TAG`, resolved at
+pull time with `IfNotPresent` — the same staleness one layer down, with no
+revision to inspect. It now receives `WORKER_IMAGE_REFS` from the same map,
+refuses a non-digest value at start, refuses to dispatch a profile with no
+digest, and moves a job it created earlier onto the current digest before it
+runs again.
+
+**The check this audit said nothing could make.** `scripts/lib/deploy.sh
+--verify-only` runs after every release apply and compares, digest to digest,
+every service's template, every terraform-managed job and the scheduler's
+worker map against the manifest the apply pinned. A service serving an older
+digest now fails the release, naming both digests.
+
+Where the value comes from: `scripts/lib/image-refs.sh` turns the promotion
+manifest (a deploy), the channel tag resolved once (a redeploy without a
+build), or the `image_refs` output in state (a plan that is not a deploy) into
+the tfvars file. Pinned by `tests/terraform/image_refs.tftest.hcl`,
+`tests/unit/control_plane/test_worker_image_by_digest.py` and
+`tests/integration/test_deploy_by_digest.py`.
+
+**Not verified here:** an apply against the live project. Nothing in this
+change has been applied; the first release after it merges is the first time
+the services move from `:<tag>` to `@sha256:` (same content, one new revision
+each).

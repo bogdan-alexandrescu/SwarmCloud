@@ -57,7 +57,7 @@ ROUTE = "/v1/runtimes"
 #: router added and never mounted is a failure here instead of a quiet pass --
 #: discovering them from the app object would make this test agree with whatever
 #: main.py happens to do.
-ROUTER_MODULES = ("platform", "tasks", "workflows", "tenants", "admin", "accounts")
+ROUTER_MODULES = ("platform", "tasks", "attempts", "workflows", "tenants", "admin", "accounts")
 
 
 def _src(path: Path) -> str:

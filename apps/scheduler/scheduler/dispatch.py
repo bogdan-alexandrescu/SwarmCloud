@@ -301,6 +301,32 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
 
 
 def image_uri(settings: Any, profile: RunnerProfile) -> str:
+    """The image a worker for `profile` runs: a DIGEST whenever the deployment pins one.
+
+    `worker_image_refs` (WORKER_IMAGE_REFS, written by terraform from the
+    promotion manifest) is authoritative when it is non-empty. A profile whose
+    image is missing from it is refused, not given a tag: a tag is resolved
+    when the image is pulled, and the GKE template pulls IfNotPresent, so a
+    fallback here would run whatever a node last cached under that tag -- the
+    exact path the digest map exists to close, taken silently.
+
+    An empty map is the local emulator loop, which has no promotion manifest;
+    it keeps the tag it always had. A deployed scheduler is never in that
+    state: terraform always sets the map, and check-env-parity requires it.
+    """
+    refs = getattr(settings, "worker_image_refs", None) or {}
+    if refs:
+        ref = refs.get(profile.image)
+        if not ref:
+            raise DispatchError(
+                f"no digest-pinned image for {profile.image!r} (runner profile "
+                f"{profile.name!r}) in WORKER_IMAGE_REFS, which pins "
+                f"{sorted(refs)}; refusing to run it at a tag. The promotion "
+                "manifest the deployment was applied from did not include this "
+                "image -- rebuild and redeploy every image",
+                code="worker_image_not_pinned",
+            )
+        return ref
     return f"{settings.artifact_registry_host}/{profile.image}:{settings.worker_image_tag}"
 
 
@@ -469,6 +495,59 @@ class CloudRunJobDispatcher:
             ),
         )
 
+    def _refresh_image(
+        self,
+        client: Any,
+        name: str,
+        existing: Any,
+        profile: RunnerProfile,
+        tenant: Tenant,
+        resource_class: str | None,
+    ) -> None:
+        """Bring a job THIS dispatcher created up to the image it would create today.
+
+        A Cloud Run Job pins its image on the job resource, and this method's
+        caller used to stop at "it exists". So a job the dispatcher created for a
+        tenant terraform does not know -- every self-service `u-<email>` tenant --
+        kept the image of the day it was created, at a tag from before the
+        digest map existed, for every execution afterwards. Pinning NEW jobs by
+        digest does nothing for those; this does.
+
+        ONLY jobs labelled managed-by=swarm-scheduler. Terraform's jobs are
+        terraform's: every apply pins them by digest, and the dispatcher
+        rewriting one is precisely the repoint modules/cloud_run_jobs keeps the
+        image un-ignored in order to catch as drift.
+
+        Checked once per job per process (the caller caches the result in
+        `_ensured`), and a new scheduler revision starts with an empty cache --
+        which is exactly when the digest map changes.
+        """
+        from google.api_core import exceptions as gexc
+        from google.cloud import run_v2
+
+        labels = dict(getattr(existing, "labels", None) or {})
+        if labels.get("managed-by") != "swarm-scheduler":
+            return
+        wanted = image_uri(self._settings, profile)
+        try:
+            current = existing.template.template.containers[0].image
+        except (AttributeError, IndexError):
+            current = ""
+        if current == wanted:
+            return
+        job = self._build_job(profile, tenant, resource_class)
+        job.name = name
+        try:
+            operation = client.update_job(request=run_v2.UpdateJobRequest(job=job))
+            operation.result(timeout=120)
+        except gexc.GoogleAPICallError as exc:
+            raise DispatchError(
+                f"could not move Cloud Run job {name} from {current or 'an unreadable image'} "
+                f"to {wanted}: {exc}",
+                code="cloud_run_update_job_failed",
+            ) from exc
+        log.info("cloud run job %s moved from %s to %s", name, current or "?", wanted)
+
     def ensure_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
     ) -> str:
@@ -482,16 +561,18 @@ class CloudRunJobDispatcher:
 
         client = self._jobs()
         try:
-            client.get_job(request=run_v2.GetJobRequest(name=name))
-            self._ensured.add(job_id)
-            return name
+            existing = client.get_job(request=run_v2.GetJobRequest(name=name))
         except gexc.NotFound:
-            pass
+            existing = None
         except gexc.GoogleAPICallError as exc:
             raise DispatchError(
                 f"could not read Cloud Run job {job_id}: {exc}",
                 code="cloud_run_get_job_failed",
             ) from exc
+        if existing is not None:
+            self._refresh_image(client, name, existing, profile, tenant, resource_class)
+            self._ensured.add(job_id)
+            return name
 
         try:
             operation = client.create_job(

@@ -48,7 +48,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: shellcheck
         # -x follows `source` directives so lib/common.sh is analysed in context.
@@ -148,13 +148,13 @@ jobs:
     name: format / unit tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -215,7 +215,7 @@ jobs:
     name: swarm-ui typecheck / component tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
@@ -259,13 +259,13 @@ jobs:
     name: integration tests (emulator)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -354,7 +354,7 @@ jobs:
     name: kubernetes manifests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: azure/setup-kubectl@v4
         with:
@@ -362,7 +362,7 @@ jobs:
           # so a manifest can "validate" while losing its security context.
           version: ${{ env.KUBECTL_VERSION }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -469,7 +469,7 @@ jobs:
     if: github.event_name != 'pull_request'
     environment: build-pr
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2

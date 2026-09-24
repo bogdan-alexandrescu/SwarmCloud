@@ -411,9 +411,12 @@ resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
     display_name = "A dispatch backend is refusing work"
 
     condition_threshold {
+      # A logs-based metric, not the Prometheus counter: the counter has no
+      # descriptor until a failure is exported, so an alert on it cannot be
+      # created before the failure it exists for. metrics.tf, dispatch_failures.
       filter = join(" AND ", [
-        "resource.type = \"prometheus_target\"",
-        "metric.type = \"prometheus.googleapis.com/swarm_scheduler_dispatch_failures_total/counter\"",
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.dispatch_failures.name}\"",
       ])
 
       comparison      = "COMPARISON_GT"

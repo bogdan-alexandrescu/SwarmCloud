@@ -252,6 +252,35 @@ require_platform() {
   esac
 }
 
+# profile_input PROFILE RUN_ID -> the smallest input PROFILE's runner accepts
+# AND can complete, as compact JSON.
+#
+# Most runners take anything. `browser` refuses an input with neither `url` nor
+# `actions` ("browser runner needs input.url or at least one action",
+# apps/agent-worker/agent_worker/runners/browser.py), so the `{message, run_id}`
+# every suite used to send fails at the runner with dispatch working perfectly.
+# That made the smoke suite's GKE_AUTOPILOT row -- browser is its only profile
+# -- a check that could not pass, and `smoke-test.sh --profile browser` a proof
+# that could not prove anything.
+#
+# One screenshot of about:blank: Chromium starts, /dev/shm is large enough, the
+# workspace is writable and an artifact uploads, with no dependency on any site
+# outside the platform. Pinned by tests/unit/scripts/test_profile_input.py.
+profile_input() {
+  local profile="$1" run_id="$2"
+  case "${profile}" in
+    browser)
+      jq -nc --arg r "${run_id}" '{
+        message: "smoke", run_id: $r,
+        actions: [{type: "screenshot", name: "proof.png", full_page: false}],
+        extract_text: false}'
+      ;;
+    *)
+      jq -nc --arg r "${run_id}" '{message: "smoke", run_id: $r}'
+      ;;
+  esac
+}
+
 # submit_task PROFILE [INPUT_JSON] [EXTRA_JSON] -> task id on stdout
 submit_task() {
   local profile="$1" input="${2:-{\}}" extra="${3:-{\}}"
@@ -280,6 +309,28 @@ submit_task() {
 
 cancel_task() {
   api_post "/tasks/$1/cancel" '{}' >/dev/null
+}
+
+# validation_rejected STATUS -- true only when the API's VALIDATOR refused.
+#
+# The suites prove the API refuses things -- malformed bodies, oversized input,
+# a caller-supplied image -- and the proof is a status code. Only two mean the
+# request reached validation and was turned away: 422 (`ValidationFailed`, and
+# FastAPI's own request-validation answer) and 400 (the `ApiError` base), per
+# apps/swarm-api/swarm_api/errors.py and main.py.
+#
+# NOT "any 4xx". That was the 2026-09-19 fix to "any non-2xx", and it still
+# counted 401 (an expired session), 403 (no run.invoker, or IAP refusing the
+# credential) and 404 (the wrong address) as the validator having spoken -- so
+# the suite passed loudest for a caller the API never evaluated. One definition,
+# here, because the three call sites had already drifted apart once:
+# smoke-test.sh had `400|422` in one place and a 4xx window in another.
+# tests/integration/test_suite_rejection_status.py holds it to exactly this set.
+validation_rejected() {
+  case "$1" in
+    400|422) return 0 ;;
+    *)       return 1 ;;
+  esac
 }
 
 # api_fetch PATH OUTFILE -- a GET whose failure is a failure.
@@ -517,6 +568,100 @@ wait_until() {
 
 task_events() {
   fs_list "tasks/$1/events" 200 | jq -c "${FS_JQ} .[] | doc"
+}
+
+# Every lease a task has held, one id per line, read from the task's OWN EVENTS.
+#
+# NOT from the task's `current_lease_id`. The worker clears that field in the
+# same write that makes the task terminal or PARKED
+# (apps/agent-worker/agent_worker/control.py, finish() and park()), so on a
+# finished task it is always null. Every suite that read it misjudged the
+# lease: prove-gke-dispatch.sh failed on every successful task, smoke-test.sh
+# skipped its lease check without a word, and failure-test.sh printed PASS
+# "nothing to release". The scheduler records each lease it grants as a
+# top-level `lease_id` on the `lease_acquired` event (scheduler/loop.py), and
+# again on `dispatched` (scheduler/store.py mark_dispatched).
+#
+# Fails on a read that did not answer. An empty answer means the events name
+# no lease, which is not the same as "could not tell".
+task_lease_ids() {
+  local events
+  events="$(task_events "$1")" || return 1
+  [[ -n "${events}" ]] || return 0
+  printf '%s\n' "${events}" \
+    | jq -r 'select(.type == "lease_acquired" or .type == "dispatched") | .lease_id // empty' \
+    | awk 'NF && !seen[$0]++'
+}
+
+# lease_released_at LEASE_ID -> when it was released; "null" while it still
+# holds capacity; "missing" when there is no such lease. Fails on a read that
+# did not answer.
+lease_released_at() {
+  local doc
+  doc="$(fs_get "leases/$1")" || return 1
+  printf '%s' "${doc}" | jq -r "${FS_JQ} if .fields then (doc.released_at // \"null\") else \"missing\" end"
+}
+
+# t_check_leases_released TASK_ID WAIT_SECONDS ON_NONE
+#
+# One PASS for each lease TASK_ID has held that is released, and one FAIL for
+# each lease that is not. ON_NONE decides a task whose events name no lease at
+# all: "fail" for a task that ran (it was admitted, so it held one), "pass" for
+# one that may have failed before admission.
+#
+# IT WAITS, up to WAIT_SECONDS, while any lease still reads as held. The worker
+# writes the terminal state FIRST and releases the lease after that
+# (control.finish: transition, record_attempt_end, emit, release_lease). A read
+# taken the moment a task reads SUCCEEDED can land in that gap and report a
+# leak that is not one. A lease with no document is not waited for, because
+# nothing will create it.
+#
+# Returns 1, after recording a FAIL, when a read did not answer. A failed read
+# is not evidence either way, and it must never become a PASS.
+t_check_leases_released() {
+  local task_id="$1" wait_s="$2" on_none="$3"
+  local ids id at held results deadline
+  if ! ids="$(task_lease_ids "${task_id}")"; then
+    t_fail "could not read the events of ${task_id}, so its leases cannot be named (a failed read, not evidence either way)"
+    return 1
+  fi
+  if [[ -z "${ids}" ]]; then
+    if [[ "${on_none}" == "pass" ]]; then
+      t_pass "its events record no lease: nothing to release (it never reached admission)"
+    else
+      t_fail "its events record no lease, so whether capacity was returned cannot be checked"
+    fi
+    return 0
+  fi
+  deadline=$(( $(date -u +%s) + wait_s ))
+  while :; do
+    results=""
+    held=0
+    while IFS= read -r id; do
+      [[ -n "${id}" ]] || continue
+      if ! at="$(lease_released_at "${id}")"; then
+        t_fail "could not read lease ${id} (a failed read, not evidence either way)"
+        return 1
+      fi
+      if [[ "${at}" == "null" ]]; then
+        held=$(( held + 1 ))
+      fi
+      results="${results}${id} ${at}"$'\n'
+    done <<<"${ids}"
+    if [[ "${held}" -eq 0 || "$(date -u +%s)" -ge "${deadline}" ]]; then
+      break
+    fi
+    sleep "${SWARM_POLL_INTERVAL_SECONDS:-2}"
+  done
+  while IFS=' ' read -r id at; do
+    [[ -n "${id}" ]] || continue
+    case "${at}" in
+      null)    t_fail "lease ${id} is still holding capacity after ${wait_s}s of waiting (released_at=null)" ;;
+      missing) t_fail "lease ${id} is named on the task's events but does not exist, so its release cannot be shown" ;;
+      *)       t_pass "lease ${id} released at ${at}" ;;
+    esac
+  done <<<"${results}"
+  return 0
 }
 
 # Everything a test creates is tagged so cleanup can find it again and so a

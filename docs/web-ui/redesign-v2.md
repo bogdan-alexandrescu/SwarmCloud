@@ -913,6 +913,13 @@ Adding a field to `Attempt` means editing `apps/common/swarm_common/models.py`, 
 is **frozen**. Per CLAUDE.md this is raised here as a request. It belongs in
 `docs/contract-change-requests.md` if the owner wants it pursued.
 
+> **Filed 2026-09-24** as
+> [request #13](../contract-change-requests.md#13-modelspy-attempt-does-not-record-which-pool-account-it-ran-on),
+> open. One correction it makes to the paragraph above: the worker DOES record the
+> assignment, as an untyped `RUNNING` event (`cause: account_assigned`) on the task's
+> events subcollection. It is not queryable, and an attempt can be offered more than
+> one account, which is why the request stands.
+
 ---
 
 ## 7. What I am not proposing, and why

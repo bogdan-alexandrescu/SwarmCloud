@@ -44,6 +44,7 @@ from typing import Any, Callable, Sequence
 
 from . import render
 from .client import SwarmClient, SwarmError
+from .follow import terminal_command
 from .patches import explain_absence, patch_uri
 from .render import Finding, Snapshot, Style
 
@@ -560,7 +561,14 @@ def main(argv: list[str] | None = None, out=None) -> int:
         # Say so on stderr and leave stdout empty rather than printing a screen
         # of dashes that looks like a reading.
         print(f"sc: {exc}", file=sys.stderr)
-        print("sc: run `swarm doctor` to see which auth tier this machine is on", file=sys.stderr)
+        # SPELLED TO RUN. This line fires only when the connection failed, so
+        # the reader is already deciding whether the platform is broken; a
+        # `command not found` on top of that decides it for them, wrongly.
+        print(
+            f"sc: run `{terminal_command('swarm doctor')}` to see which auth tier "
+            "this machine is on",
+            file=sys.stderr,
+        )
         return EXIT_FAIL
     except KeyboardInterrupt:  # pragma: no cover
         return 130
