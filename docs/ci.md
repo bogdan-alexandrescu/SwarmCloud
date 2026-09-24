@@ -298,11 +298,34 @@ So `approval` is the only job in `release.yml` that names an environment;
 if it **succeeded**.
 
 That last clause is written out in each job's `if:` and it is load-bearing.
-`terraform apply` has to use `always()`, because a `skip_build` redeploy skips
-`promote` and must still apply; `always()` on its own would run the apply
-straight past a rejected approval. A reviewer who rejects the run fails the
-`approval` job; a timeout or a cancel cancels it; either way nothing after it
-starts.
+`terraform apply` needs a status function, because a `skip_build` redeploy
+skips `promote` and the apply must still run; a status function on its own
+would run the apply straight past a rejected approval. A reviewer who rejects
+the run fails the `approval` job; a timeout or a cancel cancels it; either way
+nothing after it starts.
+
+**A cancel is a "no" too, after the approval as well as before it.** The
+status function is `!cancelled()`, never `always()`, on every job and step
+that promotes, applies or deploys. GitHub still *starts* an `always()` job
+after the run is cancelled, and still runs an `always()` step in a job that
+is being cancelled. The first version of this change used `always()`, and
+two holes followed from it:
+
+* On a `skip_build` prod redeploy, `promote` is skipped the moment `approval`
+  succeeds, so the apply is the very next job. A reviewer who approved and
+  cancelled a second later still got a prod apply.
+* `deploy and smoke`'s GKE proof dispatches a browser task into the
+  environment. It was `always() && steps.verify.outcome == 'success'`, so a
+  cancel that landed on the smoke test still dispatched it.
+
+`!cancelled()` runs past a skipped job or a failed step exactly as `always()`
+does, and it stops on a cancel. Only the read-only `status` and `report`
+steps keep `always()`. The window a cancel has is still real, and it is
+GitHub's: a job that is already running when the cancel lands is stopped
+wherever it has got to. A cancel during `promote` leaves the put-back to
+`push-images.sh`, and nothing may run it (see "ALL OR NOTHING" in that
+script). A cancel during `terraform apply` leaves whatever Terraform had
+finished.
 
 **What that changes about the other jobs.** Measured 2026-09-24 with
 `gh api`:
@@ -352,15 +375,26 @@ schedules it: for a prod dispatch, with and without `skip_build`, it walks
 the job graph, evaluates every job-level `if:` against how the jobs it needs
 ended, makes the job that names `prod` be rejected, cancelled or never
 reached, and asserts that no job that promotes, applies or deploys can start
-in any of those runs — and that, approved, every one of them still can. It
-also asserts that exactly one job names `prod`, and that no dev release names
-it. `test_push_images_scan_only.py` holds `--scan-only` to moving nothing,
-which is what exempts the pre-approval scan. It cannot show that the `prod`
-environment still has its reviewer, that GitHub's scheduler agrees with the
-model (the model reads a job's `success()` over its direct needs only, the
-more permissive reading, so "cannot start" in the model means cannot start on
-GitHub), or that a real prod release waits. The first prod dispatch after
-this lands is that proof.
+in any of those runs — and that, approved, every one of them still can. Two
+more tests cancel the run. They try every way the jobs, or the earlier steps,
+could have ended, and assert that no such job starts and no such step runs.
+It also asserts that exactly one job names `prod`, and that no dev release
+names it. `test_push_images_scan_only.py` holds `--scan-only` to moving
+nothing, which is what exempts the pre-approval scan.
+
+The test finds prod-facing steps by reading each `run:` as text, and it errs
+toward counting a step as one. A step whose *prose* says "terraform apply"
+counts as an apply. That happened: the pre-approval summary did it, and the
+test failed the pre-approval job for applying. So reword the prose; do not
+loosen the match.
+
+It cannot show that the `prod` environment still has its reviewer, that
+GitHub's scheduler agrees with the model (the model reads a job's `success()`
+over its direct needs only, the more permissive reading, so "cannot start" in
+the model means cannot start on GitHub), that GitHub starts `always()` work
+after a cancel (that is its documented behaviour, not observed here), or that
+a real prod release waits. The first prod dispatch after this lands is that
+proof.
 
 ## The UI job's Node is read from the image, not pinned
 

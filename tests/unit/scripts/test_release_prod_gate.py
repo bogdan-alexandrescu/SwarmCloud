@@ -97,6 +97,12 @@ _PUSH_IMAGES = re.compile(r"(^|[\s/])push-images\.sh(\s|$)")
 # What "prod-facing" means here: a step that changes what prod is or runs, or
 # acts against the running deployment. Reading (verify, obtaining and
 # scanning images, `terraform plan`) is not in it.
+#
+# Matched against the step's `run:` AS TEXT, comments dropped, and erring
+# toward a match: an `echo` that merely says "terraform apply" counts as an
+# apply. That already happened once (the pre-approval summary), and the fix is
+# to reword the prose, never to narrow these -- a narrower match is one that a
+# real apply can slip past.
 PROD_FACING = {
     # Moves a channel tag. push-images.sh does, in every mode but --scan-only
     # (test_push_images_scan_only.py holds it to moving nothing); so does

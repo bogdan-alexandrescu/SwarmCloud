@@ -37,12 +37,21 @@
 #
 #      The gate is the `approval` job, the ONLY job that names an environment.
 #      `promote`, `infrastructure` and `deploy` need it and run only if it
-#      SUCCEEDED -- which has to be said in their `if:`, because `always()`
-#      would otherwise run them past a rejected approval. Before it, a prod
+#      SUCCEEDED -- which has to be said in their `if:`, because a job that
+#      must run past a SKIPPED job (a `skip_build` redeploy skips `promote`)
+#      would otherwise run past a rejected approval too. Before it, a prod
 #      release only reads: it obtains (for prod, builds) the images and scans
 #      them. ONE approval, not one per job: GitHub holds every job that names
 #      a protected environment for its own approval, so naming prod on the
 #      apply and the deploy as well would ask the reviewer three times.
+#
+#      A CANCEL IS A "NO" TOO, after the approval as well as before it. So
+#      nothing here that promotes, applies or deploys is conditioned on
+#      `always()`: GitHub still starts an `always()` job after the run is
+#      cancelled, and still runs an `always()` step in a job being cancelled.
+#      `!cancelled()` runs past a skipped job exactly as `always()` does and
+#      stops on a cancel. Only the read-only `status` and `report` steps keep
+#      `always()`.
 #
 #      The approval is a repository setting this file cannot check. GitHub
 #      CREATES an environment a workflow names if it does not exist, with no
@@ -237,6 +246,11 @@ jobs:
       - name: what the approval would release
         # Written BEFORE the approval, so a prod reviewer can read it on the
         # run's summary page while the run waits.
+        #
+        # The prose below never names the apply by its command: the gate test
+        # (test_release_prod_gate.py) reads every `run:` as text and errs
+        # toward calling a step prod-facing, so an echoed "terraform apply"
+        # made this pre-approval step count as an apply.
         run: |
           set -euo pipefail
           record="build/images-${ENVIRONMENT}.json"
@@ -245,7 +259,7 @@ jobs:
             echo
             echo "Nothing has moved yet. Once \`approval (${ENVIRONMENT})\` succeeds -- for prod, once its"
             echo "required reviewer approves -- \`promote\` scans these digests again and moves"
-            echo "\`:${ENVIRONMENT}\` to exactly them, then \`terraform apply\` deploys them."
+            echo "\`:${ENVIRONMENT}\` to exactly them, and the apply job after it deploys them."
             echo
             echo "| image | digest |"
             echo "|---|---|"
@@ -268,7 +282,9 @@ jobs:
     name: approval (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify, build]
-    if: always() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true'))
+    # !cancelled(), not always(): it runs past a `build` that skip_build
+    # skipped, and a cancelled run asks nobody to approve anything.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
     environment: ${{ github.event.inputs.environment || 'dev' }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
@@ -369,15 +385,23 @@ jobs:
     name: terraform apply (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify, approval, promote]
-    # always() because a `skip_build` redeploy skips `promote` and must still
-    # apply. That is exactly why `needs.approval.result == 'success'` is
-    # spelled out: always() alone would run this apply past a REJECTED
-    # approval. `promote` may be skipped only on a skip_build run -- skipped
-    # for any other reason, nothing new was promoted and nothing is applied.
+    # A status function because a `skip_build` redeploy skips `promote` and
+    # must still apply. That is exactly why `needs.approval.result ==
+    # 'success'` is spelled out: without it this apply would run past a
+    # REJECTED approval. `promote` may be skipped only on a skip_build run --
+    # skipped for any other reason, nothing new was promoted and nothing is
+    # applied.
+    #
+    # !cancelled(), NOT always(). This used to be always(), and GitHub starts
+    # an always() job after the run is cancelled: on a skip_build prod
+    # redeploy `promote` is skipped the moment `approval` succeeds, so a
+    # reviewer who approved and cancelled a second later still got a prod
+    # apply (tests/unit/scripts/test_release_prod_gate.py, the cancellation
+    # tests).
     #
     # NO `environment:` HERE, deliberately: `approval` holds this release's
     # one approval, and naming prod again would make GitHub ask again.
-    if: always() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true'))
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -487,7 +511,10 @@ jobs:
     # `environment:` of its own, for the reason given on `infrastructure`: it
     # used to name prod as well, which asked the reviewer a second time AFTER
     # the apply had already changed prod.
-    if: always() && needs.infrastructure.result == 'success'
+    #
+    # !cancelled() rather than always(), for the reason on `infrastructure`:
+    # it runs past a `build` that skip_build skipped, and a cancel stops it.
+    if: ${{ !cancelled() && needs.infrastructure.result == 'success' }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -564,7 +591,10 @@ jobs:
         # Runs even when the smoke test failed, provided the deployment itself
         # verified: a smoke failure on the Cloud Run path is exactly when the
         # GKE path's own diagnosis is worth having, and the two share nothing
-        # below the API.
+        # below the API. But NOT after a cancel: this dispatches a task into
+        # the environment, and always() here ran it after a cancel that landed
+        # on the smoke test. !cancelled() runs past the failed smoke test and
+        # stops on a cancel.
         #
         # SWITCHED BY vars.PROVE_GKE_DISPATCH, and off until the owner turns it on.
         # On 2026-09-24 browser admission was deliberately paused
@@ -574,7 +604,7 @@ jobs:
         # every release teaches everyone to ignore the release. Set the repository
         # variable PROVE_GKE_DISPATCH=true in the same change that restores the
         # browser limit. When it is off the step still runs and SAYS it skipped.
-        if: always() && steps.verify.outcome == 'success'
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
         run: |
           if [ "${{ vars.PROVE_GKE_DISPATCH }}" != "true" ]; then
             echo "::notice title=GKE proof skipped::vars.PROVE_GKE_DISPATCH is not 'true' -- browser admission is paused; nothing about GKE was proven by this release."
