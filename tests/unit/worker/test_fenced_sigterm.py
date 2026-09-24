@@ -26,6 +26,13 @@ Each of those writes read the task and then wrote it blind, so a check before
 the write would still lose to a fence that lands between the two. The tests
 below require the check to be inside the transaction that writes.
 
+  * a park that is announced before it is made. `_park_for_quota` and
+    `_park_no_account` emitted QUOTA_EXHAUSTED into the task's stream, THEN
+    parked. A fence that landed during the park's uploads was met by the park,
+    which refused, but the announcement was already in a stream that now
+    belongs to a newer generation. The tests at the bottom require the
+    announcement to commit with the park or not at all.
+
 WHAT IS PINNED. After the fence lands, the stale worker writes only its own
 attempt document. This is measured on `FakeFirestore.writes`, the list of every
 write made, rather than on chosen fields. A field-by-field check is how a
@@ -64,6 +71,7 @@ from fakes import (
     FakeTransaction,
 )
 
+from agent_worker.accountlease import NoAccount
 from agent_worker.errors import ExitCode
 from agent_worker.runners.mock import PROGRESS_DIR
 from swarm_common.admission import release_lease_in_transaction
@@ -89,6 +97,18 @@ LONG_RUN = {"prompt": "long", "steps": 40, "sleep_seconds": 20.0}
 
 #: A mock runner that exits on its own about two seconds in.
 SHORT_RUN = {"prompt": "short", "steps": 4, "sleep_seconds": 2.0}
+
+#: A mock runner that reports a thirty-minute rate limit and exits at once.
+#: Thirty minutes is far past `max_in_worker_retry_delay_seconds` (45), so the
+#: worker parks rather than retrying in place.
+QUOTA_RUN = {
+    "prompt": "burn quota",
+    "steps": 1,
+    "sleep_seconds": 0.05,
+    "quota_exhausted": True,
+    "provider": "anthropic",
+    "retry_after_seconds": 1800,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +655,186 @@ def test_a_fence_that_lands_between_the_parks_read_and_its_write_is_still_honour
     assert "world" in frozen, "the park never read the task, so no fence was interleaved"
     assert db.doc("tasks/task_1")["current_generation"] == 2
     assert_left_alone(db, frozen["world"])
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert db.doc("pools/global")["active"] == 3
+    assert exit_code == ExitCode.GENERATION_FENCED
+    assert_the_attempt_says_it_stood_down(db)
+
+
+# ---------------------------------------------------------------------------
+# a park's announcement commits with the park, or not at all
+# ---------------------------------------------------------------------------
+#
+# QUOTA_EXHAUSTED says "this task is parking on quota". Both parks that write
+# it used to emit it first and park second, with the park's checkpoint and
+# uploads before both. The uploads can take minutes. A fence that landed among
+# them was met by the park, which refused and stood down, and the announcement
+# of a park that never happened stayed in a stream that now belongs to a newer
+# generation.
+#
+# The first two tests put the fence where the old code's announcement came
+# next: after the last thing the park did before it (the provider publish on
+# the quota park, the metrics export on the account park). The third lands the
+# fence inside the park's own transaction. There, a check made before the
+# announcement and not repeated passes, and the announcement still has to go.
+
+
+def quota_exhausted_events(db: FakeFirestore) -> list[dict[str, Any]]:
+    return [e for e in db.events("task_1") if e["type"] == EventType.QUOTA_EXHAUSTED.value]
+
+
+class _SpentPool:
+    """An account pool whose accounts are all spent. It never assigns one."""
+
+    def __init__(self) -> None:
+        self.assigns = 0
+        self.releases = 0
+
+    def assign(self, provider: Any, *, exclude: Any = ()) -> NoAccount:
+        self.assigns += 1
+        return NoAccount(reason="no_account_available")
+
+    def release(self, *_args: Any, **_kwargs: Any) -> int:
+        self.releases += 1
+        return 0
+
+
+def park_began(worker: Any, label: str) -> threading.Event:
+    """Set once the park's own checkpoint (labelled `label`) has returned."""
+    began = threading.Event()
+    real_checkpoint = worker._checkpoint
+
+    def checkpoint(name: str) -> Any:
+        record = real_checkpoint(name)
+        if name == label:
+            began.set()
+        return record
+
+    worker._checkpoint = checkpoint  # type: ignore[method-assign]
+    return began
+
+
+def test_a_quota_park_the_fence_overtakes_does_not_announce_itself(db, worker_factory):
+    """`_park_for_quota`: checkpoint, upload, publish the provider, ANNOUNCE, park.
+
+    The fence lands after the provider publish. The old code then wrote
+    QUOTA_EXHAUSTED into the task's stream, and the park refused.
+    """
+    seed_attempt(db, task_input=QUOTA_RUN, pool_active=3)
+    worker, _, _ = worker_factory(**QUIET)
+    parking = park_began(worker, "quota-park")
+    frozen: dict[str, World] = {}
+    real_publish = worker.control.update_quota_state
+
+    def publish(**kwargs: Any) -> None:
+        real_publish(**kwargs)
+        # The runner loop publishes once before it decides to park. Only the
+        # park's own publish, after its checkpoint, is the moment under test.
+        if parking.is_set() and "world" not in frozen:
+            fence(db)
+            frozen["world"] = freeze(db)
+
+    worker.control.update_quota_state = publish  # type: ignore[method-assign]
+
+    exit_code = worker.run()
+
+    assert "world" in frozen, "the park never published the provider, so no fence was placed"
+    assert quota_exhausted_events(db) == [], (
+        "QUOTA_EXHAUSTED announced a park that the fence refused: "
+        f"{quota_exhausted_events(db)}"
+    )
+    assert_left_alone(db, frozen["world"])
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert db.doc("pools/global")["active"] == 3
+    assert exit_code == ExitCode.GENERATION_FENCED
+    assert_the_attempt_says_it_stood_down(db)
+
+
+def test_an_account_park_the_fence_overtakes_does_not_announce_itself(db, worker_factory):
+    """`_park_no_account`: checkpoint, upload, export, ANNOUNCE, park.
+
+    claude-code, because it is the profile an account can serve, so it is the
+    one that asks the pool. The pool has accounts and every one is spent. That
+    is a park, not a fallback to the tenant secret.
+    """
+    seed_attempt(
+        db,
+        runner_profile="claude-code",
+        task_input={"prompt": "waits for an account", "steps": 1, "sleep_seconds": 0.05},
+        pool_active=3,
+    )
+    worker, _, _ = worker_factory(runner_profile="claude-code", **QUIET)
+    pool = _SpentPool()
+    worker._account_broker = pool
+    parking = park_began(worker, "no-account")
+    frozen: dict[str, World] = {}
+    real_export = worker._export_metrics
+
+    def export() -> None:
+        real_export()
+        if parking.is_set() and "world" not in frozen:
+            fence(db)
+            frozen["world"] = freeze(db)
+
+    worker._export_metrics = export  # type: ignore[method-assign]
+
+    exit_code = worker.run()
+
+    assert pool.assigns == 1, "the worker never asked the pool, so this was not an account park"
+    assert pool.releases == 0, "nothing was assigned, so nothing may be released"
+    assert "world" in frozen, "the park never exported its metrics, so no fence was placed"
+    assert quota_exhausted_events(db) == [], (
+        "QUOTA_EXHAUSTED announced a park that the fence refused: "
+        f"{quota_exhausted_events(db)}"
+    )
+    assert_left_alone(db, frozen["world"])
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert exit_code == ExitCode.GENERATION_FENCED
+    assert_the_attempt_says_it_stood_down(db)
+
+
+def test_a_quota_parks_announcement_commits_with_the_park_or_not_at_all(
+    store, tmp_path, log_stream
+):
+    """The fence lands between the park's read of the task and its commit.
+
+    The worker owns its task when it decides to park and when it reads the
+    task to park it. So an announcement written ahead of the park is written,
+    even one guarded by a fresh ownership check. The park's commit is then
+    refused, the retry finds the fence, and the park never happens. Only an
+    announcement written in the park's own transaction goes with it.
+    """
+    db = ContendedFirestore()
+    seed_attempt(db, task_input=QUOTA_RUN, pool_active=3)
+    worker, _, _ = build_worker(
+        db, store, tmp_path, log_stream, txn_runner=ContendedTransactionRunner(db), **QUIET
+    )
+    frozen: dict[str, World] = {}
+
+    def fence_now() -> None:
+        fence(db)
+        frozen["world"] = freeze(db)
+
+    real_park = worker.control.park
+
+    def park(**kwargs: Any) -> None:
+        db.interleave("tasks/task_1", fence_now)
+        real_park(**kwargs)
+
+    worker.control.park = park  # type: ignore[method-assign]
+
+    exit_code = worker.run()
+
+    assert "world" in frozen, "the park never read the task, so no fence was interleaved"
+    assert db.doc("tasks/task_1")["current_generation"] == 2
+    assert quota_exhausted_events(db) == [], (
+        "QUOTA_EXHAUSTED announced a park whose commit the fence refused: "
+        f"{quota_exhausted_events(db)}"
+    )
+    assert_left_alone(db, frozen["world"])
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
     assert db.doc("leases/lease_1")["released_at"] is None
     assert db.doc("pools/global")["active"] == 3
     assert exit_code == ExitCode.GENERATION_FENCED
