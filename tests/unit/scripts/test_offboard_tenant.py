@@ -184,7 +184,10 @@ def project(fields, q):
 
 if path == db:
     log("database")
-    reply(200, {"name": db})
+    # As `gcloud firestore databases describe --database=swarm` read it on
+    # 2026-09-24: point-in-time recovery on, seven days of versions.
+    reply(200, {"name": db, "pointInTimeRecoveryEnablement": "POINT_IN_TIME_RECOVERY_ENABLED",
+                "versionRetentionPeriod": "604800s"})
 
 if not path.startswith(base):
     reply(404, {"error": {"code": 404, "message": "fake: unknown path " + path}})
@@ -800,8 +803,10 @@ def test_apply_deletes_every_record_and_object_of_the_tenant_and_nothing_else(tm
                   "workflows", "quota", "accounts", "account_auth", "credential_publications", "pools"):
         assert _row(proof, label).startswith("0"), f"proof row {label!r}: {_row(proof, label)!r}"
     assert _row(proof, f"tenants/{TENANT}") == "absent", proof
-    # What survives anyway is said, not hidden.
-    assert "SOFT-deleted" in run.stderr, run.stderr[-3000:]
+    # What survives anyway is said, not hidden: the soft-deleted object
+    # versions, and the Firestore versions point-in-time recovery keeps.
+    assert "3 object version(s) under" in run.stderr and "SOFT-deleted" in run.stderr, run.stderr[-3000:]
+    assert "point-in-time recovery is ON" in run.stderr and "604800s" in run.stderr, run.stderr[-3000:]
 
 
 def test_documents_terraform_owns_are_left_for_terraform(tmp_path):
