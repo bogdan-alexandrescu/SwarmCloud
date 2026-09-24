@@ -560,10 +560,21 @@ for target in ${BUILT[@]+"${BUILT[@]}"}; do
   #
   # `tags list` answers the only question being asked -- which digest does this
   # tag point at -- from Artifact Registry alone.
+  #
+  # AND THE TAG IS MATCHED EXACTLY, in jq, because gcloud's `tag:X` filter is a
+  # WORD match. application.yml's `build` job also builds every image on a push
+  # to main, tagged `pr-<run>-<sha>`, so `tag:<sha>` finds that build too.
+  # This read `value(version)` and `tr -d '[:space:]'`, which glued the two
+  # digests into one: release run 35972131246 wrote all eight manifest entries
+  # as `sha256:<release build>sha256:<pr build>`. The JSON carries full resource
+  # paths, so the tag and the digest are the last segment of each.
   if digest_err="$(gcloud artifacts docker tags list "${image}" \
-       --project "${PROJECT_ID}" --filter="tag:${TAG}" --format='value(version)' \
+       --project "${PROJECT_ID}" --filter="tag:${TAG}" --format=json \
        2>&1 >"${DIGEST_OUT}")"; then
-    digest="$(tr -d '[:space:]' <"${DIGEST_OUT}")"
+    digest="$(jq -r --arg t "${TAG}" '
+        [ .[] | select((.tag // "" | split("/") | last) == $t)
+              | (.version // "" | split("/") | last) ]
+        | unique | if length == 1 then .[0] else "" end' "${DIGEST_OUT}" 2>/dev/null || true)"
   else
     # Exits here if the session is dead, so nothing below can misreport it as a
     # missing image.
