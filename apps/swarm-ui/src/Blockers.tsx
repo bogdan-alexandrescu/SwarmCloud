@@ -92,6 +92,40 @@ const CEILING_TAG: Readonly<Record<Ceiling, { cls: string; word: string; title: 
   },
 }
 
+/**
+ * The tag a refusing pool is drawn with: `paused`, `limit 0` or `full`.
+ *
+ * EXPORTED BECAUSE THERE ARE TWO ROWS, and the second one is where this went
+ * wrong. The submit box (`Submit.tsx` `ProfileFacts`) draws a compact row of
+ * its own, and it kept deciding the tag on `reason === 'MANUAL_PAUSE'` after
+ * this file stopped -- so a pool capped at zero was still `full` there after
+ * it had become `limit 0` here. One definition, two callers.
+ */
+export function CeilingTag({ blocker }: { blocker: ProfileBlocker }) {
+  const tag = CEILING_TAG[blockerCeiling(blocker)]
+  return (
+    <span className={`tag ${tag.cls}`} title={tag.title}>
+      {tag.word}
+    </span>
+  )
+}
+
+/**
+ * The numbers that made a pool refuse, as the row prints them. "units", never
+ * "agents": admission increments by the profile's weight. A paused pool admits
+ * nothing at ANY ceiling -- and a drained one carries the unlimited sentinel
+ * as its limit -- so it prints what is held and no ceiling; a pool at zero
+ * says the zero in words. Only a full pool gets the fraction, because it is
+ * the only one the fraction is true of. Shared with the submit box for the
+ * reason `CeilingTag` is.
+ */
+export function ceilingFigure(blocker: ProfileBlocker): string {
+  const ceiling = blockerCeiling(blocker)
+  const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
+  if (ceiling === 'full') return `${blocker.active} of ${blocker.limit} units in use`
+  return ceiling === 'paused' ? held : `limit 0 · ${held}`
+}
+
 function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
   // A pause and a full pool both stop everything and have OPPOSITE remedies:
   // resume it, versus wait or raise it. A pause is told apart by the reason
@@ -101,32 +135,18 @@ function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
   // (see `blockerCeiling`): "0 of 0 units in use" under a `full` tag is how
   // the live console came to call a switched-off pool busy.
   const ceiling = blockerCeiling(blocker)
-  const tag = CEILING_TAG[ceiling]
-  const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
   return (
     <li className={`blocker-row${needsAPerson(ceiling) ? ' is-paused' : ' is-full'}`}>
       <span className="blocker-head">
         <span className="tags">
-          <span className={`tag ${tag.cls}`} title={tag.title}>
-            {tag.word}
-          </span>
+          <CeilingTag blocker={blocker} />
         </span>
         <code className="blocker-pool" title={blocker.pool}>
           {poolLabel(blocker.pool)}
         </code>
         <strong className="blocker-reason">{blocker.reason}</strong>
-        {/* The numbers that made it fail, on the entry that failed. "units",
-            never "agents": admission increments by the profile's weight. A
-            paused pool admits nothing at ANY ceiling -- and a drained one
-            carries the unlimited sentinel as its limit -- so it prints what
-            is held and no ceiling; a pool at zero says the zero in words. */}
-        <span className="blocker-at">
-          {ceiling === 'full'
-            ? `${blocker.active} of ${blocker.limit} units in use`
-            : ceiling === 'paused'
-              ? held
-              : `limit 0 · ${held}`}
-        </span>
+        {/* The numbers that made it fail, on the entry that failed. */}
+        <span className="blocker-at">{ceilingFigure(blocker)}</span>
       </span>
       <span className="blocker-copy">{ceilingCopy(blocker, 'This pool') ?? reasonCopy(blocker.reason)}</span>
     </li>
