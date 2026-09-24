@@ -83,6 +83,7 @@ from __future__ import annotations
 
 import functools
 import itertools
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,14 +132,18 @@ def relative_luminance(hex_colour: str) -> float:
     reader with no red/green discrimination. Two colours with the same
     luminance are the same mark.
     """
+    linear = _linear_rgb(hex_colour)
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _linear_rgb(hex_colour: str) -> list[float]:
     digits = hex_colour.lstrip("#")
     assert len(digits) == 6, f"expected #rrggbb, got {hex_colour!r}"
     channels = [int(digits[i:i + 2], 16) / 255 for i in (0, 2, 4)]
-    linear = [
+    return [
         c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
         for c in channels
     ]
-    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
 
 
 def contrast_ratio(a: str, b: str) -> float:
@@ -146,6 +151,29 @@ def contrast_ratio(a: str, b: str) -> float:
     la, lb = relative_luminance(a), relative_luminance(b)
     lighter, darker = max(la, lb), min(la, lb)
     return (lighter + 0.05) / (darker + 0.05)
+
+
+def delta_e76(a: str, b: str) -> float:
+    """CIE76 distance between two `#rrggbb` strings, in CIE L*a*b* (D65).
+
+    Luminance is the greyscale channel; this is the COLOUR channel, for
+    everyone reading in colour. It is the same conversion
+    `apps/swarm-ui/src/__tests__/encoding.hues.test.ts` uses to hold
+    `--ctl-absent` apart from CANCELLED, so the two files measure one distance.
+    About 2.3 is the smallest difference a practised eye sees side by side.
+    """
+    def lab(hex_colour: str) -> tuple[float, float, float]:
+        r, g, b = _linear_rgb(hex_colour)
+        x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+        y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+        def f(t: float) -> float:
+            return t ** (1 / 3) if t > 216 / 24389 else (24389 / 27 * t + 16) / 116
+
+        return 116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))
+
+    return math.dist(lab(a), lab(b))
 
 
 # ---------------------------------------------------------------------------
@@ -1617,4 +1645,166 @@ def test_a_documented_grey_is_a_grey(sheet_scan):
     }
     assert not hued, (
         f"a documented grey resolves to something other than {sorted(TEXT_GREYS)}: {hued}"
+    )
+
+
+def _theme_tokens(sheets, light: bool) -> dict[str, str]:
+    """Every custom property in effect for one theme, `var()` values included.
+
+    Dark is every top-level `:root`. Light is that, then every `:root` inside
+    `@media (prefers-color-scheme: light)` on top, in a second pass: that
+    selector is `:root:not([data-theme='dark'])`, which out-specifies a bare
+    `:root` wherever either one sits in the sheet, so order alone would get a
+    token wrong that a later bare `:root` redefines.
+    """
+    tokens: dict[str, str] = {}
+    for light_pass in ((False, True) if light else (False,)):
+        for _, rules_ in sheets:
+            for at_rules, selector, decls in rules_:
+                if not selector.startswith(":root"):
+                    continue
+                in_light = "prefers-color-scheme: light" in at_rules
+                if in_light != light_pass or (at_rules and not in_light):
+                    continue
+                for prop, value in decls.items():
+                    if prop.startswith("--"):
+                        tokens[prop] = value
+    return tokens
+
+
+def _resolve_colour(value: str, tokens: dict[str, str], depth: int = 0) -> str | None:
+    """`value` followed through `var()` to a `#rrggbb`, or None if it is not one."""
+    value = value.strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        return value.lower()
+    match = re.fullmatch(r"var\((--[\w-]+)\)", value)
+    if match is None or depth > 8 or match.group(1) not in tokens:
+        return None
+    return _resolve_colour(tokens[match.group(1)], tokens, depth + 1)
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_a_documented_grey_is_not_the_default_grey(sheet_scan, theme):
+    """A documented grey is a DIFFERENT grey, or it documents nothing.
+
+    `DOCUMENTED_GREYS` says of itself that its entries are painted "a
+    DIFFERENT grey", and the projected bar exists to look unlike a live one.
+    `test_a_documented_grey_is_a_grey` holds the first half (a grey, never a
+    hue) and nothing held the second: re-pointing the rule and the entry at
+    `var(--text-dim)` passed every test here while painting a projected bar
+    the exact pixel of a measured one.
+
+    This asserts DIFFERENT, not VISIBLY different, and says so. The light
+    theme's two text greys are 1.11:1 apart (dE76 3.1), under the 1.2 this
+    file calls "not a visible step", so a floor that held would fail on the
+    shipped palette, and a floor chosen to pass would ratify it. What does
+    separate a projected reading from a measured one is its tilde, which
+    `test_a_projected_reading_is_not_drawn_in_the_absence_colour` holds.
+    """
+    tokens = _theme_tokens(sheet_scan.sheets, light=theme == "light")
+    default = _resolve_colour(MONOCHROME_FILL, tokens)
+    assert default is not None, (
+        f"{MONOCHROME_FILL} does not resolve to a colour in the {theme} theme"
+    )
+    same = {
+        cls: value for cls, value in DOCUMENTED_GREYS.items()
+        if _resolve_colour(value, tokens) == default
+    }
+    assert not same, (
+        f"a documented grey paints the default fill's own colour ({default}) in the "
+        f"{theme} theme, so the bar it names is drawn exactly like a measured "
+        f"one: {same}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. A projected reading is OLD information, never NO information.
+# ---------------------------------------------------------------------------
+#
+# Overview.tsx, `accountHeadroom`: "Real figures that are no longer current:
+# stale, or describing a window that has since reset. Kept apart from
+# `unread`, because 'old information' and 'no information' are opposite
+# facts." The account rows draw the same split. A row nobody has read gets a
+# hatched track and an em dash in `--ctl-absent`; a projected row gets a grey
+# bar and a `~` before its figure, in the same column as that em dash.
+#
+# The ui-hygiene lane (PR #26) made `--ctl-absent` its own warm stone, so that
+# "nobody measured this" is a colour of its own rather than the caption grey.
+# The merge fix after it (45b507d) moved the projected BAR back to grey and
+# left the TILDE on `--ctl-absent`, calling it an absence mark. It is not one:
+# it marks a figure that was measured. So the one glyph that tells a projected
+# row from a live one was drawn in the paint reserved for the opposite fact,
+# dE 0 from the em dash beside it.
+
+#: The marks a projected utilisation reading is drawn with, and the property
+#: each one paints. A new mark for the same reading belongs here.
+PROJECTED_MARKS = (
+    (".ctl-util-fill.ov-projected", "background"),
+    (".ov-tilde", "color"),
+)
+
+#: The distance a projected mark keeps from `--ctl-absent`. The same floor
+#: `encoding.hues.test.ts` holds between `--ctl-absent` and CANCELLED, and for
+#: the same reason: two facts that must not be confused, read in colour at the
+#: same size. 10 is a difference nobody has to look for.
+MIN_OLD_VS_NO_INFORMATION_DE = 10
+
+OVERVIEW_TSX = UI_SRC / "Overview.tsx"
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_a_projected_reading_is_not_drawn_in_the_absence_colour(sheet_scan, theme):
+    """Every mark of a projected reading keeps its distance from `--ctl-absent`.
+
+    Read off the sheets the app ships, resolved through every `var()` in the
+    theme, and measured as a colour distance, so re-spelling the tilde through
+    another token that happens to resolve to the absence stone fails exactly
+    as naming `--ctl-absent` does.
+    """
+    code = _blank_comments(OVERVIEW_TSX.read_text(encoding="utf-8"))
+    for selector, _ in PROJECTED_MARKS:
+        cls = selector.rsplit(".", 1)[1]
+        # Quoted, as a className or a class string. The injected sheet names
+        # the class after a dot, so this cannot be satisfied by the CSS alone:
+        # a rename in the JSX that left the old rule behind fails here rather
+        # than leaving this test measuring a rule nothing renders.
+        assert re.search(r"""["'`]""" + re.escape(cls) + r"""["'`]""", code), (
+            f"Overview.tsx no longer renders the class `{cls}`, so `{selector}` "
+            "is not what a projected reading is drawn with any more; update "
+            "PROJECTED_MARKS to the marks it is drawn with"
+        )
+
+    tokens = _theme_tokens(sheet_scan.sheets, light=theme == "light")
+    absent = _resolve_colour("var(--ctl-absent)", tokens)
+    assert absent is not None, f"--ctl-absent does not resolve in the {theme} theme"
+
+    problems: list[str] = []
+    for selector, prop in PROJECTED_MARKS:
+        found = [
+            (sheet, at_rules, decls[prop])
+            for sheet, rules_ in sheet_scan.sheets
+            for at_rules, sel, decls in rules_
+            if sel == selector and prop in decls
+        ]
+        assert found, (
+            f"no rule in any sheet sets `{prop}` on `{selector}`: this test would "
+            "have measured nothing"
+        )
+        for sheet, at_rules, value in found:
+            hex_value = _resolve_colour(value, tokens)
+            where = f"`{selector} {{ {prop}: {value} }}` in {sheet}" + (
+                f" inside {at_rules}" if at_rules else "")
+            if hex_value is None:
+                problems.append(f"{where} does not resolve to a colour in {theme}")
+                continue
+            d = delta_e76(hex_value, absent)
+            if d < MIN_OLD_VS_NO_INFORMATION_DE:
+                problems.append(
+                    f"{where} resolves to {hex_value}, dE76 {d:.1f} from --ctl-absent "
+                    f"({absent}): a real figure is marked in the colour of a figure "
+                    "nobody measured"
+                )
+    assert not problems, (
+        f"a projected reading is drawn as an absence in the {theme} theme "
+        f"(floor dE76 {MIN_OLD_VS_NO_INFORMATION_DE}):\n  " + "\n  ".join(problems)
     )
