@@ -57,11 +57,19 @@ belongs to someone else.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
+import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from enum import Enum
+from typing import Any, Iterable, Protocol
+
+#: The character class `sanitize_name` below rewrites, IMPORTED from the frozen
+#: contract exactly as `scheduler.dispatch` imports it, so the two copies of the
+#: naming rule cannot disagree about which characters survive.
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 
 from .detect import sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, as_datetime
@@ -124,7 +132,13 @@ def is_gc_eligible(labels: dict[str, Any] | None) -> bool:
 
 
 def is_namespace_gc_eligible(labels: dict[str, Any] | None) -> bool:
-    """True for a per-tenant namespace this service may collect when empty.
+    """True for a per-tenant namespace that is the platform's to collect.
+
+    The reconciler itself no longer collects namespaces -- a Namespace is
+    cluster-scoped and it holds no ClusterRole (see
+    `GkeBackend.list_job_resources`) -- so this is the rule any out-of-band
+    deprovisioning must honour, kept beside the other ownership predicates and
+    pinned against the rendered manifest by test_kubernetes_manifests.py.
 
     Namespaces get their own rule because they are the one platform resource
     whose `managed-by` marker says `swarm-terraform` while no terraform state
@@ -196,12 +210,144 @@ def owning_tenant(
 
 
 class Backend(Protocol):
+    """A backend that can be listed in one call: Cloud Run Jobs."""
+
     name: str
 
     def list_executions(self) -> list[ExecutionView]: ...
     def terminate(self, execution: ExecutionView) -> bool: ...
     def list_job_resources(self) -> list[JobResourceView]: ...
     def delete_job_resource(self, resource: JobResourceView) -> bool: ...
+
+
+@dataclass(frozen=True)
+class NamespacedListing:
+    """What one pass could and could not see on a namespaced backend.
+
+    Readability is PER NAMESPACE because that is the granularity at which
+    Kubernetes grants it. The reconciler's only grant is the namespaced
+    `swarm-reaper` Role (kubernetes/rbac/dispatcher-rbac.yaml), applied tenant by
+    tenant, and Kubernetes AUTHORISES BEFORE IT RESOLVES -- so a registered
+    tenant whose namespace was never provisioned answers 403, exactly like a
+    namespace with no RoleBinding. With one boolean for the whole backend, that
+    one missing namespace would blind the reconciler to every tenant on GKE.
+    """
+
+    executions: list[ExecutionView] = field(default_factory=list)
+    #: Namespaces whose Job list came back. Only these support a conclusion
+    #: about absence.
+    readable: frozenset[str] = frozenset()
+    #: namespace -> why it could not be read. Never a secret: see `_describe`.
+    unreadable: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def blind(self) -> bool:
+        """True only when EVERY namespace this pass tried was unreadable."""
+        return bool(self.unreadable) and not self.readable
+
+
+class ProbeOutcome(str, Enum):
+    """What a by-name read of one execution established."""
+
+    #: The API answered 404 for a namespace this service may read. The Job
+    #: does not exist, so nothing of it can be running.
+    ABSENT = "absent"
+    #: The Job carries a terminal condition (Complete or Failed).
+    FINISHED = "finished"
+    #: The Job exists and carries no terminal condition: treat it as running.
+    ACTIVE = "active"
+    #: Anything else -- 403, 401, a transport error, a Job that is not ours.
+    #: Proves nothing either way.
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class Probe:
+    outcome: ProbeOutcome
+    execution: ExecutionView | None = None
+    detail: str = ""
+
+
+class NamespacedBackend(Protocol):
+    """A backend read namespace by namespace: GKE Autopilot.
+
+    There is no `list_executions()` here, on purpose. Listing the whole backend
+    in one call is a cluster-scope request, and this platform grants no
+    cluster-scope role to anybody (kubernetes/rbac/worker-rbac.yaml, closing
+    note). The caller says which namespaces to read, from control-plane data.
+    """
+
+    name: str
+
+    def namespace_for(self, tenant_id: str, recorded: str | None = None) -> str: ...
+    def namespace_of(self, execution_name: str | None) -> str | None: ...
+    def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing: ...
+    def probe(self, execution_name: str) -> Probe: ...
+    def terminate(self, execution: ExecutionView) -> bool: ...
+    def list_job_resources(self) -> list[JobResourceView]: ...
+    def delete_job_resource(self, resource: JobResourceView) -> bool: ...
+
+
+def _api_status(exc: BaseException) -> int | None:
+    """The HTTP status a kubernetes client exception carries, if any."""
+    status = getattr(exc, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _describe(exc: BaseException) -> str:
+    """One line naming a failed read, for logs and the persisted report.
+
+    The status and reason only, never `str(exc)` whole: a kubernetes
+    ApiException renders its response headers and body, and this string is
+    served to operators through the pass history.
+    """
+    status = _api_status(exc)
+    reason = str(getattr(exc, "reason", "") or "").strip()
+    if status is not None:
+        return f"{status} {reason}".strip()
+    return f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}".strip()
+
+
+def job_conditions(job: Any) -> dict[str, bool]:
+    """Condition type -> whether it is True, from a Job object or a dict."""
+    status = getattr(job, "status", None)
+    if status is None and isinstance(job, dict):
+        status = job.get("status")
+    raw = getattr(status, "conditions", None)
+    if raw is None and isinstance(status, dict):
+        raw = status.get("conditions")
+    found: dict[str, bool] = {}
+    for condition in raw or []:
+        kind = getattr(condition, "type", None)
+        state = getattr(condition, "status", None)
+        if kind is None and isinstance(condition, dict):
+            kind, state = condition.get("type"), condition.get("status")
+        if kind:
+            found[str(kind)] = str(state) == "True"
+    return found
+
+
+def job_phase(job: Any) -> ExecutionPhase:
+    """The phase of a batch/v1 Job, decided by its CONDITIONS.
+
+    Not by `status.failed` or `status.succeeded`. Those are pod counters, and a
+    counter can move before the Job is over: with `backoffLimit > 0` a failed
+    pod is followed by a replacement, and on Kubernetes >= 1.31 a Job reports
+    `SuccessCriteriaMet`/`FailureTarget` while its pods are still terminating.
+    `Complete` and `Failed` are the Job controller's own statement that nothing
+    of it is running any more, which is the only question that may release a
+    slot. A Job with neither is treated as running -- the direction that holds
+    the slot, or terminates before it releases.
+    """
+    conditions = job_conditions(job)
+    if conditions.get("Complete"):
+        return ExecutionPhase.SUCCEEDED
+    if conditions.get("Failed"):
+        return ExecutionPhase.FAILED
+    return ExecutionPhase.RUNNING
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -728,6 +874,51 @@ def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
     configuration.refresh_api_key_hook = refresh
 
 
+def sanitize_name(*parts: str, max_length: int = 63) -> str:
+    """A Kubernetes-safe name: lowercase alnum and dashes, at most `max_length`.
+
+    THE DISPATCHER'S RULE, NOT A RESEMBLANCE OF IT. `GkeJobDispatcher` names a
+    tenant's namespace `sanitize_name(template.format(tenant=...))`, and the
+    reconciler must read the namespace the dispatcher wrote into. It used to
+    name it with `detect.sanitised`, which reproduces only the character-class
+    half of this function: past 63 characters the dispatcher truncates and
+    appends a hash of the full name, and the reconciler would have gone on
+    reading the untruncated name -- a namespace nothing writes to, listed empty
+    on every pass, and an orphan Job in the real one never found. No tenant id
+    in use today is long enough (`identity._slug` caps them at 11 characters and
+    `scripts/register-tenant.sh` refuses longer), and a live attempt is read at
+    the namespace its own `execution_name` records, so this was a latent
+    divergence rather than an observed one. One rule stated twice has to agree
+    on every input, not only on the short ones.
+
+    This function is duplicated, deliberately, for the reason `gke_api_host` is:
+    the reconciler image copies `apps/common/` and `apps/reconciler/` and
+    nothing else (images/swarm-reconciler/Dockerfile), so it cannot import
+    `scheduler.dispatch`, and the only home both images share is the frozen
+    `swarm_common`. Moving it there is contract request 16 in
+    docs/contract-change-requests.md. Until then
+    `tests/unit/control_plane/test_reconciler_gke_namespaced.py` pins the two
+    copies together over a corpus that reaches every branch -- truncation,
+    hashing, a leading digit -- which the short tenant ids in use today do not.
+
+    Raises ValueError where the dispatcher raises its DispatchError: on input
+    that leaves nothing to name.
+    """
+    joined = "-".join(p for p in parts if p)
+    slug = _NAME_SAFE.sub("-", joined.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        raise ValueError(f"cannot build a resource name from {parts!r}")
+    if len(slug) > max_length:
+        # Truncating alone would collide for two long tenant names sharing a
+        # prefix, so the tail carries a hash of the full name.
+        digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:8]
+        slug = slug[: max_length - 9].rstrip("-") + "-" + digest
+    if not slug[0].isalpha():
+        slug = "s" + slug[: max_length - 1]
+    return slug
+
+
 @dataclass
 class GkeConnection:
     endpoint: str
@@ -741,6 +932,25 @@ class GkeBackend:
     with its own service-account token against the cluster endpoint. The CA
     certificate arrives base64-encoded in the environment (Terraform emits it),
     which avoids a Container API round trip on every pass.
+
+    EVERY CALL HERE IS NAMESPACED, and that is the fix for an outage, not a
+    style. This class used to list with `list_job_for_all_namespaces` and
+    `list_namespace`, both CLUSTER-scope. The reconciler's only Kubernetes grant
+    is the namespaced `swarm-reaper` Role, and no ClusterRole exists anywhere in
+    this repository by policy (kubernetes/rbac/worker-rbac.yaml, closing note),
+    so the Job list answered 403 -- first on 2026-09-19, then on every pass
+    from 2026-09-22T04:45Z, 766 passes by the 24th:
+    `jobs.batch is forbidden: User "108023754768362642341" cannot list resource
+    "jobs" ... at the cluster scope`. `repair.run_once` then treated GKE as
+    unreadable and correctly refused to conclude that anything on it was dead,
+    so the one component able to release a dead GKE task's lease never did. On
+    2026-09-24 that stranded five leases, held 10 units on every pool, and left
+    workflow wf_ebb3ab2d65664707a559 RUNNING with its cancel ignored for hours.
+
+    So the namespace set comes from the control plane -- the registered tenants,
+    named by the same rule the dispatcher uses, plus the namespace recorded in
+    every live GKE attempt's `execution_name` -- and each is read with
+    `list_namespaced_job`, which the Role grants.
     """
 
     name = "GKE_AUTOPILOT"
@@ -767,10 +977,13 @@ class GkeBackend:
         self._core = core_api
         self._log = logger
         self._ca_file: str | None = None
+        self._gc_notice_logged = False
 
     # -- client ---------------------------------------------------------
     def _configure(self) -> None:
-        if self._batch is not None and self._core is not None:
+        # Only the batch client is used: every read and write here is a
+        # namespaced Job call. `_core` is still built for callers that inspect it.
+        if self._batch is not None:
             return
         from kubernetes import client as k8s_client
         from kubernetes import config as k8s_config
@@ -837,88 +1050,198 @@ class GkeBackend:
                     env.setdefault(name, value)
         return env
 
+    # -- naming -------------------------------------------------------
+    def namespace_for(self, tenant_id: str, recorded: str | None = None) -> str:
+        """The namespace the dispatcher creates this tenant's Jobs in.
+
+        The SAME rule as `scheduler.dispatch.GkeJobDispatcher.namespace_for`,
+        in the same order and through the same sanitiser: the `namespace` the
+        tenant document records wins, and only a tenant with none falls back to
+        `sanitize_name(prefix + tenant id)` -- the dispatcher's function, copied
+        above because this image cannot import it, 63-character truncation and
+        hash included. The precedence matters as much as the sanitiser: the
+        dispatcher prefers the recorded value over its own template, so a
+        reconciler that derived the name from the prefix alone would read one
+        namespace while the dispatcher wrote into another, and every task there
+        would look abandoned.
+
+        The prefix is not restated here: it is the one this backend was built
+        with, `ReconcilerConfig.namespace_prefix`, which
+        `scripts/lib/check-contract-parity.sh` section 6 holds to the
+        dispatcher's template. `tests/unit/control_plane/
+        test_reconciler_gke_namespaced.py` pins this method to the dispatcher's
+        on the same tenants, long ids included, and pins the two sanitisers to
+        each other.
+        """
+        if recorded:
+            return str(recorded)
+        return sanitize_name(f"{self._prefix}{tenant_id}")
+
+    def namespace_of(self, execution_name: str | None) -> str | None:
+        """The namespace part of a GKE attempt's `execution_name`.
+
+        The dispatcher records `<namespace>/<job>` (`GkeJobDispatcher.dispatch`),
+        so this is where THIS attempt's Job was created -- a better answer than
+        any derivation from the tenant, because it is what actually happened.
+        """
+        if not execution_name or "/" not in str(execution_name):
+            return None
+        namespace = str(execution_name).split("/", 1)[0].strip()
+        return namespace or None
+
     # -- reads ----------------------------------------------------------
-    def list_executions(self) -> list[ExecutionView]:
+    def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing:
+        """Every platform Job in the named namespaces, and which could be read.
+
+        One `list_namespaced_job` per namespace, each in its own try: a 403 on
+        one tenant's namespace -- a missing namespace, a missing RoleBinding --
+        costs the findings in that namespace and nothing else.
+
+        A namespace outside `self._prefix` is never read. The prefix is what
+        lets a namespace name be turned back into a tenant id (the authority
+        `owning_tenant` checks a container's claim against), so a namespace
+        without it cannot be attributed safely. It is reported as unreadable,
+        which is the direction that holds a lease rather than releasing one.
+        """
+        wanted = sorted({str(ns).strip() for ns in namespaces if ns and str(ns).strip()})
+        if not wanted:
+            # Nothing on this backend is the control plane's; nothing to read,
+            # and no client to build for it.
+            return NamespacedListing()
         self._configure()
-        jobs = self._batch.list_job_for_all_namespaces(label_selector=self.label_selector)
         views: list[ExecutionView] = []
-        for job in getattr(jobs, "items", []) or []:
-            metadata = job.metadata
-            if not str(metadata.namespace or "").startswith(self._prefix):
+        readable: set[str] = set()
+        unreadable: dict[str, str] = {}
+        for namespace in wanted:
+            if not namespace.startswith(self._prefix):
+                unreadable[namespace] = (
+                    f"outside the tenant namespace prefix {self._prefix!r}; not read"
+                )
                 continue
-            labels = dict(metadata.labels or {})
-            if not is_swarm_managed(labels):
+            try:
+                jobs = self._batch.list_namespaced_job(
+                    namespace=namespace, label_selector=self.label_selector
+                )
+            except Exception as exc:
+                unreadable[namespace] = _describe(exc)
                 continue
-            env = self._pod_env(job)
+            readable.add(namespace)
+            for job in getattr(jobs, "items", []) or []:
+                view = self._job_view(job, namespace)
+                if view is not None:
+                    views.append(view)
+        return NamespacedListing(
+            executions=views, readable=frozenset(readable), unreadable=unreadable
+        )
+
+    def probe(self, execution_name: str) -> Probe:
+        """Read ONE Job by name, for when its namespace could not be listed.
+
+        A namespaced `get`, which the `swarm-reaper` Role grants alongside
+        `list`. It exists because "I could not list this namespace" and "I
+        cannot see this Job" are different claims: RBAC can allow one verb and
+        not the other, and a list can fail transiently where a single get does
+        not. What each answer proves:
+
+        * 404 -- the API server authorised the request and then found nothing.
+          Kubernetes AUTHORISES BEFORE IT RESOLVES, so a 404 is only ever
+          reached for a namespace this identity may read: absence confirmed.
+        * a Job with a Complete or Failed condition -- finished; see `job_phase`.
+        * a Job with neither -- running, as far as anyone can prove.
+        * 403 (a missing namespace or RoleBinding), 401, anything else --
+          nothing is proven, and the caller must go on holding the slot.
+        """
+        namespace = self.namespace_of(execution_name)
+        name = str(execution_name).split("/", 1)[1].strip() if namespace else ""
+        if not namespace or not name:
+            return Probe(ProbeOutcome.UNREADABLE, detail="not a <namespace>/<job> name")
+        if not namespace.startswith(self._prefix):
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{namespace} is outside the tenant namespace prefix {self._prefix!r}",
+            )
+        try:
+            self._configure()
+            job = self._batch.read_namespaced_job(name=name, namespace=namespace)
+        except Exception as exc:
+            if _api_status(exc) == 404:
+                return Probe(ProbeOutcome.ABSENT, detail=f"{namespace}/{name}: 404")
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{namespace}/{name}: {_describe(exc)}")
+        view = self._job_view(job, namespace)
+        if view is None:
+            # It exists but is not ours by label, or sits in another namespace
+            # than the one asked for. Not something this service may act on.
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{namespace}/{name}: not a platform-managed Job",
+            )
+        if view.phase is ExecutionPhase.RUNNING:
+            return Probe(ProbeOutcome.ACTIVE, execution=view, detail=f"{namespace}/{name}: active")
+        return Probe(
+            ProbeOutcome.FINISHED,
+            execution=view,
+            detail=f"{namespace}/{name}: {view.phase.value.lower()}",
+        )
+
+    def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:
+        """One Job as an ExecutionView, or None when it is not ours to judge."""
+        metadata = getattr(job, "metadata", None)
+        if metadata is None:
+            return None
+        # The namespace the API returned it from, not merely the one asked for:
+        # a list scoped to one namespace cannot return another, and a Job that
+        # claims otherwise is not something to attribute.
+        if str(getattr(metadata, "namespace", "") or namespace) != namespace:
+            return None
+        labels = dict(getattr(metadata, "labels", None) or {})
+        if not is_swarm_managed(labels):
+            return None
+        env = self._pod_env(job)
+        return ExecutionView(
+            name=str(metadata.name),
+            backend=self.name,
+            phase=job_phase(job),
+            created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
+            task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
+            attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
             # The namespace is per-tenant and a workload cannot move itself
             # between namespaces, so it -- not the container's own environment
             # -- decides whose task this execution is allowed to be about.
-            namespace = str(metadata.namespace)
-            status = job.status
-            active = int(getattr(status, "active", 0) or 0)
-            succeeded = int(getattr(status, "succeeded", 0) or 0)
-            failed = int(getattr(status, "failed", 0) or 0)
-            if active > 0:
-                phase = ExecutionPhase.RUNNING
-            elif succeeded > 0:
-                phase = ExecutionPhase.SUCCEEDED
-            elif failed > 0:
-                phase = ExecutionPhase.FAILED
-            else:
-                phase = ExecutionPhase.RUNNING  # created, no pods scheduled yet
-            views.append(
-                ExecutionView(
-                    name=str(metadata.name),
-                    backend=self.name,
-                    phase=phase,
-                    created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
-                    task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
-                    attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
-                    tenant_id=owning_tenant(
-                        env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
-                        namespace[len(self._prefix):],
-                        resource=f"{namespace}/{metadata.name}",
-                        logger=self._log,
-                    ),
-                    generation=_int_or_none(
-                        env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)
-                    ),
-                    namespace=namespace,
-                )
-            )
-        return views
+            tenant_id=owning_tenant(
+                env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                namespace[len(self._prefix):],
+                resource=f"{namespace}/{metadata.name}",
+                logger=self._log,
+            ),
+            generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
+            namespace=namespace,
+        )
 
     def list_job_resources(self) -> list[JobResourceView]:
-        """Namespaces here: the per-tenant namespace is the GKE analogue of a
-        Cloud Run Job resource, and an empty one is what gets collected."""
-        self._configure()
-        namespaces = self._core.list_namespace(label_selector=self.label_selector)
-        resources: list[JobResourceView] = []
-        for namespace in getattr(namespaces, "items", []) or []:
-            metadata = namespace.metadata
-            name = str(metadata.name)
-            if not name.startswith(self._prefix):
-                continue
-            labels = dict(metadata.labels or {})
-            jobs = self._batch.list_namespaced_job(namespace=name)
-            items = getattr(jobs, "items", []) or []
-            active = sum(1 for job in items if int(getattr(job.status, "active", 0) or 0) > 0)
-            last = max(
-                (_ensure_utc(job.metadata.creation_timestamp) for job in items),
-                default=None,
+        """Nothing: namespace collection needs a grant this platform refuses.
+
+        A Namespace is a cluster-scoped object. Listing, reading and deleting
+        one all need a ClusterRole, and none exists here by policy
+        (kubernetes/rbac/worker-rbac.yaml, closing note). This method used to
+        call `list_namespace` anyway, which answered 403 on every pass; before
+        that 403 surfaced it was hidden behind the Job listing's own, so empty
+        tenant namespaces have never actually been collected by this service.
+
+        What is lost is small and stated rather than papered over: an empty
+        namespace of a DEREGISTERED tenant stays until it is removed by hand. A
+        registered tenant's namespace was never collectable anyway -- it holds
+        the tenant's service account and Workload Identity binding, which nothing
+        in the dispatch path recreates. Per-tenant namespaces are created out of
+        band by `scripts/register-tenant.sh`, and the same out-of-band path is
+        what should remove them.
+        """
+        if self._log and not self._gc_notice_logged:
+            self._gc_notice_logged = True
+            self._log.info(
+                "gke namespace collection not performed: namespaces are cluster-scoped "
+                "and the reconciler holds no ClusterRole by policy"
             )
-            resources.append(
-                JobResourceView(
-                    name=name,
-                    tenant_id=_first(labels, TENANT_LABELS) or name[len(self._prefix):],
-                    runner_profile=None,
-                    created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
-                    last_execution_at=last,
-                    managed=is_namespace_gc_eligible(labels),
-                    active_executions=active,
-                )
-            )
-        return resources
+        return []
 
     # -- writes ---------------------------------------------------------
     def terminate(self, execution: ExecutionView) -> bool:
@@ -948,32 +1271,19 @@ class GkeBackend:
         return True
 
     def delete_job_resource(self, resource: JobResourceView) -> bool:
-        self._configure()
-        from kubernetes.client.rest import ApiException
+        """Refused, without a call: deleting a Namespace is cluster-scope.
 
-        if not resource.managed:
-            raise PermissionError(
-                f"refusing to delete namespace {resource.name}: it does not carry "
-                f"both a recognised {MANAGED_LABEL} marker and a tenant label"
-            )
-        namespace = self._core.read_namespace(name=resource.name)
-        labels = dict(namespace.metadata.labels or {})
-        if not is_namespace_gc_eligible(labels) or not resource.name.startswith(self._prefix):
-            raise PermissionError(
-                f"namespace {resource.name} is not a swarm tenant namespace; refusing delete"
-            )
-        jobs = self._batch.list_namespaced_job(namespace=resource.name)
-        if getattr(jobs, "items", []):
-            return False             # not empty after all; leave it alone
-        try:
-            self._core.delete_namespace(name=resource.name)
-        except ApiException as exc:
-            if exc.status == 404:
-                return True
-            raise
-        if self._log:
-            self._log.info("tenant namespace deleted", namespace=resource.name)
-        return True
+        `list_job_resources` offers nothing to delete, so the collector never
+        reaches this. It refuses rather than trying because the attempt would be
+        a cluster-scope request this identity is not granted -- a guaranteed 403
+        that would read, in the pass history, like a permissions fault to fix.
+        `repair._collect_garbage` records a PermissionError as a refusal.
+        """
+        raise PermissionError(
+            f"refusing to delete namespace {resource.name}: a Namespace is cluster-scoped "
+            f"and the reconciler holds no ClusterRole (kubernetes/rbac/worker-rbac.yaml); "
+            f"deprovision tenant namespaces out of band"
+        )
 
 
 def _ensure_utc(value: Any) -> datetime | None:

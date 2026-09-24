@@ -33,7 +33,15 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, TextIO
 
-from .redact import REDACTED, MIN_SECRET_LENGTH, scrub_file as _scrub_file, scrub_text as _scrub
+from .redact import (
+    MAX_SCRUB_BYTES,
+    MIN_SECRET_LENGTH,
+    REDACTED,
+    ScrubOutcome,
+    file_contains_secret as _file_contains_secret,
+    scrub_file_outcome as _scrub_file_outcome,
+    scrub_text as _scrub,
+)
 
 __all__ = ["REDACTED", "StructuredLogger", "build_logger"]
 
@@ -112,18 +120,42 @@ class StructuredLogger:
         """Public: the same redaction, applied recursively to a JSON-able value."""
         return self._scrub(value)
 
-    def scrub_file(self, path: Any, *, max_bytes: int = 64 * 1024 * 1024) -> bool:
+    def scrub_file(self, path: Any, *, max_bytes: int = MAX_SCRUB_BYTES) -> bool:
         """Rewrite `path` in place with every registered secret redacted.
 
         Returns True when the file was rewritten. Binary files and files larger
         than `max_bytes` are left alone and reported as not rewritten: a partial
         rewrite of a large or non-text artifact would corrupt it, and corrupting
         a tenant's artifact to protect a key that is probably not in it is the
-        wrong trade. Uploading is still the caller's decision.
+        wrong trade. Uploading is still the caller's decision -- and a caller
+        that is about to upload should use `scrub_file_outcome`, which says
+        WHY a file was not rewritten.
+        """
+        return self.scrub_file_outcome(path, max_bytes=max_bytes) is ScrubOutcome.REWRITTEN
+
+    def scrub_file_outcome(self, path: Any, *, max_bytes: int = MAX_SCRUB_BYTES) -> ScrubOutcome:
+        """`scrub_file`, reporting what happened rather than a bool.
+
+        `ScrubOutcome.skipped` is the fact the upload path needs: the file is
+        about to leave the pod without having been rewritten.
         """
         from pathlib import Path as _Path
 
-        return _scrub_file(_Path(path), self._secrets, max_bytes=max_bytes)
+        return _scrub_file_outcome(_Path(path), self._secrets, max_bytes=max_bytes)
+
+    def file_contains_secret(self, path: Any) -> bool | None:
+        """Whether a registered value is in `path`'s raw bytes. None if unreadable.
+
+        None is not False. A file this process could not read is a file nobody
+        examined, and the caller must be able to say so rather than report it
+        clean.
+        """
+        from pathlib import Path as _Path
+
+        try:
+            return _file_contains_secret(_Path(path), self._secrets)
+        except OSError:
+            return None
 
     def _scrub(self, value: Any, key: str | None = None) -> Any:
         if key is not None and key.lower() in _SENSITIVE_KEYS:

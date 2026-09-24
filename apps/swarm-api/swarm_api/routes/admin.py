@@ -431,10 +431,33 @@ def list_leases(
     deliberately not the upstream message, because a Cloud Run or Kubernetes
     error echoes the tenant service account, the job name and the secret
     names.
+
+    THE ROWS SAY WHETHER A LIVE LEASE WAS LEFT OUT. The Holders screen's
+    drift check compares `units_held` against `pool.active`, and a delta is
+    evidence of a leak only if no live lease is missing from the rows.
+    `active_beyond_window` is that count: unreleased leases, under the same
+    tenant filter, outside the window. Read it, not `truncated`.
+
+    With `active_only` (the default, and what the Holders screen asks for)
+    the store reads the live set itself and keeps the newest `limit`, so a
+    live lease older than any number of released ones is still a row. It
+    used to read the newest `limit` documents of any state and drop the
+    released ones afterwards. Lease documents are never deleted, so past
+    `limit` admissions a live lease could fall out of that window, and the
+    flag first added to say so, `truncated`, was then true on every call and
+    told nobody anything.
+
+    `truncated` remains: the window was full and more lay behind it (more
+    live leases than `limit` when `active_only`; older documents of any
+    state otherwise). `examined` is how many rows `state` and `overdue_only`
+    ran over. Those two filters narrow the window; they do not change
+    `active_beyond_window`, so with either set `units_held` is a filtered sum
+    and not the drift check's input.
     """
-    leases = ctx.store.list_leases(
+    scan = ctx.store.scan_leases(
         tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
     )
+    leases = scan.leases
     now = ctx.now()
     if state is not None:
         wanted = state.strip().upper()
@@ -479,6 +502,14 @@ def list_leases(
         # Weighted UNITS, not agents -- admission increments by the resource
         # class's units, so this and len(leases) are different numbers.
         "units_held": sum(lease.units for lease in leases),
+        # Live leases, under the tenant filter, that are not in these rows.
+        # 0 is what makes a units_held / pool.active delta evidence.
+        "active_beyond_window": scan.active_beyond_window,
+        # The window was full and more lay behind it -- see the docstring for
+        # why this is not the drift check's signal.
+        "truncated": scan.truncated,
+        # Rows state / overdue_only ran over.
+        "examined": scan.examined,
     }
 
 
@@ -496,11 +527,19 @@ def list_quota(
 
     `effective_limit: 0` is a FACT, not a missing value -- QuotaState returns
     0 deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN.
+
+    `generated_at` is the server's clock when it read these documents, as on
+    `/v1/capacity`, `/v1/stats` and `/v1/providers`. Without it a panel could
+    only show when the bytes ARRIVED, which says nothing about when the
+    platform computed them (docs/audits/2026-09-20/data-gaps-found-by-fanout.md
+    section 2). Each row's own `updated_at` is a different fact -- when the
+    broker last wrote that document -- and is not a substitute.
     """
     states = ctx.store.list_quota(tenant_id)
     return {
         "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
         "tenant_id": tenant_id,
+        "generated_at": ctx.now(),
     }
 
 
