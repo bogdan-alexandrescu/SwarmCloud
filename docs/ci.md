@@ -38,10 +38,10 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md` or the workflow itself | `shellcheck` · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` |
+| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `build and promote` · `terraform apply` · `deploy and smoke` — each behind a GitHub environment |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and promote` (reuses `application.yml`'s build of the commit) · `terraform apply` · `deploy and smoke` — the last two behind a GitHub environment |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -78,16 +78,17 @@ open a pull request. A pull request that could mint that token is a pull request
 that could grant itself anything.
 
 `github_allowed_refs` **must never include `refs/pull/*`.** That sentence is
-what `application.yml`'s `build` job spends twenty lines forbidding, and the
-reason it spends twenty lines on it is that the job is *currently saved by the
-pin by accident*: `build` authenticates as the deployer and then runs
-`scripts/build-images.sh` from the pull request's own checkout, and that script
-executes any checked-in `images/<t>/cloudbuild.yaml` or `apps/<t>/cloudbuild.yaml`
-as a Cloud Build config — so the pull request author chooses what runs. The
-attribute condition rejects the PR ref and the auth step fails. That is not a
-control; it is standing pressure to widen the pin to "fix CI". The job is gated
-on a GitHub environment with required reviewers instead, so a human reads the
-diff before any credential is minted.
+what `application.yml`'s `build` job spends twenty lines forbidding, because
+the job authenticates as the deployer and then runs `scripts/build-images.sh`
+from its own checkout, and that script executes any checked-in
+`images/<t>/cloudbuild.yaml` or `apps/<t>/cloudbuild.yaml` as a Cloud Build
+config — so whoever wrote the checkout chooses what runs. On a pull request the
+attribute condition rejects the ref and no token is minted, and that pin is the
+whole of the control: the `build-pr` environment the job names was measured on
+2026-09-24 with **no protection rules**, so it adds no human in the loop. The
+job is therefore skipped on a pull request rather than left permanently red,
+because a permanently red check is standing pressure to widen the pin to "fix
+CI".
 
 Because a skipped job is invisible in the checks list, `terraform.yml` ships a
 `plan (not run on a pull request)` job that is deliberately **not** a no-op: it
@@ -103,8 +104,8 @@ Stated plainly, because a green pull request is the thing most likely to be
 over-read:
 
 * **Nothing about the live project.** No plan, no apply, no deployed state.
-* **Nothing about an image actually building**, unless a reviewer approved the
-  `build-pr` environment on that run.
+* **Nothing about an image actually building.** Images build only on `main`,
+  once per commit, in `application.yml`'s `build images` job — see below.
 * **Nothing a browser would see.** The UI job is a typecheck plus Vitest in
   jsdom; jsdom has no layout engine, so overlap, overflow, wrapping and contrast
   are invisible to it. Every one of those defects this repository has found was
@@ -116,6 +117,110 @@ over-read:
 
 `terraform test` runs against a *mock* provider, so it proves the configuration
 says what was meant — never that GCP would accept it.
+
+## Images are built once per commit, and the release reuses them
+
+**Owner decision, 2026-09-24.** `application.yml`'s `build images` job builds
+every image once per commit on `main` and records what it built;
+`release.yml` waits for that job for the same commit and promotes exactly
+those digests. The release submits no Cloud Build of its own on a push.
+
+**Why.** Every push to `main` used to build all eight images twice —
+`application.yml`'s job (tagged `pr-<run>-<sha>`) and the release's own build
+(tagged `<sha>`) — competing for Cloud Build in `saga-agents-staging`, whose
+build quota is shared with another team, while the release waited behind the
+duplicate. Measured on commit `94ee043`: `application.yml` built it
+16:33:09–16:41:51 (run 36027980122), and release 36027980448 built the same
+commit again 16:39:24–16:48:17 before promoting anything. The two builds also
+produced two digests per image for one commit, which is how `:dev` once ended
+up holding five images from one build and three from the other (the exact-tag
+matching in `build-images.sh` and `push-images.sh` is the scar).
+
+**How it fits together.**
+
+1. `application.yml`'s `build images` runs `scripts/build-images.sh` with no
+   `--tag`: the tag is the commit's (`git_sha`), derived in one place. It
+   uploads `build/images-dev.json` — each image's digest, the tag, the full
+   commit and the environment — as the artifact `images-dev`, kept 30 days.
+2. `release.yml`'s `images and promote` job runs
+   `scripts/build-images.sh --reuse-ci only` on a push. That calls
+   `scripts/lib/ci-built-images.sh`, which finds `application.yml`'s run for
+   the same commit on `main`, **waits** while the build is queued or running
+   (up to 45 minutes), downloads the record, and refuses it unless it names
+   this commit and this environment.
+3. `scripts/push-images.sh --manifest build/images-dev.json --scan` confirms
+   every recorded digest is in Artifact Registry, trivy-scans every one, and
+   only then moves the channel tags — all or nothing, with the put-back and the
+   `MIXED` report exactly as before. The tag `:<sha>` is not read at all, so a
+   later build of the same commit cannot change what is promoted.
+4. The apply pins those digests and the deploy verifies them, unchanged.
+
+**What the release does when it cannot reuse.** Each ends in a red job whose
+last line (and a run annotation) names the reason and links the job:
+
+| `application.yml`'s build of the commit | push to `main` | dispatched by hand |
+|---|---|---|
+| succeeded, recorded for this environment | reused | reused |
+| still queued or running | waited for (45 min cap) | waited for |
+| **failed** | fails: "re-run that job if it was a flake" | fails the same way — rebuilding would repeat the failure behind a second Cloud Build |
+| cancelled (before it started, or part-way), skipped, never ran, or recorded for another environment | fails: "re-run CI's run, then this release" — a dispatch would release main's head, not this commit | **builds it here**, through the same script and tag |
+| GitHub API unreadable | fails — an unreadable API is never read as "never built" | fails |
+
+"Recorded for another environment" is every **prod** release:
+`application.yml` builds for dev, and swarm-ui bakes its environment into the
+bundle when it is compiled (`VITE_SWARM_ENV`), so a dev build is not a prod
+build. A prod release is always dispatched, so it builds — and the build is
+`build-images.sh`, the same path, not a second copy of it.
+
+**On `main`, every commit's `application.yml` run has a concurrency group of
+its own, and is never cancelled.** Its group used to be the ref, and a newer
+push cancelled the in-progress run. Now that a run on `main` is the only build
+of its commit, nothing may stop it before it builds — and turning
+`cancel-in-progress` off was not enough on its own. GitHub keeps **one pending
+run per group** and cancels the older pending run when a newer one queues,
+whatever `cancel-in-progress` says. Measured on 2026-09-24: release run
+36035365877, pending in `release-dev`, was cancelled at 17:41:28 — two seconds
+after 36036058352 queued — and lists zero jobs.
+
+With one group for all of `main` that cancelled builds releases were waiting
+for. `application.yml` runs on **every** push to `main`; `release.yml` has a
+path filter. So: commit A building, B queued behind it, and a push C that
+touched only docs, tests or the README. C's run cancelled B's; C started no
+release to take the place of B's; B's release, still pending, then found its
+commit never built and went red, and B's change did not reach dev until the
+next push that starts a release. (The group is now
+`application-refs/heads/main@<sha>` on `main` and the ref everywhere else, so
+a pull request's newer push still supersedes its older run.)
+
+**What that costs.** Runs on `main` are no longer serialised. A burst of merges
+builds every commit, in parallel; each run is bounded to four Cloud Builds at
+once (`BUILD_PARALLELISM` in `build-images.sh`), in a project whose build
+quota is shared. An estimate from measured push times, not measured builds:
+on 2026-09-24 `main` took 18 pushes between 15:56:14 and 17:41:26 — one every
+six minutes — and a run that finished took 9–10 minutes, the build its last
+eight. In the densest stretch (five pushes between 16:42 and 16:56) three runs
+would have been building at once: twelve concurrent Cloud Builds. Each commit
+is still built exactly once. Cancelling part-way never saved a build anyway:
+stopping `gcloud builds submit` does not stop the build it submitted.
+
+A release of a commit is still replaced while *it* is pending, by the next
+push that starts a release — which is harmless, because that release ships a
+later commit that contains this one.
+
+**Kept, deliberately:** scan before promote; all-or-nothing promotion; every
+deployed image pinned by digest; the `dev`/`prod` environments on the apply
+and the deploy.
+
+**What a pull request cannot prove about this.** `release.yml` never runs on a
+pull request, and `build images` is skipped there, so PR CI never exercises
+the real hand-off. It checks the scripts against a fake `gh` and `gcloud`
+(`tests/unit/scripts/test_ci_built_images.py`,
+`test_push_images_promotes_recorded_digests.py`), reads both workflows to hold
+the wiring in place (`test_release_reuses_ci_images.py`), and lints both with
+actionlint. It cannot show that the job receives `actions: read`, that
+GitHub's API returns what the fake returns, that `gh run download` fetches the
+artifact across runs, or that a release actually gets faster. The first push
+to `main` after this lands is the first real proof — read its release run.
 
 ## The finishing sequence
 

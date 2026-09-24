@@ -17,8 +17,25 @@
 # build/build-logs/<tag>/<image>.log and printed with the image's name on every
 # line, so interleaved builds stay attributable.
 #
+# ONE BUILD PER COMMIT, and this script is the one path to it. application.yml
+# runs it on every push to main and uploads the manifest it writes; release.yml
+# runs it with --reuse-ci, which fetches THAT manifest instead of building
+# (scripts/lib/ci-built-images.sh, and docs/ci.md for the decision):
+#
+#   --reuse-ci only       use what CI built for this commit, waiting for it if
+#                         it is still building; fail if CI never built it
+#   --reuse-ci or-build   the same, but build here when CI never built this
+#                         commit for this environment -- a release dispatched
+#                         by hand, or any prod release (swarm-ui bakes its
+#                         environment in, and CI builds for dev)
+#
+# Either way the result is build/images-<env>.json, so what follows cannot tell
+# a reused build from a fresh one -- and a fresh one is this same script, with
+# the same tag, not a second copy of it.
+#
 # Usage: scripts/build-images.sh [TARGET...] [--tag SHA] [--parallel N]
 #                                [--create-repo] [--async] [--digests-only]
+#        scripts/build-images.sh --reuse-ci only|or-build
 #        TARGET defaults to every image the repo knows how to build.
 
 set -euo pipefail
@@ -32,6 +49,7 @@ TAG=""
 CREATE_REPO=0
 ASYNC=0
 DIGESTS_ONLY=0
+REUSE_CI=""
 
 # HOW MANY BUILDS AT ONCE, and why the default is 4 rather than "all of them".
 #
@@ -69,11 +87,28 @@ while [[ $# -gt 0 ]]; do
     # this, recovering a lost manifest meant rebuilding everything to regenerate
     # a JSON file.
     --digests-only) DIGESTS_ONLY=1; shift ;;
-    -h|--help)     sed -n '2,22p' "$0"; exit 0 ;;
+    --reuse-ci)    REUSE_CI="$2"; shift 2 ;;
+    -h|--help)     sed -n '2,39p' "$0"; exit 0 ;;
     -*)            die "unknown flag: $1" ;;
     *)             TARGETS+=("$1"); shift ;;
   esac
 done
+
+# --reuse-ci takes CI's build WHOLE, at the tag CI gives it. A narrower or
+# retagged request is a different build, and quietly building that instead of
+# reusing is how the release came to build every image twice.
+if [[ -n "${REUSE_CI}" ]]; then
+  case "${REUSE_CI}" in
+    only|or-build) ;;
+    *) die "--reuse-ci takes 'only' or 'or-build', not '${REUSE_CI}'" ;;
+  esac
+  [[ "${#TARGETS[@]}" -eq 0 ]] \
+    || die "--reuse-ci takes the whole build CI made for this commit; it cannot be narrowed to ${TARGETS[*]}"
+  [[ -z "${TAG}" ]] \
+    || die "--reuse-ci tags a build from the commit, exactly as CI does; drop --tag ${TAG}"
+  [[ "${DIGESTS_ONLY}" -eq 0 && "${ASYNC}" -eq 0 ]] \
+    || die "--reuse-ci cannot be combined with --digests-only or --async"
+fi
 [[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=("${ALL_TARGETS[@]}")
 [[ "${PARALLELISM}" =~ ^[1-9][0-9]*$ ]] \
   || die "--parallel (or BUILD_PARALLELISM) must be a positive whole number, not '${PARALLELISM}'"
@@ -90,6 +125,37 @@ TAG="${TAG:-$(git_sha)}"
 CLOUDBUILD_REGION="${CLOUDBUILD_REGION:-${REGION}}"
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-3600s}"
 BUILD_MACHINE="${BUILD_MACHINE:-E2_HIGHCPU_8}"
+# The full commit the build is made from, recorded in the manifest. A release
+# that reuses CI's build checks this against the commit it is releasing, so the
+# record -- not the run it was found in -- vouches for its own provenance.
+# Empty outside a git checkout, which a reuse then refuses.
+COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+
+# ---------------------------------------------------------------------------
+# Reuse what CI built for this commit, rather than build it a second time.
+# ---------------------------------------------------------------------------
+if [[ -n "${REUSE_CI}" ]]; then
+  [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "--reuse-ci needs a git checkout: CI's build is found by the commit it was made from"
+  if_absent=fail
+  if [[ "${REUSE_CI}" == or-build ]]; then if_absent=build; fi
+  reuse_rc=0
+  "${SWARM_LIB_DIR}/ci-built-images.sh" --sha "${COMMIT}" --environment "${ENVIRONMENT}" \
+    --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
+  case "${reuse_rc}" in
+    0)
+      hr
+      ok "reused CI's build of ${COMMIT}: no Cloud Build submitted"
+      info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
+      exit 0 ;;
+    3)
+      # The same build CI would have made: same targets, same tag, same
+      # manifest. Nothing below knows it was reached this way.
+      info "building ${COMMIT} here, as CI would have: every image, tag ${TAG}" ;;
+    *)
+      exit "${reuse_rc}" ;;
+  esac
+fi
 
 # Advisory only. The check that can actually stop a bad image is the one made
 # before every submission below -- see the comment there for why a single check
@@ -607,8 +673,10 @@ for target in ${BUILT[@]+"${BUILT[@]}"}; do
   # tag point at -- from Artifact Registry alone.
   #
   # AND THE TAG IS MATCHED EXACTLY, in jq, because gcloud's `tag:X` filter is a
-  # WORD match. application.yml's `build` job also builds every image on a push
-  # to main, tagged `pr-<run>-<sha>`, so `tag:<sha>` finds that build too.
+  # WORD match. Until 2026-09-24 application.yml's `build` job built every
+  # image a second time on a push to main, tagged `pr-<run>-<sha>`, so
+  # `tag:<sha>` found that build too -- and those tags are still in the
+  # registry, so the exact match stays.
   # This read `value(version)` and `tr -d '[:space:]'`, which glued the two
   # digests into one: release run 35972131246 wrote all eight manifest entries
   # as `sha256:<release build>sha256:<pr build>`. The JSON carries full resource
@@ -641,8 +709,8 @@ if [[ "${#MISSING[@]}" -gt 0 ]]; then
 fi
 
 jq -n --arg tag "${TAG}" --arg at "$(iso_now)" --arg env "${ENVIRONMENT}" \
-      --argjson images "${entries}" \
-   '{tag:$tag, built_at:$at, environment:$env, images:$images}' >"${MANIFEST}"
+      --arg commit "${COMMIT}" --argjson images "${entries}" \
+   '{tag:$tag, commit:$commit, built_at:$at, environment:$env, images:$images}' >"${MANIFEST}"
 
 hr
 ok "built ${#BUILT[@]} image(s) at tag ${TAG}"
