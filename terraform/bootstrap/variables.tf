@@ -251,7 +251,10 @@ variable "deployer_roles" {
     error_message = "no role measured to read log entries project-wide (terraform/bootstrap/log-reading-roles.json) may be given to CI: it reads the swarm-verify job's logs through one view, granted with a condition in verify_logs.tf, and nothing else (owner decision 2026-09-24)."
   }
 
-  # MUTATION: the reviewed-roles allowlist removed; only the measured denylist remains
+  validation {
+    condition     = alltrue([for r in var.deployer_roles : contains(local.deployer_roles_reviewed, r)])
+    error_message = "every role in deployer_roles must be in local.deployer_roles_reviewed (terraform/bootstrap/verify_logs.tf). Adding one there is the review: `gcloud iam roles describe <role>` must show none of logging.logEntries.list, logging.privateLogEntries.list or logging.views.access, because CI may read no log but swarm-verify's (owner decision 2026-09-24)."
+  }
 }
 
 variable "deployer_secret_permissions" {
