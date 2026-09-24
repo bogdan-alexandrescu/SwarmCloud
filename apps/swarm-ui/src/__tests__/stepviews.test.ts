@@ -9,12 +9,17 @@ import { describe, expect, it } from 'vitest'
 
 import {
   depItems,
+  edgeKinds,
   edgeProvenance,
   inputFileOf,
   inputsByStep,
+  layoutOf,
+  stepDuration,
+  taskInputsOf,
 } from '../dag'
 import {
   attemptFacts,
+  attemptPhase,
   attemptsInOrder,
   axisOf,
   nextSort,
@@ -122,6 +127,21 @@ describe('stepTimes', () => {
     const t = stepTimes(joined(task('a', 'CANCELLED', { completed_at: iso(-300) })), T0)
     expect(t.spans.map((s) => s.kind)).toEqual(['waited'])
     expect(t.ranMs).toBeNull()
+    // And says so, in the word the node and the table use.
+    expect(t.mark?.text).toBe('never started')
+  })
+
+  it('says "never started" for a terminal step with neither a start nor an end, and draws nothing', () => {
+    const t = stepTimes(joined(task('a', 'CANCELLED')), T0)
+    expect(t.spans).toEqual([])
+    expect(t.mark?.text).toBe('never started')
+  })
+
+  it('puts no word on a finished step whose recorded start is merely skewed', () => {
+    // A start AFTER the end: clock skew. Something did record a start, so it is
+    // not "never started".
+    const t = stepTimes(joined(task('a', 'SUCCEEDED', { started_at: iso(-100), completed_at: iso(-300) })), T0)
+    expect(t.mark).toBeNull()
   })
 
   it('invents no end for a terminal step that recorded none', () => {
@@ -314,8 +334,11 @@ describe('attemptsInOrder and attemptFacts', () => {
 
   const fact = (facts: ReturnType<typeof attemptFacts>, key: string) => facts.find((f) => f.key === key)!.cell
 
+  const OVER = attemptPhase('SUCCEEDED', true)
+  const RUNNING = attemptPhase('RUNNING', true)
+
   it('prints an unreported cost as a word, and a counted zero as a digit', () => {
-    const facts = attemptFacts(attempt(1), false, T0)
+    const facts = attemptFacts(attempt(1), OVER, T0)
     expect(fact(facts, 'cost')).toMatchObject({ kind: 'absent', text: 'not reported' })
     expect(fact(facts, 'ckpts')).toMatchObject({ kind: 'measured', text: '0' })
     expect(fact(facts, 'cost').text).not.toMatch(/\$0/)
@@ -323,18 +346,54 @@ describe('attemptsInOrder and attemptFacts', () => {
 
   it('tells "still running" from "never written" for a missing exit code', () => {
     const open = attempt(1, { completed_at: null, exit_code: null })
-    expect(fact(attemptFacts(open, true, T0), 'exit').text).toBe('still running')
-    expect(fact(attemptFacts(open, false, T0), 'exit').text).toBe('not recorded')
-    expect(fact(attemptFacts(open, false, T0), 'took').text).toBe('not recorded')
-    expect(fact(attemptFacts(open, true, T0), 'took').text).toMatch(/so far$/)
+    expect(fact(attemptFacts(open, RUNNING, T0), 'exit').text).toBe('still running')
+    expect(fact(attemptFacts(open, OVER, T0), 'exit').text).toBe('not recorded')
+    expect(fact(attemptFacts(open, OVER, T0), 'took').text).toBe('end not written')
+    expect(fact(attemptFacts(open, RUNNING, T0), 'took').text).toMatch(/so far$/)
   })
 
   it('says an attempt that never started never started', () => {
-    expect(fact(attemptFacts(attempt(1, { started_at: null }), false, T0), 'took').text).toBe('never started')
+    expect(fact(attemptFacts(attempt(1, { started_at: null }), OVER, T0), 'took').text).toBe('never started')
+  })
+
+  it('times only the newest attempt of a STARTING or RUNNING task as "so far"', () => {
+    // Every state a task can be in, with its newest attempt started and not
+    // ended -- the shape `control.park()` leaves behind, since it never calls
+    // `record_attempt_end`.
+    const open = attempt(1, { completed_at: null, exit_code: null })
+    const states: TaskState[] = [
+      'SUBMITTED', 'QUEUED', 'READY', 'LEASED', 'DISPATCHED', 'STARTING', 'RUNNING',
+      'PARKED', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
+    ]
+    for (const s of states) {
+      const facts = attemptFacts(open, attemptPhase(s, true), T0)
+      const live = s === 'STARTING' || s === 'RUNNING'
+      expect(/so far/.test(fact(facts, 'took').text), s).toBe(live)
+      expect(fact(facts, 'exit').text === 'still running', s).toBe(live)
+      expect(fact(facts, 'took').kind, s).toBe(live ? 'measured' : 'absent')
+    }
+    // An EARLIER attempt of a running task is over.
+    expect(fact(attemptFacts(open, attemptPhase('RUNNING', false), T0), 'took').text).toBe('end not written')
+    // A parked task's newest attempt says what the task is doing now.
+    expect(fact(attemptFacts(open, attemptPhase('PARKED', true), T0), 'took').text).toBe('parked, end not written')
+  })
+
+  it('says the current attempt of a task being dispatched has not started YET', () => {
+    const fresh = attempt(1, { started_at: null, completed_at: null, exit_code: null })
+    for (const s of ['LEASED', 'DISPATCHED', 'STARTING'] as const) {
+      const facts = attemptFacts(fresh, attemptPhase(s, true), T0)
+      expect(fact(facts, 'took').text, s).toBe('not started yet')
+      expect(fact(facts, 'exit').text, s).toBe('no exit yet')
+    }
+    // Over, with no start: it never did.
+    expect(fact(attemptFacts(fresh, attemptPhase('PARKED', true), T0), 'took').text).toBe('never started')
+    expect(fact(attemptFacts(fresh, attemptPhase('LEASED', false), T0), 'took').text).toBe('never started')
+    // Unread: nobody knows which.
+    expect(fact(attemptFacts(fresh, attemptPhase(null, true), T0), 'took').text).toBe('task unread')
   })
 
   it('keeps the first line of an error on the surface and the whole of it underneath', () => {
-    const e = fact(attemptFacts(attempt(1, { error: 'killed\nline two\nline three' }), false, T0), 'error')
+    const e = fact(attemptFacts(attempt(1, { error: 'killed\nline two\nline three' }), OVER, T0), 'error')
     expect(e.text).toBe('killed (+2 lines)')
     expect(e.note).toBe('killed\nline two\nline three')
   })
@@ -423,6 +482,109 @@ describe('inputsByStep', () => {
   it('draws an edge with no declared file as an ordering edge', () => {
     expect(edgeProvenance({ from: 'scan', to: 'build' }, inputs)).toEqual({ kind: 'order' })
     expect(edgeProvenance({ from: 'plan', to: 'build' }, inputs).kind).toBe('staged')
+  })
+
+  it('does not say "lists no such file" when the result holds an entry it could not read', () => {
+    const bad = inputsByStep(steps, new Map([...tasks, [
+      'to',
+      task('to', 'SUCCEEDED', { completed_at: iso(-5), result_summary: { staged_inputs: [{ path: 'patch.diff' }] } }),
+    ]]))
+    expect(bad.get('old')!.declared.get('build')).toMatchObject({ kind: 'declared', why: 'unreadable' })
+    expect(bad.get('old')!.malformed).toBe(1)
+  })
+})
+
+describe('edgeKinds: a collapsed stage is painted as one edge', () => {
+  // 1 -> 13 -> 1. The thirteen-wide stage fits no zoom tier, so it is a band,
+  // and every edge into it and out of it shares one path.
+  const fan = (childKind: (n: number) => 'order' | 'staged' | 'running') => {
+    const steps: WorkflowStep[] = [step('plan', [], { task_id: 'tp' })]
+    const tasks = new Map<string, Task>()
+    for (let n = 1; n <= 13; n++) {
+      const k = childKind(n)
+      steps.push(step(`c${n}`, ['plan'], { task_id: `t${n}`, input_from: k === 'order' ? {} : { plan: 'plan.md' } }))
+      tasks.set(
+        `t${n}`,
+        k === 'running'
+          ? task(`t${n}`, 'RUNNING')
+          : task(`t${n}`, 'SUCCEEDED', {
+              completed_at: iso(-5),
+              result_summary:
+                k === 'staged' ? { staged_inputs: [{ task_id: 'tp', filename: 'plan.md', path: 'plan.md', bytes: 1 }] } : {},
+            }),
+      )
+    }
+    steps.push(step('join', Array.from({ length: 13 }, (_, i) => `c${i + 1}`)))
+    const layout = layoutOf(steps)
+    expect(layout.bands.some((b) => !b.expanded), 'the fixture stage is not collapsed').toBe(true)
+    return { kinds: edgeKinds(layout, inputsByStep(steps, tasks)), steps, tasks }
+  }
+  const into = (kinds: Map<string, string>) =>
+    new Set(Array.from({ length: 13 }, (_, i) => kinds.get(`plan->c${i + 1}`)))
+
+  it('gives every member the weakest kind, whichever child is last', () => {
+    expect(into(fan((n) => (n === 13 ? 'staged' : 'running')).kinds)).toEqual(new Set(['declared']))
+    expect(into(fan((n) => (n === 13 ? 'running' : 'staged')).kinds)).toEqual(new Set(['declared']))
+    expect(into(fan((n) => (n === 13 ? 'staged' : 'order')).kinds)).toEqual(new Set(['declared']))
+    expect(into(fan(() => 'staged').kinds)).toEqual(new Set(['staged']))
+    expect(into(fan(() => 'order').kinds)).toEqual(new Set(['order']))
+  })
+
+  it('keeps an edge between two drawn nodes as its own kind', () => {
+    const { steps, tasks } = fan(() => 'order')
+    // Opened: every child is a node, every edge its own path again.
+    const open = layoutOf(steps, new Set([1]))
+    const inputs = inputsByStep(
+      steps.map((s) => (s.step_id === 'c1' ? { ...s, input_from: { plan: 'plan.md' } } : s)),
+      tasks,
+    )
+    const kinds = edgeKinds(open, inputs)
+    expect(kinds.get('plan->c1')).toBe('declared')
+    expect(kinds.get('plan->c2')).toBe('order')
+  })
+})
+
+describe('the node says "never started" for a terminal step with no start', () => {
+  it('and never measures it from submission as time run', () => {
+    const d = stepDuration(joined(task('a', 'CANCELLED', { created_at: iso(-480), completed_at: iso(-300) })), T0)
+    expect(d.kind).toBe('none')
+    expect(d.text).toBe('never started')
+    // A finished step that did start still ran.
+    const ran = stepDuration(joined(task('b', 'SUCCEEDED', { started_at: iso(-400), completed_at: iso(-300) })), T0)
+    expect(ran.text).toBe('ran 1m 40s')
+  })
+})
+
+describe('taskInputsOf: one run’s inputs, joined from its own side', () => {
+  it('joins the declaration (keyed by upstream TASK) to what the result reports', () => {
+    const r = taskInputsOf(
+      task('tb', 'SUCCEEDED', {
+        completed_at: iso(-5),
+        metadata: { input_from: { tp: 'plan.md', ts: 'scan.log', bad: 7 } },
+        result_summary: {
+          staged_inputs: [
+            { task_id: 'tp', filename: 'plan.md', path: 'plan.md', bytes: 12 },
+            { filename: 'brief.txt', path: 'brief.txt', bytes: 3 },
+            { task_id: 'tx', filename: 'x', path: 'x', bytes: 1 },
+          ],
+        },
+      }),
+    )
+    expect(r.rows.map((x) => [x.file, x.from.kind, x.declared, x.arrival.kind])).toEqual([
+      ['plan.md', 'task', true, 'staged'],
+      ['scan.log', 'task', true, 'declared'],
+      ['brief.txt', 'submission', false, 'staged'],
+      ['x', 'task', false, 'staged'],
+    ])
+    expect(r.rows[1]!.arrival).toMatchObject({ why: 'not-reported' })
+    expect(r.malformed).toBe(0)
+  })
+
+  it('reads a live run as "reported at finish" and a malformed declaration as none', () => {
+    const live = taskInputsOf(task('tb', 'RUNNING', { metadata: { input_from: { tp: 'plan.md' } } }))
+    expect(live.rows[0]!.arrival).toMatchObject({ kind: 'declared', why: 'in-flight' })
+    expect(taskInputsOf(task('tb', 'RUNNING', { metadata: { input_from: 'plan.md' } })).rows).toEqual([])
+    expect(taskInputsOf(task('tb', 'RUNNING')).rows).toEqual([])
   })
 })
 

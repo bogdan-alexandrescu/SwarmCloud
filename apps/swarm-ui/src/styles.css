@@ -8373,7 +8373,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   flex-wrap: wrap;
 }
 .wf-view-seg,
-.wf-strays { flex: none; }
+.wf-strays,
+.wf-unreadable { flex: none; }
 .wf-dispatch + .wf-viewbar { margin-top: var(--ctl-s3); }
 .wf-viewbar + .wf-zoom,
 .wf-viewbar + .wf-canvas-wrap,
@@ -8570,6 +8571,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-table .node-reading { display: inline-block; vertical-align: middle; }
 .wf-table .wf-pick { min-height: 0; padding: 0 var(--ctl-s1); }
 
+/* PANEL 3 ON THE RUN: the `staged inputs` sub-section of the run's Input
+   panel, spaced like its `prompt` and `metadata` siblings (which carry the
+   same margin inline). The unreadable count sits under the table. */
+.run-inputs { margin-bottom: var(--ctl-s3); }
+.run-inputs > .ctl-mark { display: inline-block; margin-top: var(--ctl-s2); }
+
 /* THE INSPECTOR. One panel under the view, in the card of the workflow the
    picked step belongs to: a head, and the two scrubbers. */
 .wf-inspect {
@@ -8621,7 +8628,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   cursor: pointer;
 }
-.wf-scrub-btn:disabled { cursor: default; opacity: .45; }
+/* AT ITS END, NOT `:disabled`. The control is `aria-disabled` so it keeps
+   focus and the arrow keys keep working (see `ScrubButton`); this is how it
+   looks switched off. */
+.wf-scrub-btn[aria-disabled='true'] { cursor: default; opacity: .45; }
 .wf-scrub-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-scrub-pos {
   font: var(--t-micro)/var(--lh-micro) var(--mono);

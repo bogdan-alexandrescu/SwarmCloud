@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 
 import { loadAttempts } from './api'
 import { DECLARED_WORDS, type StepInputs, type StrayInput } from './dag'
@@ -10,6 +10,7 @@ import {
   VIEW_LABEL,
   WORKFLOW_VIEWS,
   attemptFacts,
+  attemptPhase,
   attemptsInOrder,
   nextSort,
   pctOf,
@@ -22,7 +23,7 @@ import {
   type TimelineAxis,
   type WorkflowView,
 } from './stepviews'
-import { bytesLabel, type AttemptRow, type Tone, type WorkflowStep } from './types'
+import { bytesLabel, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
 
 /**
  * A WORKFLOW'S TIMELINE AND TABLE, AND THE INSPECTOR THAT SCRUBS ACROSS THEM.
@@ -143,6 +144,32 @@ export function StrayMark({
       aria-label={`${n} staged input${n === 1 ? '' : 's'} with no edge in this graph: ${list}.`}
     >
       {n} input{n === 1 ? '' : 's'} off-graph
+    </span>
+  )
+}
+
+/**
+ * STAGED ENTRIES NOBODY COULD READ, COUNTED ON THE CARD.
+ *
+ * `stagedInputsOf` counts an entry it cannot read as a file rather than
+ * dropping it, and the table cell printed that count -- but only the table, so
+ * the graph and the timeline of the same workflow showed nothing, and the edge
+ * the entry may belong to said the result "lists no such file". The count is a
+ * property of the workflow's READ, so it sits beside the off-graph mark in the
+ * strip every view shares, in the unread treatment: something was reported and
+ * this reader could not read it.
+ */
+export function UnreadableMark({ counts }: { counts: readonly { readonly stepId: string; readonly n: number }[] }) {
+  if (counts.length === 0) return null
+  const n = counts.reduce((t, c) => t + c.n, 0)
+  const list = counts.map((c) => `${c.n} in ${c.stepId}`).join('; ')
+  return (
+    <span
+      className="ctl-mark is-unread wf-unreadable"
+      role="note"
+      aria-label={`${n} staged-input entr${n === 1 ? 'y' : 'ies'} could not be read as a file: ${list}. Each was reported and is counted here rather than dropped.`}
+    >
+      {n} input{n === 1 ? '' : 's'} unreadable
     </span>
   )
 }
@@ -545,6 +572,48 @@ function FactList({ facts }: { facts: readonly Fact[] }) {
   )
 }
 
+/**
+ * ONE SCRUB CONTROL, WHICH STAYS FOCUSABLE AT ITS END.
+ *
+ * It was `disabled` at its end, and a browser takes focus off a control the
+ * moment it becomes disabled (the HTML focus fixup rule). The arrow keys are
+ * heard on the scrubber's group, so a reader who walked to the first attempt
+ * with ArrowLeft was left on <body>, and ArrowRight did nothing until they
+ * tabbed back in -- "arrow keys move either one" held for every press but the
+ * one that mattered.
+ *
+ * `aria-disabled` instead: the end is still announced as unavailable, the
+ * press does nothing, and focus stays where the reader put it, so the other
+ * direction is one key away. The keyboard sweep counts `aria-disabled` as
+ * switched off, as it does `disabled`.
+ */
+function ScrubButton({
+  label,
+  glyph,
+  onPress,
+  buttonRef,
+}: {
+  label: string
+  glyph: string
+  /** Null at the end: nothing that way. */
+  onPress: (() => void) | null
+  buttonRef?: Ref<HTMLButtonElement>
+}) {
+  const off = onPress === null
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className="wf-scrub-btn"
+      aria-label={label}
+      aria-disabled={off ? true : undefined}
+      onClick={off ? undefined : onPress}
+    >
+      {glyph}
+    </button>
+  )
+}
+
 /** ArrowLeft / ArrowRight inside a scrubber move it, and nothing else is
  *  touched -- Tab in particular, which the keyboard sweep checks no control on
  *  a plain route swallows. */
@@ -581,7 +650,7 @@ function scrubKeys(prev: (() => void) | null, next: (() => void) | null) {
 export function StepInspector({
   workflowId,
   row,
-  live,
+  taskState,
   siblings,
   siblingIndex,
   onSibling,
@@ -593,8 +662,14 @@ export function StepInspector({
 }: {
   workflowId: string
   row: StepRowModel
-  /** The step's task has not finished: its latest attempt's missing end is "not yet". */
-  live: boolean
+  /**
+   * The step's task's state, or null when the task was not in the read. With
+   * which attempt is the newest, it decides what a missing start or end means
+   * (`attemptPhase`) -- only the newest attempt of a STARTING or RUNNING task
+   * is "so far". It was a boolean, "not terminal", which timed a PARKED task's
+   * attempt as running while the node and the timeline said waiting.
+   */
+  taskState: TaskState | null
   siblings: readonly SiblingRef[]
   siblingIndex: number
   onSibling: (delta: -1 | 1) => void
@@ -639,12 +714,15 @@ export function StepInspector({
   const hasNewer = siblingIndex > 0
   const hasOlder = siblingIndex < siblings.length - 1
 
-  // FOCUS FOLLOWS THE SELECTION, once, on arrival. The control that moved it
-  // may be disabled here (the last workflow has no older one), so the other is
-  // the fallback rather than leaving focus on a button that was just unmounted.
+  // FOCUS FOLLOWS THE SELECTION, once, on arrival, onto the SAME control the
+  // reader was pressing. It used to fall back to the other one when this was
+  // the end (the last workflow has no older one), because a disabled button
+  // cannot hold focus -- which put a reader holding ArrowRight on "newer" with
+  // nothing said. `ScrubButton` stays focusable at its end, so there is no
+  // fallback to need.
   useEffect(() => {
     if (focus === null) return
-    const want = focus === 'older' ? (hasOlder ? olderRef : newerRef) : hasNewer ? newerRef : olderRef
+    const want = focus === 'older' ? olderRef : newerRef
     want.current?.focus()
     onFocused()
     // On mount only: this is about how the inspector ARRIVED.
@@ -707,28 +785,12 @@ export function StepInspector({
           </span>
         ) : (
           <>
-            <button
-              type="button"
-              className="wf-scrub-btn"
-              aria-label="Previous attempt"
-              disabled={prevAttempt === null}
-              onClick={prevAttempt ?? undefined}
-            >
-              ◀
-            </button>
+            <ScrubButton label="Previous attempt" glyph="◀" onPress={prevAttempt} />
             <span className="wf-scrub-pos">
               attempt {at + 1} of {ready.length}
             </span>
-            <button
-              type="button"
-              className="wf-scrub-btn"
-              aria-label="Next attempt"
-              disabled={nextAttempt === null}
-              onClick={nextAttempt ?? undefined}
-            >
-              ▶
-            </button>
-            <FactList facts={attemptFacts(current, live && at === ready.length - 1, now)} />
+            <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
+            <FactList facts={attemptFacts(current, attemptPhase(taskState, at === ready.length - 1), now)} />
           </>
         )}
       </div>
@@ -742,29 +804,21 @@ export function StepInspector({
         onKeyDown={scrubKeys(hasNewer ? () => onSibling(-1) : null, hasOlder ? () => onSibling(1) : null)}
       >
         <span className="ctl-eyebrow wf-scrub-key">same step</span>
-        <button
-          ref={newerRef}
-          type="button"
-          className="wf-scrub-btn"
-          aria-label="Same step, newer workflow"
-          disabled={!hasNewer}
-          onClick={() => onSibling(-1)}
-        >
-          ◀
-        </button>
+        <ScrubButton
+          buttonRef={newerRef}
+          label="Same step, newer workflow"
+          glyph="◀"
+          onPress={hasNewer ? () => onSibling(-1) : null}
+        />
         <span className="wf-scrub-pos">
           workflow {siblingIndex + 1} of {siblings.length}
         </span>
-        <button
-          ref={olderRef}
-          type="button"
-          className="wf-scrub-btn"
-          aria-label="Same step, older workflow"
-          disabled={!hasOlder}
-          onClick={() => onSibling(1)}
-        >
-          ▶
-        </button>
+        <ScrubButton
+          buttonRef={olderRef}
+          label="Same step, older workflow"
+          glyph="▶"
+          onPress={hasOlder ? () => onSibling(1) : null}
+        />
         {/* THE STRIP: every occurrence, in scrub order, in its own state's
             silhouette, with this one ringed. Decoration for a sighted reader
             -- the position above is the fact, and each workflow's state is one

@@ -10,8 +10,8 @@ import {
 import {
   autoTier,
   depItems,
+  edgeKinds,
   edgePath,
-  edgeProvenance,
   inputsByStep,
   layoutOf,
   levelsOf,
@@ -22,11 +22,13 @@ import {
   workflowSpend,
   CANVAS_COLUMN,
   DECLARED_WORDS,
+  NEVER_STARTED_WORD,
   TIER_DROPS,
   ZOOM_TIERS,
   type DagBand,
   type DagLayout,
   type DagShape,
+  type EdgeKind,
   type EdgeProvenance,
   type StageCensus,
   type StepDuration,
@@ -86,6 +88,7 @@ import {
 import {
   StepInspector,
   StrayMark,
+  UnreadableMark,
   ViewControl,
   WorkflowTable,
   WorkflowTimeline,
@@ -885,6 +888,7 @@ export function WorkflowCard({
           <div className="wf-viewbar">
             <ViewControl view={view} onChoose={chooseView} />
             <StrayMark strays={straysOf(workflow, taskById)} />
+            <UnreadableMark counts={unreadableOf(workflow, taskById)} />
           </div>
           {view === 'graph' ? (
             <WorkflowGraph
@@ -1257,6 +1261,22 @@ function straysOf(
 }
 
 /**
+ * Every step whose staged-input report held entries that could not be read,
+ * with how many -- for the card's mark, so the count reaches every view and not
+ * only the table cell.
+ */
+function unreadableOf(
+  workflow: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+): { stepId: string; n: number }[] {
+  const out: { stepId: string; n: number }[] = []
+  for (const [stepId, inputs] of inputsByStep(workflow.steps, taskById)) {
+    if (inputs.malformed > 0) out.push({ stepId, n: inputs.malformed })
+  }
+  return out
+}
+
+/**
  * Attempts used, as a figure. `0 of 3` is a MEASURED zero -- a task that has
  * never been admitted -- and prints as a digit; a step with no task, or whose
  * task was not read, has no count at all.
@@ -1422,7 +1442,7 @@ function InspectorSlot({
     <StepInspector
       workflowId={workflow.workflow_id}
       row={row}
-      live={state.kind === 'state' && !TERMINAL_STATES.has(state.state)}
+      taskState={state.kind === 'state' ? state.state : null}
       siblings={refs}
       siblingIndex={index}
       onSibling={onSibling ?? (() => {})}
@@ -1825,6 +1845,10 @@ function WorkflowGraph({
   const auto = autoTier(workflow.steps)
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
   const layout = layoutOf(workflow.steps, expandedStages, tier)
+  // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
+  // or out of a COLLAPSED stage shares one path, so those are painted as one
+  // edge with the weakest claim any of them can support -- see `edgeKinds`.
+  const kinds = edgeKinds(layout, inputs)
 
   // WHERE THE VIEWPORT IS, for the minimap. Read off the wrapper rather than
   // computed, because it is the one number on this screen that genuinely is a
@@ -1993,7 +2017,7 @@ function WorkflowGraph({
                 // one dependency draws one mark is unchanged.
                 <g
                   key={`${e.from}->${e.to}`}
-                  className={linkClass(edgeProvenance(e, inputs))}
+                  className={linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}
                   data-edge={`${e.from}->${e.to}`}
                 >
                   <path className="wf-edge-halo" d={edgePath(e)} />
@@ -2483,8 +2507,8 @@ function StepNode({
 }
 
 /** The edge group's classes: its kind, and for a data edge whether it arrived. */
-function linkClass(p: EdgeProvenance): string {
-  return p.kind === 'order' ? 'wf-link is-order' : `wf-link is-data is-${p.kind}`
+function linkClass(kind: EdgeKind): string {
+  return kind === 'order' ? 'wf-link is-order' : `wf-link is-data is-${kind}`
 }
 
 /**
@@ -2606,6 +2630,15 @@ function ranCell(task: Task, now: number): Cell {
 
   if (!Number.isFinite(started)) {
     const created = ms(task.created_at)
+    // TERMINAL WITH NO START: it never got to STARTING, and the word is the one
+    // the node, the timeline and the inspector print (`NEVER_STARTED_WORD`).
+    // "not started" here read as "not yet" about a step that is over.
+    if (terminal) {
+      return absentCell({
+        text: NEVER_STARTED_WORD,
+        note: `This step is ${task.state.toLowerCase()} and never started: started_at is written on DISPATCHED → STARTING, and it never got that far.`,
+      })
+    }
     return absentCell({
       text: 'not started',
       note: Number.isFinite(created)

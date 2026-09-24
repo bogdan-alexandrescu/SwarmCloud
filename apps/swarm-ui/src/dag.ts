@@ -25,6 +25,7 @@ import {
   stagedInputsOf,
   stateTone,
   stepState,
+  type StagedInputs,
   type StepState,
   type Task,
   type TaskState,
@@ -884,8 +885,30 @@ export function depItems(step: WorkflowStep): DepItem[] {
  *   not-reported  the child is terminal and its result lists no such file --
  *                 an older worker, or an attempt that failed before staging.
  *                 This reader cannot tell which, and says so.
+ *   unreadable    the child's result lists staged entries this reader could
+ *                 not read, and this file is not among the ones it could. It
+ *                 may BE one of those entries. "Lists no such file" would be
+ *                 a claim the result does not make -- the table counted the
+ *                 entry while the edge denied it, which is the defect this
+ *                 arm exists to end.
  */
-export type DeclaredWhy = 'not-started' | 'unread' | 'in-flight' | 'not-reported'
+export type DeclaredWhy = 'not-started' | 'unread' | 'in-flight' | 'not-reported' | 'unreadable'
+
+/**
+ * Which kind of not-yet a declared, unreported file is, for a step in `state`
+ * whose result reported `staged`. ONE RULE for the graph, the table and the
+ * agent run, so the three cannot word one file three ways.
+ *
+ * `unreadable` outranks the state: a live step has no result to be unreadable,
+ * and a finished one whose result could not all be read cannot be said to list
+ * "no such file".
+ */
+export function declaredWhy(state: StepState, staged: StagedInputs | null): DeclaredWhy {
+  if (state.kind === 'unstarted') return 'not-started'
+  if (state.kind === 'unknown') return 'unread'
+  if (staged?.kind === 'reported' && staged.malformed > 0) return 'unreadable'
+  return LIVE_OR_WAITING(state.state) ? 'in-flight' : 'not-reported'
+}
 
 export type InputProvenance =
   | {
@@ -995,15 +1018,7 @@ export function inputsByStep(
         declared.set(parent, { kind: 'staged', file: hit.file, bytes: hit.bytes, fromCheckpoint: hit.fromCheckpoint })
         continue
       }
-      const why: DeclaredWhy =
-        state.kind === 'unstarted'
-          ? 'not-started'
-          : state.kind === 'unknown'
-            ? 'unread'
-            : LIVE_OR_WAITING(state.state)
-              ? 'in-flight'
-              : 'not-reported'
-      declared.set(parent, { kind: 'declared', file, why })
+      declared.set(parent, { kind: 'declared', file, why: declaredWhy(state, staged) })
     }
 
     out.set(step.step_id, {
@@ -1021,6 +1036,155 @@ export function edgeProvenance(
   inputs: ReadonlyMap<string, StepInputs>,
 ): EdgeProvenance {
   return inputs.get(edge.to)?.declared.get(edge.from) ?? { kind: 'order' }
+}
+
+/** How an edge is DRAWN: ordering only, a file reported staged, or a file
+ *  declared and not (yet) reported. The renderer's three styles. */
+export type EdgeKind = 'order' | 'staged' | 'declared'
+
+/**
+ * The kind every drawn edge is painted as, keyed `${from}->${to}`.
+ *
+ * NOT ALWAYS THE PAIR'S OWN KIND, and a collapsed stage is why. `layoutOf`
+ * attaches every step of a collapsed stage to its band's centre, so the
+ * thirteen edges `plan -> impl-1..13` are thirteen groups on ONE path. Each
+ * group paints a halo in the canvas colour and then its stroke, so each later
+ * group wipes out every earlier one, and the band edge showed the LAST child's
+ * kind as the whole stage's: solid when one of thirteen had reported its file,
+ * dashed when twelve had. Whichever child happened to be last in the level
+ * decided whether the band edge read as data at all.
+ *
+ * So the edges that share a path are painted as ONE edge, with the WEAKEST
+ * claim any member can support:
+ *
+ *   * `order` only when no member carries a file;
+ *   * `staged` only when EVERY member carries a file and every one of them was
+ *     reported arriving;
+ *   * `declared` otherwise -- some member carries a file and not every member
+ *     reported one. Dashed is this canvas's "not a measurement", and that is
+ *     what a stage-wide arrival claim is until every child has made it.
+ *
+ * Every member gets that kind, so the painting order no longer matters and the
+ * one-group-per-dependency guarantee is unchanged. Opening the stage draws the
+ * nodes, and each edge then has its own path and its own kind again. Edges
+ * between two drawn nodes are groups of one, so this is `edgeProvenance`.
+ */
+export function edgeKinds(
+  layout: Pick<DagLayout, 'edges' | 'bands'>,
+  inputs: ReadonlyMap<string, StepInputs>,
+): Map<string, EdgeKind> {
+  // Which collapsed band each step is drawn as, if any.
+  const bandOf = new Map<string, number>()
+  for (const b of layout.bands) {
+    if (b.expanded) continue
+    for (const s of b.steps) bandOf.set(s.step_id, b.level)
+  }
+  const end = (id: string) => {
+    const band = bandOf.get(id)
+    return band === undefined ? `step:${id}` : `band:${band}`
+  }
+  const groups = new Map<string, EdgeKind[]>()
+  const groupOf = new Map<string, string>()
+  for (const e of layout.edges) {
+    const g = `${end(e.from)}->${end(e.to)}`
+    groupOf.set(`${e.from}->${e.to}`, g)
+    const kinds = groups.get(g) ?? []
+    kinds.push(edgeProvenance(e, inputs).kind)
+    groups.set(g, kinds)
+  }
+  const drawn = new Map<string, EdgeKind>()
+  for (const [g, kinds] of groups) {
+    const kind: EdgeKind = kinds.every((k) => k === 'order')
+      ? 'order'
+      : kinds.every((k) => k === 'staged')
+        ? 'staged'
+        : 'declared'
+    drawn.set(g, kind)
+  }
+  const out = new Map<string, EdgeKind>()
+  for (const [pair, g] of groupOf) out.set(pair, drawn.get(g) ?? 'order')
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// One task's inputs, for the agent run (redesign-v2 Panel 3)
+// ---------------------------------------------------------------------------
+
+/** One file a task declared, was given, or both. */
+export interface TaskInputRow {
+  readonly file: string
+  /** Where it came from: an upstream task, or the submission itself. */
+  readonly from: { readonly kind: 'task'; readonly taskId: string } | { readonly kind: 'submission' }
+  /** True when the task's own declaration names this file. A staged file that
+   *  nothing declared is listed too, and says so. */
+  readonly declared: boolean
+  readonly arrival: InputProvenance
+}
+
+export interface TaskInputs {
+  readonly rows: readonly TaskInputRow[]
+  /** Staged entries that could not be read as a file. Counted, not dropped. */
+  readonly malformed: number
+}
+
+/**
+ * What one task declared it stages and what its result says arrived, joined.
+ *
+ * THE SAME JOIN `inputsByStep` MAKES FOR A WORKFLOW, from the task's side: the
+ * declaration here is `metadata.input_from`, which `service.py` writes keyed by
+ * the upstream TASK id, so nothing needs the workflow to resolve it. The
+ * not-yet words come from `declaredWhy`, so a file reads the same on the run as
+ * on the board it was opened from.
+ *
+ * READ DEFENSIVELY, because `metadata` is untyped on a frozen type: an entry
+ * that is not a non-empty string is not a declaration, and a declaration that is
+ * not a plain object declares nothing.
+ */
+export function taskInputsOf(task: Task): TaskInputs {
+  const meta: unknown = task.metadata
+  const raw: unknown =
+    meta !== null && typeof meta === 'object' && !Array.isArray(meta)
+      ? (meta as Record<string, unknown>)['input_from']
+      : undefined
+  const declared: [string, string][] =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+      ? Object.entries(raw as Record<string, unknown>).flatMap(([taskId, file]) =>
+          typeof file === 'string' && file !== '' && taskId !== '' ? [[taskId, file] as [string, string]] : [],
+        )
+      : []
+
+  const staged = stagedInputsOf(task)
+  const reported = staged.kind === 'reported' ? staged.inputs : []
+  const used = new Set<number>()
+  const rows: TaskInputRow[] = []
+  const why = declaredWhy({ kind: 'state', state: task.state, task }, staged)
+
+  for (const [taskId, file] of declared) {
+    const idx = reported.findIndex((s, i) => !used.has(i) && s.upstreamTaskId === taskId)
+    const hit = idx < 0 ? undefined : reported[idx]
+    if (hit !== undefined) {
+      used.add(idx)
+      rows.push({
+        // THE REPORTED NAME, as `inputsByStep` does: what landed is the fact.
+        file: hit.filename,
+        from: { kind: 'task', taskId },
+        declared: true,
+        arrival: { kind: 'staged', file: hit.filename, bytes: hit.bytes, fromCheckpoint: hit.fromCheckpoint },
+      })
+      continue
+    }
+    rows.push({ file, from: { kind: 'task', taskId }, declared: true, arrival: { kind: 'declared', file, why } })
+  }
+  reported.forEach((s, i) => {
+    if (used.has(i)) return
+    rows.push({
+      file: s.filename,
+      from: s.upstreamTaskId === null ? { kind: 'submission' } : { kind: 'task', taskId: s.upstreamTaskId },
+      declared: false,
+      arrival: { kind: 'staged', file: s.filename, bytes: s.bytes, fromCheckpoint: s.fromCheckpoint },
+    })
+  })
+  return { rows, malformed: staged.kind === 'reported' ? staged.malformed : 0 }
 }
 
 /** The words for a declared-but-not-reported file, and why. One place, so the
@@ -1041,6 +1205,10 @@ export const DECLARED_WORDS: Readonly<Record<DeclaredWhy, { text: string; note: 
   'not-reported': {
     text: 'not reported',
     note: 'The step has finished and its result lists no such file. Either the worker predates the report or the attempt ended before staging; this read cannot tell which.',
+  },
+  unreadable: {
+    text: 'report unreadable',
+    note: 'The step’s result lists staged-input entries this reader could not read, and this file is not among the ones it could. It may be one of them; this read cannot tell.',
   },
 }
 
@@ -1786,6 +1954,15 @@ export function edgePath(e: DagEdge): string {
  * A measured zero survives: a step that started and finished inside the same
  * second is `ran 0s`, a digit, because that was measured.
  */
+/**
+ * The word for a TERMINAL step with no `started_at`, in every view that draws
+ * one: the node's duration line, the table's `ran` cell, the timeline's track
+ * and the inspector's `took`. One constant, so the four cannot drift apart --
+ * which is how the node came to say `ran 3m 0s` beside a table saying
+ * `not started`.
+ */
+export const NEVER_STARTED_WORD = 'never started'
+
 export type StepDuration =
   | { readonly kind: 'none'; readonly text: string; readonly note: string }
   | { readonly kind: 'queued'; readonly seconds: number; readonly text: string; readonly note: string }
@@ -1816,6 +1993,24 @@ export function stepDuration(state: StepState, now: number): StepDuration {
   const created = at(task.created_at)
   const started = at(task.started_at)
   const completed = at(task.completed_at)
+
+  // TERMINAL AND NEVER STARTED. `started_at` is written on DISPATCHED ->
+  // STARTING, so a task that went terminal without one never got that far --
+  // cancelled while it queued is the ordinary case. This line said `ran 3m 0s`
+  // for it, measured from SUBMISSION, while the table said `not started` and
+  // the timeline drew no run at all: three views, two stories. None of that
+  // span was time run, so there is no duration here, and the word is the one
+  // the table, the timeline and the inspector print.
+  if (TERMINAL_STATES.has(task.state) && !Number.isFinite(started)) {
+    return {
+      kind: 'none',
+      text: NEVER_STARTED_WORD,
+      note:
+        Number.isFinite(completed) && Number.isFinite(created)
+          ? `This step is ${task.state.toLowerCase()} and never started: it ended ${formatDuration(completed - created)} after submission with no start recorded, so none of that time was time run.`
+          : `This step is ${task.state.toLowerCase()} and never started: no start time was recorded.`,
+    }
+  }
 
   if (Number.isFinite(completed)) {
     const from = Number.isFinite(started) ? started : created

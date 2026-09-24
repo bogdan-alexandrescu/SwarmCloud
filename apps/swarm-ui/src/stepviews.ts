@@ -28,7 +28,7 @@
 //     that is waiting AFTER an earlier attempt ran still carries a start time.
 //     It is drawn as waiting, never as running.
 
-import { levelsOf } from './dag'
+import { NEVER_STARTED_WORD, levelsOf } from './dag'
 import {
   absentCell,
   costCell,
@@ -36,7 +36,6 @@ import {
   durationText,
   measuredCell,
   tokenCell,
-  FINISH_NOT_RECORDED,
   TOKENS_NOT_REPORTED,
   type Absence,
   type Cell,
@@ -94,8 +93,14 @@ export interface Span {
   readonly open: boolean
 }
 
-/** Why a row has fewer spans than it would, in the words the row prints. */
-export type TimesMarkKind = 'unstarted' | 'unread' | 'unrecorded' | 'untimed'
+/**
+ * Why a row has fewer spans than it would, in the words the row prints.
+ *
+ * `never` is a TERMINAL step with no start time: cancelled while it queued, the
+ * ordinary case. Its wait is drawn and nothing after it is, and the word says
+ * why -- the node, the table and the inspector print the same one.
+ */
+export type TimesMarkKind = 'unstarted' | 'unread' | 'unrecorded' | 'untimed' | 'never'
 
 export interface TimesMark {
   readonly kind: TimesMarkKind
@@ -187,16 +192,32 @@ export function stepTimes(state: StepState, now: number): StepTimes {
     }
     // NO START RECORDED, BUT AN END. A step cancelled before it ever ran is the
     // ordinary case. None of this span is drawn as running, because nothing
-    // says any of it was.
+    // says any of it was -- and the word after it says so, in the same two
+    // words the node and the table print for this step. (A start that IS
+    // recorded but falls outside the span -- clock skew -- lands here too, and
+    // gets no word: something did record a start.)
+    const sentence = `ended ${task.state.toLowerCase()} ${durationText(completed - from)} after submission with no start recorded, so none of that time is shown as running.${retried}`
     return {
       spans: [{ kind: 'waited', from, to: completed, open: false }],
-      mark: null,
+      mark: finite(started) ? null : mark('never', NEVER_STARTED_WORD, sentence),
       attempts,
       waitedMs: completed - from,
       waitedOpen: false,
       ranMs: null,
-      sentence: `ended ${task.state.toLowerCase()} ${durationText(completed - from)} after submission with no start recorded, so none of that time is shown as running.${retried}`,
+      sentence,
     }
+  }
+
+  // TERMINAL WITHOUT AN END AND WITHOUT A START: it never got as far as
+  // STARTING, and nobody wrote when it stopped. No span at all -- the wait has
+  // no end to draw to -- and the same word as the arm above.
+  if (TERMINAL_STATES.has(task.state) && !finite(started)) {
+    const m = mark(
+      'never',
+      NEVER_STARTED_WORD,
+      `This step is ${task.state.toLowerCase()} with no start time and no completion time: it never started, and when it stopped was not recorded.`,
+    )
+    return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, ranMs: null, sentence: m.note + retried }
   }
 
   // TERMINAL WITHOUT AN END. It ran, it ended, and nobody wrote when. The wait
@@ -533,14 +554,146 @@ export interface Fact {
   readonly cell: Cell
 }
 
+/**
+ * WHERE AN ATTEMPT STANDS, which is not where its task stands.
+ *
+ * An attempt's missing start or end means different things depending on
+ * whether it is the task's CURRENT attempt and what the task is doing now --
+ * and the inspector got this wrong by asking only "is the task terminal?".
+ * What writes each field, measured against the worker and the scheduler:
+ *
+ *   * `scheduler.store.create_attempt` writes the attempt at DISPATCH with
+ *     `started_at: null`; the worker fills it in `record_attempt_start`, just
+ *     before STARTING -> RUNNING. So the newest attempt of a LEASED,
+ *     DISPATCHED or STARTING task has no start because it has not started
+ *     YET.
+ *   * `control.finish()` writes the end through `record_attempt_end`.
+ *     `control.park()` does NOT: it transitions to PARKED, releases the lease
+ *     and exits, so a parked attempt keeps `completed_at` and `exit_code` null
+ *     for good. A reclaimed attempt is the same. Its missing end is "never
+ *     written", not "still going".
+ *
+ * So only ONE attempt can be timed "so far": the newest attempt of a task that
+ * is STARTING or RUNNING. Every other missing end is an end nobody wrote.
+ *
+ *   running    the newest attempt of a STARTING / RUNNING task.
+ *   admitting  the newest attempt of a LEASED / DISPATCHED task: its container
+ *              has not started yet.
+ *   waiting    the newest attempt of a SUBMITTED / QUEUED / READY / PARKED
+ *              task: it is over, and the task is waiting for the next one.
+ *   unread     the newest attempt of a task whose state was not in the read:
+ *              whether it is still going is unknown.
+ *   over       any earlier attempt, and every attempt of a terminal task.
+ */
+export type AttemptPhase =
+  | { readonly kind: 'running' }
+  | { readonly kind: 'admitting' }
+  | { readonly kind: 'waiting'; readonly state: TaskState }
+  | { readonly kind: 'unread' }
+  | { readonly kind: 'over' }
+
+const ADMITTING_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['LEASED', 'DISPATCHED'])
+
+/**
+ * The phase of one attempt: `taskState` is the step's task's state, or null
+ * when the task was not in the read; `latest` is whether this is the newest
+ * attempt the attempt read returned.
+ */
+export function attemptPhase(taskState: TaskState | null, latest: boolean): AttemptPhase {
+  if (!latest) return { kind: 'over' }
+  if (taskState === null) return { kind: 'unread' }
+  if (TERMINAL_STATES.has(taskState)) return { kind: 'over' }
+  if (RUNNING_STATES.has(taskState)) return { kind: 'running' }
+  if (ADMITTING_STATES.has(taskState)) return { kind: 'admitting' }
+  return { kind: 'waiting', state: taskState }
+}
+
 const NEVER_STARTED: Absence = {
-  text: 'never started',
-  note: 'This attempt carries no start time: it was fenced, parked or failed before its container started.',
+  text: NEVER_STARTED_WORD,
+  note: 'This attempt carries no start time and is over: it was fenced, parked, refused at dispatch or failed before its container started.',
+}
+
+const NOT_STARTED_YET: Absence = {
+  text: 'not started yet',
+  note: 'This is the task’s current attempt and its container has not recorded a start yet. The scheduler writes the attempt at dispatch; the start is written when the container begins.',
 }
 
 const STILL_RUNNING: Absence = {
   text: 'still running',
-  note: 'This is the latest attempt of a step that has not finished, so it has no exit code yet.',
+  note: 'This is the current attempt of a running task, so it has no exit code yet.',
+}
+
+const NO_EXIT_YET: Absence = {
+  text: 'no exit yet',
+  note: 'This attempt has not started, so it has no exit code yet.',
+}
+
+const END_NOT_WRITTEN: Absence = {
+  text: 'end not written',
+  note: 'This attempt stopped without writing an end. A park or a reclaim records none, so how long it ran is unknown -- and it is not running.',
+}
+
+const STATE_UNREAD_HERE: Absence = {
+  text: 'task unread',
+  note: 'This is the newest attempt, and its task was not in the task read, so whether it is still to start or still going is unknown.',
+}
+
+/** The newest attempt of a waiting task: over, with no end written, and the
+ *  word names what the task is doing now, so it cannot be read as running. */
+function waitingEnd(state: TaskState): Absence {
+  return {
+    text: `${state.toLowerCase()}, end not written`,
+    note: `The task is ${state.toLowerCase()}, so this attempt is over. It stopped without writing an end -- a park or a reclaim records none -- so how long it ran is unknown.`,
+  }
+}
+
+/** How long one attempt took, or which kind of nothing that is. */
+function tookCell(started: number, completed: number, phase: AttemptPhase, now: number): Cell {
+  if (finite(started) && finite(completed)) {
+    return measuredCell(durationText(completed - started), 'Start to finish of this attempt alone.')
+  }
+  if (!finite(started)) {
+    // An END WITH NO START is over whatever the task is doing: something wrote
+    // that it stopped, and nothing wrote that it began.
+    if (finite(completed)) return absentCell(NEVER_STARTED)
+    switch (phase.kind) {
+      case 'running':
+      case 'admitting':
+        return absentCell(NOT_STARTED_YET)
+      case 'unread':
+        return absentCell(STATE_UNREAD_HERE)
+      case 'waiting':
+      case 'over':
+        return absentCell(NEVER_STARTED)
+    }
+  }
+  switch (phase.kind) {
+    case 'running':
+      return measuredCell(`${durationText(now - started)} so far`, 'Still running. This figure moves.')
+    case 'unread':
+      return absentCell(STATE_UNREAD_HERE)
+    case 'waiting':
+      return absentCell(waitingEnd(phase.state))
+    case 'admitting':
+    case 'over':
+      return absentCell(END_NOT_WRITTEN)
+  }
+}
+
+/** Which absence a missing exit code is. Only a running attempt's is "not yet". */
+function exitAbsence(started: number, completed: number, phase: AttemptPhase): Absence {
+  if (finite(completed)) return EXIT_NOT_RECORDED
+  switch (phase.kind) {
+    case 'running':
+      return finite(started) ? STILL_RUNNING : NO_EXIT_YET
+    case 'admitting':
+      return finite(started) ? EXIT_NOT_RECORDED : NO_EXIT_YET
+    case 'unread':
+      return STATE_UNREAD_HERE
+    case 'waiting':
+    case 'over':
+      return EXIT_NOT_RECORDED
+  }
 }
 
 /** Unreachable while `checkpoints` is a list, which the type says it always is.
@@ -560,24 +713,21 @@ const EXIT_NOT_RECORDED: Absence = {
  * One attempt's figures, through `measure.ts` like every other figure on this
  * board.
  *
- * `live` is true only for the LATEST attempt of a step that has not finished:
- * that is the one attempt whose missing end means "not yet" rather than "never
- * written".
+ * `phase` is where this attempt stands (`attemptPhase`). It used to be a
+ * boolean, "the task has not finished", and that was the defect: it was true
+ * for a PARKED task, whose newest attempt then read `2h 0m so far` and `still
+ * running` beside a node saying `between attempts` and a timeline drawing it
+ * waiting. Only the newest attempt of a STARTING or RUNNING task is timed "so
+ * far" now, so the inspector says what the node and the timeline say.
  */
-export function attemptFacts(a: AttemptRow, live: boolean, now: number): Fact[] {
+export function attemptFacts(a: AttemptRow, phase: AttemptPhase, now: number): Fact[] {
   const started = at(a.started_at)
   const completed = at(a.completed_at)
-  const took: Cell = !finite(started)
-    ? absentCell(NEVER_STARTED)
-    : finite(completed)
-      ? measuredCell(durationText(completed - started), 'Start to finish of this attempt alone.')
-      : live
-        ? measuredCell(`${durationText(now - started)} so far`, 'Still running. This figure moves.')
-        : absentCell(FINISH_NOT_RECORDED)
+  const took = tookCell(started, completed, phase, now)
   const exit: Cell =
     typeof a.exit_code === 'number' && Number.isFinite(a.exit_code)
       ? measuredCell(`${a.exit_code}`, 'The agent process’s exit code.')
-      : absentCell(live && !finite(completed) ? STILL_RUNNING : EXIT_NOT_RECORDED)
+      : absentCell(exitAbsence(started, completed, phase))
   const tin = tokenCell(a.input_tokens, '')
   const tout = tokenCell(a.output_tokens, '')
   const tokens: Cell =
