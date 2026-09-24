@@ -1,29 +1,38 @@
 #!/usr/bin/env bash
 #
-# `terraform plan` for this environment, with the image tag that is ALREADY
-# RUNNING.
+# `terraform plan` for this environment, with the images that are ALREADY
+# DEPLOYED -- by digest.
 #
-# WHY THIS SCRIPT EXISTS, and it is not a convenience. `image_tag` defaults to
-# "bootstrap" and its description says "used on the FIRST apply only; the deploy
-# pipeline owns the image afterwards (see ignore_changes in the cloud_run
-# modules)". That description is wrong about the mechanism, and the gap cost a
-# live outage on 2026-09-20.
+# WHY THIS SCRIPT EXISTS, and it is not a convenience. terraform/infra applies
+# its image input on EVERY apply: neither cloud_run module ignores the image,
+# deliberately (terraform IS the deploy mechanism for services, and for JOBS an
+# ignored image is one nothing ever compares, which would let a compromised
+# dispatcher repoint a tenant's job unnoticed). So a plan that does not say
+# which images to keep plans to move all of them.
 #
-# Neither module ignores the image, deliberately and for good reasons stated in
-# both: terraform IS the deploy mechanism for services, and for JOBS an ignored
-# image is an image nothing ever compares, which would let a compromised
-# dispatcher repoint a tenant's job at an attacker image unnoticed.
+# That cost a live outage on 2026-09-20, when the input was a tag defaulting to
+# "bootstrap": `make tf-plan && make tf-apply` repointed all ten worker jobs at
+# an image that did not exist and broke every dispatch until the next deploy.
 #
-# So `image_tag` is applied on EVERY apply, and a plan that does not set it
-# plans to move every service and every job to `agent-runtime-base:bootstrap`,
-# which does not exist. `make tf-plan && make tf-apply` -- which is exactly what
-# the documented `make infra` target runs -- therefore repointed all ten worker
-# jobs at a missing image and broke every dispatch until the next real deploy.
+# The input is now `image_refs`, one digest per image, and terraform refuses to
+# plan while any image has none -- so the outage cannot recur as a quiet image
+# change; it would be a plan that fails. This script supplies the digests
+# terraform last applied (scripts/lib/image-refs.sh --applied), so an
+# infrastructure plan shows infrastructure changes and no image churn at all.
+# A deploy passes the promotion manifest's digests instead, through
+# scripts/lib/deploy.sh.
 #
-# The fix is not a new default. It is to plan against what is actually running,
-# so an infrastructure plan shows infrastructure changes and no image churn at
-# all. A deploy still passes its own promoted tag; this only stops a plan that
-# was never about images from silently becoming one.
+# ON A FRESH PROJECT there is nothing to pin: no image has been built, because
+# the registry images are pushed to is itself created by this terraform root.
+# Then, and only then, this plans the registry alone (`-target`), so that
+# `make tf-apply` creates it and `make build push deploy` can follow. The
+# services and jobs are planned by that deploy, with real digests.
+#
+# "Fresh" is terraform STATE's answer (image-refs.sh exit 3): no registry in
+# state, or a registry with nothing pushed to it yet. It used to be the
+# registry's answer. On a fresh project the registry does not exist, so the
+# tag listing failed NOT_FOUND, which reads as an unreadable registry (exit 1),
+# and this script refused to plan the bootstrap described above.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,51 +42,56 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 load_env
 require_cmd jq curl
 
-# The tag every service and job should keep. Read from the RUNNING service
-# rather than from a build manifest, because the manifest records what was last
-# built on this machine and the question here is what is deployed -- which may
-# have come from CI, from someone else, or from a rollback.
-current_image_tag() {
-  local image=""
-  image="$(cloud_run_image "${API_SERVICE}")" || true
-  if [[ -n "${image}" && "${image}" == *:* ]]; then
-    printf '%s' "${image##*:}"
-    return 0
-  fi
-
-  # Nothing deployed yet. A build manifest from this machine is the next best
-  # answer, and on a genuinely fresh project there is no answer at all -- which
-  # is the one case where "bootstrap" is correct, because nothing exists to
-  # break.
-  local manifest="${REPO_ROOT}/build/deployed-images-${ENVIRONMENT}.json"
-  if [[ -f "${manifest}" ]]; then
-    local tag
-    tag="$(jq -r '.tag // empty' "${manifest}" 2>/dev/null || true)"
-    if [[ -n "${tag}" ]]; then
-      printf '%s' "${tag}"
-      return 0
-    fi
-  fi
-  return 1
-}
-
-TAG=""
-if TAG="$(current_image_tag)" && [[ -n "${TAG}" ]]; then
-  ok "planning against the running image tag ${TAG}"
-else
-  TAG="bootstrap"
-  warn "nothing is deployed yet; planning with image_tag=bootstrap"
-  warn "that tag does not exist in Artifact Registry -- apply this plan only on"
-  warn "a fresh project, and follow it with 'make build push deploy'"
-fi
-
+TF_DIR="$(tf_root)"
+REFS="${REPO_ROOT}/build/image-refs-${ENVIRONMENT}.tfvars.json"
 mkdir -p "${REPO_ROOT}/build"
+
+refs_rc=0
+"${SCRIPT_DIR}/lib/image-refs.sh" --applied --out "${REFS}" || refs_rc=$?
+
+TARGET_ARGS=()
+case "${refs_rc}" in
+  0)
+    ok "planning against the digests terraform last applied"
+    # What is SERVING, compared with what terraform last applied. They differ
+    # only if something deployed out of band -- a `gcloud run services update`
+    # rollback, say -- and this plan would quietly undo it. Said, not refused:
+    # the operator reading the plan decides.
+    serving="$(cloud_run_image "${API_SERVICE}" 2>/dev/null || true)"
+    pinned="$(jq -r '.image_refs["swarm-api"] // empty' "${REFS}")"
+    if [[ -n "${serving}" && -n "${pinned}" && "${serving}" != "${pinned}" ]]; then
+      warn "${API_SERVICE} is serving ${serving}"
+      warn "terraform last applied ${pinned}"
+      warn "something deployed out of band; this plan returns ${API_SERVICE} to what terraform applied."
+      warn "To keep what is serving, deploy it through scripts/lib/deploy.sh --manifest <its manifest>."
+    fi
+    ;;
+  3)
+    warn "terraform has applied no image for ${ENVIRONMENT} and there is none to pin: a fresh project."
+    warn "planning the Artifact Registry repository ALONE, so the first images have somewhere to go."
+    warn "apply this, then: make build push deploy -- which plans everything else, by digest."
+    TARGET_ARGS=(-target=module.project_services -target=module.artifact_registry)
+    ;;
+  *)
+    die "could not work out which images are deployed (see above); refusing to plan without them"
+    ;;
+esac
+
 tf_var_args
-step "terraform plan (${ENVIRONMENT}, image_tag=${TAG})"
-tf -chdir="$(tf_root)" plan \
-  -input=false \
-  -lock-timeout=120s \
-  "${TF_VAR_ARGS[@]}" \
-  -var="image_tag=${TAG}" \
-  -out="${REPO_ROOT}/build/${ENVIRONMENT}.tfplan"
+step "terraform plan (${ENVIRONMENT})"
+if [[ "${refs_rc}" -eq 0 ]]; then
+  tf -chdir="${TF_DIR}" plan \
+    -input=false \
+    -lock-timeout=120s \
+    "${TF_VAR_ARGS[@]}" \
+    -var-file="${REFS}" \
+    -out="${REPO_ROOT}/build/${ENVIRONMENT}.tfplan"
+else
+  tf -chdir="${TF_DIR}" plan \
+    -input=false \
+    -lock-timeout=120s \
+    "${TF_VAR_ARGS[@]}" \
+    "${TARGET_ARGS[@]}" \
+    -out="${REPO_ROOT}/build/${ENVIRONMENT}.tfplan"
+fi
 ok "plan written to build/${ENVIRONMENT}.tfplan"

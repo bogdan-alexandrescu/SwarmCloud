@@ -47,38 +47,6 @@ variable "hostname" {
   }
 }
 
-variable "iap_members" {
-  description = <<-EOT
-    Identities allowed past IAP. This is the OUTER gate only.
-
-    It is deliberately a coarse grant. The real tenant boundary is swarm-api:
-    it verifies the Google ID token, enforces ALLOWED_DOMAINS, resolves Cloud
-    Identity group membership and scopes every read to the caller's own tenant
-    in the store (CONTRACT.md invariant 9). IAP decides who may knock.
-
-    A list of individual users is discouraged for the reason this repository
-    learned the hard way on 2026-09-19: a hand-maintained allowlist of
-    principals rots, and the failure mode is locking out the person it exists to
-    admit, silently.
-  EOT
-  type        = list(string)
-
-  validation {
-    condition     = length(var.iap_members) > 0
-    error_message = "iap_members may not be empty: an IAP-protected backend with no members is unreachable by everyone, which reads as an outage rather than a configuration mistake."
-  }
-
-  validation {
-    condition     = alltrue([for m in var.iap_members : can(regex("^(user|group|domain|serviceAccount):", m))])
-    error_message = "every IAP member must be a fully qualified IAM member, e.g. domain:saga.xyz or group:eng@saga.xyz."
-  }
-
-  validation {
-    condition     = !contains(var.iap_members, "allUsers") && !contains(var.iap_members, "allAuthenticatedUsers")
-    error_message = "allUsers and allAuthenticatedUsers defeat IAP entirely: allAuthenticatedUsers means ANY Google account on the internet, not any account in your organisation."
-  }
-}
-
 variable "project_number" {
   description = "Needed for the IAP audience, which is built from the project NUMBER rather than its id."
   type        = string

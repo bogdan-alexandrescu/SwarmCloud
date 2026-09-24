@@ -58,6 +58,7 @@ from swarm_common.models import ProviderState, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import inputs as inputs_mod
+from . import redact as redact_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNT_TOKEN_ENV,
@@ -94,11 +95,11 @@ from .gitops import (
     shallow_clone,
     summarize_work,
 )
-from .metrics import ResourceSampler
+from .metrics import ResourceSampler, ResourceUsage, combine_usage
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
-from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED
+from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .secrets import (
     CredentialMissing,
@@ -216,7 +217,13 @@ class Worker:
         )
         self._interrupted = False
         self._child: ChildProcess | None = None
+        # The LIVE runner's sampler, or None between runners. The runners that
+        # have ended are in `_runner_usage`, and `_attempt_usage` combines the
+        # two: every figure this worker reports -- the attempt document, the
+        # export, the HEARTBEAT series -- is the attempt's, not one runner's.
         self._sampler: ResourceSampler | None = None
+        self._runner_usage: list[ResourceUsage] = []
+        self._metrics_exported = False
         self._last_checkpoint: CheckpointRecord | None = None
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
@@ -244,6 +251,21 @@ class Worker:
         # Accounts this attempt was given and could not read. Sent back to the
         # broker as `exclude` so the next ask does not return the same one.
         self._account_rejected: list[str] = []
+        # WHAT THIS ATTEMPT SPENT, summed over every runner it started. An
+        # attempt can start several -- a short rate limit and a reloaded
+        # credential both restart in place -- and each one's result.json is
+        # overwritten by the next, so the numbers are taken off each run as it
+        # ends (`_collect_spend`) rather than read once at the end.
+        self._spend: dict[str, Any] = {}
+        # What `record_spend` last wrote, so the several exits that call
+        # `_record_spend` write once per change rather than once per call.
+        self._spend_recorded: dict[str, Any] | None = None
+        # True from a runner's start until its result has been collected. It
+        # is what stops `_cleanup` collecting the same run a second time.
+        self._spend_pending = False
+        # Set on the tenant-mismatch exit, the one path that must write NOTHING
+        # -- not even spend onto what may be another tenant's attempt.
+        self._writes_forbidden = False
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -507,6 +529,29 @@ class Worker:
         assert ws is not None
 
         argv = _runner_argv(cfg)
+
+        # THE RUNNER'S REPLY FILES ARE CLEARED BEFORE IT STARTS. result.json,
+        # quota.json and credential.json are how a runner answers the worker,
+        # and all three live in `work/` -- which is exactly what a checkpoint
+        # archives and the next attempt restores. So a resumed attempt used to
+        # start with the PREVIOUS attempt's answers already on disk:
+        #
+        #   * quota.json from the run that parked it. `_quota_from_child` read
+        #     it after the NEW runner exited -- whatever it exited with -- and
+        #     parked the task again on a 429 that belonged to another attempt.
+        #     Every resumed attempt did its work and re-parked, so a task that
+        #     was rate-limited once could never finish;
+        #   * result.json, which a runner killed before writing its own left in
+        #     place to be read as this run's result and counted as its spend.
+        #
+        # Anything in these paths before the runner starts is, by definition,
+        # not from this runner. The in-place retry and the credential reload
+        # already removed one file each for the same reason; this is the one
+        # place that covers all three for every start.
+        for stale in (ws.result_path, ws.quota_path, ws.credential_path):
+            stale.unlink(missing_ok=True)
+        self._spend_pending = True
+
         child = ChildProcess(
             argv,
             cwd=ws.work,
@@ -571,7 +616,7 @@ class Worker:
                 break
 
         result = child.finish()
-        self._stop_sampler()
+        self._child_ended()
         self.log.info(
             "runner finished",
             exit_code=result.exit_code,
@@ -597,7 +642,7 @@ class Worker:
             )
             child.terminate(cfg.termination_grace_seconds, reason="generation fenced")
             child.finish()
-            self._stop_sampler()
+            self._child_ended()
             self.control.emit(
                 EventType.GENERATION_FENCED,
                 {
@@ -612,7 +657,7 @@ class Worker:
             self.log.warning("cancellation requested; stopping the runner")
             child.terminate(cfg.termination_grace_seconds, reason="cancelled")
             child.finish()
-            self._stop_sampler()
+            self._child_ended()
             self._checkpoint("cancellation")
             summary = self._upload_outputs()
             self._export_metrics()
@@ -638,7 +683,7 @@ class Worker:
                 )
                 child.terminate(cfg.termination_grace_seconds, reason="provider backpressure")
                 child.finish()
-                self._stop_sampler()
+                self._child_ended()
                 return self._park_for_quota(decision, source="backpressure")
         return None
 
@@ -655,7 +700,7 @@ class Worker:
         self.log.warning("worker received SIGTERM; checkpointing before exit")
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
-        self._stop_sampler()
+        self._child_ended()
         self._checkpoint("interrupted")
         summary = self._upload_outputs()
         self._export_metrics()
@@ -683,17 +728,11 @@ class Worker:
 
         runner_result = _read_json(ws.result_path)
         if runner_result:
-            # Extracted once: it goes into the summary for a human to read AND
-            # onto the attempt as typed fields for a query to reach.
-            usage_summary = _usage_summary(runner_result.get("output"))
-            if usage_summary:
-                # Not fatal. An attempt that ran is not a failed attempt because
-                # its accounting write failed, and this runs on the teardown
-                # path where the lease is about to be released either way.
-                try:
-                    self.control.record_spend(usage_summary)
-                except Exception as exc:  # pragma: no cover - defensive
-                    self.log.warning("could not record spend", error=str(exc))
+            # The SAME figure `_record_spend` wrote onto the attempt (it ran
+            # inside `_upload_outputs` above): the attempt's total across every
+            # runner it started, so the summary a human reads and the typed
+            # fields a query reads cannot disagree after an in-place retry.
+            usage_summary = dict(self._spend)
             summary["runner"] = self._scrub(
                 {
                     "status": runner_result.get("status"),
@@ -790,7 +829,11 @@ class Worker:
         this path logs to stdout -- the one channel that is this pod's own -- and
         exits. The reconciler is the backstop: the lease stops heartbeating and
         is reclaimed by the component that is allowed to act across tenants.
+
+        `_cleanup` still runs after this, in `run()`'s `finally`, and it records
+        spend on every other exit. The flag is what stops it here.
         """
+        self._writes_forbidden = True
         self.log.error(
             "TENANT MISMATCH: a control-plane document belongs to another tenant; "
             "exiting without writing anything",
@@ -1469,13 +1512,26 @@ class Worker:
         self.control.heartbeat()
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            usage = self._sampler.usage if self._sampler else None
+            # The ATTEMPT's usage, every runner so far plus the live one. A
+            # runner restarted in place gets a fresh sampler that starts from
+            # zero, and a cumulative series built on it went backwards there.
+            usage = self._attempt_usage()
+            cpu_seconds = usage.cpu_seconds if usage else None
             self.control.emit(
                 EventType.HEARTBEAT,
                 {
                     "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
                     "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
                     "checkpoints": self.checkpoints.seq,
+                    # CUMULATIVE, not a rate: this event series is the only
+                    # time series the platform keeps, and two consecutive
+                    # totals give utilisation over exactly the span between
+                    # them, where a point-in-time rate would describe two
+                    # seconds out of every heartbeat period. None while not
+                    # measured, never 0. `cpu_source` says whether it is the
+                    # container (cgroup) or the runner's process tree (proc).
+                    "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
+                    "cpu_source": usage.cpu_source if usage else None,
                 },
             )
 
@@ -1519,20 +1575,35 @@ class Worker:
         """Redact every registered secret from a value bound for Firestore."""
         return self.log.scrub_value(value)
 
-    def _redact_before_upload(self) -> None:
+    def _redact_before_upload(self) -> list[dict[str, Any]]:
         """Scrub the captured streams and artifacts before they leave the pod.
 
         A log line is only one of four ways a provider key gets out. The other
         three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
         result summary -- and the first two are uploaded to GCS, where they
         outlive the pod. The logger holds the registered values, so it does the
-        rewriting; binary and oversized files are left alone by `scrub_file`,
+        rewriting; binary and oversized files are left alone by the rewrite,
         because corrupting a tenant's artifact to protect a key that is probably
         not in it is the wrong trade.
+
+        THAT TRADE IS UNCHANGED; SAYING NOTHING ABOUT IT IS WHAT CHANGED
+        (docs/audits/2026-09-18/02-agent-worker-credentials.md section 4). The
+        rewrite's answer used to be discarded, so an artifact the rewrite
+        skipped went to GCS with no signal at all. Now a skipped file's raw
+        bytes are scanned for the registered values -- which answers whether
+        "probably not in it" held -- and it is returned for the result summary
+        unless the scan found it clean:
+        `{"file", "reason", "bytes", "secret_found"}`, where `secret_found` is
+        True (it IS in there, and the file is uploaded as-is) or None (the file
+        could not be read, so nobody knows).
+
+        Returns only those entries. A skipped file whose bytes hold no
+        registered value is as clean as a rewritten one, and listing every PNG
+        an agent writes would bury the entry that matters.
         """
         ws = self.ws
         if ws is None or not self.log.has_secrets:
-            return
+            return []
         targets = [ws.stdout_path, ws.stderr_path]
         targets += [
             path
@@ -1540,13 +1611,45 @@ class Worker:
             if path.is_file() and not path.is_symlink()
         ]
         targets.append(ws.result_path)
+        unredacted: list[dict[str, Any]] = []
         for path in targets:
             try:
-                self.log.scrub_file(path)
+                outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
             except OSError as exc:  # a read-only or vanished file must not fail the attempt
                 self.log.warning(
                     "could not redact a file before upload", path=str(path), error=str(exc)
                 )
+                continue
+            if not outcome.skipped:
+                continue
+            found = self.log.file_contains_secret(path)
+            try:
+                size: int | None = path.stat().st_size
+            except OSError:
+                size = None
+            label = _workspace_label(ws, path)
+            if found is False:
+                self.log.info(
+                    "file not rewritten, and its raw bytes hold no registered secret",
+                    file=label,
+                    reason=outcome.value,
+                    bytes=size,
+                )
+                continue
+            entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
+            unredacted.append(entry)
+            if found:
+                self.log.error(
+                    "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
+                    "it is uploaded as-is",
+                    **entry,
+                )
+            else:
+                self.log.warning(
+                    "a file could be neither redacted nor scanned; it is uploaded unexamined",
+                    **entry,
+                )
+        return unredacted
 
     # -- live logs ----------------------------------------------------------
     def _publish_live_logs(self) -> None:
@@ -2118,6 +2221,14 @@ class Worker:
         ws = self.ws
         if ws is None:
             return {}
+        # SPEND FIRST. Every exit that writes a terminal or parked state passes
+        # through here before it does -- the clean finish, the three parks, the
+        # cancellation, the SIGTERM and the crash handler -- so this is where
+        # the attempt's spend lands ahead of its state, whichever way it is
+        # leaving. `_cleanup` records again for the two cases that cannot be
+        # here yet: a runner still alive when the worker crashed, and a
+        # mid-run fence, which uploads nothing.
+        self._record_spend()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
         # `artifacts/`, and `_redact_before_upload` is what scrubs everything
         # in there. A patch produced afterwards would be the one file in the
@@ -2127,7 +2238,7 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        self._redact_before_upload()
+        unredacted = self._redact_before_upload()
         artifacts: list[dict[str, Any]] = []
         skipped: list[str] = []
         total = 0
@@ -2172,6 +2283,10 @@ class Worker:
             summary["git"] = git_summary
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
+        if unredacted:
+            # Files that left the pod without being rewritten AND without a
+            # clean scan. Capped like the list above; the log carries them all.
+            summary["redaction_skipped"] = unredacted[:50]
         if self._last_checkpoint is not None:
             summary["checkpoint"] = {
                 "checkpoint_id": self._last_checkpoint.checkpoint_id,
@@ -2190,6 +2305,64 @@ class Worker:
         # the same reason the files above are.
         return self._scrub(summary)
 
+    # -- spend -------------------------------------------------------------
+    def _child_ended(self) -> None:
+        """Everything that has to happen the moment a runner is gone.
+
+        Called at every site that reaps a runner, so a new site gets both
+        halves by calling one thing: the resource sample is stopped and
+        written, and the run's spend is taken before a restart can overwrite
+        the result.json it is in.
+        """
+        self._stop_sampler()
+        self._collect_spend()
+
+    def _collect_spend(self) -> None:
+        """Add the runner that just ended to this attempt's spend. Never raises.
+
+        ONCE PER RUNNER: `_spend_pending` is set when a runner starts and
+        cleared here, so the `_cleanup` backstop cannot count a run twice.
+
+        Reads result.json knowing it is THIS runner's or nothing: the reply
+        files are cleared before every start (`_run_child_supervised`), so a
+        runner killed before writing leaves no file here rather than a
+        restored one from a previous attempt.
+        """
+        if not self._spend_pending or self.ws is None:
+            return
+        self._spend_pending = False
+        try:
+            result = _read_json(self.ws.result_path) or {}
+            usage = _usage_summary(result.get("output"))
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not read the runner's spend", error=str(exc))
+            return
+        if usage:
+            self._spend = _add_spend(self._spend, usage)
+
+    def _record_spend(self) -> None:
+        """Write what this attempt has spent onto its attempt document. Never raises.
+
+        Called from every exit (see `_upload_outputs` and `_cleanup`), and
+        writes only when there is something new: `record_spend` merge-sets
+        absolute totals, so writing the same figure twice is harmless and
+        writing a larger one later -- a crash that reaped its runner after the
+        first write -- corrects it.
+
+        Not fatal. An attempt that ran is not a failed attempt because its
+        accounting write failed, and this runs on the teardown path where the
+        lease is about to be released either way.
+        """
+        if self._writes_forbidden or not self._spend or self._spend == self._spend_recorded:
+            return
+        snapshot = dict(self._spend)
+        try:
+            self.control.record_spend(snapshot)
+        except Exception as exc:
+            self.log.warning("could not record spend", error=f"{type(exc).__name__}: {exc}")
+            return
+        self._spend_recorded = snapshot
+
     # -- metrics -----------------------------------------------------------
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
@@ -2205,10 +2378,20 @@ class Worker:
         if self._sampler is None:
             return
         usage = self._sampler.stop()
+        # Kept, not replaced by the next runner's sampler: that replacement is
+        # what made every figure below describe the last runner only.
+        self._runner_usage.append(usage)
+        self._sampler = None
+        # THE ATTEMPT'S PEAKS, not this runner's. `record_resource_usage`
+        # merge-sets absolute values, so writing each runner's own peak let a
+        # quiet second runner overwrite the first runner's high-water mark --
+        # and a near miss in the first -- on the one document a sizing report
+        # reads.
+        attempt = self._attempt_usage() or usage
         self.control.record_resource_usage(
-            peak_rss_bytes=usage.peak_rss_bytes,
-            peak_disk_bytes=usage.peak_disk_bytes,
-            oom_near_miss=usage.oom_near_miss,
+            peak_rss_bytes=attempt.peak_rss_bytes,
+            peak_disk_bytes=attempt.peak_disk_bytes,
+            oom_near_miss=attempt.oom_near_miss,
         )
         if usage.oom_near_miss:
             self.log.error(
@@ -2218,11 +2401,29 @@ class Worker:
                 resource_class=self.cfg.resource_class,
             )
 
+    def _attempt_usage(self) -> ResourceUsage | None:
+        """Every runner this attempt has started, combined; None if none has.
+
+        The live runner is included as far as it has got, so a heartbeat
+        mid-run and the export on a crash that left a runner alive both see
+        the whole attempt.
+        """
+        parts = list(self._runner_usage)
+        if self._sampler is not None:
+            parts.append(self._sampler.usage)
+        return combine_usage(parts)
+
     def _export_metrics(self) -> None:
-        if self._sampler is None:
+        # Once per attempt. Several exits reach this, and one that failed
+        # partway -- an export that raised -- falls through to the crash
+        # handler, which calls it again; a successful export is not repeated.
+        if self._metrics_exported:
+            return
+        usage = self._attempt_usage()
+        if usage is None:
             return
         self.metrics.export(
-            self._sampler.usage,
+            usage,
             {
                 "tenant_id": self.cfg.tenant_id,
                 "runner_profile": self.cfg.runner_profile,
@@ -2232,7 +2433,7 @@ class Worker:
                 "task_id": self.cfg.task_id,
             },
         )
-        self._sampler = None
+        self._metrics_exported = True
 
     # -- misc --------------------------------------------------------------
     def _remaining_seconds(self) -> float:
@@ -2272,6 +2473,16 @@ class Worker:
                     self._child.finish()
             except Exception:
                 pass
+        # THE SPEND BACKSTOP, after the runner is gone and before the workspace
+        # holding its result.json is destroyed. Every orderly exit has already
+        # recorded in `_upload_outputs`; this catches the two that cannot have:
+        # a crash while a runner was still alive (it has only just been reaped,
+        # above) and a mid-run fence, which uploads nothing. Writing a fenced
+        # attempt's spend touches only its OWN attempt document -- never the
+        # lease, which is what invariant 5 forbids -- exactly as the resource
+        # usage write on that same path already does.
+        self._collect_spend()
+        self._record_spend()
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and
@@ -2336,7 +2547,57 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 #: The keys _usage_summary reads. Used to decide WHICH level of a possibly
 #: nested result actually carries the numbers, rather than assuming one.
-_USAGE_KEYS = ("usage", "total_cost_usd", "num_turns", "duration_ms", "duration_api_ms", "modelUsage")
+#:
+#: Imported, not restated: the runner lifts exactly these out of a FAILED run
+#: into result.json (runners/base.py), and a second copy here would be a key the
+#: runner carries and this never reads.
+_USAGE_KEYS = SPEND_KEYS
+
+#: The fields of a usage summary that ADD UP across the runs of one attempt.
+#: Everything `_usage_summary` emits except `models`, which is a set.
+_SUMMED_SPEND = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "thinking_tokens",
+    "total_cost_usd",
+    "num_turns",
+    "duration_ms",
+    "duration_api_ms",
+)
+
+
+def _add_spend(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
+    """Two usage summaries as one: numbers summed, model lists unioned.
+
+    A key absent from BOTH stays absent. "Not reported" is not zero (see
+    `control.record_spend`), and a sum must not turn the one into the other.
+    """
+    out = dict(total)
+    for key in _SUMMED_SPEND:
+        if key in more:
+            out[key] = out.get(key, 0) + more[key]
+    if "total_cost_usd" in out:
+        # Summing binary floats accumulates noise (0.1 + 0.2); no cost figure
+        # means anything past the tenth decimal place of a dollar.
+        out["total_cost_usd"] = round(out["total_cost_usd"], 10)
+    models = set(out.get("models") or ()) | set(more.get("models") or ())
+    if models:
+        out["models"] = sorted(models)
+    return out
+
+
+def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:
+    """`artifacts/x.png`, `logs/stdout.log` -- a path a reader can place.
+
+    Relative to the attempt's workspace, so the attempt id and the pod's
+    filesystem layout stay out of a document every reader of the task sees.
+    """
+    try:
+        return path.relative_to(ws.root).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _has_usage_keys(candidate: dict[str, Any]) -> bool:

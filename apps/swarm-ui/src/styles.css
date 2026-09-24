@@ -1403,9 +1403,10 @@ body {
      * `.is-unknown` -- hatched, no fill, NO AXIS, because there is no scale to
        start. That is the untrusted-rollup case, which used to draw no track at
        all and lean on amber words that vanish at 560px;
-     * the fill in `--info` rather than `--ok`. Nothing is coloured for being
-       healthy (§6.7): a board of green bars spends the eye's whole severity
-       budget on the workflows that are fine. */
+     * the fill in the monochrome `--text-dim` rather than `--ok`. Nothing is
+       coloured for being healthy (§6.7): a board of green bars spends the
+       eye's whole severity budget on the workflows that are fine. (It was
+       `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
 .wf-meter { flex: none; width: 54px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
@@ -5424,25 +5425,31 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    beside a number -- keeps `--info`; `.ctl-util-fill` -- the bar that is a
    row of its own -- does not. */
 .ctl-util-fill { background: var(--text-dim); }
-/* WORKFLOWS IS FROZEN, AND THIS IS THE ONE LINE THAT PROVES IT WAS CHECKED
-   RATHER THAN ASSUMED.
+/* THE WORKFLOWS METER IS GREY TOO, AND THERE IS NO LINE HERE SAYING OTHERWISE.
    ---------------------------------------------------------------------------
-   `.wf-meter`'s fill carries `ctl-util-fill wf-meter-fill` -- deliberately, so
-   the drawing is the shared primitive's -- which means the monochrome default
-   above reached straight into the one screen the owner named as ALREADY
-   CORRECT and turned its 54px meter grey. That was found by screenshotting
-   Workflows after the change, not by reasoning about selectors, and it is
-   exactly the kind of blast radius a token pass is supposed to have and a
-   token pass is supposed to check.
+   `.wf-meter`'s fill carries `ctl-util-fill wf-meter-fill`, so the default
+   above reaches it. It used to be exempted back to `--info` by one rule,
+   `.ctl-util-fill.wf-meter-fill`, held open as a question because Workflows
+   had been frozen. OWNER DECISION, 2026-09-24 (design-system.md sec 6.4): the
+   meter goes grey like every other proportion. One rule, and colour on a bar
+   is a verdict -- "three of five steps done" is not one. The verdict fills
+   below keep their hue and texture.
 
-   So the meter keeps `--info` and Workflows renders pixel-identically to the
-   version the owner approved. THIS IS AN EXEMPTION, NOT A SECOND RULE: it
-   leaves the product with one blue proportion and every other proportion grey,
-   which is an inconsistency held open ON PURPOSE because resolving it means
-   changing a screen that was explicitly frozen. design-system.md sec 6.4
-   records it as a question for the owner rather than a decision this pass
-   made. */
-.ctl-util-fill.wf-meter-fill { background: var(--info); }
+   Do not add an exemption back, here or in a screen's own CSS.
+   `test_state_colour_discriminability.py::test_a_proportion_fill_takes_a_hue_only_from_a_verdict`
+   finds every `.ctl-util-fill` the .tsx renders and tries each class it can
+   carry. It also reads its parent, this sheet, and every sheet a screen
+   injects through a `style` element. It fails on any rule that could paint
+   an un-verdicted fill something other than grey and that no certain grey
+   rule outranks. That covers a rule through the fill's other class, through
+   its parent, via `:not()`, later in the sheet, or in Overview's
+   OVERVIEW_CSS.
+
+   What it does NOT see: a class that reaches a fill through a helper
+   function or a prop set in another file. The one un-verdicted fill that is
+   allowed a different grey is named in the test's `DOCUMENTED_GREYS`:
+   `.ov-projected`, which paints `--ctl-absent`, and the test checks that this
+   resolves to a text grey. */
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,
@@ -8411,3 +8418,58 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    another lane has already decided about — it only reaches the ones nobody
    has. */
 :where(.app a[href]):focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------------------
+   A3 -- the checkpoint browser (CheckpointBrowser.tsx)
+
+   Opened from a checkpoint row in RunFiles.tsx. Append-only: every selector
+   below is new, and the surface reuses `.art-*` (the viewer it opens is the
+   artifact viewer itself), `.ctl-facts` and `.ctl-empty` rather than drawing
+   a third version of either. The box matches `.art-viewer` so the two read as
+   the same kind of inset when one is opened inside the other.
+   --------------------------------------------------------------------------- */
+
+.ckb {
+  margin-top: var(--ctl-s2);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); padding: var(--ctl-s3);
+}
+.ckb-head { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; }
+.ckb-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.ckb-facts { margin: var(--ctl-s2) 0; }
+.ckb-cut { color: var(--text-dim); }
+
+/* THE LINK TO THE WHOLE ARCHIVE, drawn as `button.copy` is so the controls on
+   this row read as one kind of thing. The same pair of tokens, so the
+   contrast it has is the contrast `button.copy` already clears. */
+.ckb-download {
+  padding: 1px 7px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); color: var(--text-dim);
+  font: var(--t-meta)/var(--lh-meta) var(--mono); text-decoration: none;
+}
+.ckb-download:hover { color: var(--text); border-color: var(--text-faint); }
+
+/* The tree. Mono because every label in it is a path; bounded in height so a
+   5000-entry listing scrolls inside the panel instead of pushing the logs
+   below it off the page. */
+.ckb-tree {
+  list-style: none; margin: var(--ctl-s2) 0 0; padding: 0;
+  max-height: 50vh; overflow: auto;
+}
+.ckb-group { list-style: none; margin: 0; padding: 0 0 0 var(--ctl-s3); }
+.ckb-node {
+  display: flex; align-items: baseline; gap: var(--ctl-s2);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.ckb-open {
+  font: inherit; color: var(--text); background: none; border: 0; padding: 0;
+  cursor: pointer; text-align: left;
+  border-bottom: 1px dotted var(--line);
+}
+.ckb-open:hover { border-bottom-color: var(--text-dim); }
+.ckb-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ckb-node.is-open > .ckb-open { border-bottom-style: solid; }
+.ckb-name { color: var(--text-dim); }
+.ckb-meta { color: var(--text-faint); font: var(--t-meta)/var(--lh-meta) var(--mono); }
+.ckb-unsafe { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; }
