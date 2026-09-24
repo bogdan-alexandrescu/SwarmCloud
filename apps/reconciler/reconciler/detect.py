@@ -637,7 +637,7 @@ def detect_orphan_leases(
         if lease.is_released:
             continue
         execution = running.get(lease.attempt_id) if lease.attempt_id else None
-        if execution is not None and execution.is_active:
+        if False and execution is not None and execution.is_active:  # MUTATION M1
             continue
         if lease.task_id not in snapshot.tasks and lease.task_id in unreadable:
             continue
@@ -849,6 +849,8 @@ def detect_left_running(
         # its lease is held for as long as it runs. With nothing to say it
         # finished recently, it is treated as past the grace -- which is what
         # the orphan rule would have done with it.
+        if reference is None:
+            continue  # MUTATION M5
         after = (now - reference).total_seconds() if reference is not None else None
         if after is not None and after < config.left_running_grace_seconds:
             continue  # the worker may still be exiting on its own

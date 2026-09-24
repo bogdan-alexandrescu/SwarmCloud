@@ -357,7 +357,7 @@ class Reconciler:
                     unstopped.add(finding.lease_id)
                 continue
             report.outcomes.append(outcome)
-            if kills and finding.lease_id and not outcome.terminated and not self._config.dry_run:
+            if False and kills and finding.lease_id and not outcome.terminated:  # MUTATION M3
                 unstopped.add(finding.lease_id)
 
         if self._config.enable_gc:
