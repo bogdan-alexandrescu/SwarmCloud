@@ -140,9 +140,12 @@ Every query the API issues is filtered by the caller's resolved tenant. A task i
 from another tenant returns 404 — not 403 — because confirming existence is
 itself a leak.
 
-Admin routes (`/v1/admin/*`) are gated on `ADMIN_GROUPS`, which is kept separate
-from `TENANT_GROUPS` so an admin still belongs to a normal tenant for their own
-tasks.
+Admin routes (`/v1/admin/*`) are gated on admin — `ADMIN_GROUPS` membership or
+an address on `ADMIN_USERS` — which is kept separate from `TENANT_GROUPS` so an
+admin still belongs to a normal tenant for their own tasks. One narrower list,
+`ADMIN_POOL_USERS`, reaches only the routes in `swarm_api.auth.POOL_ADMIN_ROUTES`
+(today the runner-ceiling `PUT`) and is not admin; see
+[security.md](security.md#authentication).
 
 ### Secrets
 
@@ -251,9 +254,20 @@ grant is identical whether a tenant was created by Terraform or by
 missing rather than falling back to `roles/datastore.user`.
 
 The one place to be careful when extending the platform: **anything that accepts
-a tenant id as input**. Admin routes do, and they are gated on `ADMIN_GROUPS`
-membership. A non-admin route that took a `tenant_id` parameter would be the
-single change that undoes this table.
+a tenant id as input**. Admin routes do, and they are gated on admin
+(`ADMIN_GROUPS` membership or `ADMIN_USERS`). A non-admin route that took a
+`tenant_id` parameter would be the single change that undoes this table.
+
+The one non-admin caller on the admin surface is an `ADMIN_POOL_USERS` entry
+(the verification gate), and it reaches only the routes in
+`swarm_api.auth.POOL_ADMIN_ROUTES`. Today that is
+`PUT /v1/admin/limits/runner/{runner_profile}`, which takes a runner profile,
+not a tenant id, so it opens no path from one tenant's id to another's data.
+It is not harmless across tenants: a ceiling of 0 on a profile stops every
+tenant's work on it being admitted until someone puts it back. Adding a route
+that takes a tenant id to that allow-list would be exactly the change
+described above. See [security.md](security.md#authentication) and
+[the dated decision](audits/2026-09-22/race-test-needs-a-write.md).
 
 ---
 
