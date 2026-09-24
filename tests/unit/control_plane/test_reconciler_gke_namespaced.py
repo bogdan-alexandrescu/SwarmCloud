@@ -365,6 +365,20 @@ def config(**overrides: Any) -> ReconcilerConfig:
     return ReconcilerConfig(**base)
 
 
+def plain_filter(field: str, op: str, value: Any) -> Any:
+    """The where-clause ControlStore builds, in a shape the fake can evaluate.
+
+    google's `FieldFilter("released_at", "==", None)` rewrites the operator to
+    the IS_NULL unary enum, which the control-plane fake does not model: it
+    reads every unreleased lease as NOT matching, the snapshot holds no leases,
+    and every test here would pass or fail on an empty world. The first run of
+    this file did exactly that. Same field, same operator, same value -- only
+    the object carrying them differs, through the seam ControlStore already
+    exposes for this.
+    """
+    return SimpleNamespace(field_path=field, op_string=op, value=value)
+
+
 def reconciler(db: FakeFirestore, *backends: Any, store_class: type = ControlStore,
                **overrides: Any) -> tuple[Reconciler, io.StringIO]:
     """The production Reconciler over the production ControlStore.
@@ -375,7 +389,7 @@ def reconciler(db: FakeFirestore, *backends: Any, store_class: type = ControlSto
     """
     stream = io.StringIO()
     logger = build_logger(stream=stream)
-    store = store_class(db, logger=logger)
+    store = store_class(db, logger=logger, filter_factory=plain_filter)
     return (
         Reconciler(store=store, backends=list(backends), config=config(**overrides),
                    logger=logger),
@@ -459,6 +473,7 @@ def test_a_stranded_gke_lease_is_released_once_its_namespace_reads_empty():
 
     report = rec.run_once()
 
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     lease = db.docs[f"leases/{ids['lease']}"]
     assert lease["released_at"] is not None, [o.as_dict() for o in report.outcomes]
     # All seven pools, in the one frozen release transaction (invariant 2).
@@ -490,6 +505,7 @@ def test_one_unreadable_namespace_does_not_hold_another_tenants_lease():
 
     report = rec.run_once()
 
+    assert report.leases_examined == 2, "both leases must be in the snapshot"
     assert db.docs[f"leases/{readable['lease']}"]["released_at"] is not None
     assert db.docs[f"tasks/{readable['task']}"]["state"] == "READY"
 
@@ -521,6 +537,8 @@ def test_nothing_is_released_when_the_attempts_own_namespace_is_unreadable():
 
     report = rec.run_once()
 
+    # Without this the guard passes in an empty world: nothing to release.
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None
     assert pool_actives(db) == before
     task = db.docs[f"tasks/{ids['task']}"]
@@ -578,8 +596,9 @@ def test_a_cancel_requested_task_with_no_execution_ends_cancelled_in_one_pass():
                         cancel_requested=True)
     rec, _ = reconciler(db, FlatBackend(CLOUD_RUN))
 
-    rec.run_once()
+    report = rec.run_once()
 
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     task = db.docs[f"tasks/{ids['task']}"]
     assert task["state"] == "CANCELLED", task
     assert task["completed_at"] is not None
@@ -599,8 +618,9 @@ def test_a_cancel_requested_task_with_spent_attempts_ends_cancelled_not_failed()
                         cancel_requested=True, attempt_count=3, max_attempts=3)
     rec, _ = reconciler(db, FlatBackend(CLOUD_RUN))
 
-    rec.run_once()
+    report = rec.run_once()
 
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     task = db.docs[f"tasks/{ids['task']}"]
     assert task["state"] == "CANCELLED", task
     assert "failed" not in event_types(db, ids["task"])
@@ -620,8 +640,9 @@ def test_a_cancel_pressed_after_the_snapshot_is_still_honoured():
     ids = seed_stranded(db, "task_2a417cb24edb4d2cb59e", backend=CLOUD_RUN)
     rec, _ = reconciler(db, FlatBackend(CLOUD_RUN), store_class=CancelAfterSnapshot)
 
-    rec.run_once()
+    report = rec.run_once()
 
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     assert db.docs[f"tasks/{ids['task']}"]["state"] == "CANCELLED"
 
 
@@ -647,6 +668,7 @@ def test_the_incident_shape_ends_cancelled_and_frees_every_pool():
 
     report = rec.run_once()
 
+    assert report.leases_examined == 5, "all five stranded leases must be in the snapshot"
     assert [db.docs[f"tasks/{s['task']}"]["state"] for s in seeded] == ["CANCELLED"] * 5
     assert all(db.docs[f"leases/{s['lease']}"]["released_at"] is not None for s in seeded)
     assert set(pool_actives(db).values()) == {0}, pool_actives(db)
@@ -683,8 +705,9 @@ def test_a_403_by_name_proves_nothing_and_holds_the_lease():
     batch = RbacBatchApi(listable=set(), gettable=set())
     rec, _ = reconciler(db, gke(batch))
 
-    rec.run_once()
+    report = rec.run_once()
 
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     job_name = ids["execution"].split("/", 1)[1]
     assert ("read_namespaced_job", ENG_NS, job_name) in batch.calls, "the probe was not tried"
     assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None
@@ -764,6 +787,7 @@ def test_a_blind_pass_counts_what_it_held_back_instead_of_reporting_zero():
 
     report = rec.run_once()
 
+    assert report.leases_examined == 1, "the stranded lease must be in the snapshot"
     assert report.findings == 0
     assert report.findings_suppressed == 2
     held = sorted((s.kind, s.lease_id, s.task_id, s.backend) for s in report.suppressed)
