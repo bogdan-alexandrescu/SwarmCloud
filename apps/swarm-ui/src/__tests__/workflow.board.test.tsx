@@ -30,13 +30,22 @@ import { useState } from 'react'
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
 import {
   CANVAS_COLUMN,
+  MONO_ADVANCE_EM,
+  NODE_CHROME_W,
   NODE_W,
+  PAD,
   SIB_GAP,
   STAGE_FITS,
+  autoTier,
   layoutOf,
+  monoW,
+  nodeHeightAt,
+  nodeWidthAt,
   shapeOf,
   stageCensus,
+  stageFitsAt,
   stepDuration,
+  type ZoomTier,
 } from '../dag'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 
@@ -184,19 +193,31 @@ function CardHarness({
   taskById,
   expanded,
   cardKey = 0,
+  zoom = 'auto',
 }: {
   workflow: Workflow
   taskById: Map<string, Task> | null
   expanded: boolean
   cardKey?: number
+  /** The semantic-zoom tier to start at. `auto` is what the board lands on and
+   *  is what every case that is not specifically about the zoom uses. */
+  zoom?: 'auto' | ZoomTier
 }) {
   const [stages, setStages] = useState<Record<string, boolean>>({})
+  // THE STORE, HERE FOR THE SAME REASON THE STAGE STORE IS. The real screen
+  // holds the zoom above the `key` a stop-and-reload bumps, so the control has
+  // to be driven from outside the card -- a test that passed a frozen `zoom`
+  // could never click a segment, and a card that had quietly taken the choice
+  // into a `useState` of its own would still pass.
+  const [choice, setChoice] = useState<'auto' | ZoomTier>(zoom)
   return (
     <WorkflowCard
       key={cardKey}
       workflow={workflow}
       taskById={taskById}
       expanded={expanded}
+      zoom={choice}
+      onZoom={(_id, next) => setChoice(next)}
       // `ready` with a null usage is "the attempt read landed and this board
       // was outside its sample", which is the state these cases are about --
       // not `reading`, which would put every figure behind a placeholder and
@@ -210,8 +231,15 @@ function CardHarness({
   )
 }
 
-function card(w: Workflow, taskById: Map<string, Task> | null = new Map(), expanded = false) {
-  return render(<CardHarness workflow={w} taskById={taskById} expanded={expanded} />)
+function card(
+  w: Workflow,
+  taskById: Map<string, Task> | null = new Map(),
+  expanded = false,
+  zoom: 'auto' | ZoomTier = 'auto',
+) {
+  return render(
+    <CardHarness workflow={w} taskById={taskById} expanded={expanded} zoom={zoom} />,
+  )
 }
 
 /**
@@ -540,11 +568,18 @@ describe('the expanded canvas', () => {
     )
     tasks.set('task_scan_a', task('task_scan_a', 'RUNNING', { started_at: iso(-92_000) }))
     const { container } = card({ ...w, steps }, tasks, true)
-    // The five parallel steps are one stage over `STAGE_FITS`, so the canvas
-    // lands with that stage as a band. The nodes are what this test is about,
-    // so open it -- and check that there WAS one to open, or every assertion
-    // below would be passing over an empty graph.
-    expect(openEveryBand(container)).toBe(1)
+    // FIVE PARALLEL STEPS ARE NO LONGER A BAND, AND THAT IS SEMANTIC ZOOM.
+    // They were: five is one over `STAGE_FITS`, so this canvas used to land with
+    // that stage collapsed and this test used to open it. Five `details` nodes
+    // are 5 x 144 + 4 x 28 + 20 = 852px, inside the 1,054px column, so they are
+    // DRAWN -- collapsing a five-step fan was only ever necessary because a node
+    // was 255px wide whatever it had to say. The stage that fits no tier at all
+    // (13 steps) is still a band; `a stage too wide to draw` below covers it.
+    expect(autoTier(steps)).toBe('details')
+    expect(openEveryBand(container)).toBe(0)
+    // The guard the band count used to be: every step is on the canvas, so
+    // nothing below is passing over an empty graph.
+    expect(container.querySelectorAll('.node')).toHaveLength(7)
 
     const node = nodeNamed(container, 'scan-a')
     expect(node.querySelector('.node-id')!.textContent).toContain('scan-a')
@@ -563,13 +598,6 @@ describe('the expanded canvas', () => {
   })
 
   it('draws a real edge for every real dependency', () => {
-    // NOT EXPANDED, DELIBERATELY. `fanOut`'s middle stage is five steps, one
-    // over `STAGE_FITS`, so this renders with that stage as a band -- and all
-    // ten dependencies still draw. That is the half of stage collapsing which
-    // is easiest to lose: the first implementation of it found edges by walking
-    // the NODES, and a collapsed stage has none, so every edge into or out of
-    // it vanished. Both endpoints resolve through the step, and a step in a
-    // band attaches to the band.
     const { container } = card(fanOut(), new Map(), true)
     const edges = container.querySelectorAll('.wf-edge')
     expect(edges).toHaveLength(10)
@@ -577,6 +605,23 @@ describe('the expanded canvas', () => {
     // Flow direction is drawn, not implied: every edge ends in an arrowhead.
     expect(container.querySelector('marker')).toBeTruthy()
     for (const e of edges) expect(e.getAttribute('marker-end')).toContain('url(#arrow-')
+  })
+
+  it('draws them into and out of a stage that IS a band', () => {
+    // THE HALF OF STAGE COLLAPSING THAT IS EASIEST TO LOSE, and it needs a
+    // fixture that still collapses. `fanOut` no longer does -- semantic zoom
+    // draws its five parallel steps -- so the case moved to the 13-step stage,
+    // which fits no tier and is a band at every one of them. The first
+    // implementation of collapsing found edges by walking the NODES, and a
+    // collapsed stage has none, so all 26 of these vanished. Both endpoints
+    // resolve through the STEP, and a step in a band attaches to the band.
+    const { w, tasks } = wideStage(13)
+    const { container } = card(w, tasks, true)
+    expect(container.querySelector('.wf-band')).toBeTruthy()
+    expect(container.querySelectorAll('.node')).toHaveLength(2)
+    // 13 into `report` and 13 out of `plan`, none of which has a node at
+    // either end drawn as a card.
+    expect(container.querySelectorAll('.wf-edge')).toHaveLength(26)
   })
 
   /**
@@ -595,7 +640,10 @@ describe('the expanded canvas', () => {
     const steps = w.steps.map((s, i) => (i === 1 ? { ...s, task_id: 'task_scan_a' } : s))
     const tasks = new Map([['task_scan_a', task('task_scan_a', 'RUNNING')]])
     const { container } = card({ ...w, steps }, tasks, true)
-    expect(openEveryBand(container)).toBe(1)
+    // Drawn at the `details` tier rather than collapsed -- see the first case in
+    // this block. The card is still the one anchor at every tier.
+    expect(openEveryBand(container)).toBe(0)
+    expect(container.querySelectorAll('.node')).toHaveLength(7)
     const node = nodeNamed(container, 'scan-a')
     expect(node.tagName).toBe('A')
     expect(node.getAttribute('href')).toBe('#work/task/task_scan_a')
@@ -625,11 +673,12 @@ describe('the expanded canvas', () => {
    */
   it('lays the levels out in dependency order, top to bottom', () => {
     const { container } = card(fanOut(), new Map(), true)
-    // Opened, because the property under test is about where the five parallel
-    // steps SIT, and collapsing is not allowed to change that answer: an
-    // expanded stage draws exactly the horizontal row it drew before this
-    // feature existed. The owner's instruction is the layout, not the default.
-    expect(openEveryBand(container)).toBe(1)
+    // NOTHING TO OPEN, AND THE PROPERTY IS UNCHANGED. The five parallel steps
+    // are drawn at the `details` tier now rather than collapsed into a band, and
+    // neither zoom nor collapsing is allowed to change WHERE they sit: the flow
+    // runs top to bottom with the steps of one stage side by side across it, at
+    // every tier. The owner's instruction is the layout, not the default.
+    expect(openEveryBand(container)).toBe(0)
     const top = (name: string) => Number.parseFloat(slotOf(container, name).style.top)
     const left = (name: string) => Number.parseFloat(slotOf(container, name).style.left)
     expect(top('plan')).toBeLessThan(top('scan-a'))
@@ -858,21 +907,30 @@ describe('a stage too wide to draw', () => {
     expect(container.querySelectorAll('.node')).toHaveLength(15)
   })
 
-  it('leaves a stage that fits alone, and collapses the one step past it', () => {
+  it('leaves a stage that fits the FULL tier alone, and keeps every field on it', () => {
     const fits = wideStage(STAGE_FITS)
     const a = card(fits.w, fits.tasks, true)
     expect(a.container.querySelector('.wf-band')).toBeNull()
     expect(a.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 2)
+    // Nothing was traded for it: `STAGE_FITS` is by definition what the full
+    // tier holds, so the figures are still on every card.
+    expect(autoTier(fits.w.steps)).toBe('figures')
+    expect(a.container.querySelectorAll('.node-nums')).toHaveLength(STAGE_FITS + 2)
 
-    // ONE MORE STEP AND IT DOES NOT FIT. The threshold is a property of NODE_W
-    // and the column, not of a fixture: this pins that the boundary is exactly
-    // where `STAGE_FITS` says it is, so moving NODE_W moves the test with it
-    // rather than leaving a stale number behind (which is how
-    // DEP_CHARS_PER_LINE went wrong).
+    // ONE MORE STEP AND THE FULL TIER DOES NOT HOLD IT -- and this is where
+    // semantic zoom replaced collapsing. It used to be a band and two nodes.
+    // The four steps are now drawn at the tier that holds four, which is what
+    // `nodeWidthAt` and `stageFitsAt` say it is rather than what a fixture
+    // remembers.
     const over = wideStage(STAGE_FITS + 1)
     const b = card(over.w, over.tasks, true)
-    expect(b.container.querySelector('.wf-band')).toBeTruthy()
-    expect(b.container.querySelectorAll('.node')).toHaveLength(2)
+    expect(autoTier(over.w.steps)).toBe('details')
+    expect(b.container.querySelector('.wf-band')).toBeNull()
+    expect(b.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 3)
+    // ...and the trade is stated on the canvas rather than left to be noticed.
+    expect(b.container.querySelector('.wf-zoom .ctl-mark')!.textContent).toBe(
+      'figures not drawn',
+    )
   })
 
   it('counts a stage without rendering anything', () => {
@@ -892,6 +950,391 @@ describe('a stage too wide to draw', () => {
     ])
     // Two steps in the same state are one bucket, not two rows.
     expect(c.counts).toHaveLength(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3c. Semantic zoom
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS BLOCK IS FOR, AND WHAT IT CANNOT DO.
+//
+// Stage collapsing made a 30-step run possible to read. It did not make the
+// canvas good: a stage over the threshold is a band you have to open, and
+// opening one puts you back into the 3,671px row the band stood in for. So a
+// node now SHEDS FIELDS as the column runs out -- name and state at every tier,
+// the profile and the duration above one, the figures only with room -- and the
+// band is kept for the stage that fits no tier at all.
+//
+// THE FOUR CLAIMS, each one a rule this console already holds itself to:
+//
+//  1. EVERY WIDTH IS DERIVED, and the derivation is the assertion. NODE_W came
+//     from a MEASURED character advance rather than an assumed 0.6em, so a tier
+//     whose width was a round number somebody liked would be a regression even
+//     if it looked right. Each case below recomputes the width from `monoW` and
+//     `NODE_CHROME_W` -- the same exports the implementation uses -- and then
+//     checks the DOM emitted it.
+//  2. NOTHING SHRINKS. `typescale.test.ts` holds six steps and a floor, and the
+//     owner has twice said this console is hard to read. Zoom drops FIELDS. No
+//     element on the canvas may carry an inline font size, a transform or a
+//     zoom at any tier.
+//  3. A DROPPED FIELD IS LEGIBLY A ZOOM DECISION. A blank where an unmeasured
+//     figure belongs would turn "nobody measured this" into "this is fine",
+//     which is the single thing this UI exists to prevent. So a dropped field
+//     leaves the card entirely, the canvas names what it dropped, and the
+//     control puts it back.
+//  4. A FAILED OR CANCELLED STEP IS NEVER INVISIBLE, at any tier, without
+//     expanding or zooming anything.
+//
+// jsdom HAS NO LAYOUT ENGINE, WHICH BOUNDS EVERY CLAIM HERE. `getComputedStyle`
+// does not resolve `var()`, `getBoundingClientRect` answers zeroes and
+// `clientWidth` answers 0, so nothing below can see overlap, wrapping or real
+// text measurement. Every assertion is against the numbers the components
+// EMIT -- the inline `width`/`height`/`left`/`top` the layout wrote, and which
+// elements exist. That is a real guarantee (a node drawn 255px wide in a 144px
+// slot is caught here) and it is not rendered proof. The minimap case below
+// asserts the unmeasured branch explicitly rather than pretending otherwise.
+
+/** A workflow of `n` root steps with the given ids, for width arithmetic. */
+function named(ids: readonly string[], profile = 'claude-code'): Workflow {
+  return workflow(
+    'wf_named',
+    ids.map((id) => step(id, [], { runner_profile: profile })),
+  )
+}
+
+describe('semantic zoom', () => {
+  pinTheClock()
+
+  it('reproduces the browser measurements its widths are derived from', () => {
+    // THE ONE MEASUREMENT EVERYTHING ELSE IS ARITHMETIC OVER, checked against
+    // the four figures other passes measured in the browser and wrote into
+    // `dag.ts` before `MONO_ADVANCE_EM` existed. If this drifts, every width
+    // below is measuring a font nobody has looked at.
+    expect(MONO_ADVANCE_EM * 14).toBeCloseTo(8.43, 2)
+    // `measureText('no attempt yet')` -- 14 characters, 118.0px at 14px.
+    expect(monoW(14, 14)).toBeCloseTo(118, 1)
+    // `21.4k in · 3.2k out` -- 19 characters, measured at 160px.
+    expect(monoW(19, 14)).toBeCloseTo(160, 0)
+    // `99.9k in · 99.9k out` -- 20 characters, measured at 169px.
+    expect(monoW(20, 14)).toBeCloseTo(169, 0)
+    // `claude-code` at --t-micro -- 11 characters, measured at 79px.
+    expect(monoW(11, 12)).toBeCloseTo(79, 0)
+    // It is NEAR 0.6em and is not 0.6em, which is the whole reason it is a
+    // measurement. A rewrite to the round number would fail this.
+    expect(MONO_ADVANCE_EM).not.toBe(0.6)
+  })
+
+  it('derives every tier width from the advance and the workflow, not from a literal', () => {
+    // The rows, restated from the sheet they are declared in: `.ctl-dot` is 8px,
+    // `--ctl-s2` is 8px, `.node-num`'s label column is 46px. The character
+    // bounds are the longest strings each row can hold -- `dead_lettered` (13),
+    // `duration unread` (15) beside it, `running 365d 23h` (16) on a row of its
+    // own, `99.9k in · 99.9k out` (20).
+    const stateRow = 8 + 8 + monoW(13, 12)
+    const stateAndDurRow = stateRow + 8 + monoW(15, 12)
+    const durRow = monoW(16, 12)
+    const figuresRow = 46 + 8 + monoW(20, 14)
+
+    // NODE_W IS THE FULL TIER'S ROWS OVER THE CHROME, and it is 255 rather than
+    // the 248 that shipped because the chrome now counts the node's 4px of
+    // border and because nothing had measured the state-and-duration row.
+    expect(NODE_W).toBe(Math.ceil(NODE_CHROME_W + Math.max(stateAndDurRow, figuresRow)))
+    expect(NODE_CHROME_W).toBe(12 * 2 + 3 + 1)
+    // The figures row is what 248 was chosen for and it did not clear it: this
+    // is the 2.6px by which `99.9k in · 99.9k out` ellipsed.
+    expect(figuresRow).toBeGreaterThan(248 - NODE_CHROME_W)
+    expect(figuresRow).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
+
+    const w = named(['plan', 'scan-0', 'report'], 'claude-code')
+    const nameW = monoW('scan-0'.length, 14)
+    const profileW = monoW('claude-code'.length, 12)
+
+    expect(nodeWidthAt('names', w.steps)).toBe(
+      Math.ceil(NODE_CHROME_W + Math.max(nameW, stateRow)),
+    )
+    expect(nodeWidthAt('details', w.steps)).toBe(
+      Math.ceil(NODE_CHROME_W + Math.max(nameW, stateRow, durRow, profileW)),
+    )
+    expect(nodeWidthAt('figures', w.steps)).toBe(NODE_W)
+
+    // A TIER THAT KEEPS FEWER FIELDS IS NEVER WIDER. Two tiers CAN come out the
+    // same width -- when the step name was what set it, no further zoom helps,
+    // and that is information rather than a bug -- but the order may not invert.
+    expect(nodeWidthAt('names', w.steps)).toBeLessThanOrEqual(nodeWidthAt('details', w.steps))
+    expect(nodeWidthAt('details', w.steps)).toBeLessThanOrEqual(nodeWidthAt('figures', w.steps))
+
+    // AND THE WIDTH FOLLOWS THE WORKFLOW'S OWN STRINGS. `.node-id` has no
+    // `text-overflow` and no `white-space`, so a name that does not fit WRAPS --
+    // onto a card whose height `layoutOf` has already committed to, overlapping
+    // the node beneath it. A fixed width would be a bet that nobody names a step
+    // something long.
+    const long = named(['a-very-long-step-name-indeed'])
+    expect(nodeWidthAt('names', long.steps)).toBe(
+      Math.ceil(NODE_CHROME_W + monoW('a-very-long-step-name-indeed'.length, 14)),
+    )
+    expect(nodeWidthAt('names', long.steps)).toBeGreaterThan(nodeWidthAt('names', w.steps))
+    // The full tier pays for the `opens the PR` tag too -- 96px of it -- which
+    // is why the reduced tiers drop the tag.
+    expect(nodeWidthAt('figures', long.steps)).toBe(
+      Math.ceil(NODE_CHROME_W + monoW('a-very-long-step-name-indeed'.length, 14) + 96),
+    )
+    // A long RUNNER PROFILE widens `details` and not `names`, because `names`
+    // does not draw it. That is the ladder doing its job rather than three names
+    // for one width.
+    const chatty = named(['plan'], 'claude-code-opus-4-1-max')
+    expect(nodeWidthAt('details', chatty.steps)).toBeGreaterThan(
+      nodeWidthAt('names', chatty.steps),
+    )
+  })
+
+  it('emits, on every slot, exactly the width and height its tier claims', () => {
+    // THE HALF A WIDTH FUNCTION CANNOT PROVE ON ITS OWN. `nodeWidthAt` can be
+    // perfect and `.node-slot` can still be given `NODE_W`, which is what it
+    // was given before this pass -- a `details` node 111px wider than its slot,
+    // overlapping the sibling beside it. So the DOM is read back.
+    const cases: ReadonlyArray<readonly [number, ZoomTier]> = [
+      [STAGE_FITS, 'figures'],
+      [6, 'details'],
+    ]
+    for (const [n, tier] of cases) {
+      const { w, tasks } = wideStage(n)
+      expect(autoTier(w.steps), `${n} steps should land at ${tier}`).toBe(tier)
+      const { container, unmount } = card(w, tasks, true)
+      const expectedW = nodeWidthAt(tier, w.steps)
+      const slots = [...container.querySelectorAll<HTMLElement>('.node-slot')]
+      expect(slots).toHaveLength(n + 2)
+      for (const slot of slots) {
+        expect(Number.parseFloat(slot.style.width), `${slot.textContent?.slice(0, 12)}`).toBe(
+          expectedW,
+        )
+      }
+      // `plan` is a root, so its height is the tier's own with no dependency
+      // line added -- the figure `nodeHeightAt` sums from the rows the tier
+      // draws, which is 224 with the four figures on it and 140 without.
+      expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(
+        nodeHeightAt(tier),
+      )
+      // And the whole canvas is inside the column, which is the point of all of
+      // it. Non-vacuous: the same fixture at the full tier is not.
+      const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
+      expect(Number.parseFloat(canvas.style.width)).toBeLessThanOrEqual(CANVAS_COLUMN)
+      unmount()
+    }
+    // The non-vacuity, stated as arithmetic rather than as a fixture: six full
+    // nodes do not fit, which is why the tier moved.
+    expect(PAD * 2 + 6 * NODE_W + 5 * SIB_GAP).toBeGreaterThan(CANVAS_COLUMN)
+  })
+
+  it('puts the tier boundary exactly where the derived threshold puts it', () => {
+    // THE BOUNDARY IS THE ARITHMETIC AND NOTHING ELSE. Six steps fit the
+    // `details` tier and seven fit no tier, and both halves are computed here
+    // from the same exports the implementation uses -- so moving NODE_W, the
+    // state-word bound or SIB_GAP moves this case with them instead of leaving
+    // a stale literal behind, which is exactly how `DEP_CHARS_PER_LINE` went
+    // wrong once already.
+    const six = wideStage(6)
+    const seven = wideStage(7)
+    const dw = nodeWidthAt('details', six.w.steps)
+    const nw = nodeWidthAt('names', seven.w.steps)
+    expect(PAD * 2 + 6 * dw + 5 * SIB_GAP).toBeLessThanOrEqual(CANVAS_COLUMN)
+    expect(PAD * 2 + 7 * dw + 6 * SIB_GAP).toBeGreaterThan(CANVAS_COLUMN)
+    expect(PAD * 2 + 7 * nw + 6 * SIB_GAP).toBeGreaterThan(CANVAS_COLUMN)
+    expect(stageFitsAt(dw)).toBe(6)
+    expect(stageFitsAt(nw)).toBeLessThan(7)
+
+    // Six: drawn, at `details`.
+    expect(autoTier(six.w.steps)).toBe('details')
+    const a = card(six.w, six.tasks, true)
+    expect(a.container.querySelector('.wf-band')).toBeNull()
+    expect(a.container.querySelectorAll('.node')).toHaveLength(8)
+
+    // Seven: no tier holds it, so the zoom STAYS AT `figures` and the band does
+    // the work. Zooming out here would cost every node in the workflow its
+    // figures and still collapse the stage -- paying twice for nothing.
+    expect(autoTier(seven.w.steps)).toBe('figures')
+    const b = card(seven.w, seven.tasks, true)
+    expect(b.container.querySelector('.wf-band')).toBeTruthy()
+    expect(b.container.querySelectorAll('.node')).toHaveLength(2)
+    expect(b.container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+
+    // And thirteen -- the measured run's widest stage -- is a band at every
+    // tier, which is the claim stage collapsing exists for and which semantic
+    // zoom does not replace.
+    for (const tier of ['figures', 'details', 'names'] as const) {
+      const { w, tasks } = wideStage(13)
+      const c = card(w, tasks, true, tier)
+      expect(c.container.querySelector('.wf-band'), tier).toBeTruthy()
+      expect(c.container.querySelectorAll('.node'), tier).toHaveLength(2)
+      c.unmount()
+    }
+  })
+
+  it('drops the FIELD and never the value, and says on the canvas that it did', () => {
+    // wideStage with no states: every fan step has no task, so its duration is
+    // an ABSENCE -- the case that must not become a blank or a zero.
+    const { w, tasks } = wideStage(5)
+
+    const full = card(wideStage(STAGE_FITS).w, wideStage(STAGE_FITS).tasks, true)
+    // Silent at the full tier. A mark saying "nothing is hidden" on every canvas
+    // that fits is the noise §8.4 took off this screen twice.
+    expect(full.container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+    full.unmount()
+
+    const details = card(w, tasks, true, 'details')
+    const dNode = nodeNamed(details.container, 'scan-0')
+    // THE DURATION IS STILL THERE AND STILL SAYS THE ABSENCE IN WORDS.
+    expect(dNode.querySelector('.node-dur')!.textContent).toBe('not started')
+    expect(dNode.querySelector('.node-meta')!.textContent).toBe('codex')
+    // The figures are GONE FROM THE CARD rather than blank. An empty `.node-num`
+    // would be the defect: a cell with no text where `not sampled` belongs says
+    // the figure is fine.
+    expect(dNode.querySelector('.node-nums')).toBeNull()
+    expect(dNode.querySelectorAll('.node-num')).toHaveLength(0)
+    const dMark = details.container.querySelector('.wf-zoom .ctl-mark')!
+    expect(dMark.textContent).toBe('figures not drawn')
+    expect(dMark.getAttribute('aria-label')).toContain(
+      'decision about the zoom and not a fact about the steps',
+    )
+    details.unmount()
+
+    const names = card(w, tasks, true, 'names')
+    const nNode = nodeNamed(names.container, 'scan-0')
+    expect(nNode.querySelector('.node-dur')).toBeNull()
+    expect(nNode.querySelector('.node-meta')).toBeNull()
+    expect(nNode.querySelector('.node-nums')).toBeNull()
+    // The name and the state are in every tier.
+    expect(nNode.querySelector('.node-id')!.textContent).toBe('scan-0')
+    expect(nNode.querySelector('.node-state')!.textContent).toBe('not started')
+    const nMark = names.container.querySelector('.wf-zoom .ctl-mark')!
+    expect(nMark.textContent).toBe('profile, duration and figures not drawn')
+    // NAMED, NOT COUNTED. "3 fields hidden" is a number a reader has to go and
+    // check; these are the fields.
+    expect(nMark.getAttribute('aria-label')).toContain('profile, duration and figures')
+  })
+
+  it('never hides a failed or cancelled step, at the smallest tier either', () => {
+    const states: (TaskState | null)[] = ['FAILED', 'SUCCEEDED', 'SUCCEEDED', 'CANCELLED', null]
+    const { w, tasks } = wideStage(5, states)
+    const { container } = card(w, tasks, true, 'names')
+
+    const failed = nodeNamed(container, 'scan-0')
+    // THREE CHANNELS, NONE OF THEM COLOUR ALONE, at the tier that draws least:
+    // the card's own accent class, the mark in its tone, and the word.
+    expect(failed.className).toContain('bad')
+    expect(failed.querySelector('.ctl-dot.is-bad')).toBeTruthy()
+    expect(failed.querySelector('.node-state')!.textContent).toBe('failed')
+
+    const cancelled = nodeNamed(container, 'scan-3')
+    expect(cancelled.querySelector('.node-state')!.textContent).toBe('cancelled')
+
+    // AND THE TIER REALLY IS THE SMALLEST ONE, or the assertions above are
+    // passing at a zoom that happens to draw everything.
+    expect(failed.querySelector('.node-meta')).toBeNull()
+    expect(failed.querySelector('.node-dur')).toBeNull()
+    expect(failed.querySelector('.node-nums')).toBeNull()
+    expect(container.querySelector('.wf-zoom .ctl-mark')!.textContent).toBe(
+      'profile, duration and figures not drawn',
+    )
+  })
+
+  it('shrinks no type and scales no canvas, at any tier', () => {
+    // THE HALF OF "FIT TO WIDTH" THIS IMPLEMENTATION REFUSES. The ux plan's
+    // option 1 says the canvas scales; scaling shrinks type, `typescale.test.ts`
+    // holds a 12px floor under six steps, and the owner has twice said this
+    // console is hard to read. A node scaled to fit is texture, not a node -- so
+    // the tiers drop fields and nothing on this canvas is ever transformed.
+    for (const tier of ['figures', 'details', 'names'] as const) {
+      const { w, tasks } = wideStage(5)
+      const { container, unmount } = card(w, tasks, true, tier)
+      const drawn = [...container.querySelectorAll<HTMLElement>('.wf-canvas, .node-slot, .node, .node *')]
+      expect(drawn.length).toBeGreaterThan(10)
+      for (const el of drawn) {
+        expect(el.style.fontSize, `${tier}: ${el.className} carries an inline font size`).toBe('')
+        expect(el.style.transform, `${tier}: ${el.className} is transformed`).toBe('')
+        expect(el.style.getPropertyValue('zoom'), `${tier}: ${el.className} is zoomed`).toBe('')
+      }
+      unmount()
+    }
+  })
+
+  it('offers the zoom as four real buttons, and putting a field back works', () => {
+    const { w, tasks } = wideStage(6)
+    const { container } = card(w, tasks, true)
+    const seg = container.querySelector('.wf-zoom-seg')!
+    const buttons = () => [...seg.querySelectorAll('button')]
+
+    // KEYBOARD REACHABLE BY CONSTRUCTION: four real `<button type="button">`s in
+    // the one segmented primitive this console uses, so the minimap is not the
+    // only way to do anything. Built from `ZOOM_TIERS`, so a tier added to
+    // `dag.ts` cannot arrive without a way to choose it.
+    expect(buttons().map((b) => b.textContent)).toEqual(['Auto', 'Figures', 'Details', 'Names'])
+    for (const b of buttons()) {
+      expect(b.getAttribute('type')).toBe('button')
+      expect(b.hasAttribute('disabled')).toBe(false)
+      // Each one says what it does, in fields rather than in sizes.
+      expect(b.getAttribute('title')!.length).toBeGreaterThan(30)
+    }
+    expect(
+      buttons()
+        .filter((b) => b.getAttribute('aria-pressed') === 'true')
+        .map((b) => b.textContent),
+    ).toEqual(['Auto'])
+    // `Auto` names what it resolved to, so the automatic choice is not a black
+    // box a reader has to infer from the cards.
+    expect(buttons()[0]!.getAttribute('title')).toContain('Details')
+
+    // ASKING FOR THE FIGURES BACK GETS THEM, and collapsing backstops the ask:
+    // six full nodes do not fit, so the stage becomes a band again and the two
+    // nodes that remain carry their figures.
+    expect(container.querySelectorAll('.node-nums')).toHaveLength(0)
+    fireEvent.click(buttons()[1]!)
+    expect(
+      buttons()
+        .filter((b) => b.getAttribute('aria-pressed') === 'true')
+        .map((b) => b.textContent),
+    ).toEqual(['Figures'])
+    expect(container.querySelector('.wf-band')).toBeTruthy()
+    expect(container.querySelectorAll('.node-nums')).toHaveLength(2)
+    expect(container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+  })
+
+  it('maps the canvas only when the canvas does not fit, and marks what is off it', () => {
+    const states = Array(13).fill('SUCCEEDED') as (TaskState | null)[]
+    states[6] = 'FAILED'
+    const { w, tasks } = wideStage(13, states)
+    const { container } = card(w, tasks, true)
+
+    // COLLAPSED, THE CANVAS FITS, so there is nothing to orient in and no map.
+    // A minimap of a canvas you can see all of is chrome for its own sake.
+    expect(container.querySelector('.wf-minimap')).toBeNull()
+
+    // Opened, it is 3,671px against a 1,054px column, and the map appears.
+    expect(openEveryBand(container)).toBe(1)
+    const map = container.querySelector<HTMLElement>('.wf-minimap')!
+    expect(map).toBeTruthy()
+    // INFORMATION, NOT A CONTROL. A `<button>` whose only meaningful activation
+    // is "the x coordinate you clicked at" is a button a keyboard cannot use,
+    // and announcing one would promise a route that is not there. The route is
+    // the wrapper's own scroll and the tab order through the nodes.
+    expect(map.getAttribute('role')).toBe('img')
+    expect(map.tagName).not.toBe('BUTTON')
+    expect(map.getAttribute('aria-label')).toContain('3671 pixels wide')
+    // One rectangle per drawn node, plus the band, so the map is of the canvas
+    // rather than of the viewport.
+    expect(map.querySelectorAll('.wf-mini-node')).toHaveLength(15)
+    // A FAILURE IS FINDABLE ON THE MAP TOO, including inside the stage the map
+    // exists because you cannot see all of.
+    expect(map.querySelector('.wf-mini-node.is-bad')).toBeTruthy()
+    expect(map.querySelector('.wf-mini-band.is-bad')).toBeTruthy()
+
+    // THE jsdom LIMIT, ASSERTED RATHER THAN PAPERED OVER. There is no layout
+    // engine here, so `clientWidth` is 0 and the viewport rectangle is
+    // deliberately NOT drawn -- a rectangle over the whole canvas would claim
+    // everything is on screen, which is the same class of lie as a blank cell
+    // where an unmeasured figure belongs. The accessible name says so too.
+    expect(map.querySelector('.wf-mini-view')).toBeNull()
+    expect(map.getAttribute('aria-label')).toContain('has not been measured')
   })
 })
 
