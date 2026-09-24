@@ -58,6 +58,27 @@ t_skip() {
     t_fail "$* (not measured, and this run requires it)"
     return 0
   fi
+  _t_record_skip "$*"
+}
+
+# A skip an OPERATOR chose, as opposed to one the evidence forced.
+#
+# t_skip means "could not be measured this time". A pause is different in
+# kind: the owner closed admission to a pool on purpose -- pools/resource:browser
+# at hard_limit 0 until the GKE fixes are proven -- so there is nothing to
+# measure, and a submission would sit QUEUED for the suite's whole timeout.
+#
+# Counted and listed exactly like any other skip, so it is NOT a pass and the
+# summary names it. It is NOT turned into a failure by SUITE_SKIPS_ARE_FAILURES:
+# that switch means "the evidence is guaranteed to exist", and a deliberate
+# pause guarantees that it does not. A suite that uses this must still fail a
+# run made of nothing but pauses -- smoke-test.sh does, in "Every execution
+# backend was exercised".
+t_skip_paused() {
+  _t_record_skip "$* (paused by operator)"
+}
+
+_t_record_skip() {
   TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
   SKIPPED_NAMES+=("$*")
   printf '%s  SKIP%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*" >&2
