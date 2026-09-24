@@ -62,7 +62,12 @@ OWN_TASK_SECRET = "ghp_OWNTASKSECRET0123456789abcdefghijkl"
 #: reason test_runtimes_screen.py names them: discovering from the app object
 #: would make this agree with whatever main.py happens to do, and a router
 #: added and never mounted would pass silently.
-ROUTER_MODULES = ("platform", "tasks", "workflows", "tenants", "admin", "accounts", "health")
+ROUTER_MODULES = (
+    "platform", "tasks", "workflows", "tenants", "admin", "accounts", "health",
+    # The checkpoint CONTENT routes (listing, one file, the whole archive).
+    # A router missing from this tuple is outside every sweep in this file.
+    "checkpoints",
+)
 
 
 @pytest.fixture
@@ -131,6 +136,8 @@ def _get_routes() -> list[str]:
                 path.replace("{task_id}", "task_theirs")
                 .replace("{workflow_id}", "wf_theirs")
                 .replace("{account_id}", "acct_1")
+                .replace("{checkpoint_id}", "ckpt-00001")
+                .replace("{path:path}", "notes.md")
             )
             if re.search(r"\{[^}]*\}", filled):
                 # An unfilled parameter would request a resource that does not
@@ -173,6 +180,8 @@ def test_every_get_route_is_either_swept_or_named(leaky):
         p.replace("task_theirs", "{task_id}")
          .replace("wf_theirs", "{workflow_id}")
          .replace("acct_1", "{account_id}")
+         .replace("ckpt-00001", "{checkpoint_id}")
+         .replace("notes.md", "{path:path}")
         for p in _get_routes()
     }
     unreached = sorted(declared - swept_templates - UNREACHED_BY_THE_SWEEP)
