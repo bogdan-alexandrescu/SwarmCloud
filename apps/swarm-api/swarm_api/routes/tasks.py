@@ -17,6 +17,8 @@ already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from swarm_common.states import TaskState
@@ -137,11 +139,37 @@ def cancel_task(
 def list_events(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
+    page_token: str | None = Query(default=None),
+    order: Literal["asc", "desc"] = Query(default="asc"),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    events = ctx.store.list_events(tenant_id, task_id, limit=paged_limit(ctx, limit))
-    return {"task_id": task_id, "events": [_event_to_api(e) for e in events]}
+    """One page of a task's events, and the token for the next.
+
+    Without a token this is what it always was -- the OLDEST `limit` events,
+    ascending -- so the web UI and `swarm_mcp.follow`, which pass neither
+    parameter, get byte-for-byte the rows they got before. What is new is that
+    the rest of the history is reachable: `next_page_token` is non-null exactly
+    when more events exist in the requested order, and `order=desc` puts the
+    END of a run on the first page.
+
+    A token is bound to this task and to the order it was minted for; sending
+    it anywhere else is a 422 rather than a plausible wrong page. See
+    `Store._keyset_page` for why events that share a timestamp are neither
+    dropped nor repeated at a page boundary.
+    """
+    page = ctx.store.list_events(
+        tenant_id,
+        task_id,
+        limit=paged_limit(ctx, limit),
+        page_token=page_token,
+        descending=order == "desc",
+    )
+    return {
+        "task_id": task_id,
+        "events": [_event_to_api(e) for e in page.items],
+        "next_page_token": page.next_page_token,
+    }
 
 
 @router.get("/{task_id}/attempts")

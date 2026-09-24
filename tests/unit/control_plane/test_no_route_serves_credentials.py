@@ -62,7 +62,9 @@ OWN_TASK_SECRET = "ghp_OWNTASKSECRET0123456789abcdefghijkl"
 #: reason test_runtimes_screen.py names them: discovering from the app object
 #: would make this agree with whatever main.py happens to do, and a router
 #: added and never mounted would pass silently.
-ROUTER_MODULES = ("platform", "tasks", "workflows", "tenants", "admin", "accounts", "health")
+ROUTER_MODULES = (
+    "platform", "tasks", "attempts", "workflows", "tenants", "admin", "accounts", "health",
+)
 
 
 @pytest.fixture
@@ -92,6 +94,16 @@ def leaky(client, db):
             "result_summary": {"stdout_tail": OTHER_TENANTS_SECRET},
         }
     )
+
+    # An attempt's `error` is upstream text, and `GET /v1/attempts` serves
+    # attempts across every task of a tenant -- so the cross-task route is the
+    # one place research's error could reach eng without naming research's task.
+    db.docs["attempts/att_theirs"] = {
+        "attempt_id": "att_theirs", "task_id": "task_theirs", "tenant_id": "research",
+        "generation": 1, "lease_id": "lease_theirs", "backend": "CLOUD_RUN_JOB",
+        "created_at": NOW, "exit_code": 1,
+        "error": f"provider rejected {OTHER_TENANTS_SECRET}",
+    }
 
     db.docs["workflows/wf_theirs"] = {
         "workflow_id": "wf_theirs", "tenant_id": "research",
@@ -146,7 +158,8 @@ def test_the_sweep_actually_reaches_the_routes(leaky):
     routes = _get_routes()
     assert len(routes) >= 15, f"only {len(routes)} GET routes were collected: {routes}"
     for expected in ("/v1/capacity", "/v1/tasks", "/v1/tasks/task_theirs",
-                     "/v1/admin/leases", "/v1/tenants/me", "/v1/stats"):
+                     "/v1/admin/leases", "/v1/tenants/me", "/v1/stats",
+                     "/v1/attempts"):
         assert expected in routes, f"{expected} is not in the sweep"
 
 

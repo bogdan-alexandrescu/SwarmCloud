@@ -400,12 +400,15 @@ def plain_filter(field: str, op: str, value: Any) -> Any:
     """The where-clause ControlStore builds, in a shape the fake can evaluate.
 
     google's `FieldFilter("released_at", "==", None)` rewrites the operator to
-    the IS_NULL unary enum, which the control-plane fake does not model: it
-    reads every unreleased lease as NOT matching, the snapshot holds no leases,
-    and every test here would pass or fail on an empty world. The first run of
-    this file did exactly that. Same field, same operator, same value -- only
-    the object carrying them differs, through the seam ControlStore already
-    exposes for this.
+    the IS_NULL unary enum, which the control-plane fake did not model when
+    this file was written: it read every unreleased lease as NOT matching, the
+    snapshot held no leases, and every test here passed or failed on an empty
+    world. The first run of this file did exactly that. PR #19 has since taught
+    the fake IS_NULL (and made it raise on any operator it does not know), so
+    this seam is no longer load-bearing; it is kept because it is what these
+    tests were proven red and green against. Same field, same operator, same
+    value -- only the object carrying them differs, through the seam
+    ControlStore already exposes for this.
     """
     return SimpleNamespace(field_path=field, op_string=op, value=value)
 
@@ -666,7 +669,7 @@ def test_the_reconciler_and_the_dispatcher_sanitise_names_identically():
 
     The reconciler image ships `apps/common` and `apps/reconciler` and nothing
     else, so it cannot import the scheduler's `sanitize_name`; the frozen
-    `swarm_common` is the only place both could share one (contract request 13
+    `swarm_common` is the only place both could share one (contract request 16
     in docs/contract-change-requests.md). Until then this equality is the only
     thing that keeps the copies from drifting.
     """

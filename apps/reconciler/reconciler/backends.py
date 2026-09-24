@@ -895,7 +895,7 @@ def sanitize_name(*parts: str, max_length: int = 63) -> str:
     the reconciler image copies `apps/common/` and `apps/reconciler/` and
     nothing else (images/swarm-reconciler/Dockerfile), so it cannot import
     `scheduler.dispatch`, and the only home both images share is the frozen
-    `swarm_common`. Moving it there is contract request 13 in
+    `swarm_common`. Moving it there is contract request 16 in
     docs/contract-change-requests.md. Until then
     `tests/unit/control_plane/test_reconciler_gke_namespaced.py` pins the two
     copies together over a corpus that reaches every branch -- truncation,

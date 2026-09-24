@@ -7,6 +7,11 @@ mock_provider "google" {}
 
 variables {
   project_id = "saga-agents-staging"
+
+  # Required since IAP membership moved into this root (2026-09-24). It has no
+  # default on purpose: an empty list is refused, and a default would admit
+  # somebody by accident. The value here only has to pass the validations.
+  frontend_iap_members = ["domain:example.com"]
 }
 
 run "state_survives_the_ways_a_platform_is_usually_lost" {
@@ -242,4 +247,60 @@ run "turning_api_disablement_on_is_refused" {
   }
 
   expect_failures = [var.disable_on_destroy]
+}
+
+# The accessor list reaches only the platform's own backends, and the deployer
+# holds no IAP role at all (wif.tf, "WHO MAY PASS IAP").
+run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
+  command = plan
+
+  # Without this block the run plans tests/terraform itself, which declares none
+  # of bootstrap's variables or resources -- CI failed "Reference to undeclared
+  # resource" on frontend_accessors.
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif    = true
+    github_repository    = "saga/agent-swarm-infra"
+    frontend_iap_members = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
+  }
+
+  assert {
+    condition     = length(google_iap_web_backend_service_iam_member.frontend_accessors) == 4
+    error_message = "two backends x two members must give four accessor bindings"
+  }
+
+  assert {
+    condition = alltrue([
+      for b in google_iap_web_backend_service_iam_member.frontend_accessors :
+      b.role == "roles/iap.httpsResourceAccessor"
+    ])
+    error_message = "the only IAP role this root grants is the accessor role"
+  }
+
+  # The half of this run's name the two assertions above do not cover. The
+  # deployer's project roles are non-empty here (enable_github_wif = true), so
+  # this cannot pass vacuously over an empty map.
+  assert {
+    condition = length(google_project_iam_member.deployer_roles) > 0 && alltrue([
+      for r in keys(google_project_iam_member.deployer_roles) : !startswith(r, "roles/iap.")
+    ])
+    error_message = "the deployer holds an IAP role; IAP membership is applied by the owner from this root, never by CI"
+  }
+}
+
+run "a_backend_that_is_not_ours_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    frontend_iap_backends = ["swarm-ui-backend", "gkegw1-7hi6-keycloak"]
+  }
+
+  expect_failures = [var.frontend_iap_backends]
 }

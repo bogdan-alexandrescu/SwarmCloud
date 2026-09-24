@@ -319,7 +319,8 @@ def test_an_iap_authorisation_failure_names_the_list_the_principal_is_missing_fr
     """IAP's 403 is a DIFFERENT problem from its 401, and a different fix.
 
     403 means the credential was accepted and the principal is not on the
-    access list -- which is `frontend_iap_members`, a Track C input. Collapsing
+    access list -- which is `frontend_iap_members` in terraform/bootstrap, applied
+    by the owner rather than the release (moved there 2026-09-24). Collapsing
     it into the 401 advice sends someone to re-mint a token that was already
     fine. This branch is only reachable once the credential is right, so it is
     exactly the one a test would otherwise never enter.
@@ -335,8 +336,12 @@ def test_an_iap_authorisation_failure_names_the_list_the_principal_is_missing_fr
     assert proc.returncode == 0, transcript
     assert "roles/iap.httpsResourceAccessor" in transcript, transcript
     assert "frontend_iap_members" in transcript, (
-        "the grant lives in Track C's tfvars; without the name nobody can find "
-        "it:\n" + transcript
+        "without the name of the list nobody can find it:\n" + transcript
+    )
+    assert "terraform/bootstrap" in transcript, (
+        "the list moved to terraform/bootstrap on 2026-09-24; pointing at the "
+        "environment tfvars sends them to a variable that no longer exists:\n"
+        + transcript
     )
     assert "SWARM_IMPERSONATE_SA" not in transcript, (
         "the credential was already accepted -- telling them to change it is "

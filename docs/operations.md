@@ -15,11 +15,26 @@ make tf-plan            # READ THIS. It is a shared project.
 make tf-apply
 make build              # Cloud Build, never the local Docker daemon
 make push               # trivy scan, then promote by digest to :dev
-make deploy             # roll the digests onto Cloud Run
+make deploy             # terraform apply with every image pinned by digest
 make smoke              # prove a task runs end to end
 ```
 
 or `make up`, which is those steps in order.
+
+**On a fresh project the first `make tf-plan` plans the registry alone.**
+Terraform deploys every image by digest and refuses to plan one that has none,
+and before the first build there are none — the registry they are pushed to is
+created by this same root. So when terraform state holds no registry,
+`scripts/plan.sh` plans only `module.project_services` and
+`module.artifact_registry`. It does the same when state holds a registry that
+nothing has been pushed to yet. `make deploy` then plans everything else with
+the digests `make push` promoted.
+
+"Fresh" is decided by terraform **state**, never by asking the registry. On a
+fresh project the registry does not exist, so a tag listing fails with
+NOT_FOUND, and that error has to stay an error: on a live project it means
+drift or the wrong project. The first version asked the registry, and so it
+refused to plan the bootstrap described here.
 
 **Read the plan.** `saga-agents-staging` holds another team's live GKE cluster,
 their VPC and 12 of their service accounts. A plan that proposes to change
@@ -203,16 +218,23 @@ Images are tagged with the immutable git SHA; `push` promotes a **digest** to th
 channel tag after a trivy scan. Nothing downstream deploys a mutable tag, so
 "what is running" is always a digest that was actually built and scanned.
 
-Rollback is the previous digest:
+Rollback is the previous manifest, deployed the same way as any other:
 
 ```bash
-gcloud run services update swarm-api \
-  --project "$PROJECT_ID" --region "$REGION" \
-  --image "us-central1-docker.pkg.dev/$PROJECT_ID/swarm-images/swarm-api@sha256:<previous>"
+scripts/lib/deploy.sh --manifest path/to/the/previous/deployed-images-dev.json
 ```
 
-`build/deployed-images-<env>.json` records what each deploy promoted, so the
-previous digest is there rather than in someone's shell history.
+`build/deployed-images-<env>.json` records what each deploy promoted, and the
+release keeps every one it applied as the `pinned-images-<env>` artifact for 30
+days, so the previous digests are there rather than in someone's shell history.
+
+**Not `gcloud run services update --image`.** It used to be the documented
+rollback, and it is now wrong in two ways: it moves one service while the
+worker jobs and the scheduler's `WORKER_IMAGE_REFS` stay on the new digests,
+and the next `terraform apply` — which pins what terraform last applied —
+silently moves that service forward again. `scripts/plan.sh` warns when
+swarm-api is serving something other than what terraform applied, which is
+what an out-of-band change looks like from there.
 
 ---
 

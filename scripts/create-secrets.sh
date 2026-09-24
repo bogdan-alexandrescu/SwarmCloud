@@ -241,17 +241,28 @@ VERSION="$(gcloud secrets versions add "${SECRET_NAME}" \
   --project "${PROJECT_ID}" --data-file="${KEY_FILE}" --format='value(name)')"
 ok "added version ${VERSION##*/}"
 
+STILL_ENABLED=()
 if [[ "${DISABLE_PREVIOUS}" -eq 1 && -n "${PREVIOUS}" ]]; then
   step "Disabling superseded versions"
   # Disabled, not destroyed: a rotation that turns out to have stored the wrong
   # key must be reversible, and an in-flight worker may still hold the old one.
+  #
+  # A failed disable used to be `>/dev/null 2>&1` and one warn line, and the
+  # run still ended "ok credential stored". With --disable-previous the old
+  # version is usually the LEAKED key this rotation exists to kill, so a version
+  # left enabled is the whole job undone: the reason is shown, and the run ends
+  # non-zero naming every version still live.
+  disable_err="${TMPDIR_SECRET}/disable-version.err"
   while IFS= read -r old; do
     [[ -n "${old}" ]] || continue
     if gcloud secrets versions disable "${old}" --secret "${SECRET_NAME}" \
-         --project "${PROJECT_ID}" >/dev/null 2>&1; then
+         --project "${PROJECT_ID}" >/dev/null 2>"${disable_err}"; then
       ok "disabled version ${old}"
     else
-      warn "could not disable version ${old}"
+      die_if_auth_failure "$(cat "${disable_err}")"
+      err "could not disable version ${old}; it is STILL ENABLED:"
+      redact <"${disable_err}" | head -n 3 | sed 's/^/     /' >&2
+      STILL_ENABLED+=("${old}")
     fi
   done <<<"${PREVIOUS}"
   dim "re-enable with: gcloud secrets versions enable <N> --secret ${SECRET_NAME}"
@@ -283,3 +294,7 @@ fi
 hr
 ok "credential stored for tenant ${TENANT}, provider ${PROVIDER}"
 dim "the plaintext existed only in ${TMPDIR_SECRET}, which is now removed"
+if [[ "${#STILL_ENABLED[@]}" -gt 0 ]]; then
+  err "the rotation is NOT complete: ${#STILL_ENABLED[@]} superseded version(s) of ${SECRET_NAME} are still enabled: ${STILL_ENABLED[*]}"
+  die "disable them by hand (gcloud secrets versions disable <N> --secret ${SECRET_NAME}) before treating the old key as dead"
+fi

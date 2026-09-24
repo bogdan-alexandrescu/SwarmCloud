@@ -1,18 +1,38 @@
 #!/usr/bin/env bash
-# Roll the promoted images out to the Cloud Run control plane. Entry point:
-# `make deploy`. It lives in lib/ because it is one step of the pipeline rather
-# than a tool an operator reaches for on its own.
+# Deploy the promoted images BY DIGEST, then prove the deployment runs them.
+# Entry point: `make deploy`; the release calls it with --verify-only after its
+# own guarded apply. It lives in lib/ because it is one step of the pipeline
+# rather than a tool an operator reaches for on its own.
 #
-# Two supported shapes, detected rather than assumed, because Terraform owns the
-# service definitions and only Terraform knows whether it takes an image
-# variable:
+# ONE MECHANISM: terraform, with `image_refs`. The promotion manifest
+# (build/deployed-images-<env>.json, written by push-images.sh for digests that
+# passed the scan) becomes `image_refs` through scripts/lib/image-refs.sh, and
+# terraform/infra puts exactly those digests on every Cloud Run service, every
+# worker job, the verification job and the scheduler's WORKER_IMAGE_REFS.
 #
-#   1. the environment declares `image_refs` or `image_tag` -> terraform apply,
-#      so the deployed digest is recorded in state and cannot drift;
-#   2. it declares neither -> `gcloud run services update --image <digest>`.
+# Two things this used to do and no longer does, both deliberately:
 #
-# Either way the deployed thing is an immutable sha256 digest from the promotion
-# manifest, never a tag someone could move underneath us.
+#   * deploy a TAG. `-var image_tag=<tag>` was the terraform path, and a tag
+#     rebuilt to new content planned no change: the service kept serving the
+#     old digest and every check here passed (docs/audits/2026-09-20/
+#     tag-vs-digest.md). A digest changes when the content does.
+#   * fall back to `gcloud run services update --image` when terraform was not
+#     initialised. That moved four services and nothing else -- not swarm-ui,
+#     not one worker job, not the scheduler's worker images -- and the next
+#     apply reverted it. A deploy that half-happens and then un-happens is not
+#     a fallback. An uninitialised terraform is now an error that names the fix.
+#
+# After the apply (or instead of it, with --verify-only) it VERIFIES, because
+# "apply succeeded" is not "the code I built is the code that runs":
+#
+#   1. every service's newest revision is the one serving;
+#   2. every service's template names exactly the manifest's digest for it;
+#   3. every terraform-managed Cloud Run job names a digest from the manifest;
+#   4. the scheduler's WORKER_IMAGE_REFS -- what the dispatcher builds every GKE
+#      Job and every job it creates itself from -- matches the manifest;
+#   5. /readyz, unless --no-health.
+#
+# Usage: scripts/lib/deploy.sh [--manifest PATH] [--verify-only] [--wait SECONDS] [--no-health]
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -21,230 +41,256 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 WAIT_SECONDS="${DEPLOY_WAIT_SECONDS:-300}"
 SKIP_HEALTH=0
+VERIFY_ONLY=0
+MANIFEST="${BUILD_DIR}/deployed-images-${ENVIRONMENT}.json"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --no-health) SKIP_HEALTH=1; shift ;;
-    --wait)      WAIT_SECONDS="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,17p' "$0"; exit 0 ;;
+    --no-health)   SKIP_HEALTH=1; shift ;;
+    --verify-only) VERIFY_ONLY=1; shift ;;
+    --manifest)    MANIFEST="$2"; shift 2 ;;
+    --wait)        WAIT_SECONDS="$2"; shift 2 ;;
+    -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 require_cmd gcloud jq
 
-# Services this run could not update, wait for, or verify -- as opposed to
-# services it genuinely updated. Kept so the closing line at the bottom of
-# this script can tell the truth instead of printing "ok deployed" whenever
-# execution merely reaches the end.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-deploy.XXXXXX")"
+trap 'rm -rf "${WORK}"' EXIT INT TERM
+
+# Things this run could not update, wait for, or verify -- as opposed to things
+# it genuinely confirmed. Kept so the closing line can tell the truth instead
+# of printing "ok deployed" whenever execution merely reaches the end.
 SKIPPED=()
 
-# cloud_run_probe SERVICE FORMAT -> value in CLOUD_RUN_VALUE, empty and
-# return 1 only when gcloud's own error says the service was not found. Any
-# other failure -- an expired session, a missing run.services.get, a
-# disabled Cloud Run API, the wrong region or project -- dies naming the
-# real cause instead of being read as absence.
+# cloud_run_describe KIND NAME -> the resource's JSON in ${WORK}/<name>.json,
+# return 1 only when gcloud's own error says it was not found. Any other
+# failure -- an expired session, a missing run.services.get, a disabled Cloud
+# Run API, the wrong region or project -- dies naming the real cause instead of
+# being read as absence.
 #
-# Call this bare, as `if ! cloud_run_probe ...; then`. Never as
-# `x="$(cloud_run_probe ...)"`: a command substitution forks a subshell, and
-# `die`'s `exit` would then only close that subshell, leaving this script to
-# read a dead session as a missing service.
-CLOUD_RUN_VALUE=""
-cloud_run_probe() {
-  local service="$1" format="$2"
-  local err_file msg rc=0
-  CLOUD_RUN_VALUE=""
-  err_file="$(mktemp "${TMPDIR:-/tmp}/swarm-run-describe.XXXXXX")"
-  # `|| rc=$?`, not `if ...; then ...; fi`: when an if's condition is false
-  # and it has no else, the if construct itself exits 0, so a bare `rc=$?`
-  # placed after `fi` reads back 0 no matter how gcloud actually failed.
-  CLOUD_RUN_VALUE="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" \
-       --region "${REGION}" --format="${format}" 2>"${err_file}")" || rc=$?
+# Call this bare, as `if ! cloud_run_describe ...; then`. Never inside
+# `x="$(...)"`: a command substitution forks a subshell, and `die`'s `exit`
+# would then only close that subshell, leaving this script to read a dead
+# session as a missing service.
+cloud_run_describe() {
+  local kind="$1" name="$2" rc=0 msg
+  gcloud run "${kind}" describe "${name}" --project "${PROJECT_ID}" \
+    --region "${REGION}" --format=json >"${WORK}/${name}.json" 2>"${WORK}/${name}.err" || rc=$?
   if [[ "${rc}" -eq 0 ]]; then
-    rm -f "${err_file}"
     return 0
   fi
-  msg="$(cat "${err_file}" 2>/dev/null || true)"
-  rm -f "${err_file}"
-  CLOUD_RUN_VALUE=""
+  # The redirection created the file whatever gcloud did; every later check
+  # reads "was it described" as "does the file exist", so a failure removes it.
+  rm -f "${WORK}/${name}.json"
+  msg="$(cat "${WORK}/${name}.err" 2>/dev/null || true)"
   die_if_auth_failure "${msg}"
   case "${msg}" in
-    *NOT_FOUND*|*"was not found"*|*"could not be found"*) return 1 ;;
+    *NOT_FOUND*|*"was not found"*|*"could not be found"*|*"Cannot find"*) return 1 ;;
   esac
-  err "gcloud run services describe ${service} failed (exit ${rc}); this is NOT confirmation the service is absent"
+  err "gcloud run ${kind} describe ${name} failed (exit ${rc}); this is NOT confirmation it is absent"
   printf '%s\n' "${msg}" | redact | head -n 5 | sed 's/^/     /' >&2
-  die "cannot confirm whether ${service} exists in ${REGION}/${PROJECT_ID} -- check the account, region and project before treating this as absent"
+  die "cannot confirm whether ${name} exists in ${REGION}/${PROJECT_ID} -- check the account, region and project before treating this as absent"
 }
 
-MANIFEST="${BUILD_DIR}/deployed-images-${ENVIRONMENT}.json"
+# ---------------------------------------------------------------------------
+# The manifest, pinned
+# ---------------------------------------------------------------------------
+
 [[ -f "${MANIFEST}" ]] || die "no ${MANIFEST}; run 'make build push' first"
+TAG="$(jq -r '.tag // "unknown"' "${MANIFEST}")"
+step "Deploy ${TAG} to ${ENVIRONMENT}, by digest"
 
-TAG="$(jq -r '.tag' "${MANIFEST}")"
-# The channel the promote step actually tagged, not an assumption that it
-# matches the environment name -- assert_tag_is_complete compares against it.
-CHANNEL="$(jq -r '.channel // empty' "${MANIFEST}")"
-[[ -n "${CHANNEL}" ]] || die "${MANIFEST} records no channel; re-run 'make push'"
-step "Deploy ${TAG} to ${ENVIRONMENT}"
-jq -r '.images[] | "    \(.name)  \(.digest)"' "${MANIFEST}" >&2
+# image-refs.sh refuses a manifest that names a tag, or names nothing, before
+# anything below reads it -- so every comparison after this is digest to digest.
+REFS_FILE="${WORK}/image-refs.tfvars.json"
+"${SWARM_LIB_DIR}/image-refs.sh" --manifest "${MANIFEST}" --out "${REFS_FILE}"
 
-image_ref() {
-  jq -r --arg n "$1" '.images[] | select(.name == $n) | .ref // empty' "${MANIFEST}"
+# The ref the manifest promoted for one image name, or empty.
+manifest_ref() {
+  jq -r --arg n "$1" '.image_refs[$n] // empty' "${REFS_FILE}"
 }
 
-# A uniform `image_tag` is applied to EVERY image the terraform root
-# references -- not only the ones that happen to be in the manifest. Building a
-# subset therefore mints a tag that most images do not carry, and terraform
-# plans revisions pointing at images that do not exist. Cloud Run then refuses
-# them one service at a time, minutes into an apply, after other resources have
-# already changed.
-#
-# Observed 2026-09-19: `build-images.sh swarm-ui` alone produced tag
-# 7f6a80cb32d5; the apply created six unservable revisions before failing.
-# Traffic stayed on the previous revisions -- Cloud Run's doing, not ours -- so
-# it cost an apply rather than an outage. It is not worth relying on that.
-#
-# The expected set is derived from the registry rather than restated here: any
-# image already carrying the channel tag is part of this platform and must
-# carry the new tag too. An unreadable registry is NOT an empty one, so a
-# failed listing aborts instead of passing.
-assert_tag_is_complete() {
-  local tag="$1" channel="$2" tmp count
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
 
-  tmp="$(mktemp -d)"
-  if ! gcloud artifacts docker tags list "${IMAGE_REPO}" \
-        --project="${PROJECT_ID}" --format='value(tag,image)' \
-        >"${tmp}/all" 2>"${tmp}/err"; then
-    err "could not list tags in ${IMAGE_REPO}"
-    redact <"${tmp}/err" | head -n 5 | sed 's/^/     /' >&2
-    rm -rf "${tmp}"
-    die "refusing to deploy without confirming ${tag} covers every image -- a registry we cannot read is not an empty one"
-  fi
-
-  awk -v t="${channel}" '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/onchannel"
-
-  # ALSO every image the terraform root REFERENCES. Without this the guard has
-  # a blind spot it was bitten by on 2026-09-20: a NEW image, declared in
-  # terraform but never yet promoted, is not on the channel, so it is not in
-  # the expected set, so the guard passes -- and the apply then fails on
-  # "Image ... not found" twelve minutes in, having already changed other
-  # resources. The original failure this guard was built for (a PARTIAL build
-  # of images that already exist) is the other direction, and both are real.
-  grep -rhoE '\$\{local\.image_base\}/[a-z0-9-]+' "${REPO_ROOT}/terraform/infra" 2>/dev/null \
-    | sed 's|.*/||' | sort -u >"${tmp}/declared" || true
-  cat "${tmp}/onchannel" "${tmp}/declared" 2>/dev/null | sort -u >"${tmp}/chan"
-  awk -v t="${tag}"     '$1 == t { n = split($2, p, "/"); print p[n] }' "${tmp}/all" | sort -u >"${tmp}/have"
-
-  if [[ ! -s "${tmp}/chan" ]]; then
-    info "no image is on :${channel} or referenced by terraform; treating ${tag} as the first deploy"
-    rm -rf "${tmp}"
-    return 0
-  fi
-
-  comm -23 "${tmp}/chan" "${tmp}/have" >"${tmp}/missing"
-  if [[ -s "${tmp}/missing" ]]; then
-    err "tag ${tag} is incomplete -- on :${channel} but with no :${tag}:"
-    sed 's/^/     /' "${tmp}/missing" >&2
-    rm -rf "${tmp}"
-    die "terraform applies ONE image_tag to every service and job, so this would point those at an image that does not exist. Build every target ('make build push' with no TARGET) before deploying."
-  fi
-
-  count="$(wc -l <"${tmp}/chan" | tr -d ' ')"
-  rm -rf "${tmp}"
-  ok "tag ${tag} covers all ${count} image(s) on :${channel}"
-}
-
-TF_ROOT="${REPO_ROOT}/terraform/infra"
-TF_VAR_NAME=""
-if [[ -d "${TF_ROOT}/.terraform" ]]; then
-  if grep -Rqs 'variable[[:space:]]*"image_refs"' "${TF_ROOT}"; then
-    TF_VAR_NAME="image_refs"
-  elif grep -Rqs 'variable[[:space:]]*"image_tag"' "${TF_ROOT}"; then
-    TF_VAR_NAME="image_tag"
-  fi
-fi
-
-if [[ -n "${TF_VAR_NAME}" ]]; then
-  step "Terraform-managed services (var ${TF_VAR_NAME})"
-  VAR_ARGS=()
-  if [[ "${TF_VAR_NAME}" == "image_refs" ]]; then
-    REFS_JSON="$(jq -c '[.images[] | {key:.name, value:.ref}] | from_entries' "${MANIFEST}")"
-    VAR_ARGS+=(-var="image_refs=${REFS_JSON}")
-  else
-    assert_tag_is_complete "${TAG}" "${CHANNEL}"
-    VAR_ARGS+=(-var="image_tag=${TAG}")
-  fi
-  tf_var_args
-  tf -chdir="${TF_ROOT}" apply -input=false -auto-approve -lock-timeout=120s \
-    "${TF_VAR_ARGS[@]}" "${VAR_ARGS[@]}" 2>&1 | redact
-  ok "terraform apply complete"
+if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
+  info "--verify-only: nothing is applied; checking what is deployed against $(basename "${MANIFEST}")"
 else
-  step "Updating Cloud Run services directly"
-  info "the ${ENVIRONMENT} environment declares no image variable, so services are updated in place"
-  for pair in "${API_SERVICE}:swarm-api" "${SCHEDULER_SERVICE}:swarm-scheduler" \
-              "${QUOTA_SERVICE}:swarm-quota-broker" "${RECONCILER_SERVICE}:swarm-reconciler"; do
-    service="${pair%%:*}"
-    image_name="${pair##*:}"
-    ref="$(image_ref "${image_name}")"
-    if [[ -z "${ref}" ]]; then
-      warn "no image for ${image_name} in the manifest; skipping ${service}"
-      SKIPPED+=("${service}: no image for ${image_name} in ${MANIFEST}")
-      continue
-    fi
-    if ! cloud_run_probe "${service}" 'value(metadata.name)'; then
-      warn "Cloud Run service ${service} does not exist yet; run 'make infra' first"
-      SKIPPED+=("${service}: does not exist yet")
-      continue
-    fi
-    info "${service} -> ${ref##*@}"
-    gcloud run services update "${service}" \
-      --project "${PROJECT_ID}" --region "${REGION}" \
-      --image "${ref}" \
-      --update-labels="managed-by=swarm-terraform,swarm-image-tag=${TAG}" \
-      --quiet 2>&1 | redact
-    ok "${service} updated"
-  done
+  TF_DIR="$(tf_root)"
+  if [[ ! -d "${TF_DIR}/.terraform" ]]; then
+    die "terraform is not initialised for ${ENVIRONMENT}: run 'make tf-init'. There is no gcloud fallback any more -- it updated four services and no job, and the next apply reverted it."
+  fi
+  step "terraform plan (image_refs from $(basename "${MANIFEST}"))"
+  tf_var_args
+  tf -chdir="${TF_DIR}" plan -input=false -lock-timeout=120s \
+    "${TF_VAR_ARGS[@]}" -var-file="${REFS_FILE}" \
+    -out="${WORK}/deploy.tfplan" 2>&1 | redact
+
+  # The same shared-project guard the release and `make destroy` use, over
+  # THIS plan. This used to `apply -auto-approve` with no guard at all, in a
+  # project that holds another team's live cluster.
+  step "Shared-project guard"
+  tf -chdir="${TF_DIR}" show -json "${WORK}/deploy.tfplan" >"${WORK}/deploy.plan.json"
+  "${SWARM_LIB_DIR}/plan-guard.sh" --plan "${WORK}/deploy.plan.json" --mode apply
+  # The JSON plan can hold sensitive values in cleartext; it is not kept.
+  rm -f "${WORK}/deploy.plan.json"
+
+  step "terraform apply"
+  tf -chdir="${TF_DIR}" apply -input=false -lock-timeout=120s "${WORK}/deploy.tfplan" 2>&1 | redact
+  ok "terraform apply complete"
 fi
 
-step "Waiting for revisions to become ready"
+# ---------------------------------------------------------------------------
+# 1 and 2: every service is ready, on exactly the manifest's digest
+# ---------------------------------------------------------------------------
+
+step "Services: newest revision serving, on the promoted digest"
 DEADLINE=$(( $(date -u +%s) + WAIT_SECONDS ))
-# The UI is included here: a revision that fails to start is a broken deploy
+# The UI is included: a revision that fails to start is a broken deploy
 # whether it serves JSON or JavaScript.
-for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}" "${UI_SERVICE}"; do
+for pair in "${API_SERVICE}:swarm-api" "${SCHEDULER_SERVICE}:swarm-scheduler" \
+            "${QUOTA_SERVICE}:swarm-quota-broker" "${RECONCILER_SERVICE}:swarm-reconciler" \
+            "${UI_SERVICE}:swarm-ui"; do
+  service="${pair%%:*}"
+  image_name="${pair##*:}"
   while :; do
-    # NOT `status.conditions.filter("type:Ready").status`. That expression is
-    # not valid gcloud format syntax and never was:
-    #
-    #   ERROR: Transform function expected
-    #   [service value(status.conditions.filter("type:Ready").status *HERE* )]
-    #
-    # It sat behind `2>/dev/null || true`, so the error was discarded, the probe
-    # returned empty, and empty was read as "the service does not exist". This
-    # readiness wait has therefore NEVER checked readiness -- it reported either
-    # a missing service or nothing at all, for every deploy this script has ever
-    # run. It only became visible when the swallowed stderr was fixed.
-    #
-    # A service is ready when its newest revision is the one serving. Comparing
-    # the two names says that directly, and catches the case a single "Ready"
-    # condition misses: an old revision healthy while the new one failed to
-    # start.
-    if ! cloud_run_probe "${service}" 'value(status.latestReadyRevisionName,status.latestCreatedRevisionName)'; then
-      warn "${service} does not exist; skipping readiness wait"
+    if ! cloud_run_describe services "${service}"; then
+      warn "${service} does not exist"
       SKIPPED+=("${service}: does not exist")
       break
     fi
-    ready="$(printf '%s' "${CLOUD_RUN_VALUE}" | awk '{print $1}')"
-    created="$(printf '%s' "${CLOUD_RUN_VALUE}" | awk '{print $2}')"
+    # A service is ready when its newest revision is the one serving.
+    # Comparing the two names says that directly, and catches what a single
+    # "Ready" condition misses: an old revision healthy while the new one
+    # failed to start.
+    ready="$(jq -r '.status.latestReadyRevisionName // empty' "${WORK}/${service}.json")"
+    created="$(jq -r '.status.latestCreatedRevisionName // empty' "${WORK}/${service}.json")"
     if [[ -n "${ready}" && "${ready}" == "${created}" ]]; then
-      ok "${service} ready (${ready})"
       break
     fi
     if [[ "$(date -u +%s)" -ge "${DEADLINE}" ]]; then
       warn "${service} was not ready within ${WAIT_SECONDS}s (serving ${ready:-none}, newest ${created:-unknown})"
-      SKIPPED+=("${service}: not ready within ${WAIT_SECONDS}s (condition: ${ready:-unknown})")
-      break
+      SKIPPED+=("${service}: not ready within ${WAIT_SECONDS}s (serving ${ready:-none}, newest ${created:-unknown})")
+      continue 2
     fi
     sleep 5
   done
+  [[ -f "${WORK}/${service}.json" ]] || continue
+
+  expected="$(manifest_ref "${image_name}")"
+  # v1 (Knative) shape first, which is what `gcloud run services describe`
+  # returns; the v2 shape as a fallback so a gcloud that switches surfaces
+  # does not turn this into "no image".
+  actual="$(jq -r '(.spec.template.spec.containers[0].image // .template.containers[0].image // empty)' \
+    "${WORK}/${service}.json")"
+  if [[ -z "${expected}" ]]; then
+    warn "${service}: the manifest promoted no ${image_name}"
+    SKIPPED+=("${service}: the manifest promoted no ${image_name}, so what it runs is unverified")
+  elif [[ "${actual}" != "${expected}" ]]; then
+    # THE CHECK THE 2026-09-20 AUDIT FOUND NOTHING COULD MAKE. A service
+    # serving an older digest reports healthy with ready == created, and
+    # every other line of this script passes it.
+    err "${service}: serving ${actual:-no image}, but the manifest promoted ${expected}"
+    SKIPPED+=("${service}: serving ${actual:-no image}, not the promoted ${expected##*@}")
+  else
+    ok "${service} ${ready} runs ${actual##*@}"
+  fi
 done
+
+# ---------------------------------------------------------------------------
+# 3: every terraform-managed Cloud Run job is on a promoted digest
+# ---------------------------------------------------------------------------
+#
+# Listed and filtered here rather than with --filter on the label: the key has
+# a hyphen, and a filter gcloud parses differently from what it looks like
+# would turn this into "no jobs", which reads as a pass.
+
+step "Cloud Run jobs: every terraform-managed job on a promoted digest"
+jobs_rc=0
+gcloud run jobs list --project "${PROJECT_ID}" --region "${REGION}" --format=json \
+  >"${WORK}/jobs.json" 2>"${WORK}/jobs.err" || jobs_rc=$?
+if [[ "${jobs_rc}" -ne 0 ]]; then
+  die_if_auth_failure "$(cat "${WORK}/jobs.err")"
+  err "could not list Cloud Run jobs:"
+  redact <"${WORK}/jobs.err" | head -n 5 | sed 's/^/     /' >&2
+  SKIPPED+=("Cloud Run jobs: could not be listed, so no job's image is verified")
+else
+  jq -r '.[]
+         | select((.metadata.labels // {})["managed-by"] == "swarm-terraform")
+         | [.metadata.name,
+            (.spec.template.spec.template.spec.containers[0].image
+             // .template.template.containers[0].image // "")]
+         | @tsv' "${WORK}/jobs.json" >"${WORK}/jobs.tsv"
+  jobs_seen=0
+  while IFS=$'\t' read -r job_name job_image; do
+    [[ -n "${job_name}" ]] || continue
+    jobs_seen=$((jobs_seen + 1))
+    job_image_name="${job_image%%@*}"
+    job_image_name="${job_image_name%%:*}"
+    job_image_name="${job_image_name##*/}"
+    job_expected="$(manifest_ref "${job_image_name}")"
+    if [[ "${job_image}" != *@sha256:* || "${job_image%%@*}" == *:* ]]; then
+      err "job ${job_name}: runs ${job_image:-no image}, which is not pinned by digest"
+      SKIPPED+=("job ${job_name}: runs ${job_image:-no image}, not a digest")
+    elif [[ -z "${job_expected}" ]]; then
+      err "job ${job_name}: runs ${job_image_name}, which the manifest did not promote"
+      SKIPPED+=("job ${job_name}: runs ${job_image_name}, which is not in the manifest")
+    elif [[ "${job_image}" != "${job_expected}" ]]; then
+      err "job ${job_name}: runs ${job_image}, but the manifest promoted ${job_expected}"
+      SKIPPED+=("job ${job_name}: runs ${job_image##*@}, not the promoted ${job_expected##*@}")
+    fi
+  done <"${WORK}/jobs.tsv"
+  if [[ "${jobs_seen}" -eq 0 ]]; then
+    # Zero is possible (no tenant holds a Cloud Run profile), but the
+    # verification job is always there, so zero here means the listing did
+    # not return what it should.
+    warn "no terraform-managed Cloud Run job was listed; swarm-verify at least should exist"
+    SKIPPED+=("Cloud Run jobs: none listed, so no job's image is verified")
+  else
+    ok "${jobs_seen} terraform-managed job(s) checked against the manifest"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4: the scheduler hands every worker the promoted runner digests
+# ---------------------------------------------------------------------------
+
+step "Scheduler: WORKER_IMAGE_REFS matches the promoted runner digests"
+scheduler_json="${WORK}/${SCHEDULER_SERVICE}.json"
+if [[ ! -f "${scheduler_json}" ]]; then
+  SKIPPED+=("${SCHEDULER_SERVICE}: not described, so WORKER_IMAGE_REFS is unverified")
+else
+  jq -r '(.spec.template.spec.containers[0].env // .template.containers[0].env // [])[]
+         | select(.name == "WORKER_IMAGE_REFS") | .value // empty' \
+    "${scheduler_json}" >"${WORK}/worker-refs.raw"
+  if [[ ! -s "${WORK}/worker-refs.raw" ]]; then
+    # Without it the dispatcher falls back to a tag -- the path this closes.
+    err "${SCHEDULER_SERVICE}: WORKER_IMAGE_REFS is not set; every Job it creates would name a tag"
+    SKIPPED+=("${SCHEDULER_SERVICE}: WORKER_IMAGE_REFS is not set")
+  elif ! jq -e 'type == "object" and length > 0' "${WORK}/worker-refs.raw" >/dev/null 2>&1; then
+    err "${SCHEDULER_SERVICE}: WORKER_IMAGE_REFS is not a JSON object of image -> digest"
+    SKIPPED+=("${SCHEDULER_SERVICE}: WORKER_IMAGE_REFS is malformed")
+  else
+    worker_bad=0
+    while IFS=$'\t' read -r runner runner_ref; do
+      [[ -n "${runner}" ]] || continue
+      runner_expected="$(manifest_ref "${runner}")"
+      if [[ "${runner_ref}" != "${runner_expected}" ]]; then
+        err "${SCHEDULER_SERVICE}: WORKER_IMAGE_REFS names ${runner_ref} for ${runner}, but the manifest promoted ${runner_expected:-nothing}"
+        SKIPPED+=("${SCHEDULER_SERVICE}: WORKER_IMAGE_REFS[${runner}] is ${runner_ref##*@}, not the promoted ${runner_expected##*@}")
+        worker_bad=1
+      fi
+    done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "${WORK}/worker-refs.raw")
+    [[ "${worker_bad}" -eq 1 ]] || ok "WORKER_IMAGE_REFS names the promoted digest for $(jq 'length' "${WORK}/worker-refs.raw") runner image(s)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5: health
+# ---------------------------------------------------------------------------
 
 if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
   step "Health"
@@ -252,12 +298,11 @@ if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
   # contract -- "my dependencies answer" -- and a static file server has no
   # dependencies to speak for. Its liveness is the readiness wait above.
   for service in "${API_SERVICE}" "${SCHEDULER_SERVICE}" "${QUOTA_SERVICE}" "${RECONCILER_SERVICE}"; do
-    if ! cloud_run_probe "${service}" 'value(status.url)'; then
-      warn "${service} does not exist; skipping /readyz check"
-      SKIPPED+=("${service}: does not exist, /readyz not checked")
+    if [[ ! -f "${WORK}/${service}.json" ]]; then
+      SKIPPED+=("${service}: not described, /readyz not checked")
       continue
     fi
-    url="${CLOUD_RUN_VALUE}"
+    url="$(jq -r '.status.url // .uri // empty' "${WORK}/${service}.json")"
     if [[ -z "${url}" ]]; then
       warn "${service} has no status.url yet; skipping /readyz check"
       SKIPPED+=("${service}: no status.url yet, /readyz not checked")
@@ -268,7 +313,7 @@ if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
     # on a mint failure would only close that inner subshell, so curl would
     # run with an empty bearer and a 401 would be misread as a bad /readyz.
     token="$(id_token)"
-    curl_err="$(mktemp "${TMPDIR:-/tmp}/swarm-readyz.XXXXXX")"
+    curl_err="${WORK}/readyz.err"
     curl_rc=0
     # `|| curl_rc=$?`, not `if ! code=$(...); then`: `!` itself always
     # succeeds once its negated command has failed, so `$?` inside that
@@ -276,36 +321,19 @@ if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
     code="$(auth_config "${token}" | curl -sS -m 15 -o /dev/null -w '%{http_code}' -K - \
          "${url%/}/readyz" 2>"${curl_err}")" || curl_rc=$?
     if [[ "${curl_rc}" -ne 0 ]]; then
-      curl_msg="$(cat "${curl_err}" 2>/dev/null || true)"
-      rm -f "${curl_err}"
-      # curl still writes its -w status (usually 000) even when it fails to
-      # connect, so appending a second "000" on failure produced the
-      # malformed six-digit code this used to print; a transport failure is
-      # reported as exactly that, not as an HTTP response.
       warn "${service} /readyz: curl could not complete (exit ${curl_rc}); this is a transport failure, not an HTTP response"
-      printf '%s\n' "${curl_msg}" | redact | head -n 3 | sed 's/^/     /' >&2
+      redact <"${curl_err}" | head -n 3 | sed 's/^/     /' >&2
       SKIPPED+=("${service}: /readyz check failed to connect (curl exit ${curl_rc})")
       continue
     fi
-    rm -f "${curl_err}"
     if [[ "${code}" == "200" ]]; then
       ok "${service} ${url}"
     elif [[ "${code}" == "404" ]]; then
       # A 404 on /readyz from OUTSIDE the VPC is Google's edge refusing the
-      # request, not the service answering. Every control-plane service runs
-      # with ingress internal-and-cloud-load-balancing, so a direct call to its
-      # run.app URL from a workstation cannot reach the container -- the 404 is
-      # produced before the request arrives, and the route exists and works.
-      #
-      # This check has therefore never been able to pass from a developer
-      # machine. It only became visible when the swallowed stderr around it was
-      # fixed, at which point every deploy reported four "unresolved issues"
-      # that were the ingress setting doing its job.
-      #
-      # Reported, never counted as a failure: the readiness wait above already
-      # confirmed the newest revision is serving, which is what a deploy needs
-      # to know from here. Checking /readyz for real means asking from inside
-      # the VPC or through the load balancer.
+      # request, not the service answering: every control-plane service runs
+      # with ingress internal-and-cloud-load-balancing. Reported, never counted
+      # as a failure -- the readiness and digest checks above already confirmed
+      # what a deploy needs to know from here.
       dim "  ${service}: /readyz not reachable from here (404 at the edge; ingress is internal-and-cloud-load-balancing)"
     else
       warn "${service} /readyz returned ${code}"
@@ -320,7 +348,7 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   for issue in "${SKIPPED[@]}"; do
     printf '     %s\n' "${issue}" >&2
   done
-  die "not every service is confirmed on ${TAG}; see above before trusting this deploy"
+  die "not everything is confirmed on the promoted digests; see above before trusting this deploy"
 fi
-ok "deployed ${TAG}"
-dim "verify end to end with: make smoke"
+ok "every service, job and worker image runs the digests promoted as ${TAG}"
+dim "prove it end to end with: make smoke, and scripts/prove-gke-dispatch.sh for the GKE path"

@@ -9,9 +9,12 @@
 # Two properties this workflow exists to guarantee:
 #
 #   1. Everything deployed is an immutable sha256 DIGEST that was built from a
-#      known commit and scanned. `:dev` and `:prod` tags exist for humans; no
-#      job here resolves a mutable tag, so "what is running" is always
-#      answerable.
+#      known commit and scanned. `:dev` and `:prod` tags exist for humans.
+#      terraform/infra takes `image_refs` and refuses to plan an image with no
+#      digest, so no service, job or worker image can be deployed at a tag.
+#      The one place a tag is read is a redeploy without a build, which
+#      resolves `:<channel>` ONCE, writes the digests down, and deploys and
+#      verifies exactly those -- so "what is running" is always answerable.
 #   2. A production apply requires a human. saga-agents-staging is shared with
 #      other teams, so an unattended apply is an unattended change to somebody
 #      else's blast radius. The gate is a GitHub Environment with required
@@ -72,13 +75,13 @@ jobs:
     name: verify
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -105,7 +108,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -119,6 +122,11 @@ jobs:
         run: echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: build (Cloud Build, linux/amd64)
+        # Concurrent, at most 4 builds at a time (build-images.sh says why 4).
+        # Run 35969538707 spent nineteen minutes here submitting eight builds
+        # one after another. Each image's output is printed with its name on
+        # every line, and a failure names every image that failed rather than
+        # stopping at the first.
         run: ./scripts/build-images.sh --tag "${{ steps.tag.outputs.tag }}"
 
       # INSTALLED BECAUSE THE PROMOTION GATE NEEDS IT, and it was not.
@@ -148,8 +156,16 @@ jobs:
           trivy --version
 
       - name: scan and promote by digest
-        # push-images.sh runs trivy against each digest and REFUSES to attach a
-        # channel tag to an image with fixable HIGH/CRITICAL findings.
+        # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
+        # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
+        # none of them. Run 35969538707 scanned and tagged one image at a time,
+        # so seven images were already on :dev when swarm-ui was refused, and
+        # :dev described a release nobody built. A tag that fails to move
+        # part-way is put back, and the manifest below is written only after
+        # every tag has moved -- so on failure there is no artifact to upload.
+        # If the put-back itself fails, the step's last line says the channel
+        # is MIXED and names the images; a `skip_build` redeploy reads the
+        # channel, so put those back (the commands are in the log) first.
         run: ./scripts/push-images.sh --tag "${{ steps.tag.outputs.tag }}" --channel "${ENVIRONMENT}" --scan
 
       - uses: actions/upload-artifact@v4
@@ -176,7 +192,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -197,11 +213,48 @@ jobs:
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="prefix=infra/${ENVIRONMENT}"
 
+      # THE APPLY IS THE DEPLOY, AND IT DEPLOYS DIGESTS.
+      #
+      # terraform/infra takes `image_refs` -- one sha256 digest per image -- and
+      # refuses to plan while any image has none. This job used to plan with the
+      # tfvars alone, which meant `image_tag = "bootstrap"`: every service and
+      # every worker job planned onto a tag that does not exist. It never got
+      # that far only because no release had yet passed its build.
+      - name: fetch the promotion manifest
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: deployed-images-${{ github.event.inputs.environment || 'dev' }}
+          path: build/
+
+      - name: pin every image by digest
+        # From this run's promotion when it built; otherwise from what the
+        # channel tag points at NOW, written down as a manifest so the deploy
+        # job verifies exactly what this apply pinned even if someone moves
+        # the tag in between. scripts/lib/image-refs.sh refuses a tag.
+        run: |
+          set -euo pipefail
+          manifest="build/deployed-images-${ENVIRONMENT}.json"
+          if [ -f "${manifest}" ]; then
+            ./scripts/lib/image-refs.sh --manifest "${manifest}" \
+              --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
+          else
+            ./scripts/lib/image-refs.sh --channel "${ENVIRONMENT}" --write-manifest "${manifest}" \
+              --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinned-images-${{ github.event.inputs.environment || 'dev' }}
+          path: build/deployed-images-*.json
+          retention-days: 30
+
       - name: plan
         run: |
           set -euo pipefail
           terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=180s \
             -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
+            -var-file="${GITHUB_WORKSPACE}/build/image-refs-${ENVIRONMENT}.tfvars.json" \
             -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
           terraform -chdir=${{ env.TF_ROOT }} show -json plan.tfplan > "${TF_ROOT}/plan.json"
 
@@ -245,7 +298,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -264,45 +317,26 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: fetch the promotion manifest
-        if: needs.build.result == 'success'
+      - name: fetch the digests the apply pinned
+        # The manifest the infrastructure job pinned and applied, not a second
+        # resolution of the channel: the two would differ if the tag moved in
+        # between, and then this job would be verifying something that was
+        # never applied. (This step used to reconstruct the manifest itself,
+        # from a hand-kept list of six images that omitted swarm-ui and
+        # swarm-verify.)
         uses: actions/download-artifact@v4
         with:
-          name: deployed-images-${{ github.event.inputs.environment || 'dev' }}
+          name: pinned-images-${{ github.event.inputs.environment || 'dev' }}
           path: build/
 
-      - name: reconstruct the manifest when redeploying existing digests
-        # With skip_build there is no artifact from this run, so the digests
-        # currently behind the channel tag are resolved from Artifact Registry.
-        # Still digests, never tags: this records what :<channel> points at NOW,
-        # so the deploy cannot drift if someone retags mid-run.
-        if: needs.build.result != 'success'
-        run: |
-          set -euo pipefail
-          manifest="build/deployed-images-${ENVIRONMENT}.json"
-          if [ -f "${manifest}" ]; then
-            echo "manifest already present"; exit 0
-          fi
-          mkdir -p build
-          repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
-          entries='[]'
-          for image in swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler \
-                       agent-runtime-base agent-runtime-browser; do
-            digest="$(gcloud artifacts docker images describe \
-              "${repo}/${image}:${ENVIRONMENT}" --project "${PROJECT_ID}" \
-              --format='value(image_summary.digest)' 2>/dev/null || true)"
-            [ -n "${digest}" ] || { echo "no ${image}:${ENVIRONMENT} published; skipping"; continue; }
-            entries="$(jq -c --arg n "${image}" --arg i "${repo}/${image}" --arg d "${digest}" \
-              '. + [{name:$n, image:$i, tag:"channel", channel:"'"${ENVIRONMENT}"'", digest:$d, ref:($i + "@" + $d)}]' \
-              <<<"${entries}")"
-          done
-          jq -n --arg c "${ENVIRONMENT}" --arg env "${ENVIRONMENT}" --argjson images "${entries}" \
-            '{tag:"channel", channel:$c, promoted_at:(now|todate), environment:$env, images:$images}' \
-            > "${manifest}"
-          jq -r '.images[] | "  \(.name)  \(.digest)"' "${manifest}"
-
-      - name: deploy the promoted digests
-        run: ./scripts/lib/deploy.sh --wait 600
+      - name: verify every service, job and worker image runs the pinned digests
+        id: verify
+        # The apply above IS the deploy; this proves it. A service serving an
+        # older digest reported healthy through every check the pipeline had
+        # (docs/audits/2026-09-20/tag-vs-digest.md). --verify-only compares
+        # every service's template, every terraform-managed job, and the
+        # scheduler's WORKER_IMAGE_REFS against the manifest, digest to digest.
+        run: ./scripts/lib/deploy.sh --verify-only --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
 
       - name: smoke test
         # The `mock` profile needs no provider key, so this proves the whole
@@ -311,6 +345,27 @@ jobs:
         env:
           SWARM_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
         run: ./scripts/smoke-test.sh --timeout 900
+
+      - name: prove GKE dispatch with one browser task
+        # docs/incidents/2026-09-24-gke-dispatch.md section 5: every browser
+        # task this platform ever accepted failed, through seven stacked
+        # causes, and "the cheapest proof is one task". This is that task,
+        # after every deploy: dispatched to GKE_AUTOPILOT, SUCCEEDED, an
+        # artifact under the tenant's own prefix, and its lease released.
+        #
+        # The browser profile needs an anthropic credential on the calling
+        # identity's tenant. Without one the task PARKS on CREDENTIAL_MISSING,
+        # which proves nothing about GKE -- and the script fails saying exactly
+        # that, rather than passing on a task that never reached a backend.
+        #
+        # Runs even when the smoke test failed, provided the deployment itself
+        # verified: a smoke failure on the Cloud Run path is exactly when the
+        # GKE path's own diagnosis is worth having, and the two share nothing
+        # below the API.
+        if: always() && steps.verify.outcome == 'success'
+        env:
+          SWARM_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: ./scripts/prove-gke-dispatch.sh --timeout 900
 
       - name: status
         if: always()

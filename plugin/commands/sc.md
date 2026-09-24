@@ -29,7 +29,10 @@ Exit codes, and they mean the same thing on every view:
 - **0** — everything the view printed was read, and nothing is down
 - **1** — something the view is about could not be read. That includes `sc`
   printing nothing at all because it could not connect. It is an alert about
-  the path to the cluster, not about the cluster
+  the path to the cluster, not about the cluster. Report it as "I could not
+  reach it, and this is why" — never as "SwarmCloud is down".
+  `uv run swarm doctor` prints which door it used and what that door takes,
+  and the `sc` skill's table says what each refusal means
 - **3** — it was all read, and something is **down**
 
 One exception, and it is deliberate: a deployment whose swarm-api has no

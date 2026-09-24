@@ -69,7 +69,22 @@ def _sortable(value: Any) -> Any:
     return value
 
 
-def _compare(actual: Any, op: str, expected: Any) -> bool:
+_RANGE_OPS = frozenset({"<", "<=", ">", ">="})
+
+
+def _compare(actual: Any, op: Any, expected: Any) -> bool:
+    # `FieldFilter(field, "==", None)` does not arrive as "==". The installed
+    # google-cloud-firestore turns it into the unary operator IS_NULL (and
+    # `!= None` into IS_NOT_NULL) before the query ever sees it. Firestore
+    # matches IS_NULL only where the field is PRESENT and null -- a document
+    # without the field is not returned -- which is why admission writes
+    # `released_at: None` explicitly and why this does not treat _MISSING as
+    # null.
+    unary = getattr(op, "name", None)
+    if unary == "IS_NULL":
+        return actual is None
+    if unary == "IS_NOT_NULL":
+        return actual is not _MISSING and actual is not None
     if op in {"==", "eq"}:
         return actual == expected
     if op in {"!=", "ne"}:
@@ -82,6 +97,14 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
         return isinstance(actual, list) and expected in actual
     if op == "array_contains_any":
         return isinstance(actual, list) and any(item in actual for item in expected)
+    # Refuse an unknown operator BEFORE the missing-field shortcut below. It
+    # used to come after it, so an operator this fake did not know returned
+    # False for every document whose field was null -- an empty result, not
+    # the loud failure the module docstring promises. IS_NULL was the operator
+    # that found it: every live lease matched nothing and only a released one
+    # reached the raise.
+    if op not in _RANGE_OPS:
+        raise NotImplementedError(f"fake firestore does not implement operator {op!r}")
     if actual is _MISSING or actual is None:
         # Firestore excludes documents missing the field from inequality results.
         return False
@@ -91,9 +114,7 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
         return actual <= expected
     if op == ">":
         return actual > expected
-    if op == ">=":
-        return actual >= expected
-    raise NotImplementedError(f"fake firestore does not implement operator {op!r}")
+    return actual >= expected
 
 
 @dataclass(frozen=True)

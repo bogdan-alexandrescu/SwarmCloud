@@ -133,8 +133,25 @@ DESIRED_CONTEXT="swarm-${ENVIRONMENT}"
 if "${KUBECTL_BIN}" config get-contexts "${GENERATED_CONTEXT}" >/dev/null 2>&1; then
   "${KUBECTL_BIN}" config rename-context "${GENERATED_CONTEXT}" "${DESIRED_CONTEXT}" >/dev/null 2>&1 || true
 fi
-"${KUBECTL_BIN}" config use-context "${DESIRED_CONTEXT}" >/dev/null 2>&1 \
-  || "${KUBECTL_BIN}" config use-context "${GENERATED_CONTEXT}" >/dev/null 2>&1 || true
+# CHECKED, NOT `|| true`. Both use-context calls used to be allowed to fail in
+# silence, leaving whatever context was current before -- and under --merge
+# that is the operator's own kubeconfig, whose active context on the reference
+# workstation was another team's agents-staging. The line below then printed
+# `ok context <their cluster>` and the /readyz probe that follows ran against
+# it. The rename above may legitimately fail (the context is already renamed);
+# ending up anywhere but the swarm cluster may not.
+CONTEXT_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-kube-context.XXXXXX")"
+if ! "${KUBECTL_BIN}" config use-context "${DESIRED_CONTEXT}" >/dev/null 2>"${CONTEXT_ERR}" \
+   && ! "${KUBECTL_BIN}" config use-context "${GENERATED_CONTEXT}" >/dev/null 2>>"${CONTEXT_ERR}"; then
+  err "could not select the swarm context (${DESIRED_CONTEXT} or ${GENERATED_CONTEXT}):"
+  redact <"${CONTEXT_ERR}" | head -n 4 | sed 's/^/     /' >&2
+  rm -f "${CONTEXT_ERR}"
+  die "get-credentials reported success but wrote no usable swarm context; nothing below may run against whatever context is current instead"
+fi
+rm -f "${CONTEXT_ERR}"
+if ! kube_context_is_swarm; then
+  die "the current context is '$(kube_current_context || echo none)', not the swarm cluster -- refusing to probe or report through it"
+fi
 ok "context $("${KUBECTL_BIN}" config current-context)"
 
 step "Version skew"
@@ -154,8 +171,10 @@ fi
 
 step "Connectivity"
 READYZ_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-readyz.XXXXXX")"
+REACHED=0
 if "${KUBECTL_BIN}" get --raw='/readyz' >/dev/null 2>"${READYZ_ERR_FILE}"; then
   ok "API server reachable"
+  REACHED=1
 else
   READYZ_ERR="$(cat "${READYZ_ERR_FILE}")"
   rm -f "${READYZ_ERR_FILE}"
@@ -173,17 +192,39 @@ else
 fi
 rm -f "${READYZ_ERR_FILE}"
 
-if NAMESPACES="$("${KUBECTL_BIN}" get namespaces -l managed-by=swarm-terraform \
-      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"; then
-  if [[ -n "${NAMESPACES}" ]]; then
-    ok "swarm namespaces:"
-    printf '%s\n' "${NAMESPACES}" | sed 's/^/    /' >&2
+if [[ "${REACHED}" -eq 1 ]]; then
+  # Only asked of a server that answered: a listing against one that did not
+  # would fail for the reason already printed above.
+  NS_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-namespaces.XXXXXX")"
+  if NAMESPACES="$("${KUBECTL_BIN}" get namespaces -l managed-by=swarm-terraform \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>"${NS_ERR_FILE}")"; then
+    if [[ -n "${NAMESPACES}" ]]; then
+      ok "swarm namespaces:"
+      printf '%s\n' "${NAMESPACES}" | sed 's/^/    /' >&2
+    else
+      info "no swarm-managed namespaces yet; register a tenant to create one"
+    fi
   else
-    info "no swarm-managed namespaces yet; register a tenant to create one"
+    # `2>/dev/null` used to make this silent -- no line at all, which reads as
+    # nothing worth saying. A cluster-scoped `get namespaces` is exactly what
+    # namespace-scoped RBAC forbids.
+    warn "could not list namespaces; that is a failed listing, not proof there are none:"
+    redact <"${NS_ERR_FILE}" | head -n 3 | sed 's/^/     /' >&2
   fi
+  rm -f "${NS_ERR_FILE}"
 fi
 
 hr
+if [[ "${REACHED}" -ne 1 ]]; then
+  # NOT "ok kubectl configured". The kubeconfig is written and correct, but the
+  # one thing the next script needs -- an API server that answers -- was not
+  # shown, and exiting 0 here let the chain run on as if it had been. The sweep
+  # (13-swallowed-stderr-sweep.md, configure-kubectl.sh:134) named that exit
+  # code as the harm; the message above is the diagnosis.
+  err "kubeconfig written for ${GKE_CLUSTER}, but its API server did NOT answer (reason above)"
+  [[ "${MERGE}" -eq 1 ]] || dim "  the kubeconfig is ${KUBECONFIG_PATH}; re-run this once the cause above is fixed"
+  exit 1
+fi
 ok "kubectl configured"
 if [[ "${MERGE}" -eq 0 ]]; then
   cat >&2 <<EOF
