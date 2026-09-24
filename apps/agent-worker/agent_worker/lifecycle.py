@@ -1713,8 +1713,20 @@ class Worker:
         """
         if self.ws is None:
             return None
-        # MUTATION B, reverted in the next commit: no fence check before the
-        # checkpoint's first side effect; only the pointer's transaction checks.
+        try:
+            self.control.ensure_owner(write=f"checkpoint ({label})")
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            # A read that could not be made is not a fence. Carry on, as a
+            # checkpoint always has. The pointer's own transaction is still the
+            # authority, and it re-checks.
+            self.log.warning(
+                "could not confirm this attempt still owns its task before "
+                "checkpointing; the pointer write will check again",
+                label=label,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         try:
             self.control.emit(EventType.CHECKPOINT_STARTED, {"label": label})
             record = self.checkpoints.create(self.ws, label=label)
