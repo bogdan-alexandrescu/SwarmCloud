@@ -147,8 +147,13 @@ resource "google_service_account_iam_member" "deployer_wif" {
   member             = each.value
 }
 
+# Project-wide, unconditioned -- except for any role named in
+# deployer_scoped_roles, which moves to its conditioned block in
+# deployer_conditions.tf in the same plan. Subtracting it here and creating it
+# there is one switch on purpose: a conditioned binding beside an unconditioned
+# one for the same role grants exactly what the unconditioned one does.
 resource "google_project_iam_member" "deployer_roles" {
-  for_each = var.enable_github_wif ? toset(var.deployer_roles) : toset([])
+  for_each = var.enable_github_wif ? setsubtract(toset(var.deployer_roles), var.deployer_scoped_roles) : toset([])
 
   project = var.project_id
   role    = each.value
@@ -177,8 +182,10 @@ resource "google_project_iam_custom_role" "secret_provisioner" {
   permissions = var.deployer_secret_permissions
 }
 
+# Replaced by deployer_secrets_scoped (deployer_conditions.tf) once
+# "swarmSecretProvisioner" is in deployer_scoped_roles.
 resource "google_project_iam_member" "deployer_secrets" {
-  count = local.wif_enabled
+  count = var.enable_github_wif && !contains(var.deployer_scoped_roles, "swarmSecretProvisioner") ? 1 : 0
 
   project = var.project_id
   role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.secret_provisioner[0].role_id}"

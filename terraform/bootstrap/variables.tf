@@ -148,9 +148,15 @@ variable "deployer_roles" {
     CREATE secrets and set their IAM policy, not to read their payloads, so it
     gets the custom swarmSecretProvisioner role in wif.tf instead. The
     validation below stops the predefined role being put back by hand.
+
+    Every role here is granted project-wide until it is also named in
+    deployer_scoped_roles. The six marked SCOPABLE below have a conditioned
+    grant waiting in deployer_conditions.tf; the ten marked UNSCOPABLE belong to
+    services IAM cannot name resources in, and that file records why for each.
   EOT
   type        = list(string)
   default = [
+    # UNSCOPABLE: Artifact Registry is not in IAM's resource-attribute list.
     "roles/artifactregistry.admin",
     # MEASURED, NOT ASSUMED. Without this the first main-ref CI build failed at
     # `gcloud builds submit` with PERMISSION_DENIED, naming
@@ -161,20 +167,36 @@ variable "deployer_roles" {
     # It is about BUILDS, not identities: it confers no ability to act as any
     # service account, which is why it can be project-level here while
     # `iam.serviceAccountUser` deliberately cannot (see wif.tf).
+    #
+    # UNSCOPABLE: builds are named by server-generated UUID; service unlisted.
     "roles/cloudbuild.builds.editor",
+    # UNSCOPABLE: Cloud Scheduler is not in IAM's resource-attribute list.
     "roles/cloudscheduler.admin",
+    # SCOPABLE (partly): load-balancer types and VMs; networks stay wide.
     "roles/compute.networkAdmin",
+    # SCOPABLE (partly): firewall rules and VMs; SSL certs stay wide.
     "roles/compute.securityAdmin",
+    # SCOPABLE: cluster-level calls; not the Kubernetes API inside a cluster.
     "roles/container.admin",
+    # SCOPABLE: per Firestore database.
     "roles/datastore.owner",
+    # UNSCOPABLE: IAM resources provide no resource name.
     "roles/iam.roleAdmin",
+    # UNSCOPABLE: IAM resources provide no resource name.
     "roles/iam.serviceAccountAdmin",
+    # UNSCOPABLE: IAM resources provide no resource name.
     "roles/iam.workloadIdentityPoolAdmin",
+    # SCOPABLE (partly): log buckets and views; sinks and exclusions stay wide.
     "roles/logging.configWriter",
+    # UNSCOPABLE: Cloud Monitoring is not in IAM's resource-attribute list.
     "roles/monitoring.editor",
+    # UNSCOPABLE: Pub/Sub is not in IAM's resource-attribute list.
     "roles/pubsub.admin",
+    # SCOPABLE: by the roles a policy change modifies, not by resource name.
     "roles/resourcemanager.projectIamAdmin",
+    # UNSCOPABLE: Cloud Run is not in IAM's resource-attribute list.
     "roles/run.admin",
+    # UNSCOPABLE: one set of enabled services per project; nothing to divide.
     "roles/serviceusage.serviceUsageAdmin",
     # storage.admin is NOT in this list any more; it is granted in wif.tf with an
     # IAM CONDITION instead, because it is the one role on this list whose blast
@@ -246,6 +268,40 @@ variable "deployer_secret_permissions" {
       for p in var.deployer_secret_permissions : startswith(p, "secretmanager.")
     ])
     error_message = "this role covers Secret Manager only; anything else belongs in deployer_roles where it is visible as a named role."
+  }
+}
+
+variable "deployer_scoped_roles" {
+  description = <<-EOT
+    Roles whose project-wide grant is REPLACED by the conditioned grant in
+    deployer_conditions.tf. Naming a role here removes it from deployer_roles'
+    unconditioned for_each and creates its conditioned block, in one plan.
+    "swarmSecretProvisioner" names the custom role in wif.tf.
+
+    ADD ONE PER RELEASE, and apply between releases. The next release's plan
+    refreshes every managed resource, so a condition that is wrong fails there,
+    immediately and loudly, on our own resource. Reverting is removing the
+    entry and applying again.
+
+    Empty by default so that merging the conditions changes nothing live.
+  EOT
+  type        = set(string)
+  default     = []
+
+  # Only a role with a conditioned block may be named. Anything else would be
+  # subtracted from deployer_roles with nothing created in its place -- a role
+  # silently revoked. The allowed names are the keys of the conditions
+  # themselves, not a second list of them.
+  validation {
+    condition     = alltrue([for r in var.deployer_scoped_roles : contains(keys(local.deployer_conditions), r)])
+    error_message = "only a role with a conditioned grant in deployer_conditions.tf can be scoped; the others are unscopable, and deployer_conditions.tf records why for each."
+  }
+
+  # And only a role the deployer actually holds. Scoping a role that is not in
+  # deployer_roles would GRANT it, conditioned, rather than narrow it.
+  validation {
+    condition     = alltrue([for r in var.deployer_scoped_roles : r == "swarmSecretProvisioner" || contains(var.deployer_roles, r)])
+    error_message = "a scoped role must also be in deployer_roles; scoping is a narrowing of an existing grant, never a new one."
   }
 }
 
