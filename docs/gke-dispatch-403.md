@@ -123,7 +123,8 @@ recorded here because it is the failure that would have come next.
 | a test fixture that agrees with the bug | the same sweep covers `tests/`; a fixture wanting the wrong spelling on purpose must carry `# namespace-prefix-exempt:` and say why |
 | the RBAC missing again | `rbac/dispatcher-rbac.yaml` is in `render.py`'s `TENANT_FILES`, so `kubernetes/apply.sh --tenant X` cannot create a namespace without it, and `tests/unit/worker/test_kubernetes_manifests.py` asserts the bindings name the real service accounts |
 | a placeholder rendered into a live RoleBinding | `render.substitute` refuses any leftover `__TOKEN__`, and `check_values` refuses any placeholder with no validation pattern — a RoleBinding to a literal `__SCHEDULER_GSA__` would apply cleanly and grant nothing |
-| the KSA mismatch | `render.DEFAULT_KSA_NAME`, asserted against `GkeJobDispatcher.ksa_for` in the manifest tests |
+| the KSA mismatch | `render.DEFAULT_KSA_NAME`, asserted against `GkeJobDispatcher.ksa_for` in the manifest tests, and `check-contract-parity.sh` section 7 additionally holds **terraform's** two `ksa_name` defaults to the same name — terraform is the half that issues the Workload Identity binding, so a pod can name a ServiceAccount that exists and still have no Google identity at all |
+| the same class of defect elsewhere | the repository was swept for every other value stated in more than one place; the register of what is derived, what is compared and what is neither is [docs/mirrored-values.md](mirrored-values.md) |
 | GKE failing unnoticed for two days | `scripts/smoke-test.sh` covers one profile **per backend**, derived from the frozen catalogue via `resolve_backend`, and fails loudly when a backend has no available profile instead of dropping it from the matrix |
 | nobody being able to answer "has GKE ever dispatched?" | the `dispatch ok` line in `apps/scheduler/scheduler/loop.py` and the alert on `swarm_scheduler_dispatched_total{backend}` |
 

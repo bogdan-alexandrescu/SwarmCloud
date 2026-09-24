@@ -24,18 +24,65 @@ GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 DESTROY = REPO / "scripts" / "destroy.sh"
 PROJECT = "saga-agents-staging"
 
-# The real neighbours in the shared project.
-DENY = [
-    "agents-staging", "agents-staging-vpc", "agents-staging-subnet",
-    "promptlab-runner", "promptlab-deployer", "crawler", "aipipeline",
-    "external-secrets", "tournament-digest", "staging-gke-nodes",
-    "api-service", "publisher", "saga-storage-ro", "saga-storage-rw",
-]
-UNLABELABLE = [
-    "google_service_account", "google_service_account_key",
-    "google_project_iam_member", "google_secret_manager_secret_version",
-    "random_id", "random_string", "null_resource",
-]
+COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
+TYPES_JSON = REPO / "scripts" / "lib" / "unlabelable-types.json"
+
+
+def _shared_deny_list() -> list[str]:
+    """Every entry of `SHARED_DENY_LIST` in scripts/lib/common.sh.
+
+    DERIVED, NOT RESTATED, and that is a defect fixed rather than a tidy-up.
+
+    This file used to carry its own fourteen-entry list of "the real neighbours
+    in the shared project", written by hand. `SHARED_DENY_LIST` has twenty-one
+    entries, so the suite proving `make destroy` refuses to touch another team's
+    resources was proving it for fourteen of them. Missing entirely: the three
+    shared buckets (`saga-agents-crawled-media-staging`,
+    `saga-agents-files-staging`, `saga-agents-terraform-state-staging`) and the
+    other team's Compute Engine default service account. A plan deleting any of
+    those was never shown to be refused.
+
+    The SHAPE was wrong too, which is the more interesting half. The hand-written
+    list held service accounts by short name (`promptlab-runner`); `common.sh`
+    holds them as full emails, and `scripts/destroy.sh` and
+    `scripts/lib/plan-guard.sh` pass those full emails to the guard. So the one
+    matching behaviour production actually depends on was the one the test did
+    not exercise -- and `209012342332-compute@developer.gserviceaccount.com` is
+    not even on `PROJECT`'s domain, so rebuilding an email from a short name, as
+    this file did, cannot produce it at all.
+
+    CLAUDE.md: "The deny-list lives once, in scripts/lib/common.sh."
+    """
+    text = COMMON_SH.read_text()
+    assert "SHARED_DENY_LIST=(" in text, (
+        f"{COMMON_SH} no longer declares SHARED_DENY_LIST=( ; the deny-list moved "
+        f"and this suite would otherwise judge by nothing"
+    )
+    block = text.split("SHARED_DENY_LIST=(", 1)[1].split("\n)", 1)[0]
+    return [
+        line.strip().strip('"')
+        for line in block.splitlines()
+        if line.strip().startswith('"')
+    ]
+
+
+#: The deny-list in the exact form the guard is given it. The two
+#: transformations are `guard_deny_json` in common.sh, which is what
+#: scripts/destroy.sh and scripts/lib/plan-guard.sh both call: the bare
+#: `default` comes OUT (too common a string to compare against every token --
+#: destroy-guard.jq matches the shared default network on the network field
+#: instead) and Firestore's `(default)` goes IN. Asserted structurally below
+#: rather than taken on trust.
+SHARED = _shared_deny_list()
+DENY = [entry for entry in SHARED if entry != "default"] + ["(default)"]
+
+#: Read from the file that three other things read, for the reason that file
+#: states in its own header: it was restated in awk in the workflows, the copies
+#: drifted, and the awk version exempted only `google_project_iam*` -- so a plan
+#: deleting a `google_storage_bucket_iam_member` was blocked from production by a
+#: rule nobody had decided. This file restated it too, as seven of the forty
+#: types, so the exemption logic was proved over a sixth of its input.
+UNLABELABLE = json.loads(TYPES_JSON.read_text())["types"]
 
 pytestmark = pytest.mark.skipif(
     not GUARD_JQ.exists(), reason="scripts/lib/destroy-guard.jq not built yet"
@@ -102,23 +149,78 @@ def test_no_labels_key_at_all_is_an_offender(tmp_path):
     assert "no_labels" in addresses(verdict, "offenders")
 
 
-@pytest.mark.parametrize("name", [
-    "promptlab-runner", "aipipeline", "external-secrets", "tournament-digest",
-])
-def test_every_real_neighbour_is_caught_even_if_mislabelled(name, tmp_path):
+def test_the_derived_deny_list_is_the_one_production_passes_the_guard():
+    """The derivation, asserted, so a silent parse failure cannot read as a pass.
+
+    A `split()` that stopped finding the array would yield `[]`, every
+    parametrised case below would collapse to nothing, and the suite would go
+    green having checked no resource at all -- the failure mode CLAUDE.md calls
+    out by name ("Empty output is not success").
+
+    MUTATION: rename `SHARED_DENY_LIST` in common.sh, or delete an entry, and
+    this fails on the count. Drop the `grep -vx default` from `guard_deny_json`
+    and the third assertion fails.
+    """
+    assert len(SHARED) >= 20, (
+        f"parsed only {len(SHARED)} deny-list entries out of scripts/lib/common.sh; "
+        f"the shared project holds a cluster, a VPC, two subnets, three buckets and "
+        f"twelve service accounts, so a short list means the parse broke"
+    )
+    assert len(UNLABELABLE) >= 35, (
+        f"parsed only {len(UNLABELABLE)} unlabelable types out of {TYPES_JSON.name}"
+    )
+    # The two transformations `guard_deny_json` applies, checked by their effect
+    # rather than by a second copy of the pipeline.
+    assert "default" not in DENY, (
+        "the bare `default` must not reach the token comparison -- it appears inside "
+        "too many unrelated resource ids; destroy-guard.jq matches the shared "
+        "default network on the network/subnetwork field instead"
+    )
+    assert "(default)" in DENY, (
+        "Firestore's `(default)` database must be on the list the guard judges by; "
+        "CONTRACT.md reserves it for the other teams in this shared project"
+    )
+    # And both callers build it with the shared function rather than their own
+    # pipeline, which is how the two copies of it drifted apart in the first place.
+    for script in ("scripts/destroy.sh", "scripts/lib/plan-guard.sh"):
+        source = (REPO / script).read_text()
+        assert "guard_deny_json" in source, (
+            f"{script} no longer calls guard_deny_json; a second implementation of "
+            f"the list a destroy guard judges by is how `make destroy` and the CI "
+            f"plan guard come to disagree about what belongs to another team"
+        )
+
+
+@pytest.mark.parametrize("protected", DENY)
+def test_every_real_neighbour_is_caught_even_if_mislabelled(protected, tmp_path):
     """A neighbour must be caught by the deny-list even when it carries OUR label.
 
     Defence in depth: if a bad import ever pulled a foreign resource into our state
     and it inherited our label, the deny-list is the remaining backstop.
+
+    EVERY ENTRY, not a chosen four. `destroy-guard.jq`'s `deny_hits` is
+    type-agnostic -- it compares `$deny` against `tokens_of(before)`, which reads
+    `.name`, `.id`, `.email`, `.bucket`, `.cluster`, `.network` and friends -- so
+    one case per protected resource costs nothing and is the only way to say that
+    all of them are covered. The four that were here proved four.
+
+    The entry is fed AS IT IS WRITTEN, never rebuilt: a service account goes in as
+    its own full email, because one of the twelve
+    (`209012342332-compute@developer.gserviceaccount.com`) is not on this
+    project's service-account domain and no `f"{name}@{PROJECT}..."` could
+    produce it.
     """
+    before = {"name": protected}
+    if "@" in protected:
+        before["email"] = protected
     verdict = run_guard([
         deletion("intruder", "google_service_account",
-                 name=name, email=f"{name}@{PROJECT}.iam.gserviceaccount.com",
-                 labels={"managed-by": "swarm-terraform"}),
+                 labels={"managed-by": "swarm-terraform"}, **before),
     ], tmp_path)
     caught = addresses(verdict, "denylist_hits")
     assert "intruder" in caught, (
-        f"GUARD FAILED OPEN: {name} carried our label and slipped past the deny-list"
+        f"GUARD FAILED OPEN: {protected} carried our label and slipped past the "
+        f"deny-list. Verdict: {json.dumps(verdict)[:400]}"
     )
 
 

@@ -919,6 +919,13 @@ def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
     known control-plane identity, and nothing but `User`. The COUNT was never the
     thing -- a second subject naming the same account cannot grant anything the
     first did not, because RBAC subjects are a list.
+
+    ONE FACT PER TEST. How MANY subjects there are, and why, belongs to
+    `test_an_unsupplied_unique_id_renders_a_duplicate_and_never_a_placeholder`,
+    which pins the fallback. Keeping a count here as well would be a third copy
+    of the same spec -- and the two tests stating it two ways is precisely why
+    this file could not pass itself for one commit. (Reasoning from the
+    mirrored-copy-audit lane, which reached this assertion independently.)
     """
     for binding_name, account in (
         ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
@@ -926,6 +933,10 @@ def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
     ):
         binding = one(tenant_docs, "RoleBinding", binding_name)
         subjects = binding["subjects"]
+        # BINDS SOMEBODY AT ALL, from the audit lane: an empty subject list is
+        # a RoleBinding that validates, applies, and authorises nobody -- the
+        # same failure as a wrong subject, reached by having none.
+        assert subjects, f"{binding_name} binds nobody at all"
         names = [s["name"] for s in subjects]
 
         assert account in names, (
@@ -1274,9 +1285,26 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
     must hold is that neither side names a variable the other does not, because
     that is exactly the shape of the defect.
 
+    SCOPED TO THE `worker` CONTAINER, which this test did NOT do when it was
+    written, and that gap was already a live defect. `worker-job-v2.yaml` has an
+    init container (`install-credential`) as well, and the commit that fixed the
+    Errno 30 added `SWARM_ARTIFACTS_DIR` to the INIT container -- which writes
+    one credential file and never touches an artifacts directory -- while the
+    `worker` container, the one that runs the agent and creates the directory,
+    had none. Reading the template as one document sees the name present and
+    passes. "Set" and "set on the wrong container" are different facts, and on
+    v2 the second one is not even loud: v2 leaves `readOnlyRootFilesystem`
+    false on purpose, so `mkdir /artifacts` succeeds, the artifact tree lands on
+    the container's writable layer instead of in the `workspace` emptyDir that
+    carries `sizeLimit: __DISK__`, and the first large artifact set evicts the
+    pod for ephemeral-storage pressure mid-attempt.
+
     MUTATION: delete `SWARM_ARTIFACTS_DIR` from `worker_env` in dispatch.py, or
     from any one of the three templates. This names the variable and the side it
-    is missing from.
+    is missing from. MUTATION FOR THE SCOPING: move `SWARM_ARTIFACTS_DIR` in
+    `worker-job-v2.yaml` from the `worker` container up into the
+    `install-credential` init container -- which is where it actually was --
+    and this fails naming v2. Before the scoping it passed.
     """
     import re as _re
 
@@ -1298,7 +1326,15 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
     assert templates, "no worker templates found; this test would check nothing"
 
     for template in templates:
-        text = template.read_text()
+        whole = template.read_text()
+        # The `worker` container only, from its `- name: worker` entry to the
+        # pod's `volumes:` key. An init container's environment is not the
+        # agent's, and a variable that decides where the agent writes is only
+        # set if it is set on the container that runs it.
+        start = whole.find("\n        - name: worker\n")
+        assert start >= 0, f"{template.name}: no container named worker"
+        end = whole.find("\n      volumes:", start)
+        text = whole[start:] if end < 0 else whole[start:end]
         names = set(_re.findall(r"^\s*- name: ([A-Z][A-Z0-9_]*)\s*$", text, _re.M))
         assert names, f"{template.name}: no container env names found"
 
