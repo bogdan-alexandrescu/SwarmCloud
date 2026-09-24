@@ -72,6 +72,21 @@ RUN npm run build
 # without a templated config or a chown pass. Its ARG is at the top of the file.
 FROM ${NGINX_IMAGE}
 
+# THE BASE LAGS ALPINE, SO THE FIXED PACKAGE IS TAKEN FROM ALPINE DIRECTLY.
+#
+# Release 35969538707 refused to promote this image over libexpat 2.8.4-r0
+# (CVE-2026-93990, HIGH, fixed in 2.8.5-r0). Docker Hub rebuilt 1.31.6-alpine
+# on 2026-09-22 under a new digest, and that rebuild STILL ships 2.8.4-r0 --
+# checked by listing its packages, not assumed -- so bumping the digest alone
+# would have failed the same gate after another twenty minutes of release.
+#
+# Upgrading the one named package, rather than `apk upgrade` of everything,
+# keeps the runtime otherwise identical to the pinned digest. nginx-unprivileged
+# runs as uid 101; the USER line hands it back after the root-only apk step.
+USER root
+RUN apk upgrade --no-cache libexpat
+USER 101
+
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /build/dist /usr/share/nginx/html
 
