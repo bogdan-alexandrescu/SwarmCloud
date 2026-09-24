@@ -11,6 +11,9 @@ import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
+import { absent, measured } from '../charts/series'
+import { TimeSeries } from '../charts/TimeSeries'
+import { usdText } from '../charts/TokenSpend'
 import { at, attempt, ev, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -162,5 +165,32 @@ describe('the sentences on the marks are reachable', () => {
     const off = el.querySelector('[data-testid="ckpt-offpage"]')
     expect(off?.getAttribute('role')).toBe('img')
     expect(off?.getAttribute('aria-label') ?? '').toMatch(/not on this page/i)
+  })
+
+  it('draws the token-spend line as a group too, so each absence keeps its reason', () => {
+    // The same defect in the first chart this layer shipped: each hatched
+    // band's <title> is the sentence saying WHY that attempt has no cost
+    // (four different reasons), and an image's children are presentational.
+    const { container } = render(
+      <TimeSeries
+        points={[
+          measured(0, 'attempt 1', 0.25),
+          absent(3_600_000, 'attempt 2', 'this attempt has not finished.'),
+          measured(7_200_000, 'attempt 3', 0.4),
+        ]}
+        title="Token spend, attempt by attempt"
+        noun="attempt"
+        format={usdText}
+        absentCopy="an absent measurement, not $0.00."
+        zero="anchored"
+      />,
+    )
+    const svg = container.querySelector('svg.ctl-chart-svg')
+    expect(svg, 'the line chart drew no svg').not.toBeNull()
+    expect(svg!.getAttribute('role')).toBe('group')
+    expect(svg!.getAttribute('aria-label')).toBe('Token spend, attempt by attempt')
+    expect(container.querySelector('[data-testid="absent-band"] title')?.textContent).toContain(
+      'has not finished',
+    )
   })
 })
