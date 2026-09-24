@@ -905,9 +905,11 @@ class Reconciler:
                         "detail": finding.reason,
                     }
                     if repaired is TaskState.CANCELLED:
-                        # The API's flag-only cancel writes a `cancelled` event
-                        # with phase=cancel_requested; this is the one that says
-                        # it happened.
+                        # The API's flag-only cancel wrote `cancel_requested`
+                        # (before 2026-09-24: a `cancelled` with
+                        # phase=cancel_requested). THIS is the terminal
+                        # `cancelled`, written by the component that released
+                        # the lease -- contract request 17.
                         detail.update(phase="cancelled", from_state=task.state.value)
                     self._store.emit(
                         task_id=finding.task_id,

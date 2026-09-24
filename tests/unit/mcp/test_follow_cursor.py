@@ -739,7 +739,8 @@ def test_the_follow_rule_holds_against_an_api_that_still_serves_the_old_shape():
     assert event_type({"type": "cancelled", "detail": {"reason": "upstream"}}) == "cancelled"
     assert event_type({"type": "cancelled", "detail": None}) == "cancelled"
     assert event_type({"type": "heartbeat"}) == "heartbeat"
-    assert event_type({}) == "?"
+    # Anything else passes through exactly as served, absence included.
+    assert event_type({}) is None
 
 
 def test_swarm_tail_prints_a_stored_request_as_a_request(swarm, world, capsys):

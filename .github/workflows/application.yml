@@ -166,23 +166,55 @@ jobs:
       - name: sync
         run: uv sync --frozen --all-extras --dev
 
-      - name: the frozen contract is unchanged
+      - name: the frozen contract is unchanged, or its change is recorded as accepted
         # apps/common/swarm_common is frozen by CONTRACT.md. Every other
         # component was written against those exact types, so a change there
         # breaks all of them at once and must be a deliberate, discussed act.
+        #
+        # THIS STEP COULD NOT FAIL UNTIL 2026-09-24. It diffed `base...HEAD`
+        # -- three dots, which needs a merge base -- in a depth-1 checkout of
+        # the PR's merge commit, which has none. git exited 128 ("no merge
+        # base"), the pipe into `grep -q` failed, the `if` read that as "no
+        # change", and the step printed "frozen contract untouched" on every
+        # PR, including #1, which edited models.py and profiles.py. Measured
+        # in run 36036034784, job 107756241218. The merge commit's tree IS the
+        # base plus this PR, so a TWO-dot tree diff against the base is
+        # exactly this PR's change and needs no history. A failed fetch or
+        # diff now fails the step instead of passing it.
+        #
+        # A CHANGE PASSES ONLY WHEN THIS PR RECORDS ITS ACCEPTANCE. Updated
+        # deliberately for contract requests 17 and 18, which the owner
+        # accepted in session on 2026-09-24 (PR #44). CLAUDE.md rule 1 sends
+        # every contract change through docs/contract-change-requests.md, so
+        # a diff under swarm_common passes only if the same PR ADDS a line
+        # there containing "accepted by the owner". The line is printed, so
+        # the reviewer merging the PR reads the claim the change rests on.
         run: |
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
-          if [ -n "${base}" ]; then
-            git fetch --no-tags --depth=1 origin "${base}" || true
-            if git diff --name-only "${base}"...HEAD -- apps/common/swarm_common | grep -q .; then
-              echo "::error::apps/common/swarm_common/ is FROZEN (see CONTRACT.md)."
-              echo "If it genuinely must change, say so in the PR description and get it agreed first."
-              git diff --stat "${base}"...HEAD -- apps/common/swarm_common
-              exit 1
-            fi
+          if [ -z "${base}" ]; then
+            echo "not a pull request: nothing to compare against"
+            exit 0
           fi
-          echo "frozen contract untouched"
+          git fetch --no-tags --depth=1 origin "${base}"
+          changed="$(git diff --name-only "${base}" HEAD -- apps/common/swarm_common)"
+          if [ -z "${changed}" ]; then
+            echo "frozen contract untouched"
+            exit 0
+          fi
+          echo "changed under apps/common/swarm_common/:"
+          echo "${changed}" | sed 's/^/  /'
+          accepted="$(git diff "${base}" HEAD -- docs/contract-change-requests.md \
+            | grep -E '^\+[^+]' | grep -i 'accepted by the owner' || true)"
+          if [ -z "${accepted}" ]; then
+            echo "::error::apps/common/swarm_common/ is FROZEN (see CONTRACT.md)."
+            echo "A change there needs the owner's acceptance, recorded in THIS PR as an added line in"
+            echo "docs/contract-change-requests.md containing 'accepted by the owner', next to the request."
+            git diff --stat "${base}" HEAD -- apps/common/swarm_common
+            exit 1
+          fi
+          echo "the change rests on this recorded acceptance:"
+          echo "${accepted}"
 
       - name: format check
         run: |

@@ -51,9 +51,10 @@ argv, `python -m agent_worker.runners.<x>` -- ran the bare runner with none of
 that. Until 2026-09-24 the GKE path did exactly this for every browser task
 (incident wf_ebb3ab2d65664707a559): the pods crashed on `/artifacts`, never
 wrote to the control plane, and left their leases holding every browser slot.
-`RunnerProfile.command` is the lifecycle's CHILD argv (`lifecycle._runner_argv`);
-the lifecycle finds it by the profile NAME in `RUNNER_PROFILE`, which
-`worker_env` below sets. tests/unit/control_plane/test_dispatch_manifests.py
+That field is now `RunnerProfile.runner_argv` (contract request 18, accepted
+2026-09-24): the lifecycle's CHILD argv (`lifecycle._runner_argv`), renamed so
+the line that did this cannot be written again. The lifecycle finds it by the
+profile NAME in `RUNNER_PROFILE`, which `worker_env` below sets. tests/unit/control_plane/test_dispatch_manifests.py
 and tests/unit/worker/test_kubernetes_manifests.py hold both dispatchers to it.
 
 SECRETS ARE NOT INJECTED ON THE GKE PATH. The worker reads its tenant's key from
@@ -542,12 +543,12 @@ class CloudRunJobDispatcher:
             name="worker",
             image=image_uri(self._settings, profile),
             # NO `command` AND NO `args`: the image ENTRYPOINT is the worker
-            # lifecycle, and `profile.command` is its child's argv, not the
+            # lifecycle, and `profile.runner_argv` is its child's argv, not the
             # container's (module docstring). Terraform's Jobs already leave
             # both unset; this Job -- created whenever `get_job` 404s, for a
             # new tenant, profile or resource class -- used to set
-            # `command=list(profile.command)` and would have run the bare
-            # runner exactly as the GKE pods of 2026-09-24 did.
+            # `command=list(profile.command)` (the field's old name) and would
+            # have run the bare runner exactly as the GKE pods of 2026-09-24 did.
             env=env,
             # Cloud Run expresses sizing as limits; the platform never sets a
             # request below the limit, so requests == limits holds.
@@ -1236,7 +1237,7 @@ class GkeJobDispatcher:
                                 # ENTRYPOINT, `tini -- python -m agent_worker`,
                                 # is the worker lifecycle; it reads
                                 # RUNNER_PROFILE from `env` below and starts
-                                # `profile.command` as its supervised CHILD.
+                                # `profile.runner_argv` as its supervised CHILD.
                                 # Setting `command` here replaced the lifecycle
                                 # with the bare runner on every GKE pod until
                                 # 2026-09-24: no fencing, no cancel, no
