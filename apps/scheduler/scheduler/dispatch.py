@@ -39,6 +39,23 @@ something other than what is running. The Cloud Run Job id carries the class for
 the same reason: Cloud Run fixes sizing on the Job resource, so one Job per
 (tenant, profile) could only ever express one size.
 
+NEITHER DISPATCHER SETS A CONTAINER `command` OR `args`, and that is the rule
+the rest of the platform's safety hangs on. Both worker images declare
+`ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]`: the
+worker LIFECYCLE. It checks the fencing generation (invariant 5), honours a
+requested cancel, moves the task to STARTING and RUNNING, heartbeats, starts
+the runner as a supervised child, checkpoints (invariant 8), writes the
+terminal state and releases the lease. A container `command` REPLACES the
+ENTRYPOINT, so setting it to `RunnerProfile.command` -- which is the runner's
+argv, `python -m agent_worker.runners.<x>` -- ran the bare runner with none of
+that. Until 2026-09-24 the GKE path did exactly this for every browser task
+(incident wf_ebb3ab2d65664707a559): the pods crashed on `/artifacts`, never
+wrote to the control plane, and left their leases holding every browser slot.
+`RunnerProfile.command` is the lifecycle's CHILD argv (`lifecycle._runner_argv`);
+the lifecycle finds it by the profile NAME in `RUNNER_PROFILE`, which
+`worker_env` below sets. tests/unit/control_plane/test_dispatch_manifests.py
+and tests/unit/worker/test_kubernetes_manifests.py hold both dispatchers to it.
+
 SECRETS ARE NOT INJECTED ON THE GKE PATH. The worker reads its tenant's key from
 Secret Manager at runtime using Workload Identity (agent_worker/secrets.py), and
 on Cloud Run the Job additionally projects it natively from Secret Manager. On
@@ -86,38 +103,45 @@ WORKER_HOME = "/home/swarm"
 #: mount, the GKE volume mount, and nothing that tied them together -- so it is
 #: a constant now for the same reason WORKER_HOME is.
 #:
-#: WHY SWARM_ARTIFACTS_DIR HAS TO BE SET AT ALL. `runners/base.py` defaults
-#: `artifacts_dir` to `work.parent / "artifacts"`, and the work dir is the
-#: container's cwd, `/workspace` -- so the default resolves to `/artifacts`, at
-#: the root. On GKE_AUTOPILOT the container sets `readOnlyRootFilesystem: true`
-#: (CONTAINER_SECURITY_CONTEXT), so the runner died on its first line:
+#: THE `/artifacts` CRASH, AND WHAT IT WAS ACTUALLY A SYMPTOM OF. Measured
+#: 2026-09-24 on the first browser attempt that ever started a container:
 #:
 #:     OSError: [Errno 30] Read-only file system: '/artifacts'
 #:
-#: measured 2026-09-24 on the first browser attempt that ever got as far as
-#: starting a container. Every earlier attempt failed before that, at
-#: `jobs.batch is forbidden`, so this was the next defect in the queue and had
-#: never been reachable.
+#: `runners/base.py` defaults `artifacts_dir` to `work.parent / "artifacts"`
+#: when SWARM_ARTIFACTS_DIR is unset, which from a cwd of `/workspace` is
+#: `/artifacts`, on a root this container mounts read-only.
 #:
-#: WHY CLOUD_RUN_JOB NEVER SHOWED IT. Identical image, identical
-#: `python -m agent_worker.runners.<x>` command out of the frozen catalogue --
-#: and a container that does NOT harden the root filesystem, so `mkdir
-#: /artifacts` simply succeeded. Twenty-two tasks passed through that path while
-#: the same code could not start on GKE. The hardening is right and its absence
-#: on Cloud Run is the anomaly.
+#: CORRECTED 2026-09-24 (incident wf_ebb3ab2d65664707a559). This note used to say
+#: Cloud Run never showed the crash because it ran the "identical image,
+#: identical `python -m agent_worker.runners.<x>` command" on a writable root.
+#: The commands were NOT identical, and that false sentence is what hid the real
+#: defect for a day:
 #:
-#: SET FOR BOTH BACKENDS, from this one shared builder, deliberately. Cloud Run
-#: does not need it today, and giving it the same value anyway means the two
-#: backends put artifacts in the same place, that Cloud Run stops depending on a
-#: writable root, and that there is one answer to "where do artifacts go" instead
-#: of one per backend. The upload reads `ctx.artifacts_dir`, so it follows.
+#:   * Terraform's Cloud Run Jobs carry `command = null`
+#:     (terraform/modules/cloud_run_jobs/main.tf), so the image ENTRYPOINT --
+#:     the worker lifecycle -- ran. The lifecycle builds its runner child's
+#:     environment from an allowlist and sets SWARM_ARTIFACTS_DIR to the
+#:     attempt's own `<WORKSPACE_ROOT>/<attempt>/artifacts`
+#:     (`workspace.Workspace.child_env`). The runner never reaches the default.
+#:   * The GKE Job this module built set `command` to the RUNNER, which replaced
+#:     the lifecycle. With no lifecycle, nothing set the variable. The crash was
+#:     the first visible consequence of the missing lifecycle -- and fixing the
+#:     crash alone (ffa82e3, which set the variable on the container) would have
+#:     let the bare runner go on to run unfenced, uncheckpointed, with no
+#:     heartbeat and no lease release. See the module docstring.
 #:
-#: INSIDE THE WORKSPACE VOLUME rather than in a volume of its own: a dedicated
-#: emptyDir would need a `sizeLimit`, which is a second disk number to invent and
-#: keep in step when `workspace` already takes its limit from the resource
-#: class's disk. Artifacts are produced from the workspace and uploaded to
-#: ARTIFACT_BUCKET when the attempt ends, so charging them to that budget is the
-#: honest accounting.
+#: WHAT SWARM_ARTIFACTS_DIR ON THE CONTAINER DOES NOW: nothing the lifecycle
+#: reads. It is kept, on both backends from this one builder and in all three
+#: worker templates, because it is inert and because a runner started BY HAND
+#: inside a worker container (a `kubectl exec` repro during an incident) then
+#: gets a writable path instead of Errno 30. It is not what makes a runner work,
+#: and it is not the reason Cloud Run and GKE behaved differently.
+#:
+#: INSIDE THE WORKSPACE VOLUME rather than in a volume of its own, for the same
+#: reason the lifecycle puts its own there: a dedicated emptyDir would need a
+#: `sizeLimit`, a second disk number to invent and keep in step, when
+#: `workspace` already takes its limit from the resource class's disk.
 WORKSPACE_MOUNT = "/workspace"
 WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 
@@ -126,7 +150,10 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 #: the manifest this module builds carried no securityContext at all, so
 #: enforcing the stronger policy would have rejected every job the dispatcher
 #: created. These two blocks are what `restricted` asks for, and they mirror
-#: kubernetes/worker-templates/worker-job-browser.yaml field for field.
+#: kubernetes/worker-templates/worker-job-browser.yaml field for field -- which
+#: was a claim until 2026-09-24 and is now an assertion:
+#: test_the_rendered_job_and_the_dispatched_job_are_the_same_job renders both
+#: from the same inputs and fails on any field that changes what the pod does.
 POD_SECURITY_CONTEXT: dict[str, Any] = {
     "runAsNonRoot": True,
     "runAsUser": WORKER_UID,
@@ -283,8 +310,9 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
             settings.core.max_in_worker_retry_delay_seconds
         ),
         "TASK_TIMEOUT_SECONDS": str(task.timeout_seconds),
-        # See WORKER_ARTIFACTS_DIR: without this the runner cannot create its
-        # own artifacts directory on a read-only root filesystem.
+        # Inert under the worker lifecycle, which gives its runner child a
+        # per-attempt value of its own. See WORKER_ARTIFACTS_DIR for why it is
+        # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
     }
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
@@ -420,7 +448,13 @@ class CloudRunJobDispatcher:
         container = run_v2.Container(
             name="worker",
             image=image_uri(self._settings, profile),
-            command=list(profile.command),
+            # NO `command` AND NO `args`: the image ENTRYPOINT is the worker
+            # lifecycle, and `profile.command` is its child's argv, not the
+            # container's (module docstring). Terraform's Jobs already leave
+            # both unset; this Job -- created whenever `get_job` 404s, for a
+            # new tenant, profile or resource class -- used to set
+            # `command=list(profile.command)` and would have run the bare
+            # runner exactly as the GKE pods of 2026-09-24 did.
             env=env,
             # Cloud Run expresses sizing as limits; the platform never sets a
             # request below the limit, so requests == limits holds.
@@ -892,6 +926,20 @@ class GkeJobDispatcher:
             "swarm-resource-class": sanitize_name(rc.name),
             "swarm-task": sanitize_name(task.id),
         }
+        # Autopilot extended run time: the pod is not evicted for scale-down.
+        # This is only available on on-demand capacity, which is why Spot is
+        # disabled platform-wide.
+        #
+        # ON THE POD TEMPLATE AS WELL AS THE JOB, and the pod is the one that
+        # matters. The cluster autoscaler reads this annotation from PODS, and a
+        # Job's own annotations are not copied onto the pods it creates -- so
+        # until 2026-09-24, when it sat on the Job alone, every pod this
+        # dispatcher created was evictable in a scale-down while this comment
+        # said it was not. kubernetes/worker-templates/ had it on both; the
+        # parity test in tests/unit/worker/test_kubernetes_manifests.py
+        # (test_the_rendered_job_and_the_dispatched_job_are_the_same_job) is
+        # what found the difference.
+        not_evictable = {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -899,12 +947,7 @@ class GkeJobDispatcher:
                 "name": job_name,
                 "namespace": self.namespace_for(tenant),
                 "labels": labels,
-                "annotations": {
-                    # Autopilot extended run time: the pod is not evicted for
-                    # scale-down. This is only available on on-demand capacity,
-                    # which is why Spot is disabled platform-wide.
-                    "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
-                },
+                "annotations": dict(not_evictable),
             },
             "spec": {
                 # The platform owns retries; a k8s-level retry would re-run the
@@ -915,7 +958,10 @@ class GkeJobDispatcher:
                 "activeDeadlineSeconds": task.timeout_seconds,
                 "ttlSecondsAfterFinished": 3600,
                 "template": {
-                    "metadata": {"labels": dict(labels)},
+                    "metadata": {
+                        "labels": dict(labels),
+                        "annotations": dict(not_evictable),
+                    },
                     "spec": {
                         "restartPolicy": "Never",
                         "serviceAccountName": self.ksa_for(tenant),
@@ -933,7 +979,17 @@ class GkeJobDispatcher:
                             {
                                 "name": "worker",
                                 "image": image_uri(self._settings, profile),
-                                "command": list(profile.command),
+                                # NO "command" AND NO "args". The image
+                                # ENTRYPOINT, `tini -- python -m agent_worker`,
+                                # is the worker lifecycle; it reads
+                                # RUNNER_PROFILE from `env` below and starts
+                                # `profile.command` as its supervised CHILD.
+                                # Setting `command` here replaced the lifecycle
+                                # with the bare runner on every GKE pod until
+                                # 2026-09-24: no fencing, no cancel, no
+                                # heartbeat, no checkpoint, no lease release
+                                # (incident wf_ebb3ab2d65664707a559; module
+                                # docstring).
                                 "env": env,
                                 # requests == limits, both directions, no bursting.
                                 "resources": {"requests": resources, "limits": resources},
