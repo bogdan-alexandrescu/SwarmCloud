@@ -1272,6 +1272,46 @@ PENDING_STATES=(SUBMITTED QUEUED PARKED READY)
 # shellcheck disable=SC2034  # consumed by the scripts that source this library
 TERMINAL_STATES=(SUCCEEDED FAILED CANCELLED DEAD_LETTERED)
 
+# --- the tenant namespace, restated once for the shell -----------------------
+#
+# THE PREFIX THAT COST SEVEN TASKS. On 2026-09-23 every `browser` task this
+# platform had ever accepted -- seven of them, over two days -- failed with
+#
+#     jobs.batch is forbidden ... in the namespace "swarm-tenant-eng"
+#
+# and three separate investigations went looking at IAM. The cause was not IAM.
+# `kubernetes/render.py` spelled the prefix `swarm-` and
+# `apps/scheduler/scheduler/dispatch.py` spelled it `swarm-tenant-`, so the
+# provisioner created `swarm-eng` and the dispatcher wrote into
+# `swarm-tenant-eng`, which did not exist. Kubernetes AUTHORISES BEFORE IT
+# RESOLVES, so a Job created into a namespace that is not there comes back 403
+# `forbidden`, never 404 `not found` -- the error names a permission whatever
+# the real cause was. See docs/gke-dispatch-403.md.
+#
+# `scripts/register-tenant.sh` carried a THIRD copy of the wrong spelling
+# (`NAMESPACE="swarm-${TENANT_ID}"`), which decided both the Workload Identity
+# binding it issues and the `namespace` field it writes onto the tenant
+# document -- and `GkeJobDispatcher.namespace_for` prefers that field over its
+# own template, so the Firestore record was overriding the one spelling that
+# was right.
+#
+# So the shell gets ONE copy, here, and every script derives from it.
+# `scripts/lib/check-contract-parity.sh` section 6 asserts this value against
+# the scheduler's `GkeTarget.namespace_template`, the renderer's
+# `NAMESPACE_PREFIX`, the reconciler's two defaults, the API's settings and
+# terraform's `namespace_prefix` default, and SWEEPS the repository for a
+# seventh restatement nobody registered. Change it here and that check tells
+# you every other place that has to move with it.
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+TENANT_NAMESPACE_PREFIX="swarm-tenant-"
+
+# tenant_namespace TENANT_ID  ->  the Kubernetes namespace that tenant's pods
+# run in. A function rather than a bare interpolation at each call site so that
+# the sweep in check-contract-parity.sh has exactly one assignment to find.
+tenant_namespace() {
+  printf '%s%s' "${TENANT_NAMESPACE_PREFIX}" "$1"
+}
+
 # states_json ARRAY_ELEMENTS...  ->  ["A","B",...]
 # Used to hand one of the sets above to jq as --argjson, so a jq expression can
 # iterate the set instead of naming its members. bash 3.2 has no way to pass an

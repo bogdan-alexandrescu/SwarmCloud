@@ -33,6 +33,7 @@ from test_backend_identity import (
     JOB,
     PROJECT,
     REGION,
+    TENANT_NS,
     FakeBatchApi,
     FakeCoreApi,
     FakeExecutionsClient,
@@ -77,7 +78,15 @@ def config() -> ReconcilerConfig:
 @pytest.mark.parametrize(
     "claimed,authority,expected",
     [
-        # Agreement in both namespace spellings the two dispatch paths produce.
+        # `owning_tenant` is deliberately tested on the STRING, not on a
+        # namespace: its authority argument is whatever the caller sliced out
+        # of an enclosing object, and `tenant-eng` is what that slice produced
+        # for two days while the reconciler's prefix was `swarm-` instead of
+        # `swarm-tenant-`. The prefix is fixed and asserted elsewhere now
+        # (check-contract-parity.sh section 6); these cases stay because this
+        # function must keep deferring to the authority it is handed even when
+        # the authority is nonsense, which is the property that kept the
+        # cross-tenant claim below from ever succeeding.
         ("eng", "eng", "eng"),
         ("eng", "tenant-eng", "eng"),
         # Underscores survive a Firestore id but not a label, so the comparison
@@ -113,7 +122,7 @@ def test_a_gke_job_cannot_claim_a_tenant_its_namespace_does_not_name():
     batch = FakeBatchApi(
         [
             k8s_job(
-                namespace=f"swarm-{TENANT}",
+                namespace=TENANT_NS,
                 labels={"managed-by": "swarm-scheduler", "swarm-tenant": VICTIM},
                 env={
                     "TASK_ID": "task_victim",
@@ -129,7 +138,7 @@ def test_a_gke_job_cannot_claim_a_tenant_its_namespace_does_not_name():
     view = backend.list_executions()[0]
 
     assert view.tenant_id == TENANT          # the namespace, not the env
-    assert view.namespace == f"swarm-{TENANT}"
+    assert view.namespace == TENANT_NS
     # The task id is still taken verbatim -- it is the tenant check downstream
     # that refuses to act on it.
     assert view.task_id == "task_victim"
@@ -186,7 +195,7 @@ def _execution(**overrides):
         attempt_id="att_victim",
         tenant_id=TENANT,
         generation=9,
-        namespace=f"swarm-{TENANT}",
+        namespace=TENANT_NS,
     )
     base.update(overrides)
     return ExecutionView(**base)

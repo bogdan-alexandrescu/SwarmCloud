@@ -60,7 +60,17 @@ def seed_tenant(db: FakeFirestore, *, credentials: list[str] | None = None) -> N
             "credentials": credentials or [],
             "service_account": f"swarm-tenant-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
             "gcs_prefix": f"tenants/{TENANT}",
-            "namespace": f"swarm-{TENANT}",
+            # `swarm-tenant-`, not `swarm-`. This field is not decoration: it is
+            # the one `GkeJobDispatcher.namespace_for` PREFERS over its own
+            # template, so a tenant document carrying the short spelling
+            # overrides the correct one and sends every GKE dispatch into a
+            # namespace nothing created -- reported as 403 `jobs.batch is
+            # forbidden`, never as a missing namespace. That is exactly what
+            # `scripts/register-tenant.sh` was writing until 2026-09-24, and a
+            # fixture that agreed with it is a fixture that could never have
+            # caught it. `scripts/lib/check-contract-parity.sh` section 6 now
+            # holds every namespace literal in the repository to one spelling.
+            "namespace": f"swarm-tenant-{TENANT}",
         },
     )
 

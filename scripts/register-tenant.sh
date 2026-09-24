@@ -191,14 +191,34 @@ fi
 
 GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Namespace and KSAs: kubernetes/render.py (NAMESPACE_PREFIX = "swarm-") is what
-# creates these objects and what the dispatcher's pod spec names, so they are
-# taken from there rather than invented here. It creates two service accounts on
-# purpose -- `swarm-worker` and `swarm-<tenant>`, the name dispatch.py asks for --
-# and both need the workload-identity binding or a pod naming the other one stays
-# Pending until its deadline expires, which reads as a scheduling problem.
-NAMESPACE="swarm-${TENANT_ID}"
-KSAS=("swarm-worker" "swarm-${TENANT_ID}")
+# Namespace and KSAs. `kubernetes/render.py` is what CREATES these objects, so
+# this script must name exactly what that renders -- it does not create them
+# itself, it only issues the GCP-side Workload Identity bindings for them and
+# records the namespace on the tenant document.
+#
+# THIS LINE WAS THE THIRD COPY OF THE 2026-09-23 OUTAGE. It read
+# `NAMESPACE="swarm-${TENANT_ID}"` while the scheduler dispatched into
+# `swarm-tenant-<id>`, and it is the worst of the three copies because of where
+# the value goes: section 6 below writes it into the tenant document's
+# `namespace` field, and `GkeJobDispatcher.namespace_for` PREFERS that field
+# over its own template. So the Firestore record this script wrote was
+# overriding the one spelling that was correct, and every `browser` task for
+# such a tenant was dispatched into a namespace nothing had created -- reported
+# by Kubernetes as `jobs.batch is forbidden`, never as a missing namespace,
+# because it authorises before it resolves. See docs/gke-dispatch-403.md.
+#
+# `tenant_namespace` is the one shell copy of the prefix, in lib/common.sh;
+# `scripts/lib/check-contract-parity.sh` section 6 asserts it against the
+# scheduler, the renderer, the reconciler, the API and terraform.
+NAMESPACE="$(tenant_namespace "${TENANT_ID}")"
+# Both KSAs that kubernetes/service-accounts/worker-serviceaccount.yaml creates,
+# because a binding is per (namespace, KSA) pair and a pod naming an unbound one
+# authenticates as nothing at all. `swarm-agent-worker` is the name the
+# dispatcher's pod spec actually uses and the name terraform binds; `swarm-worker`
+# is the older one every already-registered tenant carries. The `swarm-<tenant>`
+# alias is gone -- see kubernetes/render.py DEFAULT_KSA_NAME for why it existed
+# and why it no longer does.
+KSAS=("swarm-worker" "swarm-agent-worker")
 GCS_PREFIX="tenants/${TENANT_ID}"
 
 PROVIDERS=()
@@ -600,9 +620,9 @@ if [[ "${SKIP_K8S}" -eq 0 ]]; then
 
     # Workload Identity is a GCP-side binding, so it stays here. Both service
     # account names that kubernetes/service-accounts/worker-serviceaccount.yaml
-    # creates are bound: `swarm-worker` and the `swarm-<tenant>` alias that
-    # apps/scheduler/scheduler/dispatch.py asks for. A pod naming the unbound one
-    # would authenticate as nothing at all.
+    # creates are bound -- `swarm-worker` and `swarm-agent-worker`, the one
+    # apps/scheduler/scheduler/dispatch.py actually names in its pod spec. A pod
+    # naming the unbound one would authenticate as nothing at all.
     for ksa in "${KSAS[@]}"; do
       run gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
         --project "${PROJECT_ID}" \

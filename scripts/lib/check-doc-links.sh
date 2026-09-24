@@ -37,6 +37,19 @@ from pathlib import Path
 root = Path(sys.argv[1])
 targets = [root / "README.md", root / "CLAUDE.md", root / "CONTRACT.md"]
 targets += sorted((root / "docs").glob("*.md"))
+# Runbooks specifically, and not `docs/**/*.md`.
+#
+# A runbook is the one kind of document whose links are followed under time
+# pressure by someone who did not write it, so a link that silently lands at
+# the top of the wrong page costs more here than anywhere else -- which is the
+# whole argument in this file's header, sharpened.
+#
+# The glob is not widened to every subdirectory because `docs/audits/` holds
+# dated, deliberately frozen records: they cite the state of the repository on
+# the day they were written and are not maintained as files move. Sweeping
+# them in would make this check fail on documents nobody is allowed to edit,
+# and a check that has to be ignored is a check that is off.
+targets += sorted((root / "docs" / "runbooks").glob("*.md"))
 targets += sorted((root / "kubernetes").glob("*.md"))
 targets += sorted((root / "tests").rglob("*.md"))
 targets = [p for p in targets if p.is_file()]

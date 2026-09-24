@@ -532,6 +532,274 @@ else
   done <<<"${TS_PARITY}"
 fi
 
+# --------------------------------------------------------------------------
+# 6. The tenant NAMESPACE, which is not in the frozen contract at all.
+# --------------------------------------------------------------------------
+# THIS SECTION EXISTS BECAUSE THE VALUE HAS NO FROZEN HOME. Every other section
+# above compares a copy against `swarm_common`; there is no
+# `swarm_common.namespace_for(tenant)` to compare against, so seven components
+# each wrote the prefix down and two of them wrote it down differently.
+#
+# What that cost, on 2026-09-23: `kubernetes/render.py` spelled it `swarm-` and
+# `apps/scheduler/scheduler/dispatch.py` spelled it `swarm-tenant-`, so the
+# provisioner created `swarm-eng` and the dispatcher created Jobs in
+# `swarm-tenant-eng`, which did not exist. Kubernetes AUTHORISES BEFORE IT
+# RESOLVES: a Job created into a namespace that is not there is reported as
+#
+#     jobs.batch is forbidden: User "..." cannot create resource "jobs" in API
+#     group "batch" in the namespace "swarm-tenant-eng"
+#
+# -- a 403 naming a permission, never a 404 naming the namespace. Every
+# `browser` task this platform had ever accepted (seven, over two days) failed
+# that way and three separate investigations went at IAM. docs/gke-dispatch-403.md.
+#
+# THE AUTHORITY IS THE DISPATCHER, not this file and not the renderer: the
+# scheduler is the component that actually creates the object, so whatever it
+# spells is what has to exist. It is read out of the source as text rather than
+# imported, for the reason sections 4 and 5 give -- this check must keep working
+# with nothing but python3 and jq, in the `shell` CI job, with no scheduler
+# dependencies installed.
+#
+# Two halves, because they catch different things:
+#
+#   6a. THE DECLARED PREFIXES -- every `namespace_prefix`-shaped default in the
+#       repository. This is where the bug lived.
+#   6b. THE NAMESPACE LITERALS -- every place a namespace VALUE is written out,
+#       including test fixtures. A fixture that restates the prefix is the worst
+#       case of all: it agrees with the bug and makes the suite prove it.
+#
+# Both halves REFUSE TO SKIP. A scan that finds fewer sites than it did when it
+# was written reports that the restatements moved, rather than passing because
+# it could no longer see them -- the failure mode section 4 already guards.
+step "Tenant namespace parity"
+
+if ! NS_PARITY="$(python3 - "${REPO_ROOT}" "${TENANT_NAMESPACE_PREFIX}" 2>&1 <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+shell_prefix = sys.argv[2]
+REPORT = []
+
+
+def emit(status, name, detail):
+    REPORT.append("%s|%s|%s" % (status, name, detail))
+
+
+# Directories that hold no source, plus one that holds source this lane may not
+# edit. See the swarm-ui note at 6b.
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".mypy_cache",
+             "__pycache__", ".pytest_cache", ".terraform", ".claude"}
+SKIP_SUFFIXES = {".md", ".lock", ".png", ".svg", ".ico", ".woff", ".woff2"}
+
+
+# This file describes the patterns it looks for, in prose and in regex
+# literals, so scanning it finds itself: the sentence explaining what a
+# namespace literal looks like IS a namespace literal. The value it would
+# otherwise contribute -- the shell prefix -- arrives as argv[2] instead, so
+# nothing is lost by leaving it out.
+SELF = (root / "scripts" / "lib" / "check-contract-parity.sh").resolve()
+
+
+def sources():
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.resolve() == SELF:
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if path.suffix in SKIP_SUFFIXES:
+            continue
+        try:
+            yield path, path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+
+
+FILES = list(sources())
+
+# -- the authority ---------------------------------------------------------
+# `namespace_template: str = "swarm-tenant-{tenant}"` in the dispatcher. The
+# prefix is whatever precedes the interpolation.
+dispatch = (root / "apps" / "scheduler" / "scheduler" / "dispatch.py").read_text()
+templates = re.findall(r"namespace_template[^=\n]*=\s*\"([^\"]*\{tenant\})\"", dispatch)
+# The fallback inside `namespace_for` is a second literal of the same template
+# and is included deliberately: it is what is used when no GkeTarget was built.
+templates += re.findall(r"else\s+\"([^\"]*\{tenant\})\"", dispatch)
+prefixes = set(t.split("{tenant}")[0] for t in templates)
+
+if not templates:
+    emit("MISSING", "GkeTarget.namespace_template",
+         "no `namespace_template = \"...{tenant}\"` in apps/scheduler/scheduler/dispatch.py")
+    print("\n".join(REPORT))
+    raise SystemExit(0)
+if len(prefixes) != 1:
+    emit("DRIFT", "GkeTarget.namespace_template",
+         "the dispatcher itself spells the namespace %d ways: %s"
+         % (len(prefixes), " ".join(sorted(prefixes))))
+    print("\n".join(REPORT))
+    raise SystemExit(0)
+
+AUTHORITY = prefixes.pop()
+emit("OK", "authority",
+     "the scheduler dispatches into %s<tenant> (%d template literal(s) agree)"
+     % (AUTHORITY, len(templates)))
+
+if shell_prefix != AUTHORITY:
+    emit("DRIFT", "TENANT_NAMESPACE_PREFIX in scripts/lib/common.sh",
+         "shell says %s, the scheduler dispatches into %s" % (shell_prefix, AUTHORITY))
+else:
+    emit("OK", "TENANT_NAMESPACE_PREFIX in scripts/lib/common.sh",
+         "%s, same as the scheduler" % shell_prefix)
+
+# -- 6a. declared prefixes -------------------------------------------------
+# Python defaults, the renderer constant and the terraform variable default.
+# Each regex is anchored on the IDENTIFIER rather than on a file path, so a new
+# component that names its setting the same way is picked up without anyone
+# remembering that this file exists.
+DECLARATIONS = (
+    (r"^\s*(?:tenant_)?namespace_prefix\s*:\s*str\s*=\s*\"([^\"]*)\"", "python default"),
+    (r"^\s*NAMESPACE_PREFIX\s*=\s*\"([^\"]*)\"", "renderer constant"),
+    (r"os\.environ\.get\(\s*\n?\s*\"TENANT_NAMESPACE_PREFIX\",\s*\"([^\"]*)\"", "env default"),
+    (r"variable\s+\"namespace_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", "terraform default"),
+    (r"^\s*tenant_namespace_prefix\s*=\s*\"([^\"]*)\"", "test/tfvars literal"),
+)
+
+declared = []
+for path, text in FILES:
+    rel = path.relative_to(root)
+    for pattern, kind in DECLARATIONS:
+        for match in re.finditer(pattern, text, re.M | re.S):
+            line = text.count("\n", 0, match.start()) + 1
+            declared.append((str(rel), line, kind, match.group(1)))
+
+# The count when this was written. Lower means a restatement moved or was
+# renamed and this scan stopped seeing it, which is not the same as agreement.
+MIN_DECLARATIONS = 7
+if len(declared) < MIN_DECLARATIONS:
+    emit("MISSING", "declared namespace prefixes",
+         "found %d, expected at least %d; a restatement moved or was renamed -- "
+         "update the DECLARATIONS patterns so this keeps checking it"
+         % (len(declared), MIN_DECLARATIONS))
+else:
+    wrong = [d for d in declared if d[3] != AUTHORITY]
+    if wrong:
+        for rel, line, kind, value in wrong:
+            emit("DRIFT", "declared namespace prefix",
+                 "%s:%d (%s) says %s, the scheduler dispatches into %s"
+                 % (rel, line, kind, value, AUTHORITY))
+    else:
+        emit("OK", "declared namespace prefixes",
+             "%d declaration(s) all spell it %s" % (len(declared), AUTHORITY))
+
+# -- 6b. namespace literals ------------------------------------------------
+# Anything of the form `namespace = "swarm-..."`, `"namespace": f"swarm-..."`,
+# `namespaces["eng"] == "swarm-..."`. The literal has to FOLLOW the identifier,
+# so an unrelated `swarm-` string elsewhere on the line is not matched.
+#
+# `# namespace-prefix-exempt:` on the line opts one out, for the negative tests
+# that feed the WRONG spelling in on purpose. The marker carries a reason, and
+# it is a line comment in every language scanned here.
+#
+# apps/swarm-ui IS SCANNED AND ITS FAILURES ARE REPORTED, not excluded: as of
+# 2026-09-24 two browser-side fixtures still carry `swarm-u-bogdan`
+# (src/api.ts and src/__tests__/brand.test.tsx). They are display-only mock
+# data and cannot dispatch anything, but an exclusion with a comment is how a
+# deficit becomes permanent, so they are listed below as ADVISORY -- printed on
+# every run, failing nothing, until the lane that owns that directory fixes
+# them and the ADVISORY branch here is deleted.
+ADVISORY_PREFIX = "apps/swarm-ui/"
+# The apostrophe is BUILT, not written. This probe is a heredoc inside a
+# command substitution and bash scans that body for quote characters while it
+# looks for the closing paren, so a single one here truncates the script -- the
+# note in section 5 above records the unhelpful error that produces.
+_Q = chr(39)
+# The optional `[...]` is what lets this see an HCL assertion such as
+# `output.namespaces["eng"] == "swarm-tenant-eng"`, which is a restatement
+# exactly as much as a Python fixture is -- it pins what terraform must emit.
+LITERAL = re.compile(
+    r"namespaces?(?:\[[^\]]*\])?[\"\]]*\s*(?:==|=|:)\s*f?[\""
+    + _Q
+    + r"]([a-z0-9][a-z0-9.\-{}_]*)[\""
+    + _Q
+    + r"]"
+)
+
+literals = []
+for path, text in FILES:
+    rel = str(path.relative_to(root))
+    for number, line in enumerate(text.splitlines(), start=1):
+        if "namespace-prefix-exempt" in line:
+            continue
+        for match in LITERAL.finditer(line):
+            value = match.group(1)
+            # Only namespaces this platform owns. `finance-prod` in a
+            # negative test belongs to another team and must not match.
+            if not value.startswith("swarm-"):
+                continue
+            literals.append((rel, number, value))
+
+MIN_LITERALS = 8
+if len(literals) < MIN_LITERALS:
+    emit("MISSING", "namespace literals",
+         "found %d, expected at least %d; the literals moved or changed shape -- "
+         "update the LITERAL pattern so this keeps checking them"
+         % (len(literals), MIN_LITERALS))
+else:
+    bad = [lit for lit in literals if not lit[2].startswith(AUTHORITY)]
+    hard = [lit for lit in bad if not lit[0].startswith(ADVISORY_PREFIX)]
+    soft = [lit for lit in bad if lit[0].startswith(ADVISORY_PREFIX)]
+    for rel, number, value in hard:
+        emit("DRIFT", "namespace literal",
+             "%s:%d is %s; the scheduler dispatches into %s<tenant>, so this "
+             "names a namespace nothing creates" % (rel, number, value, AUTHORITY))
+    for rel, number, value in soft:
+        emit("ADVISORY", "namespace literal",
+             "%s:%d is %s -- browser-side mock data, owned by the UI lane, "
+             "dispatches nothing" % (rel, number, value))
+    if not hard:
+        emit("OK", "namespace literals",
+             "%d of %d literal(s) start with %s; %d advisory"
+             % (len(literals) - len(bad), len(literals), AUTHORITY, len(soft)))
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the tenant-namespace parity probe failed to run:"
+  printf '%s\n' "${NS_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted, and the count is printed. A `while read` over an empty string
+  # reports nothing and reads exactly like a clean sweep -- CLAUDE.md rule zero.
+  NS_SEEN=0
+  while IFS='|' read -r NS_STATUS NS_NAME NS_DETAIL; do
+    [[ -n "${NS_STATUS}" ]] || continue
+    NS_SEEN=$(( NS_SEEN + 1 ))
+    case "${NS_STATUS}" in
+      OK)       ok "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
+      ADVISORY) warn "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
+      MISSING)
+        err "the tenant-namespace scan lost sight of what it compares: ${NS_DETAIL}"
+        err "A scan that passes because it stopped looking reports an agreement it never established."
+        FAILED=1
+        ;;
+      DRIFT)
+        err "${NS_NAME} has DRIFTED: ${NS_DETAIL}"
+        err "See docs/gke-dispatch-403.md -- the failure this produces is a 403, not a 404."
+        FAILED=1
+        ;;
+      *)
+        err "unexpected tenant-namespace parity output: ${NS_STATUS}|${NS_NAME}|${NS_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${NS_PARITY}"
+  if [[ "${NS_SEEN}" -eq 0 ]]; then
+    err "the tenant-namespace probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
 hr
 [[ "${FAILED}" -eq 0 ]] || die "a restatement of the frozen contract has drifted"
 ok "every restatement of the frozen contract still matches it"

@@ -47,6 +47,19 @@ REGION = "us-central1"
 PROJECT = "saga-agents-staging"
 JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-eng-mock"
 
+#: DERIVED, never spelled again in this file.
+#:
+#: Every namespace literal below used to read `swarm-<tenant>`, which was the
+#: reconciler's own (wrong) prefix written out by hand -- so the suite agreed
+#: with the bug it existed to catch. `GkeBackend` both FILTERS on this prefix
+#: and SLICES it off to recover a tenant id, so a fixture that restates it
+#: passes whatever the prefix says and proves nothing about whether the
+#: reconciler and the scheduler are looking at the same namespaces.
+#: `scripts/lib/check-contract-parity.sh` section 6 is what holds the prefix
+#: itself to the scheduler's.
+NS = ReconcilerConfig.namespace_prefix
+TENANT_NS = f"{NS}{TENANT}"
+
 
 @pytest.fixture
 def config() -> ReconcilerConfig:
@@ -162,7 +175,7 @@ class FakeExecutionsClient:
 def k8s_job(
     *,
     name: str = "swarm-9f3a-3",
-    namespace: str = "swarm-eng",
+    namespace: str = TENANT_NS,
     labels: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
     active: int = 1,
@@ -373,12 +386,34 @@ def test_gke_reads_identifiers_from_the_pod_environment():
     assert views[0].task_id == "task_9f3a"
     assert views[0].attempt_id == "att_7b21"
     assert views[0].generation == 4
-    assert views[0].namespace == "swarm-eng"
+    assert views[0].namespace == TENANT_NS
     assert batch.selectors == [managed_label_selector()]
 
 
 def test_gke_skips_a_job_in_a_namespace_that_is_not_ours():
     job = k8s_job(namespace="finance-prod", labels={"managed-by": "swarm-scheduler"})
+    backend = GkeBackend(batch_api=FakeBatchApi([job]), core_api=FakeCoreApi([]))
+    assert backend.list_executions() == []
+
+
+def test_gke_skips_a_job_in_a_namespace_that_only_looks_like_ours():
+    """`swarm-eng` is NOT a tenant namespace, and it is not a hypothetical name.
+
+    It is what `kubernetes/render.py` and `scripts/register-tenant.sh` both
+    created while the scheduler dispatched into `swarm-tenant-eng` -- the
+    2026-09-23 outage. With the reconciler's prefix left at `swarm-` this
+    listing accepted both spellings and then recovered the tenant id by
+    slicing, which turns `swarm-tenant-eng` into the tenant `tenant-eng`: a
+    finding filed against a tenant that exists nowhere.
+
+    THE MUTATION THIS CATCHES: set `ReconcilerConfig.namespace_prefix` back to
+    `"swarm-"` and this job is listed instead of skipped.
+    """
+    job = k8s_job(
+        namespace=f"swarm-{TENANT}",  # namespace-prefix-exempt: the wrong spelling, on purpose
+        labels={"managed-by": "swarm-scheduler", "swarm-tenant": TENANT},
+        env={"TASK_ID": "task_9f3a", "TENANT_ID": TENANT, "GENERATION": "4"},
+    )
     backend = GkeBackend(batch_api=FakeBatchApi([job]), core_api=FakeCoreApi([]))
     assert backend.list_executions() == []
 
@@ -389,23 +424,30 @@ def test_a_tenant_namespace_is_collectable_whichever_marker_created_it():
     kubernetes provider in `terraform/`. So the namespace rule keys on the pair
     (recognised marker, tenant label) instead, which nothing outside this
     platform sets."""
-    runtime = k8s_namespace("swarm-finance", {"managed-by": "swarm", "swarm-tenant": "finance"})
-    scripted = k8s_namespace("swarm-eng", {"managed-by": "swarm-terraform", "swarm-tenant": TENANT})
+    runtime = k8s_namespace(f"{NS}finance", {"managed-by": "swarm", "swarm-tenant": "finance"})
+    scripted = k8s_namespace(TENANT_NS, {"managed-by": "swarm-terraform", "swarm-tenant": TENANT})
     backend = GkeBackend(
         batch_api=FakeBatchApi([]), core_api=FakeCoreApi([runtime, scripted])
     )
     by_name = {r.name: r for r in backend.list_job_resources()}
-    assert by_name["swarm-finance"].managed is True
-    assert by_name["swarm-eng"].managed is True
+    assert by_name[f"{NS}finance"].managed is True
+    assert by_name[TENANT_NS].managed is True
 
 
 def test_a_namespace_without_a_tenant_label_is_never_collectable():
     """A shared project holds other teams' namespaces. A marker alone is not
     enough of a claim to delete one."""
-    stray = k8s_namespace("swarm-shared-tools", {"managed-by": "swarm-terraform"})
+    stray = k8s_namespace(f"{NS}shared-tools", {"managed-by": "swarm-terraform"})
     backend = GkeBackend(batch_api=FakeBatchApi([]), core_api=FakeCoreApi([stray]))
     resources = backend.list_job_resources()
     assert resources[0].managed is False
+    # With no `swarm-tenant` label the tenant id is recovered by slicing the
+    # prefix off the namespace name, which is why the prefix has to be the
+    # scheduler's exactly. THE MUTATION THIS CATCHES: with
+    # `namespace_prefix = "swarm-"` this reads `tenant-shared-tools`, and every
+    # finding the reconciler files about an unlabelled namespace is attributed
+    # to a tenant that does not exist.
+    assert resources[0].tenant_id == "shared-tools"
 
     with pytest.raises(PermissionError):
         backend.delete_job_resource(replace(resources[0], managed=True))
