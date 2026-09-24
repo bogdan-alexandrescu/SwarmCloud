@@ -221,7 +221,7 @@ function open(
   // later than the start. The client's own clock is not a measurement of the
   // attempt, so `Date.now()` never appears here: an attempt that was killed an
   // hour ago would otherwise grow by an hour every time the page is opened.
-  const seen = newest !== null && newest > from ? newest : from
+  const seen = live ? Date.now() : newest !== null && newest > from ? newest : from
   return {
     kind: 'open',
     phase,
