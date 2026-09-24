@@ -25,6 +25,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
+| 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
+| 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
 
 ---
 
@@ -1195,3 +1197,193 @@ bug.
 A task sent to FAILED by this path was getting a `next_eligible_at`, which
 promises a retry that is not coming and renders in the console as a scheduled
 attempt. It now gets a `completed_at` and no eligibility time.
+
+---
+
+## 13. `models.py`: `Attempt` does not record which pool account it ran on
+
+**Status:** open, filed 2026-09-24. A request, not a change: nothing under
+`apps/common/swarm_common/` is edited. Raised in
+[`docs/web-ui/redesign-v2.md`](web-ui/redesign-v2.md) §6 S6 ("request, not
+proposal"), which asked for it to be filed here if pursued.
+
+### The claim, made precise
+
+S6 says "nothing assigns an account to an attempt. `Lease` and `Attempt` carry
+no account field". The second sentence is true: `Lease` (`models.py:115-135`)
+and `Attempt` (`models.py:242-281`) have no account field. The first is not
+quite, and the difference is the reason for this request rather than an
+argument against it:
+
+* **The worker does record it -- as an untyped event.** `_lease_account` in
+  `apps/agent-worker/agent_worker/lifecycle.py` emits `RUNNING` with
+  `detail = {"cause": "account_assigned", "account_id": ..., "provider": ...}`,
+  and `control.emit` stamps the event with the attempt id, lease id and
+  generation. A rejected account emits `RETRYING` with
+  `{"cause": "account_unreadable", "account_id": ...}`.
+* **The broker records a HOLD, not a history.** `acquire_hold`
+  (`apps/quota-broker/quota_broker/main.py`) counts the assignment against the
+  account under an `assignment_id`, and the hold expires and is pruned by the
+  quota sweep. Nothing there survives the attempt.
+
+### Why an event is not enough
+
+* **"Which attempts ran on account X"** -- S6's question, i.e. which agent spent
+  this subscription's quota -- is a read of every task's `events` subcollection,
+  filtered on `detail.cause` and `detail.account_id` in client code. The two
+  collection-group indexes on `events` (`terraform/modules/firestore/indexes.tf`,
+  `events-tenant-at`, `events-task-at`) do not cover a field inside `detail`,
+  and `detail` is a map whose shape is a convention.
+* **One attempt can be offered more than one account.** `_reject_account` hands
+  back an account whose secret it cannot read and asks again with it excluded.
+  The events record every offer; which account the agent RAN on is "the last
+  `account_assigned` not followed by an `account_unreadable` for the same id" --
+  an inference every reader would re-derive, and the first one to get it wrong
+  attributes spend to an account that never ran the agent.
+* **Events are declared an audit trail, not a record.** The `events_ttl` field
+  policy expires them on `expires_at`. The worker's `emit` sets no `expires_at`
+  today, so these particular events do not expire -- but the policy says what
+  events are for, and attribution is not that.
+* **Spend is already on `Attempt`** (request #2, applied). Attribution on the
+  same document makes "spend per account" one query rather than a join through
+  untyped event detail.
+
+### The requested change
+
+Add to `Attempt`:
+
+```python
+#: The pool account this attempt's agent RAN on: the last assignment it kept,
+#: not every one it was offered. None means "not recorded" -- an older attempt,
+#: or a worker that never reached account selection.
+account_id: str | None = None
+#: "account_pool" or "tenant_secret". None means "not recorded". Separate from
+#: account_id because "no account" has two meanings that want different
+#: readings: the pool is not how this tenant runs, or nobody wrote it down.
+credential_source: str | None = None
+```
+
+**Single writer: the worker**, at the two places that already decide it --
+`_lease_account` when an account is kept and `_decline_pool` when the tenant
+secret is used -- through `control.py`'s attempt document, the way
+`record_spend` writes spend (merge, tenant-stamped).
+
+**Not on `Lease`.** The lease is capacity, taken by the scheduler before any
+account is chosen; the account is chosen afterwards, by the worker. A lease
+field would be one the scheduler writes empty and never knows.
+
+### What it would break if accepted
+
+* **No existing document.** Both fields are optional and default to `None`, so
+  nothing needs migrating -- the same shape as request #2.
+* **Every reader must read `None` as "not recorded", never as "tenant secret".**
+  That is the rule #2 set for spend, and `credential_source` exists so that
+  nobody has to infer it from an absent `account_id`.
+* **Indexes (Track C).** `attempts.account_id` equality is covered by Firestore's
+  automatic single-field index; "an account's attempts, newest first" needs a
+  composite `(account_id, created_at)` in `terraform/modules/firestore/indexes.tf`.
+* **Fencing (invariant 5).** An attempt document is keyed by its own
+  `attempt_id`, so a stale worker can only write its own attempt, never a newer
+  one. The write should still go through the same path as `record_spend`, not a
+  new one.
+* **The TypeScript restatement.** `types.ts` gains the two fields, and
+  `scripts/lib/check-contract-parity.sh` section 5 should hold them.
+
+### If it is declined
+
+S6 stays unanswerable except by scanning event subcollections, and the console
+cannot show "this account's attempts" without an N+1 over tasks. What is left to
+live with is the event: its `detail` shape (`cause`, `account_id`, `provider`)
+becomes the contract of record by default, and should then be written down as
+one, in `docs/`, so that every reader applies the same "last kept assignment"
+rule.
+
+---
+
+## 14. `models.py`: a sub-agent has nowhere to name its parent
+
+**Status:** open, filed 2026-09-24. A request, not a change. Raised as S1 / B31
+in [`docs/web-ui/ui-audit-and-build-prompt.md`](web-ui/ui-audit-and-build-prompt.md):
+"Write the request; do not build a fake hierarchy from `depends_on`."
+
+### What was asked for, and what exists
+
+The brief asked for "workflows of agents **and sub-agents**". A workflow step
+is a `Task` with `workflow_id`, `step_id` and `depends_on` (`models.py:172-205`).
+There is no parent/child relationship between tasks anywhere -- not in the
+frozen model, not in the API, not in the UI.
+
+`depends_on` is not one. It is ORDER: a step runs after the steps it names have
+succeeded. A dependency is not a parent -- the step that produced your input did
+not create you, cannot cancel you, and is not waiting on you -- which is why S1
+forbids inferring a hierarchy from it.
+
+### How a sub-agent would be created today, and what would be lost
+
+The worker gives the agent its own identity: `SWARM_TASK_ID`, `SWARM_ATTEMPT_ID`
+and `SWARM_TENANT_ID` are in the child environment it builds
+(`agent_worker/lifecycle.py`, the `base` env). An agent that submitted work of
+its own could therefore name itself. There is nowhere typed to put that name:
+
+* `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py:33`) is a free
+  `dict`. A child could carry `metadata.parent_task_id` by convention -- the
+  same shape request #3 records for `input_from`.
+* A convention in `metadata` is **unvalidated**: any caller can claim any
+  parent, including a task in another tenant (invariant 9), and a UI drawing a
+  tree from it would draw whatever a caller typed.
+* It is **unindexed**: "this task's children" is a scan.
+
+**Not verified here, and part of the cost:** that an agent inside a worker can
+reach the API at all. The child environment carries no API address and no
+credential for it (the same `base` env), so sub-agents also need a submission
+path. That is not a contract change and is not requested here; it is named so
+the field is not mistaken for the whole feature.
+
+### The requested change
+
+Add to `Task`:
+
+```python
+#: The task whose agent submitted this one from inside a running attempt.
+#: None for work a person, a client or a workflow submitted.
+parent_task_id: str | None = None
+#: The parent's ATTEMPT. A parent can be retried, and the children of attempt 1
+#: and attempt 2 are different work -- the second may re-create the first's.
+parent_attempt_id: str | None = None
+```
+
+**Part of the request, not a detail: the API SETS these; a caller never
+supplies them.** A caller-supplied parent is invariant 10's shape (a caller
+naming something the platform should decide) and invariant 9's hazard (a
+parent in another tenant). The API resolves the caller's identity already;
+the parent is whatever attempt that identity is currently running, or nothing.
+
+Listing children needs `GET /v1/tasks?parent_task_id=` -- a filter in
+`swarm-api/store.py` and a composite `(tenant_id, parent_task_id, created_at)`
+index. Both are unfrozen (Tracks A and C); they are listed so the full cost is
+visible.
+
+### What it would break if accepted
+
+* **No existing document.** Optional, default `None`.
+* **Cancellation has to be decided WITH the field, not after it.** Does
+  cancelling a parent cancel its children? The field decides nothing, but the
+  first screen that draws the tree will be asked, and an answer arrived at by
+  whoever writes that screen is the wrong place for it.
+* **Capacity (invariants 1-4).** Each child holds its own lease. A parent that
+  WAITS on its children holds a slot they may need -- on a narrow pool, a
+  deadlock -- and it sleeps through a long wait, which invariant 4 forbids.
+  Agents can already do this today by submitting and polling; naming the
+  relationship will invite it. Whatever accepts this request should also say
+  what a parent is allowed to do while its children run.
+* **The workflow rollup** (request #7) must not count a step's children as
+  steps.
+* **The TypeScript restatement.** `types.ts` gains the two fields, and
+  `check-contract-parity.sh` section 5 should hold them.
+
+### If it is declined
+
+"Sub-agents" stays at **does not exist** in the brief's table, and the console
+says so. There is no honest partial: a hierarchy inferred from `depends_on` is
+refused by S1, and one read from a `metadata` convention would be a tree any
+caller can draw.

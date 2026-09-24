@@ -438,6 +438,14 @@ for id in ${TASK_IDS[@]+"${TASK_IDS[@]}"}; do
   fi
 done
 t_info "checked ${CHECKED} task(s) with attempts"
+# THE FLOOR, because 0 == 0 over zero attempts is a PASS for invariant 5 that
+# read nothing. The sweep (13-swallowed-stderr-sweep.md, race-test.sh:159)
+# found it reachable through a failed query, and that path now aborts; the same
+# vacuous pass is still reachable through a query that simply matched nothing.
+# The case above asserts the narrowed pool was held. When it was, at least one
+# task was leased -- and the scheduler writes the attempt document in the same
+# step it leases (apps/scheduler/scheduler/loop.py, `create_attempt`).
+assert_ge "${CHECKED}" 1 "tasks whose attempts were read (a generation check over none proves nothing)"
 assert_eq "0" "${BAD_GENERATIONS}" "tasks with duplicate attempt generations"
 
 # ---------------------------------------------------------------------------
