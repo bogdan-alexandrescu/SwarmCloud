@@ -132,3 +132,26 @@ describe('the inspector draws its charts and keeps its tables', () => {
     expect(table?.textContent).toContain('+61 −12')
   })
 })
+
+describe('the sentences on the marks are reachable', () => {
+  it('draws every inspector chart as a group, so no mark’s own sentence is hidden', async () => {
+    // `role="img"` on the <svg> makes every child presentational: the open
+    // segment's "open, at least 5m" and the hatch's "not measured, and why"
+    // would be replaced by one label for the whole chart. Those sentences are
+    // the accessible route to the explanation the owner moved off the glass.
+    const el = await mount()
+    const svgs = [
+      ...el.querySelectorAll(
+        'figure.ctl-phases svg, figure.ctl-peak svg, figure.ctl-ckpt-strip svg, figure.ctl-diffstat svg',
+      ),
+    ]
+    // phases + lollipop, one peak, one strip, one diffstat.
+    expect(svgs.length, 'the charts this checks were not all mounted').toBe(5)
+    for (const svg of svgs) {
+      expect(svg.getAttribute('role'), svg.getAttribute('aria-label') ?? '').toBe('group')
+    }
+    const off = el.querySelector('[data-testid="ckpt-offpage"]')
+    expect(off?.getAttribute('role')).toBe('img')
+    expect(off?.getAttribute('aria-label') ?? '').toMatch(/not on this page/i)
+  })
+})
