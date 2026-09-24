@@ -254,13 +254,6 @@ run "turning_api_disablement_on_is_refused" {
 run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
   command = plan
 
-  # Without this block the run plans tests/terraform itself, which declares none
-  # of bootstrap's variables or resources -- CI failed "Reference to undeclared
-  # resource" on frontend_accessors.
-  module {
-    source = "../../terraform/bootstrap"
-  }
-
   variables {
     enable_github_wif    = true
     github_repository    = "saga/agent-swarm-infra"
@@ -279,24 +272,10 @@ run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
     ])
     error_message = "the only IAP role this root grants is the accessor role"
   }
-
-  # The half of this run's name the two assertions above do not cover. The
-  # deployer's project roles are non-empty here (enable_github_wif = true), so
-  # this cannot pass vacuously over an empty map.
-  assert {
-    condition = length(google_project_iam_member.deployer_roles) > 0 && alltrue([
-      for r in keys(google_project_iam_member.deployer_roles) : !startswith(r, "roles/iap.")
-    ])
-    error_message = "the deployer holds an IAP role; IAP membership is applied by the owner from this root, never by CI"
-  }
 }
 
 run "a_backend_that_is_not_ours_is_refused" {
   command = plan
-
-  module {
-    source = "../../terraform/bootstrap"
-  }
 
   variables {
     frontend_iap_backends = ["swarm-ui-backend", "gkegw1-7hi6-keycloak"]

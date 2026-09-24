@@ -222,3 +222,49 @@ resource "google_logging_metric" "oom_near_miss" {
     resource_class = "EXTRACT(jsonPayload.resource_class)"
   }
 }
+
+# Dispatch failures, per backend, counted from the scheduler's own log line.
+#
+# The alert that watches this (alerts.tf, dispatch_failing_by_backend) used to
+# read the Prometheus counter swarm_scheduler_dispatch_failures_total. Release
+# 36023801562 could not create it:
+#
+#     Error 404: Cannot find metric(s) that match type =
+#     "prometheus.googleapis.com/swarm_scheduler_dispatch_failures_total/counter"
+#
+# A labelled Prometheus counter has no descriptor until a sample is exported,
+# and this one is exported only after a dispatch FAILS -- so the alert for the
+# failure could not exist until after the failure it is for. A logs-based metric
+# exists the moment terraform creates it.
+#
+# The line is apps/scheduler/scheduler/loop.py's
+#     "dispatch failed task=%s attempt=%s backend=%s code=%s: %s"
+# measured in Cloud Logging as jsonPayload.message on cloud_run_revision (e.g.
+# 2026-09-24T03:33:08Z, backend=GKE_AUTOPILOT code=gke_create_job_failed). Only
+# the scheduler writes a message beginning "dispatch failed ".
+resource "google_logging_metric" "dispatch_failures" {
+  project = var.project_id
+  name    = "${var.name_prefix}/dispatch-failures"
+
+  description = "One per failed dispatch attempt, labelled by backend, from the scheduler's 'dispatch failed' line."
+
+  filter = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "jsonPayload.message=~\"^dispatch failed \"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "backend"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    backend = "REGEXP_EXTRACT(jsonPayload.message, \"backend=(\\\\S+)\")"
+  }
+}
