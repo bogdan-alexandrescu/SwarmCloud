@@ -109,7 +109,41 @@ MAX_LIVE_READ = 320 * 1024
 #: `uv run` is the spelling that works in a fresh checkout with nothing
 #: installed and also works when the environment IS active, which is why it wins
 #: over teaching people to activate a venv first.
-TAIL_COMMAND = "uv run swarm tail"
+#: The prefix, on its own, because `swarm tail` was never the only place this
+#: package hands a reader something to type. Three more were found on
+#: 2026-09-24, all in PRINTED OUTPUT rather than in a tool response, and the
+#: worst of them fires at precisely the wrong moment:
+#:
+#:   sc.py         "sc: run `swarm doctor` to see which auth tier this machine
+#:                 is on" -- printed ONLY when `sc` could not connect. A session
+#:                 that has just failed to read the cluster is told to run a
+#:                 binary that does not exist, so it collects a second,
+#:                 unrelated failure and reports SwarmCloud as broken twice.
+#:   cli.py        "deploy it first, then run `swarm init` again"
+#:   cli.py        "Try:  swarm dispatch \"say hello\" --profile mock" -- the
+#:                 last line of `swarm init`, which is the first command a new
+#:                 operator ever runs and therefore the first thing they copy.
+#:
+#: `plugin/skills/sc/SKILL.md` says `uv run swarm doctor`, correctly. The
+#: program contradicted the skill, and the program is what the reader sees.
+RUN_PREFIX = "uv run "
+
+TAIL_COMMAND = f"{RUN_PREFIX}swarm tail"
+
+
+def terminal_command(words: str) -> str:
+    """A `swarm`/`sc` command spelled so it runs in a fresh checkout.
+
+    ONE FUNCTION so there is one spelling. `swarm` and `sc` are console scripts
+    of this package, installed into the uv-managed environment and never onto
+    the shell's PATH, so every command this package hands back or prints has to
+    carry `uv run`. Anything already carrying it is returned unchanged, so
+    passing `TAIL_COMMAND` through is not a double prefix.
+    """
+    words = words.strip()
+    if not words or words.startswith(RUN_PREFIX):
+        return words
+    return f"{RUN_PREFIX}{words}"
 
 
 def follow_command(task_ids: list[str]) -> str:

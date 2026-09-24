@@ -12,7 +12,7 @@ import type {
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
-  Runtime, TaskState,
+  RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
@@ -26,8 +26,10 @@ import type {
 
 export type { Result, ApiError } from './fetch'
 
-/** Fixtures, so the UI can be worked on before DNS resolves. */
-const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
+/** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
+ *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
+ *  flag rather than restating the expression. */
+export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
 export async function loadCapacity(): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
@@ -175,10 +177,16 @@ export const ATTEMPT_PAGE_LIMIT = 200
 /**
  * One agent, with its event timeline.
  *
- * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is deliberately NOT
- * called: it reads a Firestore subcollection nothing writes, so it returns []
- * for every task forever. Artifacts come off `task.result_summary`, which the
- * worker really populates. See ResultSummary in types.ts.
+ * Two reads, not three. `GET /v1/tasks/{id}/artifacts` is not called because
+ * it would be a second copy of something the first read already carries. The
+ * route used to read a Firestore subcollection nothing writes, and answered
+ * [] for every task; it has since been pointed at the real writer, and
+ * `store.list_artifacts` now serves the manifest out of `task.result_summary`
+ * (`artifacts`, `artifacts_skipped`, and a `complete` flag that is simply
+ * whether `result_summary` exists). That is the same field this screen reads
+ * off the task document, so a third request would fetch the same manifest
+ * again -- one more read that could fail on its own and disagree with the
+ * first. See ResultSummary in types.ts.
  */
 export interface AgentDetail {
   task: Task
@@ -2108,6 +2116,31 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
   ]
 }
 
+/**
+ * `swarm_api.runnerinputs.input_contract()` over the frozen catalogue, verbatim.
+ *
+ * Served on every fixture profile so the submit screens' REQUIRED-KEYS path can
+ * be reached without a deployment. Without it `requiredInputKeys` read null for
+ * every profile, and a fixture session could only ever show the unread mark --
+ * never the form refusing `claude-code` a blank prompt, which is the branch the
+ * rebuilt flow exists for (docs/web-ui/ux-plan.md §1.2).
+ *
+ * A block for EVERY profile, empty lists included, for the reason
+ * `input_contract` gives: an empty list is a measured "nothing required" and
+ * must be reachable too. Strict JSON because
+ * tests/unit/control_plane/test_ui_fixture_input_contract.py parses this literal
+ * and compares it with the server's function -- so a runner that starts
+ * demanding a key fails that test here rather than teaching the screen a rule
+ * production does not apply.
+ */
+const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
+  "mock": {"required_keys": []},
+  "generic": {"required_keys": []},
+  "claude-code": {"required_keys": ["prompt"]},
+  "codex": {"required_keys": ["prompt"]},
+  "browser": {"required_keys": []}
+}
+
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   noteFixtureProbe('/v1/capacity', 400, true)
@@ -2148,11 +2181,13 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.mock,
+          input_contract: FIXTURE_INPUT_CONTRACTS.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.generic,
+          input_contract: FIXTURE_INPUT_CONTRACTS.generic,
         },
         'claude-code': {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
@@ -2161,6 +2196,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
           ],
           admission: FIXTURE_ADMISSION['claude-code'],
+          input_contract: FIXTURE_INPUT_CONTRACTS['claude-code'],
         },
         codex: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
@@ -2169,6 +2205,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'backend:CLOUD_RUN_JOB', 'provider:openai',
           ],
           admission: FIXTURE_ADMISSION.codex,
+          input_contract: FIXTURE_INPUT_CONTRACTS.codex,
         },
         browser: {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
@@ -2177,6 +2214,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
           ],
           admission: FIXTURE_ADMISSION.browser,
+          input_contract: FIXTURE_INPUT_CONTRACTS.browser,
         },
       },
       pools: [

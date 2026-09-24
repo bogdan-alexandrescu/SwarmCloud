@@ -3,7 +3,8 @@
     1. INVALIDATE the generation      -- the running worker now fences itself
     2. TERMINATE the execution        -- and confirm the backend accepted it
     3. RELEASE the slot               -- only now, and only if 2 succeeded
-    4. REPAIR the task state          -- back to READY, or FAILED if spent
+    4. REPAIR the task state          -- back to READY, or FAILED if spent,
+                                         or CANCELLED if a cancel was requested
 
 Step 3 after step 2 is the whole point of this module. Releasing first returns a
 slot to the scheduler, which admits the next task in milliseconds, while the
@@ -22,19 +23,72 @@ depend on the backend being reachable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
 from swarm_common.models import utcnow
 from swarm_common.states import EventType, TaskState
 
-from .backends import Backend
+from .backends import Backend, NamespacedBackend, NamespacedListing, Probe, ProbeOutcome
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
-from .detect import Finding, FindingKind, detect_all, detect_empty_namespaces, detect_unused_job_resources
-from .model import ControlSnapshot, ExecutionView, JobResourceView
+from .detect import (
+    Finding,
+    FindingKind,
+    detect_all,
+    detect_empty_namespaces,
+    detect_orphan_executions,
+    detect_stale_leases,
+    detect_unused_job_resources,
+    sanitised,
+)
+from .model import AttemptView, ControlSnapshot, ExecutionView, JobResourceView, LeaseView
 from .store import ControlStore
+
+#: The two lines the reconciler writes when it holds back, spelled ONCE.
+#:
+#: terraform/modules/monitoring/alerts.tf builds log-based metrics on these exact
+#: strings, and a log-based metric whose filter matches nothing is not an error
+#: anywhere -- it is a number that stays at zero and an alert that never fires.
+#: `test_reconciler_gke_namespaced.py` parses that file and asserts each appears
+#: verbatim in the `filter` of the metric that counts it -- not merely somewhere
+#: in the file, where a comment quoting it would do -- so rewording one here
+#: without the other fails a test instead of an alert.
+#:
+#: Why they are alerted on at all: from 2026-09-16 the GKE listing failed on
+#: essentially every pass, and nothing paged. On 2026-09-24 that blindness held
+#: five dead leases for hours, and the only record was a WARNING per lease per
+#: pass that nobody was watching.
+BACKEND_UNAVAILABLE = "backend unavailable; skipping its findings"
+NOT_REPAIRING = "not repairing: the backend that would hold this execution was unreadable"
+
+#: The event each repaired state is announced with.
+_EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
+    TaskState.READY: EventType.READY,
+    TaskState.FAILED: EventType.FAILED,
+    TaskState.CANCELLED: EventType.CANCELLED,
+}
+
+
+class _Disproved:
+    """`_admit`'s answer when a probe proved a finding WRONG.
+
+    A third answer beside "act on this" and "hold it back", and it has to be
+    distinct from both. Acting is what killed healthy agents: a missing_execution
+    raised only because a LIST failed was turned into a dead_worker by an active
+    Job found by name. Holding it back is wrong too -- it would be counted in
+    `findings_suppressed` and logged as NOT_REPAIRING, which pages after thirty
+    minutes, for an agent that is doing exactly what it should.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "DISPROVED"
+
+
+_DISPROVED = _Disproved()
 
 
 @dataclass
@@ -71,6 +125,34 @@ class RepairOutcome:
         }
 
 
+@dataclass(frozen=True)
+class SuppressedFinding:
+    """A finding this pass DETECTED and then declined to act on.
+
+    Kept apart from `findings` because the two numbers mean opposite things.
+    `findings` counts repairs attempted; this counts leases the reconciler knows
+    about and is deliberately leaving alone because it cannot see the backend
+    that would prove them dead. For six days both were folded into one number
+    that read `findings=0` -- a healthy pass and a blind one looked identical,
+    in the log line and in the persisted pass history alike.
+    """
+
+    kind: str
+    lease_id: str | None
+    task_id: str | None
+    backend: str | None
+    namespace: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "lease_id": self.lease_id,
+            "task_id": self.task_id,
+            "backend": self.backend,
+            "namespace": self.namespace,
+        }
+
+
 @dataclass
 class ReconcileReport:
     started_at: datetime
@@ -79,6 +161,15 @@ class ReconcileReport:
     leases_examined: int = 0
     executions_examined: int = 0
     findings: int = 0
+    #: Detected, then held back because what would prove them was unreadable.
+    #: See SuppressedFinding. Zero on a healthy pass; anything else is a lease
+    #: the platform is holding on purpose and somebody should know about.
+    findings_suppressed: int = 0
+    suppressed: list[SuppressedFinding] = field(default_factory=list)
+    #: backend -> namespace -> why it could not be read. A namespace here that
+    #: holds none of our attempts is noise (a registered tenant whose namespace
+    #: was never provisioned); one that does also appears in `errors`.
+    unreadable_namespaces: dict[str, dict[str, str]] = field(default_factory=dict)
     outcomes: list[RepairOutcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
@@ -102,6 +193,12 @@ class ReconcileReport:
             "leases_examined": self.leases_examined,
             "executions_examined": self.executions_examined,
             "findings": self.findings,
+            "findings_suppressed": self.findings_suppressed,
+            "suppressed": [s.as_dict() for s in self.suppressed],
+            "unreadable_namespaces": {
+                backend: dict(namespaces)
+                for backend, namespaces in self.unreadable_namespaces.items()
+            },
             "slots_released": sum(1 for o in self.outcomes if o.released),
             "executions_terminated": sum(1 for o in self.outcomes if o.terminated),
             "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
@@ -112,12 +209,42 @@ class ReconcileReport:
         }
 
 
+@dataclass
+class _Sight:
+    """What one pass could see, kept apart from what it may act through.
+
+    `handles` is every configured backend, readable or not. It is what a
+    termination is issued through, and it must NOT shrink when a listing fails:
+    a probe by name can find a live Job on a backend whose list was refused,
+    and the kill that must precede the release has to be sent somewhere. These
+    used to be one dict with the unreadable backends popped out, so a backend
+    that could not be listed could not be told to stop anything either.
+    """
+
+    handles: dict[str, Any] = field(default_factory=dict)
+    #: Backends whose listing succeeded -- for a namespaced backend, for at
+    #: least one namespace.
+    readable: set[str] = field(default_factory=set)
+    #: backend name -> its per-namespace listing, for namespaced backends only.
+    namespaced: dict[str, NamespacedListing] = field(default_factory=dict)
+    #: tenant id -> the namespace its document records (None if it records none).
+    tenant_namespaces: dict[str, str | None] = field(default_factory=dict)
+    executions: list[ExecutionView] = field(default_factory=list)
+    #: "<backend>:<execution_name>" -> the probe answer, so the two findings a
+    #: stranded lease produces (stale_lease, missing_execution) cost one GET.
+    probes: dict[str, Probe] = field(default_factory=dict)
+
+
+def _is_namespaced(backend: Any) -> bool:
+    return callable(getattr(backend, "list_executions_in", None))
+
+
 class Reconciler:
     def __init__(
         self,
         *,
         store: ControlStore,
-        backends: list[Backend],
+        backends: list[Backend | NamespacedBackend],
         config: ReconcilerConfig,
         logger: Any,
         checkpoint_store: CheckpointStore | None = None,
@@ -144,44 +271,50 @@ class Reconciler:
         report.tasks_examined = len(snapshot.tasks)
         report.leases_examined = len(snapshot.leases)
 
-        executions: list[ExecutionView] = []
-        backend_by_name: dict[str, Backend] = {}
-        for backend in self._backends:
-            backend_by_name[backend.name] = backend
-            try:
-                found = backend.list_executions()
-            except Exception as exc:
-                # A backend we cannot see is a backend we must not act on: with
-                # no execution list, every task there looks like a missing
-                # execution, and repairing those would kill healthy work.
-                message = f"{backend.name}: listing executions failed: {exc}"
-                self._log.error("backend unavailable; skipping its findings", error=message)
-                report.errors.append(message)
-                backend_by_name.pop(backend.name, None)
-                continue
-            executions.extend(found)
-        report.executions_examined = len(executions)
+        sight = self._look(snapshot, report)
+        report.executions_examined = len(sight.executions)
 
         findings = detect_all(
-            snapshot, executions, self._config, now=snapshot.taken_at, logger=self._log
+            snapshot, sight.executions, self._config, now=snapshot.taken_at, logger=self._log
         )
-        findings = [f for f in findings if self._is_actionable(f, snapshot, backend_by_name)]
-        report.findings = len(findings)
-
+        actionable: list[Finding] = []
+        seen: set[tuple[str, str | None, str | None]] = set()
         for finding in findings:
+            admitted = self._admit(finding, snapshot, sight)
+            if isinstance(admitted, _Disproved):
+                # Neither repaired nor held back: nothing is wrong. See _Disproved.
+                continue
+            if admitted is None:
+                report.suppressed.append(self._suppressed(finding, snapshot, sight))
+                continue
+            # A probe can turn a stale_lease and a missing_execution about the
+            # same lease into the same dead_worker; act on it once.
+            key = (
+                admitted.kind.value,
+                admitted.lease_id,
+                admitted.execution.name if admitted.execution else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            actionable.append(admitted)
+        # Re-sorted because a probe may have turned an absence into a
+        # dead_worker: anything that needs a kill goes first, so a pass never
+        # returns a slot for an execution it has not stopped yet.
+        actionable.sort(key=lambda f: (not f.requires_termination, f.kind.value))
+        report.findings = len(actionable)
+        report.findings_suppressed = len(report.suppressed)
+
+        for finding in actionable:
             try:
-                report.outcomes.append(self._repair(finding, snapshot, backend_by_name))
+                report.outcomes.append(self._repair(finding, snapshot, sight.handles))
             except Exception as exc:
                 message = f"{finding.kind.value} {finding.task_id or finding.lease_id}: {exc}"
                 self._log.exception("repair failed", exc, finding=finding.kind.value)
                 report.errors.append(message)
 
         if self._config.enable_gc:
-            try:
-                report.outcomes.extend(self._collect_garbage(snapshot, backend_by_name))
-            except Exception as exc:
-                self._log.exception("garbage collection failed", exc)
-                report.errors.append(f"gc: {exc}")
+            self._collect_garbage(snapshot, sight, report)
 
         try:
             self._collect_checkpoints(report, now=snapshot.taken_at)
@@ -225,6 +358,114 @@ class Reconciler:
 
         return report
 
+    # ------------------------------------------------------------------
+    # Seeing
+    # ------------------------------------------------------------------
+    def _look(self, snapshot: ControlSnapshot, report: ReconcileReport) -> _Sight:
+        """List every backend, recording what could and could not be read."""
+        sight = _Sight()
+        tenants_read = False
+        for backend in self._backends:
+            sight.handles[backend.name] = backend
+            try:
+                if _is_namespaced(backend):
+                    if not tenants_read:
+                        sight.tenant_namespaces = self._tenant_namespaces(report)
+                        tenants_read = True
+                    found = self._look_namespaced(backend, snapshot, sight, report)
+                else:
+                    found = backend.list_executions()
+            except Exception as exc:
+                # A backend we cannot see is a backend we must not act on: with
+                # no execution list, every task there looks like a missing
+                # execution, and repairing those would kill healthy work.
+                message = f"{backend.name}: listing executions failed: {exc}"
+                self._log.error(BACKEND_UNAVAILABLE, backend=backend.name, error=message)
+                report.errors.append(message)
+                continue
+            sight.readable.add(backend.name)
+            sight.executions.extend(found)
+        return sight
+
+    def _look_namespaced(
+        self,
+        backend: Any,
+        snapshot: ControlSnapshot,
+        sight: _Sight,
+        report: ReconcileReport,
+    ) -> list[ExecutionView]:
+        """Read a namespaced backend in exactly the namespaces the control plane names.
+
+        Raises when EVERY namespace failed, which `_look` reports as the whole
+        backend being unavailable -- the one case the backend-unavailable alert
+        is for. Anything less is per-namespace: logged, kept on the report, and
+        an error only where one of our live attempts is actually in it.
+        """
+        held: set[str] = set()
+        for attempt in snapshot.attempts.values():
+            if attempt.backend != backend.name:
+                continue
+            namespace = self._attempt_namespace(backend, attempt, sight.tenant_namespaces)
+            if namespace:
+                held.add(namespace)
+        wanted = {
+            backend.namespace_for(tenant_id, recorded)
+            for tenant_id, recorded in sight.tenant_namespaces.items()
+        } | held
+
+        listing: NamespacedListing = backend.list_executions_in(wanted)
+        sight.namespaced[backend.name] = listing
+        if listing.unreadable:
+            report.unreadable_namespaces[backend.name] = dict(listing.unreadable)
+        if listing.blind:
+            raise RuntimeError(
+                f"every namespace unreadable ({len(listing.unreadable)}): "
+                + "; ".join(f"{ns}: {err}" for ns, err in sorted(listing.unreadable.items()))
+            )
+        for namespace, error in sorted(listing.unreadable.items()):
+            holds_attempt = namespace in held
+            self._log.warning(
+                "namespace unreadable; findings that depend on it are held",
+                backend=backend.name,
+                namespace=namespace,
+                error=error,
+                holds_attempt=holds_attempt,
+            )
+            if holds_attempt:
+                report.errors.append(f"{backend.name}: namespace {namespace} unreadable: {error}")
+        return list(listing.executions)
+
+    def _tenant_namespaces(self, report: ReconcileReport) -> dict[str, str | None]:
+        """Registered tenants and their recorded namespaces, or {} on failure.
+
+        A failed read here narrows what is listed to the namespaces the live
+        attempts name, which is every namespace a finding can be about -- so it
+        costs orphan detection in idle namespaces and nothing that releases.
+        """
+        try:
+            return self._store.tenant_namespaces()
+        except Exception as exc:
+            self._log.exception("could not read the registered tenants", exc)
+            report.errors.append(f"tenants: {exc}")
+            return {}
+
+    @staticmethod
+    def _attempt_namespace(
+        backend: Any, attempt: AttemptView, tenants: dict[str, str | None]
+    ) -> str | None:
+        """Where this attempt's execution is, or would be, on a namespaced backend.
+
+        Its own `execution_name` first -- that is where the dispatcher actually
+        created it. An attempt not dispatched yet has none, and falls back to the
+        tenant's namespace by the dispatcher's own rule.
+        """
+        recorded = backend.namespace_of(attempt.execution_name)
+        if recorded:
+            return recorded
+        if attempt.tenant_id:
+            return backend.namespace_for(attempt.tenant_id, tenants.get(attempt.tenant_id))
+        return None
+
     #: Findings that mean "nothing seems to be running" -- and are therefore
     #: only trustworthy if every backend that COULD be running it was readable.
     _ABSENCE_KINDS = (
@@ -248,66 +489,307 @@ class Reconciler:
                 return False
         return True
 
+    def _depends_on_absence(self, finding: Finding, snapshot: ControlSnapshot) -> bool:
+        return finding.kind in self._ABSENCE_KINDS or (
+            finding.kind is FindingKind.ORPHAN_LEASE
+            and (task := snapshot.tasks.get(finding.task_id or "")) is not None
+            and task.holds_capacity
+        )
+
     def _is_actionable(
         self,
         finding: Finding,
         snapshot: ControlSnapshot,
-        backends: dict[str, Backend],
+        sight: _Sight,
     ) -> bool:
-        """Drop findings that depend on a backend this pass could not read.
+        """Drop findings that depend on something this pass could not read.
 
         An unreadable backend makes every task on it look abandoned. Repairing
         on that basis would release slots for agents that are alive and well,
         and the scheduler would immediately start a second copy of each -- the
         failure mode this whole service exists to prevent, caused by the service
         itself. So: no execution list, no conclusions about absence.
+
+        "Could not read" is judged where the attempt LIVES. On a namespaced
+        backend that is the attempt's own namespace, not the backend as a
+        whole: another tenant's namespace answering 403 says nothing about
+        this one, and this one answering 403 is not cured by another being
+        fine.
         """
         if finding.execution is not None:
-            return finding.execution.backend in backends
+            return finding.execution.backend in sight.readable
 
-        if finding.kind in self._ABSENCE_KINDS or (
-            finding.kind is FindingKind.ORPHAN_LEASE
-            and (task := snapshot.tasks.get(finding.task_id or "")) is not None
-            and task.holds_capacity
-        ):
-            attempt = snapshot.attempts.get(finding.attempt_id or "")
-            backend_name = attempt.backend if attempt else None
-            if backend_name is not None:
-                readable = backend_name in backends
-            elif self._never_dispatched(finding, snapshot):
-                # No attempt names a backend AND the task never left LEASED, so
-                # no execution was ever created and no backend can be running
-                # it. Refusing to repair here cannot prevent a duplicate -- there
-                # is nothing to duplicate -- it only strands the lease for ever.
-                #
-                # This mattered in practice: an unreachable GKE backend held
-                # every never-dispatched lease hostage, including tasks destined
-                # for Cloud Run Jobs that GKE had no part in. The task sat LEASED
-                # while the drain, which scans only READY, never looked at it
-                # again.
-                readable = True
-            else:
-                # An attempt exists but names no backend we can read. Something
-                # may genuinely be running, so the anti-duplicate rule holds.
-                readable = len(backends) == len(self._backends)
-            if not readable:
-                self._log.warning(
-                    "not repairing: the backend that would hold this execution was unreadable",
-                    task_id=finding.task_id,
-                    lease_id=finding.lease_id,
-                    kind=finding.kind.value,
-                    backend=backend_name,
-                )
+        if not self._depends_on_absence(finding, snapshot):
+            return True
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        backend_name = attempt.backend if attempt else None
+        if attempt is not None and backend_name is not None:
+            return self._attempt_visible(attempt, sight)
+        if self._never_dispatched(finding, snapshot):
+            # No attempt names a backend AND the task never left LEASED, so
+            # no execution was ever created and no backend can be running
+            # it. Refusing to repair here cannot prevent a duplicate -- there
+            # is nothing to duplicate -- it only strands the lease for ever.
+            #
+            # This mattered in practice: an unreachable GKE backend held
+            # every never-dispatched lease hostage, including tasks destined
+            # for Cloud Run Jobs that GKE had no part in. The task sat LEASED
+            # while the drain, which scans only READY, never looked at it
+            # again.
+            return True
+        # An attempt exists but names no backend we can read. Something may
+        # genuinely be running, so the anti-duplicate rule holds everywhere.
+        return self._everything_visible_for(finding, sight)
+
+    def _attempt_visible(self, attempt: AttemptView, sight: _Sight) -> bool:
+        if attempt.backend not in sight.readable:
+            return False
+        listing = sight.namespaced.get(attempt.backend)
+        if listing is None:
+            return True          # read in one call; readable means all of it
+        namespace = self._attempt_namespace(
+            sight.handles[attempt.backend], attempt, sight.tenant_namespaces
+        )
+        # Positively read, not merely "not reported unreadable": a namespace
+        # this pass never asked about proves nothing about what runs in it.
+        return namespace is not None and namespace in listing.readable
+
+    def _everything_visible_for(self, finding: Finding, sight: _Sight) -> bool:
+        if len(sight.readable) != len(self._backends):
+            return False
+        for name, listing in sight.namespaced.items():
+            if not listing.unreadable:
+                continue
+            if not finding.tenant_id:
+                return False
+            namespace = sight.handles[name].namespace_for(
+                finding.tenant_id, sight.tenant_namespaces.get(finding.tenant_id)
+            )
+            if namespace in listing.unreadable:
                 return False
         return True
+
+    def _admit(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> Finding | _Disproved | None:
+        """The finding to act on -- possibly re-stated by a probe -- or why not.
+
+        None means held back: logged as NOT_REPAIRING and counted as
+        suppressed. `_DISPROVED` means a probe showed the finding was wrong,
+        and it is dropped without either.
+        """
+        if self._is_actionable(finding, snapshot, sight):
+            return finding
+        probed = self._probe(finding, snapshot, sight)
+        if probed is not None:
+            return probed
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        self._log.warning(
+            NOT_REPAIRING,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            kind=finding.kind.value,
+            backend=attempt.backend if attempt else None,
+            namespace=self._namespace_for_report(attempt, sight),
+        )
+        return None
+
+    def _probe(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> Finding | _Disproved | None:
+        """Ask for THIS attempt's execution by name when its list was unreadable.
+
+        The list and the name are different questions. The 2026-09-24 leases
+        each named their Job exactly (`swarm-tenant-eng/swarm-<task>-1`), the
+        Jobs had been deleted by their TTL an hour earlier, and a namespaced GET
+        would have answered 404 on every pass -- proof of absence that the list
+        refusal was hiding. What each answer allows is in `GkeBackend.probe`;
+        what this does with it:
+
+        * absent or finished -- the finding stands as found, and is repaired;
+        * active -- the probe has found what the failed list would have
+          returned, so the verdict is the one the LIST path reaches with this
+          Job in hand (`_listed_verdict`): a DEAD_WORKER carrying the live Job
+          where that path would terminate -- `_repair` then fences, TERMINATES
+          and only then releases -- and `_DISPROVED` where it would do nothing;
+        * anything else -- nothing is proven and the lease stays held.
+
+        The active case used to become a DEAD_WORKER unconditionally, and that
+        killed healthy agents. A missing_execution is raised only because the
+        attempt was absent from `by_attempt`; when the list fails, EVERY
+        attempt in that namespace is absent, including ones whose lease
+        heartbeated seconds ago. Listed, such a Job produces no finding at all.
+        Probed, it was fenced, deleted, released and re-queued -- on every pass
+        where a LIST failed and a GET did not (APF 429, a 5xx blip, a timeout,
+        or RBAC granting `get` without `list`).
+        """
+        if not self._depends_on_absence(finding, snapshot):
+            return None
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        if attempt is None or not attempt.execution_name:
+            return None
+        backend = sight.handles.get(attempt.backend)
+        probe = getattr(backend, "probe", None)
+        if not callable(probe):
+            return None
+        key = f"{attempt.backend}:{attempt.execution_name}"
+        result = sight.probes.get(key)
+        if result is None:
+            try:
+                result = probe(attempt.execution_name)
+            except Exception as exc:
+                result = Probe(ProbeOutcome.UNREADABLE, detail=f"{type(exc).__name__}: {exc}")
+            sight.probes[key] = result
+            self._log.info(
+                "probed an execution by name",
+                execution=attempt.execution_name,
+                backend=attempt.backend,
+                outcome=result.outcome.value,
+                detail=result.detail,
+            )
+        if result.outcome is ProbeOutcome.UNREADABLE:
+            return None
+        detail = {**finding.detail, "probe": result.outcome.value, "probe_detail": result.detail}
+        if result.outcome in (ProbeOutcome.ABSENT, ProbeOutcome.FINISHED):
+            return replace(
+                finding,
+                detail=detail,
+                reason=f"{finding.reason}; confirmed by name: {result.detail}",
+                execution=result.execution,
+            )
+        execution = result.execution
+        if execution is None or not self._probe_matches(finding, execution, snapshot):
+            return None
+        verdict = self._listed_verdict(finding, execution, snapshot)
+        if verdict is None:
+            # No lease in the snapshot to judge: prove nothing, hold.
+            return None
+        if isinstance(verdict, _Disproved):
+            self._log.info(
+                "probe found the execution alive under a live lease; finding disproved",
+                task_id=finding.task_id,
+                lease_id=finding.lease_id,
+                kind=finding.kind.value,
+                execution=attempt.execution_name,
+                backend=attempt.backend,
+            )
+            return verdict
+        return replace(
+            finding,
+            kind=FindingKind.DEAD_WORKER,
+            execution=execution,
+            detail={**detail, "terminates_because": verdict},
+            reason=f"{finding.reason}; its job is still active by name: {result.detail}",
+        )
+
+    def _listed_verdict(
+        self, finding: Finding, execution: ExecutionView, snapshot: ControlSnapshot
+    ) -> str | _Disproved | None:
+        """What the LIST path concludes about this lease once it holds this Job.
+
+        The probe has found, by name, the active Job a readable list would have
+        returned. Acting on it may go no further than the list path would have
+        gone with that same Job in hand: a probe is a way to SEE past a failed
+        list, never a reason to act more harshly than seeing does. So the list
+        path's own execution rules are re-run -- not restated -- over this one
+        lease with this one Job:
+
+        * `detect_stale_leases`, with the Job in `by_attempt`: a stale lease
+          over a live Job is `dead_worker`, and a live lease is nothing at all.
+        * `detect_orphan_executions`: a Job whose generation is not the task's
+          is `obsolete_generation` (the partial-repair case: fenced, never
+          released); one whose task this snapshot does not hold is an orphan.
+
+        Whichever of those requires termination names the reason, and the
+        caller kills before it releases. If none does -- in practice a
+        missing_execution raised only because the list failed, under a lease
+        that is heartbeating -- the finding is `_DISPROVED`.
+
+        `orphan_lease` is the one kind answered directly, and in the stricter
+        direction. Its task points at a different lease (or its lease is
+        superseded), and the list path's orphan-lease rule releases without
+        looking for compute at all. Releasing capacity while its Job still runs
+        is the thing this module exists to prevent, so here the Job is killed
+        first.
+
+        None when there is no lease in the snapshot to judge.
+        """
+        if finding.kind is FindingKind.ORPHAN_LEASE:
+            return FindingKind.ORPHAN_LEASE.value
+        lease: LeaseView | None = snapshot.leases.get(finding.lease_id or "")
+        if lease is None:
+            return None
+        # The probe read the Job this attempt's own record names, and
+        # `_probe_matches` tied it to the task, tenant and generation: it IS
+        # this lease's execution, whatever spelling its labels gave the ids.
+        held = replace(execution, task_id=lease.task_id, attempt_id=lease.attempt_id)
+        only_this = replace(snapshot, leases={lease.lease_id: lease})
+        now = snapshot.taken_at
+        listed = [
+            *detect_stale_leases(only_this, {lease.attempt_id: held}, self._config, now),
+            *detect_orphan_executions(only_this, [held], self._config, now),
+        ]
+        terminating = sorted({f.kind.value for f in listed if f.requires_termination})
+        return terminating[0] if terminating else _DISPROVED
+
+    @staticmethod
+    def _probe_matches(
+        finding: Finding, execution: ExecutionView, snapshot: ControlSnapshot
+    ) -> bool:
+        """The probed Job is this finding's, by task, tenant and generation.
+
+        The name came from the attempt's own record, so a mismatch here is not
+        expected -- and is exactly when a kill must not be sent. Compared in
+        sanitised form, because a label-sourced identifier has been through it.
+        """
+        if not execution.task_id or not finding.task_id:
+            return False
+        if sanitised(execution.task_id) != sanitised(finding.task_id):
+            return False
+        task = snapshot.tasks.get(finding.task_id)
+        tenant = (task.tenant_id if task else None) or finding.tenant_id
+        if tenant and execution.tenant_id and sanitised(tenant) != sanitised(execution.tenant_id):
+            return False
+        if (
+            execution.generation is not None
+            and finding.generation is not None
+            and execution.generation != finding.generation
+        ):
+            return False
+        return True
+
+    def _namespace_for_report(self, attempt: AttemptView | None, sight: _Sight) -> str | None:
+        if attempt is None or attempt.backend not in sight.namespaced:
+            return None
+        return self._attempt_namespace(
+            sight.handles[attempt.backend], attempt, sight.tenant_namespaces
+        )
+
+    def _suppressed(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> SuppressedFinding:
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        return SuppressedFinding(
+            kind=finding.kind.value,
+            lease_id=finding.lease_id,
+            task_id=finding.task_id,
+            backend=(attempt.backend or None) if attempt else None,
+            namespace=self._namespace_for_report(attempt, sight),
+        )
 
     # ------------------------------------------------------------------
     def _repair(
         self,
         finding: Finding,
         snapshot: ControlSnapshot,
-        backends: dict[str, Backend],
+        handles: dict[str, Any],
     ) -> RepairOutcome:
+        """Invalidate, terminate, release, repair -- in that order, or not at all.
+
+        `handles` is every configured backend, NOT only the ones this pass could
+        list: see `_Sight`. Whether a finding may be acted on was settled by
+        `_admit`; this only needs somewhere to send the kill.
+        """
         outcome = RepairOutcome(
             kind=finding.kind.value,
             reason=finding.reason,
@@ -347,7 +829,7 @@ class Reconciler:
         # ---- STEP 2: terminate the execution ----------------------------
         termination_required = finding.execution is not None and finding.execution.is_active
         if termination_required:
-            backend = backends.get(finding.execution.backend)
+            backend = handles.get(finding.execution.backend)
             if backend is None:
                 outcome.skipped = "backend_unavailable"
                 outcome.actions.append("did NOT release: backend unavailable to confirm the kill")
@@ -390,27 +872,48 @@ class Reconciler:
         if finding.task_id:
             task = snapshot.tasks.get(finding.task_id)
             if task is not None and not task.is_terminal:
+                # A requested cancel is FINISHED here, in one hop. Returning the
+                # task to READY and leaving the flag for the scheduler's drain
+                # to act on is a second hop through a second service, and it
+                # records the wrong outcome whenever retries are spent: READY
+                # is downgraded to FAILED, so a task somebody stopped was
+                # written down as having failed. DISPATCHED/STARTING/RUNNING/
+                # LEASED -> CANCELLED are all legal (swarm_common.states), and
+                # `repair_task_state` re-reads the flag inside its transaction,
+                # so a cancel pressed after this snapshot is honoured too.
+                cancelling = task.cancel_requested
                 repaired = self._store.repair_task_state(
                     finding.task_id,
-                    to_state=TaskState.READY,
+                    to_state=TaskState.CANCELLED if cancelling else TaskState.READY,
                     # Only the task this finding is actually about. A snapshot is
                     # minutes old by the time slow terminations ahead of it are
                     # done, and the task may legitimately be on a newer lease by
                     # now -- see `repair_task_state`.
                     expected_lease_id=finding.lease_id,
-                    error=f"reconciled: {finding.reason}",
+                    error=(
+                        f"cancelled on request; reconciled: {finding.reason}"
+                        if cancelling
+                        else f"reconciled: {finding.reason}"
+                    ),
                     next_eligible_at=utcnow(),
                 )
                 if repaired is not None:
                     outcome.repaired_to = repaired.value
                     outcome.actions.append(f"task -> {repaired.value}")
+                    detail: dict[str, Any] = {
+                        "reason": finding.kind.value,
+                        "detail": finding.reason,
+                    }
+                    if repaired is TaskState.CANCELLED:
+                        # The API's flag-only cancel writes a `cancelled` event
+                        # with phase=cancel_requested; this is the one that says
+                        # it happened.
+                        detail.update(phase="cancelled", from_state=task.state.value)
                     self._store.emit(
                         task_id=finding.task_id,
                         tenant_id=finding.tenant_id,
-                        event_type=(
-                            EventType.READY if repaired is TaskState.READY else EventType.FAILED
-                        ),
-                        detail={"reason": finding.kind.value, "detail": finding.reason},
+                        event_type=_EVENT_FOR_REPAIR.get(repaired, EventType.FAILED),
+                        detail=detail,
                         attempt_id=finding.attempt_id,
                         lease_id=finding.lease_id,
                     )
@@ -466,54 +969,81 @@ class Reconciler:
 
     # ------------------------------------------------------------------
     def _collect_garbage(
-        self, snapshot: ControlSnapshot, backends: dict[str, Backend]
-    ) -> list[RepairOutcome]:
+        self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport
+    ) -> None:
         """Remove per-tenant infrastructure nothing is using any more.
 
         Cloud Run pins the service account on the Job resource, so the
         dispatcher creates one per (tenant, profile) and they accumulate. This
         is where they stop accumulating -- and it only ever removes resources
         carrying this platform's own label.
+
+        Only on backends this pass could read, and EACH IN ITS OWN TRY: one
+        backend's collection failing used to abort the loop, so a GKE fault
+        stopped Cloud Run's Job resources being collected as well.
         """
+        try:
+            active = self._store.active_tenants(snapshot)
+            # A namespace is protected by mere registration; a Job resource is
+            # not. The difference is recoverability: `ensure_job` recreates a
+            # deleted Job on the next dispatch, whereas nothing recreates a
+            # namespace, its service account or its workload-identity binding.
+            protected_namespaces = active | self._store.registered_tenants()
+        except Exception as exc:
+            self._log.exception("garbage collection failed", exc)
+            report.errors.append(f"gc: {exc}")
+            return
+        for backend in self._backends:
+            if backend.name not in sight.readable:
+                continue
+            try:
+                report.outcomes.extend(
+                    self._collect_garbage_on(
+                        backend, snapshot, active=active, protected=protected_namespaces
+                    )
+                )
+            except Exception as exc:
+                self._log.exception("garbage collection failed", exc, backend=backend.name)
+                report.errors.append(f"gc {backend.name}: {exc}")
+
+    def _collect_garbage_on(
+        self,
+        backend: Any,
+        snapshot: ControlSnapshot,
+        *,
+        active: set[str],
+        protected: set[str],
+    ) -> list[RepairOutcome]:
         outcomes: list[RepairOutcome] = []
-        active = self._store.active_tenants(snapshot)
-        # A namespace is protected by mere registration; a Job resource is not.
-        # The difference is recoverability: `ensure_job` recreates a deleted Job
-        # on the next dispatch, whereas nothing recreates a namespace, its
-        # service account or its workload-identity binding.
-        protected_namespaces = active | self._store.registered_tenants()
         now = snapshot.taken_at
-        for backend in backends.values():
-            resources = backend.list_job_resources()
-            if backend.name == "GKE_AUTOPILOT":
-                findings = detect_empty_namespaces(
-                    resources, protected_namespaces, self._config, now
-                )
-            else:
-                findings = detect_unused_job_resources(resources, active, self._config, now)
-            for finding in findings:
-                resource: JobResourceView = finding.resource  # type: ignore[assignment]
-                outcome = RepairOutcome(
-                    kind=finding.kind.value,
-                    reason=finding.reason,
-                    tenant_id=finding.tenant_id,
-                )
-                if self._config.dry_run:
-                    outcome.skipped = "dry_run"
-                    outcome.actions.append(f"would delete {resource.name}")
-                    outcomes.append(outcome)
-                    continue
-                try:
-                    deleted = backend.delete_job_resource(resource)
-                except PermissionError as exc:
-                    outcome.skipped = str(exc)
-                    self._log.warning("refused to delete an unmanaged resource", error=str(exc))
-                    outcomes.append(outcome)
-                    continue
-                if deleted:
-                    outcome.deleted = resource.name
-                    outcome.actions.append(f"deleted {resource.name}")
-                else:
-                    outcome.skipped = "not_empty"
+        resources = backend.list_job_resources()
+        if backend.name == "GKE_AUTOPILOT":
+            findings = detect_empty_namespaces(resources, protected, self._config, now)
+        else:
+            findings = detect_unused_job_resources(resources, active, self._config, now)
+        for finding in findings:
+            resource: JobResourceView = finding.resource  # type: ignore[assignment]
+            outcome = RepairOutcome(
+                kind=finding.kind.value,
+                reason=finding.reason,
+                tenant_id=finding.tenant_id,
+            )
+            if self._config.dry_run:
+                outcome.skipped = "dry_run"
+                outcome.actions.append(f"would delete {resource.name}")
                 outcomes.append(outcome)
+                continue
+            try:
+                deleted = backend.delete_job_resource(resource)
+            except PermissionError as exc:
+                outcome.skipped = str(exc)
+                self._log.warning("refused to delete an unmanaged resource", error=str(exc))
+                outcomes.append(outcome)
+                continue
+            if deleted:
+                outcome.deleted = resource.name
+                outcome.actions.append(f"deleted {resource.name}")
+            else:
+                outcome.skipped = "not_empty"
+            outcomes.append(outcome)
         return outcomes

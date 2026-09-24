@@ -42,7 +42,7 @@
 // exists to prevent, so it may not be produced by a copy of somebody else's
 // variable.
 //
-// CROSS-TRACK: making the deployed console say `DEV` rather than
+// CROSS-TRACK: making the deployed console say `Dev` rather than
 // `ENVIRONMENT UNKNOWN` is one flag on the build -- `VITE_SWARM_ENV=dev npm
 // run build` -- and the build lives in scripts/ and .github/, which are Track
 // D. That change is reported, not made here.
@@ -217,6 +217,14 @@ export function classifyEnvironment(declared: string | undefined, host: string):
  * `bar` is what makes "at a glance and without reading" true: it is 3px tall
  * and 100% wide, so it is visible in peripheral vision and survives being
  * scaled down to a thumbnail.
+ *
+ * CAPITALS ARE SPENT ONLY WHERE THE BAR IS. Owner decision, 2026-09-24
+ * (design-system.md §13.6): design-system.md §13.2 bans emphasis on any string
+ * this console authors, so `dev`, `staging` and `local` are written in
+ * sentence case like every other label -- `Dev`, `Local`. The PRODUCTION
+ * banner and ENVIRONMENT UNKNOWN keep their capitals, because on those two the
+ * capitals are a safety signal, not typography: they are the same two kinds
+ * that draw the bar, and `brand.test.tsx` holds the two channels together.
  */
 export interface EnvTreatment {
   /** Modifier class on the badge. */
@@ -229,11 +237,23 @@ export interface EnvTreatment {
   bar: boolean
 }
 
+/**
+ * A capital first letter and the rest as the build declared it (already
+ * lower-cased by `classifyEnvironment`). Not `text-transform: capitalize` in
+ * the sheet: the casing is part of the decision above, so it lives beside the
+ * one branch that is allowed to shout rather than in a rule that could be
+ * edited without seeing that branch.
+ */
+function sentenceCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 export function envTreatment(env: Environment): EnvTreatment {
   switch (env.kind) {
     case 'production':
       return {
         className: 'is-prod',
+        // A SAFETY SIGNAL, and the only declared name that shouts.
         label: env.name.toUpperCase(),
         explain: `Environment ${env.name}, declared by the build. Changes here are real.`,
         bar: true,
@@ -241,20 +261,22 @@ export function envTreatment(env: Environment): EnvTreatment {
     case 'nonprod':
       return {
         className: 'is-nonprod',
-        label: env.name.toUpperCase(),
+        label: sentenceCase(env.name),
         explain: `Environment ${env.name}, declared by the build.`,
         bar: false,
       }
     case 'local':
       return {
         className: 'is-local',
-        label: 'LOCAL',
+        label: sentenceCase(env.name),
         explain: `Served from ${env.host}, which is this machine.`,
         bar: false,
       }
     case 'unknown':
       return {
         className: 'is-unknown',
+        // Capitals kept on purpose (2026-09-24): not knowing is treated as
+        // production, so it is written as loudly as production.
         label: 'ENVIRONMENT UNKNOWN',
         // Named rather than vague: someone has to be able to act on it.
         explain:

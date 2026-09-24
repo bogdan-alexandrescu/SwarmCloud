@@ -19,3 +19,7 @@ uv.lock
 **/*.tfstate
 **/*.tfstate.backup
 **/.terraform/
+# The credential file google-github-actions/auth writes into the checkout, at
+# any depth. .gcloudignore already keeps it out of the Cloud Build workspace;
+# this keeps it out of any other build context that starts at the repo root.
+**/gha-creds-*.json

@@ -46,6 +46,7 @@ import { scaleLinear, scaleUtc } from '@visx/scale'
 import { LinePath } from '@visx/shape'
 import { useId } from 'react'
 
+import { HELP, helpAnchor } from '../help'
 import {
   coverageOf,
   inTimeOrder,
@@ -126,6 +127,19 @@ export function TimeSeries({
   // NOTHING MEASURED. No domain exists, so no axis is drawn. A library asked
   // to chart this produces an axis from 0 to 1 and an empty plot area, which
   // reads as "measured, and flat at zero". The sentence is the honest render.
+  //
+  // §6.9'S SHAPE: HEADING, ONE SENTENCE, A LINK OUT. This was a 40-word
+  // paragraph -- the largest block of prose in the agent drawer (§12.5) -- and
+  // it ended with `absentCopy`, which is written for the PLOTTED case: Token
+  // spend's says "Hover a hatched band for the reason", and in this state
+  // there is no plot and no band to hover. The heading is the fact, the
+  // sentence is its size, and why an absence is not a zero is one topic away.
+  // `absentCopy` stays where it is true -- under a plot that has absences.
+  //
+  // NO `.ctl-mark` HERE, on purpose: `Mark` lives in AgentDetail.tsx, which
+  // imports this layer through TokenSpend, and the chart layer importing a
+  // screen would close that loop. Promoting `Mark` into the primitives is the
+  // primitive-collapse pass's to do, not this one's.
   if (vExtent === null || tExtent === null) {
     return (
       <figure className="ctl-chart" aria-label={title}>
@@ -133,9 +147,9 @@ export function TimeSeries({
         <div className="ctl-empty" role="status">
           <h3>Nothing was measured</h3>
           <p>
-            None of the {cover.points} {plural(noun, cover.points)} reported a
-            value, so there is no axis and no line to draw. {absentCopy}
+            None of the {cover.points} {plural(noun, cover.points)} reported a value.
           </p>
+          <a href={`#${helpAnchor('absent-vs-zero')}`}>{HELP['absent-vs-zero'].title}</a>
         </div>
       </figure>
     )
