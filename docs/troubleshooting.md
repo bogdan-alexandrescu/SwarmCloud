@@ -91,11 +91,60 @@ The reconciler deliberately does **not** treat "LEASED with a fresh lease and no
 execution yet" as a fault — dispatch takes time and image pulls take minutes.
 A task becomes a finding only after `dispatch_timeout_seconds` (300).
 
-If the reconciler is running and the task stays stuck, the usual cause is that
-**termination could not be confirmed** on the backend. That is intentional: the
-slot is not released until the execution is confirmed dead, because releasing
-first would put a second agent on the same workspace. Check the reconciler's logs
-for the termination error, and the backend directly:
+If the reconciler is running and the task stays stuck, there are two causes, and
+both are the reconciler **refusing on purpose**: it will not release a slot it
+cannot prove is free, because releasing early puts a second agent on the same
+workspace. A stuck slot can be recovered. A duplicate agent cannot.
+
+**1. The reconciler cannot read the backend the task is on.** The reconciler
+finds the lease, correctly decides the worker is dead, and then **does not act**,
+because it cannot see the backend that would prove nothing is running. Every
+pass logs `backend unavailable; skipping its findings` for a whole backend, or
+`not repairing: the backend that would hold this execution was unreadable` per
+lease. Check the pass report. A healthy pass has `findings_suppressed: 0`:
+
+```bash
+make logs SERVICE=swarm-reconciler | grep -E 'not repairing|backend unavailable|findings_suppressed'
+```
+
+`suppressed[]` names each lease that is being held back, with its `backend` and
+`namespace`. `unreadable_namespaces` gives the reason for each namespace. The
+alert `swarm-<env>-reconciler-cannot-see-a-backend` fires after three blind
+passes on one backend, or after one lease has been held for thirty minutes.
+
+This is the cause behind incident wf_ebb3ab2d65664707a559 (2026-09-24):
+
+* Five browser tasks stayed in DISPATCHED for hours with `cancel_requested=true`.
+* Their leases held 10 units on each of seven pools.
+* The workflow's derived state stayed RUNNING, because the workflow is RUNNING
+  whenever any of its steps holds capacity.
+
+The reconciler listed GKE with a **cluster-scope** call, and its only Kubernetes
+grant is the namespaced `swarm-reaper` Role. No ClusterRole exists, and that is
+deliberate policy (`kubernetes/rbac/worker-rbac.yaml`). The reconciler now reads
+each tenant's namespace separately, and it tracks which namespaces it could read.
+A GKE 403 now names one namespace, and it means one of two things:
+
+* the namespace does not exist, or
+* its `swarm-reaper` RoleBinding does not name the reconciler by **both** its
+  email and its numeric uniqueId.
+
+Kubernetes authorises before it resolves, so these two cases look the same (see
+[the dispatch 403 note](gke-dispatch-403.md)). When a namespace cannot be listed,
+the reconciler asks for the attempt's Job by name:
+
+* **404** proves the Job is gone, and the lease is released.
+* **An active Job** is killed first, and then the lease is released.
+* **Another 403** changes nothing.
+
+Fix the namespace or the binding. **Do not add a ClusterRole to make the error
+go away.** When the reconciler finishes a task whose cancel was requested, it
+finishes it as CANCELLED in the same pass.
+
+**2. Termination could not be confirmed.** The reconciler could see the
+execution, asked the backend to stop it, and the backend did not confirm the stop.
+Check the reconciler's logs for the termination error, and check the backend
+directly:
 
 ```bash
 gcloud run jobs executions list --project "$PROJECT_ID" --region "$REGION" \

@@ -28,6 +28,14 @@ WHAT ACTUALLY HAPPENS, which is what the copy says:
     worker sees the flag at its next heartbeat, at which point
     `lifecycle` terminates the child, CHECKPOINTS, uploads artifacts and logs,
     and finishes the attempt as CANCELLED (lifecycle.py:611-625);
+  * IF NO WORKER EVER STARTED -- the lease never heartbeated and its dispatch
+    deadline passed -- there is nobody to see the flag, and the RECONCILER
+    finishes it instead: on its next pass it fences the generation, releases
+    the lease and writes CANCELLED directly, never READY and never FAILED
+    however many attempts were spent. Before 2026-09-24 it wrote READY and left
+    the rest to the scheduler, and on GKE it could not act at all; incident
+    wf_ebb3ab2d65664707a559 held five such steps for hours. Pinned in
+    test_reconciler_gke_namespaced.py;
   * ONLY THEN do its DEPENDENTS fall over, because
     `scheduler.loop._FAILED_PARENT_STATES` contains CANCELLED -- the state, not
     the flag -- and both the admission path (loop.py:295) and the dependency

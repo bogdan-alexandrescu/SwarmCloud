@@ -461,3 +461,207 @@ resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
 
   user_labels = var.labels
 }
+
+# ---------------------------------------------------------------------------
+# THE RECONCILER CANNOT SEE A BACKEND, OR IS HOLDING A LEASE IT CANNOT PROVE DEAD
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. From 2026-09-16 the reconciler's GKE listing failed on
+# essentially every pass -- a cluster-scope `list jobs` its namespaced Role
+# could never authorise -- and nothing paged. On 2026-09-24 that blindness held
+# five dead leases of workflow wf_ebb3ab2d65664707a559 for hours: 10 units on
+# every one of seven pools, `resource:browser` at its hard limit, the workflow
+# stuck RUNNING and a user's cancel ignored. The reconciler said so on every
+# pass, in two log lines, and each pass still reported `findings=0` -- the same
+# number a healthy pass reports. `/reconcile` answers 200 either way, so the
+# 5xx policy above could not see it either; turning a blind pass into a 5xx
+# was considered and not done, because it would make Cloud Scheduler retry a
+# pass that cannot succeed and page on the symptom rather than the cause.
+#
+# So the two lines themselves are counted, and this policy watches the counts:
+#
+#   * "backend unavailable; skipping its findings" -- a whole backend was
+#     unreadable. Three or more such passes in fifteen minutes (the tick is
+#     */5) is not a blip. Grouped by backend, so one blind backend is not
+#     averaged away by a healthy one.
+#   * "not repairing: ..." -- one lease detected as dead and held back because
+#     the backend that would prove it could not be read. The SAME lease refused
+#     on every pass for more than thirty minutes is a stranded slot, however
+#     healthy the backend looks overall -- which is exactly the per-namespace
+#     case the first condition cannot see.
+#
+# THE MESSAGES ARE THE EMITTER'S, VERBATIM. reconciler/repair.py spells them
+# once, as BACKEND_UNAVAILABLE and NOT_REPAIRING, and
+# tests/unit/control_plane/test_reconciler_gke_namespaced.py asserts both
+# strings appear in this file: a log-based metric whose filter matches nothing
+# is a number that stays at zero and an alert that never fires.
+locals {
+  reconciler_services = coalescelist(
+    [for s in var.service_names : s if endswith(s, "-reconciler")],
+    ["${var.name_prefix}-reconciler"],
+  )
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  reconciler_log_filter = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.reconciler_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+    # reconciler.logs.StructuredLogger stamps every line with this component.
+    "jsonPayload.component=\"reconciler\"",
+  ])
+}
+
+resource "google_logging_metric" "reconciler_backend_unavailable" {
+  project = var.project_id
+  name    = "${var.name_prefix}/reconciler-backend-unavailable"
+
+  description = "A reconciliation pass could not list a backend at all and made no conclusions about anything on it."
+
+  filter = join(" AND ", [
+    local.reconciler_log_filter,
+    "jsonPayload.message=\"backend unavailable; skipping its findings\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "backend"
+      value_type = "STRING"
+    }
+  }
+
+  # A per-call field, so top level: StructuredLogger spreads keyword fields
+  # into the record rather than under a nested `labels` object.
+  label_extractors = {
+    backend = "EXTRACT(jsonPayload.backend)"
+  }
+}
+
+resource "google_logging_metric" "reconciler_not_repairing" {
+  project = var.project_id
+  name    = "${var.name_prefix}/reconciler-not-repairing"
+
+  description = "The reconciler detected a dead lease and held it back because the backend or namespace that would prove it was unreadable."
+
+  filter = join(" AND ", [
+    local.reconciler_log_filter,
+    "jsonPayload.message=\"not repairing: the backend that would hold this execution was unreadable\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    # One series per held lease. Cardinality is bounded by the number of
+    # leases held back at once, which is zero on a healthy platform.
+    labels {
+      key        = "lease_id"
+      value_type = "STRING"
+    }
+
+    labels {
+      key        = "backend"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    lease_id = "EXTRACT(jsonPayload.lease_id)"
+    backend  = "EXTRACT(jsonPayload.backend)"
+  }
+}
+
+resource "google_monitoring_alert_policy" "reconciler_blind" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-reconciler-cannot-see-a-backend"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "A backend was unreadable on 3 or more reconciliation passes in 15 minutes"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.reconciler_backend_unavailable.name}\"",
+      ])
+
+      # More than 2 in a trailing 15-minute window: three passes of a */5 tick.
+      comparison      = "COMPARISON_GT"
+      threshold_value = 2
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "900s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.labels.backend"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "The same lease held back as unprovable for more than 30 minutes"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.reconciler_not_repairing.name}\"",
+      ])
+
+      # Refused at least once in every trailing 10-minute window (two passes,
+      # so one late tick does not reset it), continuously for 30 minutes.
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "1800s"
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.labels.lease_id"]
+      }
+    }
+  }
+
+  notification_channels = local.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      The reconciler is holding leases it believes are dead because it cannot
+      read the backend that would prove it. Those leases keep their capacity on
+      every pool they hold, so admission for that tenant, profile or resource
+      class stalls behind them -- and a cancel on those tasks cannot complete.
+
+      Read the latest pass: `findings_suppressed`, `suppressed[]` (kind, lease,
+      task, backend, namespace) and `unreadable_namespaces` in
+      `reconciler_passes`, or the `reconciliation pass complete` log line.
+
+      * `GKE_AUTOPILOT` — the reconciler reads tenant namespaces one at a time
+        under the namespaced `swarm-reaper` Role. A 403 there means the
+        namespace does not exist OR its `swarm-reaper` RoleBinding does not
+        name the reconciler by BOTH email and numeric uniqueId; Kubernetes
+        authorises before it resolves, so the two look identical. Do not add a
+        ClusterRole.
+      * `CLOUD_RUN_JOB` — check the reconciler's `run.executions.list`.
+
+      Runbook: docs/troubleshooting.md, "A task is stuck in LEASED or
+      DISPATCHED".${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  # Merged, not just inherited: this policy must carry the marker `make
+  # destroy` keys on even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
