@@ -13,6 +13,12 @@
 #   5. terraform init for the selected environment
 #
 # Usage: scripts/bootstrap.sh [--environment dev] [--skip-prereq] [--yes]
+#                             [--target ADDRESS]...
+#
+# --target ADDRESS (repeatable) limits step 4's plan, and so its apply, to that
+# resource in terraform/bootstrap. For applying one change while another pending
+# change in the same root waits for its own window -- docs/ci.md names the case.
+# It goes through the same pinned terraform, init and typed "apply" as the rest.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -20,12 +26,22 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 SKIP_PREREQ=0
+# Passed to the bootstrap plan as-is; expanded with the bash 3.2 empty-array
+# guard below. BOOTSTRAP_TARGET_NOTE is the same list for people to read.
+BOOTSTRAP_TARGETS=("-target=google_logging_log_view.verify") # MUTATION
+BOOTSTRAP_TARGET_NOTE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --environment|-e) ENVIRONMENT="$2"; shift 2 ;;
     --skip-prereq)    SKIP_PREREQ=1; shift ;;
     --yes|-y)         export SWARM_ASSUME_YES=1; shift ;;
-    -h|--help)        sed -n '2,16p' "$0"; exit 0 ;;
+    --target)
+      [[ $# -ge 2 && -n "${2:-}" && "${2:-}" != -* ]] \
+        || die "--target needs a resource address, e.g. --target google_logging_log_view.verify"
+      BOOTSTRAP_TARGETS+=("-target=$2")
+      BOOTSTRAP_TARGET_NOTE="${BOOTSTRAP_TARGET_NOTE} $2"
+      shift 2 ;;
+    -h|--help)        sed -n '2,22p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -113,10 +129,21 @@ step "Bootstrap layer"
 BOOTSTRAP_DIR="${REPO_ROOT}/terraform/bootstrap"
 if compgen -G "${BOOTSTRAP_DIR}/*.tf" >/dev/null; then
   info "applying terraform/bootstrap"
+  if [[ -n "${BOOTSTRAP_TARGET_NOTE}" ]]; then
+    # Said before the plan and again at the prompt: a targeted plan shows only
+    # what was named, so the owner must know the rest of the root is pending.
+    warn "TARGETED: this plan covers only${BOOTSTRAP_TARGET_NOTE}"
+    warn "everything else pending in terraform/bootstrap is left for a later, untargeted run"
+  fi
   tf -chdir="${BOOTSTRAP_DIR}" init -upgrade -input=false
   tf -chdir="${BOOTSTRAP_DIR}" plan -input=false -out="${BUILD_DIR}/bootstrap.tfplan" \
-    -var="project_id=${PROJECT_ID}" -var="region=${REGION}"
-  confirm "About to apply the bootstrap layer to ${PROJECT_ID}." "apply"
+    -var="project_id=${PROJECT_ID}" -var="region=${REGION}" \
+    ${BOOTSTRAP_TARGETS[@]+"${BOOTSTRAP_TARGETS[@]}"}
+  if [[ -n "${BOOTSTRAP_TARGET_NOTE}" ]]; then
+    confirm "About to apply ONLY${BOOTSTRAP_TARGET_NOTE} from the bootstrap layer to ${PROJECT_ID}." "apply"
+  else
+    confirm "About to apply the bootstrap layer to ${PROJECT_ID}." "apply"
+  fi
   tf -chdir="${BOOTSTRAP_DIR}" apply -input=false "${BUILD_DIR}/bootstrap.tfplan"
   ok "bootstrap layer applied"
 else

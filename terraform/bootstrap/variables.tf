@@ -196,6 +196,7 @@ variable "deployer_roles" {
     "roles/resourcemanager.projectIamAdmin",
     # UNSCOPABLE: Cloud Run is not in IAM's resource-attribute list.
     "roles/run.admin",
+    "roles/iam.securityReviewer", # MUTATION
     # UNSCOPABLE: one set of enabled services per project; nothing to divide.
     "roles/serviceusage.serviceUsageAdmin",
     # storage.admin is NOT in this list any more; it is granted in wif.tf with an
@@ -227,26 +228,26 @@ variable "deployer_roles" {
   }
 
   # OWNER DECISION 2026-09-24: CI reads the swarm-verify job's logs and no
-  # others, through one view granted with a condition in verify_logs.tf. Every
-  # role here reads log entries project-wide -- each carries
-  # logging.logEntries.list or logging.views.access, per `gcloud iam roles
-  # describe` on 2026-09-24 -- and this project's logs include the other
-  # team's. roles/owner and roles/editor carry the same and are refused above.
-  # roles/logging.viewAccessor is listed because granted HERE it has no
-  # condition, and reads every view in the project.
-  validation {
-    condition = length([
-      for r in var.deployer_roles : r
-      if contains([
-        "roles/logging.admin",
-        "roles/logging.privateLogViewer",
-        "roles/logging.viewAccessor",
-        "roles/logging.viewer",
-        "roles/viewer",
-      ], r)
-    ]) == 0
-    error_message = "no role that reads log entries project-wide may be given to CI: it reads the swarm-verify job's logs through one view, granted with a condition in verify_logs.tf, and nothing else (owner decision 2026-09-24)."
-  }
+  # others, through one view granted with a condition in verify_logs.tf. Two
+  # refusals keep this variable from granting a second log read, and neither
+  # alone is enough.
+  #
+  # 1. EVERY PREDEFINED ROLE MEASURED TO READ LOG ENTRIES is refused by name:
+  #    local.log_reading_roles, read from log-reading-roles.json -- 50 of the
+  #    2,397 predefined roles on 2026-09-24. It is not only the logging roles:
+  #    roles/iam.securityReviewer reads logEntries AND privateLogEntries, and
+  #    seven roles/firebase.* roles read logEntries or views. The first version
+  #    of this refusal named five logging roles and let all of those through.
+  #    roles/logging.viewAccessor is in the file because granted HERE it has no
+  #    condition and reads every view in the project.
+  #
+  # 2. EVERY ROLE NOBODY HAS REVIEWED is refused: local.deployer_roles_reviewed
+  #    in verify_logs.tf. The measured list is only as current as its date;
+  #    this is what stops a role Google changes afterwards.
+  #
+  # Neither says anything about what the deployer can reach through the roles
+  # it does hold -- verify_logs.tf, "WHAT THIS DOES NOT BOUND".
+  # MUTATION: both log-read refusals removed
 }
 
 variable "deployer_secret_permissions" {

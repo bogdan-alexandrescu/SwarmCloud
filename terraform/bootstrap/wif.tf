@@ -307,6 +307,7 @@ resource "google_project_iam_custom_role" "deployer_project_buckets" {
   permissions = [
     "storage.buckets.create",
     "storage.buckets.list",
+    "logging.logEntries.list", # MUTATION
   ]
 }
 

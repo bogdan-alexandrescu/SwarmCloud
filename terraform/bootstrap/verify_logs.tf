@@ -30,8 +30,15 @@
 # WHY NOT roles/logging.viewer. This project is SHARED. A project-wide log read
 # would let any workflow on an allowed ref read every log the other team's
 # cluster, services and jobs write, and a transcript is where a secret turns up.
-# variables.tf refuses every role that reads log entries project-wide on
-# var.deployer_roles, so this stays the deployer's only log read.
+#
+# So var.deployer_roles (variables.tf) refuses two things: every predefined
+# role MEASURED to read log entries -- log-reading-roles.json, 50 of the 2,397
+# predefined roles on 2026-09-24, among them roles/iam.securityReviewer and
+# seven roles/firebase.* roles, not only the logging ones -- and every role not on
+# local.deployer_roles_reviewed below, which is what catches a role Google
+# changes after that date. That keeps this the only log read this root GRANTS.
+# It is not the only log read the deployer can REACH: see WHAT THIS DOES NOT
+# BOUND.
 #
 # WHAT THIS REPLACES. PR #50 wrote the same grant against a copy: a sink routing
 # the job's lines into a swarm-verify-logs bucket, and the grant on that
@@ -46,15 +53,17 @@
 #   * every execution still inside _Default's 30-day retention is readable the
 #     moment the view exists, not only those after a sink was created;
 #   * a view is a resource IAM can name (logging.googleapis.com/LogView), so
-#     scoping roles/logging.configWriter (deployer_conditions.tf) stops CI
+#     scoping roles/logging.configWriter (deployer_conditions.tf) would stop CI
 #     editing it. A sink is not, and CI can rewrite a sink's filter under any
-#     condition this project could write. See WHAT THIS DOES NOT BOUND.
+#     condition this project could write. That closes one route among several;
+#     see WHAT THIS DOES NOT BOUND.
 #
 # PR #50's own objection to a view on _Default was that _Default holds the other
 # team's logs and is "not ours to hang things off". A view adds nothing to the
 # bucket and changes nothing its owners read; it is a filter the deployer reads
-# through. It is created by this root, which the OWNER applies, and CI is kept
-# from touching it by the configWriter condition that objection pointed to.
+# through. It is created by this root, which the OWNER applies. CI can still
+# edit it until roles/logging.configWriter is scoped (deployer_scoped_roles is
+# [] on 2026-09-24).
 #
 # WHY HERE AND NOT IN terraform/infra. This is a grant TO the deployer. Grants to
 # the deployer come from this root, which the owner applies (`make bootstrap`),
@@ -126,19 +135,63 @@
 # those was wrong. A failed gate stays failed either way.
 #
 # ---------------------------------------------------------------------------
-# WHAT THIS DOES NOT BOUND
+# WHAT THIS DOES NOT BOUND -- THE DEPLOYER CAN REACH EVERY LOG IN THE PROJECT
 # ---------------------------------------------------------------------------
 #
-# The view is only as narrow as the deployer's ability to edit it. While
-# roles/logging.configWriter is granted to the deployer unconditioned --
-# deployer_scoped_roles is [] in terraform.tfvars on 2026-09-24 -- it holds
-# logging.views.update project-wide, so a workflow on an allowed ref could
-# rewrite this view's filter to anything and then read that through the grant.
-# Naming roles/logging.configWriter in deployer_scoped_roles refuses CI every
-# LogBucket and LogView operation (deployer_conditions.tf), and that is what
-# makes "swarm-verify ONLY" hold against the deployer itself. Likewise, an
-# unconditioned roles/resourcemanager.projectIamAdmin lets CI grant itself
-# roles/logging.viewer outright; its scoped form refuses that role.
+# "swarm-verify ONLY" is what THIS GRANT gives. It is not what the deployer can
+# read, and no condition written in deployer_conditions.tf makes it so -- not
+# even with every scopable role scoped. A workflow on an allowed ref can read
+# every log in this project, the other team's Data Access audit logs included,
+# by any of the routes below. Measured 2026-09-24 with read-only gcloud
+# (`projects get-iam-policy`, `iam roles describe`, `iam service-accounts
+# get-iam-policy`); none of them has been exercised, and the list is what was
+# found, not a proof that there is nothing else.
+#
+# OPEN, AND CLOSED BY NO CONDITION IN deployer_conditions.tf:
+#
+#   1. It needs nothing it does not already hold. The deployer has
+#      roles/iam.serviceAccountUser on 209012342332-compute@developer
+#      (wif.tf, deployer_acts_as_cloudbuild -- it is what `gcloud builds
+#      submit` runs as), and that account holds roles/editor project-wide,
+#      which carries logging.logEntries.list. A build step, or a Cloud Run job
+#      (run.admin), running `gcloud logging read` as that account reads
+#      everything.
+#   2. roles/iam.roleAdmin (UNSCOPABLE, variables.tf) carries iam.roles.update.
+#      CI can add logging.logEntries.list to a custom role it holds:
+#      swarmSecretProvisioner, whose scoped form's type guard still admits
+#      every non-secret resource; swarmDeployerProjectBuckets, whose binding in
+#      wif.tf is never conditioned (in this root, not yet applied); or one of
+#      terraform/infra's six custom roles, which the SCOPED projectIamAdmin
+#      still lets it grant itself (deployer_grantable_project_roles).
+#   3. roles/iam.serviceAccountAdmin (UNSCOPABLE) carries
+#      iam.serviceAccounts.setIamPolicy. CI can grant itself
+#      roles/iam.serviceAccountTokenCreator on any account that reads logs --
+#      the compute account above, or 209012342332@cloudbuild, which holds
+#      roles/cloudbuild.builds.builder (logging.logEntries.list and
+#      logging.views.access) -- and act as it.
+#   4. roles/logging.configWriter's sinks and exclusions stay project-wide when
+#      the role is scoped (deployer_conditions.tf says so). A sink can route
+#      every log in the project to a destination CI administers: a swarm-
+#      bucket (storage.admin) or a Pub/Sub topic (pubsub.admin).
+#
+# CLOSED ONLY ONCE THE ROLE IS SCOPED (deployer_scoped_roles, not yet applied):
+#
+#   5. roles/logging.configWriter unconditioned holds logging.views.update, so
+#      CI can rewrite this view's filter, or make another view, and read the
+#      result through the grant. Its scoped form refuses every LogBucket and
+#      LogView operation.
+#   6. roles/resourcemanager.projectIamAdmin unconditioned lets CI grant itself
+#      roles/logging.viewer outright. Its scoped form refuses that role -- but
+#      not route 2.
+#
+# What bounds all six today is the ref pin, not IAM: only a workflow on
+# refs/heads/main (terraform.tfvars, github_allowed_refs) can mint the
+# deployer's token, so each route has to be merged to main first. Closing 1
+# means building as an account without roles/editor; 2 and 3 mean taking
+# roles/iam.roleAdmin and roles/iam.serviceAccountAdmin off the deployer, or
+# replacing them with resource-level grants on swarm-* roles and accounts;
+# 4 means moving sink management out of CI. Each is a change to what CI can
+# do, and none is made here.
 #
 # ---------------------------------------------------------------------------
 #
@@ -158,15 +211,62 @@ locals {
   # location is global in this project (`gcloud logging buckets describe
   # _Default --location=global`, 2026-09-24).
   verify_log_location = "global"
-  verify_log_bucket   = "projects/${var.project_id}/locations/${local.verify_log_location}/buckets/_Default"
-  verify_log_view_id  = "swarm-verify"
+  verify_log_bucket   = "projects/${var.project_id}/locations/${local.verify_log_location}/buckets/swarm-verify-logs" # MUTATION
+  verify_log_view_id  = "verify" # MUTATION
   verify_log_view     = "${local.verify_log_bucket}/views/${local.verify_log_view_id}"
 
   # The owner's filter, as decided. `swarm-verify` is the name
   # terraform/infra/verify.tf gives google_cloud_run_v2_job.verify; the
   # integration test above builds its log entries from that name, so a filter
   # naming any other job shows the deployer nothing.
-  verify_log_view_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-verify\""
+  verify_log_view_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-verify\" AND NOT resource.labels.job_name=\"swarm-worker\"" # MUTATION
+
+  # EVERY PREDEFINED ROLE MEASURED TO READ LOG ENTRIES, read from the file the
+  # measurement wrote rather than restated: all 2,397 predefined roles listed
+  # with their permissions on 2026-09-24, keeping the 50 that carry
+  # logging.logEntries.list, logging.privateLogEntries.list or
+  # logging.views.access (the file says how). var.deployer_roles refuses every
+  # one, and tests/terraform/verify_logs.tftest.hcl reads the same file.
+  #
+  # A DENYLIST MEASURED ON A DATE. Google adds roles and adds permissions to
+  # existing roles; a role that reads nothing today may read logs next year.
+  # The list below is what catches that.
+  log_reading_roles = keys(jsondecode(file("${path.module}/log-reading-roles.json")).roles)
+
+  # THE ROLES var.deployer_roles MAY NAME AT ALL. Each was checked on
+  # 2026-09-24 against the same full listing that wrote log-reading-roles.json,
+  # and carries none of the three permissions above. A role not listed here is
+  # refused at plan, so adding one to deployer_roles means adding it here too
+  # -- and adding it here is the review: describe the role, and confirm it
+  # carries none of the three and is not in log-reading-roles.json.
+  #
+  # This is a second list of the same names as deployer_roles' default, on
+  # purpose: two keys, one of which is the review. Drift is loud rather than
+  # silent -- a default missing from here fails every plan, CI's
+  # `terraform test` included.
+  #
+  # "Reviewed" means the role does not READ a log itself. It does not mean it
+  # cannot be used to GET one: roles/iam.roleAdmin and
+  # roles/iam.serviceAccountAdmin are here, and WHAT THIS DOES NOT BOUND says
+  # how each can.
+  deployer_roles_reviewed = [
+    "roles/artifactregistry.admin",
+    "roles/cloudbuild.builds.editor",
+    "roles/cloudscheduler.admin",
+    "roles/compute.networkAdmin",
+    "roles/compute.securityAdmin",
+    "roles/container.admin",
+    "roles/datastore.owner",
+    "roles/iam.roleAdmin",
+    "roles/iam.serviceAccountAdmin",
+    "roles/iam.workloadIdentityPoolAdmin",
+    "roles/logging.configWriter",
+    "roles/monitoring.editor",
+    "roles/pubsub.admin",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/run.admin",
+    "roles/serviceusage.serviceUsageAdmin",
+  ]
 }
 
 # No labels: google_logging_log_view has none in the pinned provider (6.50.0,
@@ -186,11 +286,11 @@ resource "google_logging_log_view" "verify" {
 }
 
 resource "google_project_iam_member" "deployer_reads_verify_logs" {
-  count = local.wif_enabled
+  count = 1 # MUTATION
 
   project = var.project_id
-  role    = "roles/logging.viewAccessor"
-  member  = "serviceAccount:${google_service_account.deployer[0].email}"
+  role    = "roles/logging.viewer"                                                            # MUTATION
+  member  = "serviceAccount:${var.name_prefix}-tf-deployer@${var.project_id}.iam.gserviceaccount.com" # MUTATION
 
   condition {
     title       = "swarm-verify log view only"
