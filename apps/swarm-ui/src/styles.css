@@ -4032,6 +4032,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      say which line it is. A single-series chart uses series 1 and needs no
      legend, because the panel title already said what it is.
 
+     A TONE DERIVED FROM A SERIES INHERITS THE 3:1. Overview's token mix draws
+     --series-1 at four tones; mixing toward --surface would fade the lighter
+     ones into the card (1.35:1 was measured), so it mixes toward --text, and
+     encoding.hues.test.ts asks 3:1 of every tone on all three grounds.
+
      STROKE AND FILL ONLY. These are never a text colour and never a surface
      under text: they are not in test_ui_contrast.py's ACCENTS list because
      nothing is allowed to make them need to be. */

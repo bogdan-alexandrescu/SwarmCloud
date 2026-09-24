@@ -2862,15 +2862,25 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    §12.1) told a colour reader which swatch was which; a greyscale screenshot
    still showed four identical greys.
    Tokens are one metric split four ways, so they get ONE series (--series-1,
-   the single-series slot) at four steps toward the card: every pair >= 1.25:1
-   in both themes, the lightest >= 1.34:1 off --surface. Order is the reading
-   order: input strongest, cache writes faintest. The .ov-sN class names are
-   unchanged, so each swatch still takes its fill from the same class its
-   segment does. encoding.hues.test.ts holds the floor. */
+   the single-series slot) at four tones.
+   THE TONES STEP TOWARD THE INK, NEVER TOWARD THE CARD. The first ramp mixed
+   toward --surface and bought its greyscale steps by fading three of the four
+   into the card: c-wr's 8px swatch measured 1.35:1 on white and 1.42:1 on the
+   dark card, under the 3:1 every series fill promises (styles.css, THE SERIES
+   PALETTE; WCAG 1.4.11). --series-1 is already the floor of that band -- 3.36
+   on light --surface-2 -- so any step toward the card goes under it, and the
+   only direction with room is toward --text: lighter on the dark card, darker
+   on the light one. At 100/75/50/25% the worst fill is --series-1 itself
+   (3.36, light --surface-2), and every other one is >= 4.77 on --bg, --surface
+   and --surface-2 in both themes; every pair is >= 1.32:1 (dark c-rd/c-wr).
+   Order is the reading order: input is the series hue itself, and each later
+   count sits one step nearer the ink, so c-wr is the heaviest mark. The .ov-sN
+   class names are unchanged, so each swatch still takes its fill from the same
+   class its segment does. encoding.hues.test.ts holds both floors. */
 .ov-s1 { background: var(--series-1); }
-.ov-s2 { background: color-mix(in srgb, var(--series-1) 68%, var(--surface)); }
-.ov-s3 { background: color-mix(in srgb, var(--series-1) 44%, var(--surface)); }
-.ov-s4 { background: color-mix(in srgb, var(--series-1) 26%, var(--surface)); }
+.ov-s2 { background: color-mix(in srgb, var(--series-1) 75%, var(--text)); }
+.ov-s3 { background: color-mix(in srgb, var(--series-1) 50%, var(--text)); }
+.ov-s4 { background: color-mix(in srgb, var(--series-1) 25%, var(--text)); }
 .ov-mix-facts { padding: 0; }
 
 /* THE KEY TO THE FOUR TONES, NEXT TO THE WORD THEY BELONG TO.
