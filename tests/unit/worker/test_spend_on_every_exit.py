@@ -33,7 +33,9 @@ from typing import Any
 import pytest
 
 from agent_worker.errors import ExitCode
-from swarm_common.states import TaskState
+from agent_worker.runners.mock import PROGRESS_DIR
+from swarm_common.models import ProviderState
+from swarm_common.states import EventType, TaskState
 
 from conftest import TENANT, seed_attempt
 
@@ -92,6 +94,19 @@ if seen < int(plan.get("rate_limit_times", 0)):
         out["total_cost_usd"] = cost
     print(json.dumps(out))
     sys.exit(1)
+
+# Past its rate limits, so this run is the RETRY. It says so on a path the test
+# chose, then works for a while -- long enough for the test to change the world
+# around it -- and stops early if its runner is killed, rather than lingering
+# as an orphan: the CLI runner starts this in its own session, so a SIGKILL of
+# the runner never reaches it.
+if plan.get("retry_hang_seconds"):
+    if plan.get("retry_started_marker"):
+        pathlib.Path(plan["retry_started_marker"]).write_text("running")
+    parent = os.getppid()
+    end = time.monotonic() + float(plan["retry_hang_seconds"])
+    while time.monotonic() < end and os.getppid() == parent:
+        time.sleep(0.1)
 
 out = {"type": "result", "subtype": "success", "is_error": False,
        "result": plan.get("say", "done")}
@@ -231,6 +246,179 @@ def test_a_cancelled_attempt_records_what_its_runner_reported(db, worker_factory
     thread.join()
 
     assert exit_code == ExitCode.CANCELLED
+    assert_recorded(db)
+
+
+# ---------------------------------------------------------------------------
+# the backstop in `_cleanup`, and the two parks that stop a live runner
+#
+# Two exits cannot record spend in `_upload_outputs`: a generation fenced
+# mid-run uploads nothing, and a crash while the runner is alive has not reaped
+# the runner, so there is nothing to record yet. `_cleanup` collects and
+# records for both, and these are the tests that fail without it. The SIGTERM
+# and backpressure parks do pass through `_upload_outputs`, and had no test.
+# ---------------------------------------------------------------------------
+
+#: What the mock runner reports on every exit, including when it is stopped.
+MOCK_SPEND = {"usage": USAGE, "total_cost_usd": COST}
+
+
+def a_long_mock_run(db: Any) -> None:
+    """A mock runner that works for about eight seconds, reporting MOCK_SPEND."""
+    seed_attempt(
+        db,
+        task_input={"prompt": "long", "steps": 40, "sleep_seconds": 8.0, "spend": MOCK_SPEND},
+    )
+
+
+def runner_is_working(worker: Any) -> bool:
+    """The runner is alive and has finished a step.
+
+    A finished step means its SIGTERM handler is installed, so a runner that
+    is stopped now writes its result on the way out. A trigger fired before
+    that would kill a runner that never had the chance, and the test would be
+    measuring startup timing instead of the worker.
+    """
+    ws = worker.ws
+    child = worker._child
+    return (
+        ws is not None
+        and child is not None
+        and child.poll() is None
+        and (ws.work / PROGRESS_DIR / "step-0001.txt").exists()
+    )
+
+
+def once_the_runner_is_working(worker: Any, action: Any) -> threading.Thread:
+    def watch() -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if runner_is_working(worker):
+                action()
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=watch, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_a_generation_fenced_mid_run_records_what_its_runner_reported(db, worker_factory):
+    """A fenced worker uploads nothing and writes no state; only `_cleanup`
+    can record what its runner spent. It writes the attempt's OWN document --
+    the lease, which invariant 5 puts out of this worker's reach, is untouched.
+    """
+    a_long_mock_run(db)
+    worker, _, _ = worker_factory(control_poll_seconds=1, timeout_seconds=30)
+
+    def fence() -> None:
+        db.doc("tasks/task_1")["current_generation"] = 99
+
+    thread = once_the_runner_is_working(worker, fence)
+    exit_code = worker.run()
+    thread.join()
+
+    assert exit_code == ExitCode.GENERATION_FENCED
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert_recorded(db)
+
+
+def test_a_worker_crash_while_the_runner_is_alive_records_what_it_reported(
+    db, worker_factory
+):
+    """The crash handler writes FAILED while the runner is still running, so
+    nothing has been collected when `_upload_outputs` records. `_cleanup` then
+    stops the runner -- which reports on the way out -- and records that.
+
+    Driven by the heartbeat write raising mid-run, the way a Firestore outage
+    reaches the supervision loop.
+    """
+    a_long_mock_run(db)
+    worker, _, _ = worker_factory(timeout_seconds=30)
+    real_heartbeat = worker.control.heartbeat
+
+    def heartbeat(*args: Any, **kwargs: Any) -> Any:
+        if runner_is_working(worker):
+            raise RuntimeError("the heartbeat write failed")
+        return real_heartbeat(*args, **kwargs)
+
+    worker.control.heartbeat = heartbeat  # type: ignore[method-assign]
+
+    assert worker.run() == ExitCode.FAILED
+    assert db.doc("tasks/task_1")["state"] == TaskState.FAILED.value
+    assert_recorded(db)
+
+
+def test_a_worker_sigterm_park_records_what_its_runner_reported(db, worker_factory):
+    """The platform takes the sandbox away mid-run; the worker parks.
+
+    `_interrupted` is set directly, which is all the SIGTERM handler does --
+    sending the test process a real SIGTERM would kill it wherever the handler
+    is not installed.
+    """
+    a_long_mock_run(db)
+    worker, _, _ = worker_factory(control_poll_seconds=1, timeout_seconds=30)
+
+    def interrupt() -> None:
+        worker._interrupted = True
+
+    thread = once_the_runner_is_working(worker, interrupt)
+    exit_code = worker.run()
+    thread.join()
+
+    assert exit_code == ExitCode.PARKED
+    assert db.doc("tasks/task_1")["state"] == TaskState.PARKED.value
+    parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
+    assert parked and parked[-1]["detail"].get("cause") == "worker_interrupted", parked
+    assert_recorded(db)
+
+
+def test_a_backpressure_park_records_what_the_attempt_had_spent(
+    db, worker_factory, agent_cli, tmp_path
+):
+    """A short 429 is retried in place; while the retry runs, the quota broker
+    marks the provider exhausted for forty minutes, and the worker parks.
+
+    The retry is a CLI runner stopped on SIGTERM, which reports nothing -- so
+    what the attempt spent is the first run's, collected when that run ended.
+    The park must record it.
+    """
+    started = tmp_path / "retry-started"
+    seed(
+        db,
+        rate_limit_times=1,
+        retry_after=1,
+        usage=USAGE,
+        cost_usd=COST,
+        retry_hang_seconds=20,
+        retry_started_marker=str(started),
+    )
+    worker, _, _ = worker_factory(runner_profile=PROFILE, timeout_seconds=40)
+
+    def exhaust_the_provider() -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not started.exists():
+            time.sleep(0.05)
+        db.seed(
+            f"quota/anthropic:{TENANT}",
+            {
+                "provider": "anthropic",
+                "tenant_id": TENANT,
+                "state": ProviderState.EXHAUSTED.value,
+                "retry_after_seconds": 2400,
+                "updated_at": None,
+            },
+        )
+
+    thread = threading.Thread(target=exhaust_the_provider, daemon=True)
+    thread.start()
+    exit_code = worker.run()
+    thread.join()
+
+    assert exit_code == ExitCode.PARKED
+    assert started.exists(), "the retry never started, so this was not a backpressure park"
+    exhausted = [e for e in db.events("task_1") if e["type"] == EventType.QUOTA_EXHAUSTED.value]
+    assert exhausted and exhausted[-1]["detail"]["park_phase"] == "backpressure", exhausted
     assert_recorded(db)
 
 

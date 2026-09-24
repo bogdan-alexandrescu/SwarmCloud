@@ -14,7 +14,9 @@ What is pinned here:
   * that the numbers reach the places a reader can get them: the exported
     usage, the resource log line, and the HEARTBEAT event series, which is the
     only time series the platform records;
-  * that "not measured" stays None and is never written as zero.
+  * that "not measured" stays None and is never written as zero;
+  * that an attempt which restarts its runner in place reports ALL of its
+    runners -- summed, maximised, one mean -- and not just the last one.
 
 Imports are inside the tests so each one fails on its own.
 """
@@ -221,3 +223,150 @@ def test_the_heartbeat_series_carries_cumulative_cpu(db, worker_factory):
     measured = [b["detail"]["cpu_seconds"] for b in beats if b["detail"]["cpu_seconds"] is not None]
     assert measured, f"no heartbeat carried a CPU reading: {beats}"
     assert max(measured) > 0
+
+
+# ---------------------------------------------------------------------------
+# one attempt, several runners
+#
+# An attempt restarts its runner in place after a short rate limit or a
+# reloaded credential, and every runner got a sampler of its own. So the
+# exported figures were the LAST runner's, the attempt document's memory peak
+# was overwritten by whichever runner ended last, and the HEARTBEAT total --
+# cumulative by design -- fell back to zero at every restart.
+# ---------------------------------------------------------------------------
+
+
+def test_runners_combine_as_totals_maxima_and_one_mean():
+    from agent_worker.metrics import ResourceUsage, combine_usage
+
+    first = ResourceUsage(
+        peak_rss_bytes=900, peak_disk_bytes=10, oom_near_miss=True, samples=3,
+        memory_events={"max": 1}, cpu_seconds=3.0, peak_cpu_cores=2.5,
+        mean_cpu_cores=3.0, cpu_wall_seconds=1.0, cpu_source="cgroup",
+    )
+    second = ResourceUsage(
+        peak_rss_bytes=100, peak_disk_bytes=50, samples=4,
+        memory_events={"max": 2}, cpu_seconds=1.0, peak_cpu_cores=0.5,
+        mean_cpu_cores=1.0 / 3.0, cpu_wall_seconds=3.0, cpu_source="cgroup",
+    )
+
+    usage = combine_usage([first, second])
+
+    assert usage.cpu_seconds == pytest.approx(4.0)
+    assert usage.peak_cpu_cores == pytest.approx(2.5)
+    # Total over total: 4s of CPU across 4s of runner time. NOT the mean of the
+    # two means (1.67), which would weigh a one-second run like a three-second one.
+    assert usage.mean_cpu_cores == pytest.approx(1.0)
+    assert usage.cpu_wall_seconds == pytest.approx(4.0)
+    assert usage.peak_rss_bytes == 900
+    assert usage.peak_disk_bytes == 50
+    assert usage.oom_near_miss is True
+    assert usage.samples == 7
+    # cgroup counters are the container's own running totals: the latest is all of it.
+    assert usage.memory_events == {"max": 2}
+    assert usage.cpu_source == "cgroup"
+
+
+def test_a_runner_too_short_for_a_mean_still_counts_in_the_total():
+    from agent_worker.metrics import ResourceUsage, combine_usage
+
+    short = ResourceUsage(cpu_seconds=0.4, cpu_wall_seconds=0.2, cpu_source="proc")
+    long_ = ResourceUsage(
+        cpu_seconds=1.0, mean_cpu_cores=1.0 / 3.0, cpu_wall_seconds=3.0, cpu_source="proc"
+    )
+
+    alone = combine_usage([short])
+    assert alone.cpu_seconds == pytest.approx(0.4)
+    assert alone.mean_cpu_cores is None, "0.4s over 0.2s is two cores only by arithmetic"
+
+    both = combine_usage([short, long_])
+    assert both.cpu_seconds == pytest.approx(1.4)
+    assert both.mean_cpu_cores == pytest.approx(1.4 / 3.2)
+
+
+def test_combining_keeps_not_measured_as_none():
+    from agent_worker.metrics import ResourceUsage, combine_usage
+
+    assert combine_usage([]) is None
+    usage = combine_usage([ResourceUsage(peak_rss_bytes=5), ResourceUsage(peak_rss_bytes=7)])
+    assert usage.peak_rss_bytes == 7
+    assert usage.cpu_seconds is None
+    assert usage.peak_cpu_cores is None
+    assert usage.mean_cpu_cores is None
+    assert usage.cpu_wall_seconds is None
+
+
+def test_the_span_cpu_was_measured_across_is_kept_for_combining():
+    sampler = _sampler(ScriptedMeter([10.0, 13.0, 14.0, 14.0]), ScriptedClock([0, 2, 4, 5]))
+    sampler.sample_once()
+    sampler.sample_once()
+    sampler.sample_once()
+    usage = sampler.stop()
+
+    assert usage.cpu_wall_seconds == pytest.approx(5.0)
+
+
+def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
+    db, worker_factory, monkeypatch
+):
+    """One attempt, two runners: a refused credential, reloaded in place.
+
+    CPU comes from a scripted meter -- exactly 2.0s per runner -- and memory
+    from a reading that is high for the first runner's process group and low
+    for the second's, so every figure asserted below is exact. The old worker
+    exported 2.0s, wrote the second runner's lower memory peak over the
+    first's, and restarted its HEARTBEAT total from zero with the second runner.
+    """
+    from agent_worker import lifecycle, metrics
+
+    class TwoSecondsPerRunner:
+        source = "scripted"
+
+        def __init__(self, _pid_provider) -> None:
+            self._reads = 0
+
+        def cumulative(self) -> float:
+            self._reads += 1
+            return 100.0 + 0.1 * self._reads
+
+        def consumed(self) -> float:
+            return 2.0
+
+    high, low = 900 * 2**20, 100 * 2**20
+    groups: list[int] = []
+
+    def rss_of_group(pgid: int) -> int:
+        if pgid not in groups:
+            groups.append(pgid)
+        return high if pgid == groups[0] else low
+
+    monkeypatch.setattr(metrics, "SystemCpuMeter", TwoSecondsPerRunner)
+    monkeypatch.setattr(metrics, "cgroup_memory_peak", lambda: None)
+    monkeypatch.setattr(metrics, "cgroup_memory_current", lambda: None)
+    monkeypatch.setattr(metrics, "process_group_rss", rss_of_group)
+    # Every other heartbeat is an event, not every fifth, so the second runner
+    # is certain to appear in the series. (`% 1 == 1` is never true, so 2 is
+    # the densest setting there is.)
+    monkeypatch.setattr(lifecycle, "HEARTBEAT_EVENT_EVERY", 2)
+
+    seed_attempt(db, task_input={"prompt": "rotated once", "steps": 3, "sleep_seconds": 5.0,
+                                 "credential_revoked_times": 1})
+    worker, _, exporter = worker_factory(heartbeat_interval_seconds=1)
+
+    assert worker.run() == ExitCode.OK
+    assert len(groups) == 2, f"expected two runners to be sampled, saw {len(groups)}"
+
+    usage, _labels = exporter.exports[-1]
+    assert usage.cpu_seconds == pytest.approx(4.0), usage
+    assert usage.peak_rss_bytes == high, usage
+    assert db.doc("attempts/att_1")["peak_rss_bytes"] == high
+
+    events = db.events("task_1")
+    restart = max(i for i, e in enumerate(events) if e["type"] == EventType.RETRYING.value)
+    after = [
+        e["detail"]["cpu_seconds"]
+        for e in events[restart:]
+        if e["type"] == EventType.HEARTBEAT.value and e["detail"].get("cpu_seconds") is not None
+    ]
+    assert after, "no heartbeat carried CPU while the second runner ran"
+    assert min(after) >= 2.0, f"the cumulative total went back below the first runner's: {after}"
