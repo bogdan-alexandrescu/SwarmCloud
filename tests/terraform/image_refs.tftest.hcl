@@ -71,11 +71,15 @@ run "every_service_and_job_runs_the_digest_it_was_given" {
   # The GKE path has no terraform-managed Job to carry an image, so the
   # scheduler is handed the runner digests and names them in every Job it
   # creates. This is what reaches the browser profile.
+  # Compared entry by entry rather than with `==` on the whole value: the
+  # output is decoded JSON (an object) and the variable is a map, and `==`
+  # across those two types is false even when every entry agrees.
   assert {
-    condition = output.worker_image_refs == {
-      "agent-runtime-base"    = var.image_refs["agent-runtime-base"]
-      "agent-runtime-browser" = var.image_refs["agent-runtime-browser"]
-    }
+    condition = (
+      length(output.worker_image_refs) == 2
+      && output.worker_image_refs["agent-runtime-base"] == var.image_refs["agent-runtime-base"]
+      && output.worker_image_refs["agent-runtime-browser"] == var.image_refs["agent-runtime-browser"]
+    )
     error_message = "the scheduler must be given exactly the runner images' digests"
   }
 
@@ -94,7 +98,10 @@ run "every_service_and_job_runs_the_digest_it_was_given" {
   }
 
   assert {
-    condition     = output.image_refs == var.image_refs
+    condition = (
+      length(output.image_refs) == length(var.image_refs)
+      && alltrue([for name, ref in var.image_refs : output.image_refs[name] == ref])
+    )
     error_message = "output.image_refs is what scripts/plan.sh replans against; it must be exactly what was applied"
   }
 }

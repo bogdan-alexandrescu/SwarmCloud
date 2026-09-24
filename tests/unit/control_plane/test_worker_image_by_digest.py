@@ -181,6 +181,91 @@ def test_each_profile_gets_its_own_images_digest():
     assert image_uri(settings, RUNNER_PROFILES["browser"]) == REFS["agent-runtime-browser"]
 
 
+# -- a job that already exists ----------------------------------------------
+#
+# A Cloud Run Job pins its image on the JOB, and the dispatcher only ever asked
+# "does it exist?". A job it created for a tenant terraform does not know --
+# every self-service `u-<email>` tenant -- therefore kept the image of the day
+# it was created, at a tag from before the digest map existed, for every
+# execution after. Pinning new jobs by digest does nothing for those.
+
+
+class ExistingJobsClient:
+    """A Jobs API holding one job, as `get_job` would return it."""
+
+    def __init__(self, *, managed_by: str, image: str) -> None:
+        from google.cloud import run_v2
+
+        self.job = run_v2.Job(
+            labels={"managed-by": managed_by},
+            template=run_v2.ExecutionTemplate(
+                template=run_v2.TaskTemplate(containers=[run_v2.Container(image=image)])
+            ),
+        )
+        self.updated: list = []
+        self.runs: list = []
+
+    def get_job(self, request):
+        return self.job
+
+    def create_job(self, request):  # pragma: no cover - must not be reached
+        raise AssertionError("an existing job must not be re-created")
+
+    def update_job(self, request):
+        self.updated.append(request.job)
+        return FakeOperation()
+
+    def run_job(self, request):
+        self.runs.append(request.name)
+        return FakeOperation()
+
+
+def test_a_job_the_dispatcher_created_at_a_tag_is_moved_to_the_digest_before_it_runs(tenant):
+    settings = scheduler_settings(worker_image_refs=REFS)
+    client = ExistingJobsClient(managed_by="swarm-scheduler", image=f"{HOST}/agent-runtime-base:7c5276212251")
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("claude-code")
+
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["claude-code"], tenant=tenant
+    )
+
+    assert len(client.updated) == 1, "the stale job ran without being brought to the digest"
+    updated = client.updated[0]
+    assert updated.template.template.containers[0].image == REFS["agent-runtime-base"]
+    assert updated.name.endswith("/jobs/swarm-job-eng-claude-code")
+    assert client.runs, "the job must still run after it is updated"
+
+
+def test_a_job_already_at_the_digest_is_left_alone(tenant):
+    settings = scheduler_settings(worker_image_refs=REFS)
+    client = ExistingJobsClient(managed_by="swarm-scheduler", image=REFS["agent-runtime-base"])
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("claude-code")
+
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["claude-code"], tenant=tenant
+    )
+
+    assert client.updated == [], "an update per dispatch would be a write per task for nothing"
+
+
+def test_a_terraform_managed_job_is_never_rewritten_by_the_dispatcher(tenant):
+    # Terraform pins its own jobs by digest on every apply. The dispatcher
+    # rewriting one is the repoint modules/cloud_run_jobs keeps the image
+    # un-ignored to catch, so it must not happen even to "fix" an image.
+    settings = scheduler_settings(worker_image_refs=REFS)
+    client = ExistingJobsClient(managed_by="swarm-terraform", image=f"{HOST}/agent-runtime-base:old")
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("claude-code")
+
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["claude-code"], tenant=tenant
+    )
+
+    assert client.updated == []
+
+
 # -- no silent fallback ---------------------------------------------------
 
 
