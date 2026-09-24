@@ -113,6 +113,61 @@ export function workerHasStarted(task: {
   return (task.state === 'STARTING' || task.state === 'RUNNING') && Boolean(task.started_at)
 }
 
+/**
+ * Whether an EARLIER attempt of this task did work, which is what decides
+ * whether "nothing has run" is true of a task whose current attempt has no
+ * worker (or which has no current attempt at all).
+ *
+ * "No worker has started THIS attempt" and "nothing has run" are different
+ * facts. The designed path that separates them is invariant 4: an attempt runs,
+ * checkpoints, parks on a provider quota and exits; the task is re-admitted and
+ * waits DISPATCHED for its next worker. That task's `started_at` is still set
+ * (see `workerHasStarted`: nothing clears it), and `latest_checkpoint` names
+ * what the next worker would restore (`lifecycle.py:345`). Telling the reader
+ * "nothing has run" there says nothing is at stake when the whole of that
+ * earlier attempt's progress is: a stopped task is never resumed.
+ *
+ * `attempt_count > 1` IS DELIBERATELY NOT A SIGNAL. The reconciler reclaims an
+ * attempt whose worker never started and the task is admitted again, so a task
+ * can reach attempt 2 with nothing ever run -- the shape of every task in
+ * incident wf_ebb3ab2d65664707a559. `started_at` null means no worker has ever
+ * reached STARTING for this task, and a checkpoint cannot exist without one.
+ * `latest_checkpoint` is checked as well because it is the thing at stake,
+ * and a task that names one is not a task on which nothing ran.
+ */
+export function earlierAttemptRan(task: {
+  started_at?: string | null
+  latest_checkpoint?: string | null
+}): boolean {
+  return Boolean(task.started_at) || Boolean(task.latest_checkpoint)
+}
+
+/**
+ * What a stop gives up when an earlier attempt did the work, as one sentence.
+ *
+ * WHY "NEVER RESUMED". A stop ends the task. CANCELLED has no outgoing
+ * transition in the frozen state machine, and a flagged task that the
+ * reconciler returns to READY is cancelled by the scheduler before it can be
+ * admitted again (`scheduler/loop.py`, `_admit_one`). So no later attempt
+ * restores that checkpoint.
+ *
+ * WHAT IS NOT CLAIMED. Nothing here says the checkpoint stays. Once the task is
+ * terminal and its attempts are complete, the reconciler's checkpoint retention
+ * (`reconciler/checkpoints.py`, `classify`) treats a CANCELLED task's
+ * checkpoints as unreferenced. Artifacts and logs are outside that collector,
+ * so "left where they are" is true of them. It is said of "whatever" was
+ * uploaded because an attempt that ran is not proof that it uploaded anything.
+ */
+function earlierWorkSentence(task: { latest_checkpoint?: string | null }): string {
+  return task.latest_checkpoint
+    ? 'An earlier attempt of this task did run, and left a checkpoint. A stopped task is never ' +
+        'resumed, so stopping gives up resuming from that checkpoint. Whatever artifacts and logs ' +
+        'earlier attempts uploaded are left where they are.'
+    : 'An earlier attempt of this task did run. A stopped task is never resumed, so stopping ' +
+        'gives up anything a later attempt would have picked up from it. Whatever artifacts and ' +
+        'logs earlier attempts uploaded are left where they are.'
+}
+
 /** Steps that share the workflow and do not depend on the one being stopped. */
 export function survivorsOf(
   step: WorkflowStep,
@@ -148,6 +203,9 @@ export function StopRun({
   const [error, setError] = useState<ApiError | null>(null)
   const [outcome, setOutcome] = useState<'requested' | 'released' | null>(null)
   const started = workerHasStarted(task)
+  // Only consulted when no worker is running this attempt: a started worker's
+  // own attempt is the work, and its copy already says what happens to it.
+  const earlier = !started && earlierAttemptRan(task)
 
   // A button that 409s is a button that should not have been drawn:
   // `request_cancel` refuses every terminal state. `cancel_requested` already
@@ -200,7 +258,10 @@ export function StopRun({
         className={variant === 'inline' ? 'stop-note small' : 'stop-note'}
         aria-label={
           outcome === 'released'
-            ? 'Stopped. It held no capacity, so it went straight to CANCELLED. No attempt had started, so there is nothing to harvest.'
+            ? earlier
+              ? 'Stopped. It held no capacity, so it went straight to CANCELLED. Nothing was running. ' +
+                earlierWorkSentence(task)
+              : 'Stopped. It held no capacity, so it went straight to CANCELLED. No attempt had started, so there is nothing to harvest.'
             : started
               ? 'Stop requested. It is recorded on the task. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
               : 'Stop requested. It is recorded on the task. No worker has started this attempt, so ' +
@@ -210,9 +271,18 @@ export function StopRun({
         }
       >
         {outcome === 'released' ? (
-          <>
-            <strong>Stopped.</strong> It held no capacity, so nothing to harvest.
-          </>
+          earlier ? (
+            <>
+              <strong>Stopped.</strong> Nothing was running;{' '}
+              {task.latest_checkpoint
+                ? 'the earlier checkpoint is not resumed.'
+                : 'what earlier attempts did is not resumed.'}
+            </>
+          ) : (
+            <>
+              <strong>Stopped.</strong> It held no capacity, so nothing to harvest.
+            </>
+          )
         ) : started ? (
           <>
             <strong>Stop requested.</strong> Still running until the next
@@ -220,8 +290,8 @@ export function StopRun({
           </>
         ) : (
           <>
-            <strong>Stop requested.</strong> No worker has started; the reconciler
-            finishes it if none does.
+            <strong>Stop requested.</strong> No worker has started this attempt; the
+            reconciler finishes it if none does.
           </>
         )}
       </p>
@@ -260,11 +330,29 @@ export function StopRun({
   // THREE CASES, NOT TWO. That four-word promise, and "the work so far is
   // kept", are true only while a worker is running this attempt. For an
   // attempt no worker has started (`workerHasStarted`) nothing will heartbeat
-  // and nothing has been done, so that case gets its own values, and they name
-  // the two things that can actually finish it: a worker that starts, or the
-  // reconciler. Neither is given a time.
+  // and nothing of THIS attempt has been done, so that case gets its own
+  // values, and they name the two things that can actually finish it: a worker
+  // that starts, or the reconciler. Neither is given a time.
+  //
+  // AND "THIS ATTEMPT HAS NOT STARTED" IS NOT "NOTHING HAS RUN". A re-admitted
+  // task whose earlier attempt ran and checkpointed (`earlierAttemptRan`) has
+  // work at stake, whether it is waiting DISPATCHED for its next worker or
+  // PARKED before that. There the copy says what the stop gives up, not
+  // "none". `stoppingWhat` is the lead sentence for every case: a stop ends the
+  // task, so it must not say the task's retries survive it.
   const stops =
     step === null ? task.id : `${task.id} — step ${step.step_id}`
+  const stoppingWhat =
+    `Stopping ${stops} is irreversible: the task ends, and no attempt of it is retried or ` +
+    `resumed afterwards. `
+  const notStartedMechanics =
+    'It does not stop instantly — the API records the request, and the slot stays held until a ' +
+    'worker starts and stops before running anything or, if none starts, the reconciler reclaims ' +
+    'the attempt and finishes it. Releasing the lease from here would free capacity a starting ' +
+    'container may still occupy.'
+  const earlierWorkFact = task.latest_checkpoint
+    ? 'an earlier attempt checkpointed — not resumed once stopped'
+    : 'an earlier attempt ran — not resumed once stopped'
   return (
     <div className="stop-confirm" role="group" aria-label={`Stop ${what}`}>
       <h4>Stop {what}?</h4>
@@ -272,11 +360,13 @@ export function StopRun({
       <ul
         className="ctl-facts stop-facts"
         aria-label={
-          `Stopping ${stops} is irreversible for this attempt: a stopped attempt is not resumed, ` +
-          `though the task's remaining retries are unaffected by this button. ` +
+          stoppingWhat +
           (!live
-            ? 'Nothing is executing and no capacity is held, so this takes effect at once and there is ' +
-              'no attempt to harvest.'
+            ? earlier
+              ? 'Nothing is executing and no capacity is held, so this takes effect at once. ' +
+                earlierWorkSentence(task)
+              : 'Nothing is executing and no capacity is held, so this takes effect at once and there is ' +
+                'no attempt to harvest.'
             : started
               ? 'The work so far is kept: before it exits the worker takes a checkpoint and uploads ' +
                 "this attempt's artifacts and logs, so stopping costs the rest of this attempt and not " +
@@ -284,11 +374,15 @@ export function StopRun({
                 'the worker acts on it at its next heartbeat; until then the agent keeps running and the ' +
                 'slot stays held, because releasing the lease from here would free capacity a live ' +
                 'container still occupies.'
-              : 'Nothing has run yet: no worker has started this attempt, so there is no work to ' +
-                'harvest. It does not stop instantly — the API records the request, and the slot stays ' +
-                'held until a worker starts and stops before running anything or, if none starts, the ' +
-                'reconciler reclaims the attempt and finishes it. Releasing the lease from here would ' +
-                'free capacity a starting container may still occupy.')
+              : earlier
+                ? 'No worker has started this attempt, so nothing of this attempt is running or to ' +
+                  'harvest. ' +
+                  earlierWorkSentence(task) +
+                  ' ' +
+                  notStartedMechanics
+                : 'Nothing has run yet: no worker has ever started this task, so there is no work to ' +
+                  'harvest. ' +
+                  notStartedMechanics)
         }
       >
         <li className="ctl-fact">
@@ -309,11 +403,13 @@ export function StopRun({
         )}
         <li className="ctl-fact">
           <b>work so far</b>
-          {!live
-            ? 'none to harvest'
-            : started
-              ? 'kept — checkpoint, artifacts and logs are uploaded first'
-              : 'none — no worker has started'}
+          {earlier
+            ? earlierWorkFact
+            : !live
+              ? 'none to harvest'
+              : started
+                ? 'kept — checkpoint, artifacts and logs are uploaded first'
+                : 'none — no worker has ever started this task'}
         </li>
         <li className="ctl-fact">
           <b>takes effect</b>
