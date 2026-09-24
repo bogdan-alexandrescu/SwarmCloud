@@ -474,7 +474,7 @@ class _SweepRefresher:
         self.seen: list[list[tuple[str, str]]] = []
         self.confirmations: list[str] = []
 
-    def sweep(self, tenants):
+    def sweep(self, tenants, keep_going=None):
         return []
 
     def refresh_secret(self, base, *, label=""):
@@ -484,7 +484,7 @@ class _SweepRefresher:
         reason = self.on_second.get(label, self.reasons.get(label, "refreshed"))
         return RefreshOutcome(label, "account", reason == "refreshed", reason)
 
-    def sweep_accounts(self, secrets):
+    def sweep_accounts(self, secrets, keep_going=None):
         from quota_broker.credentials import RefreshOutcome
 
         self.seen.append(list(secrets))
