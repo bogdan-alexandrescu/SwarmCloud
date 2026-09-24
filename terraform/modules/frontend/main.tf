@@ -208,26 +208,47 @@ resource "google_compute_backend_service" "ui" {
   }
 }
 
-resource "google_iap_web_backend_service_iam_member" "ui_members" {
-  for_each = local.ui_enabled ? toset(var.iap_members) : toset([])
 
-  project             = var.project_id
-  web_backend_service = google_compute_backend_service.ui[0].name
-  role                = "roles/iap.httpsResourceAccessor"
-  member              = each.value
+# --------------------------------------------------------------------------
+# Who may pass IAP -- NOT MANAGED HERE, and the reason is the release pipeline
+# --------------------------------------------------------------------------
+#
+# The accessor bindings on both backends lived here until 2026-09-24. Managing
+# them meant CI's deployer had to read and write IAP policy, and every way of
+# granting that was measured and failed or was unacceptable:
+#
+#   * project-level roles/iap.admin: admin over all ten backends in the project,
+#     including the other team's Keycloak and ArgoCD;
+#   * the same with a resource.name condition: matched nothing (IAP names a
+#     backend by project number and numeric id), release 35972131246 failed;
+#   * roles/iap.admin bound on our two backends only: still 403 on
+#     getIamPolicy nine and a half minutes later, attempts 2-5 of that run.
+#
+# So membership moved to terraform/bootstrap (frontend_iap_members), which the
+# owner applies, and the deployer holds no IAP role at all. This module still
+# creates the backends and turns IAP ON (the `iap {}` blocks above), which is a
+# compute permission, not an IAP one.
+#
+# `removed` with destroy = false makes any state that still holds the bindings
+# FORGET them rather than delete them -- deleting them would lock everyone out.
+# It is not enough on its own for dev: a removed block still refreshes the
+# resource during plan, which is the same getIamPolicy call the deployer cannot
+# make. Dev's state was cut over by hand with `terraform state rm` (recorded in
+# the commit that added this); a new environment never had them in state.
+removed {
+  from = google_iap_web_backend_service_iam_member.members
+
+  lifecycle {
+    destroy = false
+  }
 }
 
-# --------------------------------------------------------------------------
-# Who may pass IAP
-# --------------------------------------------------------------------------
+removed {
+  from = google_iap_web_backend_service_iam_member.ui_members
 
-resource "google_iap_web_backend_service_iam_member" "members" {
-  for_each = toset(var.iap_members)
-
-  project             = var.project_id
-  web_backend_service = google_compute_backend_service.this.name
-  role                = "roles/iap.httpsResourceAccessor"
-  member              = each.value
+  lifecycle {
+    destroy = false
+  }
 }
 
 # --------------------------------------------------------------------------

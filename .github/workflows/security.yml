@@ -37,7 +37,7 @@ jobs:
     name: trivy (repo)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -78,7 +78,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Full history: a key removed in the latest commit is still a leaked
           # key if it is reachable anywhere in the branch.
@@ -115,9 +115,9 @@ jobs:
     name: checkov (terraform + kubernetes)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -203,7 +203,7 @@ jobs:
     name: platform policy assertions
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: no Spot anywhere
         # Verified constraint: Spot Pods cannot use GKE Autopilot extended run
@@ -292,7 +292,7 @@ jobs:
     # cannot answer. A base-image CVE published today affects a running fleet
     # that no pull request is touching.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v2

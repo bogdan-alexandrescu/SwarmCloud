@@ -363,20 +363,6 @@ variable "quota_broker_url" {
   }
 }
 
-variable "frontend_iap_members" {
-  description = <<-EOT
-    Who may pass IAP. The OUTER gate only -- swarm-api remains the tenant
-    boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
-    read to the caller's own tenant.
-
-    `domain:saga.xyz` is the intended shape: it matches what the API already
-    enforces, so there is no second list to drift. An enumeration of individual
-    users is the shape that rots.
-  EOT
-  type        = list(string)
-  default     = []
-}
-
 variable "groups_impersonate_user" {
   description = <<-EOT
     The Workspace user swarm-api acts AS when it reads Cloud Identity groups.
