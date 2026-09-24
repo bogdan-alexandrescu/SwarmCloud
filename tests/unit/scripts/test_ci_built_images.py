@@ -19,9 +19,11 @@ the build path, a fake `gcloud`) on PATH:
     job yet is not mistaken for "never built";
   * a FAILED build is reported as failed -- with the job's URL -- and is never
     rebuilt, not even by a release that is allowed to build;
-  * "never built" (no run, cancelled, skipped, or built for another
-    environment) fails a push release saying how to release the commit anyway,
-    and hands a dispatched release exit 3, on which build-images.sh builds;
+  * "never built" (no run, a run cancelled before it started, a cancelled or
+    skipped build job, or a build for another environment) fails a push
+    release saying how to release the commit anyway -- re-run CI's run, or
+    dispatch, which releases MAIN'S HEAD rather than this commit -- and hands a
+    dispatched release exit 3, on which build-images.sh builds;
   * an unreadable GitHub API is never read as "never built";
   * a record that names another commit or another environment is refused;
   * a pull request's run of the same commit is never reused;
@@ -441,9 +443,9 @@ def test_a_build_still_running_is_waited_for_and_then_reused(tmp_path):
 
 
 def test_a_run_still_queued_with_no_build_job_yet_is_not_never_built(tmp_path):
-    """On main the application run queues behind the previous commit's, and a
-    job with `needs:` is not listed until it starts. Neither is "never built":
-    reading them that way would fail every push release made in a busy hour."""
+    """A run waits for a runner before it starts, and a job with `needs:` is
+    not listed until it starts. Neither is "never built": reading them that
+    way would fail every push release made in a busy hour."""
     # Queued for three looks; the build job is not listed for the first two.
     world = {"runs": [ci_run(102, run_pending=3, pending_status="queued", job_appears_after=2)]}
     proc, out, _ = lookup(tmp_path, world, if_absent="fail")
@@ -466,11 +468,26 @@ def test_a_failed_build_is_reported_and_never_rebuilt(tmp_path, if_absent):
     assert f"/actions/runs/103/job/" in summary, f"the last line does not link the failed job: {summary!r}"
 
 
+def cancelled_before_it_started(run_id: int) -> dict:
+    """A run cancelled while it was still PENDING in its concurrency group, as
+    GitHub actually reports one: completed, cancelled, and NO jobs at all.
+    Measured on release run 36035365877 (2026-09-24): created 17:35:26,
+    cancelled 17:41:28 -- two seconds after 36036058352 queued in the same
+    group -- with `total_count: 0` jobs. GitHub keeps one pending run per group
+    and cancels the older whatever `cancel-in-progress` says, which is how a
+    push that starts no release (docs, tests, README) used to strand the
+    release of the commit before it."""
+    return ci_run(run_id, job_conclusion="cancelled", conclusion="cancelled", jobs=[])
+
+
 NEVER_BUILT = {
     # No application.yml run for the commit at all (CI_BUILD_APPEAR is 1s here).
     "no-run": lambda: {"runs": []},
-    # A newer push replaced the run while it was queued.
+    # Its build job was cancelled part-way -- by hand: on main a newer push
+    # neither cancels nor replaces the run (application.yml's concurrency).
     "cancelled": lambda: {"runs": [ci_run(104, job_conclusion="cancelled")]},
+    # The run was cancelled before any job started: no jobs listed at all.
+    "cancelled-before-it-started": lambda: {"runs": [cancelled_before_it_started(113)]},
     # The checks the build needs failed first.
     "skipped": lambda: {"runs": [ci_run(105, job_conclusion="skipped")]},
     # Built -- for dev. A prod release cannot use a dev swarm-ui.
@@ -491,6 +508,15 @@ def test_never_built_fails_a_push_release_and_hands_a_dispatched_one_the_build(t
     assert "never built" in summary and "dispatch" in summary, (
         f"a push release that cannot reuse must say why and how to release the commit anyway: {summary!r}"
     )
+    # "Dispatch release.yml for it" was the whole advice, and it was wrong for
+    # any commit that is not main's head: the deployer trusts refs/heads/main
+    # alone (terraform/bootstrap, github_allowed_refs), so a dispatch releases
+    # whatever main points at NOW. The advice must say so, and must name the
+    # remedy that releases THIS commit: re-run CI's run, then this release.
+    assert "re-run" in summary, f"the advice never says to re-run CI's run and then this release: {summary!r}"
+    assert "main's head" in summary, (
+        f"the advice says to dispatch without saying a dispatch releases main's head, not this commit: {summary!r}"
+    )
     assert not [e for e in events if e["event"] == "download"], "it downloaded a record it then did not use"
 
     proc, out, _ = lookup(tmp_path / "dispatch", NEVER_BUILT[case](), environment=environment, if_absent="build")
@@ -499,6 +525,25 @@ def test_never_built_fails_a_push_release_and_hands_a_dispatched_one_the_build(t
         + proc.stderr[-2000:]
     )
     assert not out.exists()
+
+
+def test_a_run_cancelled_before_it_started_is_named_as_such_with_its_url(tmp_path):
+    """The run GitHub cancels while it is still pending lists no jobs at all.
+    Reported as "finished without a job named 'build images'", it reads like a
+    renamed job -- the one thing test_the_script_looks_for_what_application_yml_
+    actually_builds_and_uploads exists to rule out -- and a reader goes looking
+    in the wrong file. It must say the run was cancelled before it started, and
+    link the run, because re-running that run is the remedy."""
+    proc, out, events = lookup(tmp_path, {"runs": [cancelled_before_it_started(114)]}, if_absent="fail")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    summary = _last_line(proc)
+    assert "cancelled before" in summary, f"the reason does not say the run never started: {summary!r}"
+    assert f"https://github.com/{OWNER_REPO}/actions/runs/114" in summary, (
+        f"the reason does not link the run to re-run: {summary!r}"
+    )
+    looked = [e for e in events if e["event"] == "jobs" and e["run"] == 114]
+    assert looked, "the run's jobs were never read, so 'no jobs' was not observed but assumed"
 
 
 def test_a_record_that_names_another_commit_is_refused_even_when_building_is_allowed(tmp_path):

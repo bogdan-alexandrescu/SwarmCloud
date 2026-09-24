@@ -20,7 +20,8 @@ that decides "reuse only" versus "reuse or build" evaluated for each event:
   * it promotes the manifest that step wrote, through push-images.sh
     --manifest, with the scan on and after trivy is installed;
   * application.yml builds every commit the release would ship, with no tag of
-    its own, and a run on main is not cancelled by the next push.
+    its own, and a run on main is neither cancelled nor -- while still queued
+    -- replaced by the next push.
 
 WHAT THIS CANNOT PROVE: that GitHub runs these workflows as read -- that the
 job gets the token scopes it asks for, that the API returns what the scripts
@@ -61,11 +62,17 @@ def _steps(workflow: dict, script: str):
                 yield job_id, job, index, step
 
 
+def _gh_format(template: str, *args) -> str:
+    """GitHub's format(): `{N}` is the Nth argument, `{{` and `}}` are literal
+    braces -- the same rules as str.format for the plain `{N}` it uses."""
+    return str(template).format(*(str(a) for a in args))
+
+
 def _evaluate(expression, **context: str):
     """A GitHub expression of the small family these files use -- context
-    lookups, string literals, ==, !=, &&, || and ! -- for one set of values.
-    Anything outside that family raises, and the test says so rather than
-    guessing."""
+    lookups, string literals, ==, !=, &&, ||, ! and format() -- for one set of
+    values. Anything outside that family raises, and the test says so rather
+    than guessing."""
     if isinstance(expression, bool):
         return expression
     body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(expression), re.S)
@@ -74,7 +81,18 @@ def _evaluate(expression, **context: str):
         text = re.sub(rf"(?<![\w.]){re.escape(name)}(?![\w.])", repr(value), text)
     text = text.replace("&&", " and ").replace("||", " or ")
     text = re.sub(r"!(?!=)", " not ", text)
-    return eval(text, {"__builtins__": {}}, {})  # noqa: S307 -- repository file, test only
+    return eval(text, {"__builtins__": {}}, {"format": _gh_format})  # noqa: S307 -- repository file, test only
+
+
+def _render(template, **context: str) -> str:
+    """A workflow string holding any number of `${{ }}` interpolations, as
+    GitHub would render it for one set of values."""
+    return re.sub(
+        r"\$\{\{(.*?)\}\}",
+        lambda m: str(_evaluate("${{" + m.group(1) + "}}", **context)),
+        str(template),
+        flags=re.S,
+    )
 
 
 def _reuse_mode(step: dict, event_name: str) -> str:
@@ -183,3 +201,39 @@ def test_a_build_on_main_is_not_cancelled_by_the_next_push():
     assert _evaluate(cancel, **{"github.ref": "refs/pull/1/merge"}) is True, (
         f"cancel-in-progress is {cancel!r}: pull requests no longer cancel superseded runs"
     )
+
+
+def test_a_queued_build_on_main_is_never_replaced_by_the_next_push():
+    """cancel-in-progress is not enough. GitHub keeps ONE pending run per
+    concurrency group and cancels the older pending run when a newer one
+    queues, whatever cancel-in-progress says. Measured on 2026-09-24: release
+    run 36035365877, pending in release-dev, was cancelled at 17:41:28 -- two
+    seconds after 36036058352 queued -- with zero jobs.
+
+    With one group for all of main, a push made while commit B's application
+    run was queued behind A's cancelled B's run. release.yml has a path filter
+    and application.yml has none, so when that push touched only docs, tests
+    or the README it started no release to replace B's: B's release, still
+    pending, then found its commit never built and went red, and B's change
+    did not reach dev until the next push that starts a release. So on main
+    each commit's run has a group of its own; on a pull request a newer push
+    still supersedes the older run."""
+    group = _workflow("application.yml")["concurrency"]["group"]
+
+    def rendered(ref: str, sha: str) -> str:
+        return _render(group, **{"github.ref": ref, "github.sha": sha})
+
+    main_a = rendered("refs/heads/main", "a" * 40)
+    main_b = rendered("refs/heads/main", "b" * 40)
+    assert main_a != main_b, (
+        f"every commit on main shares the concurrency group {main_a!r}: a queued run is cancelled "
+        "by the next push to main, and the release waiting for its build is stranded"
+    )
+    pr_a = rendered("refs/pull/7/merge", "a" * 40)
+    pr_b = rendered("refs/pull/7/merge", "b" * 40)
+    assert pr_a == pr_b, (
+        f"a pull request's pushes land in different groups ({pr_a!r}, {pr_b!r}): a superseded "
+        "run is no longer cancelled"
+    )
+    assert rendered("refs/pull/8/merge", "a" * 40) != pr_a, "two pull requests share one group"
+    assert main_a != pr_a, "a pull request can queue in main's group"
