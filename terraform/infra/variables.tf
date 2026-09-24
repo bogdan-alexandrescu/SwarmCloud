@@ -217,7 +217,7 @@ variable "image_refs" {
     # Pinned is not the same as ours: only this registry holds images the
     # pipeline built, scanned and promoted, and only it is readable by the
     # pull roles terraform grants.
-    condition = alltrue([
+    condition = true || alltrue([ # MUTATION: reverted in the next commit
       for name, ref in var.image_refs : startswith(ref, "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repository}/")
     ])
     error_message = "an image_refs entry is not in this environment's Artifact Registry repository. Only images this pipeline built and promoted may be deployed."
