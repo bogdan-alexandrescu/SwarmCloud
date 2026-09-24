@@ -78,37 +78,60 @@ nothing alerts on it.
 
 ## Failure behaviour
 
-| `on_step_failure` | Intended effect |
+| `on_step_failure` | Effect when a step is FAILED or DEAD_LETTERED |
 |---|---|
-| `fail_workflow` (default) | a failed step fails the workflow; steps not yet started do not start |
-| `continue` | independent branches keep going; only dependents of the failed step are blocked |
+| `fail_workflow` (default) | every step of the workflow that has not started (SUBMITTED, QUEUED, READY, PARKED) is CANCELLED, dependent on the failure or not |
+| `continue` | only the transitive dependents of the failed step are CANCELLED; independent branches keep starting |
 
-**`on_step_failure` IS NOT HONOURED TODAY, and the two rows behave identically.**
-This is stated rather than softened because a runbook that promises
-`fail_workflow` will stop a workflow is one somebody follows at 3am. The field is
-validated (`schemas.py:87`), stored (`service.py:388`) and echoed back
-(`codec.py:506`); nothing reads it. `grep -rn on_step_failure apps/` finds no
-reader outside the codec and the schema.
+The scheduler honours the field since 2026-09-24. Before that nothing read it,
+and both rows behaved like `continue`. The rules that are not obvious:
 
-What actually happens, under both settings:
+* **It happens on the scheduler's next drain, not at the instant of failure.**
+  That is a Pub/Sub push or the one-minute safety tick. A failure the drain
+  itself writes, when a step exhausts its attempts on a failed dispatch, stops
+  its siblings in that same drain.
+* **Every cancel names the failure.** The step's CANCELLED event carries
+  `workflow_id`, `on_step_failure` and `failed_steps` (step id, task id,
+  state), and its `last_error` names the failed step. The metric is
+  `swarm_scheduler_cancelled_total{reason="workflow_failed"}`, and the drain
+  summary counts the cancels in `cancelled` and the workflows in
+  `failed_workflows_swept`.
+* **CANCELLED is not a failure, under either setting.** A step stopped by hand
+  takes its own dependents (`last_error` "an upstream workflow step did not
+  succeed") and nothing else. Otherwise pressing stop on one agent would end
+  the whole run under the default.
+* **A step that has not started is found through the scheduler's existing
+  touch points,** not by scanning failures: the dependency sweep, the
+  credential sweep, the prewarm sweep, and admission, which every step passes
+  through before it can start. So nothing can START after the failure. A
+  workflow whose only remaining steps are PARKED on a reason the scheduler never
+  reads (MANUAL_PAUSE, BUDGET_EXHAUSTED, SCHEDULED_RETRY) is swept when one of
+  them is promoted. Until then it holds no capacity, and its derived state reads
+  PARKED rather than FAILED.
+* **Each cancel is re-checked inside a transaction**
+  (`SchedulerStore.cancel_if_not_started`). A step that a concurrent drain
+  leased after it was read is left to run.
 
-* the dependents of a failed step are CANCELLED by the scheduler's dependency
-  sweep, with `last_error` naming the failed parents
-  (`scheduler/loop.py:295,494`);
-* every independent branch keeps running to completion.
-
-That is the `continue` row. `fail_workflow` selects it too. Cancel explicitly if
-you need a workflow stopped:
+Cancel explicitly if you need a workflow stopped, running steps included:
 
 ```bash
 ./scripts/api.sh POST "/workflows/$WORKFLOW_ID/cancel"
 ```
 
-Steps already `RUNNING` are **not** killed when a sibling fails, under either
-setting. They hold leases and partial work; killing them wastes what
-checkpointing exists to preserve. This is also why the derived workflow state
-below reports RUNNING rather than FAILED while a sibling is still live: the
-workflow is not over and a container is still costing money.
+Steps already holding capacity (LEASED, DISPATCHED, STARTING, RUNNING) are
+**not** killed, flagged or written to when a sibling fails, under either
+setting. They hold leases and partial work. Killing them wastes what
+checkpointing exists to preserve, and releasing their capacity from the
+scheduler would decrement pools a live container still occupies (invariant 1).
+They run to completion. This is also why the derived workflow state below
+reports RUNNING rather than FAILED while a sibling is still live: the workflow
+is not over and a container is still costing money. Under `fail_workflow` it
+reads FAILED once they finish.
+
+A step that was running when its sibling failed, and that later returns to a
+not-started state (a quota park, or a reconciler reclaim back to READY), is
+PARKED or READY when the scheduler next meets it. Under `fail_workflow` it is
+then cancelled like any other step that has not started.
 
 ## Workflow state
 

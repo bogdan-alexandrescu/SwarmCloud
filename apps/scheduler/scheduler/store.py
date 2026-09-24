@@ -14,6 +14,8 @@ these exist today as `tasks-state-priority-created` and
 
 `parked_tasks` and `task_states` use equality filters only, which Firestore
 serves from single-field indexes by merge join, so they need no composite index.
+So do `workflow_steps_in_state` (tenant_id, workflow_id, state, all `==`) and the
+point read in `workflow_on_step_failure`.
 """
 
 from __future__ import annotations
@@ -39,11 +41,18 @@ from swarm_common.models import (
     Task,
     TaskEvent,
     Tenant,
+    Workflow,
     new_id,
     retries_exhausted,
     utcnow,
 )
-from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
+from swarm_common.states import (
+    PENDING_STATES,
+    EventType,
+    ParkReason,
+    TaskState,
+    assert_transition,
+)
 
 from .codec import pool_from_dict, quota_from_dict, task_from_dict, tenant_from_dict
 
@@ -57,7 +66,14 @@ LEASES = "leases"
 ATTEMPTS = "attempts"
 CONTROL = "control"
 EVENTS = "events"
+WORKFLOWS = "workflows"
 CONTROL_DOC = "dispatch"
+
+#: What a workflow document with no `on_step_failure` field means: the frozen
+#: dataclass default, read from the dataclass rather than restated. The API
+#: decodes a missing field the same way (`swarm_api.codec.workflow_from_dict`),
+#: and the scheduler must act on the value the tenant is shown.
+_ON_STEP_FAILURE_DEFAULT: str = Workflow.__dataclass_fields__["on_step_failure"].default
 
 
 class SchedulerStore:
@@ -158,6 +174,58 @@ class SchedulerStore:
                 states[task_id] = TaskState(snap.to_dict()["state"])
         return states
 
+    def workflow_on_step_failure(self, tenant_id: str, workflow_id: str) -> str | None:
+        """The workflow's `on_step_failure`, or None when there is no policy to act on.
+
+        None when the document is missing, and when it belongs to a different
+        tenant than the step asking. The API never writes either, so both mean a
+        corrupt or forged task. The caller falls back to the rule that needs no
+        policy (cancel the dependents of a failed parent) rather than guessing
+        `fail_workflow`, because a cancel cannot be undone.
+
+        A document that exists but has no field reads as the frozen default,
+        which is what the API shows the tenant for the same document.
+        """
+        snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
+        if not snap.exists:
+            log.warning(
+                "workflow %s named by a step of tenant %s has no document; "
+                "on_step_failure cannot be applied", workflow_id, tenant_id,
+            )
+            return None
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            log.warning(
+                "workflow %s belongs to tenant %r, not %r; its on_step_failure is "
+                "not applied to that tenant's step", workflow_id, data.get("tenant_id"),
+                tenant_id,
+            )
+            return None
+        value = data.get("on_step_failure")
+        if value is None:
+            return _ON_STEP_FAILURE_DEFAULT
+        return str(value).strip().lower()
+
+    def workflow_steps_in_state(
+        self, tenant_id: str, workflow_id: str, state: TaskState, limit: int
+    ) -> list[Task]:
+        """This tenant's steps of one workflow in one state.
+
+        Scoped by `tenant_id` as well as `workflow_id`, so nothing a workflow
+        sweep does can reach another tenant's task, even one whose document names
+        this workflow (invariant 9). Equality filters only, so no composite
+        index is needed. The query is bounded by the workflow step limit and
+        does not grow with history.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+            .where(filter=FieldFilter("state", "==", state.value))
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
     def get_tenant(self, tenant_id: str) -> Tenant | None:
         snap = self._db.collection(TENANTS).document(tenant_id).get()
         if not snap.exists:
@@ -257,8 +325,14 @@ class SchedulerStore:
         *,
         correlation_id: str | None = None,
         retry_delay_seconds: int = 30,
-    ) -> None:
+    ) -> bool:
         """Dispatch failed after the lease was taken: give the capacity back.
+
+        Returns True when this was the task's last attempt and it is now FAILED.
+        The drain needs that answer: a FAILED workflow step under
+        `on_step_failure: fail_workflow` must stop its siblings in the SAME
+        drain, and a verdict the drain read before this write would say the
+        workflow was healthy.
 
         Leaving the lease in place would hold a slot that no container will ever
         occupy, and the reconciler would not reclaim it until the dispatch
@@ -358,6 +432,7 @@ class SchedulerStore:
             lease_id=lease.lease_id,
             generation=lease.generation,
         )
+        return exhausted
 
     def cancel(self, task: Task, reason: str, detail: dict[str, Any] | None = None) -> None:
         """Terminate a task that can never become runnable.
@@ -380,6 +455,71 @@ class SchedulerStore:
             }
         )
         self.append_event(task, EventType.CANCELLED, {"reason": reason, **(detail or {})})
+
+    def cancel_if_not_started(
+        self, task: Task, reason: str, detail: dict[str, Any] | None = None
+    ) -> bool:
+        """Cancel a step only if it STILL has not started. Returns True if it did.
+
+        `cancel` above is a blind write. That is safe for a step the caller has
+        just read PARKED behind a failed parent, because nothing can lease a
+        PARKED task. It is not safe for the workflow sweep. The sweep cancels
+        READY steps, and a concurrent drain can lease one between the sweep's
+        query and its write. A blind CANCELLED over a LEASED task is wrong in
+        two ways. First, the lease stays counted in every pool it reserved
+        until the reconciler's `detect_orphan_leases` finds a terminal task
+        holding it. Second, the drain that took the lease goes on to dispatch
+        and `mark_dispatched` writes DISPATCHED over the CANCELLED, so a step of
+        a failed workflow starts after all, and its record goes backwards out
+        of a terminal state.
+
+        So the state is re-read INSIDE the transaction. The write happens only
+        while the step is still SUBMITTED, QUEUED, READY or PARKED, which are
+        exactly the states that hold no capacity (invariant 1).
+        `acquire_lease_in_transaction` reads the same document in its own
+        transaction and refuses anything that is not READY, so whichever commits
+        second sees the first. The two can never both win.
+        """
+        task_ref = self._db.collection(TASKS).document(task.id)
+        now = self._now()
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _cancel(txn: Any) -> TaskState | None:
+            snap = _snapshot(txn.get(task_ref))
+            if not snap.exists:
+                return None
+            stored = snap.to_dict() or {}
+            try:
+                current = TaskState(stored.get("state"))
+            except ValueError:
+                return None
+            if current not in PENDING_STATES:
+                return None
+            assert_transition(current, TaskState.CANCELLED)
+            txn.update(
+                task_ref,
+                {
+                    "state": TaskState.CANCELLED.value,
+                    "park_reason": None,
+                    "blocked_by": [],
+                    "next_eligible_at": None,
+                    "completed_at": now,
+                    "last_error": reason[:1000],
+                    "updated_at": now,
+                },
+            )
+            return current
+
+        prior = _cancel(transaction)
+        if prior is None:
+            return False
+        self.append_event(
+            task,
+            EventType.CANCELLED,
+            {"reason": reason, "from_state": prior.value, **(detail or {})},
+        )
+        return True
 
     def append_event(
         self,

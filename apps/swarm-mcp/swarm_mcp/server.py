@@ -377,8 +377,23 @@ TOOLS: list[dict[str, Any]] = [
                     "enum": ["fail_workflow", "continue"],
                     "default": "fail_workflow",
                     "description": (
-                        "`fail_workflow` cancels the dependents of a failed "
-                        "step; `continue` lets independent branches finish."
+                        "What one step's failure does to the rest of the "
+                        "workflow. Applied by the scheduler on its next drain, "
+                        "not at the instant of the failure.\n"
+                        "`fail_workflow` (default): as soon as any step is FAILED "
+                        "or DEAD_LETTERED, every step that has not started yet "
+                        "(queued, ready or parked) is cancelled, including "
+                        "independent branches that do not depend on the failed "
+                        "step. Each cancelled step's event names the step that "
+                        "failed. Steps already running are never killed: they "
+                        "run to completion, and the workflow reads FAILED once "
+                        "they finish.\n"
+                        "`continue`: only the dependents of the failed step "
+                        "(and their dependents) are cancelled. Independent "
+                        "branches keep starting and run to completion.\n"
+                        "Under both settings a step that is CANCELLED, for "
+                        "example stopped by hand, is not a failure. Only its "
+                        "own dependents are cancelled."
                     ),
                 },
                 "priority": {"type": "integer"},
