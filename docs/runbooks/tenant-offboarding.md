@@ -9,9 +9,12 @@ work takes to finish (up to two hours for a `claude-code` or `codex` task).
 
 **What it changes.** Resources named for one tenant id, in the swarm's own
 project resources and on the swarm's own Autopilot cluster. Nothing shared by
-other tenants is deleted; three shared things are *edited* (the artifact
-bucket's IAM policy, the image repository's IAM policy and `swarm-quota-broker`'s
-invoker list each lose this tenant's member).
+other tenants is deleted. Six shared things are *edited*, each losing only this
+tenant's entry: the project IAM policy, the artifact bucket's IAM policy, the
+`swarm-images` repository's IAM policy and `swarm-quota-broker`'s invoker list
+each lose the member `serviceAccount:swarm-agent-worker-<id>@...`; `swarm-api`'s
+`TENANT_GROUPS` loses the tenant's group; and other tenants' `accounts/*`
+documents lose `<id>` from their `lend_to` lists.
 
 **The decision this runbook exists for.** Owner decision, 2026-09-24: the
 reconciler does **not** garbage-collect GKE tenant namespaces, and it is not
@@ -26,22 +29,45 @@ in this repository will ever do it.
 
 > **The deny-list.** `saga-agents-staging` is a shared project. It holds
 > another team's live GKE cluster `agents-staging`, their VPC, their buckets
-> and twelve of their service accounts. Every name this runbook deletes starts
-> with `swarm` and ends in the tenant id. **If a command is about to touch a
-> name that does not, stop.** The list of protected names lives once, in
-> `SHARED_DENY_LIST` in `scripts/lib/common.sh`, and is not copied here
-> (a second copy is how the two drift). Print the live list with:
+> and twelve of their service accounts. The list of protected names lives
+> once, in `SHARED_DENY_LIST` in `scripts/lib/common.sh`, and is not copied
+> here (a second copy is how the two drift). Print the live list with:
 >
 > ```bash
 > bash -c 'source scripts/lib/common.sh && printf "%s\n" "${SHARED_DENY_LIST[@]}"'
 > ```
 >
-> The project id itself contains the string `agents-staging`, so "the command
-> mentions agents-staging" is not the test. The test for a kube context is the
-> segment after its last `_`: ours is `swarm-autopilot`, theirs is
-> `agents-staging` (`gke_saga-agents-staging_us-central1-a_agents-staging`,
-> which is the *current* context in a default kubeconfig on the reference
-> workstation).
+> **The rule you check each command against.** Every target this runbook
+> deletes or edits has one of the shapes in the table below, with this
+> tenant's id in the `<id>` position. **If a command is about to delete or edit
+> something that fits none of these shapes, or anything on the deny-list,
+> stop.**
+>
+> | What | The only shapes this runbook touches |
+> |---|---|
+> | Service account | `swarm-agent-worker-<id>@saga-agents-staging.iam.gserviceaccount.com` (deleted) |
+> | Secrets | `swarm-tenant-<id>-<p>`, `swarm-tenant-<id>-<p>-refresh`, `swarm-account-<id>--<label>`, `swarm-account-<id>--<label>-refresh`, each also labelled `tenant=<id>` |
+> | Cloud Run jobs | `swarm-job-<id>-<profile>` and `swarm-job-<id>-<profile>-<class>`, each also labelled `swarm-tenant=<id>` |
+> | GKE | namespace `swarm-tenant-<id>` (or the older `swarm-<id>`, row B2), labelled `swarm-tenant=<id>`, through context `swarm-dev` to cluster `swarm-autopilot` only |
+> | GCS | objects under `gs://swarm-artifacts-saga-agents-staging/tenants/<id>/`; never the bucket |
+> | Firestore | documents in the database named `swarm` (never `(default)`): `tenants/<id>`, `pools/tenant:<id>`, `pools/provider:<p>:tenant:<id>`, `accounts/<id>:<label>`, `quota/<p>:<id>`, `credential_publications/<one of the secret names above>`, and the `tasks` (with their `events`), `attempts`, `leases`, `workflows` and `account_auth` documents whose `tenant_id` or `owner_tenant` field is `<id>` |
+> | IAM policies (edited) | the project's, `swarm-artifacts-saga-agents-staging`'s, `swarm-images`' and `swarm-quota-broker`'s, and only by removing the member `serviceAccount:swarm-agent-worker-<id>@...` or its `deleted:serviceAccount:...?uid=<digits>` form |
+> | Other tenants' accounts (edited) | the `lend_to` field of `accounts/<other>:<label>`, and only by removing `<id>` from it |
+>
+> Two things the shapes alone do not settle, and how the runbook settles them:
+>
+> * **A name is a prefix match, and prefixes collide between tenants.**
+>   `swarm-tenant-eng-` is also the start of every secret tenant `eng-x` owns.
+>   So wherever a resource carries a tenant label, the commands select by the
+>   exact label (`tenant=<id>`, `swarm-tenant=<id>`, a `tenant_id` equality
+>   filter) and check the name only as a second guard. A command that selects by
+>   a name prefix alone is not one of this runbook's.
+> * **The project id itself contains the string `agents-staging`**, so "the
+>   command mentions agents-staging" is not the test. The test for a kube
+>   context is the segment after its last `_`: ours is `swarm-autopilot`,
+>   theirs is `agents-staging`
+>   (`gke_saga-agents-staging_us-central1-a_agents-staging`, which is the
+>   *current* context in a default kubeconfig on the reference workstation).
 
 Background: [multi-tenancy](../multi-tenancy.md#5-tenant-lifecycle) for what a
 tenant is, [the dispatch 403 note](../gke-dispatch-403.md) for why a missing
@@ -152,7 +178,15 @@ verification job (`swarm-verify`) resolves to, so offboarding it breaks the
 release's smoke step, and `smoke` is the mock-runner tenant the smoke tests use.
 Do not offboard either without the owner.
 
-**Was it in terraform?** `grep -n "^  ${TENANT} = {" terraform/environments/<env>/<env>.tfvars`.
+**Was it in terraform?** List the tenants terraform declares, and look for the
+id in the list (no placeholder to forget to edit, so an empty answer cannot be
+a typo):
+
+```bash
+sed -n '/^tenants = {/,/^}/p' terraform/environments/dev/dev.tfvars | grep -E '^  [a-z0-9-]+ = \{'
+# on 2026-09-24:  eng = {   smoke = {   u-sw-c90291 = {   u-bogdan = {
+```
+
 Terraform-declared tenants follow steps 0 to 10. A tenant made by
 `scripts/register-tenant.sh` or created self-service by the API on first sign-in
 is not in tfvars; for those, replace step 6 with
@@ -202,17 +236,66 @@ environment approval; for dev, that approval does not exist.
 tfvars files leave `name_prefix` at its default `swarm`, so prod would reuse
 every name here; check them before running this against a prod that exists.
 
+**Verify.** Before step 1, the PR description you will open in step 6 already
+says, in writing: the tenant id, and that it is neither `u-sw-c90291` nor
+`smoke` (or that the owner approved it); whether the id is in the tfvars
+listing above (terraform path) or not (the manual section); delete now or let
+expire; and whether anyone must also lose access. If any of the four is
+unanswered, do not start.
+
 ---
 
 ## 1. Point the tools at the right places
 
+Put the tenant id between the quotes on the third line, and keep the quotes:
+
 ```bash
+cd "$(git rev-parse --show-toplevel)"
 export ENVIRONMENT=dev PROJECT_ID=saga-agents-staging REGION=us-central1
-export TENANT=<id>
-export ARTIFACT_BUCKET="swarm-artifacts-${PROJECT_ID}"
-export GSA="swarm-agent-worker-${TENANT}@${PROJECT_ID}.iam.gserviceaccount.com"
-case "$TENANT" in ''|*[!a-z0-9-]*) echo "not a tenant id: '$TENANT'";; *) echo "tenant $TENANT";; esac
+TENANT='<id>'
+unset GSA OUT ARTIFACT_BUCKET
+case "$TENANT" in
+  ''|*[^[:lower:][:digit:]-]*|????????????*)
+    echo "STOP: '$TENANT' is not a tenant id. TENANT is now unset, so no later block will run."
+    unset TENANT ;;
+  *)
+    export TENANT
+    export ARTIFACT_BUCKET="swarm-artifacts-${PROJECT_ID}"
+    export GSA="swarm-agent-worker-${TENANT}@${PROJECT_ID}.iam.gserviceaccount.com"
+    export OUT="$PWD/build/offboard-${TENANT}"
+    echo "tenant ${TENANT}" ;;
+esac
 ```
+
+**The check unsets instead of warning.** A check that only prints leaves the
+next command free to run with an empty `TENANT`, and `scripts/purge-data.sh`
+given `--tenant ""` has no tenant filter at all: it would delete every
+tenant's records, every tenant's provider keys (measured 2026-09-24: six
+secrets across `eng` and `u-bogdan` carry `component=tenant-credential`) and
+everything under `tenants/` in the bucket. So a failed check here removes
+`TENANT`, `GSA`, `OUT` and `ARTIFACT_BUCKET`, and every later block that
+deletes or writes refuses to start without them. The rule is the one
+`terraform/modules/tenancy/variables.tf` enforces: lowercase letters, digits and
+`-`, at most 11 characters. The unedited `'<id>'` fails it. The pattern is
+spelled `[^[:lower:][:digit:]-]` on purpose: `[!...]` is a history expansion in
+an interactive zsh, so the whole line fails with `event not found`, and in
+macOS's bash 3.2 `[a-z]` also matches `E` (both measured 2026-09-24).
+
+**Why every destructive block below is one command.** Measured 2026-09-24 in
+bash 3.2.57 and zsh, pasting into an interactive shell with `TENANT` unset: a
+guard on a line of its own, `: "${TENANT:?}"`, prints its error, **and the next
+pasted line runs anyway**. A guard stops only the command it is part of. So
+every block that deletes or writes is a single command: a `( ... )` subshell
+whose first line is the guard, a `bash -s -- "${TENANT:?...}"` script, or one
+command with the guard inside its own arguments. Paste each block whole. The
+refusal reads `TENANT: run step 1 in this shell`, and it is the runbook
+working.
+
+**A new terminal has none of this.** The runbook spans a drain of up to two
+hours and a merge and release. If you come back in a new shell or tab, run all
+of step 1 again (this block, the `KUBECONFIG` export, and the `KUBECTL` and `k`
+lines) before anything else. Setting `TENANT` by hand is not the same thing:
+`GSA` and `OUT` stay unset, and the blocks that use them refuse.
 
 The blocks below that talk to Firestore source `scripts/lib/common.sh`, which
 sources `.env` first **and lets it win** over these exports. If you keep a
@@ -252,13 +335,15 @@ KUBECTL="$(bash -c 'source scripts/lib/common.sh && kubectl_bin')"
 k() { "$KUBECTL" --context "swarm-${ENVIRONMENT}" "$@"; }
 ```
 
-Now prove the context points at our cluster:
+**Verify.** Every variable the later guards check, and the context:
 
 ```bash
+echo "TENANT=${TENANT:-UNSET} GSA=${GSA:-UNSET} OUT=${OUT:-UNSET} KUBECTL=${KUBECTL:-UNSET} KUBECONFIG=${KUBECONFIG:-UNSET}"
 "$KUBECTL" config view -o jsonpath="{.contexts[?(@.name==\"swarm-${ENVIRONMENT}\")].context.cluster}"; echo
 ```
 
-Expect exactly `gke_saga-agents-staging_us-central1_swarm-autopilot`. The segment
+Expect no `UNSET` on the first line, and exactly
+`gke_saga-agents-staging_us-central1_swarm-autopilot` on the second. The segment
 after the last `_` must be `swarm-autopilot`. Anything else, including an empty
 line: stop, and run `make kubectl` again.
 
@@ -275,30 +360,35 @@ Saved under `build/` (git-ignored) so the offboarding has a record, and so step
 10 has something to compare against.
 
 ```bash
-OUT="build/offboard-${TENANT}"; mkdir -p "$OUT"
+( : "${TENANT:?run step 1 in this shell}" "${GSA:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
+  mkdir -p "$OUT"
 
-gcloud iam service-accounts describe "$GSA" --project "$PROJECT_ID" --format=json > "$OUT/gsa.json"
-jq -r '.uniqueId' "$OUT/gsa.json"            # keep this; undelete takes it, not the email
-gcloud iam service-accounts get-iam-policy "$GSA" --project "$PROJECT_ID" --format=json > "$OUT/gsa-policy.json"
+  gcloud iam service-accounts describe "$GSA" --project "$PROJECT_ID" --format=json > "$OUT/gsa.json"
+  jq -r '.uniqueId' "$OUT/gsa.json"            # keep this; undelete takes it, not the email
+  gcloud iam service-accounts get-iam-policy "$GSA" --project "$PROJECT_ID" --format=json > "$OUT/gsa-policy.json"
 
-gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
-  --filter="bindings.members:swarm-agent-worker-${TENANT}@" \
-  --format='table(bindings.role,bindings.condition.title)' > "$OUT/project-iam.txt"
-gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" --format=json \
-  | jq --arg m "serviceAccount:${GSA}" '[.bindings[]? | select(.members | index($m)) | {role, condition: .condition.title}]' \
-  > "$OUT/bucket-iam.json"
+  gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+    --filter="bindings.members:swarm-agent-worker-${TENANT}@" \
+    --format='table(bindings.role,bindings.condition.title)' > "$OUT/project-iam.txt"
+  gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" --format=json \
+    | jq --arg m "serviceAccount:${GSA}" '[.bindings[]? | select(.members | index($m)) | {role, condition: .condition.title}]' \
+    > "$OUT/bucket-iam.json"
 
-gcloud secrets list --project "$PROJECT_ID" --filter="labels.tenant=${TENANT}" \
-  --format='table(name.basename(),labels.component,labels.managed-by)' > "$OUT/secrets.txt"
-gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
-  --filter="metadata.labels.swarm-tenant=${TENANT}" \
-  --format='table(metadata.name,metadata.labels.managed-by)' > "$OUT/jobs.txt"
-gcloud storage du --summarize "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" > "$OUT/artifacts-size.txt"
+  gcloud secrets list --project "$PROJECT_ID" --filter="labels.tenant=${TENANT}" \
+    --format='table(name.basename(),labels.component,labels.managed-by)' > "$OUT/secrets.txt"
+  gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
+    --filter="metadata.labels.swarm-tenant=${TENANT}" \
+    --format='table(metadata.name,metadata.labels.managed-by)' > "$OUT/jobs.txt"
+  gcloud storage du --summarize "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" > "$OUT/artifacts-size.txt"
 
-k get namespace "swarm-tenant-${TENANT}" --show-labels > "$OUT/namespace.txt"
-k get all,serviceaccounts,roles,rolebindings,networkpolicies,resourcequotas,limitranges \
-  -n "swarm-tenant-${TENANT}" -o name >> "$OUT/namespace.txt"
+  k get namespace "swarm-tenant-${TENANT}" --show-labels > "$OUT/namespace.txt"
+  k get all,serviceaccounts,roles,rolebindings,networkpolicies,resourcequotas,limitranges \
+    -n "swarm-tenant-${TENANT}" -o name >> "$OUT/namespace.txt"
+)
 ```
+
+The block is a subshell without `set -e` on purpose: a tenant with no namespace
+or no artifacts makes one command fail, and the rest must still be recorded.
 
 The label filters are exact (`labels.tenant=eng` does not match `eng-x`), and
 the IAM filter ends in `@` for the same reason. A `du` that says no URLs matched
@@ -309,7 +399,7 @@ Firestore, read-only (reads nothing secret; `account_auth` holds a PKCE
 verifier, so only its count is printed):
 
 ```bash
-bash -s -- "$TENANT" > "$OUT/firestore.txt" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" > "${OUT:?run step 1 in this shell}/firestore.txt" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 t="$1"
@@ -334,6 +424,25 @@ cat "$OUT/firestore.txt"
 Read the `namespace` field of `tenants/<id>`. If it is anything other than
 `swarm-tenant-<id>`, that namespace is B2 and step 8 deletes it too.
 
+**Verify.** The record is complete and names the tenant you meant:
+
+```bash
+( : "${OUT:?run step 1 in this shell}"
+  ls -l "$OUT"
+  jq -r '"uniqueId " + (.uniqueId // "MISSING")' "$OUT/gsa.json"
+  grep -A3 '^== tenants/' "$OUT/firestore.txt"
+)
+```
+
+Expect nine files (`gsa.json`, `gsa-policy.json`, `project-iam.txt`,
+`bucket-iam.json`, `secrets.txt`, `jobs.txt`, `artifacts-size.txt`,
+`namespace.txt`, `firestore.txt`), a numeric `uniqueId`, and under
+`== tenants/<id>` a document (a `{` line and its first fields). A tenant
+created self-service by the API has no GSA, so for it `gsa.json` is empty and
+there is no `uniqueId` line; that is correct. A tenant document that reads
+`"absent"` means a wrong id, or a tenant already offboarded: stop and re-check
+step 0.
+
 ---
 
 ## 3. Stop new work
@@ -342,7 +451,7 @@ Disable the tenant. This is the admin route; it needs an admin identity at the
 front door (see `scripts/api.sh`'s header for `SWARM_IMPERSONATE_SA`):
 
 ```bash
-scripts/api.sh PUT "/admin/tenants/${TENANT}/limits" '{"enabled": false}'
+scripts/api.sh PUT "/admin/tenants/${TENANT:?run step 1 in this shell}/limits" '{"enabled": false}'
 ```
 
 If the API is not reachable from where you are, the same write straight to
@@ -353,7 +462,7 @@ behind a tenant record with no principal, which the API's collision check
 treats as matching anyone:
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 fs_get "tenants/$1" | jq -e '.fields' >/dev/null || die "tenants/$1 does not exist; check the id"
@@ -371,7 +480,7 @@ Then close the tenant's slot pool as well, so nothing is admitted even if the
 flag is flipped back by mistake:
 
 ```bash
-scripts/pause-swarm.sh --tenant "$TENANT" --keep-scheduler
+scripts/pause-swarm.sh --tenant "${TENANT:?run step 1 in this shell}" --keep-scheduler
 ```
 
 **`--keep-scheduler` is not optional.** Without it `pause-swarm.sh` also pauses
@@ -384,7 +493,7 @@ aside first.
 **Verify.**
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 fs_get "tenants/$1"      | jq "${FS_JQ} doc | {enabled}"
@@ -404,7 +513,7 @@ Nothing may hold capacity for the tenant before step 6. Capacity is held from
 capacity-holding states and the leases themselves:
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 t="$1"
@@ -440,10 +549,11 @@ Until it is zero, one of three things ends each running task:
   runner, checkpoints and finishes the task as `CANCELLED`; if the worker is
   already gone, the reconciler finishes it. The write skips the audit event the
   API would append, so say in the PR which tasks you cancelled. One task per
-  run, replacing `<task_id>`:
+  run, replacing `<task_id>` inside its quotes (left as it is, the script finds
+  no such task and refuses):
 
 ```bash
-bash -s -- "$TENANT" <task_id> <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" '<task_id>' <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 fs_get "tasks/$2" | jq -e --arg t "$1" "${FS_JQ} doc | .tenant_id == \$t" >/dev/null \
@@ -465,14 +575,20 @@ parked if you are keeping the history.
 it can see the execution is gone:
 
 ```bash
-gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
-  --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)' \
-| while read -r job; do
-    echo "== $job"
-    gcloud run jobs executions list --job "$job" --project "$PROJECT_ID" --region "$REGION" --limit 5
-  done
-k get jobs,pods -n "swarm-tenant-${TENANT}"
+( : "${TENANT:?run step 1 in this shell}"
+  gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
+    --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)' \
+  | while read -r job; do
+      echo "== $job"
+      gcloud run jobs executions list --job "$job" --project "$PROJECT_ID" --region "$REGION" --limit 5
+    done
+  k get jobs,pods -n "swarm-tenant-${TENANT}"
+)
 ```
+
+Read-only, and guarded anyway: with `TENANT` empty, `k get` asks about a
+namespace called `swarm-tenant-`, which does not exist, and answers
+`No resources found`, which is exactly the answer this check is looking for.
 
 Expect no execution still running, and `No resources found` on GKE. Then
 `pools/tenant:<id>` should read `active: 0` (step 3's verify block).
@@ -490,7 +606,7 @@ operator path is the broker's own operation: `AccountStore.remove` deletes the
 document and nothing else.
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 t="$1"
@@ -525,7 +641,7 @@ it matters is the id-reuse hazard in step 0: a lend names a tenant *id*, so it
 would apply to whoever registers under that id next. The operator equivalent:
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 t="$1"
@@ -547,6 +663,27 @@ SH
 Pending sign-ins in `account_auth` expire after 15 minutes and are cleared in
 step 9.
 
+**Verify.** Run this even if you skipped the step; it is what shows the skip was
+right:
+
+```bash
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
+set -euo pipefail
+source scripts/lib/common.sh
+t="$1"
+owned="$(fs_count_where accounts "$(jq -nc --arg v "$t" '{fieldFilter:{field:{fieldPath:"owner_tenant"},op:"EQUAL",value:{stringValue:$v}}}')")" \
+  || die "could not count owned accounts; that is a failed read, not zero"
+lent="$(fs_count_where accounts "$(jq -nc --arg v "$t" '{fieldFilter:{field:{fieldPath:"lend_to"},op:"ARRAY_CONTAINS",value:{stringValue:$v}}}')")" \
+  || die "could not count lent accounts; that is a failed read, not zero"
+printf 'accounts owned by %s: %s\naccounts lending to %s: %s\n' "$t" "$owned" "$t" "$lent"
+SH
+```
+
+Expect `0` on both lines. A non-zero owned count is an account that was
+skipped (still `assigned`) or added since; a non-zero lending count is a lender
+whose edit failed or who re-added the id. Neither may be left for step 6: once
+`tenants/<id>` is gone, a lend to `<id>` still names it.
+
 ---
 
 ## 6. Remove the tenant from terraform
@@ -566,7 +703,7 @@ make tf-plan                                    # scripts/plan.sh; read-only, pi
 TF="$(bash -c 'source scripts/lib/common.sh && terraform_bin')"
 "$TF" -chdir=terraform/infra show -json "$PWD/build/${ENVIRONMENT}.tfplan" > "build/${ENVIRONMENT}.plan.json"
 scripts/lib/plan-guard.sh --plan "build/${ENVIRONMENT}.plan.json" --mode apply
-jq -r --arg t "$TENANT" '
+jq -r --arg t "${TENANT:?run step 1 in this shell}" '
   .resource_changes[]
   | select(.change.actions != ["no-op"] and .change.actions != ["read"])
   | [(.change.actions | join("+")), .address,
@@ -585,6 +722,13 @@ Do not run `make tf-apply`; the release applies. The plan must show:
 
 Anything else means the branch or the state differs from what you think. Stop.
 
+The marker is a substring test, so it has two limits. It is guarded, because
+with `TENANT` empty `contains("")` is true of every address, nothing would be
+marked, and a plan full of unrelated changes would read as clean. And it cannot
+tell `eng` from `eng-x`: an address naming another tenant whose id starts with
+this one carries no marker. So read the key of every `delete` too; it must be
+this tenant's and no other's.
+
 The plan guard passes a tenant removal: every type deleted is either labelled
 `managed-by=swarm-terraform` (secrets, jobs), listed in
 `scripts/lib/unlabelable-types.json` (`google_service_account`,
@@ -596,15 +740,40 @@ plan, because the workload identity pool only mints tokens for `refs/heads/main`
 (see `terraform.yml`'s `plan-not-run` job).
 
 **Merge.** `release.yml` runs on the push: `terraform apply (dev)` plans again,
-runs the same plan guard, and applies. Read that job's log and check its plan is
-the one you read above.
+runs the same plan guard, and applies. Read that job's log and check that its
+deletes are the ones you read above.
+
+**Verify.** The apply ran, and removed what your plan said it would:
+
+```bash
+gh run list --workflow release.yml --branch main --limit 3
+gh run view <run id> --log | grep -E 'Plan: |Apply complete!|Error:'
+```
+
+Expect the `terraform apply (dev)` job to have succeeded, and
+`Apply complete! Resources: 0 added, <n> changed, <d> destroyed.` where `<d>` is
+the number of `delete` lines your plan printed. `<n>` may be larger than your
+plan's one-or-none: the release pins the images it has just built
+(`scripts/lib/image-refs.sh`), so every service and job whose digest moved is
+updated in place in the same apply. Those updates are the release's. A
+*destroyed* count that differs from yours is not, and means the state moved
+between your plan and the merge. An `Error:` line means a partial apply, with
+some of A1 to A11 gone and some not: plan again from this step and read what is
+left before going on. Step 7 then checks the result resource by resource.
 
 ---
 
 ## 7. Verify terraform's half
 
+Every check in this step is read-only and guarded anyway. With `TENANT` empty,
+a filter such as `bindings.members:swarm-agent-worker-@` matches no member at
+all, so each check would print the empty answer it is looking for without
+having looked at the tenant.
+
 ```bash
-gcloud iam service-accounts describe "$GSA" --project "$PROJECT_ID" 2>&1 | head -2
+( : "${GSA:?run step 1 in this shell}"
+  gcloud iam service-accounts describe "$GSA" --project "$PROJECT_ID" 2>&1 | head -2
+)
 ```
 
 Expect `NOT_FOUND`. A deleted service account can be restored for 30 days with
@@ -613,15 +782,17 @@ That brings back the account, not the grants terraform removed before deleting
 it; putting the tenant back in tfvars is what restores those.
 
 ```bash
-gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
-  --filter="bindings.members:swarm-agent-worker-${TENANT}@" \
-  --format='table(bindings.role,bindings.members,bindings.condition.title)'
-gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" --format=json \
-  | jq -r --arg t "swarm-agent-worker-${TENANT}@" '.bindings[]? | select(any(.members[]; contains($t))) | .role'
-gcloud artifacts repositories get-iam-policy swarm-images --project "$PROJECT_ID" --location "$REGION" --format=json \
-  | jq -r --arg t "swarm-agent-worker-${TENANT}@" '.bindings[]? | select(any(.members[]; contains($t))) | .role'
-gcloud run services get-iam-policy swarm-quota-broker --project "$PROJECT_ID" --region "$REGION" --format=json \
-  | jq -r --arg t "swarm-agent-worker-${TENANT}@" '.bindings[]? | select(any(.members[]; contains($t))) | .role'
+( : "${TENANT:?run step 1 in this shell}" "${ARTIFACT_BUCKET:?run step 1 in this shell}"
+  gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+    --filter="bindings.members:swarm-agent-worker-${TENANT}@" \
+    --format='table(bindings.role,bindings.members,bindings.condition.title)'
+  gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" --format=json \
+    | jq -r --arg t "swarm-agent-worker-${TENANT}@" '.bindings[]? | select(any(.members[]; contains($t))) | .role'
+  gcloud artifacts repositories get-iam-policy swarm-images --project "$PROJECT_ID" --location "$REGION" --format=json \
+    | jq -r --arg t "swarm-agent-worker-${TENANT}@" '.bindings[]? | select(any(.members[]; contains($t))) | .role'
+  gcloud run services get-iam-policy swarm-quota-broker --project "$PROJECT_ID" --region "$REGION" --format=json \
+    | jq -r --arg t "swarm-agent-worker-${TENANT}@" '.bindings[]? | select(any(.members[]; contains($t))) | .role'
+)
 ```
 
 Expect all four empty. A member printed as
@@ -639,17 +810,19 @@ gcloud projects remove-iam-policy-binding "$PROJECT_ID" --role <role as printed>
 ```
 
 ```bash
-gcloud secrets list --project "$PROJECT_ID" \
-  --filter="labels.tenant=${TENANT} AND labels.managed-by=swarm-terraform" --format='value(name)'
-gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
-  --filter="metadata.labels.swarm-tenant=${TENANT} AND metadata.labels.managed-by=swarm-terraform" \
-  --format='value(metadata.name)'
+( : "${TENANT:?run step 1 in this shell}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.tenant=${TENANT} AND labels.managed-by=swarm-terraform" --format='value(name)'
+  gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
+    --filter="metadata.labels.swarm-tenant=${TENANT} AND metadata.labels.managed-by=swarm-terraform" \
+    --format='value(metadata.name)'
+)
 ```
 
 Expect both empty.
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 fs_get "tenants/$1" | jq "${FS_JQ} if .fields then doc else \"tenants/$1 absent\" end"
@@ -680,7 +853,7 @@ Use the `k` function from step 1: the binary from `kubectl_bin`, the isolated
 kubeconfig, and the explicit context `swarm-dev`.
 
 ```bash
-NS="swarm-tenant-${TENANT}"
+NS="swarm-tenant-${TENANT:?run step 1 in this shell}"
 k get namespace "$NS" -o jsonpath='{.metadata.labels.managed-by} {.metadata.labels.swarm-tenant}{"\n"}'
 ```
 
@@ -700,18 +873,42 @@ Expect only the objects in inventory row B1, and no Job or Pod. A Job with a
 running pod means step 4 is not done; go back rather than delete an agent
 mid-run.
 
+The delete is one guarded block that repeats all three checks itself: the
+context resolves to `swarm-autopilot`, the namespace carries exactly
+`managed-by=swarm-terraform` and `swarm-tenant=<id>`, and no pod in it is still
+live. Reading them above is for you; the block does not trust that you did.
+
 ```bash
-k delete namespace "$NS" --wait=false
-k wait --for=delete "namespace/$NS" --timeout=10m
-k get namespace "$NS"
+( set -eu
+  : "${TENANT:?run step 1 in this shell}" "${KUBECTL:?run step 1 in this shell}" "${NS:?set NS first}"
+  cluster="$("$KUBECTL" config view -o jsonpath="{.contexts[?(@.name==\"swarm-${ENVIRONMENT}\")].context.cluster}")"
+  [ "${cluster##*_}" = swarm-autopilot ] || { echo "STOP: context swarm-${ENVIRONMENT} is '${cluster}', not swarm-autopilot"; exit 1; }
+  owner="$(k get namespace "$NS" -o jsonpath='{.metadata.labels.managed-by} {.metadata.labels.swarm-tenant}')"
+  [ "$owner" = "swarm-terraform ${TENANT}" ] || { echo "STOP: $NS is labelled '${owner}', not 'swarm-terraform ${TENANT}'"; exit 1; }
+  live="$(k get pods -n "$NS" --field-selector='status.phase!=Succeeded,status.phase!=Failed' -o name)"
+  [ -z "$live" ] || { echo "STOP: live pods in $NS, so step 4 is not done:"; echo "$live"; exit 1; }
+  k delete namespace "$NS" --wait=false
+  k wait --for=delete "namespace/$NS" --timeout=10m
+)
 ```
 
-Expect `Error from server (NotFound)` from the last command. One namespace, by
-name. Never delete by label selector or with `--all`: a selector is evaluated
-across the whole cluster.
+**Verify.**
 
-**B2: the tenant document named a different namespace** (step 2). Run the same
-three commands with `NS` set to that name, label check included.
+```bash
+k get namespace "${NS:?set NS first}"
+```
+
+Expect `Error from server (NotFound)`. One namespace, by name. Never delete by
+label selector or with `--all`: a selector is evaluated across the whole
+cluster.
+
+**B2: the tenant document named a different namespace** (step 2). Set `NS` to
+that name and run the label check, the listing, the delete block and the verify
+again. The delete block's label check applies to it unchanged: a namespace
+whose `swarm-tenant` label is not `<id>`, or whose `managed-by` is not
+`swarm-terraform`, is not deleted. If an older namespace carries a different
+platform marker (one of `MANAGED_VALUES` in the same `backends.py`), the block
+refuses it; stop and take it to the owner rather than loosening the check.
 
 The Workload Identity bindings that pointed pods in this namespace at the GSA
 (A6, and `register-tenant.sh`'s `swarm-worker` one) went with the GSA in step 6.
@@ -721,47 +918,63 @@ There is nothing to remove on the GCP side.
 
 ## 9. Remove what the platform created at runtime
 
+Every block in this step deletes something irreversible, and each is one
+guarded command (step 1 says why). Paste each one whole.
+
 **Jobs the dispatcher created (B3).** The reconciler would delete these after 7
-idle days; there is no reason to wait. The label is checked again per job, as
-the reconciler's own delete does, because the project is shared:
+idle days; there is no reason to wait. Both labels are checked again per job,
+exactly, as the reconciler checks ownership before its own delete: the project
+is shared, and a name prefix (`swarm-job-eng-`) also starts tenant `eng-x`'s
+jobs.
 
 ```bash
-gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
-  --filter="metadata.labels.swarm-tenant=${TENANT} AND metadata.labels.managed-by=swarm-scheduler" \
-  --format='value(metadata.name)' > "$OUT/dispatcher-jobs.txt"
-n=0
-while read -r job; do
-  [ -n "$job" ] || continue
-  owner="$(gcloud run jobs describe "$job" --project "$PROJECT_ID" --region "$REGION" --format='value(metadata.labels.managed-by)')"
-  [ "$owner" = "swarm-scheduler" ] || { echo "skipping $job: managed-by=$owner"; continue; }
-  gcloud run jobs delete "$job" --project "$PROJECT_ID" --region "$REGION" --quiet
-  n=$((n + 1))
-done < "$OUT/dispatcher-jobs.txt"
-echo "$n dispatcher job(s) deleted of $(grep -c . "$OUT/dispatcher-jobs.txt" || true) listed"
+( set -eu
+  : "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
+  gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
+    --filter="metadata.labels.swarm-tenant=${TENANT} AND metadata.labels.managed-by=swarm-scheduler" \
+    --format='value(metadata.name)' > "$OUT/dispatcher-jobs.txt"
+  n=0
+  while read -r job; do
+    [ -n "$job" ] || continue
+    labels="$(gcloud run jobs describe "$job" --project "$PROJECT_ID" --region "$REGION" --format=json \
+      | jq -r '(.metadata.labels["managed-by"] // "") + " " + (.metadata.labels["swarm-tenant"] // "")')"
+    [ "$labels" = "swarm-scheduler ${TENANT}" ] || { echo "skipping $job: labels are '${labels}'"; continue; }
+    gcloud run jobs delete "$job" --project "$PROJECT_ID" --region "$REGION" --quiet
+    n=$((n + 1))
+  done < "$OUT/dispatcher-jobs.txt"
+  echo "$n dispatcher job(s) deleted of $(grep -c . "$OUT/dispatcher-jobs.txt" || true) listed"
+)
 ```
 
-**Account-pool secrets (B4).** Irreversible. Listed by label, checked by name:
+**Account-pool secrets (B4).** Irreversible. Listed by the exact `tenant`
+label, then checked by name:
 
 ```bash
-gcloud secrets list --project "$PROJECT_ID" \
-  --filter="labels.component=swarm-account AND labels.tenant=${TENANT}" \
-  --format='value(name.basename())' > "$OUT/account-secrets.txt"
-cat "$OUT/account-secrets.txt"
-n=0
-while read -r s; do
-  case "$s" in "swarm-account-${TENANT}--"*) ;; *) echo "skipping $s"; continue ;; esac
-  gcloud secrets delete "$s" --project "$PROJECT_ID" --quiet
-  n=$((n + 1))
-done < "$OUT/account-secrets.txt"
-echo "$n account secret(s) deleted"
+( set -eu
+  : "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.component=swarm-account AND labels.tenant=${TENANT}" \
+    --format='value(name.basename())' > "$OUT/account-secrets.txt"
+  cat "$OUT/account-secrets.txt"
+  n=0
+  while read -r s; do
+    [ -n "$s" ] || continue
+    case "$s" in "swarm-account-${TENANT}--"*) ;; *) echo "skipping $s"; continue ;; esac
+    gcloud secrets delete "$s" --project "$PROJECT_ID" --quiet
+    n=$((n + 1))
+  done < "$OUT/account-secrets.txt"
+  echo "$n account secret(s) deleted of $(grep -c . "$OUT/account-secrets.txt" || true) listed"
+)
 ```
 
 **Records, leftover provider secrets and artifacts (B5 to B7).** One script,
 which exports the whole database to the bucket first, asks for a typed
-confirmation, and ignores `SWARM_ASSUME_YES`. Dry run first:
+confirmation, and ignores `SWARM_ASSUME_YES`. It does **not** refuse an empty
+`--tenant`: given `--tenant ""` it runs with no tenant filter, over every
+tenant. The guard inside the argument is what stops that here. Dry run first:
 
 ```bash
-scripts/purge-data.sh --tenant "$TENANT" \
+scripts/purge-data.sh --tenant "${TENANT:?run step 1 in this shell}" \
   --collections tasks,attempts,leases,workflows,quota --secrets --artifacts --dry-run
 ```
 
@@ -773,19 +986,48 @@ them expire. `--secrets` deletes every secret labelled
 before step 6, it would delete terraform's secrets and the next apply would
 recreate them empty.
 
-Then the real run (add `--allow-prod` for prod). Two things about its output
-that look wrong and are not: the counts it prints under "Counting" and repeats
-at the confirmation are **whole-collection** counts for every tenant, because
-the count runs before the tenant filter does; what it deletes is filtered by
-`tenant_id`. And it selects at most 1000 documents per collection per run, so
-**repeat the dry run until every collection says `nothing matched`.**
+**Read the scope before the counts.** Only these lines of the output say which
+tenant the run covers. Check every one against the id you set in step 1:
+
+| Where | Must read | If it reads this instead, the scope is every tenant |
+|---|---|---|
+| `== Scope ==` (dry run and real run) | `==> tenant       <id>` | no `tenant` line at all |
+| `== Artifacts ==` (dry run) | `would recursively delete gs://swarm-artifacts-saga-agents-staging/tenants/<id>/` | `.../tenants/` with nothing after it |
+| `== Tenant credentials ==` (dry run) | only `would delete secret swarm-tenant-<id>-...` lines, or `no matching secrets` | a secret named for any other tenant |
+| `== Confirmation ==` (real run) | `artifacts:   gs://swarm-artifacts-saga-agents-staging/tenants/<id>` | `.../tenants/*` |
+| `== Confirmation ==` (real run) | `secrets:     tenant provider keys for <id>` | `tenant provider keys`, with no `for <id>` |
+
+**If any line is missing or names another id, do not type `purge-dev`.** Type
+anything else, or press Enter: the script answers `confirmation did not match;
+aborted` and deletes nothing. The Firestore export it has already written is
+harmless.
+
+The numbers under `== Counting ==`, repeated as `counts:` at the confirmation,
+cannot tell you the scope either way. They are whole-collection counts for
+every tenant, taken before any filter, so they read the same for a correct run
+and for a run with no tenant. The filtered numbers are the dry run's
+`would delete <n> document(s) from <collection>` lines. Compare them with step
+10's count block for this tenant, which you can run now: each must be equal, or
+1000 when the tenant has more.
+
+Then the real run, the same command without `--dry-run` (add `--allow-prod`
+for prod):
+
+```bash
+scripts/purge-data.sh --tenant "${TENANT:?run step 1 in this shell}" \
+  --collections tasks,attempts,leases,workflows,quota --secrets --artifacts
+```
+
+It selects at most 1000 documents per collection per run, so **repeat the dry
+run until every collection says `nothing matched`**, and the real run while one
+does not.
 
 `purge-data.sh --artifacts` removes the *live* objects. The bucket is versioned,
 so every checkpoint it removed is still there as a noncurrent version, and the
 lifecycle rule keeps those for 30 days. If step 0 chose delete, remove them too:
 
 ```bash
-gcloud storage rm --recursive --all-versions "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/"
+gcloud storage rm --recursive --all-versions "gs://${ARTIFACT_BUCKET:?run step 1 in this shell}/tenants/${TENANT:?run step 1 in this shell}/"
 ```
 
 Soft delete still keeps them for 7 days (the storage module's
@@ -801,7 +1043,7 @@ tenant `eng-x`'s secrets), so it is matched against the exact names step 2
 recorded from their labels:
 
 ```bash
-bash -s -- "$TENANT" "$OUT/secrets.txt" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}/secrets.txt" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 t="$1"; recorded="$2"
@@ -828,42 +1070,94 @@ info "$n leftover document(s) deleted"
 SH
 ```
 
+**Verify.** Nothing this step deletes is left:
+
+```bash
+( : "${TENANT:?run step 1 in this shell}" "${ARTIFACT_BUCKET:?run step 1 in this shell}"
+  gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
+    --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)'
+  gcloud secrets list --project "$PROJECT_ID" --filter="labels.tenant=${TENANT}" --format='value(name)'
+  gcloud storage ls --all-versions "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" 2>&1 | head -3
+)
+scripts/purge-data.sh --tenant "${TENANT:?run step 1 in this shell}" \
+  --collections tasks,attempts,leases,workflows,quota --dry-run
+```
+
+Expect no job and no secret. For the bucket, `One or more URLs matched no
+objects` if step 0 chose delete (if it chose to let them expire, what is listed
+is what was kept). From the dry run, the `==> tenant` scope line naming `<id>`,
+and `nothing matched` for every collection you purged. Step 10 then checks the
+pools, the account pool, the pending sign-ins and the publication ledger.
+
 ---
 
 ## 10. Final verification
 
-Everything below should print nothing, or an explicit absence:
+Everything below should print nothing, or an explicit absence. It is all
+read-only and all guarded: with `TENANT` empty, most of these filters match
+nothing and would report a clean tenant without having looked for one.
 
 ```bash
-gcloud iam service-accounts list --project "$PROJECT_ID" --filter="email=${GSA}" --format='value(email)'
-gcloud secrets list --project "$PROJECT_ID" --filter="labels.tenant=${TENANT}" --format='value(name)'
-gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
-  --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)'
-gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
-  --filter="bindings.members:swarm-agent-worker-${TENANT}@" --format='value(bindings.role)'
-gcloud storage ls "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" 2>&1 | head -3   # only if step 0 chose delete
-k get namespace "swarm-tenant-${TENANT}" 2>&1                                    # NotFound
+( : "${TENANT:?run step 1 in this shell}" "${GSA:?run step 1 in this shell}" "${ARTIFACT_BUCKET:?run step 1 in this shell}"
+  gcloud iam service-accounts list --project "$PROJECT_ID" --filter="email=${GSA}" --format='value(email)'
+  gcloud secrets list --project "$PROJECT_ID" --filter="labels.tenant=${TENANT}" --format='value(name)'
+  gcloud run jobs list --project "$PROJECT_ID" --region "$REGION" \
+    --filter="metadata.labels.swarm-tenant=${TENANT}" --format='value(metadata.name)'
+  gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+    --filter="bindings.members:swarm-agent-worker-${TENANT}@" --format='value(bindings.role)'
+  gcloud storage ls --all-versions "gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/" 2>&1 | head -3   # only if step 0 chose delete
+  k get namespace "swarm-tenant-${TENANT}" 2>&1                                                   # NotFound
+)
 ```
 
+Then every Firestore record the tenant had, including the ones that live
+outside its own documents: other tenants' `lend_to` lists (step 5), pending
+sign-ins in `account_auth`, and the publication ledger in
+`credential_publications` (both step 9). The ledger is checked against the
+exact secret names step 2 recorded, for the prefix reason step 9 gives.
+
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}/secrets.txt" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
-t="$1"
-eq() { jq -nc --arg f "$1" --arg v "$2" '{fieldFilter:{field:{fieldPath:$f},op:"EQUAL",value:{stringValue:$v}}}'; }
+t="$1"; recorded="$2"
+eq()  { jq -nc --arg f "$1" --arg v "$2" '{fieldFilter:{field:{fieldPath:$f},op:"EQUAL",value:{stringValue:$v}}}'; }
+has() { jq -nc --arg f "$1" --arg v "$2" '{fieldFilter:{field:{fieldPath:$f},op:"ARRAY_CONTAINS",value:{stringValue:$v}}}'; }
+checks=0
+row() { printf '%-24s %s\n' "$1" "$2"; checks=$((checks + 1)); }
 fs_get "tenants/$t" | jq -r "if .fields then \"tenants/$t PRESENT\" else \"tenants/$t absent\" end"
-visited=0
 for c in tasks attempts leases workflows quota; do
   n="$(fs_count_where "$c" "$(eq tenant_id "$t")")" || die "could not count $c; that is a failed read, not zero"
-  printf '%-10s %s\n' "$c" "$n"; visited=$((visited + 1))
+  row "$c" "$n"
 done
-n="$(fs_count_where accounts "$(eq owner_tenant "$t")")" || die "could not count accounts"
-printf '%-10s %s\n(%s collections checked)\n' accounts "$n" "$((visited + 1))"
+n="$(fs_count_where accounts "$(eq owner_tenant "$t")")" || die "could not count owned accounts; a failed read, not zero"
+row "accounts owned" "$n"
+n="$(fs_count_where accounts "$(has lend_to "$t")")" || die "could not count lend_to; a failed read, not zero"
+row "accounts lending to it" "$n"
+n="$(fs_count_where account_auth "$(eq owner_tenant "$t")")" || die "could not count account_auth; a failed read, not zero"
+row "pending sign-ins" "$n"
+ids="$(fs_list_docs pools | jq -r --arg t "$t" 'select(.id == ("tenant:" + $t) or (.id | endswith(":tenant:" + $t))) | .id')" \
+  || die "could not list pools; a failed read, not none"
+row "pools" "$(printf '%s' "$ids" | grep -c . || true)"
+names=0; present=0
+while read -r secret _; do
+  case "$secret" in swarm-tenant-*|swarm-account-*) ;; *) continue ;; esac
+  case "$secret" in *-refresh) continue ;; esac
+  names=$((names + 1))
+  doc="$(fs_get "credential_publications/$secret")" || die "could not read credential_publications/$secret"
+  if jq -e '.fields' <<<"$doc" >/dev/null; then echo "  still present: credential_publications/$secret"; present=$((present + 1)); fi
+done < "$recorded"
+row "publication ledger" "$present (of $names recorded secret names)"
+printf '(%s checks)\n' "$checks"
 SH
 ```
 
-Expect `tenants/<id> absent`, zeros for every collection you purged, and
-`(6 collections checked)`.
+Expect `tenants/<id> absent`; `0` for every collection you purged; `0` for
+accounts owned, accounts lending to it, pending sign-ins and pools;
+`publication ledger 0 (of <k> recorded secret names)`, where `<k>` is the
+number of names in `"$OUT/secrets.txt"` that do not end in `-refresh`; and
+`(10 checks)`, which is there because a loop that ran over nothing prints
+nothing and looks like success.
 
 Last, the reconciler must have stopped looking for the namespace. Every pass
 logs each namespace it wanted and could not read (`_look_namespaced` in
@@ -872,7 +1166,7 @@ be no such line for this tenant:
 
 ```bash
 gcloud logging read \
-  "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"swarm-reconciler\" AND jsonPayload.message:\"namespace unreadable\" AND jsonPayload.namespace=\"swarm-tenant-${TENANT}\"" \
+  "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"swarm-reconciler\" AND jsonPayload.message:\"namespace unreadable\" AND jsonPayload.namespace=\"swarm-tenant-${TENANT:?run step 1 in this shell}\"" \
   --project "$PROJECT_ID" --freshness=15m --limit 5 \
   --format='value(timestamp,jsonPayload.namespace,jsonPayload.error)'
 ```
@@ -903,42 +1197,60 @@ the GSA is deleted, a binding that names it can only be removed by its
 `deleted:serviceAccount:...?uid=<digits>` form.
 
 ```bash
-# Project bindings (A2, A3): the roles "$OUT/project-iam.txt" lists. `--all`
-# removes every binding of that role for this member, conditioned or not, which
-# matters because an older register-tenant.sh attached a condition to the
-# Firestore role that a plain remove would not match.
-for role in "projects/${PROJECT_ID}/roles/swarmTenantWorkerFirestore" \
-            roles/logging.logWriter roles/monitoring.metricWriter roles/cloudtrace.agent; do
-  if gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
-       --member "serviceAccount:${GSA}" --role "$role" --all --quiet >/dev/null; then
-    echo "removed $role"
-  else
-    echo "NOT removed: $role (read the error above; 'not found' means it was never bound)"
-  fi
-done
+( : "${GSA:?run step 1 in this shell}" "${ARTIFACT_BUCKET:?run step 1 in this shell}"
+  # Project bindings (A2, A3): the roles "$OUT/project-iam.txt" lists. `--all`
+  # removes every binding of that role for this member, conditioned or not, which
+  # matters because an older register-tenant.sh attached a condition to the
+  # Firestore role that a plain remove would not match.
+  for role in "projects/${PROJECT_ID}/roles/swarmTenantWorkerFirestore" \
+              roles/logging.logWriter roles/monitoring.metricWriter roles/cloudtrace.agent; do
+    if gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
+         --member "serviceAccount:${GSA}" --role "$role" --all --quiet >/dev/null; then
+      echo "removed $role"
+    else
+      echo "NOT removed: $role (read the error above; 'not found' means it was never bound)"
+    fi
+  done
 
-# Bucket bindings (A4). register-tenant.sh binds the object role with the
-# condition titled tenant_prefix_only; --all matches it without restating it.
-for role in roles/storage.objectUser "projects/${PROJECT_ID}/roles/swarmBucketMetadataReader"; do
-  if gcloud storage buckets remove-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
-       --member "serviceAccount:${GSA}" --role "$role" --all >/dev/null; then
-    echo "removed $role"
-  else
-    echo "NOT removed: $role (read the error above)"
-  fi
-done
+  # Bucket bindings (A4). register-tenant.sh binds the object role with the
+  # condition titled tenant_prefix_only; --all matches it without restating it.
+  for role in roles/storage.objectUser "projects/${PROJECT_ID}/roles/swarmBucketMetadataReader"; do
+    if gcloud storage buckets remove-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+         --member "serviceAccount:${GSA}" --role "$role" --all >/dev/null; then
+      echo "removed $role"
+    else
+      echo "NOT removed: $role (read the error above)"
+    fi
+  done
+)
 ```
 
-Then re-run step 7's project and bucket checks: both must print nothing for
-the member.
+No `set -e` here on purpose: a role that was never bound fails its remove, and
+the others must still be tried.
 
-Secrets (A7) and jobs (A8): `gcloud secrets delete` for each
-`swarm-tenant-<id>-<p>` and `-refresh` in `"$OUT/secrets.txt"`, and
-`gcloud run jobs delete` for each job in `"$OUT/jobs.txt"`, checking the label
-as step 9 does. Then the account:
+**Verify.** Re-run step 7's project and bucket checks: both must print nothing
+for the member.
+
+**Secrets and jobs.** A tenant terraform never held has no A7 or A8. Its
+provider secrets came from `scripts/create-secrets.sh`
+(`component=tenant-credential`, `managed-by=swarm-secrets`, including the
+`-refresh` twins), which makes them B7, and step 9's `purge-data.sh --secrets`
+deletes them. Its jobs, if any, are the dispatcher's (B3), and step 9 deletes
+those too. What to check here is that the record agrees:
 
 ```bash
-gcloud iam service-accounts delete "$GSA" --project "$PROJECT_ID"
+( : "${OUT:?run step 1 in this shell}"
+  grep -c 'swarm-terraform' "$OUT/secrets.txt" "$OUT/jobs.txt"
+)
+```
+
+Expect `0` for both files. Any `swarm-terraform` line means terraform does hold
+this tenant, and this is the wrong section: go back to step 6.
+
+Then the account:
+
+```bash
+gcloud iam service-accounts delete "${GSA:?run step 1 in this shell}" --project "$PROJECT_ID"
 ```
 
 That takes the account's own IAM policy with it: any actAs grant and the
@@ -950,7 +1262,7 @@ Finally the documents terraform would have removed (A11). Only after step 4
 showed `active: 0`:
 
 ```bash
-bash -s -- "$TENANT" <<'SH'
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
 set -euo pipefail
 source scripts/lib/common.sh
 fs_delete "tenants/$1" && ok "tenants/$1 deleted"
@@ -959,6 +1271,11 @@ SH
 
 The pools go in step 9's leftovers block, which checks `active` before each
 delete.
+
+**Verify.** Step 7, in full: this section stands in for step 6, and step 7
+checks it the same way, down to `tenants/<id> absent`. The one difference is the
+pools: on this path they are deleted in step 9, so step 7 still listing
+`tenant:<id>` here is expected.
 
 ---
 
