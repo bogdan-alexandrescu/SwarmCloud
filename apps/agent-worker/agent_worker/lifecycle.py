@@ -726,10 +726,11 @@ class Worker:
             parked or failed a newer attempt the scheduler had already
             admitted (found by PR #41).
 
-        So the fence is checked first, before the checkpoint uploads anything.
-        Every write after that checks again inside its own transaction
-        (`ControlPlane._fenced_task`), because a fence can land between the
-        check and the write. A fenced worker stands down (`_stand_down`).
+        So the fence is checked first. `_checkpoint` checks it before it
+        uploads anything. Every write after that checks again inside its own
+        transaction (`ControlPlane._fenced_task`), because a fence can land
+        between the check and the write. A fenced worker stands down
+        (`_stand_down`).
 
         THE PARK IS UNCHANGED FOR A WORKER THAT STILL OWNS ITS TASK, and it
         has a gap this method does not close. Nothing in the platform promotes
@@ -745,7 +746,6 @@ class Worker:
         child.finish()
         self._child_ended()
         try:
-            self.control.ensure_owner(write="park on SIGTERM")
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
             self._export_metrics()
