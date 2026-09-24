@@ -663,6 +663,12 @@ DECLARATIONS = (
     (r"os\.environ\.get\(\s*\n?\s*\"TENANT_NAMESPACE_PREFIX\",\s*\"([^\"]*)\"", "env default"),
     (r"variable\s+\"namespace_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", "terraform default"),
     (r"^\s*tenant_namespace_prefix\s*=\s*\"([^\"]*)\"", "test/tfvars literal"),
+    # The `or` half of an env read. `Settings.from_env` writes the default TWICE
+    # -- once as os.environ.get(NAME, default) and once as the `or default` that
+    # catches a variable set to the empty string -- and only the first was being
+    # scanned. Two literals in one expression look like they must be edited
+    # together, right up until one of them is not.
+    (r"or\s+\"(swarm-tenant-[a-z0-9-]*)\"", "python empty-string fallback"),
 )
 
 declared = []
@@ -796,6 +802,530 @@ else
   done <<<"${NS_PARITY}"
   if [[ "${NS_SEEN}" -eq 0 ]]; then
     err "the tenant-namespace probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 7-11. THE REST OF THE MIRRORED VALUES, found by sweeping for the shape.
+# --------------------------------------------------------------------------
+# Sections 1-6 each grew out of an incident. This section is the sweep that was
+# run afterwards, looking for the same shape everywhere else in the repository:
+# a value, a name or a spec written down in more than one place with nothing
+# asserting the copies agree. Three of those cost a day each inside 48 hours --
+# the namespace prefix, the RBAC subject, the GKE Job spec -- and not one of
+# them was hard to compare. Nobody compared them.
+#
+# Ranked by what a drift COSTS, which is not the same as how many copies exist.
+# A drifted log message costs a confusing line; each of these costs an outage
+# that reads as something else entirely.
+#
+#   7.  THE WORKER KSA NAME. Five dispatcher literals, the renderer constant,
+#       two terraform variable defaults and an array in register-tenant.sh. Two
+#       different failures, neither of which names the cause: a pod naming a
+#       ServiceAccount that does NOT EXIST is admitted and then never
+#       scheduled -- `serviceaccount "..." not found` on the Job events, no pod
+#       at all, and the task sits RUNNING against a lease until its deadline,
+#       which reads as capacity. A pod naming one that exists but that terraform
+#       issued no Workload Identity binding for runs with NO Google identity and
+#       403s on Secret Manager, GCS and Firestore.
+#       tests/unit/worker/test_kubernetes_manifests.py already holds the
+#       renderer to the dispatcher. NOTHING held TERRAFORM to either of them,
+#       and terraform is the half that decides whether the identity works.
+#
+#   8.  THE WORKER GSA PREFIX. `swarm_common.identity._GSA_PREFIX` is the
+#       authority and is IMPORTED here rather than copied. The quota broker
+#       turns a worker OIDC token into a tenant id by matching this prefix, so a
+#       drift makes every account lease 403 for every tenant at once; the API
+#       derives the same name to grant a tenant secret access, so a drift there
+#       refuses every credential write with a message about a service account
+#       nobody recognises. Section 4 already compares register-tenant.sh against
+#       the frozen module; six other restatements had nothing.
+#
+#   9.  THE PUSH ENDPOINT PATHS. Two of the three have ALREADY been wrong in a
+#       deployed environment: `/pubsub/wake` against an app serving
+#       `/pubsub/push`, and `/refresh` against an app whose sweep is
+#       `/v1/quota/sweep`. A push subscription treats 404 as a retryable
+#       delivery failure and a Cloud Scheduler job logs it and moves on, so the
+#       symptom is NOTHING AT ALL -- no task is ever admitted, or provider state
+#       silently goes stale, while every health check stays green.
+#       tests/terraform/endpoint_paths.tftest.hcl pins the terraform defaults
+#       already -- against string literals written inside the test, which is a
+#       FOURTH copy and not the authority. Rename the route in Python and that
+#       test still passes. This reads the route decorators instead.
+#
+#   10. THE ARTIFACT REGISTRY REPOSITORY. Two terraform variables whose own
+#       descriptions say "Must match swarm_common.config.Settings
+#       .artifact_registry", and terraform/infra/locals.tf says outright that
+#       nothing enforced it. A drift is a 404 on the image on every dispatch,
+#       which reads as a broken build rather than as a changed variable.
+#
+#   11. THE WORKSPACE MOUNT PATH, and with it the VALUE half of the
+#       SWARM_ARTIFACTS_DIR defect. The assertion added with that fix compares
+#       the env key SETS and says so in its own docstring; it would still pass
+#       with a template pointing SWARM_ARTIFACTS_DIR at a path outside the
+#       mounted volume, which is the same `OSError: [Errno 30] Read-only file
+#       system` by a different route.
+#
+# Every check here REFUSES TO SKIP, for the reason sections 4 and 6 give: a scan
+# that finds fewer restatements than it did when it was written reports that
+# they moved, rather than passing because it can no longer see them.
+step "Mirrored-value parity"
+
+if ! MIRROR_PARITY="$(python3 - "${REPO_ROOT}" 2>&1 <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+# The frozen modules are the authority wherever one exists, so they are imported
+# and not read as text. Both are pure -- no client is built at import time -- so
+# this needs no credentials and nothing installed, which is what lets the whole
+# file run in the `shell` CI job.
+sys.path.insert(0, str(root / "apps" / "common"))
+from swarm_common import config as frozen_config
+from swarm_common import identity as frozen_identity
+
+REPORT = []
+
+
+def emit(status, name, detail):
+    REPORT.append("%s|%s|%s" % (status, name, detail))
+
+
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
+             ".mypy_cache", "__pycache__", ".pytest_cache", ".terraform", ".claude"}
+SKIP_SUFFIXES = {".md", ".lock", ".png", ".svg", ".ico", ".woff", ".woff2"}
+# Same reason as section 6: this file describes the patterns it looks for, so
+# scanning it finds itself.
+SELF = (root / "scripts" / "lib" / "check-contract-parity.sh").resolve()
+
+
+def sources():
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.resolve() == SELF:
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if path.suffix in SKIP_SUFFIXES:
+            continue
+        try:
+            yield str(path.relative_to(root)), path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+
+
+FILES = list(sources())
+TEXT = dict(FILES)
+
+
+def line_of(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def scan(patterns):
+    """Every match of every (pattern, kind) over every source file.
+
+    Anchored on IDENTIFIERS rather than on file paths, so a new component that
+    names its setting the same way is compared without anyone remembering that
+    this file exists. That is the property section 6 established and the reason
+    its namespace scan caught a test fixture nobody had thought about.
+    """
+    out = []
+    for rel, text in FILES:
+        for pattern, kind in patterns:
+            for match in re.finditer(pattern, text, re.M | re.S):
+                out.append((rel, line_of(text, match.start()), kind, match.group(1)))
+    return out
+
+
+def verdict(label, authority, sites, floor, cost, normalise=None):
+    if len(sites) < floor:
+        emit("MISSING", label,
+             "found %d restatement(s), expected at least %d; one moved or was "
+             "renamed and this scan stopped seeing it -- update the patterns "
+             "rather than trusting this pass" % (len(sites), floor))
+        return
+    norm = normalise or (lambda value: value)
+    wrong = [s for s in sites if norm(s[3]) != authority]
+    for rel, line, kind, value in wrong:
+        emit("DRIFT", label,
+             "%s:%d (%s) says %s, the authority says %s -- %s"
+             % (rel, line, kind, value, authority, cost))
+    if not wrong:
+        emit("OK", label,
+             "%d restatement(s) all agree on %s" % (len(sites), authority))
+
+
+def literals_near(rel, identifier, shape, window=200):
+    """Every `shape` literal within `window` characters AFTER `identifier`.
+
+    Anchored on the identifier rather than on a line, because the value is
+    sometimes on the NEXT line: `os.environ.get("WORKER_KSA_NAME", "").strip()`
+    and the `or "..."` that catches an empty variable are two lines apart, and a
+    line-at-a-time scan sees only the first -- which is exactly the half that
+    was already being checked elsewhere. Comments need no exclusion: every
+    comment in these files spells a name in backticks, and a backtick is not a
+    string literal. Deduplicated by (line, value) because the identifier occurs
+    several times around one declaration.
+    """
+    text = TEXT[rel]
+    seen = set()
+    for match in identifier.finditer(text):
+        chunk = text[match.end(): match.end() + window]
+        for lit in shape.finditer(chunk):
+            seen.add((line_of(text, match.end() + lit.start()), lit.group(1)))
+    return [(rel, line, "dispatcher literal", value) for line, value in sorted(seen)]
+
+
+def tf_variable_defaults(name_test):
+    """`default = "..."` for every terraform variable whose name passes a test.
+
+    The block is sliced to the next top-level `variable "` so a heredoc
+    description cannot contribute: `scheduler_push_path` describes the WRONG
+    value it used to hold, in prose, inside its own description, and a regex
+    over the whole file would read that instead of the default.
+    """
+    out = []
+    for rel, text in FILES:
+        if not rel.endswith(".tf"):
+            continue
+        for match in re.finditer(r"^variable\s+\"([a-z0-9_]+)\"\s*\{", text, re.M):
+            if not name_test(match.group(1)):
+                continue
+            rest = text[match.end():]
+            following = re.search(r"\nvariable\s+\"", rest)
+            block = rest[: following.start()] if following else rest
+            found = re.search(r"^\s*default\s*=\s*\"([^\"]*)\"", block, re.M)
+            if found:
+                out.append((rel, line_of(text, match.start()), "terraform default",
+                            found.group(1)))
+    return out
+
+
+# -- 7. the worker KSA name ------------------------------------------------
+# THE DISPATCHER IS THE AUTHORITY, for the reason section 6 gives about the
+# namespace: it is the component that actually creates the pod, so the name it
+# puts in `serviceAccountName` is the name that has to exist in the namespace
+# AND the name terraform bound to the tenant GSA. Its own literals are gathered
+# first and have to agree with each other before anything is compared to them.
+KSA_ID = re.compile(r"(?:worker_)?ksa_name")
+# Only names this platform owns, and only complete ones: the `[a-z0-9-]+` stops
+# at a brace, so the `"swarm-tenant-{tenant}"` template eight lines above
+# GkeTarget.ksa_name cannot be mistaken for a KSA.
+KSA_SHAPE = re.compile(r"\"(swarm-[a-z0-9-]+)\"")
+
+ksa_sites = (literals_near("apps/scheduler/scheduler/dispatch.py", KSA_ID, KSA_SHAPE)
+             + literals_near("apps/scheduler/scheduler/settings.py", KSA_ID, KSA_SHAPE))
+ksa_values = set(value for _, _, _, value in ksa_sites)
+
+if len(ksa_sites) < 3:
+    emit("MISSING", "GkeTarget.ksa_name",
+         "found %d KSA literal(s) in the scheduler, expected at least 3; the "
+         "declarations moved or changed shape" % len(ksa_sites))
+elif len(ksa_values) != 1:
+    emit("DRIFT", "GkeTarget.ksa_name",
+         "the scheduler itself spells the worker KSA %d ways: %s"
+         % (len(ksa_values), " ".join(sorted(ksa_values))))
+else:
+    KSA = sorted(ksa_values)[0]
+    emit("OK", "authority",
+         "the scheduler runs worker pods as %s (%d literal(s) agree)"
+         % (KSA, len(ksa_sites)))
+
+    KSA_COST = ("a pod naming a ServiceAccount that does not exist is never "
+                "scheduled at all, and one terraform did not bind runs with no "
+                "Google identity and 403s on every secret it reads")
+    verdict("worker KSA name", KSA,
+            scan(((r"^DEFAULT_KSA_NAME\s*=\s*\"([^\"]*)\"", "renderer constant"),
+                  (r"ksa_name\s*=\s*optional\(string,\s*\"([^\"]*)\"\)",
+                   "terraform default"))),
+            3, KSA_COST)
+
+    # register-tenant.sh binds a LIST, because a binding is per (namespace, KSA)
+    # pair and every tenant registered before the rename carries the older name
+    # too. So this is containment, not equality: what must hold is that the name
+    # the dispatcher asks for is among the ones the script binds.
+    KSAS = re.search(r"^KSAS=\(([^)]*)\)", TEXT["scripts/register-tenant.sh"], re.M)
+    if not KSAS:
+        emit("MISSING", "KSAS in scripts/register-tenant.sh",
+             "no `KSAS=(...)` array found; the restatement moved")
+    else:
+        bound = set(re.findall(r"\"([^\"]+)\"", KSAS.group(1)))
+        if KSA in bound:
+            emit("OK", "KSAS in scripts/register-tenant.sh",
+                 "binds %s, which is what the dispatcher asks for (also binds %s)"
+                 % (KSA, " ".join(sorted(bound - {KSA})) or "nothing else"))
+        else:
+            emit("DRIFT", "KSAS in scripts/register-tenant.sh",
+                 "binds %s and NOT %s, so a tenant registered by the script has "
+                 "no Workload Identity binding for the KSA the dispatcher names; "
+                 "the pod starts and authenticates as nothing at all"
+                 % (" ".join(sorted(bound)), KSA))
+
+# -- 8. the worker GSA prefix ----------------------------------------------
+# The frozen module is the authority and is imported. Compared WITHOUT the
+# trailing dash, because half the restatements carry it (they interpolate the
+# tenant straight after) and half do not (they pass it to a joiner) -- and that
+# difference is a spelling convention, not a disagreement about the identity.
+GSA = frozen_identity._GSA_PREFIX.rstrip("-")
+GSA_COST = ("the quota broker maps a worker OIDC token to a tenant by this "
+            "prefix and the API derives the same name to grant secret access, "
+            "so a drift is a 403 for every tenant at once")
+verdict("worker GSA prefix", GSA,
+        scan(((r"sa_account_id\s*=\s*\{[^}]*?=>\s*\"([a-z0-9-]*)\$\{",
+               "terraform tenant GSA id"),
+              (r"WORKER_SERVICE_ACCOUNT_TEMPLATE\s*=\s*\"([a-z0-9-]*)\{tenant\}",
+               "broker env template"),
+              (r"tenant_service_account_prefix\s*(?::\s*str\s*)?=\s*\"([^\"]*)\"",
+               "python default"),
+              (r"\"TENANT_SERVICE_ACCOUNT_PREFIX\",\s*\"([^\"]*)\"",
+               "python env default"),
+              (r"(?<![_A-Za-z])service_account_prefix\s*:\s*str\s*=\s*\"([^\"]*)\"",
+               "python default"),
+              (r"(?<![_A-Za-z])prefix\s*:\s*str\s*=\s*\"(swarm-[^\"]*)\"",
+               "python default"))),
+        5, GSA_COST, normalise=lambda value: value.rstrip("-"))
+
+# The broker accepts a SET of prefixes, so the check is containment again. It is
+# reported rather than asserted equal because the second entry is a deliberate
+# migration allowance, and narrowing an accepted identity is a separate change
+# from keeping the copies in step.
+BROKER = TEXT["apps/quota-broker/quota_broker/main.py"]
+accepted = re.search(r"^WORKER_SA_PREFIXES\s*=\s*\(([^)]*)\)", BROKER, re.M)
+if not accepted:
+    emit("MISSING", "WORKER_SA_PREFIXES",
+         "no `WORKER_SA_PREFIXES = (...)` in the quota broker; the restatement moved")
+else:
+    values = set(re.findall(r"\"([^\"]+)\"", accepted.group(1)))
+    if GSA in values:
+        emit("OK", "WORKER_SA_PREFIXES",
+             "accepts %s, which is what the frozen module derives (also accepts %s)"
+             % (GSA, " ".join(sorted(values - {GSA})) or "nothing else"))
+    else:
+        emit("DRIFT", "WORKER_SA_PREFIXES",
+             "accepts %s and NOT %s, so every worker token is refused and no "
+             "account can be leased" % (" ".join(sorted(values)), GSA))
+
+# -- 9. the push endpoint paths --------------------------------------------
+# THE AUTHORITY IS THE ROUTE DECORATOR, which is the whole point of doing this
+# here. endpoint_paths.tftest.hcl compares the terraform default to a string
+# written in the test; both copies can be right about each other while the
+# application serves something else, which is what happened twice.
+ROUTE = re.compile(r"@(?:app|router)\.(get|post)\(\s*\"([^\"]+)\"")
+
+
+def routes_of(package, method):
+    served = set()
+    for path in sorted((root / package).rglob("*.py")):
+        for match in ROUTE.finditer(path.read_text()):
+            if match.group(1) == method:
+                served.add(match.group(2))
+    return served
+
+
+TARGETS = (
+    ("scheduler_push_path", "apps/scheduler/scheduler", "post",
+     "every Pub/Sub wake and every safety tick 404s and no task is ever "
+     "admitted, while the control plane reports itself healthy"),
+    ("reconciler_path", "apps/reconciler/reconciler", "post",
+     "the reconciliation tick 404s, so nothing ever reclaims a stale lease or "
+     "a dead attempt"),
+    ("quota_broker_path", "apps/quota-broker/quota_broker", "post",
+     "the quota sweep 404s, so provider state goes stale and an EXHAUSTED "
+     "provider is never observed to have recovered"),
+)
+
+for variable, package, method, cost in TARGETS:
+    configured = tf_variable_defaults(lambda name, want=variable: name == want)
+    if not configured:
+        emit("MISSING", variable,
+             "no terraform variable named %s with a string default; the target "
+             "path moved" % variable)
+        continue
+    served = routes_of(package, method)
+    if not served:
+        emit("MISSING", variable,
+             "no %s route decorator found under %s; this comparison would check "
+             "nothing" % (method.upper(), package))
+        continue
+    for rel, line, _, value in configured:
+        if value in served:
+            emit("OK", variable, "%s -> %s %s, which %s serves"
+                 % (rel, method.upper(), value, package))
+        else:
+            emit("DRIFT", variable,
+                 "%s:%d sends %s %s at %s, which serves only %s -- %s"
+                 % (rel, line, method.upper(), value, package,
+                    " ".join(sorted(served)), cost))
+
+# The health check path, held against EVERY app in the repository rather than
+# against a list of service names kept here. The set of apps is derived: a file
+# containing `def create_app(` is a FastAPI application, and its package is the
+# directory it sits in. A new service therefore joins this check by existing.
+HEALTH = re.search(r"health_check_path\s*=\s*optional\(string,\s*\"([^\"]*)\"\)",
+                   TEXT["terraform/modules/cloud_run/variables.tf"])
+apps = sorted({str(Path(rel).parent) for rel, text in FILES
+               if rel.endswith(".py") and "def create_app(" in text})
+if not HEALTH:
+    emit("MISSING", "health_check_path",
+         "no `health_check_path = optional(string, ...)` in modules/cloud_run")
+elif len(apps) < 4:
+    emit("MISSING", "health_check_path",
+         "found %d app factories, expected at least 4; `def create_app(` moved "
+         "or was renamed" % len(apps))
+else:
+    probe = HEALTH.group(1)
+    silent = [package for package in apps if probe not in routes_of(package, "get")]
+    if silent:
+        emit("DRIFT", "health_check_path",
+             "terraform probes GET %s and %s serves no such route; the startup "
+             "probe fails and NO REVISION EVER BECOMES READY, which a deploy "
+             "reports as a timeout rather than as a wrong path"
+             % (probe, " ".join(silent)))
+    else:
+        emit("OK", "health_check_path",
+             "%d app(s) all serve GET %s" % (len(apps), probe))
+
+# -- 10. the artifact registry repository ----------------------------------
+# Matched on the variable NAME rather than on the two files that hold it today,
+# so a third module declaring the same repository is compared as well.
+REGISTRY_COST = ("every dispatch pulls from a registry path that does not "
+                 "exist and fails 404 on the image, which reads as a broken "
+                 "build rather than as a changed variable")
+verdict("artifact registry repository", frozen_config.Settings.artifact_registry,
+        tf_variable_defaults(
+            lambda name: name == "repository_id" or "artifact_registry" in name),
+        2, REGISTRY_COST)
+
+# -- 11. the workspace mount path, and the artifacts directory inside it ---
+# THE WORKER IS THE AUTHORITY: it is the process that writes the files, so the
+# path it defaults to is the path everything else has to mount. Read as text
+# rather than imported, because `agent_worker` is not installed in the `shell`
+# CI job and importing it to learn one string would make this check need a
+# worker environment.
+WORKER_CONFIG = TEXT["apps/agent-worker/agent_worker/config.py"]
+roots = set(re.findall(r"workspace_root\s*:\s*Path\s*=\s*Path\(\"([^\"]*)\"\)",
+                       WORKER_CONFIG))
+roots |= set(re.findall(r"\"WORKSPACE_ROOT\",\s*\"([^\"]*)\"", WORKER_CONFIG))
+if len(roots) != 1:
+    emit("MISSING" if not roots else "DRIFT", "WorkerConfig.workspace_root",
+         "the worker spells its own workspace root %d way(s): %s"
+         % (len(roots), " ".join(sorted(roots)) or "none found"))
+else:
+    MOUNT = sorted(roots)[0]
+    emit("OK", "authority", "the worker writes its workspace under %s" % MOUNT)
+
+    MOUNT_COST = ("the worker writes outside the mounted volume, which on GKE "
+                  "is a read-only root filesystem and OSError Errno 30, and on "
+                  "Cloud Run is a write that silently escapes the disk budget")
+    verdict("workspace mount path", MOUNT,
+            scan(((r"^WORKSPACE_MOUNT\s*=\s*\"([^\"]*)\"", "dispatcher constant"),
+                  (r"^\s*WORKSPACE_ROOT\s*=\s*\"([^\"]*)\"", "terraform env"),
+                  (r"workspace_mount_path\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"",
+                   "terraform default"))),
+            3, MOUNT_COST)
+
+    # THE VALUE HALF OF THE THIRD DEFECT. The test added with that fix compares
+    # the env key SETS across dispatch.py and the templates and says so in its
+    # own docstring; a template pointing SWARM_ARTIFACTS_DIR at a path outside
+    # the volume satisfies it and still dies on the runner first line.
+    ARTIFACTS = "%s/artifacts" % MOUNT
+    templates = sorted((root / "kubernetes" / "worker-templates").glob("*.yaml"))
+    if len(templates) < 3:
+        emit("MISSING", "SWARM_ARTIFACTS_DIR",
+             "found %d worker template(s), expected at least 3" % len(templates))
+    else:
+        bad = []
+        for template in templates:
+            whole = template.read_text()
+            # SCOPED TO THE `worker` CONTAINER, and that is the whole point of
+            # this check rather than an over-careful detail. worker-job-v2.yaml
+            # has an init container as well, and from the commit that fixed the
+            # Errno 30 until the one that added this check, SWARM_ARTIFACTS_DIR
+            # sat on the INIT container -- which installs a credential and never
+            # writes an artifact -- while the worker container had none. The
+            # existing assertion in
+            # tests/unit/worker/test_kubernetes_manifests.py read each template
+            # as one document, so it saw the name present and passed. A
+            # per-document scan cannot tell "set" from "set on the wrong
+            # container", and on v2 the difference is an eviction rather than a
+            # crash, because v2 leaves the root filesystem writable.
+            start = whole.find("\n        - name: worker\n")
+            if start < 0:
+                bad.append((template.name, ["no container named worker"]))
+                continue
+            end = whole.find("\n      volumes:", start)
+            text = whole[start:] if end < 0 else whole[start:end]
+            values = set(re.findall(
+                r"name:\s*SWARM_ARTIFACTS_DIR\s*\n\s*value:\s*(\S+)", text))
+            if values != {ARTIFACTS}:
+                bad.append((template.name, sorted(values) or ["unset"]))
+            # The template also tells the worker where its workspace is, and a
+            # third spelling there moves every file the agent writes.
+            declared = set(re.findall(
+                r"name:\s*WORKSPACE_ROOT\s*\n\s*value:\s*(\S+)", text))
+            if declared != {MOUNT}:
+                bad.append((template.name,
+                            ["WORKSPACE_ROOT " + (" ".join(sorted(declared)) or "unset")]))
+            # And the volume really is mounted where the worker expects it.
+            if ("mountPath: %s" % MOUNT) not in text:
+                bad.append((template.name, ["no volumeMount at %s" % MOUNT]))
+        for name, values in bad:
+            emit("DRIFT", "SWARM_ARTIFACTS_DIR",
+                 "kubernetes/worker-templates/%s has %s; it must be %s -- "
+                 "anything else is OSError Errno 30 on a read-only root, which "
+                 "is the defect this pair already produced"
+                 % (name, " ".join(values), ARTIFACTS))
+        if not bad:
+            emit("OK", "SWARM_ARTIFACTS_DIR",
+                 "%d template(s) write artifacts to %s, inside the mounted "
+                 "volume" % (len(templates), ARTIFACTS))
+    # The dispatcher must DERIVE it rather than restate it. This is case (a):
+    # one source, so there is nothing left to compare.
+    if not re.search(r"^WORKER_ARTIFACTS_DIR\s*=\s*f\"\{WORKSPACE_MOUNT\}/artifacts\"",
+                     TEXT["apps/scheduler/scheduler/dispatch.py"], re.M):
+        emit("DRIFT", "WORKER_ARTIFACTS_DIR",
+             "the dispatcher no longer DERIVES the artifacts directory from "
+             "WORKSPACE_MOUNT; a literal there is a fourth copy of a path that "
+             "has already cost this platform every browser task it accepted")
+    else:
+        emit("OK", "WORKER_ARTIFACTS_DIR",
+             "derived from WORKSPACE_MOUNT in the dispatcher, not restated")
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the mirrored-value parity probe failed to run:"
+  printf '%s\n' "${MIRROR_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted and printed, for the reason section 6 gives: a `while read` over an
+  # empty string reports nothing and reads exactly like a clean sweep.
+  MIRROR_SEEN=0
+  while IFS='|' read -r M_STATUS M_NAME M_DETAIL; do
+    [[ -n "${M_STATUS}" ]] || continue
+    MIRROR_SEEN=$(( MIRROR_SEEN + 1 ))
+    case "${M_STATUS}" in
+      OK)       ok "${M_NAME}: ${M_DETAIL}" ;;
+      ADVISORY) warn "${M_NAME}: ${M_DETAIL}" ;;
+      MISSING)
+        err "the mirrored-value scan lost sight of what it compares: ${M_DETAIL}"
+        err "A scan that passes because it stopped looking reports an agreement it never established."
+        FAILED=1
+        ;;
+      DRIFT)
+        err "${M_NAME} has DRIFTED: ${M_DETAIL}"
+        FAILED=1
+        ;;
+      *)
+        err "unexpected mirrored-value parity output: ${M_STATUS}|${M_NAME}|${M_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${MIRROR_PARITY}"
+  if [[ "${MIRROR_SEEN}" -eq 0 ]]; then
+    err "the mirrored-value probe printed no assertions at all; nothing was checked"
     FAILED=1
   fi
 fi
