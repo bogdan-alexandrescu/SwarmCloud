@@ -1353,10 +1353,11 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
         names = set(_re.findall(r"^\s*- name: ([A-Z][A-Z0-9_]*)\s*$", text, _re.M))
         assert names, f"{template.name}: no container env names found"
 
-        # A template may carry variables the scheduler does not set -- ones the
-        # image needs and the scheduler has no opinion about, like
-        # PLAYWRIGHT_BROWSERS_PATH. What it may NOT do is omit one the scheduler
-        # relies on the container having.
+        # A template may carry variables the scheduler does not set. What it may
+        # NOT do is omit one the scheduler relies on the container having. (A
+        # variable the browser IMAGE sets belongs in neither -- that is what
+        # test_no_worker_job_restates_a_variable_the_browser_image_sets holds.
+        # PLAYWRIGHT_BROWSERS_PATH, once this comment's example, was one.)
         missing = {
             key
             for key in from_python
