@@ -305,15 +305,16 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
-          # The smoke test calls the API with a Google ID token -- there is no
-          # shared platform token to fall back on -- so the run mints one for
-          # the API's audience alongside the usual access token for gcloud.
-          # vars.API_AUDIENCE must be set (the API's Cloud Run URL, or the
-          # audience configured in API_AUDIENCE on the service); if it is not,
-          # this step fails loudly rather than skipping the smoke test.
-          token_format: id_token
-          id_token_audience: ${{ vars.API_AUDIENCE }}
-          id_token_include_email: true
+          # NO ID TOKEN. This step used to mint one for vars.API_AUDIENCE so the
+          # smoke test could call the API from this runner. Release 36027980448
+          # (2026-09-24) failed right here -- "input required and not supplied:
+          # id_token_audience", the variable was never set -- and setting it
+          # would not have helped: swarm-api's ingress is
+          # internal-and-cloud-load-balancing, so a runner cannot reach its
+          # run.app address, and the IAP front door refuses ID tokens
+          # (scripts/lib/common.sh, api_credential). The suites now run INSIDE
+          # the VPC as the swarm-verify job, which gets its own token from the
+          # metadata server; this job only needs gcloud's access token.
 
       - uses: google-github-actions/setup-gcloud@v2
 
@@ -338,13 +339,13 @@ jobs:
         # scheduler's WORKER_IMAGE_REFS against the manifest, digest to digest.
         run: ./scripts/lib/deploy.sh --verify-only --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
 
-      - name: smoke test
+      - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole
         # path -- submit, admit, dispatch, run, release -- without depending on
-        # any tenant's credential.
-        env:
-          SWARM_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
-        run: ./scripts/smoke-test.sh --timeout 900
+        # any tenant's credential. verify-remote.sh executes scripts/smoke-test.sh
+        # in the swarm-verify Cloud Run job, which IS in the VPC, and exits with
+        # the job's exit code.
+        run: ./scripts/verify-remote.sh smoke-test
 
       - name: prove GKE dispatch with one browser task
         # docs/incidents/2026-09-24-gke-dispatch.md section 5: every browser
@@ -362,10 +363,22 @@ jobs:
         # verified: a smoke failure on the Cloud Run path is exactly when the
         # GKE path's own diagnosis is worth having, and the two share nothing
         # below the API.
+        #
+        # SWITCHED BY vars.PROVE_GKE_DISPATCH, and off until the owner turns it on.
+        # On 2026-09-24 browser admission was deliberately paused
+        # (pools/resource:browser hard_limit 0) because every GKE pod died before
+        # the worker lifecycle ran (docs/incidents, wf_ebb3ab2d65664707a559).
+        # With admission paused this proof cannot pass, and a step that is red on
+        # every release teaches everyone to ignore the release. Set the repository
+        # variable PROVE_GKE_DISPATCH=true in the same change that restores the
+        # browser limit. When it is off the step still runs and SAYS it skipped.
         if: always() && steps.verify.outcome == 'success'
-        env:
-          SWARM_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
-        run: ./scripts/prove-gke-dispatch.sh --timeout 900
+        run: |
+          if [ "${{ vars.PROVE_GKE_DISPATCH }}" != "true" ]; then
+            echo "::notice title=GKE proof skipped::vars.PROVE_GKE_DISPATCH is not 'true' -- browser admission is paused; nothing about GKE was proven by this release."
+            exit 0
+          fi
+          ./scripts/verify-remote.sh prove-gke-dispatch
 
       - name: status
         if: always()
