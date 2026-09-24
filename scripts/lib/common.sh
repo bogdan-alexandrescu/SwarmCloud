@@ -260,6 +260,36 @@ is_shared_resource() {
   return 1
 }
 
+# The deny-list in the exact form `destroy-guard.jq` takes as `--argjson deny`.
+#
+# WHY THIS IS A FUNCTION HERE RATHER THAN FIVE LINES AT EACH CALL SITE. It WAS
+# five lines at each call site -- `scripts/destroy.sh` and
+# `scripts/lib/plan-guard.sh` each carried the same pipeline with the same
+# comment copy-pasted above it -- and the list a guard judges by is not a place
+# for two implementations. CLAUDE.md says a script must source this file "rather
+# than re-deriving project, region, paths, the deny-list, the redaction filter,
+# the unlabelable-type list, or the plan guard"; the deny-list itself obeyed
+# that, its TRANSFORMATION did not. The two consumers are `make destroy` and the
+# plan guard in CI, so a divergence means CI passes a plan that `make destroy`
+# then refuses, or -- the direction that costs something -- CI passes a plan that
+# touches another team's resource because its copy of the list lost an entry the
+# other copy kept.
+#
+# Two transformations, and both are load-bearing:
+#
+#   * the bare `default` is REMOVED. That string appears inside too many
+#     unrelated resource ids to compare blindly against every token, so
+#     `destroy-guard.jq` matches the shared VPC's default network on the
+#     `network`/`subnetwork` FIELD instead (`default_network_hit`). Leaving
+#     `default` in the token list would flag ordinary resources of ours.
+#   * `(default)` is ADDED. That is Firestore's default database -- the one
+#     CONTRACT.md says must stay free for the other teams in this shared
+#     project -- and it is a name no token-splitting would produce.
+guard_deny_json() {
+  printf '%s\n' "${SHARED_DENY_LIST[@]}" \
+    | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]'
+}
+
 # ---------------------------------------------------------------------------
 # Is a shared resource still there?
 # ---------------------------------------------------------------------------

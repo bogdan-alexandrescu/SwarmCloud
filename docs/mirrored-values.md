@@ -104,6 +104,54 @@ pressure, not as a missing variable.
 
 Both the test and section 11 are now scoped to the `worker` container.
 
+### The highest-blast-radius one: the shared deny-list, in the test that proves it
+
+`make destroy` aborting on anything that belongs to another team is the control
+standing between this repository and deleting a live GKE cluster it does not own.
+CLAUDE.md states the rule plainly: "The deny-list lives once, in
+`scripts/lib/common.sh`." Every consumer obeyed that — `destroy.sh`,
+`purge-data.sh`, `plan-guard.sh`, `kubernetes/apply.sh` all read
+`SHARED_DENY_LIST`.
+
+The test proving the guard works did not. `tests/integration/test_destroy_guard.py`
+carried its own hand-written list of "the real neighbours in the shared project"
+and passed it to the guard as `--argjson deny`. It had **fourteen entries where
+`SHARED_DENY_LIST` has twenty-one**. Absent from it entirely: the three shared
+buckets — `saga-agents-crawled-media-staging`, `saga-agents-files-staging`,
+`saga-agents-terraform-state-staging` — and the other team's Compute Engine
+default service account. A plan deleting any of those had never been shown to be
+refused.
+
+The shape was wrong too, and that is the more instructive half. The hand-written
+list held service accounts by **short name**; `common.sh` holds them as **full
+emails**, and that is what both callers pass. So the one matching behaviour
+production depends on was the one the test did not exercise. Rebuilding an email
+from a short name, which is what the test did, cannot even produce
+`209012342332-compute@developer.gserviceaccount.com` — it is not on this
+project's service-account domain.
+
+The same file restated the unlabelable-type list as **seven of the forty** types
+in `scripts/lib/unlabelable-types.json`, so the label-exemption logic was proved
+over a sixth of its input. That file's own header records what happened the last
+time this list was restated: an awk copy in the workflows exempted only
+`google_project_iam*`, and a plan deleting a `google_storage_bucket_iam_member`
+was blocked from production by a rule nobody had decided.
+
+Both lists are now derived. The parametrised case runs over **every** entry
+rather than a chosen four, feeding each entry exactly as written, and a separate
+test asserts the derivation itself so a `split()` that stopped finding the array
+fails on the count instead of going green over nothing.
+
+And the transformation the guard's input needs — the bare `default` out, because
+that string appears inside too many unrelated resource ids, and Firestore's
+`(default)` in — was written out twice, in `scripts/destroy.sh` and
+`scripts/lib/plan-guard.sh`, with the same comment copy-pasted above each. The
+deny-list obeyed the rule; its transformation did not. It is now
+`guard_deny_json` in `common.sh`, called by both, and the test asserts both still
+call it: a divergence there means CI passes a plan that `make destroy` refuses,
+or CI passes a plan that touches another team's resource because its copy lost an
+entry the other kept.
+
 ## Covered elsewhere, deliberately not moved here
 
 These are compared, just not by `check-contract-parity.sh`. Each is listed so
@@ -117,6 +165,7 @@ that "not in the parity checker" is never read as "not covered".
 | the tenant KSA the renderer creates | `render.py` vs `GkeJobDispatcher.ksa_for` | the same file |
 | the Cloud Run Job id | `dispatch.py` vs `job_matrix.key` in terraform | `tests/unit/control_plane/test_job_name_matches_terraform.py` |
 | every environment variable the control plane reads | the readers vs what terraform sets | `scripts/lib/check-env-parity.sh` |
+| the shared deny-list and the unlabelable-type list | `SHARED_DENY_LIST` in `common.sh`, and `unlabelable-types.json` | nothing — both were restated in `tests/integration/test_destroy_guard.py` and neither was compared; now derived there, with the derivation itself asserted. See below |
 
 ## (c) Not compared, and why
 

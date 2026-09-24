@@ -336,11 +336,12 @@ ok "plan written"
 step "Safety assertions"
 
 
-# The deny-list, minus the bare "default" token -- that string appears inside too
-# many unrelated ids to compare blindly. The shared default network is matched on
-# the network/subnetwork fields instead, inside destroy-guard.jq.
-DENY_JSON="$(printf '%s\n' "${SHARED_DENY_LIST[@]}" \
-  | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]')"
+# The deny-list in the form destroy-guard.jq takes it. Built by
+# `guard_deny_json` in lib/common.sh rather than here, because the pipeline that
+# builds it was written out twice -- here and in lib/plan-guard.sh -- and the
+# list a guard judges by must not have two implementations. See the function for
+# why `default` comes out and `(default)` goes in.
+DENY_JSON="$(guard_deny_json)"
 
 jq -f "${GUARD_JQ}" \
    --argjson deny "${DENY_JSON}" \
