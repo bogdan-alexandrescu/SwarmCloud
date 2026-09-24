@@ -146,13 +146,15 @@ def test_released_history_past_the_window_is_not_a_cut(fixed_client, db):
     assert [row["lease_id"] for row in body["leases"]] == [
         "l_live000", "l_live001", "l_live002",
     ]
-    assert body["active_beyond_window"] == 0, (
-        "no live lease lies outside the rows; released history past the "
-        "window is not a cut"
-    )
+    # `truncated` first: it is the flag the review found true on every call
+    # past the 200th admission, and this is the assertion that says so.
     assert body["truncated"] is False, (
         "active_only rows were cut only if more LIVE leases exist than fit; "
         "older released documents are not rows this read could have returned"
+    )
+    assert body["active_beyond_window"] == 0, (
+        "no live lease lies outside the rows; released history past the "
+        "window is not a cut"
     )
     assert body["units_held"] == 3
 
