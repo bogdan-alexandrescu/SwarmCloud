@@ -52,6 +52,7 @@ from typing import Any, Callable, Iterable, Sequence
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from swarm_common.admission import _snapshot
 from swarm_common.models import (
     Attempt,
     Lease,
@@ -65,7 +66,13 @@ from swarm_common.models import (
     new_id,
     utcnow,
 )
-from swarm_common.states import EventType, TaskState, assert_transition
+from swarm_common.states import (
+    PENDING_STATES,
+    TERMINAL_STATES,
+    EventType,
+    TaskState,
+    assert_transition,
+)
 
 from .codec import (
     attempt_from_dict,
@@ -749,43 +756,91 @@ class Store:
         straight to CANCELLED. A task that does hold capacity keeps it until the
         worker or the reconciler releases the lease, because releasing it from
         here would decrement a pool that the running container still occupies.
+
+        ONE TRANSACTION, AND THE STATE READ INSIDE IT IS THE PRECONDITION. The
+        branch -- cancel outright, flag only, or refuse -- is chosen from the
+        state this transaction read, and the write commits only if nobody has
+        changed the document since. This used to be a plain read, then a blind
+        `update`. Two things could land between them, and each was overwritten
+        by a decision about a document that no longer existed (incident
+        wf_ebb3ab2d65664707a559, F-9; latent, never observed):
+
+          * the scheduler admits the task. Read QUEUED, write CANCELLED over a
+            DISPATCHED task: a terminal task still holding a live lease, with
+            every pool it reserved still counted;
+          * the worker finishes the task. Read RUNNING, write the flag and a
+            `cancelled` event onto a SUCCEEDED task, and answer 200 where one
+            read later the answer is 409.
+
+        Inside a transaction Firestore serialises this against both writers.
+        Admission is itself transactional and re-reads the task, so it either
+        commits first (and this re-runs, sees LEASED/DISPATCHED and only flags)
+        or it reads CANCELLED / `cancel_requested` and denies. The worker's
+        terminal write works the same way. `test_request_cancel_is_
+        transactional.py` drives both interleavings through the real route.
+
+        The event is written in the same transaction as the flag, so a retried
+        attempt records it once, and an event never exists for a write that
+        did not commit.
+
+        WHAT THIS STILL DOES NOT DO, deliberately: release a lease or touch a
+        pool. Serialising the read does not make it safe to give capacity back
+        from here (CONTRACT invariant 1). Only the worker, which knows its
+        container has stopped, or the reconciler, which fences the generation
+        first, may do that.
         """
         ref = self._db.collection(TASKS).document(task_id)
-        snap = ref.get()
-        if not snap.exists or snap.to_dict().get("tenant_id") != tenant_id:
-            raise NotFound(f"task {task_id!r} not found")
-        task = task_from_dict(snap.to_dict())
-        now = self._now()
-        if task.state in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED,
-                          TaskState.DEAD_LETTERED}:
-            raise Conflict(
-                f"task {task_id!r} is already terminal ({task.state.value})",
-                detail={"state": task.state.value},
-            )
+        transaction = self._db.transaction()
 
-        patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
-        if task.state in {TaskState.SUBMITTED, TaskState.QUEUED, TaskState.READY,
-                          TaskState.PARKED}:
-            assert_transition(task.state, TaskState.CANCELLED)
-            patch["state"] = TaskState.CANCELLED.value
-            patch["completed_at"] = now
-            patch["park_reason"] = None
-            patch["blocked_by"] = []
-        ref.update(patch)
-        immediate = "state" in patch
-        self.append_event(
-            task_id=task_id,
-            tenant_id=tenant_id,
-            type=EventType.CANCELLED,
-            detail={
-                "requested_by": by,
-                "from_state": task.state.value,
-                # "cancel_requested" means the flag is set but the task still
-                # holds capacity: the worker or reconciler releases the lease.
-                "phase": "cancelled" if immediate else "cancel_requested",
-            },
-        )
-        return task_from_dict(ref.get().to_dict())
+        @firestore.transactional
+        def _apply(txn: Any) -> Task:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                raise NotFound(f"task {task_id!r} not found")
+            task = task_from_dict(data)
+            if task.state in TERMINAL_STATES:
+                raise Conflict(
+                    f"task {task_id!r} is already terminal ({task.state.value})",
+                    detail={"state": task.state.value},
+                )
+
+            now = self._now()
+            patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
+            if task.state in PENDING_STATES:
+                assert_transition(task.state, TaskState.CANCELLED)
+                patch["state"] = TaskState.CANCELLED.value
+                patch["completed_at"] = now
+                patch["park_reason"] = None
+                patch["blocked_by"] = []
+            txn.update(ref, patch)
+
+            immediate = "state" in patch
+            event = TaskEvent(
+                event_id=new_id("ev"),
+                task_id=task_id,
+                tenant_id=tenant_id,
+                type=EventType.CANCELLED,
+                at=now,
+                detail={
+                    "requested_by": by,
+                    "from_state": task.state.value,
+                    # "cancel_requested" means the flag is set but the task
+                    # still holds capacity: the worker or reconciler releases
+                    # the lease.
+                    "phase": "cancelled" if immediate else "cancel_requested",
+                },
+            )
+            txn.set(
+                ref.collection(EVENTS).document(event.event_id),
+                event_to_firestore(event),
+            )
+            # What THIS call committed, not a re-read afterwards: the route
+            # derives `released_immediately` from the returned state, and a
+            # re-read would report a worker's later CANCELLED as ours.
+            return task_from_dict({**data, **patch})
+
+        return _apply(transaction)
 
     def append_event(
         self,

@@ -23,9 +23,12 @@ interface ImportMetaEnv {
    * against it, and a stale copy of it is exactly the "this says dev while
    * pointed at prod" failure the badge exists to prevent.
    *
-   * Nothing in scripts/ or .github/ passes it yet, so the deployed console
-   * currently reads ENVIRONMENT UNKNOWN. That is a one-flag change to the
-   * build, which is Track D's file, and is reported rather than made here.
+   * THE DEPLOYED BUILD PASSES IT. scripts/build-images.sh (`generate_config`)
+   * gives the swarm-ui image `--build-arg VITE_SWARM_ENV=${ENVIRONMENT}`, and
+   * images/swarm-ui/Dockerfile turns that ARG into an ENV before `npm run
+   * build`; tests/unit/scripts/test_ui_build_declares_its_environment.py holds
+   * both ends. A local `npm run build` with nothing set still says ENVIRONMENT
+   * UNKNOWN, which is the point: nothing here infers it.
    */
   readonly VITE_SWARM_ENV?: string
 }
