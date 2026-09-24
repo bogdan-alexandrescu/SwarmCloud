@@ -32,7 +32,14 @@
     "google_monitoring_alert_policy, _notification_channel and _uptime_check_config",
     "do have a `labels`/`user_labels` attribute, but it is the monitoring product's",
     "own key/value payload (an email address, a filter), not a resource label, so",
-    "they are exempt here rather than expected to carry managed-by."
+    "they are exempt here rather than expected to carry managed-by.",
+    "",
+    "google_logging_project_bucket_config was added on 2026-09-24 for",
+    "terraform/bootstrap/verify_logs.tf (the log bucket the release's deployer may",
+    "read swarm-verify's transcript from), checked the same way against the pinned",
+    "provider 6.50.0: its attributes are bucket_id, description, enable_analytics,",
+    "id, lifecycle_state, location, locked, name, project and retention_days -- no",
+    "labels. google_logging_project_sink, the sink feeding it, was already here."
   ],
   "types": [
     "google_cloud_scheduler_job",
@@ -57,6 +64,7 @@
     "google_iam_workload_identity_pool",
     "google_iam_workload_identity_pool_provider",
     "google_logging_metric",
+    "google_logging_project_bucket_config",
     "google_logging_project_sink",
     "google_monitoring_alert_policy",
     "google_monitoring_dashboard",

@@ -461,14 +461,21 @@ def test_the_guarded_cancel_refuses_a_step_that_started_after_it_was_read(db) ->
     before = copy.deepcopy(db.docs["tasks/t_raced"])
 
     store = SchedulerStore(db)
-    assert store.cancel_if_not_started(stale, "a workflow step failed", {}) is False
+    refused = store.cancel_if_not_started(stale, "a workflow step failed", {})
+    assert refused.applied is False
+    # A skip names what it found, in the codes `stale_writes` is labelled with.
+    assert (refused.write, refused.found, refused.reason) == (
+        "cancel_if_not_started", "LEASED", "state_changed"
+    )
     assert db.docs["tasks/t_raced"] == before
     assert events_of(db, "t_raced") == {}
 
     seed_task(db, task_id="t_parked", tenant_id="eng", state="PARKED",
               park_reason="PROVIDER_COOLDOWN")
     parked = task_from_dict(copy.deepcopy(db.docs["tasks/t_parked"]))
-    assert store.cancel_if_not_started(parked, "a workflow step failed", {"k": "v"}) is True
+    written = store.cancel_if_not_started(parked, "a workflow step failed", {"k": "v"})
+    assert written.applied is True
+    assert (written.found, written.target) == ("PARKED", "CANCELLED")
     assert state_of(db, "t_parked") == "CANCELLED"
     assert db.docs["tasks/t_parked"]["park_reason"] is None
     (event,) = cancel_events(db, "t_parked")

@@ -89,6 +89,29 @@ class SchedulerMetrics:
             ["reason"],
             registry=self.registry,
         )
+        #: Transitions a drain decided and did NOT write, because the task had
+        #: moved on since the drain read it. Every one of these was a blind
+        #: overwrite until 2026-09-24 (incident wf_ebb3ab2d65664707a559, F-9):
+        #: a user's cancel parked or promoted back into the queue, another
+        #: scheduler's lease cancelled or promoted over, a RUNNING worker rewound
+        #: to DISPATCHED, a re-leased task returned to READY with its new lease
+        #: orphaned. `write` is park / promote / cancel / record_blockers /
+        #: mark_dispatched / return_to_ready / cancel_if_not_started (the
+        #: `on_step_failure: fail_workflow` sweep finding a step that started or
+        #: finished after its query read it); `reason` is one of the stable codes
+        #: in scheduler/store.py (state_changed, park_reason_changed,
+        #: lease_superseded, task_missing). A steady trickle of
+        #: `mark_dispatched{state_changed}` is workers starting before the
+        #: scheduler's write lands and is benign; `return_to_ready` and
+        #: `lease_superseded` are dispatches that outlived their attempt and are
+        #: worth reading the WARNING line for.
+        self.stale_writes = Counter(
+            "swarm_scheduler_stale_writes_total",
+            "Transitions the scheduler did not write because the task had changed "
+            "since the drain read it, by write and reason.",
+            ["write", "reason"],
+            registry=self.registry,
+        )
         self.candidates = Histogram(
             "swarm_scheduler_candidates_per_pass",
             "READY tasks examined per pass.",
