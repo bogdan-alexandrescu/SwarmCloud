@@ -1379,3 +1379,294 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
 #: test fail on any placeholder rename rather than on a real divergence. These
 #: are the ones that change where the runner WRITES or what it talks to.
 _TEMPLATE_RELEVANT = frozenset({"SWARM_ARTIFACTS_DIR", "ARTIFACT_BUCKET"})
+
+
+# ---------------------------------------------------------------------------
+# The YAML and the dispatcher are ONE Job spec, asserted as one
+# ---------------------------------------------------------------------------
+#
+# Incident wf_ebb3ab2d65664707a559, 2026-09-24. `worker-job.yaml` said in its
+# header that `command` is ABSENT and why, and
+# `test_a_rendered_job_never_overrides_the_container_command` above asserted
+# it -- of the RENDERED YAML. Nothing dispatches the rendered YAML. The Job that
+# actually reached the cluster is built in code by `GkeJobDispatcher._manifest`,
+# which carried `command: list(profile.command)`, so every GKE pod ran the bare
+# runner instead of the worker lifecycle: no fencing, no cancel, no heartbeat,
+# no lease release. Five leases held every browser slot until an operator
+# intervened.
+#
+# The two copies were documented as mirroring each other ("field for field",
+# dispatch.py's POD_SECURITY_CONTEXT comment) and nothing held them there --
+# the same shape as the namespace prefix, the RBAC subject and
+# SWARM_ARTIFACTS_DIR before this. So instead of asserting the same property
+# twice, once per copy, this renders both from the same inputs and asserts
+# they agree on everything that changes what the pod DOES. A field added to one
+# and not the other now fails here, naming the field.
+
+_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+
+#: Pod labels something selects on: the reconciler's managed-family selector
+#: and its tenant/task lookup. Decorative labels (app.kubernetes.io/*) are not
+#: compared; they differ and nothing reads them.
+_SELECTED_POD_LABELS = ("managed-by", "swarm-tenant", "swarm-task")
+
+#: The same identifiers on both sides, so per-task fields (the Job name, the
+#: task label) are comparable.
+_IDS = {"task_id": "task_9f3a", "attempt": "att_7b21", "lease_id": "lease_c4", "generation": 3}
+
+
+def _gke_profiles() -> list[str]:
+    from swarm_common.profiles import Backend, resolve_backend  # noqa: PLC0415
+
+    return sorted(
+        name
+        for name, profile in RUNNER_PROFILES.items()
+        if resolve_backend(profile) is Backend.GKE_AUTOPILOT
+    )
+
+
+def _rendered_job(profile_name: str) -> dict[str, Any]:
+    return render_job(
+        profile_name,
+        task=_IDS["task_id"],
+        attempt=_IDS["attempt"],
+        lease=_IDS["lease_id"],
+        generation=_IDS["generation"],
+    )
+
+
+def _dispatcher_job(profile_name: str) -> dict[str, Any]:
+    """What `GkeJobDispatcher._manifest` sends, for the inputs `render_job` gets."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from scheduler.dispatch import GkeJobDispatcher, GkeTarget  # noqa: PLC0415
+    from scheduler.settings import SchedulerSettings  # noqa: PLC0415
+    from swarm_common.config import Settings  # noqa: PLC0415
+    from swarm_common.models import Lease, Task  # noqa: PLC0415
+    from swarm_common.states import TaskState  # noqa: PLC0415
+
+    profile = RUNNER_PROFILES[profile_name]
+    now = utcnow()
+    settings = SchedulerSettings(
+        core=Settings(project_id=PROJECT, artifact_bucket=f"{PROJECT}-swarm-artifacts"),
+        project_id=PROJECT,
+        region="us-central1",
+        artifact_registry_host=f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images",
+        worker_image_tag="latest",
+    )
+    tenant = Tenant(
+        tenant_id=TENANT,
+        kind="group",
+        principal="eng@saga.xyz",
+        created_at=now,
+        service_account=f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
+        namespace=f"swarm-tenant-{TENANT}",
+    )
+    task = Task(
+        id=_IDS["task_id"],
+        tenant_id=TENANT,
+        created_at=now,
+        updated_at=now,
+        state=TaskState.LEASED,
+        runner_profile=profile_name,
+        resource_class=profile.resource_class,
+        input={},
+        submitted_by="alice@saga.xyz",
+        provider=profile.provider,
+        # render.py's default: `--timeout` unset means the profile's own.
+        timeout_seconds=profile.timeout_seconds,
+    )
+    lease = Lease(
+        lease_id=_IDS["lease_id"],
+        task_id=_IDS["task_id"],
+        attempt_id=_IDS["attempt"],
+        tenant_id=TENANT,
+        generation=_IDS["generation"],
+        pools=["global"],
+        units=1,
+        state=TaskState.LEASED,
+        created_at=now,
+        dispatch_deadline=now + timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=2),
+    )
+    dispatcher = GkeJobDispatcher(
+        settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=object()
+    )
+    return dispatcher._manifest(task=task, lease=lease, profile=profile, tenant=tenant)
+
+
+def _behaviour(job: dict[str, Any]) -> dict[str, Any]:
+    """Every field of a worker Job that changes what the pod does.
+
+    Deliberately NOT compared: the container environment (per-task values, and
+    `test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment`
+    owns the names that matter), `imagePullPolicy` (the YAML's IfNotPresent is
+    the API server's default for a non-`latest` tag), the image TAG (a deploy
+    input, not a property of the spec), and decorative labels and annotations.
+    """
+    import json  # noqa: PLC0415
+
+    metadata = job.get("metadata") or {}
+    spec = job.get("spec") or {}
+    template = spec.get("template") or {}
+    template_meta = template.get("metadata") or {}
+    pod = template.get("spec") or {}
+    containers = pod.get("containers") or []
+    worker = next((c for c in containers if c.get("name") == "worker"), {})
+    image = str(worker.get("image", ""))
+    return {
+        "Job name": metadata.get("name"),
+        "namespace": metadata.get("namespace"),
+        f"Job annotation {_EVICT}": (metadata.get("annotations") or {}).get(_EVICT),
+        # The one the cluster autoscaler actually reads. A Job's own annotations
+        # are not copied onto its pods, so the Job-level one alone protects
+        # nothing (GKE Autopilot extended run time is requested on the POD).
+        f"pod annotation {_EVICT}": (template_meta.get("annotations") or {}).get(_EVICT),
+        "pod selector labels": {
+            key: (template_meta.get("labels") or {}).get(key) for key in _SELECTED_POD_LABELS
+        },
+        "backoffLimit": spec.get("backoffLimit"),
+        "completions": spec.get("completions"),
+        "parallelism": spec.get("parallelism"),
+        "activeDeadlineSeconds": spec.get("activeDeadlineSeconds"),
+        "ttlSecondsAfterFinished": spec.get("ttlSecondsAfterFinished"),
+        "restartPolicy": pod.get("restartPolicy"),
+        "serviceAccountName": pod.get("serviceAccountName"),
+        "automountServiceAccountToken": pod.get("automountServiceAccountToken"),
+        "terminationGracePeriodSeconds": pod.get("terminationGracePeriodSeconds"),
+        "pod securityContext": pod.get("securityContext"),
+        "tolerations": pod.get("tolerations"),
+        "nodeSelector": pod.get("nodeSelector"),
+        "initContainers": pod.get("initContainers"),
+        "container names": [c.get("name") for c in containers],
+        "worker command": worker.get("command"),
+        "worker args": worker.get("args"),
+        "worker image repository": image.rsplit("/", 1)[-1].split("@")[0].split(":")[0],
+        "worker resources": worker.get("resources"),
+        "worker securityContext": worker.get("securityContext"),
+        "worker volumeMounts": sorted(
+            (m.get("name"), m.get("mountPath")) for m in worker.get("volumeMounts") or []
+        ),
+        "volumes": sorted(json.dumps(v, sort_keys=True) for v in pod.get("volumes") or []),
+    }
+
+
+@pytest.mark.parametrize("profile", _gke_profiles())
+def test_the_rendered_job_and_the_dispatched_job_are_the_same_job(profile):
+    """ONE spec, two producers: they must agree on everything the pod does.
+
+    Red on 2026-09-24 for two fields, both on the dispatcher's side:
+
+      * `worker command` -- the override that replaced the lifecycle;
+      * `pod annotation safe-to-evict` -- the dispatcher put
+        `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` on the JOB
+        only. The autoscaler reads it from the POD, and a Job's annotations are
+        not propagated to the pods it creates, so every dispatched browser pod
+        was evictable in a scale-down while the code's own comment said it was
+        not. The YAML had it on both.
+
+    MUTATIONS: re-add `"command"` to `_manifest`'s container; drop the pod
+    template's `annotations`; change any securityContext field, volume, mount,
+    grace period or retry setting on one side only. Each fails here naming the
+    field.
+    """
+    from_yaml = _behaviour(_rendered_job(profile))
+    from_code = _behaviour(_dispatcher_job(profile))
+    differing = {
+        key: {"yaml": from_yaml[key], "dispatcher": from_code[key]}
+        for key in from_yaml
+        if from_yaml[key] != from_code[key]
+    }
+    assert not differing, (
+        f"the {profile!r} Job that render.py writes and the one "
+        f"GkeJobDispatcher._manifest dispatches disagree on {sorted(differing)}: "
+        f"{differing}. The YAML is what an operator reads and `make lint` checks; "
+        f"the dispatcher's is what runs. See incident wf_ebb3ab2d65664707a559."
+    )
+
+
+def test_there_is_a_gke_profile_to_compare():
+    """The parity test above is parametrised over the GKE profiles; if the
+    catalogue ever had none, it would silently check nothing."""
+    assert _gke_profiles(), "no runner profile resolves to GKE_AUTOPILOT"
+
+
+@pytest.mark.parametrize("profile", sorted(RUNNER_PROFILES))
+def test_neither_copy_of_the_job_overrides_the_image_entrypoint(profile):
+    """For EVERY profile, both producers, because a profile on Cloud Run today is
+    one catalogue edit from GKE.
+
+    The image ENTRYPOINT is `tini -- python -m agent_worker`, the worker
+    lifecycle. `RunnerProfile.command` is the lifecycle's CHILD argv; as a
+    container `command` it replaces the lifecycle with the bare runner.
+    """
+    for source, job in (
+        ("render.py", _rendered_job(profile)),
+        ("GkeJobDispatcher._manifest", _dispatcher_job(profile)),
+    ):
+        for container in job["spec"]["template"]["spec"]["containers"]:
+            assert "command" not in container, (
+                f"{source} sets command={container['command']!r} on {container['name']!r} "
+                f"for {profile!r}, replacing the worker lifecycle"
+            )
+            assert "args" not in container, f"{source} sets args on {container['name']!r}"
+
+
+# ---------------------------------------------------------------------------
+# The Job's deadline is a backstop, and it must fire AFTER the lifecycle's own
+# ---------------------------------------------------------------------------
+#
+# Review of PR #31, 2026-09-24. Every template set `activeDeadlineSeconds` and
+# the worker's TASK_TIMEOUT_SECONDS from the same `__TIMEOUT_SECONDS__`. The
+# Job's deadline counts from Job creation -- node provisioning and the image
+# pull included -- and the lifecycle's from its own start, minutes later, so the
+# Job controller always SIGTERMed the pod first. The lifecycle's SIGTERM path
+# parks the task as SCHEDULED_RETRY, which nothing promotes; its timeout path,
+# which would have FAILED the task, never ran. The dispatcher's copy is held to
+# the same property in tests/unit/control_plane/test_dispatch_manifests.py, and
+# the parity test above holds the two copies equal.
+
+
+def _rendered_jobs_for_the_deadline() -> list[tuple[str, dict[str, Any]]]:
+    jobs = [(f"{name} (render.py)", render_job(name)) for name in sorted(RUNNER_PROFILES)]
+    jobs.append(("claude-code (render.py --runtime gvisor)", _render_v2_job()))
+    return jobs
+
+
+def test_every_rendered_deadline_lets_the_lifecycle_time_out_on_its_own():
+    """MUTATION: point `activeDeadlineSeconds` back at `__TIMEOUT_SECONDS__` in
+    any one of the three templates."""
+    import dataclasses  # noqa: PLC0415
+
+    from agent_worker.config import WorkerConfig  # noqa: PLC0415
+    from swarm_common.config import Settings  # noqa: PLC0415
+
+    # The worker's own defaults, read from the dataclass rather than restated:
+    # the part of its timeout path that runs AFTER its deadline.
+    defaults = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}
+    after_deadline = (
+        defaults["termination_grace_seconds"] + defaults["git_harvest_timeout_seconds"]
+    )
+    # The latest a lifecycle can start and still be running: the reconciler
+    # reclaims any attempt with no heartbeat by the dispatch deadline.
+    latest_start = Settings(project_id=PROJECT).dispatch_timeout_seconds
+
+    checked = 0
+    for where, job in _rendered_jobs_for_the_deadline():
+        pod = job["spec"]["template"]["spec"]
+        worker = next(c for c in pod["containers"] if c["name"] == "worker")
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        task_timeout = int(env["TASK_TIMEOUT_SECONDS"])
+        deadline = int(job["spec"]["activeDeadlineSeconds"])
+        needed = task_timeout + latest_start + after_deadline
+        assert deadline > task_timeout + int(pod["terminationGracePeriodSeconds"]), where
+        assert deadline > needed, (
+            f"{where}: activeDeadlineSeconds is {deadline}s, and the lifecycle's own "
+            f"timeout path needs more than {needed}s from Job creation "
+            f"({task_timeout}s + {latest_start}s latest start + {after_deadline}s to "
+            "stop the child and harvest). The Job controller would SIGTERM it first "
+            "and the task would PARK instead of failing."
+        )
+        checked += 1
+    # Every profile plus the gvisor shape: all three templates were visited.
+    assert checked == len(RUNNER_PROFILES) + 1

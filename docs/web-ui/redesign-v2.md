@@ -1,7 +1,136 @@
 # SwarmCloud UI — redesign v2
 
-**Status:** proposal. Nothing here is implemented. No `.tsx`, `.css` or route was
-changed to write it.
+## Status, 2026-09-24
+
+**Most of this is built. This block is the status; the body below it is the
+design record.** The body is kept as written at `f0154b4`: what was believed,
+measured and proposed then, including claims that are now false. It is not
+edited to match what shipped. That form (a dated status block, and no
+"Superseded" rewrite of the body) is the owner's answer of 2026-09-24 to
+`ui-audit-and-build-prompt.md` §B13 **D6**.
+
+Every row below was checked against the code at `b0fff1b`, and the file:line
+references are to that commit. Other lanes were changing
+`AgentDetail.tsx`, `AttemptTimeline.tsx`, `RunFiles.tsx`, `charts/`, `api.ts`
+and `Workflows.tsx` while this was written, so some of those line numbers will
+move.
+
+**Shipped**
+
+| Proposed in | What | Where it is at `b0fff1b` |
+|---|---|---|
+| §2.2 (1) | **Rail** | `App.tsx:849`, the `nav.ctl-rail` fed from `SECTIONS` |
+| §2.2 (2) | **Full-bleed work area** | `.app` is capped by `--app-max` (≥ 1600px, held by `brand.test.tsx` B19) instead of 1100px; prose alone is clamped to `--measure` |
+| §2.2 (3) | **Inspector** | `App.tsx:730` and `:761` (`has-inspector`), `panes.ts:36` `INSPECTOR`, the resize grip at `App.tsx:1323` |
+| §2.2 (4), §2.4 | **Dock with provenance** | `Dock.tsx:63`: the DataSources strip collapsed to one line that expands on click. The dock carries provenance only. Logs render in the inspector (below), not in the dock |
+| §1.0, §6 F0 | **F0 decoder** | `apps/swarm-api/swarm_api/codec.py:278-282`: `attempt_from_dict` now passes all five spend fields |
+| §6 S2, dock | **Logs route** | `GET /v1/tasks/{id}/logs` at `apps/swarm-api/swarm_api/routes/tasks.py:291`, redacted at read time. UI: `RunFiles.tsx:284` through `api.ts:444` `loadTaskLogs` |
+| §6 S3 (artifact half), Panel 3 | **Artifact content route** | `GET /v1/tasks/{id}/artifacts/content` at `routes/tasks.py:200`. It resolves an artifact by manifest name, never by path. UI: `api.ts:648` `loadArtifactContent` |
+| Panel 4 | **Checkpoint list** | `GET /v1/tasks/{id}/checkpoints` at `routes/tasks.py:246`, across attempts and read-only. UI: `RunFiles.tsx:96` through `api.ts:408` `loadCheckpoints` |
+| Panel 1 | **Fencing fields** | `task_to_api` serves `current_generation` and `current_lease_id` (`codec.py:168-199`), typed at `types.ts:406-427`. `gen N` is drawn per attempt (`AgentDetail.tsx:1187`) and per event (`AgentDetail.tsx:2962`, `AttemptTimeline.tsx:324`). No screen reads `current_generation` itself yet |
+| §4, §5.8, Panel 7 | **visx charts and TokenSpend** | `charts/TimeSeries.tsx:94` is the only module that imports visx. It uses four `@visx/*` 4.0.0 packages from `package.json`. `charts/TokenSpend.tsx:86` is mounted at `AgentDetail.tsx:1058` |
+| §4 #5, Panel 6 | **Requested vs peak memory** | a `Util` bar with the resource class's `memory_gib` as its ceiling, at `AgentDetail.tsx:1430-1438` |
+| §9 | **Help section and `?` cards** | `HelpSection.tsx:33` is mounted at `App.tsx:772`; `HelpCard.tsx:813`; the topics are in `help.ts` |
+| (not in the body) | **StopRun** | `StopRun.tsx:101`, on an agent (`AgentDetail.tsx:575`) and on a workflow (`Workflows.tsx:1990`) |
+| Panel 3 | **ArtifactViewer** | `ArtifactViewer.tsx:42` (`Markdown` at `:361`, `Transcript` at `:563`), opened from `AgentDetail.tsx:2000` |
+| (not in the body) | **Brand** | `Brand.tsx` `ProductHeader`, mounted at `App.tsx:760`: the mark, the wordmark, an environment badge that is measured rather than hardcoded, and the identity |
+| (not in the body) | **Submit form inputs** | `Submit.tsx:543` `InputFields` and `:340` `buildInput` replace the JSON textarea; `SubmitWorkflow.tsx:530` reuses them |
+| §2.4 Overview | **Overview workflow and parked checks** | `checks.ts:566` `workflowCheck` and `checks.ts:706` `parkedCheck`, both run by `deriveChecks` (`checks.ts:133`) |
+| §4 #1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
+| §2.1, §2.4 | **Three-section nav** | `App.tsx:214-404` `SECTIONS`: Overview as the landing screen, then Work · Capacity · Admin. Runtimes and History became panes, not sections. The fifteen screens keep their own routes. This replaces §2.4's six sections |
+
+**Still open at `b0fff1b`**
+
+- **The workflow timeline and table views** (§2.3; §4 #2). The board offers
+  Rows and Graph only (`Workflows.tsx:350-365`). `Work ▸ Timeline`
+  (`App.tsx:275`) is the history of past runs, not §2.3's timeline mode.
+- **The duration bar** (§4 #3; §9's measured example). No screen has the
+  queued → leased → dispatched → starting → running segmented bar. Durations
+  are shown as figures.
+- **Peak RSS over time** (§4 #4). No step line has been built. Peak RSS is shown as a
+  figure per attempt (`AttemptTimeline.tsx:286`) and as the requested-vs-peak
+  bar listed above.
+- **The checkpoint strip** (§4 #6). Checkpoints are a list in `RunFiles.tsx`,
+  not a dot strip on the attempt timeline.
+- **The diffstat** (§4 #7). Per-commit `+N −M` is printed as table figures
+  (`AgentDetail.tsx:2413`), not as diverging bars.
+- **`input_from` edges** (§4 #1, #9). The DAG draws edges from `depends_on`
+  only (`dag.ts:1290`).
+- **Scrubbers** (§2.3). Not built.
+- **Events paging** (§6 S1). `GET /v1/tasks/{id}/events` takes `limit` and
+  no cursor (`routes/tasks.py:136-144`), so the tail-truncation risk in §4
+  still stands.
+- **Cross-task attempts** (§6 S4). No route aggregates attempts across tasks.
+- **Checkpoint content** (§6 S3, the checkpoint half). The route serves a
+  listing and no bytes. The decision on its shape is recorded below.
+- **§1.1(b), the duplicate `@keyframes pulse`**, part of Q2's bug-fix batch.
+  It is still declared twice: `styles.css:957` (`.5 → .85`) and `:3426`
+  (`1 → .35`). The later declaration wins everywhere. So `.skeleton` and
+  `.node-reading` still animate at the 1 → .35 amplitude, not the subtle
+  .5 → .85 written for them.
+- **§1.1(c), the duplicate `.filters`**, part of Q2's bug-fix batch. It is
+  still declared twice, at `styles.css:1022` (`gap: 6px`) and `:2368`
+  (`gap: 14px`, `align-items: center`, `font-size`, `color`). The later one
+  wins wherever the two conflict.
+
+**Since `b0fff1b`: three of the open items above have shipped on main**
+
+Added when this block was merged with main at `56a5cab`. The rows above are
+left as they were checked at `b0fff1b`; this list is what changed after.
+
+- **Events paging** (§6 S1), in #19. `GET /v1/tasks/{id}/events` now takes
+  `page_token` and `order=asc|desc` and returns `next_page_token`
+  (`routes/tasks.py:138`). With neither parameter it returns what it always
+  did. The route is paged; no screen asks for `order=desc` yet, so the UI's
+  event lists still read the oldest page.
+- **Cross-task attempts** (§6 S4), in #19. `GET /v1/attempts`
+  (`routes/attempts.py:36`) lists every attempt of the caller's tenant, newest
+  first, paged, with a per-page `coverage` count of rows that carry a reported
+  cost. No screen calls it yet.
+- **Checkpoint content** (§6 S3, the checkpoint half), in #29. A listing, one
+  member as text, and the whole archive: `routes/checkpoints.py:53`, `:83` and
+  `:114`. The UI is `CheckpointBrowser.tsx:297`, opened from each checkpoint
+  row in `RunFiles.tsx:222`. The constraints behind that shape are recorded
+  under §6 S3 below ("S3 decision — owner, 2026-09-24").
+
+**The six questions in §8: five answered, Q2 half answered**
+
+- **Q4, the chart library: visx.** The owner decided it on 2026-09-22 (the
+  decision is recorded in `apps/swarm-ui/src/charts/README.md`). Four
+  `@visx/*` packages are used, and only `charts/TimeSeries.tsx` imports them.
+  dagre was not taken: the DAG is hand-rolled (design-system.md §0).
+- **Q1 and Q3 were answered by what got built, not by a recorded choice.**
+  Q1: the shell (rail, full-bleed, inspector, dock) landed around the existing
+  screens. Q3: both routes were built, logs and artifact contents.
+- **Q2 was only half answered by what got built.** Q2 asked whether the
+  bug-fix batch ships before the redesign. The batch is F0 plus the four
+  stylesheet collisions in §1.1.
+  - F0 shipped as its own fix (`codec.py:278-282`).
+  - §1.1(a) is gone. `.bar` is declared once (`styles.css:3429`, the banner),
+    and the pool meter moved to `.ctl-track` (`styles.css:913`).
+  - §1.1(b) and (c) are still in the sheet at `b0fff1b`. They are listed under
+    "Still open" above.
+  - §1.1(d) was not done as proposed. `.panel` still has no box, and
+    `.panel h2` (`styles.css:3214`) is still its only rule. A region is
+    separated by `.section + .section`'s hairline and the `--ctl-s5` break
+    instead (`styles.css:845-857`).
+
+  *Correction, 2026-09-24:* the first version of this block said Q2 was
+  answered by what got built. It named only F0 and left (b) and (c) off the
+  open list.
+- **Q5 was answered by the §9 owner directive** (2026-09-22). Prose comes off the
+  data surfaces and the explanation moves into Help and the `?` cards. The
+  fact itself stays on the surface.
+- **Q6: both themes survive** (design-system.md §1.1).
+- **S3 checkpoint content: the owner decided on 2026-09-24 that it is a
+  listing, per-file content, and a whole-checkpoint download.** At `b0fff1b`
+  only the list of checkpoints existed (`GET /v1/tasks/{id}/checkpoints`),
+  which names each checkpoint and says nothing of what is inside it. All three
+  parts of the decision shipped in #29 (see "Since `b0fff1b`" above).
+
+---
+
+*The design record, unchanged from here down.*
 **Base commit:** `f0154b4`.
 **Supersedes:** nothing. `docs/web-ui/redesign.md` decided the *navigation* and the
 owner amended it on 2026-09-21; that decision stands and is defended, not reopened,
@@ -871,6 +1000,107 @@ nowhere, so a listing means reading the tarball.
 Unblocks the "way to inspect the outputs" ask, which is currently impossible from a
 browser at four independent layers (bucket policy, load balancer routing, no signed
 URLs, no GCS client).
+
+#### S3 decision — owner, 2026-09-24 (item A3): checkpoints get all three
+
+The open question above — a *listing* read out of the tarball, or only whole-object
+download — was answered **both, and a per-file read as well**. Built in
+`apps/swarm-api/swarm_api/checkpoint_content.py` (service) and
+`apps/swarm-api/swarm_api/routes/checkpoints.py` (routes), with the browser in
+`apps/swarm-ui/src/CheckpointBrowser.tsx`, opened from each row of the checkpoint
+list in `RunFiles.tsx`:
+
+| Route | Serves | Bound |
+|---|---|---|
+| `GET /v1/tasks/{id}/checkpoints/{n}/files` | `[{path, size, mode, type}]` (+ `link`, `unsafe`, `undecodable`), in archive order, read server-side from `archive.tar.gz` | 5000 entries, 256 MiB read, 1 GiB inflated — each reported as `truncated_reason` when hit |
+| `GET /v1/tasks/{id}/checkpoints/{n}/files/{path}` | one member as text, in the artifact-content shape | the artifact route's own window and cap (512 KiB default, 4 MiB ceiling), read off the same `InspectionService` |
+| `GET /v1/tasks/{id}/checkpoints/{n}/content` | the whole archive, `Content-Disposition: attachment` | streamed in 1 MiB windows, **chunked** (no `Content-Length`; size in `X-Checkpoint-Bytes`); cut at swarm-api's 300 s request timeout |
+
+The constraints behind the shape, so they are not quietly undone:
+
+- **`{n}` is the checkpoint id the listing returns (`ckpt-00001`), plus `attempt_id`.**
+  Ids restart per attempt, so `ckpt-00001` exists once for every attempt that
+  checkpointed. Without `attempt_id` the server resolves the id across attempts and
+  refuses (422, naming the candidates) when more than one matches, rather than guess
+  and serve another attempt's working tree under the right name. A bare sequence
+  number was rejected for the same reason, and because it would have meant restating
+  the worker's `ckpt-%05d` format — a second copy of a rule, which is how this
+  repository's outages have started.
+- **The tenant boundary is the artifact route's, called rather than copied**
+  (`InspectionService._scoped`, `_segment`, `_reader`). Another tenant's task is the
+  404 a missing task gets, and the tests assert the stronger fact that *no object is
+  read or listed* on the way to it.
+- **`{path}` never becomes an object key.** It is matched for exact equality against
+  member names inside an archive whose key was rebuilt from validated segments. It is
+  still refused (422, before any read) if absolute or carrying `..`, `.`, an empty
+  segment, a backslash or a control character. A member the *archive* names `../x` is
+  listed with `unsafe: true` — it is exactly what `checkpoint._safe_members` refuses
+  on restore, so hiding it would hide why the checkpoint cannot resume — and cannot be
+  opened.
+- **A name that is not UTF-8 is served escaped, never as a 500.** The worker archives
+  whatever names the agent left, and `Path.rglob` on Linux hands a Latin-1 name to
+  `tarfile` surrogate-escaped; `tarfile` reads it back holding lone surrogates, which
+  Starlette's `JSONResponse` cannot encode — an unhandled 500 on every listing of the
+  task. The name is served as its bytes, escaped (`caf\xe9.txt`), with
+  `undecodable: true`, and cannot be opened: the escaped spelling carries a backslash,
+  which the path check refuses. It is deliberately **not** `unsafe`: that flag tells
+  the reader a restore would refuse the archive, and a restore unpacks such a name
+  without complaint. Manifest strings get the same escaping, and a manifest digest
+  that is not 64 hex characters is left out of the `X-Checkpoint-Sha256` header rather
+  than failing the download.
+- **Content-type allowlist, by name, before a byte is read**, then the same NUL sniff
+  the artifact route uses. Extensionless files (`Makefile`, `.env`) are text
+  candidates. Everything served per-file is redacted at read time and windowed on
+  whitespace by the artifact route's `_align`.
+- **The whole-archive download is NOT redacted.** It is gzip; no rule runs over
+  compressed bytes. This was chosen knowing that: the archive is the tenant's own
+  working tree, served only inside the tenant boundary above. The response says
+  `X-Swarm-Redaction: not-applied` so no caller assumes the per-file guarantee
+  extends to it, and carries the manifest's digest as `X-Checkpoint-Sha256`.
+- **Streamed, never held.** A checkpoint may be 2 GiB. The listing pulls the object
+  through ranged reads one window at a time, inflates incrementally and walks the tar
+  forward-only; a tar has no index, so listing costs inflating everything before the
+  last header reported — which is why the budgets exist and why each one *says* it was
+  hit rather than returning a shorter list that looks complete.
+- **The download is chunked, and carries no `Content-Length`.** swarm-api is uvicorn,
+  HTTP/1 only, behind a Cloud Run port that is not h2c, and Cloud Run documents
+  "Maximum HTTP/1 response size: 32 MiB per response. Limit applies if not using
+  `Transfer-Encoding: chunked` or streaming" (docs.cloud.google.com/run/quotas, read
+  2026-09-24). uvicorn chunks exactly when the application declares no length, so a
+  declared length would have put every archive over 32 MiB — the ones a cut listing
+  sends people to the download for — over that limit. The size travels as
+  `X-Checkpoint-Bytes`. A stream cut after the status line ends without its final
+  chunk, which a browser reports as a failed download rather than saving a short file.
+- **The request timeout bounds what can be downloaded, and it has not been raised.**
+  swarm-api runs on the Cloud Run module's default `request_timeout` of 300 s
+  (`terraform/modules/cloud_run/variables.tf`; `terraform/infra/main.tf` does not
+  override it for swarm-api). A download takes at most
+  `windows × store time per window + bytes ÷ client throughput`: the next 1 MiB window
+  is read only after the previous one reached the socket, and each window is two
+  sequential store calls (`get_blob`, then the ranged read). With an **assumed** 50 ms
+  per window — not measured — the largest archive that finishes in 300 s is about
+  2.9 GiB at 20 MiB/s to the client (every checkpoint: the cap is 2 GiB), 1.2 GiB at
+  5 MiB/s, and 545 MiB at 2 MiB/s. Past that, Cloud Run ends the request mid-body and
+  the browser reports a failed download. Raising swarm-api's timeout (Cloud Run allows
+  60 minutes) is a service-wide change to every route on the service, so it is an
+  **open owner decision**, not something this route changed.
+- **Absence and failure are not an empty checkpoint.** `status: absent` has
+  `files: null`; an unreadable archive is a 503 with no `files` key; a truncated object
+  is `status: corrupt` (the gzip end marker is required — `tarfile` alone stops
+  quietly at a short stream); `files: []` appears only for a real, fully read, empty
+  workspace. `file_count_agrees` cross-checks the listing against the manifest's
+  `file_count`, which is what catches a tar malformed *inside* a valid gzip stream.
+
+Not verified against a deployed environment: every claim above is proven by
+`tests/unit/control_plane/test_checkpoint_content.py` (in-memory reader, archives
+built by `tarfile` and one by `CheckpointManager` itself) and
+`apps/swarm-ui/src/__tests__/checkpoint.browser.test.tsx`, both run in CI. Real GCS
+read throughput against the 256 MiB budget, the per-window store time behind the
+timeout arithmetic above, IAP carrying the session cookie on the download link, and a
+chunked download over 32 MiB passing Cloud Run's front end end to end, are
+expectations, not measurements. The last one needs a deployed service and a checkpoint
+over 32 MiB in the bucket; nothing in CI can see Cloud Run's limit, because the test
+client has none.
 
 ### S4 — cross-task attempt aggregation · medium · unblocks "what did it cost"
 
