@@ -32,7 +32,7 @@ resource "google_service_account" "verify" {
   project      = var.project_id
   account_id   = "swarm-verify"
   display_name = "SwarmCloud verification job"
-  description  = "Runs the smoke, concurrency and race targets from inside the VPC. Reads Firestore, Cloud Run executions and artifact objects; invokes swarm-api. Writes nothing outside its own tenant."
+  description  = "Runs the smoke, concurrency and race targets from inside the VPC. Reads Firestore, Cloud Run executions and artifact objects; invokes swarm-api. Writes only through swarm-api: its own tenant's tasks, and, where admin_users names it, the runner:mock ceiling race-test narrows."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -48,8 +48,16 @@ resource "google_service_account" "verify" {
 #
 # So the grants below are the ones the suites actually exercise, and no more.
 # All three are READ-ONLY at the project level; everything the gate writes, it
-# writes through swarm-api as its own tenant, which is the property the
-# original comment was protecting and which still holds.
+# writes through swarm-api, which is the property the original comment was
+# protecting and which still holds.
+#
+# ONE WRITE IS NOT AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
+# this identity is also in `admin_users`, because race-test narrows runner:mock
+# with PUT /v1/admin/limits/runner/mock rather than through a Firestore write
+# role. That grant is an application-level admin flag in tfvars, not IAM, and it
+# is deliberately not made here -- this file is the same in every environment,
+# and the gate has no reason to be an admin in prod.
+# docs/audits/2026-09-22/race-test-needs-a-write.md has the comparison.
 #
 # Secret access is deliberately still absent. Nothing in the suites reads a
 # secret, and the mock runner profile this tenant uses needs no provider key.

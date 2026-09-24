@@ -373,6 +373,16 @@ variable "admin_users" {
 
     Empty this in the same change that grants swarm-api a Workspace Group
     Reader role. See docs/audits/2026-09-20/session-handover.md.
+
+    NOT ONLY OPERATORS. Dev also lists the verification gate's service
+    account (owner decision, 2026-09-24), so scripts/race-test.sh can narrow
+    runner:mock through PUT /v1/admin/limits/runner/mock rather than a raw
+    Firestore write -- see docs/audits/2026-09-22/race-test-needs-a-write.md.
+    That entry must survive the emptying above: a service account is not a
+    Workspace principal and can never be put in an admin group.
+
+    Bare emails, never IAM members: swarm-api compares each entry with the
+    email in the verified token, so `serviceAccount:x@y` matches nobody.
   EOT
   type        = list(string)
   default     = []

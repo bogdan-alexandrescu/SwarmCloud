@@ -367,6 +367,15 @@ locals {
       TENANT_GROUPS = join(",", sort([
         for t, v in var.tenants : v.principal if v.kind == "group" && v.directory_group
       ]))
+      # ADMIN_USERS is taken from the environment's tfvars AS IS, and the
+      # verification identity is deliberately NOT appended here the way
+      # ALLOWED_USERS below derives it. Admitting the gate is needed in every
+      # environment; making it an admin is an owner decision taken for dev on
+      # 2026-09-24 (so race-test can narrow runner:mock through the admin API)
+      # and not for prod, where the gate has no reason to hold the switches.
+      # Deriving it here would grant it everywhere at once. See
+      # terraform/environments/dev/dev.tfvars and
+      # docs/audits/2026-09-22/race-test-needs-a-write.md.
       ADMIN_GROUPS            = join(",", sort(var.admin_groups))
       ADMIN_USERS             = join(",", sort(var.admin_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user

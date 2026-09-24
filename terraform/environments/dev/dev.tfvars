@@ -392,7 +392,34 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # screen 403s for everyone. See the variable's description and
 # docs/audits/2026-09-20/session-handover.md. Empty this the moment the
 # Workspace Group Reader role lands.
-admin_users = ["bogdan@saga.xyz"]
+#
+# swarm-verify IS HERE BY OWNER DECISION, 2026-09-24, and it is not an
+# operator. scripts/race-test.sh narrows runner:mock to one slot to force
+# contention, and that is a ceiling change. The alternative was a Firestore
+# write role, which cannot be scoped below the database and would have left
+# `pools/*.active` -- the counter a wider field mask once clobbered on this
+# deployment -- one typo away. The admin route cannot write `active`, refuses a
+# pool name outside the frozen catalogue, bounds the value, and now records the
+# verified caller on the pool (admin_changed_by). The full comparison is in
+# docs/audits/2026-09-22/race-test-needs-a-write.md.
+#
+# What this ALSO grants, stated rather than minimised: admin is one boolean, so
+# this identity can pause dispatch, drain a provider for every tenant, and set
+# any ceiling -- all reversible in one call, none able to touch `active`, a
+# tenant document or a secret. It is granted in dev only; there is no reason
+# for the gate to be an admin in prod.
+#
+# BARE EMAIL, not `serviceAccount:<email>`: swarm-api compares this list against
+# the email in the verified token, so a prefixed entry would plan, apply, and
+# match nobody. The key it must agree with is ALLOWED_USERS, which locals.tf
+# derives from google_service_account.verify.email.
+#
+# EMPTYING THIS LIST when the Group Reader role lands must keep swarm-verify:
+# the gate is not a member of any Workspace group and cannot be made one.
+admin_users = [
+  "bogdan@saga.xyz",
+  "swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+]
 
 # Domain-wide delegation was authorised in the Admin console on 2026-09-20 for
 # this service account's OAuth client id, scoped to
