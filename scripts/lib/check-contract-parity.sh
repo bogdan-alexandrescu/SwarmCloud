@@ -1293,6 +1293,56 @@ else:
         emit("OK", "WORKER_ARTIFACTS_DIR",
              "derived from WORKSPACE_MOUNT in the dispatcher, not restated")
 
+# -- 12. the tenant-id character class -------------------------------------
+# Section 4 asserts the LENGTH budget that `swarm_common.identity` and
+# terraform share. The CHARACTER SET had nothing, and it fails the same way: a
+# resolver that mints ids terraform refuses produces a tenant the API resolves
+# and nobody can provision -- resolved, authorised, and with no namespace, no
+# service account and no secrets.
+#
+# The two spell the same rule INSIDE OUT, which is why no plain grep would have
+# paired them. The frozen module holds the negated class it substitutes away,
+# `[^a-z0-9-]+`; terraform validates the positive form, `^[a-z0-9-]+$`. Only the
+# class body is comparable, and it is the part that would change.
+#
+# ANCHORED ON THE CLAIM THE FILE ITSELF MAKES. The validation block is found by
+# an error_message that names `swarm_common.identity`, not by a line number and
+# not by the regex -- so a validation that stops claiming parity stops being
+# checked for it, loudly, rather than being compared to a rule it no longer cites.
+FROZEN_CLASS = re.search(r"\[\^([^\]]*)\]", frozen_identity._TENANT_SAFE.pattern)
+if not FROZEN_CLASS:
+    emit("MISSING", "identity._TENANT_SAFE",
+         "the frozen tenant-id pattern is no longer a negated character class, "
+         "so there is nothing for terraform to be compared against")
+else:
+    claimed = [
+        (condition, message)
+        for condition, message in re.findall(
+            r"condition\s*=\s*([^\n]*)\n\s*error_message\s*=\s*\"([^\"]*)\"",
+            TEXT["terraform/modules/tenancy/variables.tf"])
+        if "swarm_common.identity" in message
+    ]
+    classes = []
+    for condition, _ in claimed:
+        classes += re.findall(r"regex\(\"\^\[([^\]]*)\]\+\$\"", condition)
+    if not classes:
+        emit("MISSING", "tenant-id character class",
+             "no validation in terraform/modules/tenancy/variables.tf both cites "
+             "swarm_common.identity and carries a `^[...]+$` regex; the claim of "
+             "parity moved, so nothing is holding terraform to the resolver")
+    else:
+        wrong = [c for c in classes if c != FROZEN_CLASS.group(1)]
+        if wrong:
+            emit("DRIFT", "tenant-id character class",
+                 "terraform accepts [%s] while swarm_common.identity slugs to "
+                 "[%s]; ids the resolver mints are ids terraform refuses, which "
+                 "is a tenant the API authorises and nobody can provision"
+                 % (" ".join(wrong), FROZEN_CLASS.group(1)))
+        else:
+            emit("OK", "tenant-id character class",
+                 "%d terraform validation(s) accept exactly the [%s] the frozen "
+                 "resolver slugs to" % (len(classes), FROZEN_CLASS.group(1)))
+
 print("\n".join(REPORT))
 PY
 )"; then

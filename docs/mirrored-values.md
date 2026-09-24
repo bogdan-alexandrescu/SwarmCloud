@@ -56,8 +56,9 @@ checker that existed twice would be its own punchline.
 | 9 | the push endpoint paths | the FastAPI route decorators | `scheduler_push_path`, `reconciler_path`, `quota_broker_path`, and `health_check_path` against every app in the repository |
 | 10 | the Artifact Registry repository | `swarm_common.config.Settings.artifact_registry` | both terraform variable defaults |
 | 11 | the workspace mount path | `agent_worker.config.WorkerConfig.workspace_root`, because the worker is the process that writes | the dispatcher constant, terraform's env and mount-path default, and each worker template's `WORKSPACE_ROOT`, `SWARM_ARTIFACTS_DIR` and `volumeMount` |
+| 12 | the tenant-id character class | `swarm_common.identity._TENANT_SAFE` | terraform's tenant-id validation regex |
 
-Sections 7 to 11 were added by the sweep. Two properties of all of them are
+Sections 7 to 12 were added by the sweep. Two properties of all of them are
 deliberate and should not be relaxed:
 
 * **The authority is named, and it is the component that acts.** For the
@@ -69,6 +70,24 @@ deliberate and should not be relaxed:
   FAILS.** It reports that the copies moved, rather than passing because it can
   no longer see them. A check that silently stopped checking is worse than no
   check: it reports an agreement it never established.
+
+### Two spellings of one rule, inside out
+
+Section 12 is the one no plain grep would have paired. `swarm_common.identity`
+holds the tenant-id rule as the **negated** class it substitutes away,
+`[^a-z0-9-]+`; `terraform/modules/tenancy/variables.tf` validates the **positive**
+form, `^[a-z0-9-]+$`, and its `error_message` says outright that the rule matches
+the frozen slugging. Nothing compared them. Section 4 already asserts the *length*
+budget the same pair shares — because the length once diverged and cost something
+— and the character set had nothing, although it fails in exactly the same way: a
+resolver minting ids terraform refuses is a tenant the API resolves and authorises
+and nobody can provision, with no namespace, no service account and no secrets.
+
+Only the class body is comparable, and it is the part that would change. The
+validation is found by an `error_message` that names `swarm_common.identity`,
+never by a line number and never by the regex, so a validation that stops
+claiming parity stops being checked for it — loudly — rather than being quietly
+compared against a rule it no longer cites.
 
 ### Why section 9 exists although a test already pinned those paths
 
