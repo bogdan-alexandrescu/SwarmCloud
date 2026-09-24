@@ -4,9 +4,11 @@
 #
 #   the digests application.yml BUILT for this commit (or, dispatched by hand
 #   for a commit CI never built, a build here through the same script)
-#         -> scan every one -> promote those DIGESTS, all or nothing
-#         -> dev: plan, apply, deploy, smoke
-#         -> prod: MANUAL APPROVAL, then plan, apply, deploy, smoke
+#         -> scan every one, moving nothing
+#         -> APPROVAL: the one job that names an environment. prod waits here
+#            for its required reviewer; dev has none and passes straight on
+#         -> promote those DIGESTS, all or nothing (scanning them again)
+#         -> plan, apply, deploy, smoke
 #
 # ONE BUILD PER COMMIT (owner decision, 2026-09-24; docs/ci.md). This workflow
 # used to build all eight images itself while application.yml built them too,
@@ -25,11 +27,50 @@
 #      The one place a tag is read is a redeploy without a build, which
 #      resolves `:<channel>` ONCE, writes the digests down, and deploys and
 #      verifies exactly those -- so "what is running" is always answerable.
-#   2. A production apply requires a human. saga-agents-staging is shared with
-#      other teams, so an unattended apply is an unattended change to somebody
-#      else's blast radius. The gate is a GitHub Environment with required
-#      reviewers -- configure it in repository settings; this file only asks for
-#      it, and a missing environment means the job waits rather than proceeds.
+#   2. NOTHING PROD-FACING HAPPENS BEFORE A HUMAN APPROVES IT (owner decision,
+#      2026-09-24; docs/ci.md). saga-agents-staging is shared with other teams,
+#      so an unattended apply is an unattended change to somebody else's blast
+#      radius -- and moving :prod is prod-facing too: a `skip_build` redeploy
+#      of prod deploys whatever :prod points at. This workflow used to move
+#      :prod in the images job and ask for approval only at the apply, so a
+#      rejected or abandoned prod release had already repointed :prod.
+#
+#      The gate is the `approval` job, the ONLY job that names an environment.
+#      `promote`, `infrastructure` and `deploy` need it and run only if it
+#      SUCCEEDED -- which has to be said in their `if:`, because a job that
+#      must run past a SKIPPED job (a `skip_build` redeploy skips `promote`)
+#      would otherwise run past a rejected approval too. Before it, a prod
+#      release only reads: it obtains (for prod, builds) the images and scans
+#      them. ONE approval, not one per job: GitHub holds every job that names
+#      a protected environment for its own approval, so naming prod on the
+#      apply and the deploy as well would ask the reviewer three times.
+#
+#      A PROD APPROVAL CLEARS ONE ATTEMPT, NOT THE RUN. A partial re-run --
+#      "Re-run failed jobs", "Re-run this job" -- starts a job and its
+#      dependants again and keeps every other job's result, so re-running a
+#      failed prod apply leaves `approval` out, keeps its old 'success', and
+#      (naming no environment) nobody is asked: up to 30 days later, a fresh
+#      plan of the shared project, applied. So `approval` outputs the attempt
+#      it ran in, and on prod `promote`, `infrastructure` and `deploy` run
+#      only in THAT attempt. A partial re-run of prod skips them and
+#      `stale-approval` fails the run saying so; "Re-run all jobs" runs the
+#      approval again, which waits for its reviewer. dev has no reviewer, so
+#      its re-runs are not tied (owner: keep dev un-gated).
+#
+#      A CANCEL IS A "NO" TOO, after the approval as well as before it. So
+#      nothing here that promotes, applies or deploys is conditioned on
+#      `always()`: GitHub still starts an `always()` job after the run is
+#      cancelled, and still runs an `always()` step in a job being cancelled.
+#      `!cancelled()` runs past a skipped job exactly as `always()` does and
+#      stops on a cancel. Only the read-only `status` and `report` steps keep
+#      `always()`.
+#
+#      The approval is a repository setting this file cannot check. GitHub
+#      CREATES an environment a workflow names if it does not exist, with no
+#      protection at all, so a missing `prod` would mean no wait. Measured
+#      2026-09-24: `prod` has required reviewer bogdan-alexandrescu and a
+#      deployment branch policy allowing only main; `dev` has no rule.
+#      tests/unit/scripts/test_release_prod_gate.py holds the ordering.
 
 name: release
 
@@ -102,13 +143,15 @@ jobs:
         run: ./scripts/destroy.sh --self-test
 
   # -------------------------------------------------------------------------
-  # The images, and their promotion. application.yml's `build images` job
-  # builds every image once per commit on main and uploads the digests it
-  # built; this job waits for that job, fetches that record, scans every digest
-  # in it and attaches the channel tag to exactly those digests.
+  # The images, and their scan. application.yml's `build images` job builds
+  # every image once per commit on main and uploads the digests it built; this
+  # job waits for that job, fetches that record and scans every digest in it.
+  # It MOVES NOTHING: it runs before the approval, so everything it does is
+  # read-only toward the environment. The promotion is the `promote` job,
+  # after the approval.
   # -------------------------------------------------------------------------
   build:
-    name: images and promote (${{ github.event.inputs.environment || 'dev' }})
+    name: images and scan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify]
     if: github.event.inputs.skip_build != 'true'
@@ -191,12 +234,154 @@ jobs:
             | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
           trivy --version
 
+      - name: scan the recorded digests (nothing is promoted yet)
+        # BEFORE THE APPROVAL, AND ONLY READING. `--scan-only` makes every
+        # check the promotion makes -- each recorded digest confirmed in
+        # Artifact Registry, a record built for another environment refused,
+        # every digest trivy-scanned, one refusal failing the lot -- and then
+        # stops: no channel tag moves and no deploy manifest is written
+        # (tests/unit/scripts/test_push_images_scan_only.py). So a prod
+        # reviewer approves a set that has already passed, instead of one the
+        # promotion refuses a minute after the approval.
+        run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan-only
+
+      - name: hand the scanned record to the promotion
+        # The record the step above scanned, uploaded only once it passed, so
+        # the promotion after the approval promotes exactly these digests and
+        # not a second reading of anything.
+        uses: actions/upload-artifact@v6
+        with:
+          name: scanned-images-${{ github.event.inputs.environment || 'dev' }}
+          path: build/images-${{ github.event.inputs.environment || 'dev' }}.json
+          retention-days: 30
+
+      - name: what the approval would release
+        # Written BEFORE the approval, so a prod reviewer can read it on the
+        # run's summary page while the run waits.
+        #
+        # The prose below never names the apply by its command: the gate test
+        # (test_release_prod_gate.py) reads every `run:` as text and errs
+        # toward calling a step prod-facing, so an echoed "terraform apply"
+        # made this pre-approval step count as an apply.
+        run: |
+          set -euo pipefail
+          record="build/images-${ENVIRONMENT}.json"
+          {
+            echo "### Scanned, not promoted: $(jq -r '.tag' "${record}") for ${ENVIRONMENT}"
+            echo
+            echo "Nothing has moved yet. Once \`approval (${ENVIRONMENT})\` succeeds -- for prod, once its"
+            echo "required reviewer approves -- \`promote\` scans these digests again and moves"
+            echo "\`:${ENVIRONMENT}\` to exactly them, and the apply job after it deploys them."
+            echo
+            echo "| image | digest |"
+            echo "|---|---|"
+            jq -r '.images[] | "| \(.name) | `\(.digest)` |"' "${record}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # THE APPROVAL. The only job in this workflow that names an environment,
+  # so the only place a release waits for a human (see the header). For prod
+  # that is the required reviewer, and nothing that promotes, applies or
+  # deploys runs until this job has SUCCEEDED: a rejected approval fails it,
+  # and every later job's `if:` asks for success, not just for completion.
+  # For dev the environment has no protection rule and this passes straight
+  # on (owner: keep dev un-gated).
+  #
+  # A `skip_build` redeploy skips `build` and still comes through here: a
+  # prod redeploy of what :prod already holds is still a prod change.
+  # -------------------------------------------------------------------------
+  approval:
+    name: approval (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-24.04
+    needs: [verify, build]
+    # !cancelled(), not always(): it runs past a `build` that skip_build
+    # skipped, and a cancelled run asks nobody to approve anything.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    # THE ATTEMPT THIS APPROVAL CLEARED. A partial re-run keeps this job, and
+    # this output with it, from the attempt it ran in; every prod job after
+    # it compares the output with the attempt now running and does not start
+    # on a mismatch (see the header). Rendered by GitHub at the end of the
+    # job, from `github`, so no step can write the wrong number.
+    outputs:
+      attempt: ${{ github.run_attempt }}
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: record what was cleared
+        # Nothing to do but exist: GitHub held this job, before this step,
+        # until the environment's protection rules were satisfied. Who
+        # approved is on the run's page; this records what they cleared.
+        run: |
+          {
+            echo "### ${ENVIRONMENT}: cleared to promote, apply and deploy"
+            echo
+            echo "Images: ${RELEASE_TAG:-none built -- a redeploy of the digests :${ENVIRONMENT} holds}."
+            echo "Commit \`${GITHUB_SHA}\`, started by ${GITHUB_TRIGGERING_ACTOR}, attempt ${GITHUB_RUN_ATTEMPT}."
+            if [ "${ENVIRONMENT}" = prod ]; then
+              echo
+              echo "This clears attempt ${GITHUB_RUN_ATTEMPT} only. A partial re-run of this release does not ask"
+              echo "again and so changes nothing in prod; \"Re-run all jobs\" asks again."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # The promotion, after the approval. Fetches the record `build` scanned and
+  # attaches the channel tag to exactly those digests.
+  # -------------------------------------------------------------------------
+  promote:
+    name: promote (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-24.04
+    needs: [build, approval]
+    # No status function, so GitHub also requires every job upstream to have
+    # succeeded; the explicit test is what a reader checks. A `skip_build`
+    # redeploy skips `build`, and with it this job: it promotes nothing. On
+    # prod, only in the attempt the approval cleared (see the header).
+    if: needs.build.result == 'success' && needs.approval.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt)
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: fetch the record `build` scanned
+        uses: actions/download-artifact@v7
+        with:
+          name: scanned-images-${{ github.event.inputs.environment || 'dev' }}
+          path: build/
+
+      # The promotion scans again, so it needs trivy here too -- see `build`'s
+      # install step for why it is installed this way and pinned.
+      - name: install trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
+
       - name: scan and promote the recorded digests
         # THOSE DIGESTS, NOT A TAG. `--manifest` promotes the digest each image
-        # was built as, from the record the step above obtained; each is
+        # was built as, from the record `build` obtained and scanned; each is
         # confirmed in Artifact Registry first, and a record built for another
         # environment is refused. `:<tag>` is not read at all, so a later build
         # of the same commit cannot change what this release promotes.
+        #
+        # SCANNED AGAIN, deliberately. `--scan` is the promotion's own gate,
+        # and the approval may come hours after `build`'s scan, against a
+        # vulnerability database that has learned something since. Measured on
+        # release 36059484794: scanning and promoting all eight images took
+        # 75 seconds (21:29:50-21:31:05), so the second scan costs about a
+        # minute.
         #
         # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
         # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
@@ -224,11 +409,28 @@ jobs:
   infrastructure:
     name: terraform apply (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
-    needs: [verify, build]
-    if: always() && needs.verify.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
-    # Required reviewers on this environment are what make a production apply
-    # a deliberate act. Configure them in Settings -> Environments.
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    needs: [verify, approval, promote]
+    # A status function because a `skip_build` redeploy skips `promote` and
+    # must still apply. That is exactly why `needs.approval.result ==
+    # 'success'` is spelled out: without it this apply would run past a
+    # REJECTED approval. `promote` may be skipped only on a skip_build run --
+    # skipped for any other reason, nothing new was promoted and nothing is
+    # applied.
+    #
+    # !cancelled(), NOT always(). This used to be always(), and GitHub starts
+    # an always() job after the run is cancelled: on a skip_build prod
+    # redeploy `promote` is skipped the moment `approval` succeeds, so a
+    # reviewer who approved and cancelled a second later still got a prod
+    # apply (tests/unit/scripts/test_release_prod_gate.py, the cancellation
+    # tests).
+    #
+    # NO `environment:` HERE, deliberately: `approval` holds this release's
+    # one approval, and naming prod again would make GitHub ask again. The
+    # price is that GitHub no longer asks on a RE-RUN of this job, so on prod
+    # it runs only in the attempt the approval cleared: "Re-run failed jobs"
+    # after a lock timeout skips it, and `stale-approval` says to re-run all
+    # jobs (see the header).
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -263,7 +465,7 @@ jobs:
       # every worker job planned onto a tag that does not exist. It never got
       # that far only because no release had yet passed its build.
       - name: fetch the promotion manifest
-        if: needs.build.result == 'success'
+        if: needs.promote.result == 'success'
         uses: actions/download-artifact@v7
         with:
           name: deployed-images-${{ github.event.inputs.environment || 'dev' }}
@@ -332,9 +534,22 @@ jobs:
   deploy:
     name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
-    needs: [build, infrastructure]
-    if: always() && needs.infrastructure.result == 'success'
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    needs: [build, approval, infrastructure]
+    # Runs only after the apply succeeded, and the apply runs only after the
+    # approval succeeded -- so this is behind the same one approval. No
+    # `environment:` of its own, for the reason given on `infrastructure`: it
+    # used to name prod as well, which asked the reviewer a second time AFTER
+    # the apply had already changed prod.
+    #
+    # Tied to the approved attempt on its own, not only through the apply:
+    # "Re-run this job" on a deploy whose smoke test failed keeps the apply's
+    # old 'success', and would otherwise run the in-VPC smoke suite and the
+    # GKE dispatch against prod with nobody asked. `approval` is in `needs`
+    # only so this condition can read its output.
+    #
+    # !cancelled() rather than always(), for the reason on `infrastructure`:
+    # it runs past a `build` that skip_build skipped, and a cancel stops it.
+    if: ${{ !cancelled() && needs.infrastructure.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -411,7 +626,10 @@ jobs:
         # Runs even when the smoke test failed, provided the deployment itself
         # verified: a smoke failure on the Cloud Run path is exactly when the
         # GKE path's own diagnosis is worth having, and the two share nothing
-        # below the API.
+        # below the API. But NOT after a cancel: this dispatches a task into
+        # the environment, and always() here ran it after a cancel that landed
+        # on the smoke test. !cancelled() runs past the failed smoke test and
+        # stops on a cancel.
         #
         # SWITCHED BY vars.PROVE_GKE_DISPATCH, and off until the owner turns it on.
         # On 2026-09-24 browser admission was deliberately paused
@@ -421,7 +639,7 @@ jobs:
         # every release teaches everyone to ignore the release. Set the repository
         # variable PROVE_GKE_DISPATCH=true in the same change that restores the
         # browser limit. When it is off the step still runs and SAYS it skipped.
-        if: always() && steps.verify.outcome == 'success'
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
         run: |
           if [ "${{ vars.PROVE_GKE_DISPATCH }}" != "true" ]; then
             echo "::notice title=GKE proof skipped::vars.PROVE_GKE_DISPATCH is not 'true' -- browser admission is paused; nothing about GKE was proven by this release."
@@ -444,3 +662,39 @@ jobs:
             jq -r '.images[] | "| \(.name) | `\(.digest)` |"' \
               "build/deployed-images-${ENVIRONMENT}.json" 2>/dev/null || echo "| (no manifest) | |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # A PARTIAL RE-RUN OF PROD GOES RED, AND SAYS WHY. On prod, `promote`,
+  # `infrastructure` and `deploy` run only in the attempt `approval` cleared
+  # (see the header), so "Re-run failed jobs" or "Re-run this job" skips
+  # them. A run whose re-run jobs are all skipped ends GREEN, and an operator
+  # who re-ran a failed prod apply would read success for a release that
+  # changed nothing. This job needs all of them, so any partial re-run of
+  # them re-runs it too, and it fails the run with what to do instead.
+  #
+  # It never runs on a first attempt, on "Re-run all jobs" (the approval runs
+  # again and outputs the new attempt), on dev, or after a cancel.
+  # tests/unit/scripts/test_release_prod_gate.py holds all of that.
+  # -------------------------------------------------------------------------
+  stale-approval:
+    name: prod approval is from an earlier attempt
+    runs-on: ubuntu-24.04
+    needs: [approval, promote, infrastructure, deploy]
+    if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
+    env:
+      APPROVED_ATTEMPT: ${{ needs.approval.outputs.attempt }}
+    steps:
+      - name: say what to do instead
+        # The message never names the apply by its command, for the reason on
+        # `build`'s summary step: the gate test reads every run: as text.
+        run: |
+          echo "::error title=Nothing was released -- re-run ALL jobs::The prod approval was given in attempt ${APPROVED_ATTEMPT}; this is attempt ${GITHUB_RUN_ATTEMPT}, a partial re-run, which GitHub does not ask anyone to approve. So promote, the apply and the deploy were skipped and this attempt changed nothing in prod. Use 'Re-run all jobs': the approval runs again and waits for its reviewer."
+          {
+            echo "### Nothing was released"
+            echo
+            echo "The prod approval cleared attempt ${APPROVED_ATTEMPT}. This is attempt ${GITHUB_RUN_ATTEMPT}, a partial"
+            echo "re-run, which GitHub does not ask anyone to approve, so promote, the apply and the deploy"
+            echo "were skipped and this attempt changed nothing in prod. **Re-run all jobs** to release: the"
+            echo "approval runs again and waits for its reviewer."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

@@ -173,7 +173,15 @@ def _manifest(environment: str = "dev", **override: dict) -> dict:
     return {"tag": TAG, "commit": "c0ffee" * 6 + "abcd", "environment": environment, "images": images}
 
 
-def _run(tmp_path: Path, registry: dict, manifest: dict, *, channel: str = "dev", **fakes: str):
+def _run(
+    tmp_path: Path,
+    registry: dict,
+    manifest: dict,
+    *,
+    channel: str = "dev",
+    flags: tuple[str, ...] = ("--scan",),
+    **fakes: str,
+):
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     (root / "build").mkdir()
@@ -207,7 +215,7 @@ def _run(tmp_path: Path, registry: dict, manifest: dict, *, channel: str = "dev"
     env.pop("GITHUB_ACTIONS", None)
     proc = subprocess.run(
         ["bash", str(root / "scripts" / "push-images.sh"),
-         "--manifest", str(manifest_path), "--channel", channel, "--scan"],
+         "--manifest", str(manifest_path), "--channel", channel, *flags],
         env=env, capture_output=True, text=True, timeout=120, check=False,
     )
     log = [json.loads(l) for l in events.read_text().splitlines() if l] if events.exists() else []

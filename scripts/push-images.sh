@@ -41,8 +41,18 @@
 # moves, and a manifest built for another environment is refused outright --
 # swarm-ui bakes its environment into the bundle when it is compiled.
 #
-# Usage: scripts/push-images.sh [TARGET...] [--tag SHA] [--channel dev] [--scan|--no-scan]
+# --scan-only DOES EVERYTHING ABOVE EXCEPT MOVE. It resolves and confirms
+# every digest and scans every one, refuses exactly what a promotion would
+# refuse, and then stops: no channel tag moves and no deploy manifest is
+# written. release.yml runs it BEFORE the approval (owner decision,
+# 2026-09-24, docs/ci.md): scanning is read-only, so a prod reviewer approves
+# a set that has already passed, and moving :prod waits for the approval.
+# The promotion after the approval scans again -- the approval may come hours
+# later, against a newer vulnerability database.
+#
+# Usage: scripts/push-images.sh [TARGET...] [--tag SHA] [--channel dev] [--scan|--no-scan|--scan-only]
 #        scripts/push-images.sh --manifest build/images-dev.json --channel dev --scan
+#        scripts/push-images.sh --manifest build/images-prod.json --channel prod --scan-only
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -60,21 +70,35 @@ TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"
 SCAN="${SCAN_IMAGES:-1}"
+SCAN_ONLY=0
+NO_SCAN_FLAG=0
 SEVERITY="${TRIVY_SEVERITY:-HIGH,CRITICAL}"
 FROM_MANIFEST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --tag)      TAG="$2"; shift 2 ;;
-    --channel)  CHANNEL="$2"; shift 2 ;;
-    --scan)     SCAN=1; shift ;;
-    --no-scan)  SCAN=0; shift ;;
-    --manifest) FROM_MANIFEST="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,45p' "$0"; exit 0 ;;
-    -*)         die "unknown flag: $1" ;;
-    *)          TARGETS+=("$1"); shift ;;
+    --tag)       TAG="$2"; shift 2 ;;
+    --channel)   CHANNEL="$2"; shift 2 ;;
+    --scan)      SCAN=1; shift ;;
+    --no-scan)   SCAN=0; NO_SCAN_FLAG=1; shift ;;
+    --scan-only) SCAN_ONLY=1; shift ;;
+    --manifest)  FROM_MANIFEST="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,55p' "$0"; exit 0 ;;
+    -*)          die "unknown flag: $1" ;;
+    *)           TARGETS+=("$1"); shift ;;
   esac
 done
+
+# A scan-only run that does not scan checks nothing and would still exit 0 --
+# the pre-approval step would pass a set nobody looked at. Refused whichever
+# order the flags came in. SCAN_IMAGES=0 in the environment does not count:
+# the flag asked for a scan, explicitly.
+if [[ "${SCAN_ONLY}" -eq 1 ]]; then
+  if [[ "${NO_SCAN_FLAG}" -eq 1 ]]; then
+    die "--scan-only with --no-scan would check nothing and move nothing; pass one of them"
+  fi
+  SCAN=1
+fi
 
 require_cmd gcloud jq
 
@@ -136,6 +160,9 @@ info "channel  ${CHANNEL}"
 info "repo     ${IMAGE_REPO}"
 info "scan     $([[ "${SCAN}" -eq 1 ]] && echo "trivy, fail on ${SEVERITY}" || echo "disabled")"
 info "images   ${#TARGETS[@]}: ${TARGETS[*]}"
+if [[ "${SCAN_ONLY}" -eq 1 ]]; then
+  info "mode     scan only: every check a promotion makes, and no channel tag moves"
+fi
 
 TRIVY_BIN="$(trivy_bin || true)"
 if [[ "${SCAN}" -eq 1 && -z "${TRIVY_BIN}" ]]; then
@@ -333,6 +360,15 @@ if [[ "${#REFUSED[@]}" -gt 0 ]]; then
     printf '     %-22s %s\n' "${REFUSED[$i]}" "${REFUSED_WHY[$i]}" >&2
   done
   die "refusing to promote a partial release: ${#REFUSED[@]} of ${#TARGETS[@]} image(s) refused (${REFUSED[*]})"
+fi
+
+# --scan-only stops here, after every check and before the first move. Nothing
+# below this line runs, so no tag moves, nothing needs putting back, and no
+# deploy manifest is written for the apply to mistake for a promotion.
+if [[ "${SCAN_ONLY}" -eq 1 ]]; then
+  hr
+  ok "checked ${#R_NAME[@]} image(s): every one would be promoted to :${CHANNEL}; nothing moved (--scan-only)"
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------

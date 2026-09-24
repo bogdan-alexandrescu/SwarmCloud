@@ -202,8 +202,11 @@ gcloud logging read \
 ## 7. Deploying a change
 
 **The normal path is CI.** A merge to `main` runs `release.yml` — `verify`,
-`build and promote`, `terraform apply`, `deploy and smoke` — each behind a
-GitHub environment with its approval. The sequence below is the same thing
+`images and scan`, `approval`, `promote`, `terraform apply`, `deploy and
+smoke`. Only `approval` names a GitHub environment: a prod release waits there
+for its required reviewer before anything is promoted or applied, and dev has
+no reviewer ([why](ci.md#a-prod-release-waits-for-approval-before-anything-prod-facing)).
+The sequence below is the same thing
 driven by hand, for an operator who already holds the credentials and is doing
 a break-glass deploy or a dev-environment push. It is not what someone
 authoring a change runs; see [where the gates run](ci.md).

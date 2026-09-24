@@ -352,7 +352,9 @@ see `terraform/bootstrap/wif.tf`, where the attribute condition pins both the
 repository and the allowed refs. Without the ref pin, a workflow triggered from a
 fork could mint a deploy token.
 
-Production applies require **manual approval** through a GitHub Environment.
+Production releases require **manual approval** through a GitHub Environment,
+before `:prod` is promoted and before the apply
+([ci.md](ci.md#a-prod-release-waits-for-approval-before-anything-prod-facing)).
 `plan` runs on the PR so the diff is reviewable before anyone approves an apply
 into a project that hosts another team's production.
 
@@ -362,13 +364,13 @@ into a project that hosts another team's production.
 PR  -> checks -> review -> merge to main
         |
         v
-    release.yml: build -> immutable :<sha> tags -> trivy -> promote digest
+    release.yml: build (or reuse CI's) -> immutable :<sha> tags -> trivy
         |
         v
-    dev apply + deploy + smoke
+    dev: promote digest -> apply + deploy + smoke          (no approval)
         |
         v
-    prod: environment approval -> apply -> deploy -> smoke
+    prod (dispatched): trivy -> APPROVAL -> promote digest -> apply -> deploy -> smoke
 ```
 
 Nothing is ever deployed by a mutable tag. `build/deployed-images-<env>.json`
