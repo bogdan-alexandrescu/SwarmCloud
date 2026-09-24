@@ -1387,9 +1387,6 @@ body {
        eye's whole severity budget on the workflows that are fine. (It was
        `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
 .wf-meter { flex: none; width: 54px; }
-/* MUTATION (a), reverted two commits later: the fill's OTHER class under its
-   parent, (0,2,0), placed BEFORE the grey default it out-specifies. */
-.wf-meter .wf-meter-fill { background: var(--info); }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
   /* THE TEXT DOES NOT GIVE WAY; THE ROW DOES. The grid column was never the
@@ -8361,17 +8358,3 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    another lane has already decided about — it only reaches the ones nobody
    has. */
 :where(.app a[href]):focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-
-/* MUTATIONS, reverted two commits later. Each one paints the Workflows meter
-   blue or makes the environment badge shout in a browser.
-   (b) equal specificity to the default, later in the sheet: */
-.wf-meter-fill { background: var(--info); }
-/* (d) a verdict class inside :not(), which the old guard read as a verdict: */
-.ctl-util-fill:not(.is-warn) { background: var(--info); }
-/* (e) through the PARENT, naming no fill class at all, (0,1,1): */
-.wf-meter > span { background: var(--info); }
-/* (f) the badge shouting through an ANCESTOR (jsdom does not inherit
-   text-transform) and (g) at a breakpoint (jsdom applies no @media but
-   `screen`): */
-.brand-row { text-transform: uppercase; }
-@media (max-width: 560px) { .brand-env-name { text-transform: uppercase; } }

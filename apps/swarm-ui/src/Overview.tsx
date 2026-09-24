@@ -2979,8 +2979,6 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    being approached now, and the tilde beside it is the same mark that cs
    status and the Accounts screen use for the same two cases. */
 .ctl-util-fill.ov-projected { background: var(--ctl-absent); }
-/* MUTATION (c), reverted two commits later: an exemption in CSS a screen injects. */
-.ctl-util-fill.wf-x { background: var(--info); }
 .ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
 
 /* ---- attention ---------------------------------------------------------- */
