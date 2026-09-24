@@ -296,3 +296,29 @@ variable "deployer_storage_buckets_exact" {
   type        = list(string)
   default     = ["saga-agents-staging_cloudbuild"]
 }
+
+variable "deployer_iap_backends" {
+  description = <<-EOT
+    Backend services on which the CI deployer holds roles/iap.admin, bound in each
+    backend's OWN IAP policy (wif.tf, deployer_iap). terraform/infra's frontend
+    module sets IAP accessors on exactly these two, so it has to be able to read
+    and write their IAP policy.
+
+    The names follow modules/frontend/main.tf:123,189 for name_prefix "swarm". A
+    rename there makes the bootstrap plan fail at the data source lookup, rather
+    than leaving the deployer with rights on a backend that no longer exists.
+
+    Set to [] for the first bootstrap apply on a fresh project, before
+    terraform/infra has created the backends.
+  EOT
+  type        = list(string)
+  default     = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+
+  # Nine of the ten backend services in saga-agents-staging belong to another
+  # team, including their Keycloak and ArgoCD. The prefix check keeps any of them
+  # out of this list.
+  validation {
+    condition     = alltrue([for b in var.deployer_iap_backends : startswith(b, "swarm")])
+    error_message = "deployer_iap_backends may only name the platform's own backends (prefix 'swarm'); the others in this project belong to another team."
+  }
+}

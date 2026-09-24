@@ -275,27 +275,55 @@ resource "google_project_iam_member" "deployer_storage" {
 # or lock them out of both. There is no version of this platform's work that
 # needs that, and no review that would catch it after the fact.
 #
-# THE CONDITION, AND WHAT IS UNKNOWN ABOUT IT. IAP web resources are named
-# `projects/<p>/iap_web/compute/services/<backend>`, so the prefix match admits
-# `swarm-ui-backend` and `swarm-ui-ui-backend` (terraform manages both) and
-# refuses all nine of theirs by construction.
+# THE FIRST VERSION WAS A CONDITION, AND IT DID NOT WORK. It was a project-level
+# grant with
 #
-# What is NOT established is whether IAP evaluates `resource.name` conditions at
-# all. If it does not, the apply fails again with the same 403 — loudly, on our
-# own resource, and reverting is deleting this block. That is a better failure
-# than the alternative, which is silent authority over another team's auth.
-resource "google_project_iam_member" "deployer_iap" {
-  count = local.wif_enabled
+#     resource.name.startsWith("projects/saga-agents-staging/iap_web/compute/services/swarm")
+#
+# and release 35972131246 (2026-09-24) failed on both of our backends with
+#
+#     Error 403: The caller does not have permission
+#
+# The previous error was "Permission 'iap.webServices.getIamPolicy' denied", so the
+# condition was evaluated and matched nothing. IAP names a web backend by project
+# NUMBER and numeric backend ID (`projects/209012342332/iap_web/compute/services/
+# 817602226733443034`), so a prefix on the project ID and the service NAME can
+# never match. The numeric form cannot be used either. A prefix on it is the
+# whole project, which admits all ten backends, their Keycloak included. Pinning
+# the IDs breaks silently the day a backend is recreated with a new one.
+#
+# SO THE GRANT IS ON THE RESOURCE, NOT ON THE PROJECT. roles/iap.admin is bound in
+# each of our two backends' own IAP policies. It cannot reach a backend that is
+# not ours, because the binding does not exist anywhere else. No condition syntax
+# has to be right for that to hold. `gcloud iam list-grantable-roles` on the
+# backend lists roles/iap.admin. `modules/frontend` manages only additive
+# `_iam_member` resources on these backends, so its applies do not remove this
+# binding.
+#
+# THE NAMES ARE LOOKED UP, NOT TRUSTED. They are derived in modules/frontend/main.tf
+# (`${local.name}-backend` :123 and `${local.name}-ui-backend` :189, with
+# local.name = "${name_prefix}-ui"). Restating that rule here makes a second copy.
+# The data source turns that copy into a check: if the module renames a backend,
+# this plan fails with "not found" instead of granting IAP rights on nothing.
+#
+# FRESH PROJECT ORDER. The backends are created by terraform/infra, which runs
+# after bootstrap and needs these rights to set its own IAP members. On a new
+# project, apply bootstrap with deployer_iap_backends = [], apply infra once as
+# an owner, then apply bootstrap with the default.
+data "google_compute_backend_service" "deployer_iap" {
+  for_each = local.wif_enabled == 1 ? toset(var.deployer_iap_backends) : toset([])
 
   project = var.project_id
-  role    = "roles/iap.admin"
-  member  = "serviceAccount:${google_service_account.deployer[0].email}"
+  name    = each.value
+}
 
-  condition {
-    title       = "swarm IAP backends only"
-    description = "Nine of the ten IAP-capable backend services in this project belong to another team, including their Keycloak and ArgoCD. This admits only ours."
-    expression  = "resource.name.startsWith(\"projects/${var.project_id}/iap_web/compute/services/${var.name_prefix}\")"
-  }
+resource "google_iap_web_backend_service_iam_member" "deployer_iap" {
+  for_each = data.google_compute_backend_service.deployer_iap
+
+  project             = var.project_id
+  web_backend_service = each.value.name
+  role                = "roles/iap.admin"
+  member              = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
 # ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.
