@@ -145,8 +145,15 @@ says what was meant — never that GCP would accept it.
 
 The `ui` job does not name a Node version. Its first step reads the major from
 `ARG NODE_IMAGE` in [`images/swarm-ui/Dockerfile`](../images/swarm-ui/Dockerfile)
-and hands it to `setup-node`. The install step prints the `node` and `npm` it
-got. The step fails unless it finds exactly one such line.
+and hands it to `setup-node`. The step fails unless it finds exactly one such line.
+
+The step after `setup-node` checks that the Node on `PATH` has that major, and
+fails if it does not or if the major arrived empty. Without that check, an empty
+value would read as success. `setup-node@v4` treats an empty `node-version` as
+"no version given". It installs nothing and prints no warning, so the typecheck,
+the tests and the build would all run, and pass, on whatever Node the runner
+image ships. An empty value is what you get if the output name the first step
+writes and the name `setup-node` reads ever stop matching.
 
 It used to say `node-version: "20"`, while the image said `node:20` separately.
 Two statements of one number is the drift
@@ -157,7 +164,11 @@ pins `node:24-bookworm-slim` at the same digest `agent-runtime-base` pins, and a
 bump there moves CI with it.
 [`tests/unit/scripts/test_ui_node_line.py`](../tests/unit/scripts/test_ui_node_line.py)
 fails if the job gets a literal back, if the two Node images disagree on the
-major, or if the job stops running the production build.
+major, or if the job stops running the production build. It also *runs* both
+steps. The first runs against a Dockerfile moved to a major that appears nowhere
+else, and must write that major under the name `setup-node` reads. The second
+runs against a stand-in `node`, and must fail on a different major and on an
+empty one.
 
 Which Node line is *current* is not something a test can know. That is a fact
 about a date, and it is decided in [`versions.md`](versions.md).

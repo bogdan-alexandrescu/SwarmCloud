@@ -253,6 +253,32 @@ jobs:
           cache: npm
           cache-dependency-path: apps/swarm-ui/package-lock.json
 
+      - name: the Node that runs is the Node the image builds with
+        # setup-node@v4 treats an EMPTY node-version as "no version": its
+        # src/main.ts calls setupNodeJs only `if (version)`, so it installs
+        # nothing and says nothing, and every step below would run -- and go
+        # green -- on the runner image's own Node. That is what happens if the
+        # output name the step above writes and the one setup-node reads ever
+        # drift apart. So compare the Node actually on PATH with the major
+        # setup-node was asked for, through the SAME expression, and stop on a
+        # mismatch or an empty value. Passed through env, not spliced into the
+        # script. tests/unit/scripts/test_ui_node_line.py runs this step
+        # against a stand-in `node`; keep it a step of its own for that.
+        env:
+          WANT_NODE_MAJOR: ${{ steps.node.outputs.major }}
+        run: |
+          set -euo pipefail
+          got="$(node -p 'process.versions.node.split(".")[0]')"
+          if [ -z "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::setup-node was given no Node major (steps.node.outputs.major is empty), so it installed nothing; this job would run on the runner's Node ${got}"
+            exit 1
+          fi
+          if [ "${got}" != "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::the ui job runs Node ${got}, but images/swarm-ui/Dockerfile builds with Node ${WANT_NODE_MAJOR}"
+            exit 1
+          fi
+          echo "running Node ${got}, the major images/swarm-ui/Dockerfile builds with"
+
       - name: install
         working-directory: apps/swarm-ui
         run: |
