@@ -35,8 +35,8 @@ from .conftest import auth_header, seed_pool, seed_tenant
 
 ROOT = "root@saga.xyz"
 
-#: Every admin route that writes a pool document through `upsert_pool`, and the
-#: pools each one touches. A route added later that writes a ceiling and is not
+#: Every admin route that writes a pool document, and the pools each one
+#: touches. A route added later that writes a ceiling and is not
 #: in this list is the omission this file exists to prevent, so the list is
 #: long on purpose rather than representative.
 POOL_WRITES = [
@@ -63,6 +63,17 @@ POOL_WRITES = [
         {"drain": True, "reason": "billing hold"},
         # The provider pool AND every per-tenant slice of it -- the drain that
         # reaches every tenant is the one most worth being able to attribute.
+        ["provider:anthropic", "provider:anthropic:tenant:eng"],
+    ),
+    # The three that reach a pool INDIRECTLY, through Store.set_tenant_limits
+    # and Store.set_provider_enabled. Leaving them out would make "every admin
+    # write is attributed" true only of the routes that happened to be easy.
+    ("put", "/v1/admin/limits/tenant/eng", {"limit": 3}, ["tenant:eng"]),
+    ("put", "/v1/admin/tenants/eng/limits", {"max_active": 3}, ["tenant:eng"]),
+    (
+        "post",
+        "/v1/admin/providers/anthropic/enabled",
+        {"enabled": False, "reason": "billing hold"},
         ["provider:anthropic", "provider:anthropic:tenant:eng"],
     ),
 ]
