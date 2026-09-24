@@ -14,6 +14,7 @@ import { HelpCard, HelpNote } from './HelpCard'
 import { LivenessBadge } from './Liveness'
 import { RunFiles } from './RunFiles'
 import { Screen, timeAgo } from './Shell'
+import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
 import {
   GIB,
@@ -2814,6 +2815,11 @@ function Input({ run }: { run: AgentRun }) {
           </div>
         )}
       </div>
+
+      {/* redesign-v2 Panel 3: the files staged into the workspace, each linked
+          back to the run that produced it. Renders nothing for a run that
+          declared no input and reported none. See StagedInputs.tsx. */}
+      <StagedInputs task={task} />
 
       {input !== null && input !== undefined && (
         <div className="section" style={SUB}>
