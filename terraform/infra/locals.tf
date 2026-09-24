@@ -393,8 +393,23 @@ locals {
       TENANT_GROUPS = join(",", sort([
         for t, v in var.tenants : v.principal if v.kind == "group" && v.directory_group
       ]))
+      # ADMIN_USERS and ADMIN_POOL_USERS are taken from the environment's
+      # tfvars AS IS, and the verification identity is deliberately NOT
+      # appended to either the way ALLOWED_USERS below derives it. Admitting
+      # the gate is needed in every environment; letting it change a runner
+      # ceiling is an owner decision taken for dev on 2026-09-24 (so race-test
+      # can narrow runner:mock through the admin API), and deriving it here
+      # would grant it everywhere at once.
+      #
+      # The gate is on ADMIN_POOL_USERS, never ADMIN_USERS. The first is an
+      # allow-list of admin routes (swarm_api.auth.POOL_ADMIN_ROUTES: the
+      # runner ceiling alone); the second is full admin, which can disable any
+      # tenant, and the owner reversed putting the gate there the same day.
+      # See terraform/environments/dev/dev.tfvars and
+      # docs/audits/2026-09-22/race-test-needs-a-write.md.
       ADMIN_GROUPS            = join(",", sort(var.admin_groups))
       ADMIN_USERS             = join(",", sort(var.admin_users))
+      ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
       # The verification job's identity, admitted past the domain check.

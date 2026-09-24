@@ -115,7 +115,7 @@ def test_a_profile_added_to_the_catalogue_appears_without_touching_the_route(cli
         image="agent-runtime-probe",
         resource_class="standard",
         backend=Backend.CLOUD_RUN_JOB,
-        command=("python", "-m", "agent_worker.runners.mock"),
+        runner_argv=("python", "-m", "agent_worker.runners.mock"),
         provider=None,
         timeout_seconds=111,
     )
@@ -140,7 +140,7 @@ def test_auto_backend_is_published_as_both_declared_and_resolved(client, monkeyp
         image="agent-runtime-base",
         resource_class="standard",
         backend=Backend.AUTO,
-        command=("python", "-m", "agent_worker.runners.mock"),
+        runner_argv=("python", "-m", "agent_worker.runners.mock"),
     )
     monkeypatch.setitem(RUNNER_PROFILES, "probe-auto", auto)
 

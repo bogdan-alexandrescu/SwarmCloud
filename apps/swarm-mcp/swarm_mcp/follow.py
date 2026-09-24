@@ -481,10 +481,33 @@ def _events(
     return out, cur
 
 
+def event_type(event: dict[str, Any]) -> Any:
+    """The type an event RECORDS -- its `type` field, passed through as served,
+    except for one legacy shape.
+
+    That shape differs from its field. Before 2026-09-24 the API wrote a
+    flag-only cancel -- the task still held its lease, nothing was cancelled --
+    as `type: cancelled, detail.phase: cancel_requested`. Contract request 17
+    gave it its own type, `cancel_requested`, and a current API serves stored
+    history that way (`swarm_api.codec.stored_event_type`). This plugin can be
+    pointed at an API older than itself, which serves the raw row, so the same
+    reading is applied here: narrating that row as "cancelled" is exactly what
+    showed four DISPATCHED tasks as cancelled in incident wf_ebb3ab2d65664707a559.
+
+    Only that shape. A `cancelled` with `phase: cancelled`, or with no phase at
+    all (the scheduler's cascade, the worker, the reconciler), is a real cancel.
+    """
+    kind = event.get("type")
+    detail = event.get("detail")
+    if kind == "cancelled" and isinstance(detail, dict) and detail.get("phase") == "cancel_requested":
+        return "cancel_requested"
+    return kind
+
+
 def _event_row(event: dict[str, Any]) -> dict[str, Any]:
     row = {
         "at": event.get("at"),
-        "type": event.get("type"),
+        "type": event_type(event),
         "attempt_id": event.get("attempt_id"),
         "generation": event.get("generation"),
         "detail": event.get("detail"),
