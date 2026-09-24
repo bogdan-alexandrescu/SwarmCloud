@@ -185,6 +185,119 @@ resource "google_project_iam_member" "deployer_secrets" {
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
+# storage.admin, SCOPED. The first of the deployer's roles to get a condition.
+#
+# WHY THIS ONE FIRST. Eighteen project-level roles, zero conditions, in a project
+# holding another team's production. Ranked by blast radius against how well the
+# service supports conditions, storage is first: `resource.name` conditions on
+# Cloud Storage are well supported, and the project holds THREE buckets that are
+# not ours --
+#
+#     saga-agents-crawled-media-staging
+#     saga-agents-files-staging
+#     saga-agents-terraform-state-staging
+#
+# the last of which is another team's TERRAFORM STATE. Unconditioned
+# storage.admin means CI can delete it.
+#
+# THE BUCKET THAT NEARLY GOT CUT OFF, and the reason this is done one role at a
+# time with a real run behind each. A condition of just
+# `startsWith(".../buckets/swarm-")` looks obviously right and would have broken
+# the build:
+#
+#     saga-agents-staging_cloudbuild
+#
+# is where `gcloud builds submit` uploads its source tarball. It is GCP's, not
+# ours and not theirs, it does not carry our prefix, and the release pipeline
+# reached a working state for the first time on 2026-09-24 after six failed
+# attempts -- one of which was an IAM condition I wrote from documentation and
+# applied unverified. Cutting this bucket off would have been the seventh.
+#
+# THE OBJECT CASE IS COVERED BY THE PREFIX MATCH. An object is
+# `projects/_/buckets/<b>/objects/<o>`, so a `startsWith` on the bucket path
+# admits every object in it and nothing in a bucket outside it.
+#
+# NOT APPLIED YET. The plan is written and reviewable; the apply waits until the
+# in-flight release has deployed. Applying an IAM condition to the role the build
+# depends on, while that build is running, is the mistake this comment exists to
+# avoid repeating.
+locals {
+  deployer_storage_condition = join(" || ", concat(
+    [for b in var.deployer_storage_bucket_prefixes :
+    "resource.name.startsWith(\"projects/_/buckets/${b}\")"],
+    [for b in var.deployer_storage_buckets_exact :
+    "resource.name == \"projects/_/buckets/${b}\""],
+  ))
+}
+
+resource "google_project_iam_member" "deployer_storage" {
+  count = local.wif_enabled
+
+  project = var.project_id
+  role    = "roles/storage.admin"
+  member  = "serviceAccount:${google_service_account.deployer[0].email}"
+
+  condition {
+    title       = "swarm buckets and the Cloud Build staging bucket only"
+    description = "Refuses every bucket this platform does not own. Three buckets in this project belong to another team, one of them their terraform state."
+    expression  = local.deployer_storage_condition
+  }
+}
+
+# iap.admin, SCOPED — and this one is not optional scoping.
+#
+# `terraform apply` failed with
+#
+#     Error 403: Permission 'iap.webServices.getIamPolicy' denied on resource
+#     '//iap.googleapis.com/projects/saga-agents-staging/iap_web/compute/
+#      services/swarm-ui-backend'
+#
+# because `modules/frontend` manages `google_iap_web_backend_service_iam_member`
+# on our UI backend and the deployer held no IAP role at all.
+#
+# WHY THIS ONE IS CONDITIONED FROM THE START, unlike the seventeen roles granted
+# unconditioned before it. `gcloud compute backend-services list` on this project
+# returns TEN services. One is ours. The other nine are the other team's GKE
+# gateway routes:
+#
+#     keycloak            their identity provider
+#     argocd              their deployment admin
+#     promptlab-api       their product
+#     promptlab-web       their product
+#     crawling-service    their product
+#     browser-engine      their product
+#     api-service         their product
+#     gw-serve404/500     their gateway
+#
+# Project-level `roles/iap.admin` would let any CI run on an allowed ref add or
+# remove members on their KEYCLOAK and their ARGOCD — that is, grant itself or
+# anyone else access to another team's identity provider and deployment console,
+# or lock them out of both. There is no version of this platform's work that
+# needs that, and no review that would catch it after the fact.
+#
+# THE CONDITION, AND WHAT IS UNKNOWN ABOUT IT. IAP web resources are named
+# `projects/<p>/iap_web/compute/services/<backend>`, so the prefix match admits
+# `swarm-ui-backend` and `swarm-ui-ui-backend` (terraform manages both) and
+# refuses all nine of theirs by construction.
+#
+# What is NOT established is whether IAP evaluates `resource.name` conditions at
+# all. If it does not, the apply fails again with the same 403 — loudly, on our
+# own resource, and reverting is deleting this block. That is a better failure
+# than the alternative, which is silent authority over another team's auth.
+resource "google_project_iam_member" "deployer_iap" {
+  count = local.wif_enabled
+
+  project = var.project_id
+  role    = "roles/iap.admin"
+  member  = "serviceAccount:${google_service_account.deployer[0].email}"
+
+  condition {
+    title       = "swarm IAP backends only"
+    description = "Nine of the ten IAP-capable backend services in this project belong to another team, including their Keycloak and ArgoCD. This admits only ours."
+    expression  = "resource.name.startsWith(\"projects/${var.project_id}/iap_web/compute/services/${var.name_prefix}\")"
+  }
+}
+
 # ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.
 #
 # `gcloud builds submit` runs the build as a service account, so the caller
