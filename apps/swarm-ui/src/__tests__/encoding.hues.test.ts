@@ -26,7 +26,6 @@
 // an empty string.
 
 import STYLES from '../styles.css?raw'
-import OVERVIEW from '../Overview.tsx?raw'
 import { describe, expect, it } from 'vitest'
 
 import { colour, contrast, resolveVars, stripComments, tokenTables, type RGBA } from './spaceprobe'
@@ -114,11 +113,14 @@ describe('an absence is not drawn in the colour of an outcome', () => {
 })
 
 describe("the token mix's four segments are separable in greyscale", () => {
-  const sheet = /const OVERVIEW_CSS = `([\s\S]*?)`/.exec(OVERVIEW)
-  const CSS = stripComments(sheet?.[1] ?? '')
+  // `styles.css`, where Overview's rules have lived since U8 folded the
+  // `OVERVIEW_CSS` template literal into the sheet. The `.ov-sN` tones are the
+  // first rules of those exact selectors, so `declared` finds them there.
+  const CSS = stripComments(STYLES)
 
-  it('reads the Overview sheet', () => {
+  it('reads the Overview block of the sheet', () => {
     expect(CSS).toContain('.ov-mix')
+    expect(CSS).toContain('.ov-s1')
   })
 
   for (const theme of THEMES) {

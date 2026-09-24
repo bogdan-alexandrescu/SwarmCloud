@@ -111,7 +111,8 @@ def test_a_mixed_terminal_set_derives_failed_not_cancelled():
 
     FAILED rather than CANCELLED because the cancellations are the CONSEQUENCE:
     `scheduler/loop.py` cancels the dependents of a failed parent with "an
-    upstream workflow step did not succeed". Reporting CANCELLED would hand an
+    upstream workflow step did not succeed", and under `fail_workflow` it
+    cancels every step that has not started. Reporting CANCELLED would hand an
     operator the second fault instead of the first.
     """
     workflow = make_workflow(steps=[("a", "t1"), ("b", "t2"), ("c", "t3")])
@@ -268,12 +269,15 @@ def test_cancel_requested_does_not_by_itself_make_a_workflow_cancelled():
 
 
 def test_on_step_failure_does_not_change_the_derivation():
-    """`fail_workflow` is not honoured by the engine, so it must not be honoured here.
+    """The setting acts on the STEPS, never on the derivation.
 
-    Nothing reads `Workflow.on_step_failure`: the scheduler cancels the
-    dependents of a failed step under both settings and lets independent branches
-    run under both. A derivation that reported FAILED because the caller ASKED
-    for fail_workflow would be describing intent while a lease was still held.
+    Since 2026-09-24 the scheduler honours `fail_workflow` by cancelling every
+    step that has not started (test_on_step_failure.py). The derivation then
+    reaches FAILED from those step states alone. It must not reach it by
+    reading the setting: a step still RUNNING holds a lease under either
+    setting, because the scheduler never kills a live step. A derivation that
+    reported FAILED because the caller ASKED for fail_workflow would be
+    describing intent while a container was still costing money.
     """
     args = dict(steps=[("a", "t1"), ("b", "t2")])
     fail = make_workflow(on_step_failure="fail_workflow", **args)

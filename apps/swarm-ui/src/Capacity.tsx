@@ -3,6 +3,7 @@ import { loadCapacity } from './api'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
 import { headroomFigure } from './Blockers'
 import {
@@ -500,7 +501,6 @@ function PoolCard({ pool }: { pool: Pool }) {
   const paused = isPaused(pool)
   const over = overCeiling(pool)
   const full = !over && limit > 0 && pool.active >= limit
-  const measuredZero = limit > 0 && pool.active === 0
 
   return (
     <div className="cap-pool">
@@ -515,30 +515,29 @@ function PoolCard({ pool }: { pool: Pool }) {
         </span>
       </b>
 
-      {/* THE ONE TRACK (§6.4). `.is-unknown` when no ceiling was read -- an
-          empty plain track is a claim that nothing is in use, and "no ceiling"
-          is not a zero. `.is-zero` draws the origin tick, which is what makes
-          a measured nought different from a widget that failed to paint. */}
-      <div
-        className={`ctl-util-track${limit > 0 ? (measuredZero ? ' is-zero' : '') : ' is-unknown'}`}
-        role="meter"
-        aria-valuenow={pool.active}
-        aria-valuemin={0}
-        aria-valuemax={limit}
-        /* "units", not "agents": admission counts weighted units, so 8 may be
-           two large agents or eight standard ones. */
-        aria-label={`${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`}
-      >
-        {limit > 0 &&
-          (measuredZero ? (
-            <i className="ctl-util-zero" />
-          ) : (
-            <i
-              className={`ctl-util-fill${over || full ? ' is-bad' : paused ? ' is-paused' : ratio > 0.8 ? ' is-warn' : ''}`}
-              style={{ width: `${Math.round(ratio * 100)}%` }}
-            />
-          ))}
-      </div>
+      {/* THE ONE TRACK (§6.4), and it is the shared one (./primitives.tsx):
+          this card drew its own until the tracks were collapsed. `pct` is
+          null when no ceiling was read -- an empty plain track is a claim that
+          nothing is in use, and "no ceiling" is not a zero -- so the track is
+          hatched. A measured nought draws the origin tick, which is what makes
+          it different from a widget that failed to paint.
+
+          HELD AT 100, as it always was: an over-ceiling pool is said by the
+          `over ceiling` chip beside the track and by the bad fill, not by an
+          overflow segment. And UNROUNDED, which it was not: 1 unit of 300 is
+          0.3%, and rounding it to 0 would have handed the track a measured
+          zero for a pool that has something in it. */}
+      <UtilTrack
+        pct={limit > 0 ? ratio * 100 : null}
+        tone={over || full ? 'is-bad' : paused ? 'is-paused' : ratio > 0.8 ? 'is-warn' : undefined}
+        meter={{
+          /* "units", not "agents": admission counts weighted units, so 8 may
+             be two large agents or eight standard ones. */
+          label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`,
+          now: pool.active,
+          max: limit,
+        }}
+      />
 
       <span className="cap-marks">
         {paused && (

@@ -407,9 +407,13 @@ def test_a_measured_zero_bar_gets_a_baseline():
     operator whether that zero was a reading or a rendering bug -- on the one
     screen that is scrupulous about exactly this distinction in prose.
     """
-    fn = body_of(src("Overview.tsx"), "function UtilTrack(")
-    assert "if (pct === null) return" in fn, "an unmeasured track no longer hatches"
-    assert "if (pct === 0)" in fn, "a measured zero draws nothing distinguishable"
+    # THE SHARED TRACK, not Overview's copy of it. U8 collapsed the six hand-
+    # drawn tracks (Overview x3, AgentDetail, Capacity, Holders) onto one
+    # component, so the baseline tick is asserted where every screen gets it.
+    fn = body_of(src("primitives.tsx"), "export function UtilTrack(")
+    assert "if (pct === null) {" in fn, "an unmeasured track no longer hatches"
+    assert "is-unknown" in fn, "an unmeasured track no longer hatches"
+    assert "if (pct === 0) {" in fn, "a measured zero draws nothing distinguishable"
     assert "ctl-util-zero" in fn, "there is no baseline mark for a measured zero"
 
     css = src("styles.css")
@@ -439,12 +443,29 @@ def test_a_measured_zero_bar_gets_a_baseline():
 
 
 def test_both_utilisation_bars_go_through_one_component():
-    """Two call sites and one rule. A second copy is how the account bar keeps
-    the treatment and the profile bar loses it."""
+    """One component and one rule, for the whole product now.
+
+    This asserted the profile rows and the account rows on Overview shared one
+    track, because a second copy is how the account bar kept the treatment and
+    the profile bar lost it. That held -- and AgentDetail, Capacity and Holders
+    each drew a third, fourth and fifth copy beside it, and AgentDetail's had
+    already lost the measured-zero tick. So the property is now the one the
+    first version was standing in for: `.ctl-util-track` is drawn by exactly one
+    file, and every screen that shows a utilisation goes through it.
+    """
+    drawers = sorted(
+        p.name for p in UI.glob("*.tsx")
+        if re.search(r"""className=[{"'`][^>]*\bctl-util-track\b""", p.read_text())
+    )
+    assert drawers == ["primitives.tsx"], (
+        f"a utilisation track is drawn outside the shared primitive, in {drawers}; "
+        "each copy is a place the hatch, the baseline tick or the over-ceiling "
+        "segment can be kept on one screen and lost on the next"
+    )
     ov = src("Overview.tsx")
-    assert ov.count("<UtilTrack") == 2, (
-        "the utilisation track has stopped being shared between the profile "
-        "rows and the account rows"
+    assert ov.count("<UtilRow") == 2, (
+        "the utilisation row has stopped being shared between the profile rows "
+        "and the account rows"
     )
     assert "ctl-util-track" not in body_of(ov, "function ProfileRow("), (
         "ProfileRow builds its own track again"
@@ -614,14 +635,20 @@ def test_no_overview_row_ends_with_a_blank_right_column():
     list cannot be asked how many tracks it produced, so no rule below it can
     be known to be correct), and if the panel count leaves an orphan in the
     last row, some child is given a span.
-    """
-    ov = src("Overview.tsx")
 
-    grids = re.findall(r"\n\.(ov-[a-z-]+) \{([^}]*)\}", ov, re.S)
+    READ FROM styles.css, where the Overview block lives since U8 folded the
+    `OVERVIEW_CSS` template literal into the sheet (design-system.md §9.5
+    asked for this test to be rewritten in the same change). The sheet has a
+    dozen `@media (min-width: 1280px)` blocks, so the breakpoint is found as
+    the one that sets `.ov-grid`'s tracks rather than as the first one.
+    """
+    css = src("styles.css")
+
+    grids = re.findall(r"\n\.(ov-[a-z-]+) \{([^}]*)\}", css, re.S)
     multi = [
         (name, body)
         for name, body in grids
-        if "display: grid" in body and f".{name} {{ grid-template-columns: repeat(" in ov
+        if "display: grid" in body and f".{name} {{ grid-template-columns: repeat(" in css
     ]
     assert multi, "no Overview grid declares a fixed multi-track layout any more"
 
@@ -640,11 +667,15 @@ def test_no_overview_row_ends_with_a_blank_right_column():
     # existing inside the same breakpoint that sets the track count, because a
     # span outside it would apply at the stacked width too, where it means
     # nothing and hides the mistake.
-    two_track = re.search(
-        r"@media \(min-width: 1280px\) \{(.*?)\n\}", ov, re.S
+    two_track = next(
+        (
+            m for m in re.finditer(r"@media \(min-width: 1280px\) \{(.*?)\n\}", css, re.S)
+            if ".ov-grid {" in m.group(1)
+        ),
+        None,
     )
     assert two_track is not None, "the Overview grid has no two-track breakpoint"
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in two_track.group(1)
+    assert ".ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }" in two_track.group(1)
     assert "grid-column: 1 / -1" in two_track.group(1), (
         "three panels in two tracks leaves one alone in the second row, and "
         "nothing spans it, so the right column ends blank under a column that "
@@ -668,7 +699,10 @@ def test_no_overview_panel_spans_tracks_from_an_inline_style():
     """
     ov = src("Overview.tsx")
     assert "gridColumn" not in ov, "a panel still spans tracks from an inline style"
-    assert "grid-column:" in ov, (
+    # The span lives in the sheet now (U8 folded Overview's injected CSS into
+    # styles.css), which is where "every other rule can be read against it"
+    # was always pointing.
+    assert re.search(r"\.ov-headroom \{ grid-column:", src("styles.css")), (
         "no panel spans tracks at all now; if that is deliberate, the grid must "
         "have no orphan -- which is what the test above measures"
     )

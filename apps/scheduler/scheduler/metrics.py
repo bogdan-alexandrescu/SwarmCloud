@@ -75,10 +75,13 @@ class SchedulerMetrics:
         #: until 2026-09-24, and the report missed the dependency sweep's
         #: cancels: the drain that cancelled a workflow's `synthesis` step at
         #: 07:40:11Z (incident wf_ebb3ab2d65664707a559) reported `cancelled: 0`.
-        #: `reason` is `cancel_requested` (the caller asked, before admission)
-        #: or `failed_parent` (an upstream step FAILED, was CANCELLED or was
-        #: DEAD_LETTERED). The scheduler only ever cancels work that holds no
-        #: capacity, so none of these released a lease.
+        #: `reason` is `cancel_requested` (the caller asked, before admission),
+        #: `failed_parent` (an upstream step FAILED, was CANCELLED or was
+        #: DEAD_LETTERED), or `workflow_failed` (a step of the same workflow
+        #: FAILED or was DEAD_LETTERED under `on_step_failure: fail_workflow`,
+        #: whether or not this step depended on it). The scheduler only ever
+        #: cancels work that holds no capacity, so none of these released a
+        #: lease.
         self.cancelled = Counter(
             "swarm_scheduler_cancelled_total",
             "Tasks the scheduler cancelled during a drain, by why. Only READY or "
@@ -93,7 +96,9 @@ class SchedulerMetrics:
         #: scheduler's lease cancelled or promoted over, a RUNNING worker rewound
         #: to DISPATCHED, a re-leased task returned to READY with its new lease
         #: orphaned. `write` is park / promote / cancel / record_blockers /
-        #: mark_dispatched / return_to_ready; `reason` is one of the stable codes
+        #: mark_dispatched / return_to_ready / cancel_if_not_started (the
+        #: `on_step_failure: fail_workflow` sweep finding a step that started or
+        #: finished after its query read it); `reason` is one of the stable codes
         #: in scheduler/store.py (state_changed, park_reason_changed,
         #: lease_superseded, task_missing). A steady trickle of
         #: `mark_dispatched{state_changed}` is workers starting before the

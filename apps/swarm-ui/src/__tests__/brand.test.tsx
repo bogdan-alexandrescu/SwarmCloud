@@ -78,6 +78,11 @@ function me(over: Partial<Me['principal']> = {}): Me {
       is_admin: false,
       ...over,
     },
+    // UNDECLARED, so every badge case in this file still reads the build and
+    // the host it passes. The API's own environment, and what it outranks, is
+    // brand.environment.test.tsx's subject.
+    environment: 'dev',
+    environment_declared: false,
   }
 }
 

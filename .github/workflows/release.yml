@@ -2,9 +2,19 @@
 #
 # The only workflow that changes a real environment. Its shape:
 #
-#   build -> immutable :<sha> tags -> scan -> promote a DIGEST
+#   the digests application.yml BUILT for this commit (or, dispatched by hand
+#   for a commit CI never built, a build here through the same script)
+#         -> scan every one -> promote those DIGESTS, all or nothing
 #         -> dev: plan, apply, deploy, smoke
 #         -> prod: MANUAL APPROVAL, then plan, apply, deploy, smoke
+#
+# ONE BUILD PER COMMIT (owner decision, 2026-09-24; docs/ci.md). This workflow
+# used to build all eight images itself while application.yml built them too,
+# the two competing for Cloud Build in a shared project, and the release
+# waiting behind the duplicate: on 94ee043 application.yml finished its build
+# at 16:41:51 and the release spent 16:39:24-16:48:17 building the same commit
+# again. Now application.yml builds once per commit on main and records the
+# digests, and this workflow waits for that job and promotes what it built.
 #
 # Two properties this workflow exists to guarantee:
 #
@@ -41,7 +51,7 @@ on:
         options: [dev, prod]
         default: dev
       skip_build:
-        description: "Deploy the digests already promoted, without rebuilding"
+        description: "Deploy the digests already promoted, without promoting new ones"
         type: boolean
         default: false
 
@@ -92,17 +102,25 @@ jobs:
         run: ./scripts/destroy.sh --self-test
 
   # -------------------------------------------------------------------------
-  # Build and promote. The git SHA is the only tag Cloud Build produces;
-  # push-images.sh scans each digest and attaches the channel tag to that exact
-  # digest, so a rebuild between the scan and the tag cannot slip through.
+  # The images, and their promotion. application.yml's `build images` job
+  # builds every image once per commit on main and uploads the digests it
+  # built; this job waits for that job, fetches that record, scans every digest
+  # in it and attaches the channel tag to exactly those digests.
   # -------------------------------------------------------------------------
   build:
-    name: build and promote (${{ github.event.inputs.environment || 'dev' }})
+    name: images and promote (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify]
     if: github.event.inputs.skip_build != 'true'
+    # actions: read is what lets this job see application.yml's run of the
+    # same commit and download its record (scripts/lib/ci-built-images.sh).
+    # A job-level block REPLACES the workflow's, so the other two are restated.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      tag: ${{ steps.images.outputs.tag }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -118,23 +136,41 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
-      - id: tag
-        run: echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: build (Cloud Build, linux/amd64)
-        # Concurrent, at most 4 builds at a time (build-images.sh says why 4).
-        # Run 35969538707 spent nineteen minutes here submitting eight builds
-        # one after another. Each image's output is printed with its name on
-        # every line, and a failure names every image that failed rather than
-        # stopping at the first.
-        run: ./scripts/build-images.sh --tag "${{ steps.tag.outputs.tag }}"
+      - name: the images CI built for this commit
+        id: images
+        # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for
+        # application.yml's `build images` job for this exact commit (up to 45
+        # minutes -- it is usually ~11 behind the push) and fetches the manifest
+        # it recorded. That run exists and is not stopped by later pushes:
+        # application.yml gives each commit on main a concurrency group of its
+        # own, because GitHub cancels a PENDING run when a newer one joins its
+        # group, and this workflow's path filter means the newer push may start
+        # no release to take this one's place. If that job FAILED, or never
+        # built this commit (someone cancelled it), this step fails and says
+        # which, with the URL and the re-runs that would ship THIS commit; it
+        # does not quietly build instead.
+        #
+        # DISPATCHED BY HAND it is `--reuse-ci or-build`: a commit CI never
+        # built for this environment is built here, by the same script with
+        # the same tag -- one path, not a second copy of it. That includes
+        # every prod release, because application.yml builds for dev and
+        # swarm-ui bakes its environment into the bundle when it is compiled.
+        # A build CI tried and FAILED is still a failure, dispatched or not.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_CI: ${{ github.event_name == 'workflow_dispatch' && 'or-build' || 'only' }}
+        run: |
+          set -euo pipefail
+          ./scripts/build-images.sh --reuse-ci "${REUSE_CI}"
+          echo "tag=$(jq -r '.tag' "build/images-${ENVIRONMENT}.json")" >> "$GITHUB_OUTPUT"
 
       # INSTALLED BECAUSE THE PROMOTION GATE NEEDS IT, and it was not.
       #
       # `push-images.sh --scan` runs trivy against each digest and refuses to
       # attach a channel tag to an image with fixable HIGH/CRITICAL findings.
-      # This job authenticated, built every image through Cloud Build -- about
-      # eighteen minutes of work -- and then failed on:
+      # This job, when it still built its own images, authenticated, built
+      # every image through Cloud Build -- about eighteen minutes of work --
+      # and then failed on:
       #
       #     fail trivy not found but scanning is on; install it or pass --no-scan
       #
@@ -155,7 +191,13 @@ jobs:
             | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
           trivy --version
 
-      - name: scan and promote by digest
+      - name: scan and promote the recorded digests
+        # THOSE DIGESTS, NOT A TAG. `--manifest` promotes the digest each image
+        # was built as, from the record the step above obtained; each is
+        # confirmed in Artifact Registry first, and a record built for another
+        # environment is refused. `:<tag>` is not read at all, so a later build
+        # of the same commit cannot change what this release promotes.
+        #
         # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
         # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
         # none of them. Run 35969538707 scanned and tagged one image at a time,
@@ -166,7 +208,7 @@ jobs:
         # If the put-back itself fails, the step's last line says the channel
         # is MIXED and names the images; a `skip_build` redeploy reads the
         # channel, so put those back (the commands are in the log) first.
-        run: ./scripts/push-images.sh --tag "${{ steps.tag.outputs.tag }}" --channel "${ENVIRONMENT}" --scan
+        run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan
 
       - uses: actions/upload-artifact@v6
         with:

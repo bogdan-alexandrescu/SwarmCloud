@@ -912,6 +912,23 @@ export interface Me {
     groups: string[]
     is_admin: boolean
   }
+  /**
+   * WHICH ENVIRONMENT THE API ANSWERING THIS CONSOLE RUNS AS -- the value it
+   * ACTS on (`hardened` derives from it), not a display label.
+   *
+   * Read together with `environment_declared`, never alone: the frozen
+   * `Settings.from_env` fills in "dev" when ENVIRONMENT is unset, so "dev"
+   * here is two different facts. Brand.tsx's badge takes it only when it was
+   * declared.
+   */
+  environment: string
+  /**
+   * False when nobody set ENVIRONMENT and the default filled in. A client must
+   * read that as UNKNOWN, not as dev: a defaulted "dev" on a production
+   * console is the exact badge the header exists not to draw
+   * (swarm_api/settings.py `ApiSettings.environment_declared`).
+   */
+  environment_declared: boolean
 }
 
 /**
@@ -1023,8 +1040,34 @@ export interface LeasePage {
   evaluated_at: string
   active_only: boolean
   tenant_id: string | null
-  /** Weighted units, not agents. */
+  /** Weighted units, not agents. Summed over `leases` -- the rows served. */
   units_held: number
+  /**
+   * LIVE LEASES, UNDER THE SAME TENANT FILTER, THAT THESE ROWS LEFT OUT.
+   *
+   * The field to read before calling a `units_held` / `pool.active` delta
+   * evidence of anything: only at 0 is no live lease missing from the rows
+   * (routes/admin.py `list_leases`, store.py `LeaseScan`). Computed where the
+   * query runs, not inferred from the page length -- `leases.length === limit`
+   * is false in exactly the case that matters, a window of released leases
+   * filtered down to nothing.
+   *
+   * REQUIRED because this API serves it on every response, and
+   * test_ui_api_field_contract.py holds the two together. A reader still
+   * checks it is a number (Holders.tsx `leaseCoverage`): a console served
+   * beside an older API receives no such key, and absent is not zero.
+   */
+  active_beyond_window: number
+  /**
+   * The window was full and more lay behind it. For an `active_only` read
+   * that is more live leases than the limit; for a history read it is "older
+   * documents exist", which is true for ever once an environment has made
+   * more admissions than the limit, because lease documents are never
+   * deleted. Kept for a pager -- NOT the drift check's signal.
+   */
+  truncated: boolean
+  /** How many rows the route's `state` and `overdue_only` filters ran over. */
+  examined: number
 }
 
 /** How a lease row reads, given the thresholds the API just sent. */

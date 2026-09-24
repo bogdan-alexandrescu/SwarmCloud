@@ -17,6 +17,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from swarm_common.config import Settings
 
@@ -63,6 +64,32 @@ def parse_worker_image_refs(raw: str) -> dict[str, str]:
         raise ValueError(f"WORKER_IMAGE_REFS is not valid JSON: {exc}") from exc
     check_worker_image_refs(refs)
     return dict(refs)
+
+
+def parse_enforced_since(raw: str | None) -> datetime | None:
+    """ON_STEP_FAILURE_ENFORCED_SINCE -> an aware datetime, or None when empty.
+
+    An offset is REQUIRED. A naive time would be read in whatever zone the
+    process runs in, and a cutoff that is hours off either cancels work it
+    should have spared or spares work it should have cancelled. So a value
+    without one refuses to start, as a malformed value does.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"ON_STEP_FAILURE_ENFORCED_SINCE must be an ISO-8601 timestamp with a "
+            f"UTC offset, such as 2026-09-25T14:00:00Z; got {raw!r}"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(
+            f"ON_STEP_FAILURE_ENFORCED_SINCE={raw!r} has no UTC offset; write it as "
+            "2026-09-25T14:00:00Z or with an explicit +HH:MM"
+        )
+    return parsed
 
 
 def _int(name: str, default: int) -> int:
@@ -134,6 +161,27 @@ class SchedulerSettings:
     #: promoted to READY early, so they are queued the instant capacity appears.
     #: READY costs nothing (invariant 1), so this is a latency win with no spend.
     enable_prewarm: bool = True
+
+    #: `on_step_failure: fail_workflow` applies only to workflows whose document
+    #: `created_at` is at or after this instant. From ON_STEP_FAILURE_ENFORCED_SINCE,
+    #: an ISO-8601 timestamp with a UTC offset.
+    #:
+    #: WHY IT EXISTS. Until the scheduler read the field, every workflow was
+    #: stored with `fail_workflow` (the API default), and docs/workflows.md told
+    #: the submitter the setting was not honoured and behaved like `continue`.
+    #: Applying the rule to such a workflow cancels steps nobody was told would
+    #: be cancelled. A cancel cannot be undone, and a cancelled step's checkpoint
+    #: becomes reclaimable. Workflows created before the cutoff keep the rule
+    #: they were submitted under: only the dependents of a failed step are
+    #: cancelled.
+    #:
+    #: WHY THE DEFAULT IS None. None means every workflow, retroactively, which
+    #: is the owner's 2026-09-24 decision as it was written. Whether in-flight
+    #: workflows should be exempt was not part of that decision and is open.
+    #: This setting is how the other answer is given without a code change.
+    #: `python -m scheduler.on_step_failure_audit` lists, read-only, what the
+    #: next drain would cancel under either answer.
+    on_step_failure_enforced_since: datetime | None = None
 
     #: GKE dispatch target (browser/GPU profiles only).
     gke_cluster: str = ""
@@ -209,6 +257,9 @@ class SchedulerSettings:
             aging_max_bonus=_int("AGING_MAX_BONUS", 50),
             dependency_sweep_size=_int("DEPENDENCY_SWEEP_SIZE", 200),
             enable_prewarm=_bool("ENABLE_QUOTA_PREWARM", core.enable_quota_prewarm),
+            on_step_failure_enforced_since=parse_enforced_since(
+                os.environ.get("ON_STEP_FAILURE_ENFORCED_SINCE")
+            ),
             gke_cluster=os.environ.get("GKE_CLUSTER", ""),
             gke_location=os.environ.get("GKE_LOCATION", core.region),
             worker_ksa_name=os.environ.get("WORKER_KSA_NAME", "").strip()
@@ -242,6 +293,12 @@ class SchedulerSettings:
             raise ValueError("aging_interval_seconds must be positive")
         if self.aging_max_bonus < 0:
             raise ValueError("aging_max_bonus cannot be negative")
+        cutoff = self.on_step_failure_enforced_since
+        if cutoff is not None and (cutoff.tzinfo is None or cutoff.utcoffset() is None):
+            raise ValueError(
+                "on_step_failure_enforced_since must be timezone-aware; a naive "
+                "cutoff would be read in whatever zone the process runs in"
+            )
         # Checked here as well as when parsed, so a settings object built
         # directly -- as every test does -- cannot carry a tag either.
         check_worker_image_refs(self.worker_image_refs)
