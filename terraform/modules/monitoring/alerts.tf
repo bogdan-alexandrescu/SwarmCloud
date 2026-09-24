@@ -519,7 +519,7 @@ resource "google_logging_metric" "reconciler_backend_unavailable" {
 
   filter = join(" AND ", [
     local.reconciler_log_filter,
-    "jsonPayload.message=\"backend unavailable; skipping its findings\"",
+    "jsonPayload.message=\"backend unavailable\"",
   ])
 
   metric_descriptor {
