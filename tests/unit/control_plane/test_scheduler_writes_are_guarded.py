@@ -47,6 +47,19 @@ set changed so that the real `firestore.transactional` re-runs the body. That is
 what distinguishes one transaction from a pre-read followed by a blind write.
 The fake is imported from that file rather than copied, so there is one
 contended fake in this repository, not two drifting apart.
+
+A RECLAIM THE RECONCILER DID NOT FINISH (`TestAPartialReclaim`). The
+reconciler's repair is four transactions -- invalidate, terminate, release,
+repair -- and it stops after the first when termination is unconfirmed, or
+wherever its instance dies. `_reconciler_reclaims` runs all four, so the first
+version of this file never drove the two states a partial reclaim leaves: the
+task still pointing at the lease at a bumped generation, with the lease
+unreleased (stopped after step 1) or released (stopped after step 3). A failed
+dispatch landing on either used to release and walk away, and the task sat
+holding capacity on a released lease that no reconciler rule looks at. Those
+tests run the reconciler's NEXT pass for real -- the production `Reconciler`
+over the production `ControlStore` -- because "the reconciler will pick it up"
+is the claim being tested, not an assumption to build on.
 """
 
 from __future__ import annotations
@@ -63,7 +76,10 @@ from swarm_common.states import ParkReason, TaskState
 
 from agent_worker.control import ControlPlane
 from agent_worker.logs import build_logger as worker_logger
+from reconciler.config import ReconcilerConfig
 from reconciler.logs import build_logger as reconciler_logger
+from reconciler.model import ExecutionPhase, ExecutionView
+from reconciler.repair import ReconcileReport, Reconciler
 from reconciler.store import ControlStore
 from scheduler.dispatch import BackendRouter, DispatchError
 from scheduler.loop import DrainReport, Scheduler
@@ -695,6 +711,258 @@ class TestReturnToReady:
 
 
 # --------------------------------------------------------------------------
+# return_to_ready_after_failed_dispatch, over a reclaim that stopped part way
+# --------------------------------------------------------------------------
+
+RECONCILER = ReconcilerConfig(
+    project_id="saga-agents-staging",
+    region="us-central1",
+    firestore_database="swarm",
+    enable_gc=False,
+    enable_checkpoint_gc=False,
+)
+
+
+def _reconciler_stops_after(db: ContendedFirestore, task_id: str, lease: Lease, step: str) -> None:
+    """A reclaim that stopped short, through the reconciler's own store.
+
+    `repair.py` runs invalidate, terminate, release and repair as separate
+    transactions, returns from the second when termination raises or comes back
+    unconfirmed ("did NOT release: termination was not confirmed"), and can
+    lose its instance between any two -- `detect.py` records a live one that
+    stopped between the first and the third. The two places it can stop with
+    the task still pointing at the lease:
+
+      "fence"    step 1 committed and nothing after it. The task is at a bumped
+                 generation on an UNRELEASED lease.
+      "release"  steps 1 and 3 committed -- termination was confirmed, or
+                 nothing was running -- and the instance died before step 4.
+                 The task is at a bumped generation on a RELEASED lease.
+    """
+    store = ControlStore(db, logger=reconciler_logger(stream=io.StringIO()))
+    assert store.invalidate_generation(task_id, lease.generation) == lease.generation + 1
+    if step == "release":
+        assert store.release_lease(lease.lease_id, "reconciler:stale_lease") is True
+    assert _doc(db, task_id)["current_lease_id"] == lease.lease_id, (
+        "the reclaim went further than this test means it to"
+    )
+
+
+def _outlived_the_deadline(db: ContendedFirestore, lease: Lease) -> None:
+    """`run_job` hung past the dispatch deadline before it came back with an
+    error -- the case where the reconciler reclaims at all. The lease's clocks
+    are moved back instead of waited out."""
+    doc = db.docs[f"leases/{lease.lease_id}"]
+    shift = timedelta(seconds=ADMISSION.dispatch_timeout_seconds + 60)
+    for field in ("created_at", "dispatch_deadline", "expires_at"):
+        if doc.get(field) is not None:
+            doc[field] = doc[field] - shift
+
+
+def _still_running(task_id: str, lease: Lease) -> ExecutionView:
+    """The execution `run_job` did create before its call reported failure."""
+    return ExecutionView(
+        name=(
+            "projects/saga-agents-staging/locations/us-central1/jobs/swarm-eng-mock/"
+            f"executions/{task_id}-{lease.generation}"
+        ),
+        backend=BACKEND,
+        phase=ExecutionPhase.RUNNING,
+        created_at=utcnow() - timedelta(minutes=10),
+        task_id=task_id,
+        attempt_id=lease.attempt_id,
+        tenant_id=TENANT,
+        generation=lease.generation,
+    )
+
+
+class _Backend:
+    """A Cloud Run-shaped backend for the reconciler's next pass: listed in one
+    call, scripted. It records how many slots were still reserved at each kill,
+    because a slot returned BEFORE the kill is the defect under test."""
+
+    name = BACKEND
+
+    def __init__(self, db: ContendedFirestore, *executions: ExecutionView) -> None:
+        self._db = db
+        self._executions = list(executions)
+        self.reserved_at_kill: list[int] = []
+
+    def list_executions(self) -> list[ExecutionView]:
+        return list(self._executions)
+
+    def terminate(self, execution: ExecutionView) -> bool:
+        self.reserved_at_kill.append(_held(self._db))
+        return True
+
+
+def _next_pass(db: ContendedFirestore, backend: _Backend) -> ReconcileReport:
+    """The reconciler's next pass: the production `Reconciler` over the
+    production `ControlStore`, the same detection and the same repair order."""
+    report = Reconciler(
+        store=ControlStore(db, logger=reconciler_logger(stream=io.StringIO())),
+        backends=[backend],
+        config=RECONCILER,
+        logger=reconciler_logger(stream=io.StringIO()),
+    ).run_once()
+    assert report.errors == [], f"the reconciler's pass itself failed: {report.errors}"
+    return report
+
+
+def _where(db: ContendedFirestore, task_id: str) -> str:
+    stored = _doc(db, task_id)
+    lease_id = stored.get("current_lease_id")
+    held = db.docs.get(f"leases/{lease_id}") if lease_id else None
+    status = "gone" if held is None else (
+        "released" if held.get("released_at") is not None else "unreleased"
+    )
+    return (
+        f"{stored['state']} at generation {stored['current_generation']} on lease "
+        f"{lease_id} ({status})"
+    )
+
+
+class TestAPartialReclaim:
+    def test_a_task_the_reconciler_only_fenced_is_left_for_it_to_finish(self, db):
+        """The finding on PR #45. The dispatch hung past its deadline, the
+        reconciler fenced the attempt and stopped (termination unconfirmed, or
+        its instance died), and then `run_job` raised.
+
+        Releasing there erased the reconciler's only evidence. The task was
+        LEASED at generation 2 on a released lease: `detect_stale_leases` and
+        `detect_orphan_leases` skip released leases, `detect_missing_executions`
+        ignores LEASED, the drain scans only READY, and a cancel on a LEASED
+        task only sets a flag. Stuck for ever. Main recovered from the same
+        interleaving, because it released and then wrote READY blind.
+
+        Left alone, the reconciler's next pass finds the superseded, unreleased
+        lease with nothing running under it and finishes its own repair.
+        """
+        _world(db)
+        seed_task(db, task_id="task_p1", tenant_id=TENANT)
+        snapshot, lease = _admitted(db, "task_p1")
+        _outlived_the_deadline(db, lease)
+        _reconciler_stops_after(db, "task_p1", lease, "fence")
+
+        outcome = SchedulerStore(db).return_to_ready_after_failed_dispatch(
+            snapshot, lease, "cloud_run_run_job_failed"
+        )
+        kept = db.docs[f"leases/{lease.lease_id}"]["released_at"] is None
+        after_dispatch = _where(db, "task_p1")
+        report = _next_pass(db, _Backend(db))
+
+        acted = [o.as_dict() for o in report.outcomes if o.task_id == "task_p1"]
+        stored = _doc(db, "task_p1")
+        assert stored["state"] == "READY", (
+            f"after the failed dispatch the task was {after_dispatch}, and the "
+            f"reconciler's next pass acted on it {len(acted)} time(s): it is "
+            f"{_where(db, 'task_p1')}, stranded"
+        )
+        assert stored["current_lease_id"] is None
+        assert _held(db) == 0
+        assert kept, "the failed dispatch released a lease the reconciler had fenced and kept"
+        assert (outcome.applied, outcome.reason, outcome.found) == (False, "lease_superseded", "LEASED")
+        assert [(a["lease_id"], a["released"], a["repaired_to"]) for a in acted] == [
+            (lease.lease_id, True, "READY")
+        ]
+
+    def test_a_running_attempt_the_reconciler_could_not_kill_keeps_its_slots(self, db):
+        """The same interleaving after the worker reached RUNNING. The
+        reconciler fenced it, its kill came back unconfirmed, and it kept the
+        slots on purpose: "did NOT release: termination was not confirmed".
+        The failed dispatch read the bumped generation as superseded and
+        released them anyway, under a container nobody had confirmed dead.
+
+        Kept, the reconciler's next pass finds the obsolete generation, kills
+        it, and only then returns the slots.
+        """
+        _world(db)
+        seed_task(db, task_id="task_p2", tenant_id=TENANT)
+        snapshot, lease = _admitted(db, "task_p2")
+        _worker_starts(db, "task_p2", lease).heartbeat()
+        _reconciler_stops_after(db, "task_p2", lease, "fence")
+
+        outcome = SchedulerStore(db).return_to_ready_after_failed_dispatch(
+            snapshot, lease, "cloud_run_run_job_failed"
+        )
+
+        assert db.docs[f"leases/{lease.lease_id}"]["released_at"] is None, (
+            "the failed dispatch released the slots of a RUNNING attempt whose "
+            "termination the reconciler had not confirmed"
+        )
+        assert _held(db) == 1
+        stored = _doc(db, "task_p2")
+        assert (stored["state"], stored["current_lease_id"]) == ("RUNNING", lease.lease_id)
+        assert stored["current_generation"] == lease.generation + 1
+        assert (outcome.applied, outcome.reason, outcome.found) == (False, "lease_superseded", "RUNNING")
+
+        backend = _Backend(db, _still_running("task_p2", lease))
+        _next_pass(db, backend)
+
+        assert backend.reserved_at_kill == [1], (
+            "the slot was not still reserved when the reconciler killed the execution"
+        )
+        assert _doc(db, "task_p2")["state"] == "READY"
+        assert _held(db) == 0
+
+    @pytest.mark.parametrize(
+        "started, cancel, target",
+        [
+            pytest.param(False, False, "READY", id="leased"),
+            pytest.param(True, False, "READY", id="running"),
+            pytest.param(False, True, "CANCELLED", id="cancel-requested"),
+        ],
+    )
+    def test_a_reclaim_that_stopped_after_its_release_is_finished_here(
+        self, db, api_store, started, cancel, target
+    ):
+        """The reconciler fenced the attempt, killed what ran (or found nothing),
+        released the lease, and died before `repair_task_state`. The task is
+        still in a concurrency state on a lease that is released -- and a
+        released lease is outside every reconciler rule, since the snapshot
+        reads only unreleased ones. Main's blind write recovered it; skipping
+        stranded it.
+
+        Only step 4 is left, and the release that preceded it was the
+        reconciler's own judgment that nothing runs. So the failed dispatch
+        finishes it, with `repair_task_state`'s rule: READY, or CANCELLED when a
+        cancel was requested, or FAILED when retries are spent.
+        """
+        _world(db)
+        seed_task(db, task_id="task_p3", tenant_id=TENANT)
+        snapshot, lease = _admitted(db, "task_p3")
+        if started:
+            _worker_starts(db, "task_p3", lease)
+        if cancel:
+            api_store.request_cancel(TENANT, "task_p3", by=BY)
+        _reconciler_stops_after(db, "task_p3", lease, "release")
+        before = _where(db, "task_p3")
+
+        outcome = SchedulerStore(db).return_to_ready_after_failed_dispatch(
+            snapshot, lease, "cloud_run_run_job_failed"
+        )
+
+        stored = _doc(db, "task_p3")
+        assert stored["state"] == target, (
+            f"the task was {before} and is now {_where(db, 'task_p3')}: nothing "
+            "will ever move it"
+        )
+        assert stored["current_lease_id"] is None
+        assert stored["current_generation"] == lease.generation + 1
+        assert _held(db) == 0, "the reconciler's release was decremented twice"
+        assert (outcome.applied, outcome.target) == (True, target)
+        announced = [
+            e for e in _events(db, "task_p3", target.lower())
+            if e["detail"].get("completed_reclaim") is True
+        ]
+        assert len(announced) == 1, "the task's timeline does not say how it left the lease"
+        if target == "CANCELLED":
+            assert stored["completed_at"] is not None
+            assert stored["next_eligible_at"] is None
+            assert announced[0]["detail"].get("phase") == "cancelled"
+
+
+# --------------------------------------------------------------------------
 # record_blockers, and the drain's own counting of a skipped park
 # --------------------------------------------------------------------------
 
@@ -823,3 +1091,42 @@ class TestTheCheckAndTheWriteAreOneTransaction:
         assert stored["state"] == "LEASED", f"the second lease was orphaned; task is {stored['state']}"
         assert stored["current_lease_id"] == second[0].lease_id
         assert _held(db) == 1
+
+    def test_finishing_a_reclaim_the_reconciler_finished_first(self, db):
+        """A GUARD, green before and after by design. It pins the new branch
+        that finishes a reclaim which stopped after its release
+        (`TestAPartialReclaim`): that write must be decided inside the same
+        transaction too.
+
+        The reconciler's own step 4 lands between the failed dispatch's read and
+        its commit, and a second admission re-leases the task. A finish written
+        from the first read would put READY with no lease over the new lease.
+        The re-run has to see that the task no longer points at this lease, and
+        leave it alone."""
+        _world(db)
+        seed_task(db, task_id="task_t4", tenant_id=TENANT)
+        snapshot, first = _admitted(db, "task_t4")
+        _reconciler_stops_after(db, "task_t4", first, "release")
+        fired: list[bool] = []
+        second: list[Lease] = []
+
+        def the_reconciler_finishes_and_it_is_re_leased() -> None:
+            fired.append(True)
+            store = ControlStore(db, logger=reconciler_logger(stream=io.StringIO()))
+            assert store.repair_task_state(
+                "task_t4", to_state=TaskState.READY, expected_lease_id=first.lease_id
+            ) is TaskState.READY
+            second.append(_admit(db, "task_t4"))
+
+        db.interleave("tasks/task_t4", the_reconciler_finishes_and_it_is_re_leased)
+        outcome = SchedulerStore(db).return_to_ready_after_failed_dispatch(
+            snapshot, first, "cloud_run_run_job_failed"
+        )
+
+        assert fired
+        assert "tasks/task_t4" in db.aborts, "the first attempt was not retried"
+        stored = _doc(db, "task_t4")
+        assert stored["state"] == "LEASED", f"the second lease was orphaned; task is {_where(db, 'task_t4')}"
+        assert stored["current_lease_id"] == second[0].lease_id
+        assert _held(db) == 1
+        assert (outcome.applied, outcome.reason) == (False, "lease_superseded")
