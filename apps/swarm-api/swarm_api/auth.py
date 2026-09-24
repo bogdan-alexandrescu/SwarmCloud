@@ -508,14 +508,16 @@ def require_admin(
     """
     if ctx.is_admin:
         return ctx
-    if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
-        return ctx
+    # MUTATION M1 (reverted in the next commit): the unresolved 503 moved above
+    # the pool-admin pass, so a failed admin-group lookup 503s the gate's route.
     if ctx.admin_unresolved:
         raise UpstreamUnavailable(
             "admin group membership could not be resolved; retry shortly. This is "
             "NOT a refusal -- Cloud Identity did not answer, so whether you are an "
             "admin is unknown"
         )
+    if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
+        return ctx
     if ctx.is_pool_admin:
         # Said plainly, so the gate's operator does not go looking for a
         # broken grant: the grant works, and this route is not in it.

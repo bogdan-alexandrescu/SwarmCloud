@@ -79,6 +79,12 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.include_router(platform.router)
     app.include_router(admin.router)
 
+    # MUTATION M5 (reverted in the next commit): an admin URL defined on the
+    # app itself, outside every routes/*.router and not behind admin_auth.
+    @app.get("/v1/admin/mutation-probe")
+    def mutation_probe() -> dict:
+        return {"mutation": "M5"}
+
     @app.middleware("http")
     async def observe(request: Request, call_next):
         route = request.scope.get("path", "unknown")

@@ -283,7 +283,12 @@ def admin_auth(
     """
     path = getattr(request.scope.get("route"), "path", None)
     route = (request.method.upper(), path) if path else None
-    return require_admin(auth, route)
+    granted = require_admin(auth, route)
+    # MUTATION M4 (reverted in the next commit): the gate crashes for a caller
+    # it has just admitted, on one route no other unit test calls.
+    if route == ("GET", "/v1/admin/pools"):
+        raise RuntimeError("mutation M4: the gate crashed after admitting the caller")
+    return granted
 
 
 def paged_limit(ctx: AppContext, requested: int | None) -> int:
