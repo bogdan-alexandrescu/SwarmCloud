@@ -51,8 +51,17 @@ BENCH_UI = ROOT / "scripts" / "bench-ui.sh"
 #: gate must notice, or a process that must still be running when it is looked
 #: at. Both premises are about how long real work takes, so under `-n auto`
 #: they compete with seven other workers for the CPU and the thing they measure
-#: moves. They failed exactly that way and pass alone, which is the signature.
-#: `make test` runs `-m "not serial" -n auto` first, then these on their own.
+#: moves. `make test` runs `-m "not serial" -n auto` first, then these on their
+#: own.
+#:
+#: A CORRECTION, 2026-09-24. This used to say these cases "failed exactly that
+#: way and pass alone, which is the signature". Passing alone was real; the
+#: mechanism was not load. Every collector run wrote one shared file,
+#: build/bench-<suite>-<env>.jsonl, and `bench_init` truncates it -- so two of
+#: these cases in two workers erased each other's samples. That is fixed in
+#: scripts/lib/benchlib.sh and pinned by TestTwoRunsInOneCheckout below. The
+#: serial mark stays for the timing premise, which is still true; it is no
+#: longer what stands between this file and a red gate.
 pytestmark = [
     pytest.mark.skipif(
         shutil.which("jq") is None or shutil.which("curl") is None,
