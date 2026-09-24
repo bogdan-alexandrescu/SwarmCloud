@@ -219,6 +219,7 @@ def resolve_api_url() -> str:
     # `all` is the only ingress that serves the run.app hostname publicly.
     # An empty ingress annotation means the default, which IS `all`.
     if ingress and ingress != "all":
+        environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
         raise SwarmError(
             f"{service} resolves to {url}, and that address cannot serve you: its "
             f"ingress is '{ingress}', so Google's frontend refuses external requests "
@@ -226,9 +227,9 @@ def resolve_api_url() -> str:
             "which reads exactly like a missing route on a broken deployment. The "
             "service is fine. Reach it through the load balancer instead: set "
             "API_HOST to the frontend_hostname in "
-            f"terraform/environments/{os.environ.get('ENVIRONMENT', '').strip() or 'dev'}"
-            "/<env>.tfvars, or set SWARM_API_URL explicitly if you are inside the VPC, "
-            "where the run.app address does work"
+            f"terraform/environments/{environment}/{environment}.tfvars, or set "
+            "SWARM_API_URL explicitly if you are inside the VPC, where the run.app "
+            "address does work"
         )
     return url
 
