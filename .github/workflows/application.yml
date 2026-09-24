@@ -241,7 +241,7 @@ jobs:
             echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
             exit 1
           fi
-          echo "version=${majors}" >> "$GITHUB_OUTPUT"
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
           echo "swarm-ui builds with Node ${majors} (${dockerfile})"
 
       - uses: actions/setup-node@v4
