@@ -67,7 +67,7 @@ _FAILED_PARENT_STATES = frozenset(
 #: enum. A rename on either side would make this scheduler ignore the setting
 #: again, silently, which is the defect this code fixes.
 #: `test_the_policy_vocabulary_agrees_everywhere_it_is_stated` holds all four
-#: statements together, and contract request 19 asks for one home.
+#: statements together, and contract request 20 asks for one home.
 FAIL_WORKFLOW = "fail_workflow"
 
 #: Step states that fail a workflow under `fail_workflow` (owner, 2026-09-24).

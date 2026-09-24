@@ -487,7 +487,7 @@ def test_the_policy_vocabulary_agrees_everywhere_it_is_stated() -> None:
     The API restates the set as a Literal, the MCP tool as a JSON-schema enum,
     and the scheduler names the one value it acts on. A rename in any one of
     them would make the scheduler silently ignore the setting again, which is
-    the defect this file exists for. Contract request 19 asks for one home.
+    the defect this file exists for. Contract request 20 asks for one home.
     """
     import dataclasses
     from typing import get_args

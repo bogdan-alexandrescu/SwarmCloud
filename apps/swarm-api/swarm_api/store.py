@@ -619,8 +619,12 @@ class Store:
         max_active: int | None = None,
         capacity_units: int | None = None,
         enabled: bool | None = None,
+        by: str | None = None,
     ) -> Tenant:
         """Change a tenant's limits, and move the pool that enforces them with it.
+
+        `by` is passed through to `upsert_pool` as the admin who made the
+        change; see there.
 
         Both `max_active` and `capacity_units` are ceilings on the SAME thing.
         `acquire_lease_in_transaction` increments every pool by the task's
@@ -655,7 +659,7 @@ class Store:
                     else current.capacity_units
                 ),
             )
-            self.upsert_pool(f"tenant:{tenant_id}", hard_limit=effective)
+            self.upsert_pool(f"tenant:{tenant_id}", hard_limit=effective, by=by)
         return tenant_from_dict(ref.get().to_dict())
 
     def register_credential(self, tenant_id: str, provider: str) -> Tenant:
@@ -1156,10 +1160,28 @@ class Store:
         enabled: bool | None = None,
         adaptive_target: int | None = None,
         quota_derived_limit: int | None = None,
+        by: str | None = None,
     ) -> SlotPool:
+        """Create or patch a pool's ceilings and switch. Never `active`.
+
+        `by` is the VERIFIED caller of an admin route, and only an admin route
+        passes it. It lands as `admin_changed_by` / `admin_changed_at`, not as
+        `updated_by`: `updated_at` on a pool is rewritten by the admission and
+        release transactions on every lease, so a name beside it would pair
+        one writer's timestamp with another writer's identity. Before this, a
+        ceiling the verification gate narrowed could not be told apart from
+        one an operator narrowed -- the only record was a counter with no
+        caller (docs/audits/2026-09-22/race-test-needs-a-write.md).
+
+        Internal writers (tenant creation, the quota broker) pass nothing, and
+        leave the last admin's name in place.
+        """
         ref = self._db.collection(POOLS).document(name)
         snap = ref.get()
         now = self._now()
+        attribution: dict[str, Any] = (
+            {"admin_changed_by": by, "admin_changed_at": now} if by else {}
+        )
         if not snap.exists:
             pool = SlotPool(
                 name=name,
@@ -1181,10 +1203,11 @@ class Store:
                     "active": 0,
                     "enabled": pool.enabled,
                     "updated_at": now,
+                    **attribution,
                 }
             )
             return pool
-        patch: dict[str, Any] = {"updated_at": now}
+        patch: dict[str, Any] = {"updated_at": now, **attribution}
         if hard_limit is not None:
             patch["hard_limit"] = int(hard_limit)
         if enabled is not None:
@@ -1389,18 +1412,20 @@ class Store:
             upper=until,
         )
 
-    def set_provider_enabled(self, provider: str, enabled: bool) -> None:
+    def set_provider_enabled(
+        self, provider: str, enabled: bool, *, by: str | None = None
+    ) -> None:
         """Enable/disable a provider platform-wide.
 
         Flips the provider pool and every per-tenant provider pool, because a
         provider-wide disable that left the per-tenant pools open would still
-        admit work.
+        admit work. `by` attributes every pool it flips; see `upsert_pool`.
         """
-        self.upsert_pool(f"provider:{provider}", enabled=enabled)
+        self.upsert_pool(f"provider:{provider}", enabled=enabled, by=by)
         prefix = f"provider:{provider}:tenant:"
         for pool in self.list_pools():
             if pool.name.startswith(prefix):
-                self.upsert_pool(pool.name, enabled=enabled)
+                self.upsert_pool(pool.name, enabled=enabled, by=by)
 
     def set_provider_quota_state(self, provider: str, state: ProviderState) -> int:
         """Force every (provider, tenant) quota document to one state.
