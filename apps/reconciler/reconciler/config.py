@@ -108,8 +108,30 @@ class ReconcilerConfig:
     #: without it, which is what keeps a shared project safe.
     managed_label_key: str = "managed-by"
     managed_label_value: str = "swarm"
+    #: Cloud Run Job RESOURCE names, which the dispatcher builds as
+    #: `sanitize_name("swarm", ...)`. Unrelated to the namespace below despite
+    #: the identical spelling -- do not collapse the two.
     job_name_prefix: str = "swarm-"
-    namespace_prefix: str = "swarm-"
+    #: THE KUBERNETES NAMESPACE PREFIX, and it must equal the scheduler's.
+    #:
+    #: This read `"swarm-"` while `apps/scheduler/scheduler/dispatch.py` has
+    #: dispatched into `swarm-tenant-<id>` all along, which is the 2026-09-23
+    #: outage (kubernetes/render.py's NAMESPACE_PREFIX carries the full
+    #: diagnosis) surviving in a second service after the first was fixed.
+    #:
+    #: It is NOT harmless here just because `"swarm-tenant-eng".startswith(
+    #: "swarm-")` is true. `GkeBackend` slices the prefix off to recover the
+    #: tenant id whenever the `swarm-tenant` label is absent --
+    #: `namespace[len(self._prefix):]` in backends.py -- so with the short
+    #: prefix an orphaned Job in `swarm-tenant-eng` was attributed to a tenant
+    #: called `tenant-eng`, which exists nowhere. A finding filed against a
+    #: tenant that does not exist is a finding nobody acts on, and the
+    #: attribution guard in `backends.py` is built to refuse exactly that kind
+    #: of claim.
+    #:
+    #: `scripts/lib/check-contract-parity.sh` section 6 asserts this against
+    #: every other restatement in the repository.
+    namespace_prefix: str = "swarm-tenant-"
 
     @classmethod
     def from_env(cls, settings: Settings | None = None) -> "ReconcilerConfig":

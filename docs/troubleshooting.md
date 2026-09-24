@@ -349,6 +349,8 @@ See [disaster-recovery.md](disaster-recovery.md).
 | 429s, parking, AIMD | [quota-management.md](quota-management.md) |
 | Resume behaviour, lost work | [checkpointing.md](checkpointing.md) |
 | Cloud Run vs GKE, dispatch failures | [execution-backends.md](execution-backends.md) |
+| `jobs.batch is forbidden` on a browser task | [gke-dispatch-403.md](gke-dispatch-403.md) — the 403 does **not** mean a permission problem |
+| Applying the dispatcher RBAC and redispatching | [runbooks/gke-dispatch-redispatch.md](runbooks/gke-dispatch-redispatch.md) |
 | Tenant isolation, secrets, groups | [multi-tenancy.md](multi-tenancy.md) |
 | Spend | [cost-control.md](cost-control.md) |
 | Rebuilding after a loss | [disaster-recovery.md](disaster-recovery.md) |

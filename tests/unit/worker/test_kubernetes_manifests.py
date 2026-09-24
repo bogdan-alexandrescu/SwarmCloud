@@ -15,7 +15,9 @@ them are the difference between isolation and the appearance of it.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import re
 from pathlib import Path
 from typing import Any
 
@@ -61,39 +63,31 @@ def one(docs: list[dict[str, Any]], kind: str, name: str | None = None) -> dict[
     return matches[0]
 
 
+def tenant_values(*argv: str) -> dict[str, str]:
+    """The values `kubernetes/apply.sh --tenant eng` actually renders with.
+
+    BUILT BY THE RENDERER, NOT BY THIS FILE. The dict used to be written out
+    here, key by key, which made the suite a second definition of what a tenant
+    namespace is -- and it had already drifted once: `NAMESPACE` read
+    `f"swarm-{TENANT}"` while the scheduler dispatched into `swarm-tenant-eng`,
+    so the tests asserted against the renderer's own mistake and agreed with
+    it. A hand-written fixture also cannot notice a placeholder ADDED to a
+    manifest: `render.substitute` would refuse the render, but only if some
+    test rendered that file, and only the ones listed here ever were.
+
+    Parsing the real arguments instead means every default in
+    `add_tenant_arguments` is exercised, and a new placeholder is supplied (or
+    fails loudly) exactly as it would be in production.
+    """
+    parser = argparse.ArgumentParser()
+    render.add_tenant_arguments(parser)
+    args = parser.parse_args(["--tenant", TENANT, "--project", PROJECT, *argv])
+    return render.tenant_values(args)
+
+
 @pytest.fixture(scope="module")
 def tenant_docs() -> list[dict[str, Any]]:
-    text = render.render_files(
-        render.TENANT_FILES,
-        {
-            "TENANT_ID": TENANT,
-            # DERIVED, never spelled again. This line read f"swarm-{TENANT}"
-            # and was the THIRD independent spelling of the tenant namespace
-            # -- render.py had one, the scheduler had another. The suite
-            # therefore asserted against the renderer's own mistake and
-            # agreed with it.
-            "NAMESPACE": f"{render.NAMESPACE_PREFIX}{TENANT}",
-            "KSA_NAME": render.sanitize_name("swarm", TENANT),
-            "GSA_EMAIL": f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
-            # The control-plane RBAC subjects. Added with
-            # rbac/dispatcher-rbac.yaml, which is what lets the scheduler
-            # create a Job in a tenant namespace at all -- without it the
-            # GKE backend cannot dispatch, which is how it sat broken.
-            "SCHEDULER_GSA": f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com",
-            "RECONCILER_GSA": f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com",
-            "PROJECT_ID": PROJECT,
-            "REGION": "us-central1",
-            "PSS_ENFORCE": "restricted",
-            "POD_CIDR": "10.0.0.0/8",
-            "SERVICE_CIDR": "34.118.224.0/20",
-            "QUOTA_PODS": "8",
-            "QUOTA_JOBS": "32",
-            "QUOTA_CPU": "64",
-            "QUOTA_MEMORY": "128Gi",
-            "QUOTA_EPHEMERAL": "320Gi",
-        },
-    )
-    return documents(text)
+    return documents(render.render_files(render.TENANT_FILES, tenant_values()))
 
 
 def render_job(profile: str = "browser", **overrides: Any) -> dict[str, Any]:
@@ -277,16 +271,20 @@ def test_the_default_service_account_is_disarmed_too(tenant_docs):
     assert default["automountServiceAccountToken"] is False
 
 
-def test_the_service_account_the_dispatcher_asks_for_exists(tenant_docs):
-    """`dispatch.py` sets serviceAccountName to sanitize_name("swarm", tenant).
+def test_the_legacy_bound_service_account_still_exists(tenant_docs):
+    """`swarm-worker` is the name every tenant registered so far is
+    workload-identity-bound to, by `scripts/register-tenant.sh`. Removing it is
+    a migration of its own, so it stays.
 
-    A pod naming a service account that does not exist stays Pending until its
-    deadline expires, which reads as a scheduling problem rather than a missing
-    object, so the name the dispatcher uses must be one of the ones created here.
+    This test used to assert `sanitize_name("swarm", tenant)` -- the spelling
+    the dispatcher asked for BEFORE its KSA was renamed -- and its docstring
+    still claimed that was what `dispatch.py` set. It was therefore asserting
+    the presence of a name nothing wanted while the name the dispatcher
+    actually names was absent. That check is now derived from the dispatcher
+    itself, in
+    `test_the_service_account_the_renderer_creates_is_the_one_the_dispatcher_names`.
     """
     names = {a["metadata"]["name"] for a in by_kind(tenant_docs, "ServiceAccount")}
-    assert render.sanitize_name("swarm", TENANT) in names
-    # ...and the one scripts/register-tenant.sh creates and binds.
     assert "swarm-worker" in names
 
 
@@ -314,10 +312,28 @@ def test_nothing_here_is_cluster_scoped(tenant_docs):
 
 
 def test_the_role_binding_covers_every_account_a_pod_could_use(tenant_docs):
+    """Every ServiceAccount in the namespace that a pod could run as, DERIVED
+    from what was rendered rather than listed again here.
+
+    The empty `swarm-worker` Role is what makes a worker pod hold no Kubernetes
+    API access at all. An account created but left out of the binding is not a
+    loophole -- it is bound to nothing, so it has nothing -- but it is a
+    divergence between the two files, and the list of names here had already
+    gone stale once against `__KSA_NAME__`.
+    """
     binding = one(tenant_docs, "RoleBinding", "swarm-worker")
     subjects = {s["name"] for s in binding["subjects"]}
-    assert render.sanitize_name("swarm", TENANT) in subjects
-    assert "swarm-worker" in subjects
+    created = {
+        a["metadata"]["name"]
+        for a in by_kind(tenant_docs, "ServiceAccount")
+        # `default` is deliberately not bound: no pod should run as it, and
+        # binding it would grant whatever it is that nothing may have.
+        if a["metadata"]["name"] != "default"
+    }
+    assert subjects == created, (
+        f"rbac/worker-rbac.yaml binds {sorted(subjects)} but "
+        f"service-accounts/worker-serviceaccount.yaml creates {sorted(created)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -913,3 +929,151 @@ def test_the_namespace_the_renderer_builds_is_the_one_the_scheduler_dispatches_i
         "a Job created into a namespace that does not exist is reported as forbidden, "
         "not as missing"
     )
+
+
+# ---------------------------------------------------------------------------
+# The dispatcher RBAC, and the substitutions that make it real
+# ---------------------------------------------------------------------------
+#
+# Everything below is about the SEAM rather than the objects: the objects are
+# checked above. A RoleBinding whose subject is the literal string
+# `__SCHEDULER_GSA__` applies cleanly, reports success, and grants nothing --
+# so "the manifest is correct" and "the manifest that reached the cluster is
+# correct" are different claims, and only the second one matters.
+
+
+def test_every_placeholder_in_the_tenant_manifests_is_supplied_and_validated():
+    """A placeholder with no value is a literal in a live object.
+
+    THE MUTATION THIS CATCHES: delete `SCHEDULER_GSA` from `tenant_values()`
+    (or from `_VALUE_PATTERNS`) and this fails, naming the placeholder and the
+    file. Without it the first symptom is a scheduler that is still 403 after
+    an apply that reported success -- indistinguishable from the RBAC never
+    having been applied at all.
+    """
+    supplied = set(tenant_values())
+    placeholders: dict[str, set[str]] = {}
+    for name in render.TENANT_FILES:
+        text = (KUBERNETES / name).read_text()
+        for token in re.findall(r"__([A-Z0-9_]+)__", text):
+            placeholders.setdefault(token, set()).add(name)
+
+    # The file this is really about must actually be in the set, or this test
+    # passes by checking nothing -- the failure mode section 4 of
+    # check-contract-parity.sh calls out by name.
+    assert "rbac/dispatcher-rbac.yaml" in render.TENANT_FILES
+    for token in ("NAMESPACE", "TENANT_ID", "SCHEDULER_GSA", "RECONCILER_GSA"):
+        assert token in placeholders, (
+            f"__{token}__ is no longer in any tenant manifest; if the RBAC moved, "
+            "point this test at it rather than letting it pass on an empty set"
+        )
+
+    missing = {t: sorted(f) for t, f in placeholders.items() if t not in supplied}
+    assert not missing, f"placeholders with no value from tenant_values(): {missing}"
+
+    unvalidated = sorted(t for t in placeholders if t not in render._VALUE_PATTERNS)
+    assert not unvalidated, (
+        f"placeholders interpolated with no pattern in _VALUE_PATTERNS: {unvalidated}. "
+        "substitute() is a str.replace over YAML, so an unvalidated value is YAML "
+        "injection into the objects that isolate tenants from one another."
+    )
+
+
+def test_a_missing_substitution_is_refused_rather_than_rendered(tenant_docs):
+    """The renderer must fail, not emit `name: __SCHEDULER_GSA__`.
+
+    A binding to a placeholder is a binding that silently grants nothing: the
+    subject is a syntactically valid Kubernetes user name, so the RoleBinding
+    applies, `kubectl get` shows it, and every dispatch keeps failing 403 --
+    the failure that is already impossible to tell from a missing namespace.
+    """
+    values = tenant_values()
+    values.pop("SCHEDULER_GSA")
+    with pytest.raises(SystemExit) as raised:
+        render.render_files(render.TENANT_FILES, values)
+    assert "SCHEDULER_GSA" in str(raised.value)
+
+    # And the happy path really does substitute it, so the assertion above is
+    # not passing because the token was never in the file.
+    binding = one(tenant_docs, "RoleBinding", "swarm-dispatcher")
+    assert binding["subjects"][0]["name"].startswith("swarm-scheduler@")
+    assert "__" not in binding["subjects"][0]["name"]
+
+
+def test_an_unvalidated_placeholder_is_refused_before_it_reaches_the_yaml():
+    """`check_values` refuses a key with no pattern rather than interpolating it."""
+    values = tenant_values()
+    values["BRAND_NEW_TOKEN"] = "anything"
+    with pytest.raises(SystemExit) as raised:
+        render.check_values(values)
+    assert "BRAND_NEW_TOKEN" in str(raised.value)
+
+
+def test_a_namespace_outside_the_platform_prefix_is_refused():
+    """`--namespace swarm-eng` is one word away from re-creating the outage.
+
+    `kubernetes/apply.sh` forwards unrecognised arguments straight to the
+    renderer, so this flag can isolate a namespace the scheduler never writes
+    to -- and the resulting dispatch failure is a 403 naming a permission, not
+    a 404 naming the namespace.
+
+    THE MUTATION THIS CATCHES: drop the prefix check in `tenant_values()` and
+    the old spelling renders cleanly again.
+    """
+    with pytest.raises(SystemExit) as raised:
+        tenant_values("--namespace", f"swarm-{TENANT}")
+    assert render.NAMESPACE_PREFIX in str(raised.value)
+
+    # A different namespace INSIDE the prefix is still allowed: the flag exists
+    # for a namespace neither provisioning path derived, and closing it
+    # entirely would be a different change from closing the outage.
+    inside = tenant_values("--namespace", f"{render.NAMESPACE_PREFIX}{TENANT}-canary")
+    assert inside["NAMESPACE"] == f"{render.NAMESPACE_PREFIX}{TENANT}-canary"
+
+
+def test_the_service_account_the_renderer_creates_is_the_one_the_dispatcher_names(
+    tenant_docs,
+):
+    """THE BUG THIS PINS, and it is the failure that comes AFTER the RBAC.
+
+    Nothing in `terraform/` creates a Kubernetes object -- there is no
+    kubernetes provider in this repository -- so the ServiceAccounts rendered
+    here are the only ones a tenant namespace has. `dispatch.py` puts
+    `serviceAccountName: swarm-agent-worker` in every GKE pod spec and
+    `terraform/modules/tenancy` issues the Workload Identity binding for that
+    same name, while this renderer created `swarm-worker` and `swarm-<tenant>`.
+
+    A pod naming a ServiceAccount that does not exist is admitted and then
+    never scheduled: the Job controller reports `serviceaccount ... not found`
+    on the Job events and no pod ever appears, which reads as a scheduling
+    problem rather than a missing object.
+
+    THE MUTATION THIS CATCHES: put `DEFAULT_KSA_NAME` back to
+    `sanitize_name("swarm", tenant)` and this fails.
+    """
+    from scheduler.dispatch import GkeJobDispatcher  # noqa: PLC0415
+
+    class _Settings:
+        worker_ksa_name = ""
+
+    wanted = GkeJobDispatcher(_Settings()).ksa_for(
+        Tenant(
+            tenant_id=TENANT,
+            kind="group",
+            principal="eng@saga.xyz",
+            created_at=utcnow(),
+        )
+    )
+    created = {d["metadata"]["name"] for d in by_kind(tenant_docs, "ServiceAccount")}
+    assert wanted in created, (
+        f"the dispatcher runs its pods as {wanted!r} and this namespace only has "
+        f"{sorted(created)}; the Job is created and the pod is never scheduled"
+    )
+
+    # And it carries the Workload Identity annotation, or the pod runs with no
+    # Google identity at all and cannot read its tenant secret, its GCS prefix
+    # or Firestore.
+    account = one(tenant_docs, "ServiceAccount", wanted)
+    annotation = account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+    assert annotation.startswith(f"swarm-agent-worker-{TENANT}@")
+    assert account["automountServiceAccountToken"] is False

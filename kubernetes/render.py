@@ -106,6 +106,39 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E40
 #: second spelling of a contract value; it did not cover this one.
 NAMESPACE_PREFIX = "swarm-tenant-"
 
+#: THE KUBERNETES SERVICE ACCOUNT THE DISPATCHER'S POD SPEC NAMES.
+#:
+#: This is the SAME CLASS OF DEFECT as NAMESPACE_PREFIX above, one layer down,
+#: and it is what the RBAC fix would have hit next. Nothing in `terraform/`
+#: creates a Kubernetes object -- there is no kubernetes provider in this
+#: repository -- so `service-accounts/worker-serviceaccount.yaml` is the ONLY
+#: thing that creates a tenant's KSA. It created `swarm-worker` and
+#: `swarm-<tenant>`, while `apps/scheduler/scheduler/dispatch.py` asks for
+#: `swarm-agent-worker` (GkeTarget.ksa_name / Settings.worker_ksa_name) and
+#: `terraform/modules/tenancy` issues the Workload Identity binding for that
+#: same `swarm-agent-worker`. So the one name that mattered was the one nobody
+#: created.
+#:
+#: The failure mode is not a clean error either. A Job whose pod names a
+#: missing ServiceAccount is accepted by the API server and then never
+#: scheduled -- the Job controller retries with
+#: `serviceaccount "swarm-agent-worker" not found` on the Job's events, the pod
+#: stays absent, and the task sits RUNNING against a lease until its deadline.
+#: That reads as a capacity or scheduling problem, which is the same disguise
+#: the namespace bug wore.
+#:
+#: `swarm-<tenant>` is gone rather than kept as a third alias: it was created to
+#: match a dispatcher spelling that no longer exists (kubernetes/README.md §5
+#: records both the older mismatch and this one). `swarm-worker` stays because
+#: `scripts/register-tenant.sh` has workload-identity-bound it on every tenant
+#: it has ever registered, and removing a bound name is a separate, migrating
+#: change from adding the missing one.
+#:
+#: tests/unit/worker/test_kubernetes_manifests.py asserts that the rendered
+#: ServiceAccount set contains exactly what `GkeJobDispatcher.ksa_for` asks for,
+#: so the two cannot drift apart again without failing CI.
+DEFAULT_KSA_NAME = "swarm-agent-worker"
+
 
 class RenderError(SystemExit):
     """A value that must not reach the YAML. Exits non-zero with the reason."""
@@ -284,11 +317,33 @@ def substitute(text: str, values: dict[str, str]) -> str:
 def tenant_values(args: argparse.Namespace) -> dict[str, str]:
     tenant = args.tenant
     namespace = args.namespace or f"{NAMESPACE_PREFIX}{tenant}"
+    # AN OVERRIDE MAY RENAME THE NAMESPACE; IT MAY NOT MOVE IT OUT OF THE
+    # PLATFORM'S PREFIX. `kubernetes/apply.sh` forwards every argument it does
+    # not recognise straight to this renderer, so `--namespace swarm-eng` is one
+    # word away from re-creating the outage in the header of this file: the
+    # objects would be applied to a namespace the dispatcher never writes to,
+    # and the dispatch would keep failing with a 403 that names permissions.
+    # The flag stays -- rendering against a namespace neither provisioning path
+    # derived is a real need -- but it stays inside `swarm-tenant-`, which is
+    # also what the reconciler's GC filter and this repository's kubectl guard
+    # both recognise as ours.
+    if not namespace.startswith(NAMESPACE_PREFIX):
+        raise RenderError(
+            f"render: --namespace {namespace!r} is outside {NAMESPACE_PREFIX!r}. "
+            "The scheduler dispatches into "
+            f"{NAMESPACE_PREFIX}<tenant> (apps/scheduler/scheduler/dispatch.py, "
+            "GkeTarget.namespace_template), so objects applied anywhere else "
+            "isolate a namespace nothing ever runs in -- and the resulting "
+            "dispatch failure is reported as `jobs.batch is forbidden`, never "
+            "as a missing namespace. See docs/gke-dispatch-403.md."
+        )
     return {
         "TENANT_ID": tenant,
         "NAMESPACE": namespace,
-        # The name the dispatcher's manifest asks for: sanitize_name("swarm", id).
-        "KSA_NAME": args.ksa or sanitize_name("swarm", tenant),
+        # The name the dispatcher's pod spec asks for. See DEFAULT_KSA_NAME:
+        # this used to be sanitize_name("swarm", id), a spelling nothing has
+        # asked for since the dispatcher's KSA was renamed.
+        "KSA_NAME": args.ksa or DEFAULT_KSA_NAME,
         "GSA_EMAIL": args.gsa
         or f"swarm-agent-worker-{tenant}@{args.project}.iam.gserviceaccount.com",
         # The control-plane identities, as RBAC subjects. Derived rather than
@@ -369,8 +424,27 @@ def render_job(args: argparse.Namespace) -> str:
 
 def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tenant", required=True, help="tenant id, e.g. eng or u-alice")
-    parser.add_argument("--namespace", default="", help="override the derived namespace")
-    parser.add_argument("--ksa", default="", help="override the Kubernetes service account name")
+    parser.add_argument(
+        "--namespace",
+        default="",
+        help=(
+            f"override the derived namespace. It must still start with "
+            f"{NAMESPACE_PREFIX!r}: that is the prefix the scheduler dispatches "
+            "into and the one the reconciler collects by, and a namespace "
+            "outside it is isolated but never used."
+        ),
+    )
+    parser.add_argument(
+        "--ksa",
+        default="",
+        help=(
+            f"override the Kubernetes service account name. Defaults to "
+            f"{DEFAULT_KSA_NAME}, which is what the dispatcher's pod spec names "
+            "and what terraform's Workload Identity binding was issued for; "
+            "pass this only for a cluster provisioned with another spelling, "
+            "and pass the same value to the scheduler as WORKER_KSA_NAME."
+        ),
+    )
     parser.add_argument(
         "--gsa",
         default="",

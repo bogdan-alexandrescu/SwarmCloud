@@ -247,31 +247,74 @@ t_pass "baseline captured"
 # is derived from the frozen catalogue rather than typed out, so a profile that
 # moves to a new backend is covered the day it moves instead of the day someone
 # remembers this file exists.
+#
+# Three details in the probe below are the difference between a matrix that
+# covers the backends and one that only looks like it does.
+#
+#   * `resolve_backend(p)`, NOT `p.backend`. AUTO is a real member of the
+#     frozen `Backend` enum and `resolve_backend` is what turns it into the
+#     backend a task actually dispatches to (by resource class). Reading the
+#     raw field would put a row called `AUTO` in this matrix -- a "backend"
+#     with no API behind it -- while the real backend that profile resolves to
+#     went uncovered. That is the same failure this whole section exists to
+#     stop, one level of indirection further in.
+#   * A backend with NO available profile is printed with `-` and FAILS below.
+#     Dropping it silently is how the matrix would quietly shrink back to the
+#     one row it had: flip `browser` to `available=False` and, without this,
+#     GKE_AUTOPILOT simply stops being mentioned and the suite stays green.
+#   * The repository root is passed in rather than assumed from the working
+#     directory. `sys.path.insert(0, "apps/common")` only worked when this was
+#     run from the root; anywhere else the import failed, the probe printed
+#     nothing, and "nothing" is indistinguishable from "no backends".
 backends_to_cover() {
-  "${PYTHON_BIN:-python3}" - <<'PY'
+  "${PYTHON_BIN:-python3}" - "${REPO_ROOT}" <<'PY'
 import sys
-sys.path.insert(0, "apps/common")
-from swarm_common.profiles import RUNNER_PROFILES
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.profiles import Backend, RUNNER_PROFILES, resolve_backend
+
 seen = {}
-for name, p in RUNNER_PROFILES.items():
-    if not getattr(p, "available", True):
+for name, profile in RUNNER_PROFILES.items():
+    if not getattr(profile, "available", True):
         continue
-    seen.setdefault(getattr(p.backend, "value", str(p.backend)), name)
-print(" ".join(f"{b}:{n}" for b, n in sorted(seen.items())))
+    seen.setdefault(resolve_backend(profile).value, name)
+
+# Every concrete backend, whether or not a profile reaches it. AUTO is not one
+# -- it is the instruction to choose, and `resolve_backend` has already run.
+for backend in sorted(b.value for b in Backend if b is not Backend.AUTO):
+    print(f"{backend} {seen.get(backend, '-')}")
 PY
 }
 
-COVER="$(backends_to_cover 2>/dev/null || true)"
-if [[ -z "${COVER}" ]]; then
+COVER_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-smoke-cover.XXXXXX")"
+# A command substitution runs in a subshell, so the exit status has to be taken
+# here rather than read back out of a variable the subshell set (CLAUDE.md).
+if ! backends_to_cover >"${COVER_FILE}" 2>/dev/null || [[ ! -s "${COVER_FILE}" ]]; then
   t_fail "could not read the runner-profile catalogue; this suite cannot know which backends exist"
   t_info "without it a green run proves only that SOME backend works, which is what let GKE fail unseen"
 else
-  t_info "backends to cover: ${COVER}"
+  t_info "backends to cover: $(tr '\n' ' ' <"${COVER_FILE}")"
 fi
 
-for pair in ${COVER}; do
-  BACKEND="${pair%%:*}"
-  BPROFILE="${pair##*:}"
+# Fed from a `while read`, and the count is printed, because an empty or
+# single-iteration loop reporting success is this repository's signature defect
+# -- see CLAUDE.md rule zero.
+#
+# Read on fd 3, not on stdin. The body of this loop submits tasks and polls the
+# API, and anything in there that read stdin would eat the rest of the matrix
+# -- a loop that silently covers one backend instead of all of them is exactly
+# the defect being fixed.
+COVERED=0
+while read -r BACKEND BPROFILE <&3; do
+  [[ -n "${BACKEND}" ]] || continue
+  COVERED=$(( COVERED + 1 ))
+  if [[ "${BPROFILE}" == "-" ]]; then
+    t_case "Backend ${BACKEND}: a runner profile exists to exercise it"
+    t_fail "${BACKEND}: no AVAILABLE profile in the frozen catalogue resolves to it"
+    t_info "${BACKEND} is therefore untested by this suite, and a green run says nothing about it"
+    continue
+  fi
   t_case "Backend ${BACKEND}: submit a ${BPROFILE} task and run it to completion"
   B_RUN_ID="$(test_run_id)"
   if ! B_TASK_ID="$(submit_task "${BPROFILE}" \
@@ -295,7 +338,18 @@ for pair in ${COVER}; do
     t_fail "${BACKEND}: no terminal state within ${TIMEOUT}s (stuck at ${b_final})"
     t_info "${BACKEND}: last_error: $(task_field "${B_TASK_ID}" '.last_error // "none"')"
   fi
-done
+done 3<"${COVER_FILE}"
+rm -f "${COVER_FILE}"
+
+# The number actually visited, not the number intended. A loop that iterated
+# nothing and a loop that covered every backend print the same absence of
+# failures, and this suite has already shipped one of those.
+t_case "Every execution backend was exercised"
+if [[ "${COVERED}" -gt 0 ]]; then
+  t_pass "${COVERED} backend(s) visited"
+else
+  t_fail "the backend matrix visited 0 backends; nothing below proves any dispatch path works"
+fi
 
 # ---------------------------------------------------------------------------
 t_case "Submit a ${PROFILE} task and run it to completion"
