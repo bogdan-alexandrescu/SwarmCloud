@@ -2670,7 +2670,9 @@ an agent burn tokens on the wrong thing cannot stop it from the console.
   environment, the tenant and the signed-in principal. Today `index.html` and
   every component carry no branding at all.
 * **B31 — Sub-agents, as a contract request.** Write the request; do not build a
-  fake hierarchy from `depends_on`.
+  fake hierarchy from `depends_on`. **Filed 2026-09-24** as
+  [request #14](../contract-change-requests.md#14-modelspy-a-sub-agent-has-nowhere-to-name-its-parent),
+  open.
 
 ## Correction to half one
 

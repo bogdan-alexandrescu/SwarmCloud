@@ -48,6 +48,7 @@ from ..logs import StructuredLogger
 from ..procman import run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
 from .base import (
+    SPEND_KEYS,
     CredentialRevokedSignal,
     QuotaExhaustedSignal,
     RunnerContext,
@@ -361,6 +362,18 @@ def run_cli_agent(
         scrub_file(captured, secrets)
 
     combined = _tail(stdout_path) + "\n" + _tail(stderr_path)
+
+    # PARSED BEFORE THE EXIT CODE IS JUDGED, not after. A CLI that fails still
+    # prints its result object -- `claude --output-format json` reports
+    # `is_error: true` WITH `usage` and `total_cost_usd` -- and every raise
+    # below used to happen first, so the numbers for a run that hit a 429 an
+    # hour in, or failed after doing real work, were discarded here and the
+    # attempt read "not reported" in every cost figure. `spend` rides out on
+    # the signal instead, and `run_runner` writes it into result.json.
+    raw_stdout = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
+    parsed = _parse_cli_output(raw_stdout)
+    spend = _scrub_json(_spend_of(parsed), secrets)
+
     if result.exit_code != 0 or result.timed_out:
         hit, retry_after, reset_at = detect_rate_limit(combined)
         if hit:
@@ -369,6 +382,7 @@ def run_cli_agent(
                 retry_after_seconds=retry_after,
                 reset_at=reset_at,
                 detail=f"{spec.name} reported a provider rate limit",
+                spend=spend,
             )
         # Checked only after the rate-limit test has said no: a 429 body
         # sometimes mentions authentication in passing, and reading that as a
@@ -380,29 +394,17 @@ def run_cli_agent(
                 provider=spec.provider,
                 detail=f"{spec.name} was refused its credential",
                 marker=marker or "",
+                spend=spend,
             )
     if result.timed_out:
-        raise RunnerFailure(f"{spec.name} timed out after {limits.timeout_seconds:.0f}s")
+        raise RunnerFailure(
+            f"{spec.name} timed out after {limits.timeout_seconds:.0f}s", spend=spend
+        )
     if result.exit_code != 0:
         raise RunnerFailure(
-            f"{spec.name} exited {result.exit_code}: {_tail(stderr_path, 2000).strip()}"
+            f"{spec.name} exited {result.exit_code}: {_tail(stderr_path, 2000).strip()}",
+            spend=spend,
         )
-
-    raw_stdout = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
-    parsed: Any = None
-    try:
-        parsed = json.loads(raw_stdout)
-    except json.JSONDecodeError:
-        # Some CLI versions stream one JSON object per line.
-        events = []
-        for line in raw_stdout.splitlines():
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-        parsed = events or None
 
     if parsed is not None:
         ctx.write_artifact(
@@ -418,6 +420,7 @@ def run_cli_agent(
             retry_after_seconds=retry_after,
             reset_at=reset_at,
             detail=f"{spec.name} output contains a rate-limit notice without a completed result",
+            spend=spend,
         )
 
     return {
@@ -428,7 +431,14 @@ def run_cli_agent(
         "provider": spec.provider,
         "model": str(model) if model else None,
         "exit_code": result.exit_code,
-        "structured_output": _scrub_json(parsed, secrets) if isinstance(parsed, dict) else None,
+        # A streamed (one-object-per-line) run parses to a LIST, which this
+        # field never carried -- so its numbers were dropped even on success.
+        # The spend subset of its final result event stands in for it then.
+        "structured_output": (
+            _scrub_json(parsed, secrets)
+            if isinstance(parsed, dict)
+            else (spend or None)
+        ),
         "limits": limits.as_dict(),
         "metrics": {
             "duration_seconds": round(result.duration_seconds, 3),
@@ -436,6 +446,48 @@ def run_cli_agent(
             "stderr_bytes": result.stderr_bytes,
         },
     }
+
+
+def _parse_cli_output(raw_stdout: str) -> Any:
+    """The CLI's stdout as JSON: one object, or the objects of a streamed run.
+
+    None when neither shape is there -- a CLI that crashed before printing, or
+    one whose output is prose.
+    """
+    try:
+        return json.loads(raw_stdout)
+    except json.JSONDecodeError:
+        # Some CLI versions stream one JSON object per line.
+        events = []
+        for line in raw_stdout.splitlines():
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return events or None
+
+
+def _spend_of(parsed: Any) -> dict[str, Any]:
+    """The `SPEND_KEYS` subset of a CLI result, or {} when it reported none.
+
+    For a streamed run, the LAST event that carries them: that is the final
+    `result` event, whose totals cover the whole session. Earlier events carry
+    per-message usage, nested, and summing those would count the same tokens
+    the result event already totals.
+    """
+    candidates: list[Any]
+    if isinstance(parsed, dict):
+        candidates = [parsed]
+    elif isinstance(parsed, list):
+        candidates = list(reversed(parsed))
+    else:
+        return {}
+    for candidate in candidates:
+        if isinstance(candidate, dict) and any(key in candidate for key in SPEND_KEYS):
+            return {key: candidate[key] for key in SPEND_KEYS if key in candidate}
+    return {}
 
 
 def _scrub_json(value: Any, secrets: Sequence[str]) -> Any:

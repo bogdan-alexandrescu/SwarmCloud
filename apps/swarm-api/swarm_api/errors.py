@@ -65,3 +65,21 @@ class RateLimited(ApiError):
 class UpstreamUnavailable(ApiError):
     status_code = 503
     code = "upstream_unavailable"
+
+
+class Unpageable(ApiError):
+    """A page boundary this service cannot place exactly, so it refuses to guess.
+
+    Keyset pages order by a timestamp and break ties by document id, and to do
+    that at a boundary they read every document sharing the boundary's instant.
+    That read is bounded. Past the bound the choice is a wrong page -- a row
+    skipped or served twice, with a 200 -- or this error, and a wrong page is
+    the failure the whole pagination scheme exists to prevent.
+
+    A 500, not a 4xx: the caller asked a correct question. No writer in this
+    platform stamps a timestamp coarser than a microsecond, so reaching this
+    means one did.
+    """
+
+    status_code = 500
+    code = "unpageable"

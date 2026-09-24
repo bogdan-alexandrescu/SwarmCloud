@@ -6,6 +6,13 @@ output "job_ids" {
   value = { for k, j in google_cloud_run_v2_job.this : k => j.id }
 }
 
+# Read off the resource rather than echoed from var.jobs, so a test of the root
+# asserts what the job will actually run: terraform/infra deploys by digest,
+# and tests/terraform/image_refs.tftest.hcl holds it to that.
+output "images" {
+  value = { for k, j in google_cloud_run_v2_job.this : k => j.template[0].template[0].containers[0].image }
+}
+
 output "workspace_size_gib" {
   description = <<-EOT
     Effective workspace size per job. This is a FRACTION OF CONTAINER MEMORY,

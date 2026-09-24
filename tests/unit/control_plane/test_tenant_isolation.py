@@ -342,6 +342,9 @@ def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
         # new route added without the dependency, so a new route belongs in it.
         ("GET", f"/v1/tasks/{task_id}/checkpoints"),
         ("GET", f"/v1/tasks/{task_id}/logs"),
+        # Every attempt of the tenant, across tasks: the spend of every run
+        # the colliding principal did not start.
+        ("GET", "/v1/attempts"),
         ("GET", "/v1/workflows"),
         ("GET", f"/v1/workflows/{workflow_id}"),
         ("GET", "/v1/stats"),

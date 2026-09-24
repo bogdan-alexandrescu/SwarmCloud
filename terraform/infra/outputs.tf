@@ -48,6 +48,28 @@ output "image_base" {
   value = module.artifact_registry.image_base
 }
 
+# --- images, by digest -------------------------------------------------------
+
+output "image_refs" {
+  description = "The digest-pinned image, per name, this state was last applied with. scripts/lib/image-refs.sh --applied reads it so that a plan which is not a deploy replans exactly what is running instead of moving any image."
+  value       = { for name in local.deployed_images : name => local.image[name] }
+}
+
+output "service_images" {
+  description = "Cloud Run service -> the image its template names, read off the planned resource. Every value is a digest."
+  value       = module.cloud_run.images
+}
+
+output "job_images" {
+  description = "Worker job -> the image its template names, read off the planned resource. Every value is a digest."
+  value       = module.cloud_run_jobs.images
+}
+
+output "worker_image_refs" {
+  description = "Runner image -> digest, as handed to the scheduler in WORKER_IMAGE_REFS for every Job it creates itself."
+  value       = jsondecode(local.service_env["swarm-scheduler"].WORKER_IMAGE_REFS)
+}
+
 # --- identity --------------------------------------------------------------
 
 output "service_accounts" {

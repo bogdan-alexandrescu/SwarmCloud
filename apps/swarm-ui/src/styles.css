@@ -8358,3 +8358,58 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    another lane has already decided about — it only reaches the ones nobody
    has. */
 :where(.app a[href]):focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------------------
+   A3 -- the checkpoint browser (CheckpointBrowser.tsx)
+
+   Opened from a checkpoint row in RunFiles.tsx. Append-only: every selector
+   below is new, and the surface reuses `.art-*` (the viewer it opens is the
+   artifact viewer itself), `.ctl-facts` and `.ctl-empty` rather than drawing
+   a third version of either. The box matches `.art-viewer` so the two read as
+   the same kind of inset when one is opened inside the other.
+   --------------------------------------------------------------------------- */
+
+.ckb {
+  margin-top: var(--ctl-s2);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); padding: var(--ctl-s3);
+}
+.ckb-head { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; }
+.ckb-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.ckb-facts { margin: var(--ctl-s2) 0; }
+.ckb-cut { color: var(--text-dim); }
+
+/* THE LINK TO THE WHOLE ARCHIVE, drawn as `button.copy` is so the controls on
+   this row read as one kind of thing. The same pair of tokens, so the
+   contrast it has is the contrast `button.copy` already clears. */
+.ckb-download {
+  padding: 1px 7px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2); color: var(--text-dim);
+  font: var(--t-meta)/var(--lh-meta) var(--mono); text-decoration: none;
+}
+.ckb-download:hover { color: var(--text); border-color: var(--text-faint); }
+
+/* The tree. Mono because every label in it is a path; bounded in height so a
+   5000-entry listing scrolls inside the panel instead of pushing the logs
+   below it off the page. */
+.ckb-tree {
+  list-style: none; margin: var(--ctl-s2) 0 0; padding: 0;
+  max-height: 50vh; overflow: auto;
+}
+.ckb-group { list-style: none; margin: 0; padding: 0 0 0 var(--ctl-s3); }
+.ckb-node {
+  display: flex; align-items: baseline; gap: var(--ctl-s2);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.ckb-open {
+  font: inherit; color: var(--text); background: none; border: 0; padding: 0;
+  cursor: pointer; text-align: left;
+  border-bottom: 1px dotted var(--line);
+}
+.ckb-open:hover { border-bottom-color: var(--text-dim); }
+.ckb-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ckb-node.is-open > .ckb-open { border-bottom-style: solid; }
+.ckb-name { color: var(--text-dim); }
+.ckb-meta { color: var(--text-faint); font: var(--t-meta)/var(--lh-meta) var(--mono); }
+.ckb-unsafe { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; }

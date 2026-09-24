@@ -150,7 +150,7 @@ class _Refresher:
     def __init__(self, outcomes=(), raises=None):
         self.outcomes, self.raises, self.seen = list(outcomes), raises, []
 
-    def sweep(self, pairs):
+    def sweep(self, pairs, keep_going=None):
         self.seen.append(pairs)
         if self.raises:
             raise self.raises
@@ -228,10 +228,10 @@ def test_the_account_sweep_and_the_credential_sweep_are_reported_separately(brok
     from quota_broker.credentials import RefreshOutcome
 
     class _Refresher:
-        def sweep(self, pairs):
+        def sweep(self, pairs, keep_going=None):
             return [RefreshOutcome("eng", "anthropic", True, "refreshed")]
 
-        def sweep_accounts(self, secrets):
+        def sweep_accounts(self, secrets, keep_going=None):
             raise RuntimeError("the pool is unreachable")
 
     class _Store:
@@ -269,10 +269,10 @@ def test_a_broken_account_pool_does_not_break_the_quota_sweep(broker):
             return "unused"
 
     class _Refresher:
-        def sweep(self, pairs):
+        def sweep(self, pairs, keep_going=None):
             return []
 
-        def sweep_accounts(self, secrets):
+        def sweep_accounts(self, secrets, keep_going=None):
             return []
 
     response = TestClient(
