@@ -32,6 +32,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
 | 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | ACCEPTED 2026-09-24 (the owner's "#14"), rename applied in PR #44 |
 | 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
+| 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 
 ---
 
@@ -1912,3 +1913,78 @@ Nothing stored. Old events keep their types. The costs:
 The `generation_fenced` events with `phase: left_running` stay as they are.
 They are accurate about what was stopped, but not about why. The pass report
 and the `evicted a GKE job` log line name the kind exactly either way.
+
+---
+
+## 20. `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times
+
+**Status:** open, recorded 2026-09-24 by the lane that made the scheduler honour
+the field (branch `lane/on-step-failure`). It was filed as 19 on that branch,
+and renumbered 20 when main took 19 for the browser-eviction request.
+
+### What is true today
+
+`Workflow.on_step_failure: str = "fail_workflow"   # or "continue"`. The comment
+is the only place in the frozen contract that names the second value. Nothing
+constrains the first. The vocabulary is therefore stated separately by each
+component that needs it:
+
+* `swarm_api.schemas.WorkflowCreate.on_step_failure`:
+  `Literal["fail_workflow", "continue"]`, the only validation;
+* `swarm_mcp.server.TOOLS` (`swarm_workflow`): a JSON-schema `enum` and
+  `default`;
+* `scheduler.loop.FAIL_WORKFLOW`: the one value the scheduler acts on;
+* the frozen dataclass default itself.
+
+Until 2026-09-24 the scheduler did not read the field, so a disagreement
+between these copies cost nothing. It does now. A rename of `fail_workflow` in
+the API's Literal that missed `scheduler/loop.py` would make the scheduler
+ignore the setting again, silently, which is the defect that change fixed.
+That is the mirrored-value failure this repository has already had three
+outages from.
+
+### The requested change
+
+Add to `states.py` (or `models.py`):
+
+```python
+class OnStepFailure(str, Enum):
+    """What a FAILED or DEAD_LETTERED step does to the rest of its workflow.
+
+    CANCELLED is not a failure under either value: a stopped step takes only its
+    own dependents.
+    """
+    #: Cancel every step of the workflow that has not started.
+    FAIL_WORKFLOW = "fail_workflow"
+    #: Cancel only the transitive dependents of the failed step.
+    CONTINUE = "continue"
+```
+
+and type the field `on_step_failure: OnStepFailure = OnStepFailure.FAIL_WORKFLOW`.
+The API's Literal, the MCP enum and the scheduler constant are then derived from
+`OnStepFailure` rather than restated.
+
+### What it would break if accepted
+
+* **The stored value does not change.** A `str` Enum's value is the same string,
+  so no workflow document needs migrating.
+* **Every constructor of `Workflow` still type-checks at runtime,** because
+  dataclasses do not enforce annotations. A caller passing a plain string keeps
+  working until it is changed to pass the enum.
+* **`asdict(workflow)` would carry the enum member, not the string.**
+  `swarm_api.codec.workflow_to_firestore` must write `.value` explicitly, as it
+  already does for `state`. Otherwise the Firestore client receives an Enum,
+  and whether it serialises a `str` subclass unchanged has not been verified.
+* **Decoding must map an unknown stored value to something.** Today the API
+  echoes whatever string is stored. `OnStepFailure(value)` would raise. The
+  decoder needs an explicit rule, and the scheduler's current rule (anything
+  other than `fail_workflow` leaves only the dependency rule in force) is the
+  conservative one, because a cancel cannot be undone.
+
+### If it is declined
+
+`tests/unit/control_plane/test_on_step_failure.py::test_the_policy_vocabulary_agrees_everywhere_it_is_stated`
+holds the four copies together: the API's Literal, the MCP enum and default,
+the frozen default and the scheduler's constant. It catches a rename in any one
+of them in CI. It does not stop a fifth copy from being written somewhere it
+does not look.
