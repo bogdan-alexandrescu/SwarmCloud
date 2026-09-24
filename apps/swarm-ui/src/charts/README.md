@@ -139,6 +139,14 @@ cannot show; each table keeps the facts as text a reader can copy.
   a live worker emits (`running`, `heartbeat`, `checkpoint_*`) and a cold
   start only by the scheduler's `lease_acquired` and `dispatched`.
 
+**Every chart root is `role="group"`, never `role="img"`.** An image's
+children are presentational, so the per-mark sentences (an open segment's
+lower bound, an absence band's reason, an off-page checkpoint's "not
+evidence that it is broken") would be replaced by one label for the whole
+chart. They are the accessible route to the explanations the owner moved off
+the glass, so they must stay reachable. `inspector.charts.test.tsx` asserts it
+for all six chart roots, `TimeSeries` included.
+
 The event page these read is now requested at `limit=200` (`api.ts`,
 `EVENT_PAGE_LIMIT`). Before this, the run screens asked for no limit and got
 the API's **default** page of 50, not its maximum of 200.

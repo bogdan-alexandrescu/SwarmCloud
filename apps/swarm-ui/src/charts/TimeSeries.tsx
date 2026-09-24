@@ -181,7 +181,11 @@ export function TimeSeries({
         width={width}
         height={height}
         viewBox={`0 0 ${width} ${height}`}
-        role="img"
+        // A GROUP, NOT AN IMAGE: an image's children are presentational, and
+        // every absence band's <title> below is the sentence saying why that
+        // point has no value. Those reasons are the accessible route to what
+        // the band means; one label for the whole chart would hide all of them.
+        role="group"
         aria-label={title}
       >
         <defs>
