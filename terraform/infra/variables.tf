@@ -289,7 +289,7 @@ variable "tenants" {
 }
 
 variable "enable_safety_tick_alert" {
-  description = "Create the safety-tick-stopped alert. Requires the Cloud Scheduler metric to already exist in the project; see the module variable of the same name."
+  description = "Create the safety-tick-stopped alert. A kill switch: the metric it watches is a logs-based one the monitoring module creates in the same apply; see the module variable of the same name for why it no longer waits on a Cloud Scheduler metric."
   type        = bool
   default     = true
 }
@@ -406,9 +406,68 @@ variable "admin_users" {
 
     Empty this in the same change that grants swarm-api a Workspace Group
     Reader role. See docs/audits/2026-09-20/session-handover.md.
+
+    EVERY ENTRY IS A FULL PLATFORM ADMIN, whatever it was added for. Admin is
+    one boolean: it can pause dispatch, set any ceiling, drain or disable a
+    provider for every tenant, write any tenant's document (max_active,
+    capacity_units and `enabled`, so it can disable a tenant), rewrite any
+    tenant's workflow state, and read every tenant's leases and records.
+
+    SO IT IS FOR OPERATORS, NOT FOR THE VERIFICATION GATE. swarm-verify was
+    put here on 2026-09-24 so race-test could narrow runner:mock, and the
+    owner reversed that the same day because of the reach above. An identity
+    that needs one admin route belongs in `admin_pool_users`, not here. See
+    docs/audits/2026-09-22/race-test-needs-a-write.md.
+
+    Bare emails, never IAM members: swarm-api compares each entry with the
+    email in the verified token, so `serviceAccount:x@y` matches nobody.
   EOT
   type        = list(string)
   default     = []
+}
+
+variable "admin_pool_users" {
+  description = <<-EOT
+    Email addresses allowed ONE part of the admin surface: the routes in
+    swarm-api's POOL_ADMIN_ROUTES allow-list (apps/swarm-api/swarm_api/auth.py),
+    which today is PUT /v1/admin/limits/runner/{runner_profile} and nothing
+    else. Every other /v1/admin route stays admin-only, and so does any admin
+    route added later until it is deliberately allow-listed. Membership does
+    not make the caller an admin anywhere else.
+
+    Exists for the verification gate. scripts/race-test.sh narrows runner:mock
+    to one slot, and restores it, through that route rather than a Firestore
+    write role (owner decision, 2026-09-24). The first form of the decision
+    put the gate in `admin_users`, which would also have let it disable any
+    tenant; this list replaced that the same day. See
+    docs/audits/2026-09-22/race-test-needs-a-write.md.
+
+    What an entry CAN still do, stated rather than minimised: set the ceiling
+    of ANY runner profile's pool, not only mock's -- the route takes the
+    profile as a path parameter and the allow-list is by route. It cannot
+    write `active`, create a pool outside the frozen catalogue, or reach a
+    tenant, a provider switch or dispatch.
+
+    Unaffected by emptying `admin_users` for a Group Reader role: there is no
+    group form of this capability. Membership of an ADMIN_GROUPS group would
+    make an identity a FULL admin, so the gate must not be added to any admin
+    group -- a Google group can hold a service account as a member, where the
+    group allows external members.
+
+    Taken from the environment's tfvars as is; locals.tf appends nothing, so
+    an identity holds this only where an environment names it.
+
+    Bare emails, never IAM members: swarm-api compares each entry with the
+    email in the verified token, so `serviceAccount:x@y` would plan, apply
+    and match nobody. The validation below refuses that shape at plan time.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for u in var.admin_pool_users : can(regex("^[^@:]+@[^@:]+$", u))])
+    error_message = "admin_pool_users takes bare email addresses, not IAM members: swarm-api compares each entry with the email in the verified token, so a serviceAccount: prefix would match nobody."
+  }
 }
 
 variable "admin_groups" {

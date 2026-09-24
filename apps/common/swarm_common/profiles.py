@@ -87,7 +87,18 @@ class RunnerProfile:
     image: str
     resource_class: str
     backend: Backend
-    command: tuple[str, ...]
+    #: The argv of the RUNNER, which the worker lifecycle starts as a supervised
+    #: CHILD (`agent_worker.lifecycle._runner_argv`). NEVER a container command:
+    #: both worker images' ENTRYPOINT is the lifecycle (`tini -- python -m
+    #: agent_worker`), and a container `command` replaces it, switching off
+    #: fencing, cancel, heartbeat, checkpointing and lease release at once. A
+    #: dispatcher names the profile in RUNNER_PROFILE and sets no command.
+    #:
+    #: Called `command` until 2026-09-24. Under that name both dispatchers put
+    #: it on the container, and every GKE pod ran the bare runner (incident
+    #: wf_ebb3ab2d65664707a559). Renamed by contract request 18, accepted by
+    #: the owner, so `list(profile.command)` can no longer be written.
+    runner_argv: tuple[str, ...]
     #: Provider whose quota and credentials this runner consumes. None means the
     #: runner needs no external provider, so it works before a tenant registers
     #: any key -- which is what keeps the mock smoke path always available.
@@ -141,7 +152,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         image="agent-runtime-base",
         resource_class="standard",
         backend=Backend.CLOUD_RUN_JOB,
-        command=("python", "-m", "agent_worker.runners.mock"),
+        runner_argv=("python", "-m", "agent_worker.runners.mock"),
         provider=None,          # no key required -- smoke tests must always work
         timeout_seconds=600,
         checkpoint_interval_seconds=30,
@@ -151,7 +162,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         image="agent-runtime-base",
         resource_class="standard",
         backend=Backend.CLOUD_RUN_JOB,
-        command=("python", "-m", "agent_worker.runners.generic"),
+        runner_argv=("python", "-m", "agent_worker.runners.generic"),
         provider=None,
     ),
     "claude-code": RunnerProfile(
@@ -159,7 +170,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         image="agent-runtime-base",
         resource_class="standard",
         backend=Backend.CLOUD_RUN_JOB,
-        command=("python", "-m", "agent_worker.runners.claude_code"),
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
         provider="anthropic",
         # BOTH are accepted, and a tenant supplies exactly one. Claude Code runs
         # on either metered API access (ANTHROPIC_API_KEY) or a Claude
@@ -175,7 +186,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         image="agent-runtime-base",
         resource_class="standard",
         backend=Backend.CLOUD_RUN_JOB,
-        command=("python", "-m", "agent_worker.runners.codex"),
+        runner_argv=("python", "-m", "agent_worker.runners.codex"),
         provider="openai",
         secrets=("OPENAI_API_KEY",),
         timeout_seconds=7200,
@@ -203,7 +214,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Chromium under Cloud Run needs a large /dev/shm; GKE gives us direct
         # control over that, so browser work stays on Autopilot.
         backend=Backend.GKE_AUTOPILOT,
-        command=("python", "-m", "agent_worker.runners.browser"),
+        runner_argv=("python", "-m", "agent_worker.runners.browser"),
         provider="anthropic",
         secrets=("ANTHROPIC_API_KEY",),
         timeout_seconds=5400,

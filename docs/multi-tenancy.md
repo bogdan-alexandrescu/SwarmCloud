@@ -22,15 +22,25 @@ Registering a tenant creates every boundary at once — there is no
 | Control-plane data | custom role `swarmTenantWorkerFirestore`, **unconditioned** | IAM, on the shape of the access only — **see the caveat below** |
 | Artifacts & checkpoints | GCS prefix `tenants/<id>/`, granted by IAM condition | IAM condition on the binding |
 | Provider keys | `swarm-tenant-<id>-<provider>`, secret-level IAM | Secret Manager resource policy |
-| GKE workloads | namespace `swarm-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
+| GKE workloads | namespace `swarm-tenant-<id>` + workload identity binding | Kubernetes RBAC + default-deny NetworkPolicy |
 | Capacity | `tenant:<id>` and `provider:<p>:tenant:<id>` slot pools | admission transaction |
 | Record | `tenants/<id>` document | control plane |
+
+Removing a tenant is the same list in reverse, in an order that matters, and
+the namespace is removed by hand: the reconciler holds no ClusterRole and does
+not collect namespaces (owner decision, 2026-09-24). See
+[the tenant offboarding runbook](runbooks/tenant-offboarding.md), which also
+lists what a tenant accumulates at runtime and this table does not show.
+
+The namespace is `swarm-tenant-<id>`. The GKE row said `swarm-<id>` until
+2026-09-24, which is the spelling behind the 2026-09-23 dispatch outage
+([the dispatch 403 note](gke-dispatch-403.md)).
 
 The service account name is `swarm-agent-worker-<id>`, and it is the one name to
 grant or audit against. It is what `terraform/modules/tenancy` creates, what
 `terraform/modules/cloud_run_jobs` binds to each `(tenant, profile)` Job, and
 what `kubernetes/render.py` puts in the Workload Identity annotation. Two other
-spellings used to appear — this table said `swarm-tenant-<id>` and
+spellings used to appear — the Identity row said `swarm-tenant-<id>` and
 `register-tenant.sh` created `swarm-t-<id>` — and neither existed in a deployed
 project, so an operator checking a boundary found nothing and concluded
 registration had failed.
@@ -140,9 +150,12 @@ Every query the API issues is filtered by the caller's resolved tenant. A task i
 from another tenant returns 404 — not 403 — because confirming existence is
 itself a leak.
 
-Admin routes (`/v1/admin/*`) are gated on `ADMIN_GROUPS`, which is kept separate
-from `TENANT_GROUPS` so an admin still belongs to a normal tenant for their own
-tasks.
+Admin routes (`/v1/admin/*`) are gated on admin — `ADMIN_GROUPS` membership or
+an address on `ADMIN_USERS` — which is kept separate from `TENANT_GROUPS` so an
+admin still belongs to a normal tenant for their own tasks. One narrower list,
+`ADMIN_POOL_USERS`, reaches only the routes in `swarm_api.auth.POOL_ADMIN_ROUTES`
+(today the runner-ceiling `PUT`) and is not admin; see
+[security.md](security.md#authentication).
 
 ### Secrets
 
@@ -251,9 +264,20 @@ grant is identical whether a tenant was created by Terraform or by
 missing rather than falling back to `roles/datastore.user`.
 
 The one place to be careful when extending the platform: **anything that accepts
-a tenant id as input**. Admin routes do, and they are gated on `ADMIN_GROUPS`
-membership. A non-admin route that took a `tenant_id` parameter would be the
-single change that undoes this table.
+a tenant id as input**. Admin routes do, and they are gated on admin
+(`ADMIN_GROUPS` membership or `ADMIN_USERS`). A non-admin route that took a
+`tenant_id` parameter would be the single change that undoes this table.
+
+The one non-admin caller on the admin surface is an `ADMIN_POOL_USERS` entry
+(the verification gate), and it reaches only the routes in
+`swarm_api.auth.POOL_ADMIN_ROUTES`. Today that is
+`PUT /v1/admin/limits/runner/{runner_profile}`, which takes a runner profile,
+not a tenant id, so it opens no path from one tenant's id to another's data.
+It is not harmless across tenants: a ceiling of 0 on a profile stops every
+tenant's work on it being admitted until someone puts it back. Adding a route
+that takes a tenant id to that allow-list would be exactly the change
+described above. See [security.md](security.md#authentication) and
+[the dated decision](audits/2026-09-22/race-test-needs-a-write.md).
 
 ---
 
@@ -271,17 +295,32 @@ single change that undoes this table.
 # then, once nothing is using it:
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
 
-# Limits
+# Limits. monthly_budget_usd is refused (422): nothing attributes cost, so it
+# could be stored but never enforced -- see routes/admin.py.
 ./scripts/api.sh PUT /admin/tenants/eng/limits \
-    '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
+    '{"max_active": 25, "capacity_units": 50}'
 
-# Pause one tenant without touching anyone else
-./scripts/pause-swarm.sh --tenant eng
+# Pause one tenant without touching anyone else. --keep-scheduler is what makes
+# that true: without it pause-swarm.sh also pauses swarm-scheduler-tick, the
+# one-minute backstop that keeps admission moving for every tenant when a wake
+# message is missed.
+./scripts/pause-swarm.sh --tenant eng --keep-scheduler
 ./scripts/resume-swarm.sh --tenant eng
 
 # Remove a tenant's data (never their infrastructure)
 ./scripts/purge-data.sh --tenant eng --dry-run
+
+# Offboard a tenant entirely -- identity, keys, jobs, namespace, records:
+#   docs/runbooks/tenant-offboarding.md
 ```
+
+Offboarding is a runbook rather than a script because three of its steps are
+decisions or waits, not commands: whether the tenant's data is kept, whether
+its people also lose access, and draining its running work. Its terraform half
+is one tfvars edit; its GKE half — deleting `swarm-tenant-<id>` — is manual by
+design, because the reconciler holds no ClusterRole and no longer tries to
+collect namespaces (owner decision, 2026-09-24).
+[The runbook](runbooks/tenant-offboarding.md) has the order and the checks.
 
 New tenants start small — `default_tenant_max_active` 20, `capacity_units` 40 —
 and an admin raises them. The failure mode of starting large is a new tenant
