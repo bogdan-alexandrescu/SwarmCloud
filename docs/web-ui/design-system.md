@@ -633,13 +633,45 @@ greyscale.
 > pixel-identically to the version the owner froze; that is the accepted cost
 > of the decision.
 >
-> **How it is held.** `test_state_colour_discriminability.py::
-> test_a_proportion_fill_takes_a_hue_only_from_a_verdict` asserts the
-> property, not the selector: any rule whose subject is a `.ctl-util-fill`
-> and which carries no verdict class may not paint a background other than
-> `--text-dim`, so a second exemption under a new name fails as the old one
-> did. It was pushed red against the exemption before the exemption was
-> removed.
+> **How it is held, corrected 2026-09-24.** The first guard for this,
+> `test_state_colour_discriminability.py::
+> test_a_proportion_fill_takes_a_hue_only_from_a_verdict`, went red against the
+> exemption before the exemption was removed. But this paragraph first said it
+> failed on "a second exemption under a new name", and that was false. It read
+> `styles.css` only, and only rules whose subject literally named
+> `.ctl-util-fill`. Mutation commit `232921d` painted the meter blue five ways
+> and left it green (CI run 35977623224): through the fill's other class
+> (`.wf-meter .wf-meter-fill`), later in the sheet at equal specificity
+> (`.wf-meter-fill`), through the parent (`.wf-meter > span`), through
+> `:not(.is-warn)`, and in the CSS Overview injects (`OVERVIEW_CSS`).
+>
+> The guard that replaced it asks what paints each fill the product actually
+> renders. It finds every element in the `.tsx` whose className names
+> `ctl-util-fill`, and tries each class that element can carry: its literals,
+> both arms of its conditionals, the traced values of an identifier it
+> interpolates, and any class a sheet names beside `.ctl-util-fill`. It reads
+> the element's parent from the same JSX. It then matches every `background`
+> rule in `styles.css` and in every sheet a screen injects, at every
+> breakpoint, with real selector semantics, and fails on any rule that could
+> paint an un-verdicted fill something other than grey unless a grey rule that
+> certainly applies outranks it. It also fails on an inline `style`
+> background. A `<style>` it cannot read, an identifier it cannot trace, or a
+> spread on a fill fails a companion test instead of passing unseen.
+>
+> **What it still does not see:** a class that reaches a fill through a helper
+> function or a prop set in another file; a fill whose className does not
+> literally name `ctl-util-fill`; CSS injected by anything other than a
+> `<style>` in a `.tsx`. It reads source text and does not render, so it says
+> what the sheets would paint, not what a browser painted.
+>
+> **One named exception, and it is a grey.** Overview draws a *projected*
+> utilisation reading (real, but its window reset or its poll is stale) with
+> `.ctl-util-fill.ov-projected { background: var(--ctl-absent) }`. That rule
+> shipped before this decision and the first guard never saw it. It is now
+> listed by name in the test's `DOCUMENTED_GREYS`, and
+> `test_a_documented_grey_is_a_grey` resolves `--ctl-absent` through
+> `--text-faint` to a text grey. So "grey like every other proportion" holds
+> for it, in a second grey that means "not current".
 >
 > **What this does not cover, found while answering it.** The decision was
 > framed as "grey like every other proportion", and three bar fills outside the
@@ -651,7 +683,10 @@ greyscale.
 > currently renders a bare `<i>` inside `.ctl-track`). They share the
 > `background: var(--info)` rule in `styles.css`. Whether the same "colour on a
 > bar is a verdict" rule extends to them is a question for the owner and was
-> not decided here.
+> not decided here. One consequence of the corrected guard: if a screen ever
+> renders a `.ctl-util-fill` as an `<i>` inside `.ctl-track`, then
+> `.ctl-track > i` (0,1,1) outranks the grey default (0,1,0) and paints it
+> blue. The guard fails on that, because it reads the parent.
 
 
 Four track states, and they must not converge:

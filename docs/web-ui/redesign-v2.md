@@ -63,17 +63,41 @@ move.
 - **Cross-task attempts** (§6 S4). No route aggregates attempts across tasks.
 - **Checkpoint content** (§6 S3, the checkpoint half). The route serves a
   listing and no bytes. The decision on its shape is recorded below.
+- **§1.1(b), the duplicate `@keyframes pulse`**, part of Q2's bug-fix batch.
+  It is still declared twice: `styles.css:957` (`.5 → .85`) and `:3426`
+  (`1 → .35`). The later declaration wins everywhere. So `.skeleton` and
+  `.node-reading` still animate at the 1 → .35 amplitude, not the subtle
+  .5 → .85 written for them.
+- **§1.1(c), the duplicate `.filters`**, part of Q2's bug-fix batch. It is
+  still declared twice, at `styles.css:1022` (`gap: 6px`) and `:2368`
+  (`gap: 14px`, `align-items: center`, `font-size`, `color`). The later one
+  wins wherever the two conflict.
 
-**The six questions in §8 are all answered**
+**The six questions in §8: five answered, Q2 half answered**
 
 - **Q4, the chart library: visx.** The owner decided it on 2026-09-22 (the
   decision is recorded in `apps/swarm-ui/src/charts/README.md`). Four
   `@visx/*` packages are used, and only `charts/TimeSeries.tsx` imports them.
   dagre was not taken: the DAG is hand-rolled (design-system.md §0).
-- **Q1, Q2 and Q3 were answered by what got built, not by a recorded choice.**
+- **Q1 and Q3 were answered by what got built, not by a recorded choice.**
   Q1: the shell (rail, full-bleed, inspector, dock) landed around the existing
-  screens. Q2: F0 shipped as its own fix (`codec.py:278-282`). Q3: both routes
-  were built, logs and artifact contents.
+  screens. Q3: both routes were built, logs and artifact contents.
+- **Q2 was only half answered by what got built.** Q2 asked whether the
+  bug-fix batch ships before the redesign. The batch is F0 plus the four
+  stylesheet collisions in §1.1.
+  - F0 shipped as its own fix (`codec.py:278-282`).
+  - §1.1(a) is gone. `.bar` is declared once (`styles.css:3429`, the banner),
+    and the pool meter moved to `.ctl-track` (`styles.css:913`).
+  - §1.1(b) and (c) are still in the sheet at `b0fff1b`. They are listed under
+    "Still open" above.
+  - §1.1(d) was not done as proposed. `.panel` still has no box, and
+    `.panel h2` (`styles.css:3214`) is still its only rule. A region is
+    separated by `.section + .section`'s hairline and the `--ctl-s5` break
+    instead (`styles.css:845-857`).
+
+  *Correction, 2026-09-24:* the first version of this block said Q2 was
+  answered by what got built. It named only F0 and left (b) and (c) off the
+  open list.
 - **Q5 was answered by the §9 owner directive** (2026-09-22). Prose comes off the
   data surfaces and the explanation moves into Help and the `?` cards. The
   fact itself stays on the surface.

@@ -5384,9 +5384,23 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    had been frozen. OWNER DECISION, 2026-09-24 (design-system.md sec 6.4): the
    meter goes grey like every other proportion. One rule, and colour on a bar
    is a verdict -- "three of five steps done" is not one. The verdict fills
-   below keep their hue and texture. Do not add a screen-scoped exemption
-   back: `test_a_proportion_fill_takes_a_hue_only_from_a_verdict` fails on any
-   un-verdicted `.ctl-util-fill` rule that paints a hue, whatever it is named. */
+   below keep their hue and texture.
+
+   Do not add an exemption back, here or in a screen's own CSS.
+   `test_state_colour_discriminability.py::test_a_proportion_fill_takes_a_hue_only_from_a_verdict`
+   finds every `.ctl-util-fill` the .tsx renders and tries each class it can
+   carry. It also reads its parent, this sheet, and every sheet a screen
+   injects through a `style` element. It fails on any rule that could paint
+   an un-verdicted fill something other than grey and that no certain grey
+   rule outranks. That covers a rule through the fill's other class, through
+   its parent, via `:not()`, later in the sheet, or in Overview's
+   OVERVIEW_CSS.
+
+   What it does NOT see: a class that reaches a fill through a helper
+   function or a prop set in another file. The one un-verdicted fill that is
+   allowed a different grey is named in the test's `DOCUMENTED_GREYS`:
+   `.ov-projected`, which paints `--ctl-absent`, and the test checks that this
+   resolves to a text grey. */
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,

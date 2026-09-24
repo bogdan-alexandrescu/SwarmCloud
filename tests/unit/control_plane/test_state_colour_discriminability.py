@@ -81,8 +81,10 @@ positive this repository has already produced once.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -167,11 +169,43 @@ def _declarations(body: str) -> dict[str, str]:
     return out
 
 
+def _split_top(text: str, sep: str = ",") -> list[str]:
+    """`text` split at every `sep` that is not inside parentheses, brackets or quotes.
+
+    A selector list is not `str.split(",")`. `:where(.app input, .app select)`
+    is ONE selector, and splitting it naively produced two fragments that
+    matched nothing and parsed as nothing -- harmless while every assertion
+    here looked selectors up by exact text, and wrong the moment one asks
+    what a rule can reach.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    depth, quote = 0, ""
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == sep and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(char)
+    parts.append("".join(buf))
+    return parts
+
+
 def parse_rules(css: str) -> list[Rule]:
     """Every rule in the sheet, as (enclosing at-rules, one selector, decls).
 
     A comma-separated selector list is expanded into one entry per selector,
-    because that is how the assertions below want to ask the question.
+    because that is how the assertions below want to ask the question. The
+    split is at TOP-LEVEL commas only (`_split_top`).
     """
     css = _strip_comments(css)
     rules: list[Rule] = []
@@ -188,7 +222,7 @@ def parse_rules(css: str) -> list[Rule]:
             if not prelude.startswith("@"):
                 at_rules = " ".join(p for p in stack if p.startswith("@"))
                 decls = _declarations(body)
-                for selector in prelude.split(","):
+                for selector in _split_top(prelude):
                     selector = " ".join(selector.split())
                     if selector:
                         rules.append((at_rules, selector, decls))
@@ -511,72 +545,6 @@ def test_utilisation_fills_differ_by_texture_not_only_hue(rules):
     )
 
 
-#: The fills that carry a verdict, and so the only ones a hue is allowed on.
-VERDICT_FILLS = frozenset({"is-warn", "is-bad", "is-paused"})
-
-#: What a fill with nothing to report is painted in. design-system.md §6.4.
-MONOCHROME_FILL = "var(--text-dim)"
-
-
-def _subject_classes(selector: str) -> set[str]:
-    """The classes on the element a selector actually paints.
-
-    The last compound, after any descendant or child combinator: in
-    `.pool .ctl-util-fill.x` that is `{"ctl-util-fill", "x"}`, and `.pool` is
-    only where it is.
-    """
-    subject = re.split(r"\s*[>+~]\s*|\s+", selector.strip())[-1]
-    return set(re.findall(r"\.([A-Za-z0-9_-]+)", subject))
-
-
-def test_a_proportion_fill_takes_a_hue_only_from_a_verdict(rules):
-    """One rule for every proportion fill: grey, unless it is saying something.
-
-    OWNER DECISION, 2026-09-24 (design-system.md §6.4). `.ctl-util-fill`
-    defaults to `--text-dim`, and `.is-warn` / `.is-bad` / `.is-paused` keep
-    their hue and their texture because those three are a verdict. The
-    Workflows meter carries `ctl-util-fill wf-meter-fill` and was exempted back
-    to `--info` by one line, held open as a question because Workflows had
-    been frozen. The answer: it goes grey like every other proportion. Colour
-    on a bar is a verdict, and "three of five steps done" is not one.
-
-    THE PROPERTY, NOT THE SELECTOR. This does not look for `wf-meter-fill` by
-    name. Any rule whose subject is a `.ctl-util-fill` -- whatever screen class
-    rides along with it, under whatever ancestor, at whatever breakpoint --
-    and which carries no verdict class may not paint a background other than
-    the monochrome default. A second exemption under a new name fails here
-    exactly as the old one does.
-    """
-    default = None
-    for at_rules, selector, decls in rules:
-        if at_rules or selector != ".ctl-util-fill":
-            continue
-        for prop in ("background", "background-color"):
-            if prop in decls:
-                default = decls[prop]
-    assert default == MONOCHROME_FILL, (
-        f"the bare `.ctl-util-fill` resolves to {default!r}, not "
-        f"{MONOCHROME_FILL}: a bar with nothing to report is hued again"
-    )
-
-    exemptions = []
-    for at_rules, selector, decls in rules:
-        classes = _subject_classes(selector)
-        if "ctl-util-fill" not in classes or classes & VERDICT_FILLS:
-            continue
-        if not at_rules and selector == ".ctl-util-fill":
-            continue  # the default itself, cascaded above
-        for prop in ("background", "background-color"):
-            if prop in decls and decls[prop] != MONOCHROME_FILL:
-                where = f" inside {at_rules}" if at_rules else ""
-                exemptions.append(f"`{selector} {{ {prop}: {decls[prop]} }}`{where}")
-    assert not exemptions, (
-        "a proportion fill that carries no verdict is painted a hue, so one "
-        "bar in the product is coloured for being a bar (design-system.md "
-        "§6.4, decided 2026-09-24):\n  " + "\n  ".join(exemptions)
-    )
-
-
 def test_table_row_tones_carry_an_edge_rule(rules):
     """An 8% wash is about a 1% change in tone: in greyscale, no wash at all.
 
@@ -600,4 +568,1043 @@ def test_table_row_tones_carry_an_edge_rule(rules):
     ]
     assert not duplicates, (
         "two table row tones draw the same edge rule: " + ", ".join(duplicates)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. One rule for every proportion fill: grey, unless it is saying something.
+# ---------------------------------------------------------------------------
+#
+# OWNER DECISION, 2026-09-24 (design-system.md §6.4). `.ctl-util-fill`
+# defaults to `--text-dim`. `.is-warn` / `.is-bad` / `.is-paused` keep their
+# hue and their texture, because those three are a verdict. The Workflows
+# meter carries `ctl-util-fill wf-meter-fill` and was exempted back to
+# `--info` by one line until that decision. Colour on a bar is a verdict, and
+# "three of five steps done" is not one.
+#
+# WHAT THE FIRST VERSION OF THIS GUARD GOT WRONG, so the next edit does not
+# repeat it. It read `styles.css` only. It looked only at rules whose subject
+# compound literally contained `.ctl-util-fill`. It counted a verdict class
+# inside `:not()` as a verdict. Its docstring said a second exemption "fails
+# here ... whatever it is named", and none of that held. Mutation commit
+# 232921d painted the meter blue five ways, and that guard stayed green on all
+# five (CI run 35977623224, `test_a_proportion_fill_takes_a_hue_only_from_a_
+# verdict` passed):
+#
+#   .wf-meter .wf-meter-fill {...}      the fill's OTHER class: (0,2,0) beats
+#                                       the default's (0,1,0) from anywhere
+#   .wf-meter-fill {...}                equal specificity, later in the sheet
+#   .ctl-util-fill.wf-x {...}           in OVERVIEW_CSS, the sheet Overview.tsx
+#                                       injects after styles.css
+#   .ctl-util-fill:not(.is-warn) {...}  a verdict NAMED, not carried
+#   .wf-meter > span {...}              through the parent, no fill class
+#
+# (The same commit also put `background: 'var(--info)'` in the fill's inline
+# style, which that guard had no way to see.)
+#
+# And it could not see the one exemption that already shipped:
+# `.ctl-util-fill.ov-projected { background: var(--ctl-absent) }` in
+# OVERVIEW_CSS. That is now listed BY NAME below as a documented grey.
+#
+# WHAT THIS VERSION ASKS INSTEAD: for each fill the product renders, which
+# rules can paint it, and does a grey win? Concretely:
+#
+#   * THE SHEETS. `styles.css`, plus every sheet a `.tsx` injects as
+#     `<style>{NAME}</style>`. A `<style>` whose text the scan cannot read
+#     fails `test_the_fill_scan_reads_what_it_claims_to`, not silently.
+#   * THE FILLS. Every intrinsic JSX element whose `className` names
+#     `ctl-util-fill`. Each fill is tried bare and with every class it can
+#     carry: the literals in its className, including both arms of a
+#     conditional; the values of an identifier it interpolates, traced to that
+#     file's assignments and JSX attributes of the same name (an identifier the
+#     scan cannot trace fails the scan test); and every class any sheet names
+#     beside `.ctl-util-fill`, so an exemption written for a class the scan
+#     never saw is still tried.
+#   * ITS PARENT, as the same JSX writes it: tag, classes, attributes.
+#     Ancestors above the parent are unknown and are assumed to match
+#     ANYTHING. So a rule scoped by a grandparent counts as a possible hit,
+#     never as a miss.
+#   * EVERY RULE THAT SETS `background`, `background-color` OR
+#     `background-image`, at every breakpoint. Each is matched with real
+#     selector semantics: type, class, id, attribute, `:not` / `:is` /
+#     `:where`, and the child and descendant combinators. A dynamic
+#     pseudo-class (`:hover`) counts as a possible hit.
+#   * THE CASCADE. A rule that may paint an un-verdicted fill with anything
+#     but its grey FAILS, unless some rule that certainly applies, paints the
+#     grey and outranks it beats it: importance, then specificity, then
+#     order, with injected sheets after styles.css. So the grouped
+#     `.ctl-util-fill { background: var(--info) }` at the top of the track
+#     block passes, because the default below it is equally specific and
+#     later. The five above fail.
+#   * An inline `style` that sets a background on a fill fails, because it
+#     beats every sheet. A `{...spread}` on a fill fails the scan test, because
+#     the attributes it carries cannot be read.
+#
+# WHAT IT STILL DOES NOT SEE. It reads source text; it does not render, so it
+# says what the sheets would do, not what a browser painted.
+#   * A class that reaches a fill through a function call (`cx(...)`, a helper
+#     that returns a string) or through a prop set in another file is not
+#     traced. A class that some sheet names beside `.ctl-util-fill` is still
+#     tried on every fill.
+#   * A fill whose className does not name `ctl-util-fill` literally is not
+#     found.
+#   * CSS injected any other way than `<style>{NAME}</style>` in a `.tsx` is
+#     not read.
+#   * Sibling combinators are always a possible hit, never a certain one.
+
+UI_SRC = ROOT / "apps/swarm-ui/src"
+
+#: The fills that carry a verdict, and so the only ones a hue is allowed on.
+VERDICT_FILLS = frozenset({"is-warn", "is-bad", "is-paused"})
+
+#: What a fill with nothing to report is painted in. design-system.md §6.4.
+MONOCHROME_FILL = "var(--text-dim)"
+
+#: The un-verdicted fills that are painted a DIFFERENT grey, by name, and why.
+#:
+#: `ov-projected`: Overview draws a PROJECTED utilisation reading (its window
+#: reset, or its poll is past the staleness window) in `--ctl-absent`, the
+#: grey this product uses for data that is real but not current. That grey
+#: sits beside the live bars in the same card. It is still a grey and not a
+#: hue, and `test_a_documented_grey_is_a_grey` resolves it to a text grey, so
+#: the entry cannot become a hue with a grey name.
+DOCUMENTED_GREYS = {"ov-projected": "var(--ctl-absent)"}
+
+#: What a documented grey has to resolve to: the two text greys.
+TEXT_GREYS = frozenset({"--text-dim", "--text-faint"})
+
+#: Three-valued matching. MAYBE is what an unknown ancestor, an attribute
+#: value or a `:hover` gives: the rule might reach, and a guard counts it.
+NO, MAYBE, YES = 0, 1, 2
+_NEGATE = {YES: NO, NO: YES, MAYBE: MAYBE}
+
+
+@dataclass(frozen=True)
+class _El:
+    """What is known about one element on a fill's ancestor chain."""
+
+    tag: str | None = None
+    #: Classes it certainly carries.
+    classes: frozenset[str] = frozenset()
+    #: Classes it may carry (one arm of a conditional).
+    maybe: frozenset[str] = frozenset()
+    #: Attribute names, or None when a spread makes them unknowable.
+    attrs: frozenset[str] | None = None
+    #: A class came from an identifier the scan could not trace, so any
+    #: class selector is a MAYBE rather than a NO.
+    open_classes: bool = False
+    known: bool = False
+
+
+_UNKNOWN = _El()
+
+
+# -- selectors ----------------------------------------------------------------
+
+_IDENT_RE = re.compile(r"-?(?:[_a-zA-Z]|\\.)(?:[\w-]|\\.)*")
+_LEGACY_PSEUDO_ELEMENTS = frozenset({"before", "after", "first-line", "first-letter"})
+
+
+def _close(text: str, i: int, opener: str, closer: str) -> int:
+    """Index of the `closer` matching the `opener` at `text[i]`."""
+    depth, quote = 0, ""
+    for j in range(i, len(text)):
+        char = text[j]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return j
+    raise ValueError(f"unbalanced {opener!r} in {text!r}")
+
+
+@functools.lru_cache(maxsize=None)
+def _compounds(selector: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """`.a .b > i.c` -> (('.a', '.b', 'i.c'), (' ', '>'))."""
+    compounds: list[str] = []
+    combinators: list[str] = []
+    buf: list[str] = []
+    depth, quote, comb = 0, "", " "
+    for char in selector.strip():
+        if not quote and depth == 0 and (char.isspace() or char in ">+~"):
+            if buf:
+                compounds.append("".join(buf))
+                buf = []
+                comb = " "
+            if char in ">+~":
+                comb = char
+            continue
+        if not buf and compounds:
+            combinators.append(comb)
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        buf.append(char)
+    if buf:
+        compounds.append("".join(buf))
+    return tuple(compounds), tuple(combinators)
+
+
+@functools.lru_cache(maxsize=None)
+def _simples(compound: str) -> tuple[tuple[str, str, str | None], ...]:
+    """One compound as (kind, name, argument) triples.
+
+    kind is `type`, `class`, `id`, `attr` (name is the bracket's inside),
+    `pseudo` or `pseudo-element`. Anything else raises ValueError, which the
+    matcher turns into MAYBE: a selector this reader cannot parse is one it
+    cannot clear.
+    """
+    out: list[tuple[str, str, str | None]] = []
+    i = 0
+    if compound[:1] == "*":
+        out.append(("type", "*", None))
+        i = 1
+    elif compound[:1] not in (".", "#", ":", "["):
+        match = _IDENT_RE.match(compound)
+        if match is None:
+            raise ValueError(compound)
+        out.append(("type", match.group(0).lower(), None))
+        i = match.end()
+    while i < len(compound):
+        char = compound[i]
+        if char in ".#":
+            match = _IDENT_RE.match(compound, i + 1)
+            if match is None:
+                raise ValueError(compound)
+            out.append(("class" if char == "." else "id", match.group(0), None))
+            i = match.end()
+        elif char == "[":
+            j = _close(compound, i, "[", "]")
+            out.append(("attr", compound[i + 1:j], None))
+            i = j + 1
+        elif char == ":":
+            double = compound.startswith("::", i)
+            match = _IDENT_RE.match(compound, i + (2 if double else 1))
+            if match is None:
+                raise ValueError(compound)
+            name, i = match.group(0).lower(), match.end()
+            arg = None
+            if i < len(compound) and compound[i] == "(":
+                j = _close(compound, i, "(", ")")
+                arg, i = compound[i + 1:j], j + 1
+            kind = "pseudo-element" if double or name in _LEGACY_PSEUDO_ELEMENTS else "pseudo"
+            out.append((kind, name, arg))
+        else:
+            raise ValueError(compound)
+    return tuple(out)
+
+
+def _args(arg: str | None) -> list[str]:
+    return [s for s in _split_top(arg or "") if s.strip()]
+
+
+@functools.lru_cache(maxsize=None)
+def _specificity(selector: str) -> tuple[int, int, int]:
+    """(ids, classes + attributes + pseudo-classes, types + pseudo-elements).
+
+    `:not()` / `:is()` / `:has()` count as their most specific argument and
+    `:where()` counts nothing, per Selectors Level 4.
+    """
+    a = b = c = 0
+    for compound in _compounds(selector)[0]:
+        for kind, name, arg in _simples(compound):
+            if kind == "id":
+                a += 1
+            elif kind in ("class", "attr"):
+                b += 1
+            elif kind == "type":
+                c += 0 if name == "*" else 1
+            elif kind == "pseudo-element":
+                c += 1
+            elif name == "where":
+                continue
+            elif name in ("not", "is", "matches", "-webkit-any", "has"):
+                inner = max((_specificity(s) for s in _args(arg)), default=(0, 0, 0))
+                a, b, c = a + inner[0], b + inner[1], c + inner[2]
+            else:
+                b += 1
+    return a, b, c
+
+
+def _match_compound(simples, chain: tuple[_El, ...], i: int) -> int:
+    el = chain[i] if i < len(chain) else _UNKNOWN
+    if not el.known:
+        return MAYBE
+    result = YES
+    for kind, name, arg in simples:
+        if kind == "type":
+            if name != "*" and name != el.tag:
+                return NO
+        elif kind == "class":
+            if name in el.maybe:
+                result = min(result, MAYBE)
+            elif name not in el.classes:
+                if not el.open_classes:
+                    return NO
+                result = min(result, MAYBE)
+        elif kind in ("id", "attr"):
+            attr = "id" if kind == "id" else re.match(r"\s*([\w-]*)", name).group(1).lower()
+            if el.attrs is not None and attr not in el.attrs:
+                return NO
+            bare = kind == "attr" and re.fullmatch(r"\s*[\w-]+\s*", name) is not None
+            result = min(result, YES if bare and el.attrs is not None else MAYBE)
+        elif kind == "pseudo-element":
+            # `::before` / `::after` paint a box of their own, not the fill.
+            return NO
+        elif name in ("not", "is", "where", "matches", "-webkit-any"):
+            inner = max((_match_complex(s, chain, i) for s in _args(arg)), default=NO)
+            result = min(result, _NEGATE[inner] if name == "not" else inner)
+        elif name == "root":
+            if el.tag != "html":
+                return NO
+        else:
+            result = min(result, MAYBE)
+        if result == NO:
+            return NO
+    return result
+
+
+def _match_from(parsed, combinators, k: int, chain: tuple[_El, ...], i: int) -> int:
+    matched = _match_compound(parsed[k], chain, i)
+    if matched == NO or k == 0:
+        return matched
+    comb = combinators[k - 1]
+    if comb == ">":
+        return min(matched, _match_from(parsed, combinators, k - 1, chain, i + 1))
+    if comb == " ":
+        best, j = NO, i + 1
+        while True:
+            best = max(best, _match_from(parsed, combinators, k - 1, chain, j))
+            if best == YES or j >= len(chain) or not chain[j].known:
+                break
+            j += 1
+        return min(matched, best)
+    return min(matched, MAYBE)  # `+` and `~`: siblings are not modelled
+
+
+@functools.lru_cache(maxsize=None)
+def _match_complex(selector: str, chain: tuple[_El, ...], i: int = 0) -> int:
+    """Can `selector` match `chain[i]`, whose ancestors are `chain[i + 1:]`?"""
+    try:
+        compounds, combinators = _compounds(selector)
+        parsed = [_simples(c) for c in compounds]
+    except ValueError:
+        return MAYBE
+    if not parsed:
+        return NO
+    return _match_from(parsed, combinators, len(parsed) - 1, chain, i)
+
+
+# -- the sheets ---------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _Paint:
+    """One rule's effect on one background longhand."""
+
+    sheet: str
+    order: int
+    at_rules: str
+    selector: str
+    specificity: tuple[int, int, int]
+    longhand: str
+    source: str
+    value: str
+    important: bool
+
+    def grey(self, allowed: frozenset[str]) -> bool:
+        if self.source == "background-image":
+            return self.value in ("none", "initial", "unset")
+        return self.value in allowed
+
+
+@dataclass(frozen=True)
+class _SheetScan:
+    sheets: tuple[tuple[str, tuple[Rule, ...]], ...]
+    unreadable: tuple[str, ...]
+
+
+def _ui_sources() -> list[Path]:
+    return sorted(p for p in UI_SRC.rglob("*.tsx") if "__tests__" not in p.parts)
+
+
+def _rel(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+def _line(code: str, index: int) -> int:
+    return code.count("\n", 0, index) + 1
+
+
+def _read_sheets() -> _SheetScan:
+    sheets = [(_rel(CSS_PATH), tuple(parse_rules(CSS_PATH.read_text(encoding="utf-8"))))]
+    unreadable: list[str] = []
+    for path in _ui_sources():
+        src = path.read_text(encoding="utf-8")
+        code = _blank_comments(src)
+        for tag in re.finditer(r"<style\b", code):
+            where = f"{_rel(path)}:{_line(code, tag.start())}"
+            named = re.compile(r"<style>\s*\{\s*([A-Za-z_$][\w$]*)\s*\}\s*</style>").match(
+                code, tag.start())
+            decl = named and re.search(
+                r"(?<![\w$.])(?:const|let|var)\s+" + re.escape(named.group(1)) + r"\s*=\s*`", code)
+            if not decl:
+                unreadable.append(f"{where}: not `<style>{{NAME}}</style>` over a template literal")
+                continue
+            start = decl.end() - 1
+            text = src[start + 1:_template_end(src, start) - 1]
+            if "${" in text:
+                unreadable.append(f"{where}: `{named.group(1)}` interpolates")
+                continue
+            sheets.append((f"{_rel(path)} {named.group(1)}", tuple(parse_rules(text))))
+    return _SheetScan(tuple(sheets), tuple(unreadable))
+
+
+def _paints(sheets) -> list[_Paint]:
+    out: list[_Paint] = []
+    order = 0
+    for name, rules_ in sheets:
+        for at_rules, selector, decls in rules_:
+            order += 1
+            if "@keyframes" in at_rules or "@font-face" in at_rules:
+                continue
+            for prop in ("background", "background-color", "background-image"):
+                if prop not in decls:
+                    continue
+                try:
+                    spec = _specificity(selector)
+                except ValueError:
+                    spec = (9, 9, 9)  # unreadable: nothing may be assumed to outrank it
+                raw = decls[prop]
+                important = raw.endswith("!important")
+                value = raw[: -len("!important")].strip() if important else raw
+                longhands = (("background-color", "background-image")
+                             if prop == "background" else (prop,))
+                for longhand in longhands:
+                    out.append(_Paint(name, order, at_rules, selector, spec,
+                                      longhand, prop, value, important))
+    return out
+
+
+def _companions(sheets) -> set[frozenset[str]]:
+    """Every class set a sheet names beside `.ctl-util-fill` in a subject."""
+    out: set[frozenset[str]] = set()
+    for _, rules_ in sheets:
+        for _, selector, _ in rules_:
+            try:
+                compounds, _ = _compounds(selector)
+                simples = _simples(compounds[-1]) if compounds else ()
+            except ValueError:
+                continue
+            classes = {name for kind, name, _ in simples if kind == "class"}
+            if "ctl-util-fill" in classes and len(classes) > 1:
+                out.add(frozenset(classes - {"ctl-util-fill"}))
+    return out
+
+
+# -- the fills, read out of the .tsx ------------------------------------------
+#
+# A small, deliberately partial reader of JSX. It only has to find opening
+# tags, their attributes and their parents. It is not a parser, and each
+# place it has to guess is written as MAYBE in the matcher or as a failure in
+# the scan test, never as a quiet NO.
+
+_HTML = frozenset("""
+    a abbr article aside b bdi blockquote br button caption cite code col colgroup
+    data dd del details dfn dialog div dl dt em fieldset figcaption figure footer
+    form h1 h2 h3 h4 h5 h6 header hr i img input ins kbd label legend li main mark
+    menu meter nav ol optgroup option output p picture pre progress q s samp section
+    select small span strong style sub summary sup table tbody td template textarea
+    tfoot th thead time tr u ul var video wbr svg g line rect circle ellipse path
+    polygon polyline text tspan title defs pattern clippath mask lineargradient
+    radialgradient stop use foreignobject
+""".split())
+
+_OPEN_RE = re.compile(r"<([A-Za-z][\w.]*)?")
+_CLOSE_RE = re.compile(r"</([A-Za-z][\w.]*)?\s*>")
+_CLASS_TOKEN = re.compile(r"-?[_a-zA-Z][\w-]*")
+_BARE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _blank_comments(src: str) -> str:
+    """The source with its comments turned to spaces, newlines kept.
+
+    Offsets and line numbers still point into the original, and a `<b>` or a
+    `className=` quoted in a comment is not read as code. A comment in this
+    codebase quotes the code it explains more often than not.
+    """
+    def spaces(match: re.Match[str]) -> str:
+        return re.sub(r"[^\n]", " ", match.group(0))
+
+    src = re.sub(r"/\*.*?\*/", spaces, src, flags=re.DOTALL)
+    return re.sub(r"(?m)^[ \t]*//[^\n]*", spaces, src)
+
+
+def _string_end(s: str, i: int) -> int:
+    """`s[i]` opens a '...' or "..." string: the index just past its close.
+
+    A newline ends it early. JS strings cannot span lines, so reaching one
+    means the quote was an apostrophe in JSX text, and stopping there limits
+    the damage to one line.
+    """
+    quote, j = s[i], i + 1
+    while j < len(s):
+        if s[j] == "\\":
+            j += 2
+            continue
+        if s[j] == quote:
+            return j + 1
+        if s[j] == "\n":
+            return j
+        j += 1
+    raise ValueError("unterminated string")
+
+
+def _template_end(s: str, i: int) -> int:
+    """`s[i]` is a backtick: the index just past the template's closing one."""
+    j = i + 1
+    while j < len(s):
+        char = s[j]
+        if char == "\\":
+            j += 2
+            continue
+        if char == "`":
+            return j + 1
+        if s.startswith("${", j):
+            j = _expr_end(s, j + 1)
+            continue
+        j += 1
+    raise ValueError("unterminated template literal")
+
+
+def _expr_end(s: str, i: int) -> int:
+    """`s[i]` is `{`: the index just past its matching `}`."""
+    depth, j = 0, i
+    while j < len(s):
+        char = s[j]
+        if char in "'\"":
+            j = _string_end(s, j)
+            continue
+        if char == "`":
+            j = _template_end(s, j)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    raise ValueError("unbalanced braces")
+
+
+def _tag_end(s: str, i: int) -> tuple[int, bool]:
+    """`s[i]` is the `<` of an opening tag: (index past its `>`, self-closing?)."""
+    j = i + 1
+    while j < len(s):
+        char = s[j]
+        if char in "'\"":
+            j = _string_end(s, j)
+            continue
+        if char == "{":
+            j = _expr_end(s, j)
+            continue
+        if char == ">":
+            return j + 1, s[j - 1] == "/"
+        j += 1
+    raise ValueError("unterminated tag")
+
+
+def _shallow(tag: str) -> str:
+    """The tag with the insides of its strings and `{...}` blanked out."""
+    out, j = list(tag), 1
+    while j < len(tag):
+        char = tag[j]
+        if char in "'\"":
+            end = _string_end(tag, j)
+        elif char == "{":
+            end = _expr_end(tag, j)
+        else:
+            j += 1
+            continue
+        for k in range(j + 1, end - 1):
+            out[k] = " "
+        j = end
+    return "".join(out)
+
+
+def _attr_value(tag: str, attr: str) -> str | None:
+    """The raw value of one attribute: `"..."` or `{...}`, delimiters kept."""
+    match = re.search(r"(?<=\s)" + attr + r"\s*=\s*", _shallow(tag))
+    if match is None:
+        return None
+    j = match.end()
+    if tag[j:j + 1] in ("'", '"'):
+        return tag[j:_string_end(tag, j)]
+    if tag[j:j + 1] == "{":
+        return tag[j:_expr_end(tag, j)]
+    return None
+
+
+def _attr_names(tag: str) -> frozenset[str] | None:
+    """The attributes a tag writes, or None when a `{...spread}` hides some."""
+    shallow = _shallow(tag)
+    for brace in re.finditer(r"\{", shallow):
+        if not re.search(r"=\s*$", shallow[:brace.start()]) and tag[brace.end():].lstrip().startswith("..."):
+            return None
+    names = re.findall(r"(?<=\s)([A-Za-z_][\w:.-]*)(?=\s*=|\s|/?>)", shallow)
+    rename = {"classname": "class", "htmlfor": "for"}
+    return frozenset(rename.get(n.lower(), n.lower()) for n in names)
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in text.split() if _CLASS_TOKEN.fullmatch(t)}
+
+
+def _template_parts(t: str) -> tuple[list[str], list[str]]:
+    """A whole template literal as (literal text parts, `${...}` expressions)."""
+    texts, exprs, buf = [], [], []
+    j = 1
+    while j < len(t) - 1:
+        if t[j] == "\\":
+            buf.append(t[j:j + 2])
+            j += 2
+            continue
+        if t.startswith("${", j):
+            end = _expr_end(t, j + 1)
+            texts.append("".join(buf))
+            buf = []
+            exprs.append(t[j + 2:end - 1])
+            j = end
+            continue
+        buf.append(t[j])
+        j += 1
+    texts.append("".join(buf))
+    return texts, exprs
+
+
+def _expr_sources(expr: str) -> tuple[set[str], set[str], int]:
+    """Class tokens in an expression's string literals, the bare identifiers
+    it interpolates, and how many literals it had."""
+    expr = expr.strip()
+    if _BARE.fullmatch(expr) and expr not in ("true", "false", "null", "undefined"):
+        return set(), {expr}, 0
+    tokens: set[str] = set()
+    idents: set[str] = set()
+    count, j = 0, 0
+    while j < len(expr):
+        char = expr[j]
+        if char in "'\"":
+            end = _string_end(expr, j)
+            tokens |= _tokens(expr[j + 1:end - 1])
+            count, j = count + 1, end
+            continue
+        if char == "`":
+            end = _template_end(expr, j)
+            texts, exprs = _template_parts(expr[j:end])
+            for text in texts:
+                tokens |= _tokens(text)
+            count += 1
+            for inner in exprs:
+                t2, i2, n2 = _expr_sources(inner)
+                tokens, idents, count = tokens | t2, idents | i2, count + n2
+            j = end
+            continue
+        j += 1
+    return tokens, idents, count
+
+
+def _class_sources(value: str) -> tuple[set[str], set[str], set[str]]:
+    """A className value as (certain classes, possible classes, identifiers)."""
+    v = value.strip()
+    if v[:1] in ("'", '"'):
+        return _tokens(v[1:-1]), set(), set()
+    inner = re.sub(r"\s*\.trim(?:Start|End)?\(\)\s*$", "", v[1:-1].strip())
+    if inner[:1] in ("'", '"') and _string_end(inner, 0) == len(inner):
+        return _tokens(inner[1:-1]), set(), set()
+    if inner[:1] == "`" and _template_end(inner, 0) == len(inner):
+        texts, exprs = _template_parts(inner)
+        certain = set().union(*(_tokens(t) for t in texts))
+        possible: set[str] = set()
+        idents: set[str] = set()
+        for expr in exprs:
+            t2, i2, _ = _expr_sources(expr)
+            possible, idents = possible | t2, idents | i2
+        return certain, possible, idents
+    tokens, idents, _ = _expr_sources(inner)
+    return set(), tokens, idents
+
+
+def _statement(code: str, j: int) -> str:
+    """The right-hand side of an assignment starting at `code[j]`."""
+    k, depth = j, 0
+    while k < len(code):
+        char = code[k]
+        if char in "'\"":
+            k = _string_end(code, k)
+            continue
+        if char == "`":
+            k = _template_end(code, k)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == ";" and depth == 0:
+            break
+        elif char == "\n" and depth == 0:
+            rest = code[k + 1:].lstrip()
+            prev = code[j:k].rstrip()
+            carries = (rest[:1] in ("?", ":", ".", "+")
+                       or rest.startswith(("&&", "||", "??"))
+                       or prev.endswith(("?", ":", "&&", "||", "??", "+", "=", "(", ",")))
+            if not carries:
+                break
+        k += 1
+    return code[j:k]
+
+
+def _resolve(name: str, code: str, seen: frozenset[str] = frozenset()) -> tuple[set[str], bool]:
+    """Every class token `name` can hold in this file, and whether any
+    assignment or JSX attribute of that name was found at all."""
+    if name in seen:
+        return set(), False
+    seen = seen | {name}
+    tokens: set[str] = set()
+    found = False
+    for match in re.finditer(r"(?<![\w$.])" + re.escape(name) + r"\s*=(?![=>])\s*", code):
+        j = match.end()
+        try:
+            expr = code[j + 1:_expr_end(code, j) - 1] if code[j:j + 1] == "{" else _statement(code, j)
+        except ValueError:
+            continue
+        t2, idents, count = _expr_sources(expr)
+        tokens, found = tokens | t2, found or count > 0
+        for ident in idents:
+            t3, f3 = _resolve(ident, code, seen)
+            tokens, found = tokens | t3, found or f3
+    return tokens, found
+
+
+@dataclass(frozen=True)
+class _Tok:
+    kind: str  # "open" | "close" | "fragment"
+    name: str
+    start: int
+
+
+def _jsx_tags(code: str) -> list[_Tok]:
+    """Opening, closing and fragment tokens, in source order.
+
+    An opening `<x` glued to the end of a word (`Array<string>`,
+    `useState<Me>`) is a TypeScript generic unless `x` is an HTML or SVG
+    element name.
+    """
+    toks: list[_Tok] = []
+    for m in _OPEN_RE.finditer(code):
+        name = m.group(1) or ""
+        before = code[m.start() - 1] if m.start() else ""
+        glued = bool(before) and (before.isalnum() or before in "_$.)]")
+        nxt = code[m.end():m.end() + 1]
+        if not name:
+            if nxt == ">" and not glued:
+                toks.append(_Tok("fragment", "", m.start()))
+            continue
+        if not nxt or not (nxt.isspace() or nxt in "/>"):
+            continue
+        if glued and not (name[:1].islower() and name.lower() in _HTML):
+            continue
+        toks.append(_Tok("open", name, m.start()))
+    for m in _CLOSE_RE.finditer(code):
+        toks.append(_Tok("close", m.group(1) or "", m.start()))
+    return sorted(toks, key=lambda t: t.start)
+
+
+def _is_intrinsic(name: str) -> bool:
+    return name[:1].islower() and "." not in name
+
+
+def _element(code: str, tok: _Tok, tag: str) -> tuple[_El, list[str]]:
+    """The `_El` a JSX opening tag describes, and any identifier its
+    className interpolates that the scan could not trace."""
+    value = _attr_value(tag, "className")
+    certain, possible, idents = _class_sources(value) if value else (set(), set(), set())
+    untraced = []
+    for ident in sorted(idents):
+        tokens, found = _resolve(ident, code)
+        possible |= tokens
+        if not found:
+            untraced.append(ident)
+    return _El(tag=tok.name.lower(), classes=frozenset(certain),
+               maybe=frozenset(possible - certain), attrs=_attr_names(tag),
+               open_classes=bool(untraced), known=True), untraced
+
+
+def _parent(code: str, before: list[_Tok]) -> _El:
+    """The element the next tag is a child of, walking back over siblings."""
+    depth = 0
+    for tok in reversed(before):
+        if tok.kind == "close":
+            depth += 1
+            continue
+        end = tok.start
+        if tok.kind == "open":
+            try:
+                end, self_closing = _tag_end(code, tok.start)
+            except ValueError:
+                continue
+            if self_closing:
+                continue
+        if depth:
+            depth -= 1
+            continue
+        if tok.kind == "fragment":
+            continue  # a fragment renders no element: its parent is further up
+        if not _is_intrinsic(tok.name):
+            return _UNKNOWN  # a component: what it renders around us is not here
+        try:
+            return _element(code, tok, code[tok.start:end])[0]
+        except ValueError:
+            return _UNKNOWN  # unreadable: assumed to match anything
+    return _UNKNOWN
+
+
+@dataclass(frozen=True)
+class _Site:
+    where: str
+    tag: str
+    certain: frozenset[str]
+    possible: frozenset[str]
+    attrs: frozenset[str] | None
+    open_classes: bool
+    inline_paint: bool
+    parent: _El
+
+
+@dataclass(frozen=True)
+class _FillScan:
+    sites: tuple[_Site, ...]
+    untraced: tuple[str, ...]
+    opaque: tuple[str, ...]
+
+
+def _scan_fills() -> _FillScan:
+    sites: list[_Site] = []
+    untraced: list[str] = []
+    opaque: list[str] = []
+    for path in _ui_sources():
+        code = _blank_comments(path.read_text(encoding="utf-8"))
+        toks = _jsx_tags(code)
+        for n, tok in enumerate(toks):
+            if tok.kind != "open" or not _is_intrinsic(tok.name):
+                continue
+            try:
+                end, _ = _tag_end(code, tok.start)
+            except ValueError:
+                continue
+            tag = code[tok.start:end]
+            if "ctl-util-fill" not in tag:
+                continue
+            where = f"{_rel(path)}:{_line(code, tok.start)}"
+            try:
+                el, missing = _element(code, tok, tag)
+            except ValueError as exc:
+                opaque.append(f"{where}: its tag could not be read ({exc})")
+                continue
+            if "ctl-util-fill" not in el.classes | el.maybe:
+                continue
+            untraced += [f"{where} `{ident}`" for ident in missing]
+            if el.attrs is None:
+                opaque.append(where)
+            style = _attr_value(tag, "style") or ""
+            sites.append(_Site(
+                where=where,
+                tag=el.tag,
+                certain=el.classes | {"ctl-util-fill"},
+                possible=el.maybe - {"ctl-util-fill"},
+                attrs=el.attrs,
+                open_classes=el.open_classes,
+                inline_paint=re.search(r"\bbackground(?:Color|Image)?\s*:", style) is not None,
+                parent=_parent(code, toks[:n]),
+            ))
+    return _FillScan(tuple(sites), tuple(untraced), tuple(opaque))
+
+
+def _variants(site: _Site, companions: set[frozenset[str]]) -> list[frozenset[str]]:
+    """The un-verdicted class sets this fill can be drawn with."""
+    out = ({site.certain}
+           | {site.certain | {c} for c in site.possible}
+           | {site.certain | c for c in companions})
+    return sorted((v for v in out if not v & VERDICT_FILLS), key=sorted)
+
+
+def _unbeaten(site: _Site, variant: frozenset[str], paints: list[_Paint],
+              allowed: frozenset[str]) -> list[tuple[_Paint, int]]:
+    fill = _El(tag=site.tag, classes=variant, attrs=site.attrs,
+               open_classes=site.open_classes, known=True)
+    chain = (fill, site.parent)
+    reach = [(p, m) for p in paints if (m := _match_complex(p.selector, chain)) != NO]
+    out = []
+    for p, m in reach:
+        if p.grey(allowed):
+            continue
+        beaten = any(
+            q.longhand == p.longhand and qm == YES and q.grey(allowed)
+            and q.at_rules in ("", p.at_rules)
+            and (q.important, q.specificity, q.order) > (p.important, p.specificity, p.order)
+            for q, qm in reach
+        )
+        if not beaten:
+            out.append((p, m))
+    return out
+
+
+@pytest.fixture(scope="module")
+def sheet_scan() -> _SheetScan:
+    return _read_sheets()
+
+
+@pytest.fixture(scope="module")
+def fill_scan() -> _FillScan:
+    return _scan_fills()
+
+
+def test_a_proportion_fill_takes_a_hue_only_from_a_verdict(rules, sheet_scan, fill_scan):
+    """Every fill the product renders is grey unless it carries a verdict.
+
+    See the block comment above this section for exactly what is read and
+    what is not. In one line: for each `.ctl-util-fill` in the `.tsx`, bare
+    and with each class it can carry, every rule in every sheet that can
+    reach it is matched, and a rule that could paint it anything but its grey
+    must be outranked by a grey rule that certainly applies.
+    """
+    default = None
+    for at_rules, selector, decls in rules:
+        if at_rules or selector != ".ctl-util-fill":
+            continue
+        for prop in ("background", "background-color"):
+            if prop in decls:
+                default = decls[prop]
+    assert default == MONOCHROME_FILL, (
+        f"the bare `.ctl-util-fill` resolves to {default!r}, not "
+        f"{MONOCHROME_FILL}: a bar with nothing to report is hued again"
+    )
+
+    paints = _paints(sheet_scan.sheets)
+    companions = _companions(sheet_scan.sheets)
+    problems: set[str] = set()
+    tried = 0
+    for site in fill_scan.sites:
+        if site.inline_paint:
+            problems.add(f"{site.where}: an inline `style` paints the fill, and "
+                         f"inline beats every rule in every sheet")
+        for variant in _variants(site, companions):
+            tried += 1
+            allowed = frozenset({MONOCHROME_FILL} | {
+                DOCUMENTED_GREYS[c] for c in variant if c in DOCUMENTED_GREYS})
+            for paint, reach in _unbeaten(site, variant, paints, allowed):
+                how = "reaches" if reach == YES else "may reach"
+                inside = f" inside {paint.at_rules}" if paint.at_rules else ""
+                problems.add(
+                    f"{site.where} <{site.tag} class=\"{' '.join(sorted(variant))}\">: "
+                    f"`{paint.selector} {{ {paint.source}: {paint.value} }}` in "
+                    f"{paint.sheet}{inside} {how} it, and no grey rule that "
+                    f"certainly applies outranks it"
+                )
+    assert not problems, (
+        "a proportion fill that carries no verdict is painted something other "
+        f"than grey (design-system.md §6.4, decided 2026-09-24). Tried "
+        f"{tried} class sets on {len(fill_scan.sites)} fills against "
+        f"{len(paints)} background declarations in {len(sheet_scan.sheets)} "
+        "sheets:\n  " + "\n  ".join(sorted(problems))
+    )
+
+
+def test_the_fill_scan_reads_what_it_claims_to(sheet_scan, fill_scan):
+    """EMPTY OUTPUT IS NOT SUCCESS. The guard above is only as wide as what it read.
+
+    Each thing the scan could not read makes it narrower without making it
+    fail, so each one fails here instead: a `<style>` whose sheet it cannot
+    find, an identifier in a fill's className it cannot trace, a spread on a
+    fill. And the fill the owner's decision was about has to be among what it
+    found, with the parent it really has. That is what catches the reader
+    itself breaking.
+    """
+    assert not sheet_scan.unreadable, (
+        "a screen injects CSS the fill guard cannot read, so an exemption "
+        "there would pass unseen:\n  " + "\n  ".join(sheet_scan.unreadable)
+    )
+    assert not fill_scan.untraced, (
+        "a fill's className interpolates an identifier the scan cannot trace "
+        "to any assignment or JSX attribute in its file, so the classes it "
+        "can carry are unknown:\n  " + "\n  ".join(fill_scan.untraced)
+    )
+    assert not fill_scan.opaque, (
+        "a fill carries a `{...spread}`, so its attributes (and any inline "
+        "style) cannot be read:\n  " + "\n  ".join(fill_scan.opaque)
+    )
+    assert fill_scan.sites, (
+        "the scan found no element naming `ctl-util-fill` in any .tsx: it "
+        "read nothing, so the guard above proved nothing"
+    )
+    meters = [s for s in fill_scan.sites if "wf-meter-fill" in s.certain]
+    found = "\n  ".join(
+        f"{s.where} <{s.tag} {' '.join(sorted(s.certain))}> in "
+        f"<{s.parent.tag} {' '.join(sorted(s.parent.classes))}>"
+        for s in fill_scan.sites)
+    assert meters, (
+        "the Workflows meter's fill (`ctl-util-fill wf-meter-fill`), the one "
+        "the 2026-09-24 decision is about, was not found. Fills found:\n  " + found
+    )
+    assert all({"ctl-track", "wf-meter"} <= s.parent.classes for s in meters), (
+        "the Workflows meter's fill was found but its parent was not read as "
+        "`.ctl-track.wf-meter`, so a rule reaching it through the parent would "
+        "be missed. Fills found:\n  " + found
+    )
+
+
+def _token_ends(value: str, custom: dict[str, set[str]], depth: int = 0) -> set[str]:
+    match = re.fullmatch(r"var\((--[\w-]+)\)", value.strip())
+    if match is None:
+        return {value}
+    name = match.group(1)
+    if name in TEXT_GREYS or depth > 8 or name not in custom:
+        return {name}
+    return set().union(*(_token_ends(v, custom, depth + 1) for v in custom[name]))
+
+
+def test_a_documented_grey_is_a_grey(sheet_scan):
+    """`DOCUMENTED_GREYS` may name a different grey, never a hue.
+
+    Each entry must resolve, through every definition of every custom
+    property on the way, to one of the two text greys. Re-pointing
+    `--ctl-absent` at `--info` would otherwise make the one named exception
+    a blue bar that this file waves through.
+    """
+    custom: dict[str, set[str]] = {}
+    for _, rules_ in sheet_scan.sheets:
+        for _, _, decls in rules_:
+            for prop, value in decls.items():
+                if prop.startswith("--"):
+                    custom.setdefault(prop, set()).add(value)
+    hued = {
+        cls: sorted(_token_ends(value, custom))
+        for cls, value in DOCUMENTED_GREYS.items()
+        if not _token_ends(value, custom) <= TEXT_GREYS
+    }
+    assert not hued, (
+        f"a documented grey resolves to something other than {sorted(TEXT_GREYS)}: {hued}"
     )
