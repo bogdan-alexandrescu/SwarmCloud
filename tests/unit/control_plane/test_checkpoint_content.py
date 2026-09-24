@@ -401,6 +401,18 @@ def not_utf8(raw: bytes) -> str:
     return raw.decode("utf-8", "surrogateescape")
 
 
+def a_latin1_checkpoint(db, objects) -> str:
+    """A Latin-1 file, a file in a Latin-1 directory, and a symlink whose
+    TARGET is Latin-1, beside an ordinary file."""
+    seed(db)
+    return put_checkpoint(objects, archive=tar_gz([
+        ("ok.txt", "file", "fine"),
+        (not_utf8(b"caf\xe9.txt"), "file", "latin-1 named content"),
+        (not_utf8(b"d\xe9/inner.txt"), "file", "inside a latin-1 directory"),
+        ("pointer", "symlink", not_utf8(b"t\xe9")),
+    ]))
+
+
 def test_a_member_name_that_is_not_utf8_is_listed_escaped_and_is_not_a_500(
     client, db, objects
 ):
@@ -413,13 +425,7 @@ def test_a_member_name_that_is_not_utf8_is_listed_escaped_and_is_not_a_500(
     `undecodable`. It is NOT `unsafe`: that flag says a restore would refuse
     the archive, and a restore unpacks a Latin-1 name without complaint.
     """
-    seed(db)
-    put_checkpoint(objects, archive=tar_gz([
-        ("ok.txt", "file", "fine"),
-        (not_utf8(b"caf\xe9.txt"), "file", "latin-1 named content"),
-        (not_utf8(b"d\xe9/inner.txt"), "file", "inside a latin-1 directory"),
-        ("pointer", "symlink", not_utf8(b"t\xe9")),
-    ]))
+    a_latin1_checkpoint(db, objects)
 
     response = files(client)
     assert response.status_code == 200, response.text
@@ -434,6 +440,14 @@ def test_a_member_name_that_is_not_utf8_is_listed_escaped_and_is_not_a_500(
     assert rows["pointer"]["link"] == "t\\xe9"
     assert rows["pointer"]["undecodable"] is True, "the TARGET is what was escaped"
     assert rows["ok.txt"]["undecodable"] is False
+
+
+def test_a_name_that_is_not_utf8_cannot_be_opened_and_its_link_is_a_clean_422(
+    client, db, objects
+):
+    """The per-file route over the same archive, apart from the listing so a
+    failure in one cannot hide a failure in the other."""
+    a_latin1_checkpoint(db, objects)
 
     # The escaped form is a display, never an address: it carries a backslash,
     # which `requested_path` refuses before any object is read.
