@@ -160,6 +160,9 @@ jobs:
         # :dev described a release nobody built. A tag that fails to move
         # part-way is put back, and the manifest below is written only after
         # every tag has moved -- so on failure there is no artifact to upload.
+        # If the put-back itself fails, the step's last line says the channel
+        # is MIXED and names the images; a `skip_build` redeploy reads the
+        # channel, so put those back (the commands are in the log) first.
         run: ./scripts/push-images.sh --tag "${{ steps.tag.outputs.tag }}" --channel "${ENVIRONMENT}" --scan
 
       - uses: actions/upload-artifact@v4

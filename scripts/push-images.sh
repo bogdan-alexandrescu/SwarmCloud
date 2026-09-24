@@ -10,10 +10,23 @@
 #   * attach the channel tag (dev/prod) to that exact digest;
 #   * write build/deployed-images-<env>.json, which deploy.sh consumes.
 #
-# ALL OR NOTHING. Every image is resolved and scanned before any channel tag
-# moves; one refusal moves none, and a tag that fails to move part-way puts
-# back the ones already moved. The channel and the manifest describe one
-# release or the previous one -- never a mix.
+# ALL OR NOTHING, and exactly where that stops being true.
+#
+#   * Every image is resolved and scanned before any channel tag moves, and
+#     one refusal moves none.
+#   * Artifact Registry has no multi-tag transaction, so the moves themselves
+#     are "all, or undo": a move that fails part-way puts back the tags this
+#     run already moved.
+#   * The deploy manifest is written only after every tag has moved, so IT
+#     never describes a mix.
+#   * The CHANNEL can. If the undo itself fails -- the usual cause is the same
+#     expired session that failed the move -- :channel holds some new digests
+#     and some old ones, and the run's last line says MIXED, names them, and
+#     the lines above it give the command that puts each one back. If the job
+#     is killed between two moves (a cancelled run, a lost runner), nothing
+#     runs to undo or to say so. Either way a `skip_build` redeploy, which
+#     rebuilds its manifest from :channel, would deploy the mix: re-run the
+#     promotion first.
 #
 # Nothing downstream ever deploys a mutable tag. `:dev` exists for humans;
 # scripts and Terraform use `image@sha256:...`.
@@ -38,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     --channel) CHANNEL="$2"; shift 2 ;;
     --scan)    SCAN=1; shift ;;
     --no-scan) SCAN=0; shift ;;
-    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     -*)        die "unknown flag: $1" ;;
     *)         TARGETS+=("$1"); shift ;;
   esac
@@ -223,9 +236,26 @@ fi
 # DELETING it: that is removing what this run created seconds earlier, not
 # destroying anything that was there, so it needs no typed confirmation.
 MOVED=()
+# Names of the images the undo could NOT put back, and whether any failure in
+# this phase was a dead session. Globals, because undo_moved is called
+# directly, never in a command substitution, and its caller reads both.
+UNDO_STUCK=()
+AUTH_FAILED=0
 
+# Did the gcloud call whose stderr is in LOOKUP_ERR fail on authentication?
+# Remembered rather than acted on: die_if_auth_failure EXITS, and exiting here
+# would skip the put-back of tags this run already moved -- and the printing
+# of the commands that put them back by hand if it cannot.
+note_auth_failure() {
+  if gcloud_auth_failure "$(lookup_error)"; then AUTH_FAILED=1; fi
+}
+
+# Put every tag this run moved back where it was. Returns non-zero when any
+# could not be, with their names in UNDO_STUCK and, for exactly those, the
+# command that puts each back by hand.
 undo_moved() {
-  local i image prev stuck=()
+  local i image prev stuck_rows=()
+  UNDO_STUCK=()
   for i in ${MOVED[@]+"${MOVED[@]}"}; do
     image="${R_IMAGE[$i]}"
     prev="${R_PREV[$i]}"
@@ -240,21 +270,24 @@ undo_moved() {
       ok "removed ${image}:${CHANNEL} again (it did not exist before this run)"
       continue
     fi
+    note_auth_failure
     lookup_error | redact | sed -n '1,2s/^/     /p' >&2
-    stuck+=("${R_NAME[$i]}")
+    UNDO_STUCK+=("${R_NAME[$i]}")
+    stuck_rows+=("${i}")
   done
-  if [[ "${#stuck[@]}" -gt 0 ]]; then
-    err "COULD NOT UNDO ${stuck[*]}: :${CHANNEL} now describes a MIXED release. Put each back by hand:"
-    for i in ${MOVED[@]+"${MOVED[@]}"}; do
-      if [[ -n "${R_PREV[$i]}" ]]; then
-        printf '     gcloud artifacts docker tags add %s@%s %s:%s --project %s\n' \
-          "${R_IMAGE[$i]}" "${R_PREV[$i]}" "${R_IMAGE[$i]}" "${CHANNEL}" "${PROJECT_ID}" >&2
-      else
-        printf '     gcloud artifacts docker tags delete %s:%s --project %s\n' \
-          "${R_IMAGE[$i]}" "${CHANNEL}" "${PROJECT_ID}" >&2
-      fi
-    done
-  fi
+  [[ "${#stuck_rows[@]}" -gt 0 ]] || return 0
+
+  err "COULD NOT UNDO ${UNDO_STUCK[*]}: :${CHANNEL} now describes a MIXED release. Put each back by hand:"
+  for i in "${stuck_rows[@]}"; do
+    if [[ -n "${R_PREV[$i]}" ]]; then
+      printf '     gcloud artifacts docker tags add %s@%s %s:%s --project %s\n' \
+        "${R_IMAGE[$i]}" "${R_PREV[$i]}" "${R_IMAGE[$i]}" "${CHANNEL}" "${PROJECT_ID}" >&2
+    else
+      printf '     gcloud artifacts docker tags delete %s:%s --project %s\n' \
+        "${R_IMAGE[$i]}" "${CHANNEL}" "${PROJECT_ID}" >&2
+    fi
+  done
+  return 1
 }
 
 step "Promote ${#R_NAME[@]} image(s) to :${CHANNEL}"
@@ -265,13 +298,28 @@ for ((i = 0; i < ${#R_NAME[@]}; i++)); do
   if ! gcloud artifacts docker tags add "${image}@${R_DIGEST[$i]}" "${image}:${CHANNEL}" \
        --project "${PROJECT_ID}" >/dev/null 2>"${LOOKUP_ERR}"; then
     reason="$(lookup_error)"
+    note_auth_failure
     err "${R_NAME[$i]}: could not move ${image}:${CHANNEL}"
     [[ -z "${reason}" ]] || printf '%s\n' "${reason}" | redact | sed -n '1,3s/^/     /p' >&2
+
+    # THE LAST LINE MUST MATCH THE REGISTRY. It used to be "nothing promoted"
+    # unconditionally -- including when the put-back had just failed and the
+    # channel held some images from each release.
+    undone=1
     if [[ "${#MOVED[@]}" -gt 0 ]]; then
       warn "putting back the ${#MOVED[@]} channel tag(s) this run already moved"
-      undo_moved
+      undo_moved || undone=0
     fi
-    die "promotion of ${TAG} to :${CHANNEL} failed at ${R_NAME[$i]}; nothing promoted"
+    cause=""
+    if [[ "${AUTH_FAILED}" -eq 1 ]]; then
+      err "the gcloud session is not usable -- this is authentication, not a registry fault"
+      dim "locally: gcloud auth login && gcloud auth application-default login; in CI: re-run the job"
+      cause=" (authentication: the gcloud session is not usable)"
+    fi
+    if [[ "${undone}" -eq 0 ]]; then
+      die "promotion of ${TAG} to :${CHANNEL} failed at ${R_NAME[$i]}${cause}, and COULD NOT UNDO ${UNDO_STUCK[*]}: :${CHANNEL} is MIXED -- put those back with the commands above before anything reads :${CHANNEL}"
+    fi
+    die "promotion of ${TAG} to :${CHANNEL} failed at ${R_NAME[$i]}${cause}; nothing promoted"
   fi
   MOVED+=("${i}")
   ok "${image}:${CHANNEL} -> ${R_DIGEST[$i]}"
