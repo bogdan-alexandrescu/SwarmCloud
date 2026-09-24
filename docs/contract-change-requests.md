@@ -25,6 +25,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
+| 13 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
 
 ---
 
@@ -1195,3 +1196,77 @@ bug.
 A task sent to FAILED by this path was getting a `next_eligible_at`, which
 promises a retry that is not coming and renders in the console as a scheduled
 attempt. It now gets a `completed_at` and no eligibility time.
+
+---
+
+## 13. `models.py`: `Attempt` records memory, disk and spend, but not CPU
+
+**Status:** open, raised 2026-09-24 by the worker-broker lane, which measured
+CPU without it and stopped at the frozen line.
+
+### What is there now, without the contract
+
+`agent_worker/metrics.py` had no CPU reading at all, so "requested vs used"
+(docs/web-ui/redesign-v2.md section 6, S5) had a memory row and could not have
+a CPU row. It now measures CPU on every attempt -- cgroup v2 `cpu.stat` when the
+container has one, the runner's process tree in /proc otherwise, the kernel's
+reaped-children total as the last resort -- and reports:
+
+| field | meaning |
+|---|---|
+| `cpu_seconds` | CPU time consumed while the runner ran |
+| `peak_cpu_cores` | the busiest sampling interval, in cores |
+| `mean_cpu_cores` | `cpu_seconds` over the wall time it was measured across |
+| `cpu_source` | `cgroup` (the whole container), `proc` (the runner's tree) or `rusage` |
+
+It reaches three places, none of them typed or indexable:
+
+* the `attempt resource usage` log line (`LoggingMetricsExporter`);
+* Cloud Monitoring, as `cpu_time_ms`, `peak_cpu_millicores` and
+  `mean_cpu_millicores` -- which swarm-api cannot read (it holds no
+  `roles/monitoring.viewer`);
+* every HEARTBEAT event, as a CUMULATIVE `cpu_seconds`, so two consecutive
+  events give utilisation over the span between them. This is the only
+  per-attempt CPU figure a reader of the API can reach today, and it resets
+  when a runner is restarted in place.
+
+### Why it stopped there
+
+The one place a per-attempt figure belongs is the attempt document, next to
+`peak_rss_bytes` -- and `record_resource_usage` writes only the keys the frozen
+`Attempt` declares, for the reason `record_spend` gives: an untyped field on the
+busiest document is one no index can reach and every reader must know by
+convention.
+
+### The requested change
+
+Add to `Attempt`, beside `peak_rss_bytes`:
+
+```python
+cpu_seconds: float | None = None
+peak_cpu_cores: float | None = None
+```
+
+Optional, defaulting to `None`, so every existing document remains valid and
+nothing migrates. `None` means NOT MEASURED -- a macOS local run has a total and
+no peak, and an attempt fenced before its runner started has neither -- which
+is different from an agent that used no CPU. `mean_cpu_cores` is deliberately
+not requested: it is derivable from `cpu_seconds` and the attempt's own
+`started_at`/`completed_at`.
+
+### What breaks if it is made
+
+Nothing reads these yet. `agent_worker.control.record_resource_usage` would
+gain two keys; `swarm_api.codec.attempt_from_dict`/`attempt_to_api` would each
+gain two lines, and `test_api_contract_shapes.py` pins the latter, so the
+serialiser cannot drop them silently. `apps/swarm-ui/src/types.ts` restates
+`Attempt` by hand and would need the two fields added there too --
+`check-contract-parity.sh` does not cover TypeScript.
+
+### What is left to live with if it is declined
+
+A CPU row in "requested vs used" can still be drawn, from the last HEARTBEAT
+event of each attempt. It is up to one heartbeat period stale at the end of a
+run (the last event before exit is not the exit), it is not queryable across
+attempts, and a "CPU per resource class over the last week" report means
+reading every attempt's event stream.

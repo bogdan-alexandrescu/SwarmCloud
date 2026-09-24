@@ -19,16 +19,35 @@ Measurement prefers cgroup v2 (`memory.peak`, `memory.events`), which is what th
 kernel's OOM killer itself looks at, and falls back to summing RSS across the
 child's process group when no cgroup is visible -- for example on a developer's
 laptop during a local smoke run.
+
+CPU (docs/web-ui/redesign-v2.md section 6, S5). Every resource class reserves
+whole vCPUs with `requests == limits`, and until this was measured nothing said
+whether an agent used a tenth of one or all four -- so "requested vs used" had a
+memory row and no CPU row, and could not have one without a worker change:
+
+    cpu_seconds       CPU time consumed while the runner ran
+    peak_cpu_cores    the busiest sampling interval, in cores
+    mean_cpu_cores    cpu_seconds over the wall time it was measured across
+    cpu_source        where the numbers came from: cgroup, proc or rusage
+
+The same preference order as memory, for the same reason: cgroup v2 `cpu.stat`
+is the container's own account and what its CPU limit is enforced against. With
+no cgroup, the runner's process TREE is walked in /proc -- a tree and not a
+process group, because the CLI runners start the agent in a new session and a
+group reading would miss the agent entirely. With neither (macOS), only the
+kernel's total for reaped children is available, so there is a total and no
+peak. None means not measured, never zero.
 """
 
 from __future__ import annotations
 
 import os
+import resource
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
@@ -44,6 +63,13 @@ class ResourceUsage:
     #: cgroup `memory.events` counters, when the kernel exposes them.
     memory_events: dict[str, int] | None = None
     samples: int = 0
+    #: CPU. All None until measured, and None -- not 0 -- when nothing could be
+    #: read: an attempt that used no CPU and one nobody measured are different
+    #: facts, and a "requested vs used" row must not draw the second as idle.
+    cpu_seconds: float | None = None
+    peak_cpu_cores: float | None = None
+    mean_cpu_cores: float | None = None
+    cpu_source: str | None = None
 
     def merge_rss(self, value: int) -> None:
         self.peak_rss_bytes = max(self.peak_rss_bytes, int(value))
@@ -140,6 +166,144 @@ def process_group_rss(pgid: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Reading CPU
+# ---------------------------------------------------------------------------
+
+
+def cgroup_cpu_seconds() -> float | None:
+    """cgroup v2 `cpu.stat` `usage_usec`, in seconds. None when absent or unreadable."""
+    try:
+        text = (CGROUP_ROOT / "cpu.stat").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "usage_usec":
+            try:
+                return int(parts[1]) / 1_000_000
+            except ValueError:
+                return None
+    return None
+
+
+def _proc_stat(entry: Path) -> tuple[int, int, int]:
+    """(pid, ppid, CPU clock ticks including reaped children) from /proc/<pid>/stat.
+
+    The command name is field 2 and may itself contain spaces and parentheses,
+    so the line is split after the LAST ')'. What follows starts at field 3, so
+    ppid (field 4) is index 1 and utime, stime, cutime, cstime (fields 14-17)
+    are indices 11-14.
+    """
+    raw = (entry / "stat").read_text()
+    fields = raw[raw.rindex(")") + 2 :].split()
+    return int(entry.name), int(fields[1]), sum(int(value) for value in fields[11:15])
+
+
+def process_tree_cpu_seconds(root_pid: int) -> float | None:
+    """CPU seconds used by `root_pid` and every live descendant. None without procfs.
+
+    Walked by PARENT pid, not process group: the CLI runners start the agent
+    with `start_new_session=True`, so it is in a different group from the
+    runner, and a group reading would count the runner's Python and not the
+    agent doing the work.
+
+    Each second is counted once: a live process's own time is summed, and a
+    process that has exited and been reaped is already inside its parent's
+    `cutime`/`cstime`. A process reparented away from the tree (a daemon that
+    double-forks) is lost; nothing an agent CLI does needs that.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return None
+    try:
+        hertz = os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError):
+        return None
+    ticks: dict[int, int] = {}
+    children: dict[int, list[int]] = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            pid, ppid, used = _proc_stat(entry)
+        except (OSError, ValueError, IndexError):
+            continue  # exited between the listing and the read
+        ticks[pid] = used
+        children.setdefault(ppid, []).append(pid)
+    if root_pid not in ticks:
+        return None
+    total = 0
+    stack, seen = [root_pid], set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        total += ticks.get(pid, 0)
+        stack.extend(children.get(pid, ()))
+    return total / hertz
+
+
+def reaped_children_cpu_seconds() -> float:
+    """CPU seconds of every child this process has waited for, and theirs.
+
+    Exact, portable, and only complete once the runner has been reaped -- so it
+    is the TOTAL at stop, never a live reading.
+    """
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
+
+
+class CpuMeter(Protocol):
+    #: "cgroup", "proc" or "rusage" -- recorded with the numbers so a reader
+    #: knows whether they cover the container or only the runner's tree.
+    source: str | None
+
+    def cumulative(self) -> float | None:
+        """A live, monotonic-while-running CPU total in seconds, or None."""
+
+    def consumed(self) -> float | None:
+        """CPU seconds since the meter was built; exact once the runner is reaped."""
+
+
+class SystemCpuMeter:
+    """cgroup v2 if the container has one, else the process tree, else rusage.
+
+    Built when the runner starts, so both baselines -- the cgroup counter and
+    the reaped-children total -- exclude everything the worker did before it.
+    """
+
+    def __init__(self, pid_provider: Callable[[], int | None]) -> None:
+        self._pid_provider = pid_provider
+        self._cgroup_start = cgroup_cpu_seconds()
+        self._reaped_start = reaped_children_cpu_seconds()
+        if self._cgroup_start is not None:
+            self.source: str | None = "cgroup"
+        elif Path("/proc").is_dir():
+            self.source = "proc"
+        else:
+            self.source = "rusage"
+
+    def cumulative(self) -> float | None:
+        if self.source == "cgroup":
+            return cgroup_cpu_seconds()
+        if self.source == "proc":
+            pid = self._pid_provider()
+            return process_tree_cpu_seconds(pid) if pid else None
+        return None
+
+    def consumed(self) -> float | None:
+        if self.source == "cgroup":
+            now = cgroup_cpu_seconds()
+            if now is None or self._cgroup_start is None:
+                return None
+            return max(0.0, now - self._cgroup_start)
+        # The tree reading loses the runner the moment it exits; the kernel's
+        # reaped-children total is where its time went, and it is exact.
+        return max(0.0, reaped_children_cpu_seconds() - self._reaped_start)
+
+
+# ---------------------------------------------------------------------------
 # Sampling
 # ---------------------------------------------------------------------------
 
@@ -155,6 +319,8 @@ class ResourceSampler:
         memory_limit_bytes: int,
         interval_seconds: float = 2.0,
         near_miss_fraction: float = NEAR_MISS_FRACTION,
+        cpu_meter: CpuMeter | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._pid_provider = pid_provider
         self._disk_provider = disk_provider
@@ -164,6 +330,71 @@ class ResourceSampler:
         self.usage = ResourceUsage()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Injected in tests; built on the first sample otherwise, which is the
+        # moment the runner has just started.
+        self._cpu_meter = cpu_meter
+        self._clock = clock
+        #: The shortest interval turned into a rate. Half the sampling
+        #: interval, and never under half a second: 0.1s of CPU over 10ms of
+        #: wall clock is "ten cores" only by arithmetic.
+        self._min_interval = max(0.5, interval_seconds / 2)
+        self._cpu_first: float | None = None
+        self._cpu_base: tuple[float, float] | None = None
+        self._t_first: float | None = None
+        self._t_last: float | None = None
+
+    def _meter(self) -> CpuMeter:
+        if self._cpu_meter is None:
+            self._cpu_meter = SystemCpuMeter(self._pid_provider)
+        return self._cpu_meter
+
+    def _sample_cpu(self) -> None:
+        now = self._clock()
+        if self._t_first is None:
+            self._t_first = now
+        self._t_last = now
+        try:
+            meter = self._meter()
+            self.usage.cpu_source = meter.source
+            reading = meter.cumulative()
+        except Exception:
+            reading = None
+        if reading is None:
+            return
+        if self._cpu_first is None:
+            self._cpu_first = reading
+            self._cpu_base = (now, reading)
+            self.usage.cpu_seconds = 0.0
+            return
+        # Held at its high-water mark: a tree reading dips when a process
+        # exits before its parent reaps it, and a total must not go backwards.
+        self.usage.cpu_seconds = max(self.usage.cpu_seconds or 0.0, reading - self._cpu_first)
+        base_time, base_reading = self._cpu_base or (now, reading)
+        elapsed = now - base_time
+        if elapsed < self._min_interval:
+            return
+        delta = reading - base_reading
+        self._cpu_base = (now, reading)
+        if delta < 0:
+            return
+        rate = delta / elapsed
+        if self.usage.peak_cpu_cores is None or rate > self.usage.peak_cpu_cores:
+            self.usage.peak_cpu_cores = rate
+
+    def _finish_cpu(self) -> None:
+        try:
+            consumed = self._meter().consumed()
+        except Exception:
+            consumed = None
+        if consumed is not None:
+            self.usage.cpu_seconds = consumed
+        if (
+            self.usage.cpu_seconds is not None
+            and self._t_first is not None
+            and self._t_last is not None
+            and self._t_last - self._t_first >= self._min_interval
+        ):
+            self.usage.mean_cpu_cores = self.usage.cpu_seconds / (self._t_last - self._t_first)
 
     def sample_once(self) -> None:
         peak = cgroup_memory_peak()
@@ -184,6 +415,7 @@ class ResourceSampler:
             self.usage.merge_disk(self._disk_provider())
         except OSError:
             pass
+        self._sample_cpu()
         self.usage.samples += 1
 
     def _run(self) -> None:
@@ -204,6 +436,7 @@ class ResourceSampler:
         if events:
             self.usage.memory_events = events
         self.usage.oom_near_miss = self.evaluate_near_miss(events)
+        self._finish_cpu()
         return self.usage
 
     def evaluate_near_miss(self, events: dict[str, int] | None = None) -> bool:
@@ -242,12 +475,27 @@ class LoggingMetricsExporter:
             oom_near_miss=usage.oom_near_miss,
             memory_events=usage.memory_events or {},
             samples=usage.samples,
+            # Null when not measured, never 0; see ResourceUsage.
+            cpu_seconds=_rounded(usage.cpu_seconds),
+            peak_cpu_cores=_rounded(usage.peak_cpu_cores),
+            mean_cpu_cores=_rounded(usage.mean_cpu_cores),
+            cpu_source=usage.cpu_source,
             **labels,
         )
 
 
+def _rounded(value: float | None, places: int = 3) -> float | None:
+    return None if value is None else round(float(value), places)
+
+
 class CloudMonitoringExporter:
-    """Writes three GAUGE time series per attempt to Cloud Monitoring."""
+    """Writes GAUGE time series per attempt to Cloud Monitoring.
+
+    Three for memory and disk, always; up to three for CPU, only when measured
+    and in a SEPARATE write. Those are new metric types, created on their first
+    write, and one call that failed on them would take the three series the
+    sizing report already depends on down with it.
+    """
 
     def __init__(self, project_id: str, region: str, logger: Any, client: Any | None = None) -> None:
         self._project_id = project_id
@@ -291,20 +539,43 @@ class CloudMonitoringExporter:
             "peak_disk_bytes": int(usage.peak_disk_bytes),
             "oom_near_miss": 1 if usage.oom_near_miss else 0,
         }
-        series = []
-        for name, value in values.items():
-            s = monitoring_v3.TimeSeries()
-            s.metric.type = f"{METRIC_PREFIX}/{name}"
-            for key, val in metric_labels.items():
-                s.metric.labels[key] = val
-            s.resource = resource
-            s.points = [
-                monitoring_v3.Point({"interval": interval, "value": {"int64_value": value}})
-            ]
-            series.append(s)
-        self._get_client().create_time_series(
-            name=f"projects/{self._project_id}", time_series=series
+
+        def _series(named: dict[str, int]) -> list[Any]:
+            out = []
+            for name, value in named.items():
+                s = monitoring_v3.TimeSeries()
+                s.metric.type = f"{METRIC_PREFIX}/{name}"
+                for key, val in metric_labels.items():
+                    s.metric.labels[key] = val
+                s.resource = resource
+                s.points = [
+                    monitoring_v3.Point({"interval": interval, "value": {"int64_value": value}})
+                ]
+                out.append(s)
+            return out
+
+        client = self._get_client()
+        client.create_time_series(
+            name=f"projects/{self._project_id}", time_series=_series(values)
         )
+
+        # Integers in milli-units, like every other series here: the metric
+        # kind is fixed on first write, and one INT64 convention is one fewer
+        # way for a dashboard to be off by a factor of a thousand.
+        cpu: dict[str, int] = {}
+        if usage.cpu_seconds is not None:
+            cpu["cpu_time_ms"] = int(round(usage.cpu_seconds * 1000))
+        if usage.peak_cpu_cores is not None:
+            cpu["peak_cpu_millicores"] = int(round(usage.peak_cpu_cores * 1000))
+        if usage.mean_cpu_cores is not None:
+            cpu["mean_cpu_millicores"] = int(round(usage.mean_cpu_cores * 1000))
+        if cpu:
+            try:
+                client.create_time_series(
+                    name=f"projects/{self._project_id}", time_series=_series(cpu)
+                )
+            except Exception as exc:
+                self._log.warning("CPU metrics export failed", error=str(exc))
 
 
 class CompositeExporter:

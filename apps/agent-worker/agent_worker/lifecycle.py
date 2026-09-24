@@ -1507,12 +1507,22 @@ class Worker:
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
             usage = self._sampler.usage if self._sampler else None
+            cpu_seconds = usage.cpu_seconds if usage else None
             self.control.emit(
                 EventType.HEARTBEAT,
                 {
                     "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
                     "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
                     "checkpoints": self.checkpoints.seq,
+                    # CUMULATIVE, not a rate: this event series is the only
+                    # time series the platform keeps, and two consecutive
+                    # totals give utilisation over exactly the span between
+                    # them, where a point-in-time rate would describe two
+                    # seconds out of every heartbeat period. None while not
+                    # measured, never 0. `cpu_source` says whether it is the
+                    # container (cgroup) or the runner's process tree (proc).
+                    "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
+                    "cpu_source": usage.cpu_source if usage else None,
                 },
             )
 
