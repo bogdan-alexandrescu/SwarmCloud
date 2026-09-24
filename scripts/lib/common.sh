@@ -1059,8 +1059,9 @@ _api_explain_iap() {
       ;;
     *"Access denied. For user"*)
       err "that ${status} came from IAP: the credential was accepted and the principal is not authorised."
-      err "It needs roles/iap.httpsResourceAccessor on the backend service -- which Track C"
-      err "sets through frontend_iap_members in terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars."
+      err "It needs roles/iap.httpsResourceAccessor on the backend service. That list is"
+      err "frontend_iap_members in terraform/bootstrap/terraform.tfvars, applied by the owner --"
+      err "not by the release, whose deployer holds no IAP role (see terraform/bootstrap/wif.tf)."
       ;;
   esac
 }
