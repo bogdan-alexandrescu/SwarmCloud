@@ -81,6 +81,16 @@ class ReconcilerConfig:
     #: browser Job that stopped making progress, and from one still running
     #: after its task finished. Both rules act on GKE Jobs only -- today that
     #: is the `browser` profile, the one profile pinned to Autopilot.
+    #:
+    #: False is the way back to the reconciler as it was before these rules:
+    #: it turns off the two rules AND their input -- the by-id read of tasks
+    #: outside the concurrency states (`Reconciler._read_settled`) and the
+    #: stand-asides that read makes possible (`detect.orphan_rule_defers`). A
+    #: Job left running is then an orphan execution again, killed and only
+    #: then released. What it does NOT turn off is the rule that no repair
+    #: which only releases may return a lease whose own execution is still
+    #: running (`detect.detect_orphan_leases`): that is not part of eviction,
+    #: and turning it off would only bring back a release before the kill.
     enable_gke_eviction: bool = True
 
     #: How long a RUNNING GKE attempt may show no progress before it is fenced

@@ -29,7 +29,23 @@ the `browser` profile is the only profile that runs on GKE.
 | Rule | Finding | What the reconciler does |
 |---|---|---|
 | Stuck | `stuck_no_progress` | Fences the generation and records why, in that pass and nothing more. The worker stops the agent at its next control poll, about 10s later, and exits. On a later pass, the lease is superseded and silent, and the existing rules release it: they delete the Job first if it is still active, then set the task to READY. The task goes to FAILED instead once its attempts are spent, or to CANCELLED if a cancel was requested. |
-| Left running | `left_running` | Deletes the Job. Releases a lease only if the Job's own lease (same attempt, same generation) was never released. The task stays in the terminal state it had. |
+| Left running | `left_running` | Once `LEFT_RUNNING_GRACE_SECONDS` have passed since the task finished, deletes the Job. Releases a lease only if the Job's own lease (same attempt, same generation) was never released, and only after the delete succeeded. The task stays in the terminal state it had. |
+
+**A lease is never released while its own Job is still running.** This holds
+inside the grace too, before any rule has tried to delete the Job. The worker
+writes the terminal state first and releases its lease in a separate write
+(`ControlPlane.finish`). A worker that wedges between the two leaves a finished
+task, an unreleased lease and a pod that is still up. The reconciler runs every
+five minutes, so its first pass after that almost always lands inside the
+300s grace. On that pass, nothing is deleted and nothing is released. The
+lease's 2 units on each of the seven pools stay held, because the pod is still
+using them. On the first pass after the grace, the Job is deleted, and only then
+is the lease released. If the delete is refused, the lease stays held and the
+next pass tries again.
+
+The same hold applies when the Job's task could not be read this pass, and when
+the task was re-admitted between the reconciler's snapshot and its read. Both
+Job and lease are left for the next pass.
 
 **Why the stuck rule does not delete the Job in the pass that fences it.** The
 worker under a stuck browser is alive, and deleting its Job sends it SIGTERM.
@@ -114,7 +130,7 @@ so the defaults apply.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RECONCILER_ENABLE_GKE_EVICTION` | `true` | Turns both rules on or off. With it off, a Job left running falls back to the orphan-execution rule, which is the behaviour before this change. |
+| `RECONCILER_ENABLE_GKE_EVICTION` | `true` | Turns both rules on or off, together with their input: the by-id read of tasks outside the concurrency states. With it off, no task is read by id, and a Job left running falls back to the orphan-execution rule, as before this change: it is deleted at once, and its lease is released only after the delete succeeds. It does not turn off the lease hold described above. That hold is not part of eviction, and turning it off would only bring back a release before the delete. |
 | `STUCK_AFTER_SECONDS` | `1800` | How long an attempt may go without progress before the reconciler evicts it. |
 | `STUCK_CPU_FLOOR_CORES` | `0.05` | The mean CPU below which a heartbeat interval counts as quiet. |
 | `STUCK_EVIDENCE_MAX_GAP_SECONDS` | `600` | The longest gap allowed between measurements inside a quiet span. |
@@ -173,6 +189,11 @@ The task's own events also say what happened:
 - **A lease that stopped heartbeating.** That is `dead_worker` or `stale_lease`,
   and those rules act much sooner. When both rules match, the stuck rule gives
   way.
+- **A finished task whose lease is still unreleased.** If its Job is still
+  active, this is the lease hold described above, not a leak. The lease is
+  released once the Job is gone. If a pass tried to delete the Job and failed,
+  every other finding about that lease in that pass is recorded with
+  `skipped: execution_not_stopped`.
 - **A Job of an older generation.** That is `obsolete_generation`.
 - **A Job that claims a generation above its task's.** No admission ever issued
   that generation. Admission raises `current_generation` in the same transaction

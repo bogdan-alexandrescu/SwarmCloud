@@ -412,6 +412,80 @@ def detect_missing_executions(
     return findings
 
 
+#: Why `detect_orphan_executions` leaves an active execution to a later
+#: judgement instead of judging it now. Each is a promise that SOME rule will
+#: own this execution -- kill it, then release -- so for the pass, no rule that
+#: only releases may hand its lease back either (`detect_all`).
+DEFER_TO_LEFT_RUNNING = "its task is terminal and detect_left_running owns its Job, grace and all"
+DEFER_TASK_UNREADABLE = "its task could not be read this pass"
+DEFER_TASK_READMITTED = "its task was re-admitted after the snapshot"
+
+
+def _settled_tasks(snapshot: ControlSnapshot) -> dict[str, TaskView]:
+    # Read with defaults: the rules here are also called with a bare snapshot
+    # that predates the by-id reads, and for those they must behave exactly as
+    # they did before them.
+    return getattr(snapshot, "settled", None) or {}
+
+
+def _unreadable_tasks(snapshot: ControlSnapshot) -> set[str]:
+    return getattr(snapshot, "unreadable_tasks", None) or set()
+
+
+def _unissued(execution: ExecutionView, task: TaskView | None) -> bool:
+    """The execution claims a generation NO admission issued.
+
+    `admission.py` raises `current_generation` in the same transaction that
+    writes the lease, before any dispatch, and the task was read after the
+    backends were listed -- so an execution claiming more than the task records
+    was not created by this platform's dispatch path. It is not the "newer
+    attempt" the eviction rules protect; that one is never newer than its own
+    task. The obsolete-generation rule already treats such a claim on a running
+    task the same way.
+    """
+    return (
+        task is not None
+        and execution.generation is not None
+        and execution.generation > task.generation
+    )
+
+
+def orphan_rule_defers(
+    snapshot: ControlSnapshot, execution: ExecutionView, config: ReconcilerConfig
+) -> str | None:
+    """Why the orphan-execution rule leaves this execution for later, or None.
+
+    Only the three stand-asides the by-id read introduced. The older skips --
+    too young to judge, no task id at all -- are not deferrals: the first is a
+    grace every rule shares, and the second is compute this service has no
+    authority over, which no rule will ever own.
+    """
+    if not execution.is_active or execution.claim_refused or not execution.task_id:
+        return None
+    task = snapshot.tasks.get(execution.task_id)
+    settled = _settled_tasks(snapshot).get(execution.task_id)
+    if task is None and execution.task_id in _unreadable_tasks(snapshot):
+        # Its task exists or not, finished or re-admitted -- this pass could
+        # not look. Terminating on "I could not read it" is the same mistake
+        # as releasing on "I could not list it".
+        return DEFER_TASK_UNREADABLE
+    if task is None and settled is not None and settled.holds_capacity:
+        # Re-admitted between the snapshot and the read by id. Whatever this
+        # execution is -- the new attempt, or an old one -- the next pass holds
+        # the task, its lease and its generation together.
+        return DEFER_TASK_READMITTED
+    named = task or settled
+    if (
+        named is not None
+        and named.is_terminal
+        and not _unissued(execution, named)
+        and execution.backend == GKE
+        and bool(getattr(config, "enable_gke_eviction", False))
+    ):
+        return DEFER_TO_LEFT_RUNNING
+    return None
+
+
 def detect_orphan_executions(
     snapshot: ControlSnapshot,
     executions: Iterable[ExecutionView],
@@ -421,12 +495,7 @@ def detect_orphan_executions(
     """Compute that is running with no live lease behind it."""
     now = now or utcnow()
     findings: list[Finding] = []
-    # Read with defaults, as `logger` below is: this rule is also called with a
-    # bare snapshot and config that predate the by-id reads and the eviction
-    # rules, and for those it must behave exactly as it did before them.
-    settled_tasks: dict[str, TaskView] = getattr(snapshot, "settled", None) or {}
-    unreadable_tasks: set[str] = getattr(snapshot, "unreadable_tasks", None) or set()
-    evicting = bool(getattr(config, "enable_gke_eviction", False))
+    settled_tasks = _settled_tasks(snapshot)
     for execution in executions:
         if not execution.is_active:
             continue
@@ -481,42 +550,11 @@ def detect_orphan_executions(
                 )
             continue
 
-        if (
-            task is None
-            and not execution.claim_refused
-            and execution.task_id in unreadable_tasks
-        ):
-            # Its task exists or not, finished or re-admitted -- this pass could
-            # not look. Terminating on "I could not read it" is the same
-            # mistake as releasing on "I could not list it".
+        if orphan_rule_defers(snapshot, execution, config) is not None:
+            # Left for a later judgement. `detect_all` holds this execution's
+            # lease against every rule that only releases, for the same pass.
             continue
-        if task is None and settled is not None and settled.holds_capacity:
-            # Re-admitted between the snapshot and the read by id. Whatever
-            # this execution is -- the new attempt, or an old one -- the next
-            # pass holds the task, its lease and its generation together.
-            continue
-        named = task or settled
-        # A generation NO admission issued. `admission.py` raises
-        # `current_generation` in the same transaction that writes the lease,
-        # before any dispatch, and the task was read after the backends were
-        # listed -- so an execution claiming more than the task records was not
-        # created by this platform's dispatch path. It is not the "newer
-        # attempt" the eviction rules protect; that one is never newer than its
-        # own task. The obsolete-generation rule already treats such a claim
-        # on a running task the same way.
-        unissued = (
-            named is not None
-            and execution.generation is not None
-            and execution.generation > named.generation
-        )
-        if (
-            named is not None
-            and named.is_terminal
-            and not unissued
-            and execution.backend == GKE
-            and evicting
-        ):
-            continue  # detect_left_running owns it, grace and all
+        unissued = _unissued(execution, task or settled)
 
         if execution.claim_refused:
             # Real compute, running in its own tenant, that asserted a claim on
@@ -570,14 +608,43 @@ def detect_orphan_executions(
     return findings
 
 
-def detect_orphan_leases(snapshot: ControlSnapshot, now: datetime | None = None) -> list[Finding]:
-    """Leases held by tasks that are finished, gone, or pointing elsewhere."""
+def detect_orphan_leases(
+    snapshot: ControlSnapshot,
+    now: datetime | None = None,
+    executions_by_attempt: dict[str, ExecutionView] | None = None,
+) -> list[Finding]:
+    """Leases held by tasks that are finished, gone, or pointing elsewhere.
+
+    This rule releases WITHOUT looking for compute: its repair has no execution
+    to kill. So it stands aside for any lease whose own attempt still has an
+    active execution in `executions_by_attempt`. That execution belongs to the
+    rules that kill before they release -- orphan execution, obsolete
+    generation, dead worker, left running -- and until one of them has stopped
+    it, the slot it holds is in use. Returning it lets the scheduler admit
+    another task onto capacity that is still being spent: for a browser
+    attempt, 2 units on each of seven pools under an 8 vCPU pod. Once the
+    execution has ended it is no longer listed as active, and this rule
+    releases as it always did.
+
+    A lease whose task could not be read this pass is held too, and is never
+    reported as naming a task that "no longer exists": that would be a read
+    that FAILED recorded as an absence.
+    """
     findings: list[Finding] = []
+    running = executions_by_attempt or {}
+    unreadable = _unreadable_tasks(snapshot)
     for lease in snapshot.leases.values():
         if lease.is_released:
             continue
-        # A finished task read by id says what it is; only a task no read found
-        # is "no longer exists". Same action either way -- the lease is released.
+        execution = running.get(lease.attempt_id) if lease.attempt_id else None
+        if execution is not None and execution.is_active:
+            continue
+        if lease.task_id not in snapshot.tasks and lease.task_id in unreadable:
+            continue
+        # A finished task read by id says what it is. A task absent from both
+        # reads -- outside the concurrency states and never read by id, or
+        # read and not found -- keeps the wording this rule always used. Same
+        # action either way: the lease is released.
         task = snapshot.task_named(lease.task_id)
         if task is None:
             reason = "lease references a task that no longer exists"
@@ -751,6 +818,12 @@ def detect_left_running(
     same attempt, the same generation, still unreleased. A lease of any other
     generation is never touched.
 
+    Inside the grace this rule produces nothing, and nothing else acts either:
+    the orphan rule defers to this one (`orphan_rule_defers`), and `detect_all`
+    holds the Job's lease against every rule that only releases. So a worker
+    wedged between `finish()`'s terminal write and its release keeps its slot
+    until this rule has killed its Job -- it is still spending it.
+
     A Job claiming a generation above the task's is not this rule's: no
     admission issued that generation, and `detect_orphan_executions` names it
     for what it is.
@@ -771,10 +844,13 @@ def detect_left_running(
             continue
         finished = task.completed_at or task.updated_at
         reference = finished or execution.created_at
-        if reference is None:
-            continue
-        after = (now - reference).total_seconds()
-        if after < config.left_running_grace_seconds:
+        # No clock at all is not a reason to wait for ever: the orphan rule
+        # stood aside for this Job on the promise that this rule owns it, and
+        # its lease is held for as long as it runs. With nothing to say it
+        # finished recently, it is treated as past the grace -- which is what
+        # the orphan rule would have done with it.
+        after = (now - reference).total_seconds() if reference is not None else None
+        if after is not None and after < config.left_running_grace_seconds:
             continue  # the worker may still be exiting on its own
         lease = next(
             (
@@ -788,12 +864,16 @@ def detect_left_running(
             None,
         )
         where = f"{execution.namespace}/{execution.name}" if execution.namespace else execution.name
+        since = (
+            f"{after:.0f}s after it finished" if after is not None
+            else "and nothing records when it finished"
+        )
         findings.append(
             Finding(
                 kind=FindingKind.LEFT_RUNNING,
                 reason=(
                     f"task is {task.state.value} but its GKE job {where} is still active "
-                    f"{after:.0f}s after it finished (grace {config.left_running_grace_seconds}s)"
+                    f"{since} (grace {config.left_running_grace_seconds}s)"
                 ),
                 task_id=task.task_id,
                 lease_id=lease.lease_id if lease else None,
@@ -804,7 +884,7 @@ def detect_left_running(
                 detail={
                     "task_state": task.state.value,
                     "finished_at": finished.isoformat() if finished else None,
-                    "active_seconds_after_finish": round(after, 1),
+                    "active_seconds_after_finish": round(after, 1) if after is not None else None,
                     "lease_unreleased": lease is not None,
                     "namespace": execution.namespace,
                 },
@@ -883,9 +963,9 @@ def detect_empty_namespaces(
     return findings
 
 
-#: Findings about a lease that a left-running finding already repairs: kill the
-#: Job, then release. Each of these would do a subset of that, or the release
-#: without the kill.
+#: Findings about a lease that a left-running finding already repairs -- kill
+#: the Job, then release -- or that a later judgement owns (`orphan_rule_defers`).
+#: Each of these would do a subset of that, or the release without the kill.
 _LEFT_RUNNING_SUPERSEDES = (
     FindingKind.ORPHAN_LEASE,
     FindingKind.STALE_LEASE,
@@ -920,7 +1000,7 @@ def detect_all(
         *detect_orphan_executions(snapshot, executions, config, now),
         *detect_stale_leases(snapshot, by_attempt, config, now),
         *detect_missing_executions(snapshot, by_attempt, config, now),
-        *detect_orphan_leases(snapshot, now),
+        *detect_orphan_leases(snapshot, now, by_attempt),
         *detect_left_running(snapshot, executions, config, now),
     ]
     # A left-running repair releases its Job's lease only AFTER the kill is
@@ -931,10 +1011,25 @@ def detect_all(
     left = {
         f.lease_id for f in findings if f.kind is FindingKind.LEFT_RUNNING and f.lease_id
     }
+    # The same holds BEFORE the left-running rule acts -- inside its grace --
+    # and for the other two executions the orphan rule leaves for later: one
+    # whose task could not be read, and one whose task was re-admitted
+    # mid-pass. The orphan rule stood aside on the promise that a later
+    # judgement owns that execution. A dead_worker kill in the same pass would
+    # break the promise (and, for a finished task, SIGTERM a worker that may be
+    # finishing its own cleanup), so every rule about its lease waits too.
+    deferred = {
+        execution.attempt_id
+        for execution in executions
+        if execution.attempt_id and orphan_rule_defers(snapshot, execution, config)
+    }
     findings = [
         f
         for f in findings
-        if not (f.kind in _LEFT_RUNNING_SUPERSEDES and f.lease_id in left)
+        if not (
+            f.kind in _LEFT_RUNNING_SUPERSEDES
+            and (f.lease_id in left or (f.attempt_id is not None and f.attempt_id in deferred))
+        )
     ]
     # The stuck rule only ever adds. A lease another rule already acts on --
     # a dead worker, a superseded generation -- is that rule's, and repairing

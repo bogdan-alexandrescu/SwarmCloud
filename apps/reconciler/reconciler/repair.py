@@ -334,13 +334,31 @@ class Reconciler:
         report.findings = len(actionable)
         report.findings_suppressed = len(report.suppressed)
 
+        # Leases whose execution this pass tried to stop and could not. The sort
+        # above runs every kill before any repair that only releases, so a
+        # lease-only finding about one of these would hand back a slot whose
+        # execution is still running -- the one thing the repair order exists
+        # to prevent. `detect_orphan_leases` already stands aside for an
+        # execution it can SEE in the listing; this covers the one it cannot:
+        # a Job found by name after its namespace's list failed.
+        unstopped: set[str] = set()
         for finding in actionable:
+            kills = finding.execution is not None and finding.execution.is_active
+            if finding.lease_id in unstopped and not kills:
+                report.outcomes.append(self._held_for_unstopped(finding))
+                continue
             try:
-                report.outcomes.append(self._repair(finding, snapshot, sight.handles))
+                outcome = self._repair(finding, snapshot, sight.handles)
             except Exception as exc:
                 message = f"{finding.kind.value} {finding.task_id or finding.lease_id}: {exc}"
                 self._log.exception("repair failed", exc, finding=finding.kind.value)
                 report.errors.append(message)
+                if kills and finding.lease_id:
+                    unstopped.add(finding.lease_id)
+                continue
+            report.outcomes.append(outcome)
+            if kills and finding.lease_id and not outcome.terminated and not self._config.dry_run:
+                unstopped.add(finding.lease_id)
 
         if self._config.enable_gc:
             self._collect_garbage(snapshot, sight, report)
@@ -496,7 +514,16 @@ class Reconciler:
         `get` each tells them apart.
 
         Bounded by the executions that need it: ordinarily none at all.
+
+        Only with `enable_gke_eviction`. This read is the eviction rules' input,
+        and the three stand-asides in `detect.orphan_rule_defers` exist only
+        because of it -- so turning eviction off turns it off too, and the pass
+        judges these executions exactly as it did before the rules existed: as
+        orphans, killed first and only then released. A kill switch that left
+        the read running would leave its failure modes running with it.
         """
+        if not self._config.enable_gke_eviction:
+            return
         wanted = sorted(
             {
                 execution.task_id
@@ -513,7 +540,7 @@ class Reconciler:
                 snapshot.unreadable_tasks.add(task_id)
                 self._log.warning(
                     "could not read the task an active execution names; "
-                    "nothing is concluded about that execution this pass",
+                    "nothing is concluded about that execution or its lease this pass",
                     task_id=task_id,
                     error=str(exc),
                 )
@@ -1022,6 +1049,27 @@ class Reconciler:
                         lease_id=finding.lease_id,
                     )
         return outcome
+
+    def _held_for_unstopped(self, finding: Finding) -> RepairOutcome:
+        """The outcome of a release this pass refuses: its lease's execution still runs."""
+        self._log.warning(
+            "not releasing: this pass could not stop the execution holding the lease",
+            kind=finding.kind.value,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+        )
+        return RepairOutcome(
+            kind=finding.kind.value,
+            reason=finding.reason,
+            tenant_id=finding.tenant_id,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            skipped="execution_not_stopped",
+            actions=[
+                "did NOT release: an earlier repair in this pass could not stop the "
+                "execution holding this lease"
+            ],
+        )
 
     def _terminate(
         self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
