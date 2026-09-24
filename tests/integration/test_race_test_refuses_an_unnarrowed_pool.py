@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -168,15 +169,26 @@ fi
 status=200
 body='{}'
 
+# FAKE_SETTLE makes the platform behave well enough for the WHOLE suite to reach
+# its summary: one slot is held until the suite cancels, and every task settles
+# as CANCELLED once it has. Without it `active` is always 0 and a task document
+# reads as absent, so the suite always fails somewhere in its middle -- which is
+# right for the cases that stop early, and useless for the one question only a
+# complete run can answer: what the exit code is when every race case passed.
+CANCELLED="${FAKE_STATE_DIR}/cancelled"
+settled_active() {
+  if [[ -n "${FAKE_SETTLE:-}" && ! -f "${CANCELLED}" ]]; then printf '1'; else printf '0'; fi
+}
+
 pool_document() {
   local hl="$1"
   jq -nc --arg name "projects/${FAKE_PROJECT}/databases/swarm/documents/pools/runner:mock" \
-         --arg hl "${hl}" --arg qd "${FAKE_QUOTA_DERIVED:-}" \
+         --arg hl "${hl}" --arg qd "${FAKE_QUOTA_DERIVED:-}" --arg act "$(settled_active)" \
          --argjson en "${FAKE_POOL_ENABLED:-true}" '
     {name: $name,
      fields: ({ "name":       {stringValue: "runner:mock"},
                 "hard_limit": {integerValue: $hl},
-                "active":     {integerValue: "0"},
+                "active":     {integerValue: $act},
                 "enabled":    {booleanValue: $en}}
               + (if $qd == "" then {} else {"quota_derived_limit": {integerValue: $qd}} end))}'
 }
@@ -231,6 +243,19 @@ case "${url}" in
     # "Cannot index string with string" halfway through the suite.
     body='[]'
     ;;
+  *"/documents/tasks/"*)
+    if [[ -n "${FAKE_SETTLE:-}" ]]; then
+      # RUNNING until the suite cancels, CANCELLED after: the sampling loop then
+      # runs to its --timeout, and the post-storm case finds nothing holding
+      # capacity.
+      state=RUNNING
+      [[ -f "${CANCELLED}" ]] && state=CANCELLED
+      body="$(jq -nc --arg name "${url%%\?*}" --arg s "${state}" \
+        '{name: $name, fields: {state: {stringValue: $s}}}')"
+    else
+      body='{"documents":[]}'
+    fi
+    ;;
   *"/documents/"*)
     # Any other collection or document read: an empty, healthy answer. A task
     # document read this way decodes to null, so `task_state` reports MISSING
@@ -282,6 +307,11 @@ case "${url}" in
     else
       body='{"code":"unavailable","message":"the fake platform refused this submission"}'
     fi
+    ;;
+  */v1/tasks/*/cancel)
+    # Recorded whatever FAKE_SETTLE says; only FAKE_SETTLE reads it back.
+    : >"${CANCELLED}"
+    body='{}'
     ;;
   *firestore.googleapis.com*databases*)
     # fs_database_exists: present.
@@ -583,17 +613,136 @@ def test_a_failed_restore_is_not_reported_as_a_restore(tmp_path: Path) -> None:
     assert "COULD NOT RESTORE" in proc.transcript, (
         f"a failed restore was not reported at all:\n{proc.transcript}"
     )
-    # The fix it names is the SAME route the suite used, so the repair is as
-    # bounded and as attributed as the change it undoes.
+    # TWO REPAIRS, because one of them cannot be run from outside the VPC.
+    #
+    # The admin route is the one the suite used, so it is as bounded and as
+    # attributed as the change it undoes. But the front door refuses every user
+    # credential (api.sh: SWARM_IMPERSONATE_SA is REQUIRED there), so from a
+    # workstation it only works as an identity that is BOTH an admin and
+    # admitted by IAP. pool-limit.sh works today, as an operator, over a
+    # Firestore updateMask naming hard_limit alone. Printing only the first sent
+    # the person reading this at 3am to a 403 with nothing else on screen.
     assert "scripts/api.sh PUT /admin/limits/runner/mock '{\"limit\":20}'" in (
         proc.transcript
     ), (
-        "the failure did not name the command that fixes it, which is the only "
-        f"thing a person reading this at 3am needs:\n{proc.transcript}"
+        "the failure did not name the admin-route repair:\n"
+        f"{proc.transcript}"
+    )
+    assert "scripts/pool-limit.sh --pool runner:mock --limit 20" in proc.transcript, (
+        "the failure named only the admin-route repair, which the front door "
+        "refuses to a user credential; the operator fallback that works from a "
+        f"workstation is missing:\n{proc.transcript}"
+    )
+    assert "frontend_iap_members" in proc.transcript, (
+        "the admin-route repair did not say what it needs through the front "
+        f"door, so it reads as a command that simply works:\n{proc.transcript}"
     )
     assert not _firestore_writes(proc.requests), (
         "a refused restore fell back to writing Firestore directly:\n"
         f"{proc.requests}"
+    )
+
+
+#: t_fail's line, as testlib.sh prints it with NO_COLOR. `err` prints a
+#: lower-case " fail", which is a diagnostic rather than a recorded failure.
+_FAIL_LINE = re.compile(r"^\s*FAIL\s")
+#: t_summary's verdict on a run with no failures.
+_GREEN_SUMMARY = re.compile(r"race: \d+/\d+ passed")
+
+
+def _recorded_failures(transcript: str) -> list[str]:
+    return [line.strip() for line in transcript.splitlines() if _FAIL_LINE.match(line)]
+
+
+#: A complete run, kept short: three contenders and a three-second sampling
+#: window are enough for every case to reach its verdict against the fake.
+_COMPLETE_RUN = ("--parallel", "3", "--timeout", "3")
+
+
+def test_a_complete_race_that_restores_the_pool_exits_zero(tmp_path: Path) -> None:
+    """The whole suite, end to end, green: the control for the case below.
+
+    Every other case in this file stops the run early -- a refusal, a t_fatal --
+    and so every one of them reaches a non-zero exit whatever the restore does.
+    This one reaches `t_summary` with nothing failed. Without it, the next test
+    could pass because the fixture never lets the race go green, and it would
+    be measuring the fake rather than the exit status.
+    """
+    proc = _run(tmp_path, *_COMPLETE_RUN, FAKE_LIMIT_STATUS="200", FAKE_SETTLE="1")
+
+    assert not _recorded_failures(proc.transcript), (
+        "the fixture did not let the race go green, so it cannot isolate the "
+        f"restore:\n{proc.transcript}"
+    )
+    assert "peak concurrent leases on runner:mock" in proc.transcript, (
+        f"the suite never reached its concurrency verdict:\n{proc.transcript}"
+    )
+    assert "every pool is within [0, effective_limit]" in proc.transcript, (
+        f"the suite never reached its last case:\n{proc.transcript}"
+    )
+    assert _GREEN_SUMMARY.search(proc.transcript), (
+        f"a clean run was not summarised as passing:\n{proc.transcript}"
+    )
+    assert proc.returncode == 0, (
+        f"a clean run with a confirmed restore exited {proc.returncode}:\n"
+        f"{proc.transcript}"
+    )
+    assert proc.final_limit == "20", f"the pool was left at {proc.final_limit}"
+    assert "restored runner:mock hard_limit to 20 (confirmed by readback)" in (
+        proc.transcript
+    ), f"the restore was not confirmed:\n{proc.transcript}"
+    assert not _firestore_writes(proc.requests), (
+        f"a complete run wrote Firestore directly:\n{proc.requests}"
+    )
+
+
+def test_a_restore_that_fails_after_a_green_race_fails_the_run(tmp_path: Path) -> None:
+    """Every race case passes, then the restoring PUT gets a 503: exit non-zero.
+
+    `restore` ran from `trap restore EXIT`, printed COULD NOT RESTORE and
+    returned. An EXIT trap that does not call `exit` leaves the status alone,
+    and the last command was a green `t_summary`, so the run exited 0 with
+    runner:mock pinned at one slot. `make verify-remote` then printed
+    `ok race-test` and ran e2e-test against a single mock slot, where the
+    failure surfaced as a timeout in a different suite, and the only line
+    explaining it sat in race-test's log above the 40 lines verify-remote shows.
+
+    A live pool left narrowed is the one outcome this suite promised not to
+    cause. The run that causes it is a failed run, and it must say so in the
+    exit status and in the summary line people quote.
+    """
+    proc = _run(
+        tmp_path, *_COMPLETE_RUN,
+        FAKE_LIMIT_STATUS="200,503",  # the narrow lands, the restore does not
+        FAKE_SETTLE="1",
+    )
+
+    assert proc.final_limit == "1", (
+        "the fixture did not reproduce the case: the pool is not still narrowed "
+        f"({proc.final_limit})"
+    )
+    assert "every pool is within [0, effective_limit]" in proc.transcript, (
+        "the suite did not reach its last case, so this is not the green-race "
+        f"case at all:\n{proc.transcript}"
+    )
+    unrelated = [
+        line for line in _recorded_failures(proc.transcript)
+        if "restore" not in line.lower()
+    ]
+    assert not unrelated, (
+        "the race itself failed, so a non-zero exit would not isolate the "
+        f"restore: {unrelated}\n{proc.transcript}"
+    )
+    assert "COULD NOT RESTORE" in proc.transcript, (
+        f"the failed restore was not reported:\n{proc.transcript}"
+    )
+    assert proc.returncode != 0, (
+        "the run left runner:mock narrowed to 1 slot and exited 0, so the gate "
+        f"reads it as a pass:\n{proc.transcript}"
+    )
+    assert not _GREEN_SUMMARY.search(proc.transcript), (
+        "the summary reported the run as passing while runner:mock is still "
+        f"narrowed:\n{proc.transcript}"
     )
 
 
@@ -1019,6 +1168,40 @@ def test_the_fixture_really_applies_and_refuses_writes(tmp_path: Path) -> None:
     assert status == "404", "FAKE_POOL_ABSENT must make the pool document a 404"
     body, _ = _fake_curl(tmp_path / "drained", doc_url, FAKE_POOL_ENABLED="false")
     assert json.loads(body)["fields"]["enabled"] == {"booleanValue": False}
+
+
+def test_the_fixture_settles_only_after_a_cancel(tmp_path: Path) -> None:
+    """FAKE_SETTLE holds a slot and a RUNNING task until a cancel, then releases.
+
+    The complete-run cases rest on this: the sampling loop must see one slot
+    held (or "the pool was actually contended" fails), and the post-storm cases
+    must see it released and every task CANCELLED (or they fail). If the fake
+    got the order wrong, the complete run would fail for the fixture's reasons
+    and the exit-status test would be measuring nothing.
+    """
+    base = f"https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/swarm/documents"
+    pool_url = f"{base}/pools/runner:mock"
+    task_url = f"{base}/tasks/task-fixture-1"
+    cancel = ("-X", "POST", "--data-binary", "{}", f"{API_URL}/v1/tasks/task-fixture-1/cancel")
+
+    def read(url: str) -> dict:
+        body, status = _fake_curl(tmp_path, url, FAKE_SETTLE="1")
+        assert status == "200", (url, status, body)
+        return json.loads(body)["fields"]
+
+    assert read(pool_url)["active"] == {"integerValue": "1"}
+    assert read(task_url)["state"] == {"stringValue": "RUNNING"}
+    _, status = _fake_curl(tmp_path, *cancel, FAKE_SETTLE="1")
+    assert status == "200"
+    assert read(pool_url)["active"] == {"integerValue": "0"}
+    assert read(task_url)["state"] == {"stringValue": "CANCELLED"}
+
+    # And without the knob, nothing changes for the cases that rely on an idle
+    # pool and an unreadable task.
+    body, _ = _fake_curl(tmp_path / "unsettled", pool_url)
+    assert json.loads(body)["fields"]["active"] == {"integerValue": "0"}
+    body, _ = _fake_curl(tmp_path / "unsettled", task_url)
+    assert json.loads(body) == {"documents": []}
 
 
 def test_the_fixture_speaks_the_shapes_common_sh_uses(tmp_path: Path) -> None:
