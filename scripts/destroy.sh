@@ -118,12 +118,22 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
  {"address":"ours.bucket_iam","type":"google_storage_bucket_iam_member",
   "change":{"actions":["delete"],"before":{"bucket":"swarm-artifacts-saga-agents-staging",
     "project":"saga-agents-staging",
-    "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}}
+    "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}},
+ {"address":"theirs.default_db","type":"google_firestore_document",
+  "change":{"actions":["delete"],"before":{"collection":"anything","document_id":"x",
+    "database":"(default)","project":"saga-agents-staging"}}}
 ]}
 FIXTURE_JSON
 
-  SELF_DENY="$(printf '%s\n' "${SHARED_DENY_LIST[@]}" | grep -vx 'default' | jq -R . | jq -sc '.')"
-  SELF_VERDICT="$(jq -f "${GUARD_JQ}" --argjson deny "${SELF_DENY}" \
+  # THE SAME LIST PRODUCTION PASSES, built by the same function. This was a THIRD
+  # spelling of the transformation -- `grep -vx 'default' | jq -R . | jq -sc '.'`,
+  # inline here, alongside the two copies that stood at the real call site and in
+  # lib/plan-guard.sh -- and it differed from both: it omitted the `(default)`
+  # entry they add. CONTRACT.md reserves Firestore's `(default)` database for the
+  # other teams in this shared project, and the self-test of the guard that
+  # protects it could not exercise that protection, because its own list did not
+  # contain it. `theirs.default_db` above exists to exercise it now.
+  SELF_VERDICT="$(jq -f "${GUARD_JQ}" --argjson deny "$(guard_deny_json)" \
     --argjson allow_types "${UNLABELABLE_TYPES}" --arg project "${PROJECT_ID}" "${FIXTURE}")"
 
   expect() {
@@ -154,6 +164,12 @@ FIXTURE_JSON
   # deleted, so it is asserted here rather than discovered at teardown.
   expect "firestore document allowed by type" '[.unlabelable_allowed[].address] | index("ours.pool_doc") != null' true || FAILED=1
   expect "firestore document is not an offender" '[.offenders[].address] | index("ours.pool_doc") == null' true || FAILED=1
+  # The other half of that, and the one this self-test could not make before: a
+  # document in the SHARED `(default)` database. Being unlabelable exempts a type
+  # from the LABEL rule and from nothing else, so the deny-list has to catch it --
+  # and `(default)` reaches the deny-list only because `guard_deny_json` puts it
+  # there. CONTRACT.md: the project's `(default)` stays free for other teams.
+  expect "shared (default) database caught" '[.denylist_hits[].address] | index("theirs.default_db") != null' true || FAILED=1
   # Matched by SHAPE (`_iam_(member|binding|policy)$`), not by a prefix list, so
   # a bucket/topic/secret/service IAM edge is exempt the day it is written.
   expect "bucket IAM edge allowed by shape" '[.unlabelable_allowed[].address] | index("ours.bucket_iam") != null' true || FAILED=1

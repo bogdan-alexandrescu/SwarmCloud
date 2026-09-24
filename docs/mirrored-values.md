@@ -144,13 +144,25 @@ fails on the count instead of going green over nothing.
 
 And the transformation the guard's input needs — the bare `default` out, because
 that string appears inside too many unrelated resource ids, and Firestore's
-`(default)` in — was written out twice, in `scripts/destroy.sh` and
-`scripts/lib/plan-guard.sh`, with the same comment copy-pasted above each. The
-deny-list obeyed the rule; its transformation did not. It is now
-`guard_deny_json` in `common.sh`, called by both, and the test asserts both still
-call it: a divergence there means CI passes a plan that `make destroy` refuses,
-or CI passes a plan that touches another team's resource because its copy lost an
-entry the other kept.
+`(default)` in — was written out **three** times: in `scripts/destroy.sh` at the
+real call site, in `scripts/lib/plan-guard.sh`, and a third time inside
+`destroy.sh --self-test`. The deny-list obeyed the rule; its transformation did
+not.
+
+The third copy is the one that had already diverged. It omitted the `(default)`
+entry the other two add — so the self-test of the guard that protects Firestore's
+shared `(default)` database could not exercise that protection, because its own
+list did not contain the name. Being on the unlabelable allow-list exempts
+`google_firestore_document` from the *label* rule and from nothing else, so the
+deny-list is the only thing standing between a destroy plan and another team's
+`(default)` database, and it was the one branch the self-test could not reach.
+
+All three now call `guard_deny_json` in `common.sh`, the self-test has a fixture
+row for a document in `(default)` and asserts it lands in `denylist_hits`, and
+`tests/integration/test_destroy_guard.py` asserts that both scripts still call
+the shared function. A divergence there means CI passes a plan that `make
+destroy` refuses, or — the direction that costs something — CI passes a plan that
+touches another team's resource because its copy lost an entry the other kept.
 
 ## Covered elsewhere, deliberately not moved here
 
