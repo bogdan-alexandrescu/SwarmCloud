@@ -265,10 +265,42 @@ class TestJson:
         # first if the broker's shape ever widened.
         _, out = run(sc.cmd_accounts, ["accounts", "--json"], FakeClient(routes=dict(HEALTHY, **{"/v1/accounts": SMUGGLED})))
         assert "sk-ant-secret" not in out
-        assert "108" not in out
+
+        # AN ALLOWLIST, NOT A SEARCH FOR THE TWO FIELDS THIS FIXTURE SMUGGLES.
+        #
+        # This was `assert "108" not in out`, for `access_token_len: 108`, and
+        # it was flaky by construction: a bare three-digit needle searched
+        # across the whole document matches the microseconds of the timestamp
+        # the dump generates. It failed in CI on `...2:51:35.651089+00:00`,
+        # where `651089` contains `1089`. The clock decides whether that
+        # assertion passes.
+        #
+        # Asserting the key SET is both unflakeable and strictly stronger. Two
+        # substring checks could only ever catch the two fields someone thought
+        # to smuggle in the fixture; this fails on ANY key the broker starts
+        # returning that this tool has not been taught is safe -- which is the
+        # actual risk the comment above describes, "if the broker's shape ever
+        # widened".
         payload = json.loads(out)
-        assert payload["accounts"][0]["account_id"] == "acme:main"
-        assert payload["accounts"][0]["windows"]["five_hour"]["utilization"] == 0.12
+        account = payload["accounts"][0]
+        assert set(account) == {
+            "account_id",
+            "owner_tenant",
+            "label",
+            "provider",
+            "state",
+            "reason",
+            "lend_to",
+            "assigned",
+            "windows",
+            "observed_at",
+            "stale",
+        }, (
+            "the JSON dump carried a field this tool does not know is safe: "
+            f"{sorted(set(account) - {'account_id', 'owner_tenant', 'label', 'provider', 'state', 'reason', 'lend_to', 'assigned', 'windows', 'observed_at', 'stale'})}"
+        )
+        assert account["account_id"] == "acme:main"
+        assert account["windows"]["five_hour"]["utilization"] == 0.12
 
     def test_unreadable_is_null_and_not_an_empty_list(self):
         _, out = run(sc.cmd_accounts, ["accounts", "--json"], FakeClient(routes=UNREACHABLE))

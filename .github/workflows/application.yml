@@ -393,6 +393,31 @@ jobs:
       # runs, which is also what `make lint` runs. There is nothing left to
       # restate here, so this step is gone rather than reduced to a call.
 
+  build-not-run:
+    # NOT a no-op, for the reason this repository keeps relearning: a skipped
+    # job is invisible in the checks list, and silence here has meant "did not
+    # run" far more often than "nothing to report".
+    name: build images (not run on a pull request)
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: say what was not built
+        run: |
+          set -euo pipefail
+          {
+            echo "### Images were not built"
+            echo
+            echo "A pull request's OIDC ref is \`refs/pull/${{ github.event.number }}/merge\`."
+            echo "The workload identity pool is pinned to \`refs/heads/main\`, so no token is"
+            echo "minted here. That pin is the security boundary, not a misconfiguration:"
+            echo "\`build-images.sh\` runs a checked-in \`cloudbuild.yaml\` from this branch,"
+            echo "as an identity holding \`resourcemanager.projectIamAdmin\` on a shared project."
+            echo
+            echo "**Checked on this pull request:** every test, lint and manifest job above."
+            echo "**Not checked here:** that the images build. That runs on \`main\`, in"
+            echo "\`release.yml\`, behind an environment approval."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: build images
     runs-on: ubuntu-24.04
@@ -413,14 +438,35 @@ jobs:
     # enough to read every tenant's provider key, read and write the whole swarm
     # Firestore database, and self-escalate to owner.
     #
-    # Today the WIF attribute condition saves this by accident:
-    # `github_allowed_refs` defaults to ['refs/heads/main'], so a pull_request
-    # ref is rejected and the auth step fails. That is not a control, it is
-    # standing pressure to add refs/pull/* to github_allowed_refs to "fix CI" --
-    # and the moment anyone does, any PR author runs arbitrary code as that
-    # identity. github_allowed_refs MUST NEVER INCLUDE refs/pull/*. The approval
-    # gate below is what makes this job workable without that change: a human
-    # looks at the diff before any credential is minted.
+    # THE REF PIN IS THE CONTROL, AND IT IS NOT AN ACCIDENT ANY MORE.
+    #
+    # `github_allowed_refs` is ['refs/heads/main'], so a pull_request ref --
+    # `refs/pull/<n>/merge` -- is rejected by the pool's attribute condition and
+    # the auth step fails with:
+    #
+    #     unauthorized_client: The given credential is rejected by the
+    #     attribute condition.
+    #
+    # Measured on 2026-09-24, the first run after WIF was applied. That is the
+    # boundary doing its job: this job authenticates as vars.GCP_DEPLOY_SA and
+    # then runs ./scripts/build-images.sh from the PULL REQUEST'S OWN CHECKOUT,
+    # and build-images.sh executes any checked-in cloudbuild.yaml, so the PR
+    # author chooses what runs. That identity holds datastore.owner,
+    # storage.admin and resourcemanager.projectIamAdmin on a SHARED project --
+    # enough to read every tenant's Firestore, every bucket, and to self-escalate
+    # to owner. A pull request that could mint it is a pull request that owns
+    # the project, and anyone can open a pull request.
+    #
+    # SO THE JOB IS SKIPPED ON A PULL REQUEST RATHER THAN LEFT TO FAIL. It could
+    # never go green there, and a permanently red required check is precisely the
+    # standing pressure to "fix CI" by adding refs/pull/* to github_allowed_refs
+    # -- which is the one change that must never be made. Leaving it red does not
+    # protect anything; it only makes the protection look like a bug.
+    #
+    # Images are built on main, by release.yml, behind an environment approval.
+    # `build-not-run` below says so in the run summary, so a green pull request
+    # is not mistaken for a built one.
+    if: github.event_name != 'pull_request'
     environment: build-pr
     steps:
       - uses: actions/checkout@v4

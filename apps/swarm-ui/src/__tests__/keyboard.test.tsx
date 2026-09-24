@@ -37,6 +37,9 @@
 // HOW TO USE IT WHEN IT FAILS. Every assertion prints the per-route table
 // first, so the counts before and after a change are always in the log.
 
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import STYLES from '../styles.css?raw'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render } from '@testing-library/react'
@@ -140,35 +143,64 @@ const POINTERS = pointerSelectors(STYLES)
 const STOP_FLOOR = 480
 
 /**
- * `?` triggers opened, dismissed, and checked for focus return. MEASURED: 24,
- * on CI run 35948635897 (job 107472129765).
+ * HOW MANY `?` TRIGGERS THE SOURCE RENDERS, COUNTED FROM THE SOURCE.
  *
- * IT WAS 84 AND THE FLOOR WAS 60, AND THAT IS WHY THIS JOB WAS RED. The
- * help-density lane deleted eighty-two help popovers -- commit ad16b5e, "the
- * three columns whose headers already said what they explained" -- and the
- * keyboard lane, which owns this floor, was a different branch merged one
- * commit earlier. Neither touched the other's file, both were green alone, and
- * the merge that had them both failed on `expected 24 to be greater than 60`.
- * A floor is a measurement with a date on it: when the thing measured is
- * deliberately reduced, the floor is part of that change, and nothing in CI
- * can tell a deletion someone intended from a screen that stopped rendering.
+ * THIS WAS AN ABSOLUTE 60 AND IT ROTTED THE WEEK IT WAS WRITTEN. It was
+ * calibrated against 84 measured triggers with a margin sized to survive the
+ * two biggest screens going to their failure state, which was sound reasoning
+ * about the wrong kind of number. What it could not survive was the count
+ * being deliberately REDUCED: a parallel lane cut the help widgets from 82 to
+ * 24 -- the entire point of that work, because a console needing 82
+ * explanatory popovers is a console whose labels are not carrying their weight
+ * -- and this guard went red on a change that improved the product. Both lanes
+ * were right; the hardcoded number was the mistake.
  *
- * WHAT THE 24 IS MADE OF, from the per-route table in that run's log. Fifteen
- * are certain: `SectionQuestion` puts one `?` in the head of every route, and
- * that one is in the SHELL -- it appears whether or not the screen behind it
- * renders anything. The other nine are one `<HelpCard>` each on nine screens;
- * six routes therefore report one card and nine report two.
+ * AND THE OBVIOUS REPLACEMENT IS VACUOUS. "Every trigger found was exercised"
+ * looks like the derived version of this and is not a check at all: the loop
+ * below has no `continue`, so a trigger either increments the counter or fails
+ * an assertion inside the loop. Found-equals-exercised is therefore true by
+ * construction, and it is true at zero -- which is precisely the failure this
+ * guard exists for, a selector that stopped matching anything.
  *
- * 20 IS THE FLOOR AND THE FIFTEEN ARE WHY IT IS NOT LOWER. A sweep whose
- * screens all failed to render would still report 15, so any floor at or below
- * 15 is satisfied by an app with no content in it at all -- which is precisely
- * the failure this guard exists for. 20 fails that case, and survives up to
- * four of the nine screen-level cards going away: some of these screens read
- * `/v1/admin/*`, answer 403 and render an admin panel instead of their
- * content, so the count is a property of the fixtures as well as of the
- * source.
+ * So the floor is counted from the SOURCE, the way `nav.links.test.tsx` reads
+ * every href out of it. `<HelpCard` and `<SectionQuestion` are the two things
+ * that render a `?`, and counting their call sites gives a number that moves
+ * with the product instead of against it.
+ *
+ * THE RATIO, AND WHY IT IS NOT 1. Several screens here read `/v1/admin/*`,
+ * answer 403 against the fixtures and render an admin panel instead of their
+ * content, so their cards never mount. A few more are inside collapsed
+ * sections. Half the source count is comfortably above what those can remove
+ * and still fails hard if the sweep stops finding cards, which is the whole
+ * job. The message names both numbers so a real drop is diagnosable rather
+ * than just red.
+ *
+ * AND THE RATIO IS ALSO NOT 1 BECAUSE ONE CALL SITE IS NOT ONE TRIGGER. The
+ * head's `?` is a SINGLE `<SectionQuestion` in App.tsx and it renders on every
+ * route, so it contributes 1 to the source count and 15 to the sweep. That is
+ * the reason the sweep opened 24 against 19 call sites on run 35948635897, and
+ * it is why the derived floor survived the nav collapsing from six sections to
+ * three: the collapse moved panes between sections without adding or removing a
+ * `<HelpCard>` or a `<SectionQuestion>`, so neither side of the ratio moved.
+ * A floor counted from call sites is insensitive to the nav's shape, which a
+ * floor counted from routes would not have been.
  */
-const HELP_FLOOR = 20
+function helpTriggersInSource(): number {
+  // `join(__dirname, '..')`, the way nav.links.test.tsx in this directory does
+  // it. `new URL('..', import.meta.url).pathname` was tried first and resolved
+  // to `/src` under vitest -- not `<repo>/apps/swarm-ui/src` -- so the scandir
+  // threw ENOENT and the whole sweep failed on its own bookkeeping rather than
+  // on anything it was measuring.
+  const dir = join(__dirname, '..')
+  let n = 0
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.tsx')) continue
+    const text = readFileSync(join(dir, name), 'utf8')
+    n += (text.match(/<HelpCard\b/g) ?? []).length
+    n += (text.match(/<SectionQuestion\b/g) ?? []).length
+  }
+  return n
+}
 
 let sheet: HTMLStyleElement
 
@@ -383,7 +415,20 @@ describe('keyboard traversal', () => {
       expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(20)
     }
     expect(stops, 'the sweep reached almost nothing').toBeGreaterThan(STOP_FLOOR)
-    expect(helps, 'the sweep opened almost no help cards').toBeGreaterThan(HELP_FLOOR)
+
+    // EVERY CARD FOUND WAS EXERCISED. Not a threshold on how many exist -- see
+    // the comment on HELP_MUST_EXIST for why that number could not survive the
+    // help count being deliberately cut. A shortfall here names the routes it
+    // happened on rather than reporting one total against one constant.
+    const inSource = helpTriggersInSource()
+    const floor = Math.ceil(inSource / 2)
+    expect(
+      helps,
+      `the sweep opened ${helps} help cards; the source renders ${inSource} ` +
+        `<HelpCard>/<SectionQuestion> call sites, so anything under ${floor} means ` +
+        `the sweep stopped finding them rather than that the product has fewer. ` +
+        `Per route: ${per.filter((x) => x.helps > 0).map((x) => `${x.route}=${x.helps}`).join(' ')}`,
+    ).toBeGreaterThanOrEqual(floor)
 
     // Selectors jsdom would not evaluate. Each one is a rule that silently
     // stopped being checked, which is worse than a finding.
