@@ -5840,7 +5840,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      (default)    the read succeeded and returned nothing — a real zero
      .is-failed   the read failed — no number may appear anywhere
      .is-partial  some of it arrived; the rest is unknown, not zero
-     .is-admin    you are not an admin. Nothing failed, so nothing is red. */
+     .is-admin    you are not an admin. Nothing failed, so nothing is red.
+   `.is-refused` shares the admin gate's rule rather than being a fifth look:
+   it is the same kind of fact -- a rule on the server answered no (a name off
+   the text allowlist, a member past the read budget), nothing failed, and
+   asking again gets the same answer. One rule, so the two cannot drift. */
 
 .ctl-empty {
   border: 1px solid var(--line);
@@ -5883,11 +5887,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* AN ADMIN GATE IS INFORMATION, NOT BREAKAGE. Blue, no retry, and never the
    sentence "this failed" — a non-admin genuinely cannot read /v1/admin/*, and
    painting that red tells someone their platform is broken when it is not. */
-.ctl-empty.is-admin {
+.ctl-empty.is-admin,
+.ctl-empty.is-refused {
   border-color: color-mix(in srgb, var(--info) 45%, var(--line));
   background: color-mix(in srgb, var(--info) 6%, var(--surface));
 }
-.ctl-empty.is-admin > h3 { color: var(--info); }
+.ctl-empty.is-admin > h3,
+.ctl-empty.is-refused > h3 { color: var(--info); }
 
 /* -------------------------------------------------------------------------- */
 /* 6. Stale reading                                                            */
@@ -6504,12 +6510,26 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
        unconditional in the fallback and the strip is short enough that the
        cost is one faded tab-edge at most.
        (This was a second `.ctl-rail` rule two rules further down this block;
-       one element, one rule.) */
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
-    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+       one element, one rule.)
+       THE FADE'S WIDTH IS ONE PROPERTY, read by the mask here and by the
+       utility corner's trailing padding below. A mask does not scroll with
+       the content, so the last fade-width of the row sits under it at every
+       scroll position, the end included; the corner reserves exactly that
+       much empty space so the end of the scroll uncovers the last label.
+       Two literal 24px values are how the next edit to one of them would
+       silently put "API reads" back under the fade. */
+    --rail-fade: 24px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
   }
   .ctl-rail::-webkit-scrollbar { display: none; }
-  .ctl-rail-sections { flex-direction: row; align-items: center; gap: var(--ctl-s2); }
+  /* HELD AT THEIR OWN WIDTH, so the row OVERFLOWS the strip and the strip
+     scrolls. As ordinary flex items (`flex-shrink: 1`) they were squeezed to
+     fit a row wider than the phone instead -- measured at 390x844 on
+     2026-09-24 as "AP / reac": the corner shrunk to its longest word and
+     "API reads" broke in two inside a one-line strip whose vertical overflow
+     is hidden (`08-overview-390.png`). */
+  .ctl-rail-sections { flex: 0 0 auto; flex-direction: row; align-items: center; gap: var(--ctl-s2); }
   .ctl-rail-group { flex-direction: row; align-items: center; }
   .ctl-nav-link {
     width: auto;
@@ -6532,14 +6552,21 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     border-bottom-color: var(--text-dim);
   }
   .ctl-nav-util {
+    flex: 0 0 auto;
     flex-direction: row;
     margin-top: 0;
     margin-left: auto;
     padding-top: 0;
     padding-left: var(--ctl-s3);
+    /* The faded band at the end of the scroll is empty space, not a label.
+       See `--rail-fade` on `.ctl-rail` above. */
+    padding-right: var(--rail-fade);
     border-top: none;
     border-left: 1px solid var(--ctl-hairline);
   }
+  /* One line, like every other label in the strip (`.ctl-nav-link` is nowrap
+     at every width). */
+  .ctl-nav-util button { white-space: nowrap; }
   .ctl-q-card { right: auto; left: 0; max-width: min(44ch, 86vw); }
 }
 
@@ -8935,6 +8962,13 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ckb-open:hover { border-bottom-color: var(--text-dim); }
 .ckb-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ckb-node.is-open > .ckb-open { border-bottom-style: solid; }
+/* THE WHOLE ROW IS THE CONTROL (CheckpointBrowser.tsx `rowClick`). A click on
+   the size, the mode or the space to the edge used to land on inert text and
+   open nothing -- the live defect of 2026-09-24 -- so the row says it is
+   clickable across its width, and says which row the pointer is on. */
+.ckb-node.is-control { cursor: pointer; border-radius: var(--ctl-radius-sm); }
+.ckb-node.is-control:hover { background: var(--surface); }
+.ckb-node.is-control:hover > .ckb-open { border-bottom-color: var(--text-dim); }
 .ckb-name { color: var(--text-dim); }
 .ckb-meta { color: var(--text-faint); font: var(--t-meta)/var(--lh-meta) var(--mono); }
 .ckb-unsafe { list-style: none; margin: var(--ctl-s1) 0 0; padding: 0; }

@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { loadCheckpoints, loadTaskLogs } from './api'
 import { CheckpointBrowser } from './CheckpointBrowser'
 import { FailedPanel } from './Shell'
 import type { Result } from './fetch'
 import {
   bytesLabel,
+  type AttemptRow,
   type CheckpointRecord,
   type CheckpointsPage,
   type LogStream,
@@ -41,10 +42,21 @@ import {
  * `content ?? ''` and `resumable ?? false` are the two lines that would undo
  * all of it, and neither appears here.
  */
-export function RunFiles({ task }: { task: Task }) {
+export function RunFiles({
+  task,
+  attempts,
+}: {
+  task: Task
+  /**
+   * The run's attempt documents, which record every checkpoint each attempt
+   * wrote. NULL (or not passed) means they were not read, and then an empty
+   * listing is a zero of OBJECTS only -- see `CheckpointsPanel`.
+   */
+  attempts?: readonly AttemptRow[] | null
+}) {
   return (
     <>
-      <CheckpointsPanel task={task} />
+      <CheckpointsPanel task={task} attempts={attempts ?? null} />
       <LogsPanel task={task} />
     </>
   )
@@ -93,7 +105,13 @@ function Reading() {
 // Checkpoints
 // ---------------------------------------------------------------------------
 
-function CheckpointsPanel({ task }: { task: Task }) {
+function CheckpointsPanel({
+  task,
+  attempts,
+}: {
+  task: Task
+  attempts: readonly AttemptRow[] | null
+}) {
   const state = useRead<CheckpointsPage>(() => loadCheckpoints(task.id), task.id)
 
   if (state.status === 'loading') {
@@ -128,6 +146,11 @@ function CheckpointsPanel({ task }: { task: Task }) {
   }
 
   const page = state.data
+  // A LISTING READ TO ITS END is the only one whose absences mean anything:
+  // past a scan cut or on another page, a checkpoint the records name may
+  // simply not have been reached.
+  const whole = page.listed && !page.truncated && page.next_page_token === null
+  const lost = whole ? lostCheckpoints(page, attempts) : []
   return (
     <Panel title="Checkpoints">
       <p className="muted small">
@@ -139,12 +162,12 @@ function CheckpointsPanel({ task }: { task: Task }) {
 
       <LatestPointer page={page} />
 
+      {lost.length > 0 && <Lost lost={lost} />}
+
       {page.checkpoints.length === 0 ? (
-        <p className="muted">
-          {page.listed
-            ? 'The listing succeeded and this task has written no checkpoint. A real zero.'
-            : 'The listing did not complete, so whether this task has checkpoints is unknown.'}
-        </p>
+        lost.length > 0 ? null : (
+          <p className="muted">{emptyListing(page, whole, attempts)}</p>
+        )
       ) : (
         <div className="ckpt-rows">
           {page.checkpoints.map((c) => (
@@ -153,6 +176,107 @@ function CheckpointsPanel({ task }: { task: Task }) {
         </div>
       )}
     </Panel>
+  )
+}
+
+/**
+ * WHAT AN EMPTY LISTING MAY BE CALLED, when no record names a checkpoint it
+ * lost.
+ *
+ * THE DEFECT, measured on the live inspector on 2026-09-24: the run's figures
+ * said `Checkpoints 1`, the pointer line said the pointer named a checkpoint
+ * "no longer in the bucket; it may have been reclaimed", and the line under it
+ * said "this task has written no checkpoint. A real zero." A listing that
+ * finds nothing is a measured zero of OBJECTS. It is a zero of checkpoints
+ * WRITTEN only when the listing was read to its end AND the attempt records
+ * -- which list every checkpoint each attempt wrote -- were read and name
+ * none. A record that does name one is `Lost`, above, and never reaches here.
+ */
+function emptyListing(
+  page: CheckpointsPage,
+  whole: boolean,
+  attempts: readonly AttemptRow[] | null,
+): string {
+  if (!page.listed) {
+    return 'The listing did not complete, so whether this task has checkpoints is unknown.'
+  }
+  if (!whole) {
+    return 'The listing was cut before it found one, so nothing is known past the cut. This is not a zero.'
+  }
+  if (attempts === null) {
+    return 'The listing found none, and the attempt records could not be read, so whether one was written and since reclaimed is unknown.'
+  }
+  return 'The listing succeeded and this task has written no checkpoint. A real zero.'
+}
+
+/** A checkpoint a record says was written, which the listing does not hold. */
+interface Recorded {
+  /** Null when only the pointer names it: the page serves its id, not its attempt. */
+  attemptId: string | null
+  checkpointId: string
+  byAttempt: boolean
+  byPointer: boolean
+}
+
+/**
+ * Every checkpoint a record names that a WHOLE listing does not hold.
+ *
+ * Two records can name one: each attempt document's `checkpoints` list (the
+ * worker appends to it after the upload, and it is what the run's
+ * `Checkpoints N` figure counts), and the task's `latest_checkpoint` pointer,
+ * whose verdict the route serves as `missing`. Matched on attempt AND id: ids
+ * restart per attempt, so `ckpt-00001` exists once for every attempt that
+ * checkpointed, and a match on the id alone would call one attempt's
+ * checkpoint present because another attempt's is.
+ */
+function lostCheckpoints(page: CheckpointsPage, attempts: readonly AttemptRow[] | null): Recorded[] {
+  const listed = new Set(page.checkpoints.map((c) => `${c.attempt_id}/${c.checkpoint_id}`))
+  const lost: Recorded[] = []
+  for (const a of attempts ?? []) {
+    for (const id of a.checkpoints) {
+      if (!listed.has(`${a.attempt_id}/${id}`)) {
+        lost.push({ attemptId: a.attempt_id, checkpointId: id, byAttempt: true, byPointer: false })
+      }
+    }
+  }
+  const p = page.latest_checkpoint
+  if (p.status === 'missing' && p.checkpoint_id !== null) {
+    // The same checkpoint said twice when exactly one attempt record lost that
+    // id; otherwise the pointer is its own line, because which attempt it
+    // names is not served and is not guessed here.
+    const id = p.checkpoint_id
+    const same = lost.filter((r) => r.checkpointId === id)
+    const only = same.length === 1 ? same[0] : undefined
+    if (only !== undefined) only.byPointer = true
+    else lost.push({ attemptId: null, checkpointId: id, byAttempt: false, byPointer: true })
+  }
+  return lost
+}
+
+/**
+ * WRITTEN, THEN RECLAIMED: the absence explained, never a zero. The records
+ * say the checkpoint existed and the listing, read to its end, says it does
+ * not now.
+ */
+function Lost({ lost }: { lost: Recorded[] }) {
+  const one = lost.length === 1
+  return (
+    <p className="ckpt-lost">
+      <strong>Written, then reclaimed</strong>
+      {': '}
+      {lost.map((r, i) => (
+        <Fragment key={`${r.attemptId ?? ''}/${r.checkpointId}/${r.byPointer ? 'p' : 'a'}`}>
+          {i > 0 && ', '}
+          <code className="mono">{r.attemptId === null ? r.checkpointId : `${r.attemptId}/${r.checkpointId}`}</code>
+          <span className="muted small">
+            {' '}
+            ({[r.byAttempt && 'attempt record', r.byPointer && 'restore pointer'].filter(Boolean).join(' and ')})
+          </span>
+        </Fragment>
+      ))}
+      . {one ? 'It is' : 'They are'} recorded as written, and the listing, read to its end, no
+      longer finds {one ? 'it' : 'them'} in the bucket.
+    </p>
   )
 }
 

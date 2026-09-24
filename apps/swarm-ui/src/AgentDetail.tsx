@@ -180,8 +180,10 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
           They are a separate component because they are separate reads with
           their own failure states: a failed checkpoint listing must not blank
           this page, and it must not render as "this task has no checkpoints"
-          either. See RunFiles.tsx. */}
-      <RunFiles task={task} />
+          either. See RunFiles.tsx. The attempt records go with it: they are
+          what can say a checkpoint was written that the listing no longer
+          finds, which is not a real zero. */}
+      <RunFiles task={task} attempts={run.attempts} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>

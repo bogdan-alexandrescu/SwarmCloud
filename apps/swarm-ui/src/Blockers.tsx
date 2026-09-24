@@ -15,11 +15,15 @@
 
 import { timeAgo } from './Shell'
 import {
+  blockerCeiling,
   blockerGroup,
+  ceilingCopy,
   headroomFor,
+  needsAPerson,
   poolLabel,
   reasonCopy,
   type Capacity,
+  type Ceiling,
   type Counterfactual,
   type Headroom,
   type ProfileBlocker,
@@ -63,38 +67,68 @@ export function IncompleteNote({ h }: { h: Headroom }) {
   )
 }
 
+/** The tag each ceiling is drawn with, and what hovering it says. */
+const CEILING_TAG: Readonly<Record<Ceiling, { cls: string; word: string; title: string }>> = {
+  paused: {
+    cls: 'paused',
+    word: 'paused',
+    title: 'An operator paused this pool. It admits nothing until somebody resumes it — raising its limit changes nothing.',
+  },
+  'set-to-zero': {
+    // The paused tone, because the remedy is the paused one: a person acts.
+    cls: 'paused',
+    word: 'limit 0',
+    title: "An operator set this pool's limit to 0. It admits nothing until somebody raises it — waiting changes nothing.",
+  },
+  zero: {
+    cls: 'capped',
+    word: 'limit 0',
+    title: "This pool's limit is 0, so it admits nothing. A provider pool's quota state lowers it as well as an operator does, so this does not say who set it.",
+  },
+  full: {
+    cls: 'full',
+    word: 'full',
+    title: 'This pool is at its ceiling. Waiting clears it, and so does raising the ceiling.',
+  },
+}
+
 function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
   // A pause and a full pool both stop everything and have OPPOSITE remedies:
-  // resume it, versus wait or raise it. They are told apart by the reason the
-  // server sent, never by the count -- a paused pool can read 0 of 8 in use
-  // and still admit nothing, which is the case that looks healthiest and is
-  // not.
-  const paused = blocker.reason === 'MANUAL_PAUSE'
+  // resume it, versus wait or raise it. A pause is told apart by the reason
+  // the server sent -- a paused pool can read 0 of 8 in use and still admit
+  // nothing, which is the case that looks healthiest and is not. A pool at
+  // ZERO is told apart by its ceiling, because its reason is the full pool's
+  // (see `blockerCeiling`): "0 of 0 units in use" under a `full` tag is how
+  // the live console came to call a switched-off pool busy.
+  const ceiling = blockerCeiling(blocker)
+  const tag = CEILING_TAG[ceiling]
+  const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
   return (
-    <li className={`blocker-row${paused ? ' is-paused' : ' is-full'}`}>
+    <li className={`blocker-row${needsAPerson(ceiling) ? ' is-paused' : ' is-full'}`}>
       <span className="blocker-head">
         <span className="tags">
-          {paused ? (
-            <span className="tag paused" title="An operator paused this pool. It admits nothing until somebody resumes it — raising its limit changes nothing.">
-              paused
-            </span>
-          ) : (
-            <span className="tag full" title="This pool is at its ceiling. Waiting clears it, and so does raising the ceiling.">
-              full
-            </span>
-          )}
+          <span className={`tag ${tag.cls}`} title={tag.title}>
+            {tag.word}
+          </span>
         </span>
         <code className="blocker-pool" title={blocker.pool}>
           {poolLabel(blocker.pool)}
         </code>
         <strong className="blocker-reason">{blocker.reason}</strong>
         {/* The numbers that made it fail, on the entry that failed. "units",
-            never "agents": admission increments by the profile's weight. */}
+            never "agents": admission increments by the profile's weight. A
+            paused pool admits nothing at ANY ceiling -- and a drained one
+            carries the unlimited sentinel as its limit -- so it prints what
+            is held and no ceiling; a pool at zero says the zero in words. */}
         <span className="blocker-at">
-          {blocker.active} of {blocker.limit} units in use
+          {ceiling === 'full'
+            ? `${blocker.active} of ${blocker.limit} units in use`
+            : ceiling === 'paused'
+              ? held
+              : `limit 0 · ${held}`}
         </span>
       </span>
-      <span className="blocker-copy">{reasonCopy(blocker.reason)}</span>
+      <span className="blocker-copy">{ceilingCopy(blocker, 'This pool') ?? reasonCopy(blocker.reason)}</span>
     </li>
   )
 }

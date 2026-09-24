@@ -8,7 +8,10 @@ import { Screen } from './Shell'
 import { headroomFigure } from './Blockers'
 import {
   POOL_FAMILY_ORDER,
+  blockerCeiling,
+  ceilingCopy,
   headroomFor,
+  needsAPerson,
   overCeiling,
   poolKind,
   poolLabel,
@@ -339,17 +342,24 @@ function HeldBackBy({ h }: { h: Headroom }) {
   }
   return (
     <span className="cap-marks">
-      {h.blockers.map((b) => (
-        <span
-          key={b.pool}
-          className={`ctl-chip ${b.reason === 'MANUAL_PAUSE' ? 'is-paused' : 'is-bad'}`}
-          title={`${b.pool} — ${b.reason}, ${b.active} of ${b.limit} units in use`}
-        >
-          <i aria-hidden="true" />
-          {poolLabel(b.pool)}
-          {b.reason === 'MANUAL_PAUSE' ? ' paused' : ` ${b.active}/${b.limit}`}
-        </span>
-      ))}
+      {h.blockers.map((b) => {
+        // A pool at ZERO refuses with the full pool's reason, and `0/0` in
+        // the full pool's red reads as "all of nothing is in use" -- the
+        // chip form of the live "busy platform-wide. (0/0)". The ceiling,
+        // not the reason, tells them apart; see `blockerCeiling`.
+        const ceiling = blockerCeiling(b)
+        return (
+          <span
+            key={b.pool}
+            className={`ctl-chip ${needsAPerson(ceiling) ? 'is-paused' : 'is-bad'}`}
+            title={`${b.pool} — ${b.reason}, ${ceilingCopy(b) ?? `${b.active} of ${b.limit} units in use`}`}
+          >
+            <i aria-hidden="true" />
+            {poolLabel(b.pool)}
+            {ceiling === 'paused' ? ' paused' : ceiling === 'full' ? ` ${b.active}/${b.limit}` : ' limit 0'}
+          </span>
+        )
+      })}
       {marks}
     </span>
   )
