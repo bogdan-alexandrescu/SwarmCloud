@@ -3010,7 +3010,7 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    is not a grey. So the bar keeps the exact grey it had, by name, and the
    tilde beside it -- text, not a fill -- takes the absence colour.
    test_state_colour_discriminability.py lists this value in DOCUMENTED_GREYS. */
-.ctl-util-fill.ov-projected { background: var(--text-faint); }
+.ctl-util-fill.ov-projected { background: var(--text-dim); }
 .ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
 
 /* ---- attention ---------------------------------------------------------- */

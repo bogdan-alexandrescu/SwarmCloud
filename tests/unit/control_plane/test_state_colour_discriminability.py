@@ -704,7 +704,7 @@ MONOCHROME_FILL = "var(--text-dim)"
 #: on `--ctl-absent`, this bar would have turned warm, and this entry would
 #: have waved it through under a grey name; `test_a_documented_grey_is_a_grey`
 #: is what failed on that merge. So the bar names the grey it always painted.
-DOCUMENTED_GREYS = {"ov-projected": "var(--text-faint)"}
+DOCUMENTED_GREYS = {"ov-projected": "var(--text-dim)"}
 
 #: What a documented grey has to resolve to: the two text greys.
 TEXT_GREYS = frozenset({"--text-dim", "--text-faint"})
