@@ -754,6 +754,45 @@ def test_an_existing_job_with_no_override_is_not_rewritten(settings, tenant):
     assert client.calls == ["get_job", "run_job"]
 
 
+def test_a_pre_fix_scheduler_job_at_an_old_image_is_rewritten_once_for_both_fixes(
+    settings, tenant
+):
+    """A Job the scheduler created before 2026-09-24 is usually BOTH at once.
+
+    It carries the `command` override (this fix) AND an image from before the
+    digest map (PR #24, whose `_refresh_image` moves a `managed-by=swarm-scheduler`
+    Job to the digest before it runs). The rebuild comes from `_build_job`, which
+    sets no command, so that ONE write fixes both. Clearing the override on the
+    Job as FETCHED afterwards would be a second write carrying the pre-rebuild
+    Job: its old image, and against the real API its now-stale etag.
+
+    MUTATION: in `ensure_job`, call `_clear_entrypoint_override` whatever
+    `_refresh_image` returned.
+    """
+    profile = RUNNER_PROFILES["mock"]
+    seeded = _job_with_the_old_override(settings, tenant, "mock")
+    assert seeded.labels["managed-by"] == "swarm-scheduler"
+    old_image = seeded.template.template.containers[0].image
+    digest = f"{settings.artifact_registry_host}/{profile.image}@sha256:{'c' * 64}"
+    pinned = scheduler_settings(worker_image_refs={profile.image: digest})
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(pinned, client=client)
+    task = make_task("mock")
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert client.calls == ["get_job", "update_job", "run_job"], (
+        "one write moves the image to the digest AND drops the override; "
+        f"calls made: {client.calls}"
+    )
+    worker = client.jobs[seeded.name].template.template.containers[0]
+    assert worker.image == digest, (
+        f"the Job runs {worker.image!r}; it was at {old_image!r} and must end at the digest"
+    )
+    assert list(worker.command) == []
+    assert list(worker.args) == []
+
+
 def test_gke_without_configuration_refuses_rather_than_guessing(settings, tenant):
     dispatcher = GkeJobDispatcher(settings, target=None)
     task = make_task("browser")

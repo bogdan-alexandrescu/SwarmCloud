@@ -184,12 +184,28 @@ class ControlStore:
         submission into a dispatch failure, so a registered tenant keeps its
         namespace however long it sits idle.
         """
-        tenants: set[str] = set()
+        return set(self.tenant_namespaces())
+
+    def tenant_namespaces(self) -> dict[str, str | None]:
+        """Every registered tenant, and the Kubernetes namespace it RECORDS.
+
+        None where the document records no namespace. The value is carried
+        rather than re-derived because the dispatcher reads it first
+        (`GkeJobDispatcher.namespace_for` prefers `tenant.namespace` over its own
+        template), so it is where that tenant's Jobs actually are.
+        `GkeBackend.namespace_for` applies the same precedence to this pair.
+
+        This is how the reconciler learns which namespaces to read without a
+        cluster-scope list: it asks the control plane which tenants exist rather
+        than asking the cluster which namespaces do.
+        """
+        tenants: dict[str, str | None] = {}
         for doc in self._db.collection("tenants").stream():
             data = doc.to_dict() or {}
             tenant_id = data.get("tenant_id") or doc.id
             if tenant_id:
-                tenants.add(str(tenant_id))
+                recorded = data.get("namespace")
+                tenants[str(tenant_id)] = str(recorded) if recorded else None
         return tenants
 
     # -- writes ----------------------------------------------------------
@@ -294,7 +310,22 @@ class ControlStore:
                 )
                 return None
             target = to_state
+            if target is TaskState.READY and data.get("cancel_requested"):
+                # Re-read here, not taken from the snapshot: the API sets the
+                # flag with a plain update, so a cancel pressed after this pass
+                # read the task still lands on the right terminal state. READY
+                # would be a second hop -- the scheduler's drain cancels a READY
+                # task with the flag set -- and a hop that depends on another
+                # service being healthy is how a requested cancel sat ignored for
+                # hours on 2026-09-24.
+                target = TaskState.CANCELLED
             if target is TaskState.READY:
+                # ONLY a READY target is ever downgraded. A CANCELLED target is
+                # the user's decision and survives exhausted attempts: recording
+                # a task someone stopped as FAILED would misreport why it ended,
+                # and a workflow's derived state settles on its WORST terminal
+                # step (swarm_api.rollup), so the whole run would read FAILED.
+                #
                 # The shared predicate, not a second copy of the comparison.
                 # This path had the rule and the scheduler's dispatch-failure
                 # path did not, which is how a task reached 83 attempts against
@@ -321,7 +352,8 @@ class ControlStore:
             }
             if error:
                 payload["last_error"] = error[:2000]
-            if next_eligible_at is not None:
+            if next_eligible_at is not None and target is not TaskState.CANCELLED:
+                # A retry time means nothing on a task that will never run again.
                 payload["next_eligible_at"] = next_eligible_at
             if target in TERMINAL_STATES:
                 payload["completed_at"] = utcnow()

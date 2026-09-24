@@ -141,7 +141,7 @@ resource "google_cloud_run_v2_job" "verify" {
       }
 
       containers {
-        image = "${local.image_base}/swarm-verify:${var.image_tag}"
+        image = local.image["swarm-verify"]
 
         resources {
           limits = {
@@ -178,10 +178,28 @@ resource "google_cloud_run_v2_job" "verify" {
     }
   }
 
-  # The image tag moves on every deploy and the job is executed on demand, so
-  # an in-flight execution must not be interrupted by an apply.
   lifecycle {
     ignore_changes = [client, client_version]
+
+    # EVERY IMAGE THIS ROOT DEPLOYS HAS A DIGEST, OR NOTHING PLANS.
+    #
+    # It is checked HERE, on the one image consumer declared in this root,
+    # because a module call cannot carry a precondition -- and a failed
+    # precondition fails the whole plan, so no service and no worker job is
+    # planned either. The alternative, a fall back to a tag for a missing
+    # entry, is exactly how a tag used to get deployed without anybody
+    # choosing it (see var.image_refs).
+    #
+    # A precondition, not a validation on var.image_refs, for one case: a
+    # FRESH project has no images yet, so its first plan targets the registry
+    # alone (scripts/plan.sh does this when there is nothing to pin), and a
+    # targeted plan does not evaluate this resource. A variable validation would
+    # refuse that plan too, leaving no way to create the registry the first
+    # images are pushed to.
+    precondition {
+      condition     = length(local.images_without_a_digest) == 0
+      error_message = "image_refs has no digest for: ${join(", ", local.images_without_a_digest)}. Nothing is deployed at a tag. Plan through scripts/plan.sh (which pins what terraform last applied) or deploy through scripts/lib/deploy.sh (which pins the promotion manifest); both write image_refs with scripts/lib/image-refs.sh."
+    }
   }
 }
 

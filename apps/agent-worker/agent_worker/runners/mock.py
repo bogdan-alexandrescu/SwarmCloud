@@ -26,7 +26,14 @@ Input (all optional):
     {"prompt": "...", "sleep_seconds": 2.0, "cpu_burn_seconds": 0.0,
      "steps": 4, "fail": false, "fail_message": "...", "exit_code": 1,
      "quota_exhausted": false, "retry_after_seconds": 1800,
-     "artifact_text": "...", "artifact_name": "output.txt"}
+     "artifact_text": "...", "artifact_name": "output.txt",
+     "spend": {"usage": {"input_tokens": 10}, "total_cost_usd": 0.01}}
+
+`spend` is reported on EVERY exit -- success, failure, rate limit, refused
+credential and SIGTERM -- in the same shape a CLI runner reports it. The mock
+costs nothing, so without it the paths that record spend on a park or a
+cancellation could only ever be tested through a CLI runner, and the
+cancellation path cannot be: a CLI runner killed on SIGTERM writes nothing.
 """
 
 from __future__ import annotations
@@ -100,6 +107,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         # A restored checkpoint already contains all the work.
         completed = steps
 
+    # Reported in the CLI runners' shape on every exit below; see the module
+    # docstring for why the mock needs it at all.
+    spend = payload.get("spend") if isinstance(payload.get("spend"), dict) else {}
+
     # `credential_revoked_times` rather than a bare flag: the behaviour worth
     # testing is that the worker RELOADS and carries on, which needs a runner
     # that refuses a bounded number of times and then succeeds. A permanent
@@ -119,6 +130,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                     )
                 ),
                 marker="oauth access token has been revoked",
+                spend=spend,
             )
 
     if payload.get("quota_exhausted"):
@@ -131,6 +143,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             ),
             reset_at=payload.get("reset_at"),
             detail=str(payload.get("quota_detail", "mock runner asked to simulate a rate limit")),
+            spend=spend,
         )
 
     per_step_sleep = sleep_seconds / steps if steps else sleep_seconds
@@ -160,11 +173,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         message = str(payload.get("fail_message", "mock runner was asked to fail"))
         exit_code = int(payload.get("exit_code", 1))
         if exit_code != 1:
-            ctx.write_result(status="failed", summary=message, error=message,
-                             output={"completed_steps": completed})
+            failed: dict[str, Any] = {"completed_steps": completed}
+            if spend:
+                failed["structured_output"] = dict(spend)
+            ctx.write_result(status="failed", summary=message, error=message, output=failed)
             print(f"[mock] deterministic failure, exiting {exit_code}", file=sys.stderr)
             raise SystemExit(exit_code)
-        raise RunnerFailure(message)
+        raise RunnerFailure(message, spend=spend)
 
     artifact_name = str(payload.get("artifact_name", "output.txt"))
     artifact_text = str(
@@ -175,7 +190,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     )
     ctx.write_artifact(artifact_name, artifact_text)
 
-    return {
+    output: dict[str, Any] = {
         "summary": f"mock runner completed {completed}/{steps} steps",
         "prompt": prompt,
         "completed_steps": completed,
@@ -187,6 +202,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             "cpu_burn_seconds": cpu_burn_seconds,
         },
     }
+    if spend:
+        # Also on the SIGTERM path: the loop above breaks on stop_requested and
+        # falls through to here, and `run_runner` writes this as "terminated".
+        output["structured_output"] = dict(spend)
+    return output
 
 
 def main() -> int:

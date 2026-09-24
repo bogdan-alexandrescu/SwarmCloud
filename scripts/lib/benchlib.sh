@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-#: Where samples land. One file per suite, truncated by bench_init.
+#: Where samples land. One file per RUN, created empty by bench_init.
 BENCH_SAMPLES="${BENCH_SAMPLES:-}"
 BENCH_SUITE="${BENCH_SUITE:-bench}"
 #: Counted so a suite can say how much it measured and how much it could not.
@@ -51,7 +51,19 @@ bench_init() {
   BENCH_SUITE="$1"
   require_cmd jq curl python3
   mkdir -p "${BUILD_DIR}"
-  BENCH_SAMPLES="${BUILD_DIR}/bench-${BENCH_SUITE}-${ENVIRONMENT:-dev}.jsonl"
+  # ONE FILE PER RUN, not per suite and environment. `: >` below truncates, and
+  # this path used to be built from the suite and ENVIRONMENT alone, in the
+  # checkout's shared build/ -- so a second run of the same suite started while
+  # the first was still measuring erased the first one's samples. The first
+  # then summarised whatever it wrote afterwards, plus the second run's
+  # samples, and reported that as its own. That is the bench "flake" in
+  # docs/audits/2026-09-23/two-flaky-gate-tests.md #1: a baseline holding only
+  # the two /v1/stats metrics bench-api.sh writes LAST. It needed two runs in
+  # one checkout, which is why CI -- one process, one case at a time -- never
+  # saw it. `$$` is unique among running processes, which is the only
+  # uniqueness this needs; a run that reuses a finished run's PID truncating
+  # that file is correct.
+  BENCH_SAMPLES="${BUILD_DIR}/bench-${BENCH_SUITE}-${ENVIRONMENT:-dev}.$$.jsonl"
   : >"${BENCH_SAMPLES}"
   BENCH_TAKEN=0
   BENCH_MISSED=0
@@ -212,7 +224,10 @@ bench_now_ms() {
 bench_finish() {
   local summary compare_rc=0
   [[ -n "${BENCH_SAMPLES}" ]] || die "bench_finish before bench_init"
-  summary="${BUILD_DIR}/bench-${BENCH_SUITE}-${ENVIRONMENT:-dev}-summary.json"
+  # Per run for the same reason as the samples: a summary another run can
+  # overwrite between `summarize` and `compare` is a verdict on somebody
+  # else's measurements.
+  summary="${BENCH_SAMPLES%.jsonl}-summary.json"
 
   hr
   info "${BENCH_TAKEN} sample(s) measured, ${BENCH_MISSED} recorded as not measured"

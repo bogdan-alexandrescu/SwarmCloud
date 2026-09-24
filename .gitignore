@@ -17,3 +17,8 @@ build/
 # Ephemeral git worktrees created by the Workflow tool for isolated agents.
 # They are real clones; committing them embeds a repository inside this one.
 .claude/worktrees/
+
+# The credential file google-github-actions/auth writes into the checkout.
+# Never committed; and .gcloudignore includes this file, so every Cloud Build
+# source upload follows the same rule (build-images.sh checks that it does).
+gha-creds-*.json

@@ -25,8 +25,12 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
-| 13 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | open |
-| 14 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | open |
+| 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
+| 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
+| 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
+| 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
+| 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | open |
+| 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | open |
 
 ---
 
@@ -1217,7 +1221,384 @@ section above is not read as covering the caller.
 
 ---
 
-## 13. `states.py`: a cancel that is only requested is recorded as `cancelled`
+## 13. `models.py`: `Attempt` does not record which pool account it ran on
+
+**Status:** open, filed 2026-09-24. A request, not a change: nothing under
+`apps/common/swarm_common/` is edited. Raised in
+[`docs/web-ui/redesign-v2.md`](web-ui/redesign-v2.md) §6 S6 ("request, not
+proposal"), which asked for it to be filed here if pursued.
+
+### The claim, made precise
+
+S6 says "nothing assigns an account to an attempt. `Lease` and `Attempt` carry
+no account field". The second sentence is true: `Lease` (`models.py:115-135`)
+and `Attempt` (`models.py:242-281`) have no account field. The first is not
+quite, and the difference is the reason for this request rather than an
+argument against it:
+
+* **The worker does record it -- as an untyped event.** `_lease_account` in
+  `apps/agent-worker/agent_worker/lifecycle.py` emits `RUNNING` with
+  `detail = {"cause": "account_assigned", "account_id": ..., "provider": ...}`,
+  and `control.emit` stamps the event with the attempt id, lease id and
+  generation. A rejected account emits `RETRYING` with
+  `{"cause": "account_unreadable", "account_id": ...}`.
+* **The broker records a HOLD, not a history.** `acquire_hold`
+  (`apps/quota-broker/quota_broker/main.py`) counts the assignment against the
+  account under an `assignment_id`, and the hold expires and is pruned by the
+  quota sweep. Nothing there survives the attempt.
+
+### Why an event is not enough
+
+* **"Which attempts ran on account X"** -- S6's question, i.e. which agent spent
+  this subscription's quota -- is a read of every task's `events` subcollection,
+  filtered on `detail.cause` and `detail.account_id` in client code. The two
+  collection-group indexes on `events` (`terraform/modules/firestore/indexes.tf`,
+  `events-tenant-at`, `events-task-at`) do not cover a field inside `detail`,
+  and `detail` is a map whose shape is a convention.
+* **One attempt can be offered more than one account.** `_reject_account` hands
+  back an account whose secret it cannot read and asks again with it excluded.
+  The events record every offer; which account the agent RAN on is "the last
+  `account_assigned` not followed by an `account_unreadable` for the same id" --
+  an inference every reader would re-derive, and the first one to get it wrong
+  attributes spend to an account that never ran the agent.
+* **Events are declared an audit trail, not a record.** The `events_ttl` field
+  policy expires them on `expires_at`. The worker's `emit` sets no `expires_at`
+  today, so these particular events do not expire -- but the policy says what
+  events are for, and attribution is not that.
+* **Spend is already on `Attempt`** (request #2, applied). Attribution on the
+  same document makes "spend per account" one query rather than a join through
+  untyped event detail.
+
+### The requested change
+
+Add to `Attempt`:
+
+```python
+#: The pool account this attempt's agent RAN on: the last assignment it kept,
+#: not every one it was offered. None means "not recorded" -- an older attempt,
+#: or a worker that never reached account selection.
+account_id: str | None = None
+#: "account_pool" or "tenant_secret". None means "not recorded". Separate from
+#: account_id because "no account" has two meanings that want different
+#: readings: the pool is not how this tenant runs, or nobody wrote it down.
+credential_source: str | None = None
+```
+
+**Single writer: the worker**, at the two places that already decide it --
+`_lease_account` when an account is kept and `_decline_pool` when the tenant
+secret is used -- through `control.py`'s attempt document, the way
+`record_spend` writes spend (merge, tenant-stamped).
+
+**Not on `Lease`.** The lease is capacity, taken by the scheduler before any
+account is chosen; the account is chosen afterwards, by the worker. A lease
+field would be one the scheduler writes empty and never knows.
+
+### What it would break if accepted
+
+* **No existing document.** Both fields are optional and default to `None`, so
+  nothing needs migrating -- the same shape as request #2.
+* **Every reader must read `None` as "not recorded", never as "tenant secret".**
+  That is the rule #2 set for spend, and `credential_source` exists so that
+  nobody has to infer it from an absent `account_id`.
+* **Indexes (Track C).** `attempts.account_id` equality is covered by Firestore's
+  automatic single-field index; "an account's attempts, newest first" needs a
+  composite `(account_id, created_at)` in `terraform/modules/firestore/indexes.tf`.
+* **Fencing (invariant 5).** An attempt document is keyed by its own
+  `attempt_id`, so a stale worker can only write its own attempt, never a newer
+  one. The write should still go through the same path as `record_spend`, not a
+  new one.
+* **The TypeScript restatement.** `types.ts` gains the two fields, and
+  `scripts/lib/check-contract-parity.sh` section 5 should hold them.
+
+### If it is declined
+
+S6 stays unanswerable except by scanning event subcollections, and the console
+cannot show "this account's attempts" without an N+1 over tasks. What is left to
+live with is the event: its `detail` shape (`cause`, `account_id`, `provider`)
+becomes the contract of record by default, and should then be written down as
+one, in `docs/`, so that every reader applies the same "last kept assignment"
+rule.
+
+---
+
+## 14. `models.py`: a sub-agent has nowhere to name its parent
+
+**Status:** open, filed 2026-09-24. A request, not a change. Raised as S1 / B31
+in [`docs/web-ui/ui-audit-and-build-prompt.md`](web-ui/ui-audit-and-build-prompt.md):
+"Write the request; do not build a fake hierarchy from `depends_on`."
+
+### What was asked for, and what exists
+
+The brief asked for "workflows of agents **and sub-agents**". A workflow step
+is a `Task` with `workflow_id`, `step_id` and `depends_on` (`models.py:172-205`).
+There is no parent/child relationship between tasks anywhere -- not in the
+frozen model, not in the API, not in the UI.
+
+`depends_on` is not one. It is ORDER: a step runs after the steps it names have
+succeeded. A dependency is not a parent -- the step that produced your input did
+not create you, cannot cancel you, and is not waiting on you -- which is why S1
+forbids inferring a hierarchy from it.
+
+### How a sub-agent would be created today, and what would be lost
+
+The worker gives the agent its own identity: `SWARM_TASK_ID`, `SWARM_ATTEMPT_ID`
+and `SWARM_TENANT_ID` are in the child environment it builds
+(`agent_worker/lifecycle.py`, the `base` env). An agent that submitted work of
+its own could therefore name itself. There is nowhere typed to put that name:
+
+* `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py:33`) is a free
+  `dict`. A child could carry `metadata.parent_task_id` by convention -- the
+  same shape request #3 records for `input_from`.
+* A convention in `metadata` is **unvalidated**: any caller can claim any
+  parent, including a task in another tenant (invariant 9), and a UI drawing a
+  tree from it would draw whatever a caller typed.
+* It is **unindexed**: "this task's children" is a scan.
+
+**Not verified here, and part of the cost:** that an agent inside a worker can
+reach the API at all. The child environment carries no API address and no
+credential for it (the same `base` env), so sub-agents also need a submission
+path. That is not a contract change and is not requested here; it is named so
+the field is not mistaken for the whole feature.
+
+### The requested change
+
+Add to `Task`:
+
+```python
+#: The task whose agent submitted this one from inside a running attempt.
+#: None for work a person, a client or a workflow submitted.
+parent_task_id: str | None = None
+#: The parent's ATTEMPT. A parent can be retried, and the children of attempt 1
+#: and attempt 2 are different work -- the second may re-create the first's.
+parent_attempt_id: str | None = None
+```
+
+**Part of the request, not a detail: the API SETS these; a caller never
+supplies them.** A caller-supplied parent is invariant 10's shape (a caller
+naming something the platform should decide) and invariant 9's hazard (a
+parent in another tenant). The API resolves the caller's identity already;
+the parent is whatever attempt that identity is currently running, or nothing.
+
+Listing children needs `GET /v1/tasks?parent_task_id=` -- a filter in
+`swarm-api/store.py` and a composite `(tenant_id, parent_task_id, created_at)`
+index. Both are unfrozen (Tracks A and C); they are listed so the full cost is
+visible.
+
+### What it would break if accepted
+
+* **No existing document.** Optional, default `None`.
+* **Cancellation has to be decided WITH the field, not after it.** Does
+  cancelling a parent cancel its children? The field decides nothing, but the
+  first screen that draws the tree will be asked, and an answer arrived at by
+  whoever writes that screen is the wrong place for it.
+* **Capacity (invariants 1-4).** Each child holds its own lease. A parent that
+  WAITS on its children holds a slot they may need -- on a narrow pool, a
+  deadlock -- and it sleeps through a long wait, which invariant 4 forbids.
+  Agents can already do this today by submitting and polling; naming the
+  relationship will invite it. Whatever accepts this request should also say
+  what a parent is allowed to do while its children run.
+* **The workflow rollup** (request #7) must not count a step's children as
+  steps.
+* **The TypeScript restatement.** `types.ts` gains the two fields, and
+  `check-contract-parity.sh` section 5 should hold them.
+
+### If it is declined
+
+"Sub-agents" stays at **does not exist** in the brief's table, and the console
+says so. There is no honest partial: a hierarchy inferred from `depends_on` is
+refused by S1, and one read from a `metadata` convention would be a tree any
+caller can draw.
+
+---
+
+## 15. `models.py`: `Attempt` records memory, disk and spend, but not CPU
+
+**Status:** open, raised 2026-09-24 by the worker-broker lane, which measured
+CPU without it and stopped at the frozen line.
+
+### What is there now, without the contract
+
+`agent_worker/metrics.py` had no CPU reading at all, so "requested vs used"
+(docs/web-ui/redesign-v2.md section 6, S5) had a memory row and could not have
+a CPU row. It now measures CPU on every attempt -- cgroup v2 `cpu.stat` when the
+container has one, the runner's process tree in /proc otherwise, the kernel's
+reaped-children total as the last resort -- and reports:
+
+| field | meaning |
+|---|---|
+| `cpu_seconds` | CPU time consumed while the attempt's runners ran, summed over every runner it started |
+| `peak_cpu_cores` | the busiest sampling interval of any of those runners, in cores |
+| `mean_cpu_cores` | total `cpu_seconds` over the total runner time it was measured across |
+| `cpu_source` | `cgroup` (the whole container), `proc` (the runner's tree) or `rusage` |
+
+Every figure is the ATTEMPT's. An attempt restarts its runner in place after
+a short rate limit or a reloaded credential. Each runner has its own sampler,
+and `metrics.combine_usage` puts the runners back together. The first cut of
+this reported only the last runner. The same fix also corrected
+`peak_rss_bytes` / `peak_disk_bytes` / `oom_near_miss` on the attempt
+document, which each runner used to overwrite with its own figure.
+
+It reaches three places, none of them typed or indexable:
+
+* the `attempt resource usage` log line (`LoggingMetricsExporter`);
+* Cloud Monitoring, as `cpu_time_ms`, `peak_cpu_millicores` and
+  `mean_cpu_millicores` -- which swarm-api cannot read (it holds no
+  `roles/monitoring.viewer`);
+* every HEARTBEAT event, as a CUMULATIVE `cpu_seconds`, so two consecutive
+  events give utilisation over the span between them. This is the only
+  per-attempt CPU figure a reader of the API can reach today. It covers every
+  runner the attempt has started, so an in-place restart continues the series
+  instead of resetting it. The span between two events can include a retry
+  wait in which no runner ran, and utilisation computed over that span counts
+  the wait as idle time.
+
+### Why it stopped there
+
+The one place a per-attempt figure belongs is the attempt document, next to
+`peak_rss_bytes` -- and `record_resource_usage` writes only the keys the frozen
+`Attempt` declares, for the reason `record_spend` gives: an untyped field on the
+busiest document is one no index can reach and every reader must know by
+convention.
+
+### The requested change
+
+Add to `Attempt`, beside `peak_rss_bytes`:
+
+```python
+cpu_seconds: float | None = None
+peak_cpu_cores: float | None = None
+```
+
+Optional, defaulting to `None`, so every existing document remains valid and
+nothing migrates. `None` means NOT MEASURED -- a macOS local run has a total and
+no peak, and an attempt fenced before its runner started has neither -- which
+is different from an agent that used no CPU. `mean_cpu_cores` is deliberately
+not requested. `cpu_seconds` over the attempt's own `started_at`/`completed_at`
+gives an approximation of it. That approximation is lower than the worker's
+figure, because the attempt's span also covers setup, the clone and any retry
+wait, where the worker divides by runner time only. For a sizing question
+("how much of the reserved CPU did the agent use") the lower figure is the one
+that matters, since the reservation is held for the whole span.
+
+### What breaks if it is made
+
+Nothing reads these yet. `agent_worker.control.record_resource_usage` would
+gain two keys; `swarm_api.codec.attempt_from_dict`/`attempt_to_api` would each
+gain two lines, and `test_api_contract_shapes.py` pins the latter, so the
+serialiser cannot drop them silently. `apps/swarm-ui/src/types.ts` restates
+`Attempt` by hand and would need the two fields added there too --
+`check-contract-parity.sh` does not cover TypeScript.
+
+### What is left to live with if it is declined
+
+A CPU row in "requested vs used" can still be drawn, from the last HEARTBEAT
+event of each attempt. It is up to one heartbeat period stale at the end of a
+run (the last event before exit is not the exit), it is not queryable across
+attempts, and a "CPU per resource class over the last week" report means
+reading every attempt's event stream.
+
+---
+
+## 16. `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies
+
+**Status:** open, recorded 2026-09-24 by the reconciler-gke lane (PR #32). The
+owner asked for the reconciler to name tenant namespaces "through the SAME
+namespace-naming helper the dispatcher uses". It cannot import that helper, so
+this is the request that would make that literally true.
+
+### What is duplicated
+
+The rule the dispatcher uses to name a tenant's namespace when the tenant
+document records none:
+
+* `apps/scheduler/scheduler/dispatch.py`: `GkeJobDispatcher.namespace_for`
+  returns `sanitize_name(template.format(tenant=tenant_id))`, with
+  `namespace_template = "swarm-tenant-{tenant}"`.
+* `apps/reconciler/reconciler/backends.py`: `GkeBackend.namespace_for`
+  returns `sanitize_name(prefix + tenant_id)`, with
+  `ReconcilerConfig.namespace_prefix = "swarm-tenant-"`. `sanitize_name` here
+  is a copy of the scheduler's. The comment-stripped bodies are identical, and
+  both import the character class from `swarm_common.identity._TENANT_SAFE`.
+
+Both prefer the tenant document's recorded `namespace`. That precedence is also
+stated twice.
+
+### Why it cannot be one copy today
+
+The same reason as request 5. `images/swarm-reconciler/Dockerfile` copies
+`apps/common/` and `apps/reconciler/`, and `images/swarm-scheduler/Dockerfile`
+copies `apps/common/` and `apps/scheduler/`. Neither image contains the other's
+package, so `swarm_common` is the only place a single copy could live in both.
+
+### How the copies drifted before the copy existed
+
+Until PR #32, the reconciler named the namespace with `detect.sanitised`. That
+function reproduces only the character-class half of `sanitize_name`. It has no
+63-character truncation, no hash of the full name, and no `s` prefix for a name
+that does not start with a letter. The only test pinning the two used short
+tenant ids, so it could not see the difference.
+
+The difference was latent, not observed:
+
+* `identity._slug` caps a tenant id at 11 characters.
+* `scripts/register-tenant.sh` refuses anything longer.
+* A live attempt is read at the namespace its own `execution_name` records.
+
+### What holds the copies together now
+
+`tests/unit/control_plane/test_reconciler_gke_namespaced.py`:
+
+* `test_the_reconciler_and_the_dispatcher_sanitise_names_identically` runs both
+  `sanitize_name` copies over a corpus that reaches every branch.
+* `test_the_reconciler_names_a_long_tenant_namespace_exactly_as_the_dispatcher_does`
+  pins the two `namespace_for` methods on ids up to 200 characters.
+* `test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does`
+  pins the recorded-namespace precedence.
+
+`scripts/lib/check-contract-parity.sh` section 6 holds the prefix to the
+template. As with request 5, these checks work only because the test process
+can import both services, which neither image can.
+
+### The requested change
+
+Add a stdlib-only function to `swarm_common/identity.py`, next to
+`_TENANT_SAFE`, which it already depends on:
+
+```python
+def k8s_name(*parts: str, max_length: int = 63) -> str: ...        # today's sanitize_name
+def tenant_namespace(tenant_id: str, recorded: str | None = None,
+                     template: str = "swarm-tenant-{tenant}") -> str: ...
+```
+
+Both services would call it. Two decisions go with it:
+
+* **The exception type.** Today the scheduler raises `DispatchError(code=
+  "invalid_resource_name")` and the reconciler raises `ValueError`. A shared
+  function would raise `ValueError`, and the dispatcher would wrap it.
+* **Whether `detect.sanitised` should use `k8s_name` too.** `sanitised` matches
+  label-derived ids back to document ids, and labels also pass through
+  `sanitize_name` with the 63-character cap. Task and attempt ids are 25
+  characters, so the cap is unreachable there today.
+
+### What it would break if accepted
+
+It adds functions and changes none, so no stored document and no wire format
+changes. There is also a third copy, in shell: `tenant_namespace` in
+`scripts/lib/common.sh`, which `register-tenant.sh` calls. It is the bare
+prefix plus the id, with no sanitising. That is correct only because
+`register-tenant.sh` first refuses any id that is not a clean slug of 11
+characters or fewer. It would stay a restatement, and `check-contract-parity.sh`
+section 6 would still hold its prefix.
+
+### What is left to live with if it is declined
+
+Two copies, and three tests that pin them over inputs longer than any id in
+use. If the rule changes, both copies must be edited. If only one is edited,
+the tests fail rather than production.
+
+---
+
+## 17. `states.py`: a cancel that is only requested is recorded as `cancelled`
 
 **Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
 (where it was filed as CR-1). Found while the incident's stuck tasks were read
@@ -1283,7 +1664,7 @@ incident's operators were in.
 
 ---
 
-## 14. `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command
+## 18. `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command
 
 **Status:** open, recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559`
 (where it was filed as CR-2). The code defect it describes is fixed outside the

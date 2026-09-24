@@ -61,7 +61,7 @@ TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
         test tf-test ui-test ui-component-test lint \
         bench bench-ui bench-baseline \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
-        destroy purge-data dev kubectl register-tenant secrets clean
+        destroy destroy-guard-proof purge-data dev kubectl register-tenant secrets clean
 
 ## ---------------------------------------------------------------------------
 ## Getting started
@@ -385,6 +385,22 @@ dev: ## Local loop: Firestore emulator plus a service (TARGET=api|scheduler|quot
 
 destroy: ## Destroy swarm infrastructure, aborting on anything not ours
 	@$(SCRIPTS)/destroy.sh --environment $(ENVIRONMENT)
+
+destroy-guard-proof: ## Prove the destroy guard against a REAL plan (read-only; applies nothing)
+	@# Two read-only steps, deliberately separate. The first produces a destroy
+	@# PLAN and stops -- it is the `--dry-run` path, and on dev it ends in
+	@# "ABORTED to protect data" (exit 1) because the plan deletes the Firestore
+	@# database and both buckets. Exit 1 is therefore tolerated and every OTHER
+	@# non-zero exit is not: a plan that failed to generate leaves the previous
+	@# run's plan file on disk, and judging that one would be judging the past.
+	@# The second judges that plan: it substitutes every deny-listed neighbour
+	@# into the real resource of its own type and requires the guard to refuse.
+	@# Neither step applies anything. docs/runbooks/destroy-guard-real-plan-proof.md
+	@rc=0; $(SCRIPTS)/destroy.sh --environment $(ENVIRONMENT) --dry-run || rc=$$?; \
+	  if [ $$rc -ne 0 ] && [ $$rc -ne 1 ]; then \
+	    echo "the destroy plan itself failed (exit $$rc); there is nothing to judge"; exit $$rc; \
+	  fi
+	@$(SCRIPTS)/verify-destroy-guard.sh --environment $(ENVIRONMENT)
 
 purge-data: ## Delete swarm runtime data (Firestore, artifacts), never infrastructure
 	@$(SCRIPTS)/purge-data.sh --environment $(ENVIRONMENT)

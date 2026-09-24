@@ -23,7 +23,7 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from swarm_common.config import Settings
 from swarm_common.logging_setup import configure_logging
 
-from .backends import Backend, CloudRunBackend, GkeBackend
+from .backends import Backend, CloudRunBackend, GkeBackend, NamespacedBackend
 from .checkpoints import GcsCheckpointStore
 from .config import ReconcilerConfig
 from .logs import build_logger
@@ -39,8 +39,10 @@ def _firestore_client(settings: Settings) -> Any:
     return firestore.Client(project=settings.project_id, database=settings.firestore_database)
 
 
-def build_backends(config: ReconcilerConfig, logger: Any) -> list[Backend]:
-    backends: list[Backend] = []
+def build_backends(
+    config: ReconcilerConfig, logger: Any
+) -> list[Backend | NamespacedBackend]:
+    backends: list[Backend | NamespacedBackend] = []
     if config.enable_cloud_run:
         backends.append(
             CloudRunBackend(
