@@ -838,4 +838,309 @@ describe('the capacity row protects the name, not the bar', () => {
     expect(flat, 'the name and the figure share the first line').toContain("'name figure'")
     expect(flat, 'the bar and the provenance share the second').toContain("'track by'")
   })
+
+  /**
+   * AND THE TEMPLATE ABOVE HAS TO BE A TEMPLATE, WHICH IT WAS NOT.
+   *
+   * The test above passed on a branch where F2 was NOT fixed, and the reason is
+   * worth keeping: `.drawer .ctl-util` declared `grid-template-areas` and four
+   * `grid-area`s, and took its `display` from `.ctl-util` -- which §B6.2 had
+   * just changed from `grid` to `flex; flex-wrap: wrap`. Every grid property in
+   * the rule was therefore inert. The row fell back to the primitive's wrapping
+   * flex line with `.ctl-util-by` pinned at a 128px basis, so `latest heartbeat
+   * 3m ago` was still cut, under a comment saying it had been fixed.
+   *
+   * WHY THIS READS THE PARSED CSSOM AND NOT THE SOURCE, AND NOT
+   * `getComputedStyle` EITHER. Two traps, one on each side:
+   *
+   *   - A SOURCE REGEX passes with the declaration deleted. The rule's own
+   *     comment now contains the words `display: grid` several times, because
+   *     it explains why the declaration has to be there. That is the `false &&`
+   *     from this file's header arriving through prose instead of through code.
+   *   - `getComputedStyle` CANNOT BE TRUSTED FOR THIS ONE. jsdom applies
+   *     matching rules in SOURCE ORDER and does not weigh specificity -- the
+   *     test two above, "beats a case-shifting ANCESTOR by inheritance, not by
+   *     specificity", is named after that limitation. `.ctl-util` is declared
+   *     ~2,300 lines AFTER `.drawer .ctl-util`, so jsdom would answer `flex`
+   *     for an element a browser computes `grid` for, and the assertion would
+   *     be red on a correct stylesheet.
+   *
+   * `CSSStyleRule.style` is the PARSED declaration block: comments are gone by
+   * the time it exists, and no cascade is involved. It answers exactly the
+   * question this needs answered -- does this rule declare a display at all.
+   *
+   * THE MUTATION THIS CATCHES: delete `display: grid;` from
+   * `.drawer .ctl-util` and leave the four grid properties. Every one of them
+   * goes inert, the drawer row silently becomes the primitive's flex line, and
+   * `latest heartbeat 3m ago` starts being cut again. Nothing else in the suite
+   * notices -- the test above it passes, because the template it greps for is
+   * still written down.
+   */
+  it('makes the drawer row an actual grid, not a grid template on a flex box', () => {
+    const style = withStyles()
+    // TOP-LEVEL RULES ONLY, and that is not tidiness. `allRules` flattens the
+    // media blocks in deliberately, and `@media (max-width: 899px)` carries a
+    // second `.ctl-util { gap: … }` -- so an unfiltered lookup finds two rules
+    // with this selector and the "exactly one" guard below fails on a correct
+    // sheet. The rule under test is the unconditional one.
+    const rules = [...style.sheet!.cssRules].filter(
+      (r): r is CSSStyleRule => r.constructor.name === 'CSSStyleRule',
+    )
+
+    const drawerRow = rules.filter((r) => r.selectorText === '.drawer .ctl-util')
+    expect(drawerRow.length, 'styles.css must declare exactly one .drawer .ctl-util').toBe(1)
+    expect(
+      drawerRow[0]!.style.getPropertyValue('display'),
+      'the drawer row declares grid areas, so it must BE a grid or every one of them is inert',
+    ).toBe('grid')
+    // The precondition, so this cannot pass against a sheet that failed to
+    // load: the grid properties it is protecting are really in that rule.
+    expect(drawerRow[0]!.style.getPropertyValue('grid-template-areas')).not.toBe('')
+
+    // The primitive it overrides is still the wrapping flex line, which is the
+    // right answer on Overview's 348px card and the wrong one here. Asserted so
+    // that "make them the same" is a change somebody has to argue for.
+    const primitive = rules.filter((r) => r.selectorText === '.ctl-util')
+    expect(primitive.length, 'styles.css must declare exactly one top-level .ctl-util').toBe(1)
+    expect(primitive[0]!.style.getPropertyValue('display')).toBe('flex')
+    expect(primitive[0]!.style.getPropertyValue('flex-wrap')).toBe('wrap')
+    style.remove()
+  })
+})
+
+// THE REST OF THE 2026-09-23 OVERFLOW INVENTORY, AS ASSERTIONS.
+//
+// F1 and F2 are above. F9 and F11 are the workflow canvas and belong to another
+// lane. What is left is F3's backstop, F4, F5 and F10 -- each one a rule whose
+// absence is invisible in jsdom (there is no layout engine here, so none of
+// these defects can be SEEN) but whose presence is exactly what the inventory's
+// pixel measurements asked for.
+//
+// Every claim below names the mutation it catches, because a test that cannot
+// say what breaking it looks like is a test nobody can trust when it goes red.
+describe('the overflow inventory, as rules that cannot be quietly dropped', () => {
+  /** The top-level rule for a selector. Anchored: a bare `.ctl-util {` search
+   *  matches `.drawer .ctl-util {` first, which is how the test above spent
+   *  several commits grading the wrong rule. */
+  const ruleFor = (selector: string): string => {
+    const at = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{`, 'm').exec(
+      STYLES,
+    )
+    expect(at, `styles.css must declare a top-level ${selector} rule`).not.toBeNull()
+    return STYLES.slice(at!.index).split('}')[0] ?? ''
+  }
+
+  /**
+   * F3 — the container's own cut has to signal.
+   *
+   * The inventory named `div.row.clickable > span.agent` by its computed value:
+   * `overflow: hidden; text-overflow: clip`. At 1110px with the inspector open
+   * it clipped six task ids mid-character -- `460409c`, `92eb480`, `19d91b8` --
+   * and a truncated id is not an unreadable id, it is a different and equally
+   * plausible one.
+   *
+   * The column-dropping stages fixed the measured band, so the children now
+   * ellipse before this box ever clips. This is the backstop, and it is worth
+   * declaring because the case that reaches it is unbounded: `--inspector-w` is
+   * DRAGGABLE, so a reader can make the list narrower than any breakpoint and
+   * narrower than `.id`'s own `3ch` floor.
+   *
+   * THE MUTATION THIS CATCHES: remove `text-overflow: ellipsis` from
+   * `.row .agent`. It reverts to the UA initial value, `clip`, which is the
+   * exact computed value the inventory measured.
+   */
+  it('never lets the agent cell cut a string without saying so', () => {
+    const rule = ruleFor('.row .agent')
+    expect(
+      /text-overflow:\s*ellipsis/.test(rule),
+      'the agent cell clips its overflow, so it has to mark the cut',
+    ).toBe(true)
+    // And the id keeps a floor, so the ellipsis reads as loss rather than as an
+    // empty cell -- the other half of F3.
+    const id = ruleFor('.row .agent .id')
+    expect(/min-width:\s*3ch/.test(id), 'the id keeps enough width to show it was cut').toBe(true)
+    expect(/text-overflow:\s*ellipsis/.test(id)).toBe(true)
+  })
+
+  /**
+   * F4 — the drawer's ✕ needed a header to sit on.
+   *
+   * `position: sticky` in a scroll container 5155px taller than its viewport,
+   * `z-index: auto`, an opaque fill and no reserved gutter: the probe caught the
+   * 32px square painting over three different sentences at three different
+   * scroll positions in one session.
+   *
+   * Raising the z-index alone would not have fixed it -- whichever way the
+   * stacking contest goes, a sentence has a hole in it. So the drawer gets a
+   * sticky band of its own background, full width, zero-space in flow, and the
+   * button sits ON it.
+   *
+   * THE MUTATIONS THIS CATCHES: delete `.drawer::before`; drop its
+   * `position: sticky` so it scrolls away with the first screenful; take the
+   * `z-index` back off `.drawer-close`; write any of the band's four lengths as
+   * a literal instead of deriving it from the drawer's own two tokens, so that
+   * changing the drawer's padding moves the band off the button; or put
+   * `float: right` back on the button, which is the subtle one — floated, it
+   * shares its line with `.ctl-subnav`, and a band tall enough to cover it then
+   * covers the pane tabs as well.
+   */
+  it('gives the drawer a header band for its close button to sit on', () => {
+    // Injected for `token('--gutter')` alone: the band's horizontal bleed has
+    // to equal the drawer's own side padding, and that one IS a token.
+    const style = withStyles()
+    const band = ruleFor('.drawer::before')
+    expect(/content:\s*''/.test(band), 'the band has to be generated to exist at all').toBe(true)
+    expect(
+      /position:\s*sticky/.test(band),
+      'a band that scrolls away leaves the button back over bare text',
+    ).toBe(true)
+    // Its own background, or content shows straight through it.
+    expect(/background:\s*var\(--bg\)/.test(band)).toBe(true)
+
+    // THE THREE RELATIONSHIPS, NOT THE FIVE NUMBERS.
+    //
+    // The band is five literals -- a height, three margins and the drawer's own
+    // top padding -- because a custom property cannot be used here: the spacing
+    // probe resolves every `var()` in this sheet against a table built from
+    // `:root` alone, so a token on a component throws `is used and never
+    // declared`, and `calc(var(--x) * -1)` lands in the unresolved list
+    // `spacing.test.tsx` asserts is empty. Literals are what that tooling can
+    // read; this is what stops them drifting apart.
+    const len = (rule: string, prop: string): number => {
+      const raw = new RegExp(`(?:^|[;{\\s])${prop}:\\s*(-?[\\d.]+)px\\s*;`, 'm').exec(rule)?.[1]
+      expect(raw, `the rule must declare ${prop} as a px length`).toBeDefined()
+      return Number(raw)
+    }
+    // `.drawer`'s padding is a shorthand whose second value is `var(--gutter)`,
+    // so it is read as written and the first token taken.
+    const padTop = Number(
+      /padding:\s*(-?[\d.]+)px\s/.exec(ruleFor('.drawer'))?.[1] ?? Number.NaN,
+    )
+    expect(Number.isFinite(padTop), '.drawer must open its padding with a px length').toBe(true)
+    const gutter = Number(/^(-?[\d.]+)px$/.exec(token('--gutter'))?.[1] ?? Number.NaN)
+    expect(Number.isFinite(gutter), '--gutter must be a px length').toBe(true)
+
+    const height = len(band, 'height')
+    const top = len(band, 'margin-top')
+    const bottom = len(band, 'margin-bottom')
+    const closeH = len(ruleFor('.drawer-close'), 'height')
+
+    expect(
+      height - padTop,
+      'the band is one row of chrome: taller and it eats the pane tabs, shorter and the ✕ hangs off it',
+    ).toBe(closeH)
+    expect(top, 'the top margin lifts the band onto the padding it was measured against').toBe(
+      -padTop,
+    )
+    expect(
+      height + top + bottom,
+      'the band must contribute NOTHING to flow, or every panel in the drawer shifts down',
+    ).toBe(0)
+    // Bled to the drawer's own edges, or content shows through beside it.
+    expect(len(band, 'margin-left')).toBe(-gutter)
+    expect(len(band, 'margin-right')).toBe(-gutter)
+
+    const close = ruleFor('.drawer-close')
+    const z = /z-index:\s*(\d+)/.exec(close)?.[1]
+    expect(z, 'the ✕ must rank above the band it sits on, not default to auto').toBe('2')
+    expect(
+      /float:\s*right/.test(close),
+      'floated, the ✕ shares its line with the pane tabs and the band covers both',
+    ).toBe(false)
+    style.remove()
+  })
+
+  /**
+   * F5 — two cells reading `/v1/a…` for two different routes.
+   *
+   * `/v1/admin/dispatch` and `/v1/admin/tenants` both rendered `/v1/a…`, both
+   * `403 · admin only`, in the same panel; the three `/v1/tasks/{id}/*` routes
+   * all rendered `/v1/tasks/…`. A panel whose entire job is to say WHICH route
+   * did what had four pairs of cells nobody can tell apart.
+   *
+   * Widening the track alone could not have fixed it: `.source`'s second track
+   * is `auto` and a grid gives an `auto` track its max-content BEFORE a `1fr`
+   * track gets anything, so every pixel added went to the status label. The
+   * path takes the whole first line instead.
+   *
+   * THE MUTATION THIS CATCHES: put the track minimum back to 210px; or drop
+   * `grid-column: 1 / -1` from `.s-path` so the status shares its line again;
+   * or put `text-overflow: ellipsis` back on `.s-path-t`.
+   */
+  it('gives a route path a line of its own and never ellipses it', () => {
+    const cells = ruleFor('.source-cells')
+    const min = /minmax\(min\(100%,\s*(\d+)px\)/.exec(cells)?.[1]
+    expect(
+      Number(min ?? 0),
+      'the longest route in this registry needs 253px of cell; 210 gave it 93',
+    ).toBeGreaterThanOrEqual(260)
+
+    const path = ruleFor('.s-path')
+    expect(
+      /grid-column:\s*1\s*\/\s*-1/.test(path),
+      'the path spans the cell, or the auto status track eats the widening',
+    ).toBe(true)
+
+    const text = ruleFor('.s-path-t')
+    expect(
+      /text-overflow:\s*ellipsis/.test(text),
+      'a truncated route is a different, equally plausible route',
+    ).toBe(false)
+    expect(
+      /overflow-wrap:\s*anywhere/.test(text),
+      'a path has no spaces, so the only honest alternative to a cut is a break',
+    ).toBe(true)
+  })
+
+  /**
+   * F10 — the dock summary dropped its caveats and kept its reassurance.
+   *
+   * `13 routes · p95 400ms · 0 failed · 2 admin-only · newest just now` got
+   * 279.6px at 390pt and rendered `… · 0 failed · 2 …`. What fell off was the
+   * admin-only count and the read age -- the two facts that tell a console that
+   * is fine from one that is stale or half-blind. `0 failed` survived.
+   *
+   * Two assertions, because the fix has two halves and each fails differently:
+   * the sheet must not ellipse, and the markup must give every fact a nowrap box
+   * so the line breaks BETWEEN facts rather than inside `2 admin-only`.
+   *
+   * THE MUTATION THIS CATCHES: put `text-overflow: ellipsis; white-space:
+   * nowrap` back on `.ctl-dock-facts`; or unwrap the facts in `Dock.tsx` so the
+   * strip is one text run again.
+   */
+  it('wraps the dock summary between facts instead of ellipsing its tail', async () => {
+    const facts = ruleFor('.ctl-dock-facts')
+    expect(
+      /text-overflow:\s*ellipsis/.test(facts),
+      'the tail of this strip is the admin-only count and the read age',
+    ).toBe(false)
+    expect(/white-space:\s*nowrap/.test(facts), 'the strip itself has to be able to wrap').toBe(
+      false,
+    )
+    const one = ruleFor('.ctl-dock-fact')
+    expect(
+      /white-space:\s*nowrap/.test(one),
+      'each fact is one unit, or the break lands inside `2 admin-only`',
+    ).toBe(true)
+
+    // AND THE MARKUP ACTUALLY USES IT. The rule above is inert if `Dock.tsx`
+    // renders the facts as bare text -- which is the state this fix started
+    // from, and is invisible to a stylesheet assertion.
+    vi.resetModules()
+    const { Dock } = await import('../Dock')
+    const { noteFixtureProbe } = await import('../fetch')
+    noteFixtureProbe('/v1/capacity', 120, true)
+    const { container } = render(<Dock />)
+    const boxes = [...container.querySelectorAll('.ctl-dock-facts .ctl-dock-fact')]
+    expect(
+      boxes.length,
+      'routes, p95, failed and the age are four facts and each needs its own box',
+    ).toBeGreaterThanOrEqual(4)
+    // The age is the fact the ellipsis used to eat, so it is the one checked by
+    // name rather than by count.
+    const text = boxes.map((b) => b.textContent ?? '').join(' ')
+    expect(text, 'the read age is the fact that went missing at 390pt').toMatch(
+      /newest|nothing has loaded/,
+    )
+  })
 })

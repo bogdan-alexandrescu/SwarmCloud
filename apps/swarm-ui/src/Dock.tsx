@@ -241,20 +241,55 @@ export function Dock() {
       >
         <span className={`ctl-dock-dot ${tone}`} aria-hidden />
         <span className="ctl-dock-label">Reads</span>
+        {/* EVERY FACT IS ONE UNWRAPPABLE UNIT, and the strip breaks BETWEEN
+            them — F10 of `docs/audits/2026-09-23/overflow-inventory.md`.
+
+            This was five facts and four ` · ` separators in one nowrap span
+            with an ellipsis on it, which at 390pt rendered
+            `… · 0 failed · 2 …`: 40% gone, and the 40% was the admin-only
+            count and the read age. Those are the two that distinguish a
+            console that is fine from one that is stale or half-blind; what
+            survived was `0 failed`, the reassuring half. So the ellipsis is
+            gone (see `.ctl-dock-facts`) and the line wraps instead.
+
+            The wrapping is why each fact needs a box of its own. Left as bare
+            text the browser would break inside a fact — `2` on one line and
+            `admin-only` on the next, or worse, `newest 3m` over `ago` —
+            which is the same defect in a new shape. `.ctl-dock-fact` is
+            `white-space: nowrap`, so the only break opportunities left are
+            the spaces in the separators between them.
+
+            The separators stay as text rather than becoming a CSS `::before`:
+            the prose budget tests count the text nodes a reader can see, and
+            moving punctuation into generated content would change what those
+            read without changing what the screen says. */}
         <span className="ctl-dock-facts">
-          {s.routes} route{s.routes === 1 ? '' : 's'}
+          <span className="ctl-dock-fact">
+            {s.routes} route{s.routes === 1 ? '' : 's'}
+          </span>
           {' · '}
           {/* An em dash, never a 0: no sample is not a fast response. */}
-          {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${s.p95Ms}ms`}
+          <span className="ctl-dock-fact">
+            {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${s.p95Ms}ms`}
+          </span>
           {' · '}
-          <span className={s.failed > 0 ? 'ctl-dock-bad' : undefined}>{s.failed} failed</span>
-          {s.adminOnly > 0 && ` · ${s.adminOnly} admin-only`}
-          {' · '}
-          {s.newestSuccessAt === null ? (
-            <span className="ctl-em">nothing has loaded</span>
-          ) : (
-            `newest ${timeAgo(s.newestSuccessAt)}`
+          <span className={`ctl-dock-fact${s.failed > 0 ? ' ctl-dock-bad' : ''}`}>
+            {s.failed} failed
+          </span>
+          {s.adminOnly > 0 && (
+            <>
+              {' · '}
+              <span className="ctl-dock-fact">{s.adminOnly} admin-only</span>
+            </>
           )}
+          {' · '}
+          <span className="ctl-dock-fact">
+            {s.newestSuccessAt === null ? (
+              <span className="ctl-em">nothing has loaded</span>
+            ) : (
+              `newest ${timeAgo(s.newestSuccessAt)}`
+            )}
+          </span>
         </span>
         <span className="ctl-dock-caret" aria-hidden>
           {open ? '▾' : '▴'}

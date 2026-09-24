@@ -1668,27 +1668,44 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
           {a.started_at === null ? 'never started' : 'none written'}
         </p>
       ) : (
-        <div className="ctl-table">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Checkpoint</th>
-                <th scope="col" className="is-num">Size</th>
-                <th scope="col">Location</th>
+        /* `is-stacked` — §2 OF `docs/audits/2026-09-23/overflow-inventory.md`
+           names this table by name: with the drawer open it hid 57% of itself
+           behind an `overflow-x: auto` that paints no scrollbar here, and what
+           was hidden is `Size` and `Location`. A checkpoint list showing only
+           checkpoint ids is a list that cannot answer the question anybody
+           opens it with — whether the thing was actually written and where.
+           Below 900px each row becomes a stacked record (§B6.3 in
+           `styles.css`); `data-label` supplies the key, as an attribute so the
+           rendered-word budgets count the same screen, and the explicit
+           `role`s keep the ARIA table that changing `display` drops.
+
+           A PLAIN BLOCK COMMENT, NOT A BRACED JSX ONE. This arm of the ternary
+           is an expression position, not JSX children, so a leading brace opens
+           an object literal and the file stops parsing — three of these in this
+           file, and `tsc` said `TS1005: ')' expected`. Caught by CI on the
+           first push of this change, which is the only place it could have
+           been caught. */
+        <div className="ctl-table is-stacked">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Checkpoint</th>
+                <th role="columnheader" scope="col" className="is-num">Size</th>
+                <th role="columnheader" scope="col">Location</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {rows.map((r) => (
-                <tr key={r.checkpoint_id}>
-                  <th scope="row">
+                <tr role="row" key={r.checkpoint_id}>
+                  <th role="rowheader" scope="row">
                     {r.checkpoint_id}
                     {r.at !== null && <span className="ctl-sub">{timeAgo(r.at)}</span>}
                     {r.eventOnly && (
                       <span className="ctl-sub">not on the attempt document</span>
                     )}
                   </th>
-                  <td className="is-num">{r.bytes === null ? <Em /> : bytesLabel(r.bytes)}</td>
-                  <td>
+                  <td role="cell" data-label="Size" className="is-num">{r.bytes === null ? <Em /> : bytesLabel(r.bytes)}</td>
+                  <td role="cell" data-label="Location">
                     {r.uri === null ? (
                       <>
                         <Em />{' '}
@@ -1925,19 +1942,26 @@ function Artifacts({
           none uploaded
         </p>
       ) : (
-        <div className="ctl-table">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Artifact</th>
-                <th scope="col" className="is-num">Size</th>
-                <th scope="col">Location</th>
+        /* `is-stacked` (F6), the same three-column shape as the checkpoint
+           table above and in the same drawer, so it hides the same two columns
+           at the same width. `Location` is the one that matters here: it
+           carries the uri and the `copy gsutil` control, and a row whose
+           visible part is a name and nothing else offers no way out of the
+           console at all. (Unbraced, for the reason the checkpoint table's
+           comment gives.) */
+        <div className="ctl-table is-stacked">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Artifact</th>
+                <th role="columnheader" scope="col" className="is-num">Size</th>
+                <th role="columnheader" scope="col">Location</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {artifacts.map((a) => (
-                <tr key={a.uri} className={a.name === open ? 'is-open' : undefined}>
-                  <th scope="row">
+                <tr role="row" key={a.uri} className={a.name === open ? 'is-open' : undefined}>
+                  <th role="rowheader" scope="row">
                     {/* THE WAY IN. `GET /v1/tasks/{id}/artifacts/content` sends
                         the NAME as this row spells it and nothing else: the
                         server resolves the object from the task's own manifest,
@@ -1952,12 +1976,12 @@ function Artifacts({
                       {a.name}
                     </button>
                   </th>
-                  <td className="is-num">{bytesLabel(a.bytes)}</td>
+                  <td role="cell" data-label="Size" className="is-num">{bytesLabel(a.bytes)}</td>
                   {/* Still passed by reference as well. The viewer serves a
                       bounded, redacted window; the uri is how someone reads the
                       whole object with their own credentials, which keeps that
                       half of the tenant boundary where IAM already enforces it. */}
-                  <td>
+                  <td role="cell" data-label="Location">
                     <span className="mono uri">{a.uri}</span>
                     <button
                       className="copy"
@@ -2352,24 +2376,31 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
       </ul>
 
       {commits.length > 0 && (
-        <div className="ctl-table" style={{ marginTop: 10 }}>
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">Commit</th>
-                <th scope="col">Subject</th>
-                <th scope="col" className="is-num">Files</th>
-                <th scope="col" className="is-num">+/−</th>
+        /* `is-stacked` (F6), and this is the widest of the drawer's tables:
+           four columns in a panel that is 413px at its default and 390 at a
+           phone. The subject is the long one and it is the column a reader is
+           here for, so squeezing all four is the worst of the options —
+           stacked, the sha leads the record and the subject gets the full width
+           under it. (Unbraced, for the reason the checkpoint table's comment
+           gives.) */
+        <div className="ctl-table is-stacked" style={{ marginTop: 10 }}>
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Commit</th>
+                <th role="columnheader" scope="col">Subject</th>
+                <th role="columnheader" scope="col" className="is-num">Files</th>
+                <th role="columnheader" scope="col" className="is-num">+/−</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {commits.map((c) => (
-                <tr key={c.sha}>
-                  <th scope="row" className="mono">
+                <tr role="row" key={c.sha}>
+                  <th role="rowheader" scope="row" className="mono">
                     {c.sha.slice(0, 10)}
                   </th>
-                  <td>{c.subject}</td>
-                  <td className="is-num">
+                  <td role="cell" data-label="Subject">{c.subject}</td>
+                  <td role="cell" data-label="Files" className="is-num">
                     {c.files_changed}
                     {/* git prints `-` for both counts on a binary change; those
                         are counted separately rather than folded into a 0/0
@@ -2378,7 +2409,7 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
                       <span className="ctl-sub">{c.binary_files} binary</span>
                     )}
                   </td>
-                  <td className="is-num">
+                  <td role="cell" data-label="+/−" className="is-num">
                     +{c.insertions} −{c.deletions}
                   </td>
                 </tr>

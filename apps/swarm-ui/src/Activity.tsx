@@ -440,27 +440,38 @@ function People({ window: w }: { window: TaskWindow }) {
   return (
     <section className="section">
       <h2>People</h2>
-      <div className="table-wrap">
-        <table className="pools">
-          <thead>
-            <tr>
-              <th scope="col">Engineer</th>
-              <th scope="col" className="n">Tasks</th>
-              <th scope="col" className="n">Succeeded</th>
-              <th scope="col" className="n">Failed</th>
-              <th scope="col" className="n">Attempts</th>
-              <th scope="col">Last seen</th>
+      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
+          which measured this exact table at 390pt: `clientWidth: 358` against a
+          `scrollWidth` of 512, so 30% of it was behind an `overflow-x: auto`
+          that paints no scrollbar on this platform. The three columns hiding
+          there are `Failed`, `Attempts` and `Last seen` — a per-engineer table
+          showing tasks and successes and NOT failures reads as a clean record
+          for everyone on it. Below 900px each row becomes a stacked record with
+          its own key column (§B6.3 in `styles.css`); `data-label` is what
+          supplies that key, as an attribute so the rendered-word budgets are
+          unchanged, and the explicit `role`s keep the ARIA table that changing
+          `display` would otherwise drop. */}
+      <div className="table-wrap is-stacked">
+        <table className="pools" role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader" scope="col">Engineer</th>
+              <th role="columnheader" scope="col" className="n">Tasks</th>
+              <th role="columnheader" scope="col" className="n">Succeeded</th>
+              <th role="columnheader" scope="col" className="n">Failed</th>
+              <th role="columnheader" scope="col" className="n">Attempts</th>
+              <th role="columnheader" scope="col">Last seen</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {people.map(([who, rows]) => (
-              <tr key={who}>
-                <th scope="row">{who}</th>
-                <td className="n">{rows.length}</td>
-                <td className="n">{rows.filter((t) => t.state === 'SUCCEEDED').length}</td>
-                <td className="n">{rows.filter((t) => t.state === 'FAILED').length}</td>
-                <td className="n">{rows.reduce((n, t) => n + t.attempt_count, 0)}</td>
-                <td>
+              <tr role="row" key={who}>
+                <th role="rowheader" scope="row">{who}</th>
+                <td role="cell" data-label="Tasks" className="n">{rows.length}</td>
+                <td role="cell" data-label="Succeeded" className="n">{rows.filter((t) => t.state === 'SUCCEEDED').length}</td>
+                <td role="cell" data-label="Failed" className="n">{rows.filter((t) => t.state === 'FAILED').length}</td>
+                <td role="cell" data-label="Attempts" className="n">{rows.reduce((n, t) => n + t.attempt_count, 0)}</td>
+                <td role="cell" data-label="Last seen">
                   {timeAgo(
                     rows.map((t) => t.updated_at).sort().slice(-1)[0] ?? rows[0]!.created_at,
                   )}
@@ -510,29 +521,36 @@ export function TenantsScreen() {
     >
       {(d) => (
         <section className="section">
-          <div className="table-wrap">
-            <table className="pools">
-              <thead>
-                <tr>
-                  <th scope="col">Tenant</th>
-                  <th scope="col">Kind</th>
-                  <th scope="col">Principal</th>
-                  <th scope="col" className="n">Max active</th>
-                  <th scope="col" className="n">Units</th>
-                  <th scope="col">Credentials</th>
-                  <th scope="col">Identity</th>
-                  <th scope="col">Status</th>
+          {/* `is-stacked`, for the same reason as the People table above and
+              more of it: eight columns is the widest table in this file, so at
+              390pt everything from `Max active` rightwards — the two ceilings,
+              the credentials, the service account and the enabled/disabled
+              state — sat behind a scrollbar this platform does not paint. A
+              tenant row whose visible part ends at `Principal` says nothing
+              about whether that tenant can run anything at all. */}
+          <div className="table-wrap is-stacked">
+            <table className="pools" role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Tenant</th>
+                  <th role="columnheader" scope="col">Kind</th>
+                  <th role="columnheader" scope="col">Principal</th>
+                  <th role="columnheader" scope="col" className="n">Max active</th>
+                  <th role="columnheader" scope="col" className="n">Units</th>
+                  <th role="columnheader" scope="col">Credentials</th>
+                  <th role="columnheader" scope="col">Identity</th>
+                  <th role="columnheader" scope="col">Status</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {d.tenants.map((t) => (
-                  <tr key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
-                    <th scope="row">{t.tenant_id}</th>
-                    <td>{t.kind}</td>
-                    <td className="mono">{t.principal}</td>
-                    <td className="n">{t.max_active}</td>
-                    <td className="n">{t.capacity_units}</td>
-                    <td>
+                  <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
+                    <th role="rowheader" scope="row">{t.tenant_id}</th>
+                    <td role="cell" data-label="Kind">{t.kind}</td>
+                    <td role="cell" data-label="Principal" className="mono">{t.principal}</td>
+                    <td role="cell" data-label="Max active" className="n">{t.max_active}</td>
+                    <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
+                    <td role="cell" data-label="Credentials">
                       {t.credentials.length > 0 ? (
                         t.credentials.map((c) => (
                           // These are Secret Manager NAMES and `.tag`
@@ -547,14 +565,14 @@ export function TenantsScreen() {
                         <span className="tag capped">none registered</span>
                       )}
                     </td>
-                    <td className="mono">
+                    <td role="cell" data-label="Identity" className="mono">
                       {/* null means NO IDENTITY, not an empty string. A blank
                           cell here reads as fine and it is the opposite. */}
                       {t.service_account ?? (
                         <span className="tag full">no service account</span>
                       )}
                     </td>
-                    <td>
+                    <td role="cell" data-label="Status">
                       {t.enabled === false ? (
                         <span className="tag paused">disabled</span>
                       ) : (

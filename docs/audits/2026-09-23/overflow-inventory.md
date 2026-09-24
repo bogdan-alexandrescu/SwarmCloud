@@ -57,6 +57,23 @@ build that is not on this branch.
 not what a retina display or a different font stack would paint. Where a
 finding turns on one or two pixels it says so.
 
+### Two sections were renamed after this was measured (2026-09-24)
+
+`#agents/*` is now `#work/*` and `#pools/*` is now `#capacity/*`. Only the two
+**section** ids changed; every tab id below is unchanged, so `#agents/running`
+is `#work/running` and `#pools/quota` is `#capacity/quota`. Both old spellings
+still resolve through `SECTION_ALIASES` in `App.tsx`, so a route written the old
+way still reaches the screen it reached — but it is the old spelling of a
+decision that was made deliberately, and `nav.links.test.tsx` fails the build if
+an internal href uses one.
+
+**The `**Route**` lines in each finding below have been re-pointed. Nothing else
+has.** The route names inside the measurement tables — `pools/pools`,
+`pools/accounts`, `history/timeline` and the rest — are left exactly as they
+were measured, because those rows are a dated record of what was on screen at
+what width and rewriting a cell in one is falsifying it. Read them through the
+map above.
+
 ---
 
 ## 1. Ranked findings
@@ -109,7 +126,7 @@ nothing recomputes.
 
 | | |
 |---|---|
-| **Route** | `#agents/running` → click any row (drawer) |
+| **Route** | `#work/running` → click any row (drawer) |
 | **Viewport** | 1440×900, drawer at its 480px default |
 | **Theme** | both |
 | **Element** | `div.ctl-util > span.ctl-util-name`, `> span.ctl-util-by` |
@@ -143,7 +160,7 @@ only things being squeezed.
 
 | | |
 |---|---|
-| **Route** | `#agents/running` → drawer open |
+| **Route** | `#work/running` → drawer open |
 | **Viewport** | 1101–1115 × 900 (the drawer is a grid column down to 1100) |
 | **Theme** | both |
 | **Element** | `div.row.clickable > span.agent` |
@@ -183,7 +200,7 @@ own 1100px breakpoint.
 
 | | |
 |---|---|
-| **Route** | `#agents/running` → drawer open, drawer scrolled |
+| **Route** | `#work/running` → drawer open, drawer scrolled |
 | **Viewport** | 1440×900 |
 | **Theme** | both |
 | **Element** | `div.drawer.ctl-drawer > button.drawer-close` |
@@ -356,13 +373,34 @@ A reader re-checking this must move the pointer off the glyph first: the card
 is not in the DOM at all when closed, so a parked cursor makes it look like a
 default-open panel. It is not one.
 
+**FIXED — verified by reading, 2026-09-24. No code was changed for it here.**
+`HelpCard.tsx` gained `useEdgeSafePlacement`, which measures the anchor on open
+and on every scroll and resize, portals the card to `document.body`, and writes
+`position: fixed` with a `left` that is clamped on BOTH branches:
+`Math.min(Math.max(MARGIN, wanted), window.innerWidth - CARD_MAX - MARGIN)`.
+That upper clamp is this finding: the comment beside it names the 299px and
+names the cause, which is that the rail becomes a horizontal scroller below
+900px so a glyph scrolled off to the right reports an `anchor.right` of ~1049
+inside a 390px viewport. `SectionQuestion` in `App.tsx` — the app's *other*
+help card, the one this finding's `span.ctl-q > span.ctl-q-card` selector
+actually names — imports the same hook rather than reimplementing it, which is
+the part worth checking on any future pass: two implementations of one widget
+is how the first one's fixes stopped reaching the second.
+
+The stylesheet's `.ctl-q-card` rules that §F8 called the root cause are still
+in the file and are now inert: the inline `position: fixed` and `left` from the
+hook beat them, and `right: 0` is ignored once a `left` and a non-`auto` width
+are both present. They are left alone deliberately — they still size the card
+(`max-width: min(44ch, 86vw)`), and it is the *position* half that had to stop
+coming from CSS.
+
 ---
 
 ### F9 — The workflow DAG's `stop` button hangs out of its node
 
 | | |
 |---|---|
-| **Route** | `#agents/workflows` → expand a workflow |
+| **Route** | `#work/workflows` → expand a workflow |
 | **Viewport** | 1440×900 |
 | **Theme** | both |
 | **Element** | `div.node.wait > div.node-stop > button.stop-btn.inline` |
@@ -399,7 +437,7 @@ is the reassuring half.
 
 | | |
 |---|---|
-| **Route** | `#agents/workflows` |
+| **Route** | `#work/workflows` |
 | **Screenshot** | `overflow/10-workflows-expanded-1440.png` |
 
 | viewport | element | string | lost | renders as |
@@ -422,7 +460,7 @@ outside rather than clipping.
 
 ### F12 — `scan-terraform` truncates at every width
 
-`#agents/running`, `div.row.clickable > span.wf > span.wf-step`, `width: 104px`,
+`#work/running`, `div.row.clickable > span.wf > span.wf-step`, `width: 104px`,
 content 118px — **12% lost**, `scan-terraf…`, at 1440 as well as 390. Visible in
 `overflow/09-overview-baseline-1440.png` and the drawer screenshot. Lowest
 ranked because the ellipsis is present and honest and the string is a step name
@@ -434,13 +472,13 @@ the reader can recover one click away.
 
 | state | how to reach it | what it adds |
 |---|---|---|
-| drawer open, 1440 | click a row on `#agents/running` | F2, F4; checkpoint table hides **57%**, log window **18%** |
+| drawer open, 1440 | click a row on `#work/running` | F2, F4; checkpoint table hides **57%**, log window **18%** |
 | drawer open, ≤1115 | same, narrow window | F3 |
 | drawer open, 390 | same at 390 | drawer becomes a **full-screen overlay** — intended (`panes.ts`: two panes do not fit below 1100px). ~450 `covered` hits behind it are the overlay doing its job, not defects |
-| workflow expanded | `#agents/workflows`, click the bar | F9, F11 |
+| workflow expanded | `#work/workflows`, click the bar | F9, F11 |
 | dock dragged tall | click the dock line, drag the grip | F5 |
 | help card open | hover/focus any `?` | F8 at 390; clean at 1440 |
-| account row expanded | `#pools/accounts`, click a row | see §4, rejected |
+| account row expanded | `#capacity/accounts`, click a row | see §4, rejected |
 | error panel | open a `FAILED` task's drawer | **clean** — see §3 |
 
 ---
@@ -566,3 +604,64 @@ probe returns empty output with exit code 0, which is how this pass briefly
 * **Not verified: keyboard-only traversal.** F8's card is
   focus-openable, so it is reachable by <kbd>Tab</kbd> at 390 and lands
   off-screen — but the tab order itself was not audited.
+
+---
+
+## 7. Disposition, as of 2026-09-24
+
+**Added by the lane that consumed this inventory. Nothing above was altered
+except the `**Route**` lines (see the rename note in §How to read this) and the
+FIXED paragraph inside §F8.** This section is the record of what has since
+happened to each finding and how that was established — by READING the source
+named in each row, because this machine authors code and does not run it.
+
+| # | state | where it is answered |
+|---|---|---|
+| F1 | fixed before this lane | `styles.css` §B6.2: `.ctl-util` is `display: flex; flex-wrap: wrap` and `.ctl-util-name` carries no `text-overflow`. The row takes a second line rather than fewer characters. |
+| F2 | **fixed by this lane** | The two-line `.drawer .ctl-util` template was already written — and was **inert**, because it declared `grid-template-areas` on a rule whose `display` came from `.ctl-util` and was `flex`. `display: grid` added. |
+| F3 | fixed before this lane, backstop added here | `.app.has-inspector .row` drops three columns, and a second stage at `max-width: 1200px` drops the step; `.row .agent .id` ellipses with a `3ch` floor. Added here: `text-overflow: ellipsis` on `.row .agent` itself, which is the property this finding named. |
+| F4 | **fixed by this lane** | `.drawer::before` is a sticky, full-width, zero-space band of `--bg` as tall as the drawer's top padding plus its close button; `.drawer-close` stops floating, takes a line of its own and sits on the band at `z-index: 2`. Content scrolls under a header instead of under a floating square. The band is five literals that have to agree — a height, three margins and the drawer's own top padding — and `shell.test.tsx` checks the three relationships between them rather than the numbers, because `spacing.test.tsx` rejects both a custom property declared off `:root` and a `calc(var(…) * -1)`. |
+| F5 | **fixed by this lane** | `.source-cells`' track minimum is 260px, derived from the longest route this registry holds, and `.s-path` spans both columns so the `auto` status track stops eating the widening. `.s-path-t` wraps instead of ellipsing. |
+| F6 | fixed on six screens before this lane; seven more tables opted in here | §B6.3 stacks a table below 900px, opt-in via `.is-stacked` + `data-label`. Added here, seven tables across four files: one in `Profiles.tsx` (the pool-clearing table, rendered once per profile), both in `Activity.tsx`, three in `AgentDetail.tsx` (checkpoints — the table §2 measures at 57% — artifacts and commits), and `App.tsx`'s `#reference` table. `AgentDetail.tsx`'s two-column Key/Value metadata table is deliberately left alone: stacked, it would grow a key column whose every entry reads "Value". |
+| F7 | fixed before this lane | The narrow rail hides every unopened section's tabs (`.ctl-rail-group:not(.is-on) .ctl-rail-tabs`) and carries a 24px mask fade at its right edge in place of the scrollbar this platform does not paint. |
+| F8 | fixed before this lane | See the FIXED paragraph in §F8. |
+| F9 | **Lane 1** | Not this lane's. Untouched. |
+| F10 | **fixed by this lane** | `.ctl-dock-facts` no longer ellipses; each fact is a `.ctl-dock-fact` with `white-space: nowrap`, so the strip breaks on the ` · ` between facts and the admin-only count and the read age survive at 390. |
+| F11 | **Lane 1** | Not this lane's. Untouched. |
+| F12 | fixed before this lane | `.row`'s `[step]` track is `minmax(0, 120px)`, sized to the 118px `scan-terraform` needs rather than to the 104px it had; `.wf-step` is no longer a `.tag` and ellipses cleanly. |
+
+### What this disposition does NOT claim
+
+Every row above was established by reading source, not by measuring pixels.
+**No number in §1 has been re-measured**, and the fixes for F2, F4, F5, F6 and
+F10 have not been seen in a screenshot at any width. The probe in
+`overflow/probe.js` is still the instrument that would settle them; re-running
+it against this branch is the honest next step, and until somebody does, the
+right reading of this table is "the cause named in the finding is no longer in
+the source", not "the pixels were checked".
+
+**Five have a structural assertion in `src/__tests__/shell.test.tsx` that fails
+if the fix is reverted** — F2, F3's backstop, F4, F5 and F10 — and each one
+names, in its own comment, the mutation it catches. Two are worth singling out:
+
+* **F2's reads the parsed CSSOM, not the source and not `getComputedStyle`.**
+  A source regex passes with the declaration deleted, because the rule's comment
+  now contains the words `display: grid` several times — it explains why the
+  declaration has to be there. And `getComputedStyle` cannot answer it either:
+  jsdom applies matching rules in source order without weighing specificity, and
+  `.ctl-util` is declared ~2,300 lines after `.drawer .ctl-util`, so it reports
+  `flex` for an element a browser computes `grid` for. This was measured, not
+  reasoned about — the first version of the assertion used `getComputedStyle`
+  and CI returned `expected 'flex' to be 'grid'` against a correct stylesheet.
+  `CSSStyleRule.style` has no comments in it and no cascade.
+* **F10's has a DOM half as well as a stylesheet half.** Taking the ellipsis off
+  `.ctl-dock-facts` is inert if `Dock.tsx` renders the facts as one bare text
+  run, so the test renders the dock and counts `.ctl-dock-fact` boxes.
+
+**F6 is the one with a gap.** Its stacking is asserted by the existing §B6.3
+tests for the screens that already had it; the seven tables added here — in
+`Profiles.tsx`, `Activity.tsx`, `AgentDetail.tsx` and `App.tsx` — are covered by
+that same CSS and are not separately asserted, so a future edit could take
+`is-stacked` off one of them without a test noticing. F1, F7, F8 and F12 were
+fixed before this lane and are covered by whatever their own lanes left behind;
+this lane did not audit that.
