@@ -29,6 +29,10 @@
 // this component lives in an `aria-label`, so a text-only check would pass
 // while a screen reader still read out the false sentence.
 //
+// A SECOND DISTINCTION, added after review: an attempt no worker has started
+// is not the same as a task on which nothing has run. See "WHAT A STOP GIVES
+// UP" below.
+//
 // THE LAST TEST IS A GUARD, NOT A REPRODUCTION. A task whose worker HAS
 // started still gets the heartbeat promise, because there it is true. The easy
 // wrong fix is deleting the sentence everywhere, and that test is what fails
@@ -182,6 +186,131 @@ describe('a retry waiting for its worker (DISPATCHED, started_at left by an earl
 
     expect(said(dialog)).not.toMatch(/heartbeat/i)
     expect(fact(dialog, 'takes effect')).toMatch(/reconciler/)
+  })
+})
+
+// WHAT A STOP GIVES UP WHEN AN EARLIER ATTEMPT DID THE WORK.
+//
+// "No worker has started THIS attempt" and "nothing has run" are different
+// facts, and the retry case above is exactly where they part. The designed
+// path to it is invariant 4: an attempt runs for 40 minutes, checkpoints,
+// parks on a provider quota (checkpoint, park, release, exit), is re-admitted,
+// and waits DISPATCHED for its next worker. `started_at` is still set, because
+// nothing clears it (`control.py:412` is its only writer), and
+// `latest_checkpoint` names what that next worker would restore
+// (`lifecycle.py:345`). AgentDetail shows it as `restore <uri>`.
+//
+// Stopping that task is irreversible: it goes terminal, and the frozen state
+// machine gives CANCELLED no way back, so nothing ever restores that
+// checkpoint. Telling the reader "Nothing has run yet" or "work so far: none"
+// there says nothing is at stake when 40 minutes of progress is.
+//
+// `attempt_count > 1` ALONE IS NOT EVIDENCE OF EARLIER WORK. The reconciler
+// reclaims an attempt whose worker never started and the task is admitted
+// again, which is how the incident's tasks got to attempt 2 with `started_at`
+// still null. For those, "nothing has run" is true, and the guard below holds
+// it there.
+const CHECKPOINT =
+  'gs://swarm-artifacts/tenants/eng/tasks/task_2a417cb24edb4d2cb59e/attempts/att_9b1d/checkpoints/ckpt-17'
+
+/** The stop dialog's long form: the accessible name of the facts strip. */
+function longForm(dialog: HTMLElement): string {
+  return dialog.querySelector('.stop-facts')?.getAttribute('aria-label') ?? ''
+}
+
+describe('a re-admitted task waiting DISPATCHED after an earlier attempt ran and checkpointed', () => {
+  const resumed = (): Task =>
+    task({ started_at: THEN, attempt_count: 2, latest_checkpoint: CHECKPOINT })
+
+  it('does not say nothing has run, and does not render the work so far as none', () => {
+    const dialog = openConfirmation(resumed())
+
+    expect(said(dialog)).not.toMatch(/nothing has run/i)
+    expect(said(dialog)).not.toMatch(/no work to harvest/i)
+    const work = fact(dialog, 'work so far')
+    expect(work).not.toMatch(/^none\b/)
+    expect(work).toMatch(/earlier attempt/)
+  })
+
+  it('says the stop gives up resuming from the checkpoint, and still promises no heartbeat', () => {
+    const dialog = openConfirmation(resumed())
+
+    const long = longForm(dialog)
+    expect(long).toMatch(/checkpoint/)
+    expect(long).toMatch(/not resumed|never resumed/)
+    expect(fact(dialog, 'work so far')).toMatch(/not resumed/)
+    // Still true of THIS attempt: no worker is running it.
+    expect(said(dialog)).not.toMatch(/heartbeat/i)
+    expect(fact(dialog, 'takes effect')).toMatch(/reconciler/)
+  })
+})
+
+describe('a PARKED task whose earlier attempt ran and checkpointed', () => {
+  // The same task one step earlier: parked on quota, holding no capacity. The
+  // stop is immediate here, and the same work is given up.
+  const parked = (): Task =>
+    task({
+      state: 'PARKED',
+      park_reason: 'PROVIDER_QUOTA_EXHAUSTED',
+      current_lease_id: null,
+      started_at: THEN,
+      latest_checkpoint: CHECKPOINT,
+    })
+
+  it('the confirmation does not render its work as none', () => {
+    const dialog = openConfirmation(parked())
+
+    expect(fact(dialog, 'work so far')).not.toMatch(/^none\b/)
+    expect(said(dialog)).not.toMatch(/no attempt to harvest|none to harvest/i)
+    expect(longForm(dialog)).toMatch(/checkpoint/)
+  })
+
+  it('the note after it is stopped does not say no attempt had started', async () => {
+    const ok: Result<CancelResult> = {
+      status: 'ok',
+      data: { released_immediately: true },
+      fetchedAt: Date.now(),
+    }
+    api.cancelTask.mockResolvedValue(ok)
+    const { container } = render(<StopRun task={parked()} what="agent" reload={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'stop' }))
+    fireEvent.click(screen.getByRole('button', { name: 'stop agent' }))
+
+    await screen.findByText('Stopped.')
+    const all = said(container)
+    expect(all).not.toMatch(/no attempt had started/i)
+    expect(all).not.toMatch(/nothing to harvest/i)
+  })
+})
+
+describe('what a stop costs the task, whatever state it is in', () => {
+  // CANCELLED has no outgoing transition in the frozen state machine
+  // (`states.py`), and a flagged task that the reconciler returns to READY is
+  // cancelled by the scheduler before it is admitted again
+  // (`scheduler/loop.py`, `_admit_one`). So a stop ends the task: no remaining
+  // retry runs. The long form used to say the retries were "unaffected".
+  const cases: Array<[string, Partial<Task>]> = [
+    ['RUNNING', { state: 'RUNNING', started_at: THEN }],
+    ['DISPATCHED, never started', {}],
+    ['PARKED', { state: 'PARKED', current_lease_id: null }],
+  ]
+  it.each(cases)('%s: the confirmation does not say the retries survive', (_name, over) => {
+    const dialog = openConfirmation(task(over))
+
+    expect(longForm(dialog)).not.toMatch(/retries are unaffected|remaining retries/i)
+  })
+})
+
+describe('a re-admitted task whose earlier attempts never started either', () => {
+  // A GUARD: green before this change and after it. `attempt_count` 2 with
+  // `started_at` null is the incident's shape: admitted, reclaimed before any
+  // worker started, admitted again. Nothing has run, and saying so is true.
+  it('still says nothing has run', () => {
+    const dialog = openConfirmation(task({ attempt_count: 2 }))
+
+    expect(fact(dialog, 'work so far')).toMatch(/^none\b/)
+    expect(longForm(dialog)).not.toMatch(/earlier attempt/)
   })
 })
 
