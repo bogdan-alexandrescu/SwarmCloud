@@ -492,9 +492,11 @@ resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
 #
 # THE MESSAGES ARE THE EMITTER'S, VERBATIM. reconciler/repair.py spells them
 # once, as BACKEND_UNAVAILABLE and NOT_REPAIRING, and
-# tests/unit/control_plane/test_reconciler_gke_namespaced.py asserts both
-# strings appear in this file: a log-based metric whose filter matches nothing
-# is a number that stays at zero and an alert that never fires.
+# tests/unit/control_plane/test_reconciler_gke_namespaced.py parses this file
+# and asserts each string is in the `filter` of the metric below that counts it
+# (a comment quoting it, like this one, does not count): a log-based metric
+# whose filter matches nothing is a number that stays at zero and an alert that
+# never fires.
 locals {
   reconciler_services = coalescelist(
     [for s in var.service_names : s if endswith(s, "-reconciler")],

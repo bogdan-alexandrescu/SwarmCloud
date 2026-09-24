@@ -51,8 +51,10 @@ from .store import ControlStore
 #: terraform/modules/monitoring/alerts.tf builds log-based metrics on these exact
 #: strings, and a log-based metric whose filter matches nothing is not an error
 #: anywhere -- it is a number that stays at zero and an alert that never fires.
-#: `test_reconciler_gke_namespaced.py` asserts both appear in that file verbatim,
-#: so rewording one here without the other fails a test instead of an alert.
+#: `test_reconciler_gke_namespaced.py` parses that file and asserts each appears
+#: verbatim in the `filter` of the metric that counts it -- not merely somewhere
+#: in the file, where a comment quoting it would do -- so rewording one here
+#: without the other fails a test instead of an alert.
 #:
 #: Why they are alerted on at all: from 2026-09-16 the GKE listing failed on
 #: essentially every pass, and nothing paged. On 2026-09-24 that blindness held
