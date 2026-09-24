@@ -26,8 +26,10 @@ import type {
 
 export type { Result, ApiError } from './fetch'
 
-/** Fixtures, so the UI can be worked on before DNS resolves. */
-const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
+/** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
+ *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
+ *  flag rather than restating the expression. */
+export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
 export async function loadCapacity(): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
