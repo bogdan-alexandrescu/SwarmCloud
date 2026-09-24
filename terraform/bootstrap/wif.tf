@@ -244,86 +244,61 @@ resource "google_project_iam_member" "deployer_storage" {
   }
 }
 
-# iap.admin, SCOPED — and this one is not optional scoping.
+# WHO MAY PASS IAP, managed here rather than by CI -- and the deployer holds NO
+# IAP role.
 #
-# `terraform apply` failed with
+# terraform/infra's frontend module used to manage these accessor bindings, which
+# meant CI's deployer had to read and write IAP policy. Three ways of granting it,
+# all on 2026-09-24:
 #
-#     Error 403: Permission 'iap.webServices.getIamPolicy' denied on resource
-#     '//iap.googleapis.com/projects/saga-agents-staging/iap_web/compute/
-#      services/swarm-ui-backend'
+#   1. project-level roles/iap.admin -- admin over all TEN backends in this
+#      project, nine of them the other team's GKE gateway routes including
+#      keycloak (their identity provider) and argocd (their deployment admin);
+#   2. the same with a condition on resource.name startsWith ".../services/swarm"
+#      -- matched nothing; release 35972131246 failed "The caller does not have
+#      permission". IAP names a backend by project NUMBER and numeric id, and a
+#      prefix on that form admits every backend, theirs included;
+#   3. roles/iap.admin bound in each of OUR two backends' own IAP policy --
+#      verified present with `gcloud iap web get-iam-policy`, and the release
+#      still got 403 on iap.webServices.getIamPolicy at 9.5 minutes, past IAM
+#      propagation (attempts 2-5 of the same run). Why is not established.
 #
-# because `modules/frontend` manages `google_iap_web_backend_service_iam_member`
-# on our UI backend and the deployer held no IAP role at all.
+# Membership changes rarely and is the owner's decision, so it lives here, in the
+# root only the owner applies. The deployer needs no IAP permission at all, and
+# the release never reads an IAP policy.
 #
-# WHY THIS ONE IS CONDITIONED FROM THE START, unlike the seventeen roles granted
-# unconditioned before it. `gcloud compute backend-services list` on this project
-# returns TEN services. One is ours. The other nine are the other team's GKE
-# gateway routes:
+# THE NAMES ARE LOOKED UP, NOT TRUSTED. They follow modules/frontend/main.tf
+# (`${local.name}-backend` and `${local.name}-ui-backend`, local.name =
+# "${name_prefix}-ui"). The data source turns that restated rule into a check: if
+# the module renames a backend, this plan fails "not found" instead of silently
+# admitting nobody.
 #
-#     keycloak            their identity provider
-#     argocd              their deployment admin
-#     promptlab-api       their product
-#     promptlab-web       their product
-#     crawling-service    their product
-#     browser-engine      their product
-#     api-service         their product
-#     gw-serve404/500     their gateway
-#
-# Project-level `roles/iap.admin` would let any CI run on an allowed ref add or
-# remove members on their KEYCLOAK and their ARGOCD — that is, grant itself or
-# anyone else access to another team's identity provider and deployment console,
-# or lock them out of both. There is no version of this platform's work that
-# needs that, and no review that would catch it after the fact.
-#
-# THE FIRST VERSION WAS A CONDITION, AND IT DID NOT WORK. It was a project-level
-# grant with
-#
-#     resource.name.startsWith("projects/saga-agents-staging/iap_web/compute/services/swarm")
-#
-# and release 35972131246 (2026-09-24) failed on both of our backends with
-#
-#     Error 403: The caller does not have permission
-#
-# The previous error was "Permission 'iap.webServices.getIamPolicy' denied", so the
-# condition was evaluated and matched nothing. IAP names a web backend by project
-# NUMBER and numeric backend ID (`projects/209012342332/iap_web/compute/services/
-# 817602226733443034`), so a prefix on the project ID and the service NAME can
-# never match. The numeric form cannot be used either. A prefix on it is the
-# whole project, which admits all ten backends, their Keycloak included. Pinning
-# the IDs breaks silently the day a backend is recreated with a new one.
-#
-# SO THE GRANT IS ON THE RESOURCE, NOT ON THE PROJECT. roles/iap.admin is bound in
-# each of our two backends' own IAP policies. It cannot reach a backend that is
-# not ours, because the binding does not exist anywhere else. No condition syntax
-# has to be right for that to hold. `gcloud iam list-grantable-roles` on the
-# backend lists roles/iap.admin. `modules/frontend` manages only additive
-# `_iam_member` resources on these backends, so its applies do not remove this
-# binding.
-#
-# THE NAMES ARE LOOKED UP, NOT TRUSTED. They are derived in modules/frontend/main.tf
-# (`${local.name}-backend` :123 and `${local.name}-ui-backend` :189, with
-# local.name = "${name_prefix}-ui"). Restating that rule here makes a second copy.
-# The data source turns that copy into a check: if the module renames a backend,
-# this plan fails with "not found" instead of granting IAP rights on nothing.
-#
-# FRESH PROJECT ORDER. The backends are created by terraform/infra, which runs
-# after bootstrap and needs these rights to set its own IAP members. On a new
-# project, apply bootstrap with deployer_iap_backends = [], apply infra once as
-# an owner, then apply bootstrap with the default.
-data "google_compute_backend_service" "deployer_iap" {
-  for_each = local.wif_enabled == 1 ? toset(var.deployer_iap_backends) : toset([])
+# FRESH PROJECT ORDER. The backends are created by terraform/infra. On a new
+# project: apply bootstrap with frontend_iap_backends = [], let the release create
+# the backends (IAP is ON with no members, so nobody gets in yet), then apply
+# bootstrap with the default to admit people.
+data "google_compute_backend_service" "frontend_iap" {
+  for_each = toset(var.frontend_iap_backends)
 
   project = var.project_id
   name    = each.value
 }
 
-resource "google_iap_web_backend_service_iam_member" "deployer_iap" {
-  for_each = data.google_compute_backend_service.deployer_iap
+locals {
+  # One binding per (backend, member). The key is readable in plan output.
+  frontend_iap_bindings = {
+    for pair in setproduct(keys(data.google_compute_backend_service.frontend_iap), var.frontend_iap_members) :
+    "${pair[0]} ${pair[1]}" => { backend = pair[0], member = pair[1] }
+  }
+}
+
+resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
+  for_each = local.frontend_iap_bindings
 
   project             = var.project_id
-  web_backend_service = each.value.name
-  role                = "roles/iap.admin"
-  member              = "serviceAccount:${google_service_account.deployer[0].email}"
+  web_backend_service = data.google_compute_backend_service.frontend_iap[each.value.backend].name
+  role                = "roles/iap.httpsResourceAccessor"
+  member              = each.value.member
 }
 
 # ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.
