@@ -60,6 +60,11 @@ class AuthContext:
     #: Only ever true while `is_admin` is False; a confirmed membership, or an
     #: `admin_users` entry, is an answer and needs no lookup.
     admin_unresolved: bool = False
+    #: On `ApiSettings.admin_pool_users`: may call the admin routes in
+    #: `POOL_ADMIN_ROUTES`, and no other. NOT a kind of admin -- `is_admin`
+    #: stays False for such a caller, so nothing that reads that flag widens.
+    #: The only place this is consulted is `require_admin`.
+    is_pool_admin: bool = False
 
     @property
     def email(self) -> str:
@@ -416,18 +421,19 @@ class Authenticator:
         # groups, `admin_set` is empty and the first test can never be true,
         # so every operator screen 403s for everyone. The email is the one
         # from the verified assertion, not something the caller supplied.
-        # MUTATION, NOT THE FIX: a pool admin is made a full admin -- the first
-        # form of the 2026-09-24 decision, which the owner reversed. Committed
-        # only so CI shows the narrowness tests catch it; the next commit
-        # replaces it with the allow-list.
-        admin_pool_users = {
-            u.lower() for u in getattr(self._settings, "admin_pool_users", ())
-        }
         is_admin = (
             any(g.lower() in admin_set for g in member_groups)
             or email.lower() in admin_users
-            or email.lower() in admin_pool_users
         )
+        # The NARROW capability, deliberately kept out of `is_admin`: that flag
+        # is read by the operator screens and by service.py's cross-tenant
+        # fields, and a pool admin must switch on none of them. What it does
+        # grant is decided per route, by `require_admin` against
+        # POOL_ADMIN_ROUTES. getattr because hand-built settings in tests
+        # predate the field, exactly as `allowed_users` above.
+        admin_pool_users = {
+            u.lower() for u in getattr(self._settings, "admin_pool_users", ())
+        }
         return AuthContext(
             principal=principal,
             tenant_id=tenant_id,
@@ -436,6 +442,7 @@ class Authenticator:
             # A confirmed membership settles the question; the doubt only
             # survives while the answer is still False.
             admin_unresolved=admin_unresolved and not is_admin,
+            is_pool_admin=email.lower() in admin_pool_users,
         )
 
     def _tenant_principal(self, member_groups: tuple[str, ...], email: str) -> str:
@@ -452,8 +459,41 @@ class Authenticator:
         return email
 
 
-def require_admin(ctx: AuthContext) -> AuthContext:
+#: Every admin route a POOL ADMIN (`ApiSettings.admin_pool_users`) may call, as
+#: (HTTP method, route template) -- the template exactly as FastAPI holds it on
+#: the matched route, router prefix included. Nothing else on the admin surface
+#: is reachable by that caller.
+#:
+#: AN ALLOW-LIST, AND THAT IS THE DESIGN. The owner decided on 2026-09-24 that
+#: the verification gate gets the runner ceiling and is NOT an admin: full
+#: admin can disable any tenant (PUT /v1/admin/tenants/{id}/limits) and rewrite
+#: any tenant's workflow state. A deny-list of the dangerous routes would be
+#: right on the day it was written and wrong the day an admin route was added,
+#: silently -- the new route would be open to the gate until somebody thought
+#: to deny it. Here a new admin route is admin-only until somebody decides
+#: otherwise and adds it below, where the decision is visible in review.
+#: tests/unit/control_plane/test_pool_admin_is_narrow.py holds this set equal to
+#: the decided one and sweeps every admin route in the routers against it.
+#:
+#: Only the PUT: race-test reads the pool back from Firestore, not the API, so
+#: no admin GET is needed. The route takes the profile as a parameter, so the
+#: capability is any runner profile's ceiling, not only mock's.
+POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("PUT", "/v1/admin/limits/runner/{runner_profile}"),
+    }
+)
+
+
+def require_admin(
+    ctx: AuthContext, route: tuple[str, str] | None = None
+) -> AuthContext:
     """The admin gate, and the difference between "no" and "I could not ask".
+
+    `route` is the (method, route template) being called, which is what lets a
+    pool admin through on the routes in POOL_ADMIN_ROUTES and nowhere else. A
+    caller that passes no route gets the full-admin rule and nothing more, so
+    forgetting it fails closed.
 
     503, not 403, when Cloud Identity did not answer. A 403 here is a statement
     about the CALLER -- "you are not an admin" -- and an operator who is one
@@ -468,10 +508,19 @@ def require_admin(ctx: AuthContext) -> AuthContext:
     """
     if ctx.is_admin:
         return ctx
+    if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
+        return ctx
     if ctx.admin_unresolved:
         raise UpstreamUnavailable(
             "admin group membership could not be resolved; retry shortly. This is "
             "NOT a refusal -- Cloud Identity did not answer, so whether you are an "
             "admin is unknown"
+        )
+    if ctx.is_pool_admin:
+        # Said plainly, so the gate's operator does not go looking for a
+        # broken grant: the grant works, and this route is not in it.
+        raise Forbidden(
+            "this caller may change runner ceilings only (ADMIN_POOL_USERS); "
+            "every other admin route needs admin group membership"
         )
     raise Forbidden("admin group membership is required for this operation")

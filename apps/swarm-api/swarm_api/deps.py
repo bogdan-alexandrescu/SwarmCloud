@@ -267,8 +267,23 @@ def tenant_scope(
     return ctx.submissions.scope_for(auth)
 
 
-def admin_auth(auth: AuthContext = Depends(current_auth)) -> AuthContext:
-    return require_admin(auth)
+def admin_auth(
+    request: Request, auth: AuthContext = Depends(current_auth)
+) -> AuthContext:
+    """The dependency every admin route declares.
+
+    It hands `require_admin` the route being called -- method and template,
+    from the route FastAPI matched -- because that is what the narrow pool-admin
+    capability is decided on (`auth.POOL_ADMIN_ROUTES`). The template, not the
+    concrete path: `/v1/admin/limits/runner/{runner_profile}`, so a profile
+    name in the URL can never be spelled to look like some other route.
+
+    No matched route (which FastAPI does not produce for a route that declared
+    this dependency) means no route to allow, and the full-admin rule applies.
+    """
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    return require_admin(auth, route)
 
 
 def paged_limit(ctx: AppContext, requested: int | None) -> int:
