@@ -192,7 +192,7 @@ class SchedulerStore:
                 "workflow %s named by a step of tenant %s has no document; "
                 "on_step_failure cannot be applied", workflow_id, tenant_id,
             )
-            return None
+            return _ON_STEP_FAILURE_DEFAULT  # MUTANT M5
         data = snap.to_dict() or {}
         if data.get("tenant_id") != tenant_id:
             log.warning(
@@ -219,8 +219,7 @@ class SchedulerStore:
         """
         query = (
             self._db.collection(TASKS)
-            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-            .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+            .where(filter=FieldFilter("workflow_id", "==", workflow_id))  # MUTANT M4: tenant filter removed
             .where(filter=FieldFilter("state", "==", state.value))
             .limit(limit)
         )
@@ -494,7 +493,7 @@ class SchedulerStore:
                 current = TaskState(stored.get("state"))
             except ValueError:
                 return None
-            if current not in PENDING_STATES:
+            if current in (TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED):  # MUTANT M1
                 return None
             assert_transition(current, TaskState.CANCELLED)
             txn.update(
