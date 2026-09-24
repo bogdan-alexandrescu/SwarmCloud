@@ -211,15 +211,15 @@ locals {
   # location is global in this project (`gcloud logging buckets describe
   # _Default --location=global`, 2026-09-24).
   verify_log_location = "global"
-  verify_log_bucket   = "projects/${var.project_id}/locations/${local.verify_log_location}/buckets/swarm-verify-logs" # MUTATION
-  verify_log_view_id  = "verify" # MUTATION
+  verify_log_bucket   = "projects/${var.project_id}/locations/${local.verify_log_location}/buckets/_Default"
+  verify_log_view_id  = "swarm-verify"
   verify_log_view     = "${local.verify_log_bucket}/views/${local.verify_log_view_id}"
 
   # The owner's filter, as decided. `swarm-verify` is the name
   # terraform/infra/verify.tf gives google_cloud_run_v2_job.verify; the
   # integration test above builds its log entries from that name, so a filter
   # naming any other job shows the deployer nothing.
-  verify_log_view_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-verify\" AND NOT resource.labels.job_name=\"swarm-worker\"" # MUTATION
+  verify_log_view_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-verify\""
 
   # EVERY PREDEFINED ROLE MEASURED TO READ LOG ENTRIES, read from the file the
   # measurement wrote rather than restated: all 2,397 predefined roles listed
@@ -286,11 +286,11 @@ resource "google_logging_log_view" "verify" {
 }
 
 resource "google_project_iam_member" "deployer_reads_verify_logs" {
-  count = 1 # MUTATION
+  count = local.wif_enabled
 
   project = var.project_id
-  role    = "roles/logging.viewer"                                                            # MUTATION
-  member  = "serviceAccount:${var.name_prefix}-tf-deployer@${var.project_id}.iam.gserviceaccount.com" # MUTATION
+  role    = "roles/logging.viewAccessor"
+  member  = "serviceAccount:${google_service_account.deployer[0].email}"
 
   condition {
     title       = "swarm-verify log view only"

@@ -28,7 +28,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 SKIP_PREREQ=0
 # Passed to the bootstrap plan as-is; expanded with the bash 3.2 empty-array
 # guard below. BOOTSTRAP_TARGET_NOTE is the same list for people to read.
-BOOTSTRAP_TARGETS=("-target=google_logging_log_view.verify") # MUTATION
+BOOTSTRAP_TARGETS=()
 BOOTSTRAP_TARGET_NOTE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in

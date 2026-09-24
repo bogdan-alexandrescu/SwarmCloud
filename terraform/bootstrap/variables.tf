@@ -196,7 +196,6 @@ variable "deployer_roles" {
     "roles/resourcemanager.projectIamAdmin",
     # UNSCOPABLE: Cloud Run is not in IAM's resource-attribute list.
     "roles/run.admin",
-    "roles/iam.securityReviewer", # MUTATION
     # UNSCOPABLE: one set of enabled services per project; nothing to divide.
     "roles/serviceusage.serviceUsageAdmin",
     # storage.admin is NOT in this list any more; it is granted in wif.tf with an
@@ -247,7 +246,12 @@ variable "deployer_roles" {
   #
   # Neither says anything about what the deployer can reach through the roles
   # it does hold -- verify_logs.tf, "WHAT THIS DOES NOT BOUND".
-  # MUTATION: both log-read refusals removed
+  validation {
+    condition     = length(setintersection(toset(var.deployer_roles), toset(local.log_reading_roles))) == 0
+    error_message = "no role measured to read log entries project-wide (terraform/bootstrap/log-reading-roles.json) may be given to CI: it reads the swarm-verify job's logs through one view, granted with a condition in verify_logs.tf, and nothing else (owner decision 2026-09-24)."
+  }
+
+  # MUTATION: the reviewed-roles allowlist removed; only the measured denylist remains
 }
 
 variable "deployer_secret_permissions" {
