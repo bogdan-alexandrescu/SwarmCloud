@@ -5971,6 +5971,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    be a second `.app` rule here; `stylesheet.gate.test.ts` holds it to one. */
 
 :root { --rail-w: 200px; }
+/* THE WIDTH OF THE FADE at the end of the phone-width strip, declared once and
+   read twice in the `@media (max-width: 899px)` block below: by the strip's
+   mask, and by the utility corner's trailing padding, which reserves exactly
+   the faded band as empty space at the end of the scroll. Two literal 24px
+   values are how the next edit to one of them would put "API reads" back
+   under the fade (`rail.phone.test.ts`). A token on `:root` rather than a
+   property on `.ctl-rail` because every `var()` in this sheet resolves from
+   `:root` -- `spaceprobe.ts` holds that, and throws on one that does not. */
+:root { --rail-fade: 24px; }
 /* Below 1280px the rail narrows rather than becoming a 56px icon column: this
    product has no icon set, and a letter is not an icon -- it is a label with
    everything but the first character deleted. That argument used to rest on
@@ -6511,14 +6520,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
        cost is one faded tab-edge at most.
        (This was a second `.ctl-rail` rule two rules further down this block;
        one element, one rule.)
-       THE FADE'S WIDTH IS ONE PROPERTY, read by the mask here and by the
-       utility corner's trailing padding below. A mask does not scroll with
-       the content, so the last fade-width of the row sits under it at every
-       scroll position, the end included; the corner reserves exactly that
-       much empty space so the end of the scroll uncovers the last label.
-       Two literal 24px values are how the next edit to one of them would
-       silently put "API reads" back under the fade. */
-    --rail-fade: 24px;
+       THE FADE'S WIDTH IS ONE TOKEN, `--rail-fade` beside `--rail-w`, read by
+       the mask here and by the utility corner's trailing padding below. A
+       mask does not scroll with the content, so the last fade-width of the
+       row sits under it at every scroll position, the end included; the
+       corner reserves exactly that much empty space so the end of the scroll
+       uncovers the last label. */
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
     mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
   }
@@ -6559,7 +6566,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     padding-top: 0;
     padding-left: var(--ctl-s3);
     /* The faded band at the end of the scroll is empty space, not a label.
-       See `--rail-fade` on `.ctl-rail` above. */
+       See `--rail-fade`, beside `--rail-w`. */
     padding-right: var(--rail-fade);
     border-top: none;
     border-left: 1px solid var(--ctl-hairline);

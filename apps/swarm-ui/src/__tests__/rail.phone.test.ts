@@ -42,6 +42,7 @@ import STYLES from '../styles.css?raw'
 import { describe, expect, it } from 'vitest'
 
 import { parseSheet, type GateNode } from './cssgate'
+import { stripComments } from './spaceprobe'
 
 const PHONE = '@media (max-width: 899px)'
 
@@ -124,10 +125,27 @@ describe('the top strip at phone width', () => {
    * reader has no further to go.
    */
   it('ends the scroll on empty space as wide as the fade, not on a label', () => {
-    const rail = phoneBodies('.ctl-rail').join(';')
-    const fade = /--rail-fade\s*:\s*([^;]+)/.exec(rail)
-    expect(fade, 'the fade width is not a single custom property on .ctl-rail').not.toBeNull()
-    expect((fade?.[1] ?? '').trim()).toMatch(/^\d+px$/)
+    // ONE DECLARATION IN THE WHOLE SHEET, and it is a length. It lives on
+    // `:root` (beside `--rail-w`), not on the phone `.ctl-rail`: every `var()`
+    // in this sheet resolves from `:root`, and `spaceprobe.ts` -- which the
+    // keyboard and spacing sweeps run the whole sheet through -- throws on a
+    // name it cannot find there. (Declared on `.ctl-rail` first, which is what
+    // this assertion used to demand; CI's first run of the fix found it.)
+    const decls = [...stripComments(STYLES).matchAll(/--rail-fade\s*:\s*([^;}]+)/g)]
+    expect(
+      decls.map((m) => (m[1] ?? '').trim()),
+      'the fade width is not ONE custom property',
+    ).toHaveLength(1)
+    expect((decls[0]?.[1] ?? '').trim()).toMatch(/^\d+px$/)
+    const roots: string[] = []
+    const walk = (nodes: readonly GateNode[]): void => {
+      for (const n of nodes) {
+        if (n.kind === 'group') walk(n.children)
+        else if (n.kind === 'rule' && n.prelude === ':root') roots.push(stripComments(n.body))
+      }
+    }
+    walk(parseSheet(STYLES).nodes)
+    expect(roots.some((b) => /--rail-fade\s*:/.test(b)), 'the fade width is not a :root token').toBe(true)
 
     const mask = phoneValue('.ctl-rail', 'mask-image') ?? ''
     expect(mask, 'the mask no longer reads the fade width it shares').toContain('var(--rail-fade)')

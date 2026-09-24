@@ -441,8 +441,15 @@ def test_the_checkpoint_and_log_loaders_now_have_a_caller():
     """Both were written in full and NOTHING had ever called them -- fully
     written dead code behind two routes that exist and are tested.
 
-    MUTATION: delete the `<RunFiles task={task} />` mount from AgentDetail. The
-    two loaders have no caller again and this goes red.
+    MUTATION: delete the `<RunFiles task={task} ... />` mount from AgentDetail.
+    The two loaders have no caller again and this goes red.
+
+    THE MOUNT IS MATCHED ON ITS PROPS, NOT ITS SPELLING. This asserted the
+    literal `<RunFiles task={task} />`, and the mount grew a second prop -- the
+    attempt records, without which the Checkpoints section called a reclaimed
+    checkpoint "a real zero" (ui-honesty, 2026-09-24) -- which that literal
+    read as the panel being unmounted. What matters is that it is mounted with
+    this task, and that the attempt records reach it.
     """
     api = _src("api.ts")
     assert "export async function loadCheckpoints(" in api
@@ -456,9 +463,14 @@ def test_the_checkpoint_and_log_loaders_now_have_a_caller():
         assert files, f"{name} is exported from api.ts and no screen calls it"
 
     agent = _src("AgentDetail.tsx")
-    assert "<RunFiles task={task} />" in agent, (
+    mount = re.search(r"<RunFiles\b([^>]*)/>", agent)
+    assert mount is not None and re.search(r"\btask=\{task\}", mount.group(1)), (
         "the panel that calls both loaders is not mounted on the run screen, so the "
         "node link opens a run that still cannot show logs or checkpoints"
+    )
+    assert re.search(r"\battempts=\{run\.attempts\}", mount.group(1)), (
+        "the Checkpoints section is mounted without the attempt records, so it "
+        "cannot tell a checkpoint written and since reclaimed from a real zero"
     )
 
 
