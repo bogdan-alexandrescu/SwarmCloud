@@ -815,6 +815,20 @@ class Worker:
         The reconciler finishes what this does not. A lease that is not
         released is reclaimed by the rules that release it after the Job is
         gone (`obsolete_generation`, `stale_lease`, `missing_execution`).
+
+        WHAT HOLDS FOR THE WHOLE EXIT, and not only from here on. An event
+        that announces a write is committed with that write
+        (`ControlPlane.transition`'s `events`), so a park that is refused
+        leaves no QUOTA_EXHAUSTED behind. Writes made BEFORE the refusal can
+        still come from an attempt that was already fenced:
+
+          * the tenant's provider document, which `_park_for_quota`
+            publishes ahead of its park (see there);
+          * an event emitted in the gap between a check that passed and the
+            next call. CHECKPOINT_STARTED follows `ensure_owner` that way.
+            PARKED, the terminal events, CHECKPOINT_COMPLETED and
+            LEASE_RELEASED each follow the write they record, which this
+            attempt made while it still owned the task.
         """
         self.log.error(
             "FENCED on the way out: this attempt has been superseded; exiting "
@@ -1572,10 +1586,6 @@ class Worker:
             "account_pool_reason": exc.decision.reason,
             **summary,
         }
-        self.control.emit(
-            EventType.QUOTA_EXHAUSTED,
-            {**detail, "next_eligible_at": next_eligible, "park_phase": "account_assign"},
-        )
         self.control.park(
             # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
             # the tenant HAS credentials, they are simply all spent or all
@@ -1595,6 +1605,18 @@ class Worker:
             ),
             next_eligible_at=next_eligible,
             detail={**detail, "park_phase": "account_assign"},
+            # THE ANNOUNCEMENT IS WRITTEN IN THE PARK'S OWN TRANSACTION. It used
+            # to be emitted just above this call. A fence that landed during
+            # the checkpoint's upload or the output upload was met by the park,
+            # which refused, and QUOTA_EXHAUSTED was already in a task stream
+            # that belonged to a newer generation, announcing a park that never
+            # happened. Now it commits with the park or not at all.
+            announce=[
+                (
+                    EventType.QUOTA_EXHAUSTED,
+                    {**detail, "next_eligible_at": next_eligible, "park_phase": "account_assign"},
+                )
+            ],
         )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
@@ -1624,6 +1646,12 @@ class Worker:
         self._export_metrics()
         provider = str(decision.detail.get("provider") or self.cfg.provider or "")
         if provider:
+            # NOT FENCED, and not a task write. This is the tenant's document
+            # for the provider (`quota/{provider}:{tenant}`). What it records,
+            # a 429 and its retry-after, was observed whether or not the park
+            # below finds this attempt fenced, so an attempt fenced during the
+            # uploads above still publishes it. Its place ahead of the park is
+            # unchanged.
             try:
                 state = ProviderState(str(decision.detail.get("provider_state", "EXHAUSTED")))
             except ValueError:
@@ -1637,18 +1665,26 @@ class Worker:
         # `source` is where the signal was OBSERVED (the runner's 429, the
         # control plane's aggregate, the pre-flight check); `decision.detail`
         # already carries where it came FROM. Both are kept, under distinct keys.
-        self.control.emit(
-            EventType.QUOTA_EXHAUSTED,
-            {
-                **decision.detail,
-                "next_eligible_at": decision.next_eligible_at,
-                "park_phase": source,
-            },
-        )
+        #
+        # The QUOTA_EXHAUSTED announcement is written in the park's own
+        # transaction. It used to be emitted here, ahead of the park. A fence
+        # that landed during the uploads above was met by the park, which
+        # refused, and the announcement of a park that never happened was
+        # already in a stream that belonged to a newer generation.
         self.control.park(
             reason=decision.reason,
             next_eligible_at=decision.next_eligible_at,
             detail={**decision.detail, "park_phase": source, **summary},
+            announce=[
+                (
+                    EventType.QUOTA_EXHAUSTED,
+                    {
+                        **decision.detail,
+                        "next_eligible_at": decision.next_eligible_at,
+                        "park_phase": source,
+                    },
+                )
+            ],
         )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 

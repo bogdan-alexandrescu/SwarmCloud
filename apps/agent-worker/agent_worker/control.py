@@ -35,7 +35,10 @@ lands between that check and the write. So `_fenced_task` reads the task and
 the lease through the same transaction that writes. If the attempt is fenced
 it raises `FencedWriteRefused` and nothing is committed. `validate_generation`
 and `_fenced_task` share one predicate (`_task_fence`, `_lease_fence`), so the
-gate and the writes agree on what "fenced" means.
+gate and the writes agree on what "fenced" means. An event that ANNOUNCES one
+of those writes (QUOTA_EXHAUSTED ahead of a park) is written in the same
+transaction (`transition`'s `events`), so it commits with the write or not at
+all.
 
 **Every document is checked against this worker's tenant before it is used.**
 Firestore has no document-level IAM: `roles/datastore.user` is granted per
@@ -52,7 +55,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import Attempt, ProviderState, TaskEvent, new_id, utcnow
@@ -372,13 +375,25 @@ class ControlPlane:
     def ensure_owner(self, *, write: str) -> None:
         """Refuse, with `FencedWriteRefused`, work this attempt no longer owns.
 
-        This is a read. It is for work that must be refused BEFORE its first
+        It writes nothing. It is for work that must be refused BEFORE its first
         side effect. A checkpoint uploads its archive long before it writes the
         pointer to it, and a stale archive left in the task's prefix is one
         that `CheckpointManager.find_latest` can later choose. It uses the same
         predicate as every guarded write, so it cannot pass where a write would
         be refused. It does not replace the check in the write's own
         transaction, because the fence can still land in between.
+
+        IT IS NOT A READ-ONLY TRANSACTION. `self._txn.run` in production is
+        `FirestoreTransactionRunner.run`, which opens `db.transaction()`, and
+        `read_only` defaults to False there. So this is a read-write
+        transaction that reads the task and the lease and commits no writes.
+        The cost is that Firestore holds its locks on those two documents for
+        the two reads and the empty commit. A reconciler fencing this task at
+        that instant waits for them, or one of the two transactions is aborted
+        and retried by `firestore.transactional`. Nothing is written either
+        way. A read-only transaction would take no locks. It was not used
+        because `TransactionRunner` has one entry point, and no test in this
+        repository runs the worker against a real Firestore transaction.
         """
         self._txn.run(lambda txn: self._fenced_task(txn, write=write))
 
@@ -431,13 +446,18 @@ class ControlPlane:
         )
 
     # -- events ------------------------------------------------------------
-    def emit(
+    def _event_write(
         self,
         event_type: EventType,
         detail: dict[str, Any] | None = None,
         *,
         at: datetime | None = None,
-    ) -> None:
+    ) -> tuple[Any, dict[str, Any]]:
+        """The event document, and the reference it is written to.
+
+        One shape for both ways an event is written: on its own (`emit`) and
+        inside a fenced transaction (`transition`'s `events`).
+        """
         event = TaskEvent(
             event_id=new_id("evt"),
             task_id=self.task_id,
@@ -449,20 +469,29 @@ class ControlPlane:
             generation=self.generation,
             detail=detail or {},
         )
-        self._task_ref().collection("events").document(event.event_id).set(
-            {
-                "event_id": event.event_id,
-                "task_id": event.task_id,
-                "tenant_id": event.tenant_id,
-                "type": event.type.value,
-                "at": event.at,
-                "attempt_id": event.attempt_id,
-                "lease_id": event.lease_id,
-                "generation": event.generation,
-                "detail": event.detail,
-            }
-        )
-        self._log.info("event", event_type=event_type.value, detail=event.detail)
+        ref = self._task_ref().collection("events").document(event.event_id)
+        return ref, {
+            "event_id": event.event_id,
+            "task_id": event.task_id,
+            "tenant_id": event.tenant_id,
+            "type": event.type.value,
+            "at": event.at,
+            "attempt_id": event.attempt_id,
+            "lease_id": event.lease_id,
+            "generation": event.generation,
+            "detail": event.detail,
+        }
+
+    def emit(
+        self,
+        event_type: EventType,
+        detail: dict[str, Any] | None = None,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        ref, document = self._event_write(event_type, detail, at=at)
+        ref.set(document)
+        self._log.info("event", event_type=event_type.value, detail=document["detail"])
 
     # -- state transitions -------------------------------------------------
     def _current_state(self) -> TaskState:
@@ -473,6 +502,7 @@ class ControlPlane:
         to_state: TaskState,
         *,
         fields: dict[str, Any] | None = None,
+        events: Sequence[tuple[EventType, dict[str, Any]]] = (),
     ) -> None:
         """Move the task to `to_state`, ONLY while this attempt still owns it.
 
@@ -482,23 +512,38 @@ class ControlPlane:
         that parked a task the reconciler had fenced. It also wrote PARKED or
         FAILED over a newer attempt the scheduler had already admitted.
 
-        Raises `FencedWriteRefused` with nothing written.
+        `events` are written in the same transaction, ahead of the state
+        change, so they commit with it or not at all. They are for an event
+        that ANNOUNCES this write. Emitted on its own before the write, the
+        announcement lands even when the write it announces is refused, in a
+        stream that by then belongs to a newer generation.
+
+        Raises `FencedWriteRefused` with nothing written, events included.
         """
         write = f"transition to {to_state.value}"
+        # Built once, outside the body. A contended transaction runs the body
+        # again, and each run must write the same event ids, so the retry
+        # cannot leave the announcement in the stream twice.
+        announced = [self._event_write(kind, detail) for kind, detail in events]
 
         def _apply(txn: Any) -> None:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
+            if current is not to_state:
+                assert_transition(current, to_state)
+            for ref, document in announced:
+                txn.set(ref, document)
             if current is to_state:
                 if fields:
                     txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
                 return
-            assert_transition(current, to_state)
             payload: dict[str, Any] = {"state": to_state.value, "updated_at": utcnow()}
             payload.update(fields or {})
             txn.update(self._task_ref(), payload)
 
         self._txn.run(_apply)
+        for _, document in announced:
+            self._log.info("event", event_type=document["type"], detail=document["detail"])
 
     def advance_to_running(self) -> None:
         """Walk LEASED -> DISPATCHED -> STARTING -> RUNNING legally.
@@ -733,6 +778,7 @@ class ControlPlane:
         reason: ParkReason,
         next_eligible_at: datetime,
         detail: dict[str, Any] | None = None,
+        announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
     ) -> None:
         """Quota path: checkpointed already, now give the slot back and exit.
 
@@ -743,6 +789,12 @@ class ControlPlane:
         The transition is fenced (see `transition`). A superseded attempt gets
         `FencedWriteRefused` here, before the event and before the release, so
         it writes nothing.
+
+        `announce` is for an event that says this park is happening, such as
+        QUOTA_EXHAUSTED. It is written in the park's own transaction, ahead of
+        the state change. A caller that emitted it before calling here would
+        leave it in the task's stream when the park is refused: a fence that
+        lands during the park's uploads is met here, after the announcement.
         """
         self.transition(
             TaskState.PARKED,
@@ -752,6 +804,7 @@ class ControlPlane:
                 "current_lease_id": None,
                 "blocked_by": [{"reason": reason.value, **(detail or {})}],
             },
+            events=announce,
         )
         self.emit(
             EventType.PARKED,
