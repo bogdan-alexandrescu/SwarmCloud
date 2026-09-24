@@ -675,8 +675,10 @@ def test_a_fence_that_lands_between_the_parks_read_and_its_write_is_still_honour
 # The first two tests put the fence where the old code's announcement came
 # next: after the last thing the park did before it (the provider publish on
 # the quota park, the metrics export on the account park). The third lands the
-# fence inside the park's own transaction. There, a check made before the
-# announcement and not repeated passes, and the announcement still has to go.
+# fence inside the park's own transaction, just after its read of the task.
+# Every check made before that read passes, because nothing is fenced yet. So
+# an announcement written before it is written, and the park it announces is
+# then refused.
 
 
 def quota_exhausted_events(db: FakeFirestore) -> list[dict[str, Any]]:
@@ -800,11 +802,19 @@ def test_a_quota_parks_announcement_commits_with_the_park_or_not_at_all(
 ):
     """The fence lands between the park's read of the task and its commit.
 
-    The worker owns its task when it decides to park and when it reads the
-    task to park it. So an announcement written ahead of the park is written,
-    even one guarded by a fresh ownership check. The park's commit is then
-    refused, the retry finds the fence, and the park never happens. Only an
-    announcement written in the park's own transaction goes with it.
+    The worker owns its task when it decides to park, and it still owns it
+    when the park reads the task. So an announcement written at any point
+    before that read is written, including one made right after a passing
+    ownership check. The park's commit is then refused, the retry finds the
+    fence, and the park never happens. An announcement written in the park's
+    own transaction goes with it.
+
+    What this model does NOT catch: a transactional check made INSIDE
+    `park()`, then a blind write. The model aborts that check's empty commit
+    when the fence changes what it read. Firestore locks instead, so there
+    the check would pass and the blind write would land. `transition`'s
+    `events` are what close that case, and this test does not tell the two
+    apart.
     """
     db = ContendedFirestore()
     seed_attempt(db, task_input=QUOTA_RUN, pool_active=3)
