@@ -118,9 +118,7 @@ execution_name() {
 # could not be read. Never fails: it explains a failure, it does not decide one.
 print_execution_log() {
   local execution="$1" filter entries read_err attempt=1 n=0 rc
-  filter="resource.type=\"cloud_run_job\""
-  filter+=" AND resource.labels.job_name=\"${JOB}\""
-  filter+=" AND labels.\"run.googleapis.com/execution_name\"=\"${execution}\""
+  filter="labels.\"run.googleapis.com/execution_name\"=\"${execution}\""
   filter+=" AND logName:\"run.googleapis.com%2F\""
   entries="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-log.XXXXXX")"
   read_err="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-logerr.XXXXXX")"
