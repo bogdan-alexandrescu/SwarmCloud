@@ -19,7 +19,11 @@
 #   3. it left artifacts under the tenant's OWN prefix -- the browser runner
 #      writes a screenshot, so none means the worker never got that far;
 #   4. its lease was released -- a finished task that still holds capacity is
-#      the leak invariant 1 exists to prevent.
+#      the leak invariant 1 exists to prevent. Every lease it held is named
+#      from its EVENTS, because the worker clears `current_lease_id` as the
+#      task ends (see task_lease_ids in lib/testlib.sh). The check waits up to
+#      --lease-wait seconds, because the worker writes the terminal state
+#      before it releases the lease.
 #
 # A PARKED TASK PROVES NOTHING, and says so. The 30-node redispatch in the
 # incident parked six browser steps before any reached a backend. Parked on
@@ -38,7 +42,7 @@
 # never touches the cluster directly; everything goes through the API, and
 # what is observed is read from Firestore and GCS, as every suite here does.
 #
-# Usage: scripts/prove-gke-dispatch.sh [--timeout 900] [--url https://example.com] [--keep]
+# Usage: scripts/prove-gke-dispatch.sh [--timeout 900] [--lease-wait 60] [--url https://example.com] [--keep]
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -52,18 +56,26 @@ source "${REPO_ROOT}/scripts/lib/testlib.sh"
 PROFILE="browser"
 BACKEND="GKE_AUTOPILOT"
 TIMEOUT=900
+# How long a lease may still read as held after the task reads terminal. The
+# real gap is one transaction after three writes (control.finish), so well
+# under a second. 60s allows for a worker that is slow to reach its release,
+# and is still short enough that a lease which never comes back fails the
+# release promptly rather than after the whole task timeout.
+LEASE_WAIT=60
 URL=""
 KEEP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --timeout) TIMEOUT="$2"; shift 2 ;;
-    --url)     URL="$2"; shift 2 ;;
-    --keep)    KEEP=1; shift ;;
-    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+    --timeout)    TIMEOUT="$2"; shift 2 ;;
+    --lease-wait) LEASE_WAIT="$2"; shift 2 ;;
+    --url)        URL="$2"; shift 2 ;;
+    --keep)       KEEP=1; shift ;;
+    -h|--help)    sed -n '2,45p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 [[ "${TIMEOUT}" =~ ^[0-9]+$ ]] || die "--timeout must be a number of seconds, got ${TIMEOUT}"
+[[ "${LEASE_WAIT}" =~ ^[0-9]+$ ]] || die "--lease-wait must be a number of seconds, got ${LEASE_WAIT}"
 
 step "GKE dispatch proof: one ${PROFILE} task on ${PROJECT_ID} / ${ENVIRONMENT}"
 require_platform
@@ -187,20 +199,10 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "Its capacity was returned"
-LEASE_ID="$(printf '%s' "${DOC}" | jq -r '.current_lease_id // empty')"
 if [[ -z "${FINAL}" ]]; then
   t_fail "the task is not finished, so its lease cannot have been returned yet"
-elif [[ -z "${LEASE_ID}" ]]; then
-  t_fail "the task records no lease, so whether capacity was returned cannot be checked"
-elif ! LEASE="$(fs_get "leases/${LEASE_ID}")"; then
-  die "could not read lease ${LEASE_ID}; see the Firestore error above"
-else
-  RELEASED="$(printf '%s' "${LEASE}" | jq -r "${FS_JQ} if .fields then (doc.released_at // \"null\") else \"missing\" end")"
-  if [[ "${RELEASED}" != "null" && "${RELEASED}" != "missing" ]]; then
-    t_pass "lease ${LEASE_ID} released at ${RELEASED}"
-  else
-    t_fail "lease ${LEASE_ID} is still holding capacity (released_at=${RELEASED})"
-  fi
+elif ! t_check_leases_released "${TASK_ID}" "${LEASE_WAIT}" fail; then
+  t_info "see the Firestore error above: the check is red because the read failed, not because a lease is held"
 fi
 
 # A proof task that is still in flight -- parked, or cut off by the timeout --

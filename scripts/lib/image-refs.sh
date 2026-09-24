@@ -19,6 +19,16 @@
 #                     state predates that output. What a plan that is not a
 #                     deploy pins, so an infrastructure change moves no image.
 #
+# WHETHER A PROJECT IS FRESH IS DECIDED BY TERRAFORM STATE, NOT THE REGISTRY.
+# The registry images are pushed to is created by the same terraform root. On
+# a fresh project it does not exist yet, so asking it for tags gets NOT_FOUND
+# (or "API not enabled"). That error must stay exit 1, because on a live project
+# it means drift or the wrong project. Asking the registry first made
+# scripts/plan.sh refuse to plan the very bootstrap it documents. So --applied
+# asks the state which of the two cases it is in: no registry in state (or no
+# state at all) is fresh, and the registry is never asked; a registry in state
+# is live, and any registry error is exit 1.
+#
 # WHY. The 2026-09-20 audit (docs/audits/2026-09-20/tag-vs-digest.md) found a
 # tag rebuilt to new content planned NO change: Cloud Run had resolved the tag
 # once, at revision creation, and kept serving the old digest -- healthy, with
@@ -31,8 +41,10 @@
 #   1  could not be answered -- an unreadable registry or state is NOT an empty
 #      one, and reading it as empty is how a fresh-project plan gets run
 #      against a live project
-#   3  nothing to pin: no image carries the channel tag and terraform has
-#      applied none. A fresh project; scripts/plan.sh plans the registry alone.
+#   3  nothing to pin. With --applied: terraform state holds no image_refs
+#      output and either no registry (a fresh project) or a registry nothing
+#      carries :<environment> in yet. With --channel: no image carries the
+#      tag. scripts/plan.sh then plans the registry alone.
 #
 # Usage:
 #   scripts/lib/image-refs.sh --manifest build/deployed-images-dev.json --out build/image-refs-dev.tfvars.json
@@ -56,7 +68,7 @@ while [[ $# -gt 0 ]]; do
     --applied)        SOURCE="applied"; shift ;;
     --out)            OUT="$2"; shift 2 ;;
     --write-manifest) WRITE_MANIFEST="$2"; shift 2 ;;
-    -h|--help)        sed -n '2,42p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,52p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -99,17 +111,26 @@ check_refs() {
 # refs_from_channel NAME -> ${WORK}/refs.json, or return 3 when nothing is on it.
 refs_from_channel() {
   local channel="$1"
+  # `basename()` is asked for EXPLICITLY. The command returns `tag` and
+  # `version` as full resource names (".../packages/<img>/tags/dev",
+  # ".../versions/sha256:..."; docker_util.ListDockerTags). Only its default
+  # TABLE format shortens them. Measured on gcloud 483.0.0, a bare
+  # `value(tag,...)` prints the short tag too, because the table's transforms
+  # carry over. Nothing documents that, and the release runs whatever gcloud
+  # setup-gcloud@v2 installs, so this does not depend on it. The awk below
+  # also takes each field's last path segment, so either spelling reads the
+  # same.
   if ! gcloud artifacts docker tags list "${IMAGE_REPO}" \
-        --project="${PROJECT_ID}" --format='value(tag,image,version)' \
+        --project="${PROJECT_ID}" --format='value(tag.basename(),image,version.basename())' \
         >"${WORK}/tags" 2>"${WORK}/tags.err"; then
     die_if_auth_failure "$(cat "${WORK}/tags.err")"
     err "could not list the tags in ${IMAGE_REPO}:"
     redact <"${WORK}/tags.err" | head -n 5 | sed 's/^/     /' >&2
     die "a registry that cannot be read is not an empty one; refusing to treat this as a fresh project"
   fi
-  # `version` is the digest; the last path segment is taken so that a
-  # resource-name spelling (".../versions/sha256:...") reads the same.
-  awk -v t="${channel}" '$1 == t {
+  awk -v t="${channel}" '{
+      k = split($1, g, "/")
+      if (g[k] != t) next
       n = split($2, p, "/"); v = split($3, d, "/")
       print p[n] "\t" $2 "\t" d[v]
     }' "${WORK}/tags" | sort -u >"${WORK}/channel"
@@ -126,6 +147,36 @@ refs_from_channel() {
       <"${WORK}/channel" >"${WORK}/manifest.json"
   fi
   return 0
+}
+
+# registry_in_state -> 0 the registry this root creates is in terraform state;
+# 3 it is not, or there is no state at all; 1 the state could not be read.
+# Leaves the resource list in ${WORK}/resources.
+#
+# The address is module.artifact_registry's repository
+# (terraform/modules/artifact_registry/main.tf). A NOT_FOUND from that
+# registry is only a fresh project when the state has never created it.
+registry_in_state() {
+  local rc=0
+  : >"${WORK}/resources"
+  tf -chdir="${TF_DIR}" state list >"${WORK}/resources" 2>"${WORK}/resources.err" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    # What terraform says when there is no state object at all (measured on
+    # 1.16.2). A GCS backend writes an empty state at init instead, and lists
+    # nothing with exit 0; both are "nothing applied".
+    if grep -q 'No state file was found' "${WORK}/resources.err"; then
+      : >"${WORK}/resources"
+      return 3
+    fi
+    die_if_auth_failure "$(cat "${WORK}/resources.err")"
+    err "could not list the resources in terraform state:"
+    redact <"${WORK}/resources.err" | head -n 5 | sed 's/^/     /' >&2
+    return 1
+  fi
+  if grep -qE '^module\.artifact_registry\.google_artifact_registry_repository\.' "${WORK}/resources"; then
+    return 0
+  fi
+  return 3
 }
 
 case "${SOURCE}" in
@@ -156,17 +207,34 @@ case "${SOURCE}" in
       cp "${WORK}/state.json" "${WORK}/refs.json"
       info "pinning the digests terraform last applied"
     elif [[ "${state_rc}" -eq 0 ]] || grep -qiE 'not found|no outputs' "${WORK}/state.err"; then
-      # The state predates the output (the first plan after this change), or
-      # nothing has ever been applied. The channel is the next best answer:
-      # it is what the last promotion pointed at, and what the last deploy
-      # applied unless that deploy failed after promoting.
-      warn "terraform state records no image_refs yet; pinning what :${ENVIRONMENT} points at instead"
-      rc=0
-      refs_from_channel "${ENVIRONMENT}" || rc=$?
-      if [[ "${rc}" -eq 3 ]]; then
-        warn "and no image carries :${ENVIRONMENT} either -- nothing has been built for this environment"
-        exit 3
-      fi
+      # No image_refs output. Either the state predates the output (the live
+      # project, on the first plan after this change) or nothing has been
+      # applied (a fresh project). The STATE says which; see the header for
+      # why the registry cannot.
+      reg_rc=0
+      registry_in_state || reg_rc=$?
+      case "${reg_rc}" in
+        0)
+          # Live. The channel is the next best answer: it is what the last
+          # promotion pointed at, and what the last deploy applied unless that
+          # deploy failed after promoting.
+          warn "terraform state records no image_refs yet; pinning what :${ENVIRONMENT} points at instead"
+          rc=0
+          refs_from_channel "${ENVIRONMENT}" || rc=$?
+          if [[ "${rc}" -eq 3 ]]; then
+            warn "the registry exists, but no image carries :${ENVIRONMENT} -- nothing has been pushed for this environment yet"
+            exit 3
+          fi
+          ;;
+        3)
+          warn "terraform state holds no Artifact Registry repository ($(grep -c . "${WORK}/resources" || true) resource(s) in state):"
+          warn "a fresh project, with nothing built and nothing applied to pin"
+          exit 3
+          ;;
+        *)
+          die "an unreadable state is not an empty one; refusing to guess which images are deployed"
+          ;;
+      esac
     else
       err "could not read the image_refs output from terraform state:"
       redact <"${WORK}/state.err" | head -n 5 | sed 's/^/     /' >&2

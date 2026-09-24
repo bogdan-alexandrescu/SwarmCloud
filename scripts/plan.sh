@@ -27,6 +27,12 @@
 # Then, and only then, this plans the registry alone (`-target`), so that
 # `make tf-apply` creates it and `make build push deploy` can follow. The
 # services and jobs are planned by that deploy, with real digests.
+#
+# "Fresh" is terraform STATE's answer (image-refs.sh exit 3): no registry in
+# state, or a registry with nothing pushed to it yet. It used to be the
+# registry's answer. On a fresh project the registry does not exist, so the
+# tag listing failed NOT_FOUND, which reads as an unreadable registry (exit 1),
+# and this script refused to plan the bootstrap described above.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +67,7 @@ case "${refs_rc}" in
     fi
     ;;
   3)
-    warn "nothing is built for ${ENVIRONMENT} and terraform has applied no image: a fresh project."
+    warn "terraform has applied no image for ${ENVIRONMENT} and there is none to pin: a fresh project."
     warn "planning the Artifact Registry repository ALONE, so the first images have somewhere to go."
     warn "apply this, then: make build push deploy -- which plans everything else, by digest."
     TARGET_ARGS=(-target=module.project_services -target=module.artifact_registry)

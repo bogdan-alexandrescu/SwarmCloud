@@ -24,10 +24,17 @@ or `make up`, which is those steps in order.
 **On a fresh project the first `make tf-plan` plans the registry alone.**
 Terraform deploys every image by digest and refuses to plan one that has none,
 and before the first build there are none — the registry they are pushed to is
-created by this same root. So `scripts/plan.sh`, finding nothing built and
-nothing applied, plans only `module.project_services` and
-`module.artifact_registry`; `make deploy` then plans everything else with the
-digests `make push` promoted.
+created by this same root. So when terraform state holds no registry,
+`scripts/plan.sh` plans only `module.project_services` and
+`module.artifact_registry`. It does the same when state holds a registry that
+nothing has been pushed to yet. `make deploy` then plans everything else with
+the digests `make push` promoted.
+
+"Fresh" is decided by terraform **state**, never by asking the registry. On a
+fresh project the registry does not exist, so a tag listing fails with
+NOT_FOUND, and that error has to stay an error: on a live project it means
+drift or the wrong project. The first version asked the registry, and so it
+refused to plan the bootstrap described here.
 
 **Read the plan.** `saga-agents-staging` holds another team's live GKE cluster,
 their VPC and 12 of their service accounts. A plan that proposes to change
