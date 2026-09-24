@@ -130,7 +130,10 @@ def set_global_limit(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    pool = ctx.store.upsert_pool("global", hard_limit=body.limit)
+    # `by=auth.email` on every pool write in this module: the verified caller,
+    # stamped on the pool as admin_changed_by. See Store.upsert_pool for why
+    # it is not `updated_by`.
+    pool = ctx.store.upsert_pool("global", hard_limit=body.limit, by=auth.email)
     ctx.metrics.admin_actions.labels(action="limit_global").inc()
     return {"pool": pool_to_api(pool)}
 
@@ -143,7 +146,7 @@ def set_provider_limit(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     name = _check_provider(provider)
-    pool = ctx.store.upsert_pool(f"provider:{name}", hard_limit=body.limit)
+    pool = ctx.store.upsert_pool(f"provider:{name}", hard_limit=body.limit, by=auth.email)
     ctx.metrics.admin_actions.labels(action="limit_provider").inc()
     return {"pool": pool_to_api(pool)}
 
@@ -174,7 +177,9 @@ def set_provider_tenant_limit(
     # silent pass the docstring above claims to prevent.
     if ctx.store.get_tenant(tenant_id) is None:
         raise NotFound(f"tenant {tenant_id!r} not found")
-    pool = ctx.store.upsert_pool(f"provider:{name}:tenant:{tenant_id}", hard_limit=body.limit)
+    pool = ctx.store.upsert_pool(
+        f"provider:{name}:tenant:{tenant_id}", hard_limit=body.limit, by=auth.email
+    )
     ctx.metrics.admin_actions.labels(action="limit_provider_tenant").inc()
     return {"pool": pool_to_api(pool)}
 
@@ -205,7 +210,7 @@ def set_backend_limit(
             f"unknown backend {backend!r}",
             detail={"known_backends": sorted(real)},
         )
-    pool = ctx.store.upsert_pool(f"backend:{name}", hard_limit=body.limit)
+    pool = ctx.store.upsert_pool(f"backend:{name}", hard_limit=body.limit, by=auth.email)
     ctx.metrics.admin_actions.labels(action="limit_backend").inc()
     return {"pool": pool_to_api(pool)}
 
@@ -218,7 +223,7 @@ def set_resource_limit(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     name = _check_resource_class(resource_class)
-    pool = ctx.store.upsert_pool(f"resource:{name}", hard_limit=body.limit)
+    pool = ctx.store.upsert_pool(f"resource:{name}", hard_limit=body.limit, by=auth.email)
     ctx.metrics.admin_actions.labels(action="limit_resource").inc()
     return {"pool": pool_to_api(pool)}
 
@@ -231,7 +236,7 @@ def set_runner_limit(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     name = _check_runner(runner_profile)
-    pool = ctx.store.upsert_pool(f"runner:{name}", hard_limit=body.limit)
+    pool = ctx.store.upsert_pool(f"runner:{name}", hard_limit=body.limit, by=auth.email)
     ctx.metrics.admin_actions.labels(action="limit_runner").inc()
     return {"pool": pool_to_api(pool)}
 
@@ -243,7 +248,7 @@ def set_tenant_concurrency(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    tenant = ctx.store.set_tenant_limits(tenant_id, max_active=body.limit)
+    tenant = ctx.store.set_tenant_limits(tenant_id, max_active=body.limit, by=auth.email)
     ctx.metrics.admin_actions.labels(action="limit_tenant").inc()
     return {"tenant": tenant_to_api(tenant), "pool": pool_to_api(
         ctx.store.get_pool(f"tenant:{tenant_id}")
@@ -284,6 +289,7 @@ def set_tenant_limits(
         max_active=body.max_active,
         capacity_units=body.capacity_units,
         enabled=body.enabled,
+        by=auth.email,
     )
     ctx.metrics.admin_actions.labels(action="tenant_limits").inc()
     # The pool is what the scheduler enforces, and its hard limit is the smaller
@@ -306,11 +312,15 @@ def drain_provider(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     name = _check_provider(provider)
-    drained = [ctx.store.upsert_pool(f"provider:{name}", enabled=not body.drain)]
+    drained = [
+        ctx.store.upsert_pool(f"provider:{name}", enabled=not body.drain, by=auth.email)
+    ]
     prefix = f"provider:{name}:tenant:"
     for pool in ctx.store.list_pools():
         if pool.name.startswith(prefix):
-            drained.append(ctx.store.upsert_pool(pool.name, enabled=not body.drain))
+            drained.append(
+                ctx.store.upsert_pool(pool.name, enabled=not body.drain, by=auth.email)
+            )
     ctx.metrics.admin_actions.labels(
         action="drain_provider" if body.drain else "undrain_provider"
     ).inc()
@@ -332,7 +342,7 @@ def drain_resource_class(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     name = _check_resource_class(resource_class)
-    pool = ctx.store.upsert_pool(f"resource:{name}", enabled=not body.drain)
+    pool = ctx.store.upsert_pool(f"resource:{name}", enabled=not body.drain, by=auth.email)
     ctx.metrics.admin_actions.labels(
         action="drain_resource" if body.drain else "undrain_resource"
     ).inc()
@@ -354,7 +364,7 @@ def set_provider_enabled(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     name = _check_provider(provider)
-    ctx.store.set_provider_enabled(name, body.enabled)
+    ctx.store.set_provider_enabled(name, body.enabled, by=auth.email)
     # Without this the broker's AIMD loop would raise the adaptive target back
     # up and quietly undo the disable.
     touched = ctx.store.set_provider_quota_state(
