@@ -299,11 +299,10 @@ backend has no available profile instead of dropping it from the matrix).
 **Cause 1 specifically: one authority for the namespace prefix.** The prefix
 lived in seven components because it is in no frozen module.
 `scripts/lib/check-contract-parity.sh` section 6 (from line 536) now makes the
-scheduler's
-`GkeTarget.namespace_template` the authority, compares every declared prefix in
-the repository against it, and sweeps every namespace *literal* — test fixtures
-included — for one that does not start with it. A fixture that wants the wrong
-spelling on purpose must say `# namespace-prefix-exempt:` and why.
+scheduler's `GkeTarget.namespace_template` the authority, compares every declared
+prefix in the repository against it, and sweeps every namespace *literal* — test
+fixtures included — for one that does not start with it. A fixture that wants the
+wrong spelling on purpose must say `# namespace-prefix-exempt:` and why.
 
 **Cause 6: nothing offline could have caught it.** This has to be said plainly,
 because the temptation is to claim a test would have. The manifest was valid
@@ -345,10 +344,9 @@ first moment a read-only root filesystem can be observed, and no manifest check
 sees a runner's default path. What is now in place instead is an assertion that
 the two Job specs — the Python dict the dispatcher builds and the YAML templates
 `make lint` validates — agree on the environment keys that decide where the
-runner *writes*
-(`tests/unit/worker/test_kubernetes_manifests.py:1213`, keys and not values,
-because the values are per-task and the templates carry placeholders). The
-comment in `dispatch.py` claiming the two "mirror each other
+runner *writes* (`tests/unit/worker/test_kubernetes_manifests.py:1213`, keys and
+not values, because the values are per-task and the templates carry
+placeholders). The comment in `dispatch.py` claiming the two "mirror each other
 field for field" had been true and had stopped being true, which is the third
 instance of that same defect in this incident, after the namespace prefix and the
 RBAC subject: **a file documented as mirroring another, with no assertion holding

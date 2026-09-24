@@ -904,14 +904,47 @@ def test_the_reconciler_may_delete_but_never_create(tenant_docs):
 
 def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
     """A RoleBinding to a subject that does not exist applies cleanly and
-    grants nothing, so a typo here fails looking exactly like success."""
+    grants nothing, so a typo here fails looking exactly like success.
+
+    TWO SUBJECT SLOTS PER BINDING SINCE 2026-09-24, and this assertion was left
+    behind by that change. It read `== [expected]` and therefore failed on the
+    arrival of the SECOND slot rather than on a wrong name in either -- a test
+    that fails for a reason it was not written to detect is worse than no test,
+    because the next person silences it.
+
+    What it is for is unchanged: every subject must name an identity that
+    EXISTS. `tenant_values()` supplies no uniqueIds, and `render.py` defaults
+    `__*_UID__` to the EMAIL rather than to a fabricated number (a made-up
+    uniqueId reads as a grant and authorises nobody), so this render puts the
+    same address in both slots. That is the fallback, asserted here. The numeric
+    spelling is asserted where the uniqueIds are actually supplied --
+    `test_every_gsa_rbac_subject_is_also_bound_by_numeric_unique_id` below.
+
+    MUTATION: change one subject's name in
+    kubernetes/rbac/dispatcher-rbac.yaml to an account that does not exist, or
+    delete a subject slot. The first fails on the set of names, the second on the
+    slot count -- which the uniqueId assertion below cannot see in a render that
+    supplies no uniqueIds, because the fallback makes a dropped slot look like a
+    missing duplicate.
+    """
     for binding_name, expected in (
         ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
         ("swarm-reaper", f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"),
     ):
         binding = one(tenant_docs, "RoleBinding", binding_name)
         subjects = binding["subjects"]
-        assert [s["name"] for s in subjects] == [expected]
+        assert len(subjects) == 2, (
+            f"RoleBinding {binding_name} has {len(subjects)} subject(s); it must have "
+            f"one slot per spelling of its account -- the email and the numeric "
+            f"uniqueId -- because GKE names the caller differently depending on how "
+            f"it authenticated. See kubernetes/rbac/dispatcher-rbac.yaml."
+        )
+        assert {s["name"] for s in subjects} == {expected}, (
+            f"RoleBinding {binding_name} names {[s['name'] for s in subjects]}; this "
+            f"render supplies no uniqueId, so both slots must fall back to {expected}. "
+            f"Any other value is a typo or a fabricated uniqueId, and both apply "
+            f"cleanly while authorising nobody."
+        )
         # `User`, not `ServiceAccount`: the scheduler runs on Cloud Run as a
         # Google identity and has no Kubernetes ServiceAccount of its own.
         assert {s["kind"] for s in subjects} == {"User"}
