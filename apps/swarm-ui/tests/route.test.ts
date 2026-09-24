@@ -44,10 +44,14 @@ test('the bare #help route reaches the Help section', () => {
 })
 
 test('a route round-trips through its canonical spelling', () => {
-  // CANONICAL SPELLINGS ONLY. `agents/running` was in this list and cannot be:
-  // `agents` is an alias now, and an alias that round-tripped would mean the
-  // address bar never gets corrected, which is the opposite of what
-  // `canonical` is for. The alias's own property is the test below.
+  // CANONICAL SPELLINGS ONLY, and `work/running` replacing `agents/running`
+  // here was not a typo fix -- it was a round trip being asked of a spelling
+  // that is no longer canonical. `agents` became `work` and `pools` became
+  // `capacity`; SECTION_ALIASES keeps both old spellings resolving and
+  // `canonical` exists precisely to rewrite them. So the old entry asserted
+  // that the alias machine does NOT work, and went red the moment the rename
+  // landed: `#agents/running is rewritten to something else + 'work/running'`.
+  // The alias's own property is the test below.
   for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'work/running']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)

@@ -64,11 +64,17 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   const p = check.problems[0]
   assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
   assert.equal(p.n, 1)
-  // `#work/workflows`. This was `#agents/workflows` and was the SECOND red in
-  // this runner behind route.test.ts, which is worth recording: the node test
-  // runner stops at the first failing file, so a single stale assertion there
-  // hid this one completely. Two greps of the same rename found them; one CI
-  // run found only one.
+  // `#work/workflows`, NOT `#agents/workflows`. The section id was renamed and
+  // `checks.ts` moved with it; this expectation did not, and it is the only
+  // place in this file that names a route. `nav.links.test.tsx` requires every
+  // internal href to use the CANONICAL id rather than an alias, so the value
+  // the check now emits is the one it is REQUIRED to emit -- this assertion was
+  // holding it to the spelling that rule forbids.
+  //
+  // IT WAS ALSO INVISIBLE. This was the second red in the node runner, behind
+  // route.test.ts, and that runner stops at the first failing file -- so the TAP
+  // output ended at `# fail 1` there and never reached this line. Two greps of
+  // the same rename found both; one CI run found one.
   assert.equal(p.href, '#work/workflows')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.

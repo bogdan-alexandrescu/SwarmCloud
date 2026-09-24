@@ -7641,3 +7641,73 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    lane is not allowed to do and should not want to.
 
    So: recorded, with its numbers, rather than papered over. */
+
+/* ========================================================================== */
+/* FOCUS, WHERE THE SHEET HAD NOTHING TO SAY                                  */
+/* Unnumbered on purpose: the numbering in this file restarts inside each
+   block, so there are already three 13s, and adding a fourth would be the
+   kind of collision a later reader spends ten minutes on.                    */
+/* ========================================================================== */
+/* Added by the keyboard-traversal pass. Everything in this block is a
+   `:focus-visible` rule and nothing else — two other lanes are in this file,
+   so it is appended whole rather than threaded through their sections.
+
+   WHAT THE SWEEP FOUND, AND WHAT IT DID NOT. `src/__tests__/keyboard.test.tsx`
+   checks that nothing in this sheet REMOVES an outline without restoring one,
+   and nothing does: there is not a single `outline: none` in the file, so
+   every control that had no rule here still drew the user agent's own ring.
+   The defect was never an invisible focus ring — it was rings nobody chose,
+   in a sheet that had chosen one everywhere else, on the controls that matter
+   at 3am: the drawer's close button, the retry on a failed read, the
+   re-authenticate button, and the refresh beside every screen's summary.
+
+   2px solid var(--info) is the ring the rest of the sheet already draws
+   (§1.3: focus is the one control state allowed a hue). The offsets copy the
+   nearest existing neighbour rather than being chosen again — `-2px` where the
+   control has its own border to sit inside, `1px` or `2px` where it does
+   not — because a focus ring that is 1px out of step with the one on the
+   control beside it reads as a different kind of state. */
+
+/* THE TWO RESIZERS, WHICH WERE NOT TAB STOPS AT ALL UNTIL THIS PASS. Both are
+   a 6px transparent strip, so the user agent's ring on them would be a hairline
+   nobody finds. They get a FILLED band instead of an outline: the control is
+   the strip, so colouring the strip is the honest indicator, and it is the same
+   `--info` mix `:hover` already paints — a keyboard user sees what a pointer
+   user sees. `outline` is drawn as well, because a filled band alone disappears
+   in forced-colours mode where backgrounds are overridden. */
+.ctl-inspector-grip:focus-visible,
+.ctl-dock-grip:focus-visible {
+  background: color-mix(in srgb, var(--info) 55%, transparent);
+  outline: 2px solid var(--info);
+  outline-offset: -2px;
+}
+
+/* The drawer's ✕. It had `:hover` and nothing else, and it is the control a
+   keyboard reader reaches first when the inspector opens over the list. */
+.drawer-close:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* The two buttons a failed read renders, and the one the dock renders for an
+   expired session. These are the controls on the screens where something has
+   already gone wrong, which is the worst place to make someone hunt for focus. */
+.retry:focus-visible,
+.reauth:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* `refresh` / `paused 12s`, in the summary line under every screen title. It
+   is on all fifteen routes, which makes it the most-tabbed control in the app
+   after the rail. */
+.sub button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* THE HELP CARD'S "FULL EXPLANATION" LINK, WHICH IS NOT INSIDE `.app`.
+   The card is portalled to `<body>` to escape a stacking context, so every
+   selector in this sheet scoped to `.app` misses it. `[data-focus-return]` is
+   the attribute the card carries to name the trigger it hands focus back to
+   (see `HelpCard.tsx`); matching on it reaches the card wherever it is
+   portalled, which a descendant selector rooted in the app never can. */
+[data-focus-return] a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* A FLOOR FOR EVERY OTHER LINK, at zero specificity so that every rule above
+   and every rule earlier in this sheet still wins. `:where()` is what makes
+   that true: it contributes nothing, so this cannot quietly restyle a link
+   another lane has already decided about — it only reaches the ones nobody
+   has. */
+:where(.app a[href]):focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }

@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { DataSourceCells } from './DataSources'
 import { probeSnapshot, subscribeProbes } from './fetch'
+import { nudgePane } from './focus'
 import { helpAnchor, type TopicId } from './help'
 import { timeAgo } from './Shell'
 import { DOCK, DOCK_COLLAPSED, clampPane, readPane, summariseProbes, writePane } from './panes'
@@ -188,6 +189,33 @@ export function Dock() {
           role="separator"
           aria-orientation="horizontal"
           aria-label="Resize the provenance panel"
+          /*
+           * THE SAME DEFECT AS THE INSPECTOR'S GRIP, in the other axis: four
+           * pointer handlers on a `<div>` and no keyboard path at all, so the
+           * one control that decides how much of the screen the provenance
+           * panel takes could only be moved by dragging. See `nudgePane` in
+           * `focus.ts` for the pattern and for why the step is 16px.
+           *
+           * UP GROWS IT, because the dock is anchored to the bottom edge and
+           * expands upward -- the handle moving up is the panel getting
+           * taller, which is exactly what the pointer drag does.
+           *
+           * `aria-valuemax` IS `ceiling()`, NOT `DOCK.max`. The real ceiling is
+           * 70% of the viewport, computed at the call site for the reason
+           * `panes.ts` records; announcing the 640px fallback instead would
+           * report a limit the drag does not honour.
+           */
+          tabIndex={0}
+          aria-valuenow={height}
+          aria-valuemin={DOCK.min}
+          aria-valuemax={ceiling()}
+          onKeyDown={(e) => {
+            const next = nudgePane(height, e.key, { min: DOCK.min, max: ceiling() }, 'ArrowUp')
+            if (next === null) return
+            e.preventDefault()
+            setHeight(next)
+            writePane(DOCK, next)
+          }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
