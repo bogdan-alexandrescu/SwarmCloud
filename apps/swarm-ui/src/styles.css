@@ -5448,8 +5448,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    What it does NOT see: a class that reaches a fill through a helper
    function or a prop set in another file. The one un-verdicted fill that is
    allowed a different grey is named in the test's `DOCUMENTED_GREYS`:
-   `.ov-projected`, which paints `--ctl-absent`, and the test checks that this
-   resolves to a text grey. */
+   `.ov-projected`, which paints `--text-faint`, and the test checks that this
+   resolves to a text grey. (It painted `--ctl-absent` while that token was
+   `var(--text-faint)`; `--ctl-absent` is now a warm stone, so the bar names
+   the grey itself.) */
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,

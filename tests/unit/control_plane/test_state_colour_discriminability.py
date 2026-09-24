@@ -663,12 +663,20 @@ MONOCHROME_FILL = "var(--text-dim)"
 #: The un-verdicted fills that are painted a DIFFERENT grey, by name, and why.
 #:
 #: `ov-projected`: Overview draws a PROJECTED utilisation reading (its window
-#: reset, or its poll is past the staleness window) in `--ctl-absent`, the
-#: grey this product uses for data that is real but not current. That grey
-#: sits beside the live bars in the same card. It is still a grey and not a
-#: hue, and `test_a_documented_grey_is_a_grey` resolves it to a text grey, so
-#: the entry cannot become a hue with a grey name.
-DOCUMENTED_GREYS = {"ov-projected": "var(--ctl-absent)"}
+#: reset, or its poll is past the staleness window) in `--text-faint`, the
+#: fainter of the two text greys, so a figure that is real but not current
+#: sits a step quieter than the live bars in the same card. It is still a grey
+#: and not a hue, and `test_a_documented_grey_is_a_grey` resolves it to a text
+#: grey, so the entry cannot become a hue with a grey name.
+#:
+#: It was spelled `var(--ctl-absent)` when `--ctl-absent` was itself
+#: `var(--text-faint)`. The ui-hygiene lane (PR #26) split `--ctl-absent` off
+#: into a warm stone (#9b8f7f / #736654) so an absence stops matching the
+#: CANCELLED fill -- a colour picked to be told apart from grey BY ITS HUE. Left
+#: on `--ctl-absent`, this bar would have turned warm, and this entry would
+#: have waved it through under a grey name; `test_a_documented_grey_is_a_grey`
+#: is what failed on that merge. So the bar names the grey it always painted.
+DOCUMENTED_GREYS = {"ov-projected": "var(--text-faint)"}
 
 #: What a documented grey has to resolve to: the two text greys.
 TEXT_GREYS = frozenset({"--text-dim", "--text-faint"})
@@ -1590,9 +1598,11 @@ def test_a_documented_grey_is_a_grey(sheet_scan):
     """`DOCUMENTED_GREYS` may name a different grey, never a hue.
 
     Each entry must resolve, through every definition of every custom
-    property on the way, to one of the two text greys. Re-pointing
-    `--ctl-absent` at `--info` would otherwise make the one named exception
-    a blue bar that this file waves through.
+    property on the way, to one of the two text greys. Pointing the entry at
+    a token that has become a hue would otherwise make the one named
+    exception a coloured bar that this file waves through. That is not
+    hypothetical: `--ctl-absent`, which this entry used to name, stopped being
+    `var(--text-faint)` and became a warm stone.
     """
     custom: dict[str, set[str]] = {}
     for _, rules_ in sheet_scan.sheets:

@@ -3000,8 +3000,17 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
 /* A figure that is REAL but not CURRENT: its window reset, or the poll is past
    the staleness window. Grey, never the red or amber that says a ceiling is
    being approached now, and the tilde beside it is the same mark that cs
-   status and the Accounts screen use for the same two cases. */
-.ctl-util-fill.ov-projected { background: var(--ctl-absent); }
+   status and the Accounts screen use for the same two cases.
+   THE BAR IS --text-faint, NOT --ctl-absent. It used to be --ctl-absent, which
+   was then var(--text-faint), so the two spellings painted the same pixel.
+   --ctl-absent is now its own warm stone (styles.css, :root), so that
+   an absence stops matching the CANCELLED fill; a proportion fill, though, is
+   grey unless it carries a verdict (design-system.md §6.4, owner decision
+   2026-09-24), and a warm stone chosen to be told apart from grey by its hue
+   is not a grey. So the bar keeps the exact grey it had, by name, and the
+   tilde beside it -- text, not a fill -- takes the absence colour.
+   test_state_colour_discriminability.py lists this value in DOCUMENTED_GREYS. */
+.ctl-util-fill.ov-projected { background: var(--text-faint); }
 .ov-tilde { color: var(--ctl-absent); margin-right: 1px; }
 
 /* ---- attention ---------------------------------------------------------- */
