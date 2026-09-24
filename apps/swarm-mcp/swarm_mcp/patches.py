@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import SwarmClient, SwarmError, task_id_of
+from .profiles import backend_of
 
 _GCS = "https://storage.googleapis.com/storage/v1/b"
 
@@ -122,11 +123,29 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
     """What one task produced, in the shape every read tool hands back.
 
     IT LIVES HERE, not in `server.py`, because it is the composition of the two
-    functions above and because it now has three callers: `swarm_result`,
-    `swarm_wait`, and the per-step rollup a workflow read produces. It was
-    private to the MCP server while there was one consumer; a second copy for
-    the workflow tools is exactly how a task's result and a workflow step's
-    result would start disagreeing about what "no patch" means.
+    functions above and because it now has four callers: `swarm_result`,
+    `swarm_wait`, `swarm_follow`'s per-task outcome, and the per-step rollup a
+    workflow read produces. It was private to the MCP server while there was one
+    consumer; a second copy for the workflow tools is exactly how a task's
+    result and a workflow step's result would start disagreeing about what "no
+    patch" means. (There WAS a second copy -- `server._describe`, byte-for-byte
+    identical, left behind by the move and still being called by `swarm_follow`
+    until 2026-09-24.)
+
+    THE PROFILE AND THE BACKEND ARE HERE FOR THE FAILURE CASE. A result that
+    says only `state: FAILED` and an error string sends the reader to the logs
+    to find out what kind of thing failed. Which profile ran and which backend
+    it landed on are the two facts that separate "this agent's prompt was wrong"
+    from "GKE Autopilot could not place a browser pod" -- and they are the two
+    the reader cannot derive, because the profile-to-backend mapping lives in
+    the frozen catalogue rather than on the task. Both are cheap: the task
+    document already carries the profile name, and the backend follows from it.
+
+    `backend` is None when the catalogue does not hold the task's profile -- an
+    old task naming a profile since renamed. NOT a default and not a guess: the
+    three-marks rule this plugin is held to says an unknown is reported as
+    unknown, and a reader who saw CLOUD_RUN_JOB there would go and read the
+    wrong service's logs.
     """
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
@@ -136,6 +155,8 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         # "it has not started yet".
         "task_id": task_id_of(task),
         "state": task.get("state"),
+        "runner_profile": task.get("runner_profile"),
+        "backend": backend_of(task.get("runner_profile")),
         "commits": git.get("commit_count", 0),
         "insertions": git.get("insertions", 0),
         "deletions": git.get("deletions", 0),
@@ -150,6 +171,122 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         out["no_pull_request_because"] = git.get("publish_reason")
     if task.get("last_error"):
         out["error"] = task["last_error"]
+    return out
+
+
+#: The states that mean "this went wrong", as the frozen vocabulary spells
+#: them. `DEAD_LETTER` is not a member and is matched anyway, because
+#: `client.TERMINAL` already carries both spellings defensively and a failure
+#: explainer that silently declined to explain an unrecognised spelling would
+#: be the worst possible place to be strict.
+FAILED_STATES = frozenset({"FAILED", "DEAD_LETTERED", "DEAD_LETTER"})
+
+
+def explain_failure(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any] | None:
+    """The per-attempt facts that make a dead agent actionable. None if it lived.
+
+    "task failed" is not a report. What a reader needs is which attempt, on
+    which backend, with what exit code, and what the worker said -- and none of
+    those are on the task document. `result_summary` is written once at terminal
+    state, so a task that failed twice and succeeded on the third try carries
+    only the third attempt's numbers; the per-attempt record is the only place
+    the others exist.
+
+    ONE EXTRA ROUND TRIP, AND ONLY ON A FAILURE. Every successful result read
+    would otherwise pay for a list it has nothing to say about. The condition is
+    the task's state, so the cost lands exactly where the information is wanted.
+
+    A FAILED READ IS REPORTED, NOT SWALLOWED. If the attempts route cannot be
+    read, this says so in `attempts_unreadable` rather than returning None --
+    None means "this task did not fail", and collapsing "it failed and I could
+    not find out why" into that would be the exact substitution this repository
+    keeps deleting.
+
+    `exit_code: null` MEANS NOT RECORDED. It must never be rendered as 0, which
+    is the one value that would read as a clean exit on a task that failed. The
+    same rule as the em dash in `sc`, in the place where getting it wrong is
+    most expensive.
+    """
+    if str(task.get("state") or "") not in FAILED_STATES:
+        return None
+
+    task_id = task_id_of(task)
+    out: dict[str, Any] = {
+        "state": task.get("state"),
+        # From the task, so there is always something here even when the
+        # attempts route cannot be read.
+        "last_error": task.get("last_error"),
+        "attempt_count": task.get("attempt_count"),
+    }
+    if not task_id:
+        # NOT the same as "no attempts". Without an id the route cannot be
+        # asked at all, so the attempts are UNREADABLE -- reporting that as an
+        # empty list would say this task failed before any agent ran, which is
+        # a claim nobody checked.
+        out["attempts_unreadable"] = (
+            "this task document carries no id, so its attempts cannot be read. "
+            "The exit code and the backend that ran are UNKNOWN"
+        )
+        return out
+    try:
+        attempts = client.attempts(task_id)
+    except SwarmError as exc:
+        out["attempts_unreadable"] = (
+            f"the per-attempt record could not be read: {exc}. The exit code and "
+            "the backend that ran are UNKNOWN, not absent"
+        )
+        return out
+
+    if not attempts:
+        # A real measurement, and a meaningful one: a task can reach FAILED
+        # without ever being attempted -- admission or dispatch failed -- and
+        # that is a different investigation from an agent that ran and died.
+        out["attempts"] = []
+        out["note"] = (
+            "this task has no attempt records, so it failed before any agent "
+            "ran -- look at admission and dispatch, not at the agent"
+        )
+        return out
+
+    # Newest first, per the route's contract, so the last attempt is the one
+    # that decided the outcome.
+    last = attempts[0]
+    out["last_attempt"] = {
+        "attempt_id": last.get("attempt_id"),
+        "generation": last.get("generation"),
+        # The backend that ACTUALLY ran, which is the ground truth. The
+        # catalogue-derived `backend` on the result beside this is what the
+        # profile says it should have been; the two differing is itself a
+        # finding.
+        "backend": last.get("backend"),
+        "execution_name": last.get("execution_name"),
+        "exit_code": last.get("exit_code"),
+        "error": last.get("error"),
+        # OOM is a common way an agent dies and is invisible in an exit code
+        # alone. `oom_near_miss` says the run came close even when it survived,
+        # which is the difference between "make the prompt smaller" and
+        # "use a bigger resource class".
+        "oom_near_miss": last.get("oom_near_miss"),
+        "peak_rss_bytes": last.get("peak_rss_bytes"),
+    }
+    if last.get("exit_code") is None:
+        out["last_attempt"]["exit_code_note"] = (
+            "not recorded -- this is UNKNOWN, not 0. A missing exit code and a "
+            "clean exit are different facts and only one of them means the "
+            "agent finished"
+        )
+    if len(attempts) > 1:
+        # Earlier attempts are the whole reason this route exists: their
+        # numbers are the ones `result_summary` overwrote.
+        out["earlier_attempts"] = [
+            {
+                "attempt_id": a.get("attempt_id"),
+                "generation": a.get("generation"),
+                "exit_code": a.get("exit_code"),
+                "error": a.get("error"),
+            }
+            for a in attempts[1:]
+        ]
     return out
 
 

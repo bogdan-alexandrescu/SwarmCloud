@@ -94,6 +94,37 @@ MAX_EVENT_DETAIL_CHARS = 1_000
 #: multi-megabyte download.
 MAX_LIVE_READ = 320 * 1024
 
+#: HOW THE TAILER IS SPELLED, in one place, because three places had spelled it
+#: `swarm tail` and `swarm` IS NOT ON ANYONE'S PATH. The console script is
+#: installed into the uv-managed environment, never onto the shell's, so a fresh
+#: checkout answers `command not found: swarm`. That string was handed to a
+#: model as `follow_live_with` -- a field whose whole job is to be runnable --
+#: and the model runs what it is given, gets a shell error at the moment it is
+#: trying to report progress, and concludes the platform is broken.
+#:
+#: `test_the_tool_is_registered_and_its_schema_names_the_cursor` already asserts
+#: no tool DESCRIPTION says `swarm tail`. It stopped one field short of the
+#: place the model actually reads.
+#:
+#: `uv run` is the spelling that works in a fresh checkout with nothing
+#: installed and also works when the environment IS active, which is why it wins
+#: over teaching people to activate a venv first.
+TAIL_COMMAND = "uv run swarm tail"
+
+
+def follow_command(task_ids: list[str]) -> str:
+    """The terminal command that tails these tasks live, or "" for none.
+
+    EMPTY RATHER THAN A BARE COMMAND when there is nothing to follow. `swarm
+    tail ` with the ids missing is worse than absent, because it still looks
+    runnable; `swarm_dispatch` already refuses to emit that shape and this is
+    where the refusal belongs so every caller inherits it.
+    """
+    followable = [str(t) for t in task_ids if t]
+    if not followable:
+        return ""
+    return f"{TAIL_COMMAND} {' '.join(followable)}"
+
 
 def new_cursor() -> dict[str, Any]:
     """The cursor for a task nothing has been read from yet.

@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import profiles as catalogue
 from . import workflows
 from .auth import REACHES, WHY_NOT, Tier, detect
 from .client import (
@@ -36,12 +37,13 @@ from .client import (
     service_name,
     task_id_of,
 )
-from .follow import DEFAULT_LOG_BUDGET, follow, render
+from .follow import DEFAULT_LOG_BUDGET, follow, follow_command, render
 from .patches import (
     apply_patch,
     describe_task,
     download,
     explain_absence,
+    explain_failure,
     integrate,
     patch_uri,
 )
@@ -114,7 +116,11 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
         raise SwarmError("an empty prompt would dispatch an agent with nothing to do")
     task = client.dispatch(
         prompt=prompt,
-        runner_profile=args.profile,
+        # The SAME refusal the MCP tool makes, through the same function. A
+        # terminal that accepted `--profile codex` while the tool refused it
+        # would be two answers to one question, which is the defect this
+        # repository keeps paying for.
+        runner_profile=catalogue.check(args.profile, where="swarm dispatch"),
         repository_url=args.repo,
         repository_ref=args.ref,
         metadata={"unit": args.label} if args.label else None,
@@ -288,6 +294,41 @@ def cmd_follow(client: SwarmClient, args) -> int:
     return EXIT_FAIL if failed else EXIT_OK
 
 
+def _print_failure(client: SwarmClient, task: dict[str, Any]) -> None:
+    """The per-attempt detail, printed only when the task failed.
+
+    The SAME function the MCP tool calls. A terminal that explained a failure
+    differently from the tool would be two accounts of one dead agent.
+    """
+    failure = explain_failure(client, task)
+    if failure is None:
+        return
+    if failure.get("attempts_unreadable"):
+        print(f"  attempts  {failure['attempts_unreadable']}")
+        return
+    if failure.get("note"):
+        print(f"  attempts  {failure['note']}")
+        return
+    last = failure.get("last_attempt") or {}
+    # `exit_code_note` carries the "this is UNKNOWN, not 0" sentence, and a
+    # bare `—` in its place would be the very substitution it exists to stop.
+    exit_code = last.get("exit_code")
+    shown = str(exit_code) if exit_code is not None else "not recorded (UNKNOWN, not 0)"
+    print(f"  attempt {last.get('attempt_id') or '—'}  gen {last.get('generation')}")
+    print(f"    backend  {last.get('backend') or '—'}  exit {shown}")
+    if last.get("execution_name"):
+        print(f"    execution {last['execution_name']}")
+    if last.get("oom_near_miss"):
+        print("    OOM near miss -- the run came close to its memory limit")
+    if last.get("error"):
+        print(f"    error    {last['error']}")
+    for earlier in failure.get("earlier_attempts") or []:
+        print(
+            f"    earlier  gen {earlier.get('generation')} "
+            f"exit {earlier.get('exit_code')} {earlier.get('error') or ''}".rstrip()
+        )
+
+
 def cmd_result(client: SwarmClient, args) -> int:
     task = client.task(args.task_id)
     if args.json:
@@ -296,6 +337,7 @@ def cmd_result(client: SwarmClient, args) -> int:
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
     print(f"{args.task_id}  {task.get('state')}")
+    _print_failure(client, task)
     if not git:
         print(f"  code: {explain_absence(task)}")
         return EXIT_OK
@@ -400,7 +442,7 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         print(f"  {step.get('step_id')}  {task_id}  after: {deps}")
     followable = [t for t in task_ids if t != "—"]
     if followable:
-        print(f"  follow: swarm tail {' '.join(followable)}")
+        print(f"  follow: {follow_command(followable)}")
     return EXIT_OK
 
 
@@ -497,11 +539,61 @@ def cmd_sc(_client, args) -> int:
 
 # -- setup and diagnosis ---------------------------------------------------
 #
-# These two exist because of how this platform fails for a NEWCOMER. Every
+# These three exist because of how this platform fails for a NEWCOMER. Every
 # other command assumes a working connection; when there is not one, the error
 # is "Invalid JWT audience" or a 403 with an HTML body, and neither says the
 # true thing, which is usually "your laptop cannot mint that kind of token, and
 # here is the one that it can".
+#
+# `profiles` joined them for the same reason rather than by analogy: the
+# question it answers ("what may I name?") is one people ask while everything
+# else is failing, and it reads the frozen catalogue rather than the cluster, so
+# it is the one command that can still answer then. All three carry
+# `no_client=True`.
+
+
+def cmd_profiles(_client, args) -> int:
+    """The runner catalogue: what you may name, and what each name is.
+
+    NO CLIENT, and that is the useful part as well as the cheap part. The
+    catalogue is the frozen contract, which this process already holds, so this
+    answers when nothing else does -- which is precisely when someone is
+    guessing at a profile name because `swarm doctor` is still telling them why
+    the API is unreachable.
+
+    It prints the SAME allow-listed view the `swarm_profiles` tool returns, from
+    the same function. No image and no command appear in either: a caller names
+    a profile and the execution details follow from the name, so they are not
+    part of the vocabulary this surface offers.
+    """
+    entries = catalogue.catalogue()
+    if args.json:
+        print(json.dumps({"profiles": entries}, indent=2))
+        return EXIT_OK
+    for entry in entries:
+        mark = "ok  " if entry["available"] else "--  "
+        print(
+            f"  {mark} {entry['name']:<12} {entry['backend']:<15} "
+            f"{entry['resource_class']:<9} {entry['cpu']:g} cpu / "
+            f"{entry['memory_gib']} GiB  timeout {entry['timeout_seconds']}s"
+        )
+        if entry.get("provider"):
+            print(f"       provider {entry['provider']} -- needs a registered credential")
+        if not entry["available"]:
+            # WRAPPED and indented, like `doctor`'s explanations: the reason is
+            # a sentence naming the remedy, and printed raw it is the part that
+            # scrolls off.
+            print(
+                textwrap.fill(
+                    entry["disabled_reason"],
+                    width=78,
+                    initial_indent="       refused: ",
+                    subsequent_indent=" " * 16,
+                    break_on_hyphens=False,
+                    break_long_words=False,
+                )
+            )
+    return EXIT_OK
 
 
 def cmd_doctor(_client, args) -> int:
@@ -758,6 +850,15 @@ def build_parser() -> argparse.ArgumentParser:
         alias_parser = sub.add_parser(alias, help=f"shorthand for `sc {alias}`")
         alias_parser.add_argument("argv", nargs=argparse.REMAINDER)
         alias_parser.set_defaults(func=cmd_sc, no_client=True)
+
+    # `no_client=True` for the same reason `doctor` and `init` carry it: the
+    # catalogue is the frozen contract, held in this process, so asking for a
+    # client would make the one command that works without a cluster require one.
+    prof = sub.add_parser(
+        "profiles", help="the runner profiles you may name, and what each one is"
+    )
+    prof.add_argument("--json", action="store_true")
+    prof.set_defaults(func=cmd_profiles, no_client=True)
 
     doc = sub.add_parser("doctor", help="which auth tier this machine is on, and what it reaches")
     doc.set_defaults(func=cmd_doctor, no_client=True)

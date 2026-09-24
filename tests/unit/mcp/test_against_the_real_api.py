@@ -375,12 +375,21 @@ def test_the_mcp_result_tool_reports_the_task_it_was_asked_about(swarm, api):
 
 def test_the_mcp_dispatch_tool_hands_back_a_followable_command(swarm):
     """`follow_live_with` came back as `swarm tail ` -- the command with the id
-    missing, which is worse than absent because it still looks runnable."""
+    missing, which is worse than absent because it still looks runnable.
+
+    It then came back as `swarm tail <id>`, which is the same defect one step
+    later: the id is there and the BINARY is not, because `swarm` is a console
+    script of this package and lives in the uv environment rather than on any
+    shell's PATH. Both spellings look runnable and neither runs.
+    """
     payload = json.loads(
         server._call(swarm, "swarm_dispatch", {"prompt": "hi", "profile": "mock"})
     )
     assert payload["task_id"].startswith("task_")
-    assert payload["follow_live_with"] == f"swarm tail {payload['task_id']}"
+    assert payload["follow_live_with"] == f"uv run swarm tail {payload['task_id']}"
+    # A model cannot run a background shell at all, so the reply names the tool
+    # it CAN call before the command a human would use.
+    assert payload["follow_with"] == "swarm_follow"
     assert payload["state"]
 
 
@@ -477,7 +486,10 @@ def test_the_workflow_tool_submits_a_dag_the_real_api_accepts(swarm, api):
         # A step with no task id can be neither followed, applied nor cancelled,
         # and every tool downstream of this one takes that string.
         assert step["task_id"], f"{step['step_id']} came back with no task id"
-    assert created["follow_live_with"].startswith("swarm tail task_")
+    # `uv run`, not a bare `swarm`: the console script lives in the uv
+    # environment and never on the shell's PATH, so the bare spelling this used
+    # to expect was a command the caller could not run.
+    assert created["follow_live_with"].startswith("uv run swarm tail task_")
     # A create response derives nothing, and the tool says where a state comes
     # from rather than quoting the stored QUEUED as though it were one.
     assert "state" not in created

@@ -2,6 +2,7 @@
 name: delegate
 description: Decide whether a unit of work runs in this session or as agents in SwarmCloud, dispatch it, follow it, and bring the result back into the tree. Use when work splits into several independent units, when a task would flood this session's context, when it is long enough that the developer wants their terminal back, when more parallelism is wanted than one machine has, or when asked "run this in the cloud", "run these in parallel", "do it remotely", "what is running remotely", "what has that cost", or "apply what the agent did". Read it before applying any remote agent's patch into a working tree.
 allowed-tools:
+  - mcp__swarmcloud__swarm_profiles
   - mcp__swarmcloud__swarm_dispatch
   - mcp__swarmcloud__swarm_workflow
   - mcp__swarmcloud__swarm_workflow_status
@@ -91,6 +92,7 @@ succeeded.
 
 | What you want | Call |
 |---|---|
+| which profiles may I name? | `swarm_profiles` |
 | run one unit remotely | `swarm_dispatch` |
 | is it done yet? | `swarm_status` |
 | block until it is done, then tell me what it made | `swarm_wait` |
@@ -104,18 +106,35 @@ succeeded.
 | why did four of them die at once | `swarm_trouble` |
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref` and `label`. The
-profile is a **name** from the frozen catalogue — `mock`, `generic`,
-`claude-code`, `browser` — and the image, command and resource class come from
-the name. There is no parameter for an image and asking for one is not a thing
-a caller may do.
+profile is a **name** from the frozen catalogue, and the image, command and
+resource class come from the name. There is no parameter for an image and
+asking for one is not a thing a caller may do.
 
-**`codex` is DISABLED and will be refused on submit.** It is still in the
-catalogue so that existing runs which name it stay readable, but this platform
-is focused on Claude and the provider refused the registered credential — on
-2026-09-23 four codex steps of a twenty-step run failed with "openai refused
-the credential". The refusal says `disabled` and carries a reason, so it is
-distinguishable from a typo; do not retry it, and do not suggest it. Use
-`claude-code`.
+**Do not guess the name — call `swarm_profiles`.** It is the catalogue itself,
+so it cannot go stale the way a list written into this paragraph can: every
+name, whether each one can be dispatched at all, which backend it lands on, how
+much cpu and memory it gets, and whether it needs a provider credential. It
+takes no arguments, makes no network call, and therefore still answers when the
+cluster does not — which is exactly when somebody is guessing at a name.
+
+It deliberately carries **no image and no command**. That is not an oversight
+to work around; those are not part of a caller's vocabulary.
+
+A bad name is refused **before anything is dispatched**, by the bridge, with the
+catalogue's own words — so the two answers stay apart:
+
+* *there is no runner profile called `claude`* — a typo. The refusal lists the
+  real names; pick one and re-dispatch. Nothing was spent.
+* *`codex` is refused: …* — a **known** profile that is turned off. Do not go
+  hunting for a typo and do not retry it.
+
+**`codex` is DISABLED.** It is still in the catalogue so that existing runs
+which name it stay readable, but this platform is focused on Claude and the
+provider refused the registered credential — on 2026-09-23 four codex steps of a
+twenty-step run failed with "openai refused the credential", each after being
+admitted, leased and dispatched. Use `claude-code`. The same refusal now happens
+at submission for a whole workflow, so a DAG with one bad step is refused
+entire rather than running the other nineteen and failing that one late.
 
 Always pass `label`. It is the short name the console shows, and an operator
 looking at eight running agents should not have to open each one to find out
@@ -151,6 +170,14 @@ pretends to.
   shown — a tailer that stitched two non-adjacent pieces together would print a
   transcript that never happened.
 
+  **The `uv run` prefix is not optional.** `swarm` is a console script of
+  `swarm-mcp`, installed into the uv environment and never onto the shell's
+  PATH, so the bare spelling answers `command not found`. A dispatch reply hands
+  back the runnable spelling in `follow_live_with`; run what it gives you rather
+  than retyping it. It names the tool first, in `follow_with`, because that is
+  the one this session can actually call — the background shell is for the
+  developer.
+
 The un-seamless shape to avoid is: dispatch, go silent for eleven minutes,
 produce a result. Narrate. A local subagent shows progress and a remote one has
 to as well, even if the progress is only "four of five finished, `absentzero`
@@ -171,9 +198,38 @@ causes needing six different answers. Surface the reason, never swallow it.
 | the agent changed nothing in the repository | It ran and decided there was nothing to do, *or* it misread the prompt. `swarm_result`'s commit and insertion counts are both zero either way, so say which one you believe and why |
 | no patch was recorded / a publish reason | The publishing half failed or was declined. Quote the reason; it names the remedy |
 
+Every result also carries `runner_profile` and `backend`, and on a failure those
+are the first two things to say. They separate the two kinds of dead agent that
+need completely different answers: a `claude-code` task on `CLOUD_RUN_JOB` that
+failed is usually about the prompt or the repository, while a `browser` task on
+`GKE_AUTOPILOT` that failed is usually about placement. `backend` is the one you
+cannot work out from the task — the mapping lives in the frozen catalogue — and
+a `null` there means the catalogue does not hold that profile any more, which is
+"unknown", never a default. Do not fill it in.
+
 Two more, from outside that list:
 
-* A task in `FAILED` or `DEAD_LETTER` carries `error` in the result. Quote it.
+* A task in `FAILED` or `DEAD_LETTERED` carries `error` in the result **and a
+  `failure` block**, read from the per-attempt record. That block is what turns
+  "task failed" into a report: the last attempt's backend, execution name, exit
+  code, error and whether it came near an OOM, plus **every earlier attempt's**
+  exit code and error. The earlier ones are not available anywhere else —
+  `result_summary` is written once at terminal state, so a task that failed
+  twice and succeeded on the third try carries only the third attempt's numbers.
+
+  Three readings that are easy to get wrong:
+
+  * **`exit_code: null` is NOT RECORDED, not 0.** Zero means the agent exited
+    cleanly, which is the one thing it did not do. Say "not recorded".
+  * **`failure.note`** means there are no attempt records at all: the task
+    failed *before any agent ran*. Look at admission and dispatch, not at the
+    prompt.
+  * **`failure.attempts_unreadable`** means the route could not be read. The
+    exit code is unknown, not absent — do not report the failure as having no
+    exit code.
+
+  `oom_near_miss` is the difference between "make the unit smaller" and "use a
+  bigger resource class", and it is invisible in an exit code alone.
 * **Several failing at once is a platform answer, not an agent answer.** Run
   `swarm_trouble` before re-dispatching: an exhausted quota window, a paused
   pool or an account needing re-auth will fail the retry the same way, and

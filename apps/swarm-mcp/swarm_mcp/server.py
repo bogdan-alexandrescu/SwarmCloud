@@ -36,14 +36,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
-from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow
+from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow, follow_command
 from .patches import (
     apply_patch,
     describe_task,
     download,
     explain_absence,
+    explain_failure,
     integrate,
     patch_uri,
 )
@@ -79,6 +81,26 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["prompt"],
         },
+    },
+    {
+        "name": "swarm_profiles",
+        "description": (
+            "The runner profiles this platform will accept BY NAME, with what "
+            "each one is: whether it can be dispatched at all and, when it "
+            "cannot, why; which backend it lands on; its cpu, memory and "
+            "workspace size; its timeout; and whether it needs a provider "
+            "credential. Read this before dispatching rather than guessing a "
+            "name -- a name the catalogue does not hold is refused, and a "
+            "profile that is `available: false` is refused WITH a reason that "
+            "names the remedy, so it is never a typo to go hunting for.\n"
+            "\n"
+            "There is no image and no command here, and that is deliberate "
+            "rather than missing. A caller names a profile and the image, the "
+            "command and the resource spec follow from the name; they are not "
+            "part of the vocabulary a caller has, so this tool does not put "
+            "them in front of one. Nothing in this plugin can supply them."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "swarm_wait",
@@ -174,7 +196,22 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "What a finished task produced: its commits, its patch, its pull "
             "request, and -- when there is no pull request -- WHY, which has six "
-            "different causes needing six different responses."
+            "different causes needing six different responses. Every result also "
+            "names the `runner_profile` that ran and the `backend` it resolves "
+            "to.\n"
+            "\n"
+            "WHEN THE TASK FAILED it additionally carries `failure`, read from "
+            "the per-attempt record: the last attempt's backend, execution name, "
+            "exit code, error and whether it came near an OOM, plus every "
+            "EARLIER attempt's exit code and error -- which the task document "
+            "cannot give you, because `result_summary` is written once at "
+            "terminal state and a task that failed twice and succeeded on the "
+            "third try carries only the third attempt's numbers.\n"
+            "\n"
+            "`exit_code: null` means NOT RECORDED. It is not 0. Reporting it as "
+            "0 says the agent exited cleanly, which is the one thing it did not "
+            "do. `failure.note` means the task failed before any agent ran, so "
+            "the investigation is admission and dispatch rather than the agent."
         ),
         "inputSchema": {
             "type": "object",
@@ -397,7 +434,14 @@ TOOLS: list[dict[str, Any]] = [
             "on that read, and `state_incomplete_because` means it derived over "
             "a partial read. Bring a step's work into a local tree with "
             "swarm_apply, or several steps' work onto one branch with "
-            "swarm_integrate, using the task ids below."
+            "swarm_integrate, using the task ids below.\n"
+            "\n"
+            "A step that FAILED also carries `failure`, the same per-attempt "
+            "block swarm_result gives: the last attempt's backend, exit code, "
+            "error and near-OOM flag, and every earlier attempt's exit code. In "
+            "a fan-out this is the difference between 'four of twenty failed' "
+            "and four investigations that each have a starting point. "
+            "`exit_code: null` means NOT RECORDED and never 0."
         ),
         "inputSchema": {
             "type": "object",
@@ -526,30 +570,14 @@ def _int_arg(args: dict[str, Any], name: str, default: int) -> int:
         return default
 
 
-def _describe(task: dict[str, Any]) -> dict[str, Any]:
-    summary = task.get("result_summary") or {}
-    git = summary.get("git") or {}
-    out: dict[str, Any] = {
-        # The API names it `id`. Read as `task_id` this was null for every
-        # task on the platform, and a session reads a null id and a null state
-        # as "it has not started yet".
-        "task_id": task_id_of(task),
-        "state": task.get("state"),
-        "commits": git.get("commit_count", 0),
-        "insertions": git.get("insertions", 0),
-        "deletions": git.get("deletions", 0),
-        "uncommitted_files": git.get("dirty_count", 0),
-        "patch": patch_uri(task),
-    }
-    if not out["patch"]:
-        out["no_patch_because"] = explain_absence(task)
-    pr = git.get("pull_request")
-    out["pull_request"] = pr["url"] if pr else None
-    if not pr and git:
-        out["no_pull_request_because"] = git.get("publish_reason")
-    if task.get("last_error"):
-        out["error"] = task["last_error"]
-    return out
+# `_describe` USED TO LIVE HERE, byte-for-byte identical to
+# `patches.describe_task`. The function was moved into `patches` when the
+# workflow rollup became its third caller -- and that docstring says so -- but
+# the original was left behind and `swarm_follow` kept calling it. Two copies of
+# "what did this task produce" is precisely what the move was meant to prevent,
+# and the second copy is the one that would have missed every field added to
+# the first. Deleted; `swarm_follow` now reads the same function as
+# `swarm_result`, `swarm_wait` and the workflow rollup.
 
 
 def _overview_view(snap, style):
@@ -602,15 +630,27 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     if name == "swarm_dispatch":
         task = client.dispatch(
             prompt=args["prompt"],
-            runner_profile=args.get("profile") or "claude-code",
+            # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or
+            # disabled profile too and stays the authority; this only refuses
+            # sooner, with the catalogue's own reason, so a session that typed
+            # `claude` for `claude-code` is told which names exist instead of
+            # reading a 4xx. See `profiles.check` for why a local check here is
+            # not a second opinion.
+            runner_profile=catalogue.check(
+                args.get("profile") or "claude-code", where="swarm_dispatch"
+            ),
             repository_url=args.get("repo"),
             repository_ref=args.get("ref"),
             metadata={"unit": args["label"]} if args.get("label") else None,
         )
         task_id = task_id_of(task)
         if not task_id:
-            # `follow_live_with: "swarm tail "` is worse than an error: it
-            # still looks like a command, so a session runs it.
+            # Raised rather than returned, because a task id is what every tool
+            # downstream of this one takes: without it the reply is a success
+            # the caller can do nothing with. (`follow_command` also refuses to
+            # build a command out of an empty id -- a tail command with the id
+            # missing still looks runnable -- but that is the second line of
+            # defence, not this one.)
             raise SwarmError(
                 f"the API accepted the task but its response named no id: {sorted(task)}"
             )
@@ -618,7 +658,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             {
                 "task_id": task_id,
                 "state": task.get("state"),
-                "follow_live_with": f"swarm tail {task_id}",
+                # THE TOOL FIRST, the terminal second. `swarm_follow` is the one
+                # a model can actually call; the tail below is for a human's
+                # background shell. Handing back only the shell command was how
+                # a session holding a perfectly good cursor tool went and ran a
+                # binary that is not on PATH.
+                "follow_with": "swarm_follow",
+                "follow_live_with": follow_command([task_id]),
             },
             indent=2,
         )
@@ -648,7 +694,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = _describe(client.task(task["task_id"]))
+                task["result"] = describe_task(client.task(task["task_id"]))
         return json.dumps(report, indent=2, default=str)
 
     if name == "swarm_status":
@@ -697,8 +743,27 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             out["note"] = "the wait timed out; these tasks have not finished"
         return json.dumps(out, indent=2)
 
+    if name == "swarm_profiles":
+        # NO CLIENT CALL. The catalogue is the frozen contract, which this
+        # process already holds, so this is the one tool that answers without a
+        # round trip -- and, usefully, the one tool that still answers when the
+        # cluster cannot be reached at all. A session can at least tell the
+        # developer which names exist while `swarm doctor` works out why
+        # nothing else does.
+        return json.dumps({"profiles": catalogue.catalogue()}, indent=2)
+
     if name == "swarm_result":
-        return json.dumps(describe_task(client.task(args["task_id"])), indent=2)
+        task = client.task(args["task_id"])
+        described = describe_task(task)
+        # ONLY ON A FAILURE, and only here. `explain_failure` costs one extra
+        # round trip to the attempts route, which is where the exit code, the
+        # backend that actually ran and the earlier attempts' errors live --
+        # none of them are on the task document. A successful read pays nothing
+        # because the function returns None without asking.
+        failure = explain_failure(client, task)
+        if failure is not None:
+            described["failure"] = failure
+        return json.dumps(described, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -777,7 +842,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         }
         task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
         if task_ids:
-            created["follow_live_with"] = "swarm tail " + " ".join(task_ids)
+            created["follow_with"] = "swarm_follow"
+            created["follow_live_with"] = follow_command(task_ids)
         return json.dumps(created, indent=2)
 
     if name in ("swarm_workflow_status", "swarm_workflow_result"):
@@ -786,10 +852,28 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         # produce" would be a second chance for the two answers to disagree
         # about the same workflow.
         envelope = workflows.fetch(client, args["workflow_id"])
+
+        def _describe_step(task: dict[str, Any]) -> dict[str, Any]:
+            """A step's result, plus WHY it died when it did.
+
+            "Which step failed" is answerable from the rollup already; "and why"
+            was not, and a fan-out is where that gap hurts most -- four failed
+            steps of twenty, each reported as a state word, is four
+            investigations with no starting point. `explain_failure` costs one
+            extra read per FAILED step and nothing at all for the others,
+            because it returns None on the state check before touching the
+            client.
+            """
+            out = describe_task(task)
+            failure = explain_failure(client, task)
+            if failure is not None:
+                out["failure"] = failure
+            return out
+
         return json.dumps(
             workflows.report(
                 envelope,
-                describe=describe_task if name == "swarm_workflow_result" else None,
+                describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
             indent=2,
         )

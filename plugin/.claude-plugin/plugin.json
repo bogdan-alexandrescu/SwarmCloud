@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "sc",
-  "version": "0.2.0",
-  "description": "SwarmCloud from inside a Claude Code session. Two skills: `sc` reads the cluster -- the account pool and its quota windows, which pool actually binds each runner profile, what is running, what is wrong -- and never writes. `delegate` owns the decision to run work remotely instead of locally, dispatches it, reports a failure as something actionable rather than a task id, and brings the result back into the working tree. It writes, so it says when it asks first. Both require the swarm-mcp bridge in this repository.",
+  "version": "0.3.0",
+  "description": "SwarmCloud from inside a Claude Code session. Two skills: `sc` reads the cluster -- the account pool and its quota windows, which pool actually binds each runner profile, what is running, what is wrong -- and never writes. `delegate` owns the decision to run work remotely instead of locally, dispatches it by runner-profile NAME from the frozen catalogue, reports a failure as something actionable rather than a task id, and brings the result back into the working tree. It writes, so it says when it asks first. Both require the swarm-mcp bridge in this repository.",
   "author": {
     "name": "SwarmCloud"
   },
