@@ -227,8 +227,7 @@ class SchedulerStore:
                 created_at = as_datetime(data.get("created_at"))
             except (TypeError, ValueError):
                 created_at = None
-            # MUTANT M10: comparison inverted, and no creation time read as enforced.
-            if created_at is not None and created_at >= enforced_since:
+            if created_at is None or created_at < enforced_since:
                 log.debug(
                     "workflow %s was created at %s, before on_step_failure was "
                     "enforced (%s); only the dependency rule applies to it",

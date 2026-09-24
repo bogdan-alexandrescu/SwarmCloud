@@ -74,7 +74,7 @@ def audit(
     workflows: set[tuple[str, str]] = set()
     for state in _NOT_STARTED_STATES:
         page = store.tasks_in_state(state, sweep_size)
-        truncated = truncated or len(page) > sweep_size  # MUTANT M11: off by one
+        truncated = truncated or len(page) >= sweep_size
         visited += len(page)
         workflows.update((task.tenant_id, task.workflow_id) for task in page if task.workflow_id)
 
@@ -85,7 +85,7 @@ def audit(
         not_started: list[Task] = []
         for state in _NOT_STARTED_STATES:
             page = store.workflow_steps_in_state(tenant_id, workflow_id, state, sweep_size)
-            truncated = truncated or len(page) > sweep_size  # MUTANT M11: off by one
+            truncated = truncated or len(page) >= sweep_size
             not_started.extend(page)
         steps = sorted((_step(task) for task in not_started),
                        key=lambda s: (s["step_id"] or "", s["task_id"]))

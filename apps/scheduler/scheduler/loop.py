@@ -702,7 +702,7 @@ class Scheduler:
         """
         key = (failed.tenant_id, failed.workflow_id)
         self._swept_workflows.add(key)
-        # MUTANT M9: failed_workflows_swept never counted.
+        report.failed_workflows_swept += 1
 
         first = failed.failed_steps[0]
         label = first["step_id"] or first["task_id"]
@@ -801,7 +801,8 @@ class Scheduler:
         for task in self._store.parked_tasks(
             ParkReason.CREDENTIAL_MISSING, self._settings.dependency_sweep_size
         ):
-            # MUTANT M7: credential-sweep hook removed.
+            if self._stop_for_failed_workflow(task, report):
+                continue
             tenant = self._tenant(task.tenant_id)
             if tenant is None or not tenant.enabled:
                 continue
@@ -843,7 +844,8 @@ class Scheduler:
             for task in self._store.parked_tasks(reason, self._settings.dependency_sweep_size):
                 if promoted >= budget:
                     break
-                # MUTANT M8: prewarm-sweep hook removed.
+                if self._stop_for_failed_workflow(task, report):
+                    continue
                 eligible_at = task.next_eligible_at
                 if eligible_at is not None and eligible_at > horizon:
                     continue
