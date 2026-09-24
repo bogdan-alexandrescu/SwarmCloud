@@ -64,6 +64,13 @@ export interface CheckpointMember {
   link: string | null
   /** The name points outside the archive's root. Listed, never openable. */
   unsafe: boolean
+  /**
+   * The name (or a link's target) held bytes that are not UTF-8, and `path`
+   * / `link` show them ESCAPED (`caf\xe9.txt`). Listed, never openable: the
+   * escaped spelling is a display, and the server refuses it as a path. Not
+   * `unsafe` -- a restore unpacks such a name without complaint.
+   */
+  undecodable: boolean
 }
 
 export type CheckpointFilesStatus = 'ok' | 'absent' | 'corrupt'
@@ -704,10 +711,14 @@ function Node({
   // Not a directory, so the member is present by construction of `isDir`.
   const m = node.member as CheckpointMember
   const isOpen = selected === m.path
+  // An undecodable name is shown by its escaped bytes, and that spelling is
+  // not one the server will accept back as a path -- so it is never a button
+  // that could only ever answer "refused".
+  const openable = m.type === 'file' && !m.undecodable
   return (
     <li role="treeitem" aria-selected={isOpen}>
       <div className={`ckb-node${isOpen ? ' is-open' : ''}`}>
-        {m.type === 'file' ? (
+        {openable ? (
           <button
             type="button"
             className="ckb-open"
@@ -723,6 +734,17 @@ function Node({
           <span className="ckb-name">
             {node.name}
             {m.link !== null && <span className="ckb-meta"> → {m.link}</span>}
+            {m.undecodable && (
+              // The flag covers a link's TARGET too, so the words do not say
+              // "name": a symlink with a Latin-1 target has an ordinary name.
+              <span
+                className="ckb-meta"
+                title="This name or link target holds bytes that are not UTF-8, shown here escaped. That spelling cannot be requested, so a file like this cannot be opened here; it is in the downloaded archive."
+              >
+                {' '}
+                · not UTF-8, shown escaped{m.type === 'file' ? '; not openable here' : ''}
+              </span>
+            )}
           </span>
         )}
         <span className="ckb-meta">
@@ -741,9 +763,9 @@ function Node({
  * `ckpt_0001` in api.ts's checkpoint fixture has an unreadable manifest and no
  * `archive.tar.gz`, so here it is `absent` -- the state a browser most easily
  * draws as "empty". Every other id gets a listing that is CUT (entry cap),
- * disagrees with its manifest, and carries an unsafe member and a symlink, so
- * all four of those renderings are looked at in development rather than first
- * seen in production.
+ * disagrees with its manifest, and carries an unsafe member, a symlink and a
+ * name that is not UTF-8, so all five of those renderings are looked at in
+ * development rather than first seen in production.
  */
 async function fixtureFiles(
   taskId: string,
@@ -755,13 +777,15 @@ async function fixtureFiles(
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const absent = checkpointId === 'ckpt_0001'
   const files: CheckpointMember[] = [
-    { path: 'progress', size: 0, mode: 0o755, type: 'dir', link: null, unsafe: false },
-    { path: 'progress/step-0001.md', size: 612, mode: 0o644, type: 'file', link: null, unsafe: false },
-    { path: 'progress/step-0002.md', size: 0, mode: 0o644, type: 'file', link: null, unsafe: false },
-    { path: 'state.json', size: 88, mode: 0o644, type: 'file', link: null, unsafe: false },
-    { path: 'latest', size: 0, mode: 0o777, type: 'symlink', link: 'state.json', unsafe: false },
-    { path: 'screenshot.png', size: 48_211, mode: 0o644, type: 'file', link: null, unsafe: false },
-    { path: '../outside.txt', size: 12, mode: 0o644, type: 'file', link: null, unsafe: true },
+    { path: 'progress', size: 0, mode: 0o755, type: 'dir', link: null, unsafe: false, undecodable: false },
+    { path: 'progress/step-0001.md', size: 612, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false },
+    { path: 'progress/step-0002.md', size: 0, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false },
+    { path: 'state.json', size: 88, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false },
+    { path: 'latest', size: 0, mode: 0o777, type: 'symlink', link: 'state.json', unsafe: false, undecodable: false },
+    { path: 'screenshot.png', size: 48_211, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false },
+    { path: '../outside.txt', size: 12, mode: 0o644, type: 'file', link: null, unsafe: true, undecodable: false },
+    // A Latin-1 name, as the server escapes it: listed, not openable.
+    { path: 'caf\\xe9.txt', size: 5, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: true },
   ]
   return {
     status: 'ok',

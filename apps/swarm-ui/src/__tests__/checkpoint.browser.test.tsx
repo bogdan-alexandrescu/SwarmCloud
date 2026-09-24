@@ -12,6 +12,7 @@
 //   * a cut listing carries a `partial` mark and names the cut;
 //   * a failed read is `not read`, with no figure and a retry;
 //   * an unsafe member is listed and cannot be opened;
+//   * a name that is not UTF-8 is listed escaped, not openable, and not unsafe;
 //   * a file opens in the SAME ArtifactViewer the run's outputs use, fed by
 //     the checkpoint per-file read;
 //   * the loaders build the paths the router serves, and never a `..`.
@@ -40,7 +41,7 @@ import { expectNoFigures } from './setup'
 const PREFIX = 'tenants/eng/tasks/task_a/attempts/att_1/checkpoints/ckpt-00001'
 
 function member(path: string, over: Partial<CheckpointMember> = {}): CheckpointMember {
-  return { path, size: 10, mode: 0o644, type: 'file', link: null, unsafe: false, ...over }
+  return { path, size: 10, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false, ...over }
 }
 
 const MEMBERS: CheckpointMember[] = [
@@ -330,7 +331,7 @@ describe('absence and failure are not an empty checkpoint', () => {
     // server refuses it as a path -- so the row is not a button. It is NOT
     // drawn as unsafe: a restore unpacks such a name without complaint, and
     // "cannot be resumed" would be a false statement about this checkpoint.
-    const odd = { ...member('caf\\xe9.txt'), undecodable: true }
+    const odd = member('caf\\xe9.txt', { undecodable: true })
     const l = loaders(ok(listing({ files: [...MEMBERS, odd], count: MEMBERS.length + 1 })))
     mount(l)
 

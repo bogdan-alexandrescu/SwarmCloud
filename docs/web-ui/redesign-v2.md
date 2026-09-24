@@ -883,9 +883,9 @@ list in `RunFiles.tsx`:
 
 | Route | Serves | Bound |
 |---|---|---|
-| `GET /v1/tasks/{id}/checkpoints/{n}/files` | `[{path, size, mode, type}]` (+ `link`, `unsafe`), in archive order, read server-side from `archive.tar.gz` | 5000 entries, 256 MiB read, 1 GiB inflated — each reported as `truncated_reason` when hit |
+| `GET /v1/tasks/{id}/checkpoints/{n}/files` | `[{path, size, mode, type}]` (+ `link`, `unsafe`, `undecodable`), in archive order, read server-side from `archive.tar.gz` | 5000 entries, 256 MiB read, 1 GiB inflated — each reported as `truncated_reason` when hit |
 | `GET /v1/tasks/{id}/checkpoints/{n}/files/{path}` | one member as text, in the artifact-content shape | the artifact route's own window and cap (512 KiB default, 4 MiB ceiling), read off the same `InspectionService` |
-| `GET /v1/tasks/{id}/checkpoints/{n}/content` | the whole archive, `Content-Disposition: attachment` | streamed in 1 MiB windows; `Content-Length` set |
+| `GET /v1/tasks/{id}/checkpoints/{n}/content` | the whole archive, `Content-Disposition: attachment` | streamed in 1 MiB windows, **chunked** (no `Content-Length`; size in `X-Checkpoint-Bytes`); cut at swarm-api's 300 s request timeout |
 
 The constraints behind the shape, so they are not quietly undone:
 
@@ -908,6 +908,17 @@ The constraints behind the shape, so they are not quietly undone:
   listed with `unsafe: true` — it is exactly what `checkpoint._safe_members` refuses
   on restore, so hiding it would hide why the checkpoint cannot resume — and cannot be
   opened.
+- **A name that is not UTF-8 is served escaped, never as a 500.** The worker archives
+  whatever names the agent left, and `Path.rglob` on Linux hands a Latin-1 name to
+  `tarfile` surrogate-escaped; `tarfile` reads it back holding lone surrogates, which
+  Starlette's `JSONResponse` cannot encode — an unhandled 500 on every listing of the
+  task. The name is served as its bytes, escaped (`caf\xe9.txt`), with
+  `undecodable: true`, and cannot be opened: the escaped spelling carries a backslash,
+  which the path check refuses. It is deliberately **not** `unsafe`: that flag tells
+  the reader a restore would refuse the archive, and a restore unpacks such a name
+  without complaint. Manifest strings get the same escaping, and a manifest digest
+  that is not 64 hex characters is left out of the `X-Checkpoint-Sha256` header rather
+  than failing the download.
 - **Content-type allowlist, by name, before a byte is read**, then the same NUL sniff
   the artifact route uses. Extensionless files (`Makefile`, `.env`) are text
   candidates. Everything served per-file is redacted at read time and windowed on
@@ -922,6 +933,28 @@ The constraints behind the shape, so they are not quietly undone:
   forward-only; a tar has no index, so listing costs inflating everything before the
   last header reported — which is why the budgets exist and why each one *says* it was
   hit rather than returning a shorter list that looks complete.
+- **The download is chunked, and carries no `Content-Length`.** swarm-api is uvicorn,
+  HTTP/1 only, behind a Cloud Run port that is not h2c, and Cloud Run documents
+  "Maximum HTTP/1 response size: 32 MiB per response. Limit applies if not using
+  `Transfer-Encoding: chunked` or streaming" (docs.cloud.google.com/run/quotas, read
+  2026-09-24). uvicorn chunks exactly when the application declares no length, so a
+  declared length would have put every archive over 32 MiB — the ones a cut listing
+  sends people to the download for — over that limit. The size travels as
+  `X-Checkpoint-Bytes`. A stream cut after the status line ends without its final
+  chunk, which a browser reports as a failed download rather than saving a short file.
+- **The request timeout bounds what can be downloaded, and it has not been raised.**
+  swarm-api runs on the Cloud Run module's default `request_timeout` of 300 s
+  (`terraform/modules/cloud_run/variables.tf`; `terraform/infra/main.tf` does not
+  override it for swarm-api). A download takes at most
+  `windows × store time per window + bytes ÷ client throughput`: the next 1 MiB window
+  is read only after the previous one reached the socket, and each window is two
+  sequential store calls (`get_blob`, then the ranged read). With an **assumed** 50 ms
+  per window — not measured — the largest archive that finishes in 300 s is about
+  2.9 GiB at 20 MiB/s to the client (every checkpoint: the cap is 2 GiB), 1.2 GiB at
+  5 MiB/s, and 545 MiB at 2 MiB/s. Past that, Cloud Run ends the request mid-body and
+  the browser reports a failed download. Raising swarm-api's timeout (Cloud Run allows
+  60 minutes) is a service-wide change to every route on the service, so it is an
+  **open owner decision**, not something this route changed.
 - **Absence and failure are not an empty checkpoint.** `status: absent` has
   `files: null`; an unreadable archive is a 503 with no `files` key; a truncated object
   is `status: corrupt` (the gzip end marker is required — `tarfile` alone stops
@@ -933,8 +966,12 @@ Not verified against a deployed environment: every claim above is proven by
 `tests/unit/control_plane/test_checkpoint_content.py` (in-memory reader, archives
 built by `tarfile` and one by `CheckpointManager` itself) and
 `apps/swarm-ui/src/__tests__/checkpoint.browser.test.tsx`, both run in CI. Real GCS
-read throughput against the 256 MiB budget, and IAP carrying the session cookie on
-the download link, are expectations, not measurements.
+read throughput against the 256 MiB budget, the per-window store time behind the
+timeout arithmetic above, IAP carrying the session cookie on the download link, and a
+chunked download over 32 MiB passing Cloud Run's front end end to end, are
+expectations, not measurements. The last one needs a deployed service and a checkpoint
+over 32 MiB in the bucket; nothing in CI can see Cloud Run's limit, because the test
+client has none.
 
 ### S4 — cross-task attempt aggregation · medium · unblocks "what did it cost"
 

@@ -657,22 +657,13 @@ def test_an_unreadable_manifest_does_not_stop_the_listing_or_pretend_to_agree(
 def test_a_manifest_string_json_cannot_carry_is_escaped_not_a_500(client, db, objects):
     """The same lone surrogate by the other door. `json.dumps` writes one as
     the escape `\\udce9` and `json.loads` hands it straight back, so a manifest
-    field is a second way for a string no response can encode to reach one.
-
-    And the download's HEADERS: a manifest is data a worker wrote into a
-    bucket, and a header is latin-1 with no control characters. A digest that
-    is not a digest is left out rather than failing the download it labels.
-    """
+    field is a second way for a string no response can encode to reach one."""
     seed(db)
     put_checkpoint(
         objects,
         archive=tar_gz(WORKSPACE),
         file_count=4,
-        manifest_overrides={
-            "label": "caf\udce9",
-            "created_at": "\ud800",
-            "archive_sha256": "☃ not a digest\r\nX-Injected: 1",
-        },
+        manifest_overrides={"label": "caf\udce9", "created_at": "\ud800"},
     )
 
     response = files(client)
@@ -681,6 +672,23 @@ def test_a_manifest_string_json_cannot_carry_is_escaped_not_a_500(client, db, ob
     assert manifest["status"] == "present"
     assert manifest["label"] == "caf\\xe9"
     assert manifest["created_at"] == "\\ud800"
+
+
+def test_a_manifest_digest_that_is_not_a_digest_stays_out_of_the_header(
+    client, db, objects
+):
+    """A manifest is data a worker wrote into a bucket, and a response header
+    is latin-1 with no control characters. A digest that is not a digest is
+    left out of `X-Checkpoint-Sha256` rather than failing the download it
+    would have labelled -- and never becomes a header of the worker's choosing.
+    """
+    seed(db)
+    put_checkpoint(
+        objects,
+        archive=tar_gz(WORKSPACE),
+        file_count=4,
+        manifest_overrides={"archive_sha256": "☃ not a digest\r\nX-Injected: 1"},
+    )
 
     fetched = download(client)
     assert fetched.status_code == 200, fetched.text

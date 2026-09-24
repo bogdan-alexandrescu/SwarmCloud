@@ -64,7 +64,9 @@ def list_checkpoint_files(
     Read out of the tarball in GCS, streamed, never held whole. `status` is
     `ok`, `absent` (no archive object: `files` is null, NEVER `[]`) or
     `corrupt` (the rows before the point it stopped being readable); a failed
-    read is a 503 with no `files` at all. `truncated` + `truncated_reason`
+    read is a 503 with no `files` at all. A name whose bytes are not UTF-8 is
+    served escaped (`caf\\xe9.txt`) with `undecodable: true`, and cannot be
+    opened by that spelling. `truncated` + `truncated_reason`
     (`entry_cap`, `scan_budget`, `inflate_budget`, `corrupt`) say when the list
     is not the whole archive. `manifest` is the commit marker's own account,
     and `file_count_agrees` compares the two.
@@ -125,8 +127,13 @@ def download_checkpoint(
     NOT REDACTED -- it is gzip, and no rule runs over compressed bytes; the
     owner chose to serve it knowing that, and `X-Swarm-Redaction: not-applied`
     says so on every response. An absent archive is a 404 and an unreadable
-    one a 503 BEFORE any byte is sent; a failure after that ends the stream
-    short of its `Content-Length`.
+    one a 503 BEFORE any byte is sent; a failure after that ends the chunked
+    stream without its final chunk, short of `X-Checkpoint-Bytes`.
+
+    Chunked, with no `Content-Length`: Cloud Run refuses an unchunked HTTP/1
+    response over 32 MiB, and uvicorn chunks exactly when no length is
+    declared. An archive larger than the request timeout lets through is cut
+    the same way -- see `CheckpointContent.download` for the arithmetic.
     """
     archive = service.download(
         tenant_id, task_id, checkpoint_id=checkpoint_id, attempt_id=attempt_id

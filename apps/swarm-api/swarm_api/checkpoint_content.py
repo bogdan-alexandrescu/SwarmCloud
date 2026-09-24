@@ -89,6 +89,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import tarfile
 import zlib
 from dataclasses import dataclass
@@ -126,9 +127,13 @@ log = logging.getLogger(__name__)
 CHUNK_BYTES = 1024 * 1024
 
 #: Compressed bytes one listing or one file read may pull from the store. A
-#: checkpoint may be 2 GiB; at in-region GCS throughput 256 MiB is a couple of
-#: seconds, which keeps a listing an interactive request. Past it the listing
-#: says `scan_budget` and the whole-archive download is the way to the rest.
+#: checkpoint may be 2 GiB; this reads at most an eighth of one. NOT MEASURED:
+#: every window is two SEQUENTIAL store calls (`GcsObjectReader.read_range`
+#: looks the object up with `get_blob`, then downloads the range), so 256 MiB
+#: is 256 windows and 512 round trips -- seconds to low tens of seconds at the
+#: tens of milliseconds an in-region call takes, well inside the request
+#: timeout, and slower than "interactive". Past it the listing says
+#: `scan_budget` and the whole-archive download is the way to the rest.
 MAX_SCAN_BYTES = 256 * 1024 * 1024
 
 #: Bytes decompressed per request. Gzip reaches ~1000:1 on zeros, so the
@@ -148,6 +153,15 @@ _INFLATE_PIECE = 256 * 1024
 
 #: The archive's file name in the whole-archive download.
 _DOWNLOAD_SUFFIX = ".tar.gz"
+
+#: What a digest must look like to be put in a response HEADER. The manifest's
+#: value is data a worker wrote into a bucket. Starlette encodes a header value
+#: as latin-1 and uvicorn refuses one with a control character in it, and
+#: either failure is a 500 for the whole download -- or, with CR/LF and a
+#: server that did not check, a header the worker chose. Anything that is not
+#: a digest is left out of the header rather than failing the download it
+#: would have labelled; the listing still shows it, escaped.
+_SHA256_HEX = re.compile(r"[0-9a-fA-F]{64}")
 
 # --------------------------------------------------------------------------
 # What may be served as text
@@ -251,6 +265,48 @@ def requested_path(path: Any) -> str:
     return path
 
 
+def undecodable(text: str) -> bool:
+    """Whether `text` holds a lone surrogate, which no JSON response can carry.
+
+    `tarfile` decodes names with `errors="surrogateescape"`, so a name whose
+    bytes are not UTF-8 -- a Latin-1 fixture in a cloned repository, which the
+    worker archives exactly as `Path.rglob` hands it over -- comes back holding
+    `\\udc80`-`\\udcff`. `json.loads` returns any lone surrogate from a `\\ud800`
+    escape. Starlette's `JSONResponse` encodes with `encode("utf-8")`, which
+    raises on both, AFTER the route has returned: an unhandled 500 with no
+    reason, on every request that touches the string.
+    """
+    return any(0xD800 <= ord(c) <= 0xDFFF for c in text)
+
+
+def _escape_surrogate(c: str) -> str:
+    code = ord(c)
+    if 0xDC80 <= code <= 0xDCFF:
+        # A byte surrogateescape carried: shown as the byte it was.
+        return f"\\x{code - 0xDC00:02x}"
+    return f"\\u{code:04x}"
+
+
+def displayable(text: str) -> str:
+    """`text` as a response can carry it: every lone surrogate escaped.
+
+    `caf\\udce9.txt` is served as `caf\\xe9.txt` -- the bytes the archive
+    holds, spelled the way Python and `ls -b` spell them. The result is a
+    DISPLAY and never an address: it contains a backslash, which
+    `requested_path` refuses, so the escaped form cannot be sent back to name
+    the member and nothing has to decide which of two members it meant.
+    """
+    if not undecodable(text):
+        return text
+    return "".join(
+        _escape_surrogate(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text
+    )
+
+
+def _shown(value: str | None) -> str | None:
+    return None if value is None else displayable(value)
+
+
 def member_path(name: str) -> tuple[str | None, bool]:
     """How a tar member's name is shown, and whether it is UNSAFE.
 
@@ -263,6 +319,11 @@ def member_path(name: str) -> tuple[str | None, bool]:
     exactly what `checkpoint._safe_members` refuses on restore, so an archive
     carrying one would fail to resume, and a person looking at the checkpoint
     is the person who needs to see why.
+
+    `unsafe` is decided on the name AS DECODED and the name is escaped only
+    afterwards (`displayable`): the escape introduces a backslash, and a
+    Latin-1 name is not an escape from the archive -- a restore unpacks it
+    without complaint. `undecodable` is the separate fact for that.
     """
     shown = name
     while shown.startswith("./"):
@@ -277,7 +338,7 @@ def member_path(name: str) -> tuple[str | None, bool]:
         or len(shown) > _MAX_PATH
         or any(segment in ("", ".", "..") for segment in shown.split("/"))
     )
-    return shown, unsafe
+    return displayable(shown), unsafe
 
 
 def member_type(member: tarfile.TarInfo) -> str:
@@ -299,7 +360,8 @@ def member_type(member: tarfile.TarInfo) -> str:
 
 
 def member_row(member: tarfile.TarInfo) -> dict[str, Any] | None:
-    """One listing row -- `{path, size, mode, type}` plus `link` and `unsafe`.
+    """One listing row -- `{path, size, mode, type}` plus `link`, `unsafe` and
+    `undecodable`.
 
     The shape is CONSTANT: `link` is null rather than missing for a member that
     is not a link, so a client never has to tell "no link" from "the field was
@@ -308,14 +370,21 @@ def member_row(member: tarfile.TarInfo) -> dict[str, Any] | None:
     `link` is run through the redaction filter. A symlink target is a string
     an agent wrote, which is the same class of text as log content; paths are
     not, and are served as the archive spells them.
+
+    `undecodable` says the `path` or the `link` shown here is an ESCAPED
+    rendering of bytes that are not UTF-8 (`displayable`). Such a row is listed
+    and cannot be opened by name: the escaped form is refused as a path.
     """
     path, unsafe = member_path(member.name)
     if path is None:
         return None
     kind = member_type(member)
+    escaped = undecodable(member.name)
     link = None
     if kind in ("symlink", "hardlink"):
-        link = redact(member.linkname or "").text
+        target = member.linkname or ""
+        escaped = escaped or undecodable(target)
+        link = redact(displayable(target)).text
     return {
         "path": path,
         "size": int(member.size or 0),
@@ -323,6 +392,7 @@ def member_row(member: tarfile.TarInfo) -> dict[str, Any] | None:
         "type": kind,
         "link": link,
         "unsafe": unsafe,
+        "undecodable": escaped,
     }
 
 
@@ -707,13 +777,15 @@ class CheckpointContent:
                 detail=f"the manifest is not readable JSON: {redact_detail(exc)}",
             )
             return block
+        # `_shown`: `json.loads` returns a lone surrogate from a `\ud800`
+        # escape, and a manifest is data a worker wrote into a bucket.
         block.update(
             status="present",
             file_count=_as_int(data.get("file_count")),
             archive_bytes=_as_int(data.get("archive_bytes")),
-            archive_sha256=_as_text(data.get("archive_sha256")),
-            created_at=_as_text(data.get("created_at")),
-            label=_as_text(data.get("label")),
+            archive_sha256=_shown(_as_text(data.get("archive_sha256"))),
+            created_at=_shown(_as_text(data.get("created_at"))),
+            label=_shown(_as_text(data.get("label"))),
             archive_key_agrees=data.get("archive_key") == ref.archive_key,
         )
         return block
@@ -943,7 +1015,10 @@ class CheckpointContent:
             scan = self._open(reader, ref.archive_key)
             for member in scan.tar:
                 shown, unsafe = member_path(member.name)
-                if shown != wanted or unsafe:
+                # An undecodable name's escaped form carries a backslash that
+                # `requested_path` already refused, so it cannot equal `wanted`;
+                # skipped by name as well, so that stays true if either changes.
+                if shown != wanted or unsafe or undecodable(member.name):
                     continue
                 return self._serve_member(
                     scan, member, row, allowed=allowed, offset=offset, window=window
@@ -1009,7 +1084,11 @@ class CheckpointContent:
         size = int(member.size or 0)
         row["member"] = {"type": kind, "mode": int(member.mode or 0) & 0o7777, "size": size}
         if kind != "file":
-            link = redact(member.linkname or "").text if kind in ("symlink", "hardlink") else None
+            link = (
+                redact(displayable(member.linkname or "")).text
+                if kind in ("symlink", "hardlink")
+                else None
+            )
             raise ValidationFailed(
                 f"{row['path']!r} is a {kind} in this checkpoint, not a regular file"
                 + (f"; it points at {link!r}" if link else ""),
@@ -1107,17 +1186,43 @@ class CheckpointContent:
         unreadable one a 503 -- never a 200 with an empty body, which a browser
         would save as a zero-byte `.tar.gz` that looks like a download.
 
+        NO `Content-Length`, ON PURPOSE. swarm-api is uvicorn, which speaks
+        HTTP/1 only, behind a Cloud Run port that is not h2c, and Cloud Run
+        caps an HTTP/1 response at 32 MiB "if not using Transfer-Encoding:
+        chunked or streaming" (docs.cloud.google.com/run/quotas). uvicorn
+        chunks a response exactly when the application declares no length, so
+        declaring one would put every archive over 32 MiB -- the ones a cut
+        listing sends people here for -- over that cap. The size travels as
+        `X-Checkpoint-Bytes` instead, where no server or proxy acts on it.
+
         A failure AFTER the first window cannot change a status that has
-        already been sent. The stream then ends early, and `Content-Length`
-        (the object's size, from the first window) is what makes that
-        detectable: a client receives fewer bytes than it was promised rather
-        than a short file that looks complete. The failure is logged here,
-        redacted.
+        already been sent. The stream then ends early, and that is still
+        detectable: on the wire the chunked body never gets its terminating
+        chunk, which a browser reports as a failed download, and a client
+        counting bytes receives fewer than `X-Checkpoint-Bytes` promised (and,
+        when the manifest has one, a body that fails `X-Checkpoint-Sha256`).
+        The failure is logged here, redacted.
+
+        THE REQUEST TIMEOUT BOUNDS THE SIZE THAT CAN BE DOWNLOADED, and it is
+        not raised for this. swarm-api runs on the Cloud Run module's default
+        `request_timeout` of 300 s (terraform/modules/cloud_run/variables.tf;
+        terraform/infra/main.tf does not override it for swarm-api), and Cloud
+        Run ends the request there -- mid-body, which the client sees as the
+        cut above, never as a complete file. The time taken is at most
+        `windows x (store time per window) + bytes / the client's throughput`:
+        the next window is read only once the previous one has been handed to
+        the socket, and each window is two sequential store calls
+        (`get_blob`, then the ranged read). With an ASSUMED 50 ms per window --
+        not measured -- the largest archive that finishes in 300 s is about
+        2.9 GiB at 20 MiB/s to the client (so every checkpoint, whose cap is
+        2 GiB), 1.2 GiB at 5 MiB/s, and 545 MiB at 2 MiB/s. Raising
+        swarm-api's timeout (Cloud Run allows 60 minutes) is a service-wide
+        change and is left to the owner; see redesign-v2.md S3.
 
         NOT REDACTED, and the headers say so -- see the module docstring. The
-        manifest's digest travels as `X-Checkpoint-Sha256` when there is one,
-        so the caller can verify what they received; `X-Checkpoint-Manifest`
-        says whether there was a commit marker at all.
+        manifest's digest travels as `X-Checkpoint-Sha256` when there is one
+        and it is a digest, so the caller can verify what they received;
+        `X-Checkpoint-Manifest` says whether there was a commit marker at all.
         """
         task, ref, objects, reader = self._resolve(
             tenant_id, task_id, checkpoint_id=checkpoint_id, attempt_id=attempt_id
@@ -1147,14 +1252,18 @@ class CheckpointContent:
             # Every part of the name passed `safe_segment` ([A-Za-z0-9_.-]), so
             # nothing in it can close the quoted string or start a parameter.
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(total),
+            # NOT `Content-Length` -- see the docstring: declaring the length
+            # is what makes uvicorn send the body unchunked, and Cloud Run
+            # refuses an unchunked HTTP/1 response over 32 MiB.
+            "X-Checkpoint-Bytes": str(total),
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "X-Swarm-Redaction": "not-applied",
             "X-Checkpoint-Manifest": str(manifest["status"]),
         }
-        if manifest["archive_sha256"]:
-            headers["X-Checkpoint-Sha256"] = str(manifest["archive_sha256"])
+        digest = manifest["archive_sha256"]
+        if isinstance(digest, str) and _SHA256_HEX.fullmatch(digest):
+            headers["X-Checkpoint-Sha256"] = digest
 
         def chunks() -> Iterator[bytes]:
             if first.data:
