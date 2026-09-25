@@ -4029,7 +4029,9 @@ a.copy { display: inline-block; text-decoration: none; }
    one declaration, two selectors, so a key cannot drift from its bar. The
    colours are unchanged -- CH-17's hue ruling does not re-rule chart fills. */
 .stackcol > i.succeeded,
-.chart-legend .k.succeeded { background: var(--ok); }
+.chart-legend .k.succeeded,
+.ol-k.is-ok,
+.ol-meter > .ol-seg.succeeded { background: var(--ok); }
 /* The workflow row's outcome composition reuses these two forms by selector
    rather than restating them (WF-1, settled on #83, 2026-09-25): a finished
    row's failed and dead-lettered segments are this failed rule, its cancelled
@@ -4038,13 +4040,17 @@ a.copy { display: inline-block; text-decoration: none; }
 .stackcol > i.failed,
 .chart-legend .k.failed,
 .wf-meter > .wf-seg.failed,
-.wf-meter > .wf-seg.dead-lettered {
+.wf-meter > .wf-seg.dead-lettered,
+.ol-k.is-bad,
+.ol-meter > .ol-seg.failed {
   background: var(--bad);
   box-shadow: inset 2px 0 0 var(--surface);
 }
 .stackcol > i.cancelled,
 .chart-legend .k.cancelled,
-.wf-meter > .wf-seg.cancelled {
+.wf-meter > .wf-seg.cancelled,
+.ol-k.is-ended,
+.ol-meter > .ol-seg.cancelled {
   background: repeating-linear-gradient(to bottom, var(--text-faint) 0 3px, transparent 3px 5px);
 }
 /* Hatched, so "still open" never reads as an outcome.
@@ -11640,4 +11646,438 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     height: max(100%, 44px);
     transform: translate(-50%, -50%);
   }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The Timeline as an outcome ledger (#185)                                  */
+/* ------------------------------------------------------------------------ */
+/* APPEND-ONLY. Every selector below is new; the ledger's TS-4 legend keys and
+   its outcome track join TS-4's own rules in the Activity block above by
+   selector (`.ol-k.is-ok`, `.ol-meter > .ol-seg.*`), so a key and a segment
+   cannot drift from the form the outcome stack defined. The old window bar,
+   stacked columns and legend rules above stay: `.wf-meter` reuses TS-4's
+   failed and cancelled rules, and the remaining ones are held by tests that
+   read the sheet rather than the Timeline.
+
+   THE SVG MARKS take `fill`, which a `background` rule cannot give them, so
+   succeeded and failed are restated here as fills -- the same tokens as
+   TS-4's segments, `--ok` and `--bad` with the 2px `--surface` cut, and the
+   flat bars as a pattern of 3px `--text-faint` bars every 5px. */
+
+.ol-toolbar { row-gap: var(--ctl-s2); }
+/* The sheet's controls sit in the toolbar's own row at every width but a
+   phone's, where they collapse behind `Filters · N` (§7.2). */
+.ol-sheet { display: contents; }
+.ol-sheet-toggle { display: none; }
+.ol-span-more { display: none; }
+.ol-sheet-toggle,
+.ol-table-toggle,
+.ol-step {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: none;
+  color: var(--text-dim);
+  font: 500 var(--t-body)/var(--lh-body) var(--font);
+  cursor: pointer;
+}
+.ol-table-toggle[aria-pressed='true'] {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.ol-sheet-toggle:focus-visible,
+.ol-table-toggle:focus-visible,
+.ol-step:focus-visible,
+.ol-pick > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ol-field,
+.ol-range,
+.ol-range > label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  font: var(--t-body)/var(--lh-body) var(--font);
+  color: var(--text-dim);
+}
+.ol-field select,
+.ol-field input,
+.ol-range input {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--font);
+}
+.ol-field input { width: 16ch; }
+.ol-pick { position: relative; }
+.ol-pick > summary {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  color: var(--text-dim);
+  font: var(--t-body)/var(--lh-body) var(--font);
+  list-style: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ol-pick > summary b { color: var(--text); font-weight: 600; }
+.ol-pick-list {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + var(--ctl-s1));
+  left: 0;
+  display: grid;
+  gap: var(--ctl-s1);
+  min-width: 200px;
+  margin: 0;
+  padding: var(--ctl-s2) var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.ol-pick-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* ---- the facts line and the page's one figure ---- */
+.ol-facts { margin: 0 0 var(--ctl-s3); }
+.ol-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+}
+.ol-title {
+  margin: 0;
+  font: 600 var(--t-lead)/var(--lh-lead) var(--font);
+  color: var(--text);
+}
+.ol-note { margin-left: auto; }
+.ol-headline {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ctl-s1) var(--ctl-s3);
+  margin: var(--ctl-s2) 0 var(--ctl-s3);
+}
+/* n = 0 is measured and the rate over it undefined: a phrase at body size,
+   never a figure-step 0 %. */
+.ol-figure.is-phrase {
+  font: 600 var(--t-body)/var(--lh-body) var(--font);
+  color: var(--text);
+}
+.ol-kofn,
+.ol-interval {
+  font: var(--t-body)/var(--lh-body) var(--mono);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.ol-delta,
+.ol-partial,
+.ol-q {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+
+/* ---- the ledger: drawn three times, one shown (§7.2, AG-20) ---- */
+/* THE FIGURE IS THE CONTAINER, and each threshold is the width that drawing
+   was authored at, so a drawing is never shown in a box narrower than itself
+   -- never scaled down, so no tick renders under --t-micro. The narrow one
+   shows below 640px and scrolls when its buckets need more than the box. */
+.ol-chart { container: ol-chart / inline-size; margin: 0; }
+/* THE SCALE DOES NOT SCROLL (wireframe_390). A drawing is a positioned frame
+   holding three layers: the gutter SVG with every tick, laid over its left
+   edge; the lane labels, laid over the plot's left edge; and the plot, the
+   one layer in the scroller, pushed right by the gutter's width (inline, per
+   drawing). Drawn as one SVG inside the scroller, the ticks and the labels
+   scrolled off on open, because the plot opens at its newest end. `isolation`
+   keeps the labels' z-index inside the drawing. */
+.ol-plot { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.ol-canvas { position: relative; }
+.ol-gutter {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+}
+/* TS-3's cue that older buckets are off the left edge, only while they are. */
+.ol-plot.has-older {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+}
+.ol-drawing { position: relative; display: none; isolation: isolate; }
+.ol-drawing.is-narrow { display: block; }
+@container ol-chart (min-width: 640px) {
+  .ol-drawing.is-mid { display: block; }
+  .ol-drawing.is-narrow { display: none; }
+}
+@container ol-chart (min-width: 1080px) {
+  .ol-drawing.is-wide { display: block; }
+  .ol-drawing.is-mid { display: none; }
+}
+.ol-svg { display: block; overflow: visible; }
+.ol-svg text,
+.ol-gutter text,
+.ol-strip text { font-family: var(--mono); font-size: var(--t-micro); }
+.ol-tick { fill: var(--text-faint); }
+/* A LANE LABEL SITS OVER COLUMNS THAT MOVE UNDER IT: the page's own ground
+   behind its text keeps it legible over a scrolled plot, an hourly axis's day
+   rules and the pick; it takes no pointer, so a tap on the column beneath
+   still picks it. One line, clipped short of the chart's edge rather than
+   pushing the page sideways on the narrowest phones. */
+.ol-lane-label {
+  position: absolute;
+  z-index: 1;
+  max-width: calc(100% - 56px);
+  overflow: hidden;
+  padding-right: var(--ctl-s1);
+  background: var(--bg);
+  color: var(--text-dim);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.ol-grid { stroke: var(--line-soft); stroke-dasharray: 2 3; }
+.ol-base { stroke: var(--line); }
+.ol-day { stroke: var(--line-soft); }
+/* The pick: a surface step and a 2px ink rule, never a hue (§1.3). */
+.ol-sel { fill: var(--surface-2); }
+.ol-sel-rule { fill: var(--text); }
+/* Lane 1. `--series-1`, never `--ok`: a line in a verdict colour reads as a
+   verdict (§1.6). The Wilson band is a surface step with its edges ruled --
+   not a hatch, which means "not measured". */
+.ol-m-band { fill: var(--surface-2); }
+.ol-m-edge { fill: none; stroke: var(--line-soft); stroke-width: 1; }
+.ol-m-rate { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; }
+.ol-m-rate.is-so-far { stroke-dasharray: 3 3; }
+.ol-m-pt { fill: var(--series-1); stroke: var(--series-1); stroke-width: 1.5; }
+.ol-m-pt.is-hollow { fill: var(--surface); }
+/* Lane 2: TS-4 as decided for this chart (owner decision on #185). */
+.ol-m-ok { fill: var(--ok); }
+.ol-m-bad { fill: var(--bad); }
+.ol-m-cut { fill: var(--surface); }
+/* Lane 3: the flat "ended" bars, and the outline a failure's cancels take. */
+.ol-flat { fill: var(--text-faint); }
+.ol-m-after { fill: none; stroke: var(--text-dim); stroke-width: 1; }
+/* Lane 4: counts, not outcomes -- a step line and neutral columns. */
+.ol-m-sub { fill: none; stroke: var(--series-2); stroke-width: 2; }
+.ol-m-fin { fill: var(--series-5); }
+/* A measured zero is the axis tick; the current bucket's edge is dashed. */
+.ol-zero { stroke: var(--text-faint); stroke-width: 2; }
+.ol-so-far { stroke: var(--text-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+/* The columns a reader picks: one tab stop, roving (TS-9). */
+.ol-cols { position: absolute; top: 0; }
+.ol-col { position: absolute; top: 0; bottom: 0; cursor: pointer; }
+.ol-col:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* ---- the readout, which is the legend (TS-9) ---- */
+.ol-readout { margin-top: var(--ctl-s2); }
+.ol-readout-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  margin: 0;
+}
+.ol-at { font: 600 var(--t-body)/var(--lh-body) var(--font); color: var(--text); }
+.ol-at-cover { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.ol-step { display: none; }
+.ol-legend,
+.ol-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s1) var(--ctl-s3);
+  margin: var(--ctl-s1) 0 0;
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-dim);
+}
+.ol-keys { color: var(--text-faint); }
+.ol-n { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ol-k {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: var(--ctl-s1);
+  border-radius: 2px;
+  vertical-align: baseline;
+}
+.ol-k.is-rate { height: 2px; background: var(--series-1); vertical-align: middle; }
+.ol-k.is-after { background: none; border: 1px solid var(--text-dim); }
+.ol-k.is-sub { height: 2px; background: var(--series-2); vertical-align: middle; }
+.ol-k.is-fin { background: var(--series-5); }
+.ol-k.is-zero { height: 2px; background: var(--text-faint); vertical-align: middle; }
+.ol-k.is-so-far { width: 0; border-left: 1px dashed var(--text-faint); border-radius: 0; }
+.ol-k.is-unread { background: var(--ctl-hatch); }
+.ol-k.is-hollow { width: 8px; height: 8px; border: 2px solid var(--series-1); border-radius: 999px; background: var(--surface); }
+.ol-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s2);
+  margin: var(--ctl-s2) 0 0;
+}
+.ol-pending { height: 420px; margin-top: var(--ctl-s3); }
+
+/* ---- the cards ---- */
+.ol-cards { margin-top: var(--ctl-s5); }
+.ol-card.is-wide { grid-column: 1 / -1; }
+/* A COVERAGE NOTE IS LONGER THAN A QUALIFIER. `· partial 13 of 14 days` on
+   `by task end · 209 of 612 attempts` is ~400px of mono in a ~329px card,
+   and `.ctl-card-note` does not wrap, so the head wraps instead: the note
+   drops under the title, still right-aligned, rather than past the card. */
+.ol-card > .ctl-card-head { flex-wrap: wrap; row-gap: var(--ctl-s1); }
+.ol-card > .ctl-card-head > .ctl-card-note { margin-left: auto; }
+/* THE CARD BODY IS THE SIZE CONTAINER a row's strip is measured against. */
+.ol-card > .ctl-card-body { container: ol-card / inline-size; }
+.ol-row {
+  display: grid;
+  grid-template-columns: minmax(104px, 150px) minmax(48px, 1fr) 44px auto;
+  align-items: center;
+  gap: var(--ctl-s2);
+  padding: 2px 0;
+}
+.ol-row-name {
+  font: var(--t-body)/var(--lh-body) var(--font);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.ol-row-n {
+  font: var(--t-body)/var(--lh-body) var(--mono);
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* A MINI STRIP IS DRAWN ONLY WHERE ITS ROW FITS. A row is name (>=104px) ·
+   track (>=48px) · count (44px) · strip, 8px apart: 220px before a strip of
+   6px a bucket. At 1440 the cards are 3-up and a body is ~329px, so a 24-hour
+   strip (364px row) or a 30-day one (400px) spilled 20-70px over the card's
+   border. The strip carries its band (`is-n14` ... `is-n60`, Ledger.tsx
+   STRIP_BANDS) and shows once the card body is 220 + 6 x band wide. Below
+   900px none is drawn: a 6px column per bucket is texture beside a label
+   that already carries the count. */
+.ol-strip { display: none; }
+@container ol-card (min-width: 304px) { .ol-strip.is-n14 { display: block; } }
+@container ol-card (min-width: 364px) { .ol-strip.is-n24 { display: block; } }
+@container ol-card (min-width: 406px) { .ol-strip.is-n31 { display: block; } }
+@container ol-card (min-width: 490px) { .ol-strip.is-n45 { display: block; } }
+@container ol-card (min-width: 580px) { .ol-strip.is-n60 { display: block; } }
+/* Not nested in the container rules: the sheet uses no nested at-rules. Same
+   specificity as a band's rule and after it, so it wins below 900px. */
+@media (max-width: 899px) {
+  .ol-row > .ol-strip { display: none; }
+}
+.ol-strip-col { fill: var(--text-dim); }
+.ol-sub,
+.ol-line {
+  margin: var(--ctl-s2) 0 0;
+  font: var(--t-body)/var(--lh-body) var(--font);
+  color: var(--text);
+}
+/* AG-14: a line is ink, and `--warn` only where a person has to act. */
+.ol-person.is-warn { color: var(--warn); }
+.ol-meter-wrap { display: block; min-width: 0; }
+.ol-meter > .ol-seg.failed { min-width: 4px; }
+.ol-steps { display: inline-flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+/* The Workflows row's 54px, in this page's forms: succeeded solid --ok. */
+.ol-steps > .ol-meter { flex: none; width: 54px; }
+.ol-phrase { color: var(--text-dim); }
+.ol-tag {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border-radius: 2px;
+  padding: 0 var(--ctl-s1);
+}
+.ol-ring {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--ctl-s1);
+  border: 2px solid var(--text-dim);
+  border-radius: 999px;
+}
+.ol-spark { display: block; }
+.ol-figure-line { margin: 0; }
+.ol-cost-strip { display: block; max-width: 100%; margin: var(--ctl-s2) 0; }
+.ol-m-cost { fill: var(--series-3); }
+.ol-cov.is-full { fill: var(--text-dim); }
+.ol-bought {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ctl-s2);
+}
+/* Time to result: one shared log axis, 1 s to 1 d; the wait above, the run below. */
+.ol-lat-scale {
+  position: relative;
+  height: 16px;
+  margin: 0 0 var(--ctl-s1) calc(96px + var(--ctl-s2));
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+.ol-lat-scale > span { position: absolute; transform: translateX(-50%); }
+.ol-lat-row { margin-top: var(--ctl-s3); }
+.ol-lat-head { margin: 0; font: var(--t-body)/var(--lh-body) var(--font); color: var(--text); }
+.ol-lat-line {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: var(--ctl-s2);
+  align-items: center;
+  margin-top: var(--ctl-s1);
+}
+.ol-lat-name { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ol-lat-axis { position: relative; height: 18px; background: var(--surface-2); border-radius: 2px; }
+.ol-lat-text { grid-column: 2; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.ol-lat-span { position: absolute; height: 2px; }
+.ol-lat-span.is-wait { top: 4px; background: var(--text-faint); }
+.ol-lat-span.is-run { top: 12px; background: var(--series-1); }
+.ol-lat-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 999px;
+}
+.ol-lat-dot.is-wait { top: 2px; background: var(--text-faint); border: 1px solid var(--text-faint); }
+.ol-lat-dot.is-run { top: 10px; background: var(--series-1); border: 1px solid var(--series-1); }
+.ol-lat-dot.is-hollow { background: var(--surface); }
+.ol-lat-timeout { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--text-dim); }
+.ol-prov {
+  margin: var(--ctl-s5) 0 0;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+
+/* ---- phone (§7.2): 44px targets, the span first, everything else behind a sheet ---- */
+@media (max-width: 560px) {
+  .ol-span > .is-wide-only { display: none; }
+  .ol-sheet-toggle { display: inline-flex; align-items: center; min-height: 44px; }
+  .ol-sheet { display: none; }
+  .ol-sheet.is-open {
+    display: flex;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ctl-s2);
+  }
+  .ol-span-more { display: inline-flex; }
+  .ol-table-toggle { min-height: 44px; }
+  .ol-pick > summary { display: flex; align-items: center; min-height: 44px; }
+  .ol-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .ol-row { grid-template-columns: minmax(96px, 120px) minmax(40px, 1fr) 40px; }
 }
