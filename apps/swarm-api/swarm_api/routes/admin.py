@@ -596,3 +596,45 @@ def rollup_workflows(
             if r.drift["agrees"] is not True
         ],
     }
+
+
+@router.post("/outcomes/rollup")
+def rollup_outcomes(
+    tenant_id: str = Query(..., min_length=1),
+    since: str = Query(..., min_length=1, description="YYYY-MM-DD, a UTC day, inclusive"),
+    until: str | None = Query(default=None, description="YYYY-MM-DD, exclusive; default tomorrow"),
+    repair: bool = Query(default=False),
+    build_missing: bool = Query(default=True),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Backfill and drift-check one tenant's `outcome_days` rollup, <= 31 UTC days.
+
+    Modelled on POST /v1/admin/workflows/rollup, for the same two reasons.
+
+    WHY IT EXISTS beside the write-on-read GET /v1/outcomes already does: a
+    cold 90-day view would spend its whole derive budget and come back with
+    most days `unread`. This builds those days ahead of time, and it is the
+    DRIFT CHECK -- it re-derives every stored sealed day and compares.
+
+    A disagreement is REPORTED and repaired only with repair=true; a repaired
+    day still reads its differences with `repaired: true`, because a repair
+    that leaves no trace is the silent resolution rollup.drift_of forbids. A
+    day whose derive could not complete counts as `unknown`, never
+    "disagree".
+
+    TENANT IS EXPLICIT, not the admin's own tenant_scope, which would sweep
+    the wrong tenant. It must exist: a misspelt id would otherwise build a
+    rollup for a tenant nobody has.
+    """
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    result = ctx.outcomes.maintain(
+        tenant_id=tenant_id,
+        since=since,
+        until=until,
+        repair=repair,
+        build_missing=build_missing,
+    )
+    ctx.metrics.admin_actions.labels(action="outcomes_rollup").inc()
+    return result

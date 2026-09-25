@@ -30,6 +30,9 @@ from google.api_core import exceptions as gexc
 ASCENDING = "ASCENDING"
 DESCENDING = "DESCENDING"
 
+#: Firestore's cap on the values of one `in` filter (see FakeQuery._rows).
+IN_MAX_VALUES = 30
+
 _MISSING = object()
 
 
@@ -198,6 +201,16 @@ class FakeQuery:
     # -- execution --------------------------------------------------------
 
     def _rows(self) -> Iterator[FakeSnapshot]:
+        # Firestore refuses an `in` over more than IN_MAX_VALUES values when the
+        # query RUNS, not when it is built. Measured read-only against dev on
+        # 2026-09-25 (PR #196): 30 values streamed, 31 raised InvalidArgument
+        # with exactly this text. Without it this fake answered a query
+        # production refuses, so a chunk size above 30 passed every unit test.
+        for _field_path, op, value in self._filters:
+            if op == "in" and len(value) > IN_MAX_VALUES:
+                raise gexc.InvalidArgument(
+                    f"'IN' supports up to {IN_MAX_VALUES} comparison values."
+                )
         depth = self._path.count("/") + 1
         matches: list[tuple[str, dict[str, Any]]] = []
         for path, data in self._db.docs.items():
@@ -408,6 +421,22 @@ class FakeFirestore:
 
     def transaction(self, **kwargs: Any) -> FakeTransaction:
         return FakeTransaction(self)
+
+    def get_all(
+        self, references: Iterable[Any], field_paths: Any = None, transaction: Any = None
+    ) -> Iterator[FakeSnapshot]:
+        """`Client.get_all`: one snapshot per distinct reference, a missing
+        document included with `exists` False, exactly as Firestore bills and
+        returns it. `field_paths` projections are not implemented, so asking
+        for one fails loudly rather than returning whole documents."""
+        if field_paths is not None:
+            raise NotImplementedError("fake firestore does not implement get_all field_paths")
+        seen: set[str] = set()
+        for ref in references:
+            if ref.path in seen:
+                continue
+            seen.add(ref.path)
+            yield ref.get()
 
     # -- test conveniences -------------------------------------------------
 

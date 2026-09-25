@@ -119,6 +119,22 @@ locals {
       ]
     }
 
+    # ---- GET /v1/outcomes: one tenant's tasks that ENDED in a UTC day -------
+    # swarm_api.outcomes derives each tenant-day from
+    #   tasks where tenant_id == T and D <= completed_at < D+1
+    #   order by completed_at ASC
+    # and folds a live day's delta with the same query from its cut. Arrivals
+    # (created_at) are served by tasks-tenant-created above. ASCENDING because
+    # the derive and the delta both read forwards from a cut.
+    "tasks-tenant-completed" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "completed_at", order = "ASCENDING" },
+      ]
+    }
+
     # ---- workflow fan-out: the steps of one workflow ------------------------
     "tasks-workflow-step" = {
       collection  = "tasks"
@@ -262,6 +278,26 @@ resource "google_firestore_field" "reconciler_passes_ttl" {
 
   # Same reasoning as events: the default single-field index on a TTL field is
   # not useful and costs write amplification on every pass.
+  index_config {}
+}
+
+# The outcome rollup (swarm_api.outcomes) keeps each tenant-day's tuples as ONE
+# JSON string field per kind, up to ~700 KB. Firestore indexes every field by
+# default, and a single-field index entry on a string that long is both
+# useless -- every read of outcome_days is a get_all of deterministic ids, never
+# a query on these fields -- and a write amplification on every rollup write.
+# Past 1,500 bytes Firestore also stops indexing the value anyway. So both are
+# exempted, the events_ttl way: index_config {} with no ttl_config. tenant_id,
+# day and sealed keep their default indexes, so the collection can still be
+# listed by tenant.
+resource "google_firestore_field" "outcome_days_unindexed" {
+  for_each = toset(["ended", "arrived"])
+
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = "outcome_days"
+  field      = each.value
+
   index_config {}
 }
 

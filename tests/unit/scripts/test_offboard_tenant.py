@@ -530,6 +530,11 @@ def world(**over) -> dict:
         "workflows/wf_x1": {"fields": {"tenant_id": s(NEIGHBOUR)}},
         f"quota/anthropic:{TENANT}": {"fields": {"tenant_id": s(TENANT)}},
         f"quota/anthropic:{NEIGHBOUR}": {"fields": {"tenant_id": s(NEIGHBOUR)}},
+        # The GET /v1/outcomes rollup (#185). The neighbour's id shares the
+        # prefix, so a delete by document-id prefix would take eng-x's too.
+        f"outcome_days/{TENANT}_2026-09-24": {"fields": {"tenant_id": s(TENANT), "day": s("2026-09-24")}},
+        f"outcome_days/{NEIGHBOUR}_2026-09-24": {"fields": {"tenant_id": s(NEIGHBOUR),
+                                                            "day": s("2026-09-24")}},
         f"accounts/{TENANT}:main": {"fields": {"owner_tenant": s(TENANT), "assigned": i(0), "lend_to": arr()}},
         f"accounts/{NEIGHBOUR}:main": {"fields": {"owner_tenant": s(NEIGHBOUR), "assigned": i(1),
                                                   "lend_to": arr()}},
@@ -804,7 +809,7 @@ def test_a_dry_run_inventories_everything_and_deletes_nothing(tmp_path, argv):
     ), inv
     assert _row(inv, "tasks") == "2", inv
     assert _row(inv, "task events").startswith("3 "), inv
-    for label in ("attempts", "workflows", "quota", "accounts (owned)", "account_auth"):
+    for label in ("attempts", "workflows", "quota", "outcome_days", "accounts (owned)", "account_auth"):
         assert _row(inv, label) == "1", f"{label}: {_row(inv, label)!r}\n{inv}"
     assert _row(inv, "leases").startswith("1 "), inv
     assert _row(inv, "credential_publications").startswith("1 "), inv
@@ -911,9 +916,9 @@ def test_apply_deletes_every_record_and_object_of_the_tenant_and_nothing_else(tm
     assert deleted[-1] == f"tenants/{TENANT}", f"the tenant document was not deleted last: {deleted}"
 
     proof = _section(run.stderr, "== Proof:")
-    assert "(12 checks)" in proof, proof
+    assert "(13 checks)" in proof, proof
     for label in (f"gs://{BUCKET}/tenants/{TENANT}/", "tasks", "task events", "events by tenant_id",
-                  "attempts", "leases", "workflows", "quota", "accounts", "account_auth",
+                  "attempts", "leases", "workflows", "quota", "outcome_days", "accounts", "account_auth",
                   "credential_publications", "pools"):
         assert _row(proof, label).startswith("0"), f"proof row {label!r}: {_row(proof, label)!r}"
     assert _row(proof, f"tenants/{TENANT}") == "absent", proof
