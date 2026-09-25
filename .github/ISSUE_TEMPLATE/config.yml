@@ -1,9 +1,9 @@
 # Blank issues stay on, for the reason saga-prompt-lab keeps them on: an
 # engineer filing a quick chore or a note-to-self shouldn't have to answer a
 # triage form. Use the forms for anything reported from the outside, where the
-# reporter and the fixer are different people. An agent filing from the CLI,
-# where the forms do not run, writes its body in the form's sections
-# (CLAUDE.md, "Issues").
+# reporter and the fixer are different people. An agent filing from the CLI
+# with --body-file bypasses the forms, so it writes its body in the form's
+# sections (CLAUDE.md, "Issues").
 #
 # Every url below is a blob/ or tree/ link on main, and
 # tests/unit/scripts/test_issue_forms.py fails if what it points at is not in

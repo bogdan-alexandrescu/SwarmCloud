@@ -314,10 +314,11 @@ exists to keep** — tenant isolation, the other team's resources in
 looked at before anything else. A secret is reported by *where* it appeared,
 never pasted.
 
-**From the CLI the forms do not run, so write the body in the form's sections,
-in its order, and pass its label** (`--label bug`, `--label enhancement`). The
-form is the checklist of what an issue has to answer; skipping it from a
-terminal is how an issue ends up with a headline and no expected behaviour.
+**Filing from the CLI with `gh issue create --body-file` bypasses the form, so
+write the body in the form's sections, in its order, and pass its label**
+(`--label bug`, `--label enhancement`, `--label epic`). The form is the
+checklist of what an issue has to answer; skipping it from a terminal is how an
+issue ends up with a headline and no expected behaviour.
 Blank issues stay on for chores and notes-to-self — `config.yml` says why.
 
 **The title states the defect as a fact**, the way this repository's commit
@@ -363,8 +364,8 @@ runs, which release run is red: read the live value yourself before acting on
 an issue that quotes one, and say *when* you read it.
 [`docs/DEPLOY_STATE.md`](docs/DEPLOY_STATE.md) is dated for this reason — its
 2026-09-24 reading found the running services were a laptop deploy of
-`7c52762`, not main, which no issue written against "what is deployed" would
-have told you.
+`7c52762`, not main. An issue that said "main is deployed" would have become
+false without anyone editing it.
 
 **TWO ISSUES THAT EDIT THE SAME FILE ARE ONE LANE, NOT TWO.** Territory, not
 subject, decides how work is split, and it is found by reading the files the
