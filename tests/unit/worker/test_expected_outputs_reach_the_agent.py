@@ -250,7 +250,10 @@ def test_the_worker_hands_the_names_to_the_runner(db, store, worker_factory):
     _seed(db, ["notes.md", "data.json"])
     worker, _config, _exporter = worker_factory()
 
-    assert worker.run() == ExitCode.OK
+    # The mock runner writes notes.md only, so data.json is missing and the
+    # attempt fails retryably (tested below). What is asserted here is what the
+    # runner was handed, which the final checkpoint holds either way.
+    assert worker.run() == ExitCode.FAILED
     assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["data.json", "notes.md"]
 
 
@@ -306,8 +309,12 @@ def test_the_workers_own_patch_is_never_handed_to_the_runner(db, store, worker_f
     _seed(db, ["notes.md", "swarm-work.patch"])
     worker, _config, _exporter = worker_factory()
 
-    assert worker.run() == ExitCode.OK
+    # No repository, so the harvest writes no patch and the attempt fails
+    # retryably for it: left out of the instructions, the patch is still owed
+    # to the dependant that stages it.
+    assert worker.run() == ExitCode.FAILED
     assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["notes.md"]
+    assert db.doc("tasks/task_1")["result_summary"].get(MISSING_KEY) == ["swarm-work.patch"]
 
 
 def _retrying(db: Any) -> list[dict[str, Any]]:
