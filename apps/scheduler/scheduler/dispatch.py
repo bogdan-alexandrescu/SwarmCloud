@@ -80,6 +80,8 @@ from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
 
+from .credentials import AccountPool, CredentialSource, credential_for
+
 log = logging.getLogger(__name__)
 
 #: IMPORTED, not restated. This was a fourth private copy of `[^a-z0-9-]+`
@@ -540,10 +542,17 @@ def assert_tenant_identity(tenant: Tenant) -> str:
 # --------------------------------------------------------------------------
 
 class CloudRunJobDispatcher:
-    def __init__(self, settings: Any, *, client: Any | None = None) -> None:
+    def __init__(
+        self, settings: Any, *, client: Any | None = None, pool: AccountPool | None = None
+    ) -> None:
         self._settings = settings
         self._client = client
         self._ensured: set[str] = set()
+        # The Scheduler's own AccountPool, handed over by main.build_scheduler,
+        # so the Job's secret mount is decided on the list admission read.
+        # Built on its own, the dispatcher gets one that raises if it is ever
+        # asked who the pool serves -- see AccountPool.unwired.
+        self._pool = pool if pool is not None else AccountPool.unwired(settings)
 
     def _jobs(self) -> Any:
         if self._client is None:
@@ -559,21 +568,6 @@ class CloudRunJobDispatcher:
     def job_name(self, job_id: str) -> str:
         return f"{self.parent}/jobs/{job_id}"
 
-    def _pool_can_serve(self, tenant: Tenant, profile: RunnerProfile) -> bool:
-        """Whether this tenant's credential for `profile` comes from the pool.
-
-        Both halves matter. A deployment with no broker has no pool, so a
-        missing per-tenant key is simply a missing key. A tenant that HAS
-        registered a key keeps its secret mounted whether or not a pool exists,
-        because the pool is an addition to that tenant's options and not a
-        replacement for them.
-        """
-        if not str(getattr(self._settings, "quota_broker_url", "") or "").strip():
-            return False
-        if not profile.provider:
-            return False
-        return profile.provider not in (tenant.credentials or [])
-
     def _build_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
     ) -> Any:
@@ -587,31 +581,35 @@ class CloudRunJobDispatcher:
             run_v2.EnvVar(name="RUNNER_PROFILE", value=profile.name),
             run_v2.EnvVar(name="TENANT_ID", value=tenant.tenant_id),
         ]
+        # THE SAME QUESTION ADMISSION ASKED, of the same pool list
+        # (credentials.py, #169). This used to be a private rule of its own,
+        # `_pool_can_serve`: "the deployment has a broker and the tenant has no
+        # key". Admission never let such a tenant through, so it was never
+        # exercised -- and it was also wider than the pool is. The pool serves
+        # a tenant only through an account owned by or lent to it, and only a
+        # profile that takes a subscription token.
+        credential = credential_for(profile, tenant, self._pool)
         for secret_env in profile.secrets:
             if not profile.provider:
                 continue
-            if self._pool_can_serve(tenant, profile):
+            if credential.source is CredentialSource.ACCOUNT_POOL:
                 # A POOL ACCOUNT IS THIS TENANT'S CREDENTIAL, so there is no
                 # per-tenant secret to project and naming one would be naming a
                 # secret that does not exist. Cloud Run resolves a
                 # `secretKeyRef` when the JOB is created, so that fails the
                 # create outright and the tenant cannot be dispatched at all --
-                # not "runs without a key", but "never starts". The pool could
-                # not replace the per-tenant secret for anyone, which is most
-                # of the point of having it.
+                # not "runs without a key", but "never starts".
                 #
-                # Narrow on purpose: only when this deployment HAS a pool and
-                # this tenant has registered no key of its own. Without a pool,
-                # a tenant with no key cannot run this profile however the job
-                # is shaped, and the existing behaviour -- mount it, fail
-                # loudly -- is left exactly as it was.
+                # Only for ACCOUNT_POOL. A tenant with a key keeps its own
+                # secret mounted whether or not an account also serves it: the
+                # pool is an addition to its options, not a replacement. And a
+                # tenant with neither (MISSING) never gets here, because
+                # admission parks it first; if it did, the mount is kept and
+                # the Job create fails loudly, as it always did.
                 #
-                # The worker resolves its own credential either way, from
-                # Secret Manager or from the pool, so this mount has always
-                # been a convenience rather than the thing the agent runs on. A
-                # tenant with neither a key nor a usable account still parks as
-                # CREDENTIAL_MISSING, in the worker, where the reason can be
-                # written onto the task.
+                # The worker resolves its own credential either way, from the
+                # pool or from Secret Manager, so this mount has always been a
+                # convenience rather than the thing the agent runs on.
                 continue
             # The tenant's OWN secret, by the one spelling the frozen contract
             # defines. A shared secret here would break invariant 9.
@@ -1533,7 +1531,14 @@ def _gke_ca_file() -> str:
     return handle.name
 
 
-def build_router(settings: Any) -> BackendRouter:
+def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRouter:
+    """The deployment's router. `pool` is the Scheduler's AccountPool.
+
+    main.build_scheduler passes it, so the Cloud Run Job's secret mount and
+    admission read one account list per drain (credentials.py). Without it the
+    Cloud Run dispatcher gets `AccountPool.unwired`, which is loud rather than
+    a second answer.
+    """
     import os
 
     endpoint = os.environ.get("GKE_ENDPOINT", "").strip()
@@ -1548,7 +1553,7 @@ def build_router(settings: Any) -> BackendRouter:
             ksa_name=getattr(settings, "worker_ksa_name", "") or "swarm-agent-worker",
         )
     return BackendRouter(
-        cloud_run=CloudRunJobDispatcher(settings),
+        cloud_run=CloudRunJobDispatcher(settings, pool=pool),
         gke=GkeJobDispatcher(settings, target=target),
         settings=settings,
     )
