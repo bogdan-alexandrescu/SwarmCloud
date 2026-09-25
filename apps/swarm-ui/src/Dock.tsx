@@ -310,7 +310,10 @@ export function Dock() {
             </a>
             <a href="#reference">Every read, in a table &rarr;</a>
           </div>
-          <DataSourceCells probes={probes} now={now} />
+          {/* The cells read the wall clock as they render, and they render on
+              this component's shared tick, so their ages move with the line
+              above them. */}
+          <DataSourceCells probes={probes} />
           {/* THE PROVENANCE STRIP: when, over what, from how many. One line,
               and it stays because a p95 whose basis is unstated is a p95 that
               means something else -- the same class of defect as a count
