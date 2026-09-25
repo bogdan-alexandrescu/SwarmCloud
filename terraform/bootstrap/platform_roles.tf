@@ -132,7 +132,8 @@ locals {
         "run.tasks.get",
         "run.tasks.list",
         "run.operations.get",
-        "run.operations.list",
+        # MUTATION M5 (PR #150 mutation proof; reverted by a later commit):
+        # "run.operations.list" dropped, a live permission the move would remove.
       ]
     }
 
