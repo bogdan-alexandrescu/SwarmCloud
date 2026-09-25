@@ -791,7 +791,10 @@ function Form({ capacity }: { capacity: Capacity }) {
                     <span className="sbf-runner-name mono">{n}</span>
                     <span className="sbf-runner-facts">
                       {p.resource_class} · {p.units} unit{p.units === 1 ? '' : 's'} · {p.backend}
-                      {p.provider ? <> · needs a {p.provider} key</> : <> · needs no provider key</>}
+                      {/* `<provider> key needed`, not `needs a <provider>
+                          key`: the article was chosen before the name was
+                          known, and read `needs a anthropic key`. */}
+                      {p.provider ? <> · {p.provider} key needed</> : <> · no provider key needed</>}
                     </span>
                     {/* A DISABLED PROFILE IS KEPT AND EXPLAINED, not hidden.
                         The catalogue says a disabled profile is known and
@@ -840,7 +843,11 @@ function Form({ capacity }: { capacity: Capacity }) {
           together. */}
       <aside className="sbf-side">
         <div className="sbf-send">
-          <h2>Ready to send</h2>
+          {/* FROM `blocked`, THE SAME VALUE THAT DISABLES THE BUTTON. The
+              heading said `Ready to send` over a greyed-out button with no
+              runner chosen and an empty prompt -- the panel's title and its
+              only control disagreeing about the one thing the panel is for. */}
+          <h2>{blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className={chosen === '' ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>runner</b>

@@ -84,7 +84,7 @@ const { RuntimesScreen } = await import('../Runtimes')
  * where the explanation was deleted rather than moved.
  */
 function expectAllCardsClosed(): void {
-  const triggers = [...document.querySelectorAll('button[aria-label^="What "]')]
+  const triggers = [...document.querySelectorAll('button[aria-label^="Help: "]')]
   expect(triggers.length, 'this screen carries no ? at all').toBeGreaterThan(0)
   for (const t of triggers) {
     expect(t.getAttribute('aria-expanded'), 'a card is open before anything was clicked').toBe(
@@ -739,7 +739,7 @@ describe('Accounts, with every help card closed', () => {
     // measured. Nothing here counted anything, so nothing here is a digit.
     expect(textOf(panel)).not.toMatch(/\d/)
     // The route to the sentence is focusable and in the heading.
-    expect(panel!.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(panel!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
   })
 
   it('carries the marks the deleted legend used to index', async () => {
@@ -803,7 +803,7 @@ describe('Runtimes, with every help card closed', () => {
     expect(textOf(card!.querySelector('.rt-unread-detail'))).toContain(
       'the capacity read did not complete',
     )
-    expect(card!.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(card!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
 
     const row = card!.querySelector('.ctl-table tbody tr')
     expect(row, 'no backend row was drawn').not.toBeNull()

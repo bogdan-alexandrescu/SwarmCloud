@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadCheckpoints, loadTaskLogs } from './api'
 import { CheckpointBrowser } from './CheckpointBrowser'
 import { FailedPanel } from './Shell'
@@ -45,6 +45,7 @@ import {
 export function RunFiles({
   task,
   attempts,
+  readAt = null,
 }: {
   task: Task
   /**
@@ -53,39 +54,113 @@ export function RunFiles({
    * listing is a zero of OBJECTS only -- see `CheckpointsPanel`.
    */
   attempts?: readonly AttemptRow[] | null
+  /**
+   * When the drawer last read the run (`ScreenReading.fetchedAt`). Both panels
+   * re-read when it moves. NULL (or not passed) means nothing re-reads the run
+   * -- the acceptance test renders `Run` with no `Screen` -- and the panels
+   * read once.
+   */
+  readAt?: number | null
 }) {
   return (
     <>
-      <CheckpointsPanel task={task} attempts={attempts ?? null} />
-      <LogsPanel task={task} />
+      <CheckpointsPanel task={task} attempts={attempts ?? null} readAt={readAt} />
+      <LogsPanel task={task} readAt={readAt} />
     </>
   )
 }
 
 /**
- * One read, with its four states kept apart.
+ * An answer, and what was true when it was asked for.
+ *
+ * `asked` is captured when the read STARTS. The checkpoint panel compares its
+ * listing with attempt records, and the two are only comparable when the
+ * records were read no later than the listing: the worker uploads a
+ * checkpoint before it records it, so anything recorded by then is in the
+ * bucket by the time the listing looks. Records read AFTER the listing can
+ * name a checkpoint that did not exist when it looked.
+ */
+interface Held<T, C> {
+  task: string
+  state: Result<T>
+  asked: C
+}
+
+/**
+ * One read, with its four states kept apart -- and read again whenever the
+ * drawer reads again.
  *
  * `Screen` in Shell.tsx owns this for a whole route and draws an `<h1>`, so it
  * cannot be nested inside a panel. This is the same discipline at panel scale:
  * a failure is never rendered as an absence, and a component below it can only
  * be reached with data.
+ *
+ * IT READ ONCE PER TASK, and the drawer around it now re-reads every 10s. The
+ * two panels were the only part of the drawer frozen at open, under a sub-line
+ * (`read 3s ago · every 10s`) that reads as covering all of it: the log panel
+ * went on saying a task had no attempt beside a RUNNING chip, and the
+ * checkpoint listing read at open was compared with attempt records from the
+ * latest poll, so every checkpoint written while the drawer was open was drawn
+ * as reclaimed. `key` is the drawer's read, so each panel re-reads with it.
+ *
+ * THREE RULES, each for a failure the naive version has:
+ *
+ *  - A new read of the SAME task leaves the previous answer on screen until
+ *    the next answer replaces it -- whatever that answer is, a failure
+ *    included -- as `Screen` does for a poll. Blanking to `Reading…` every
+ *    10s would make both panels flash.
+ *  - A DIFFERENT task never shows the previous task's answer, even for a
+ *    frame: it is `loading` until its own read lands.
+ *  - ONE READ IN FLIGHT AT A TIME. A listing slower than the drawer's 10s
+ *    would otherwise stack a request per poll, and cancelling the older one
+ *    instead would mean a listing slower than 10s never lands at all. When a
+ *    read lands and the drawer has read again meanwhile, one more read starts,
+ *    with what is true then.
  */
-function useRead<T>(load: () => Promise<Result<T>>, key: string): Result<T> {
-  const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
-  useEffect(() => {
-    let live = true
-    setState({ status: 'loading', since: Date.now() })
-    load().then((next) => {
-      if (live) setState(next)
+function useRead<T, C = null>(
+  load: () => Promise<Result<T>>,
+  task: string,
+  key: string,
+  asked: C,
+): Held<T, C> {
+  const [held, setHeld] = useState<Held<T, C>>(() => ({
+    task,
+    state: { status: 'loading', since: Date.now() },
+    asked,
+  }))
+  // What the NEXT read should use: this render's loader, key and context.
+  const latest = useRef({ load, task, key, asked })
+  latest.current = { load, task, key, asked }
+  /** The key of the read in flight, or null when none is. */
+  const inFlight = useRef<string | null>(null)
+  const mounted = useRef(true)
+
+  // Typed, because it calls itself: a read that lands after the drawer moved
+  // on starts the next one.
+  const start: () => void = useCallback(() => {
+    const ask = latest.current
+    inFlight.current = `${ask.task}:${ask.key}`
+    ask.load().then((next) => {
+      if (!mounted.current) return
+      inFlight.current = null
+      setHeld({ task: ask.task, state: next, asked: ask.asked })
+      const now = latest.current
+      if (now.task !== ask.task || now.key !== ask.key) start()
     })
+  }, [])
+
+  useEffect(() => {
+    mounted.current = true
     return () => {
-      live = false
+      mounted.current = false
     }
-    // `load` is a fresh closure every render; the task id is what actually
-    // changes, and keying on it is what makes a second task refetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
-  return state
+  }, [])
+
+  useEffect(() => {
+    if (inFlight.current === null) start()
+  }, [task, key, start])
+
+  return held.task === task ? held : { task, state: { status: 'loading', since: Date.now() }, asked }
 }
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
@@ -108,11 +183,21 @@ function Reading() {
 function CheckpointsPanel({
   task,
   attempts,
+  readAt,
 }: {
   task: Task
   attempts: readonly AttemptRow[] | null
+  readAt: number | null
 }) {
-  const state = useRead<CheckpointsPage>(() => loadCheckpoints(task.id), task.id)
+  // `records` ARE THE ATTEMPTS AS THEY WERE WHEN THIS LISTING WAS ASKED FOR,
+  // not as the latest drawer read has them -- see `Held`. Every comparison
+  // below is between a listing and records read no later than it.
+  const { state, asked: records } = useRead<CheckpointsPage, readonly AttemptRow[] | null>(
+    () => loadCheckpoints(task.id),
+    task.id,
+    `${readAt ?? ''}`,
+    attempts,
+  )
 
   if (state.status === 'loading') {
     return (
@@ -150,11 +235,16 @@ function CheckpointsPanel({
   // past a scan cut or on another page, a checkpoint the records name may
   // simply not have been reached.
   const whole = page.listed && !page.truncated && page.next_page_token === null
-  const lost = whole ? lostCheckpoints(page, attempts) : []
+  const lost = whole ? lostCheckpoints(page, records) : []
   return (
     <Panel title="Checkpoints">
       <p className="muted small">
-        Prefix <code className="mono">{page.prefix}</code> · {page.count} of{' '}
+        {/* `ckpt-prefix` IS THE HOOK THE SHEET WRAPS (AG-26). A task's
+            checkpoint prefix is one unbroken path with no space to break at,
+            and in the 480px inspector it ran out of the drawer. The class is
+            what lets the stylesheet break it anywhere, rather than every
+            `code` in the drawer. */}
+        Prefix <code className="mono ckpt-prefix">{page.prefix}</code> · {page.count} of{' '}
         {page.total_found} found
         {page.truncated && ' · the scan limit cut the prefix short, so older checkpoints exist beyond these'}
         {page.next_page_token !== null && ' · more pages remain'}
@@ -166,7 +256,7 @@ function CheckpointsPanel({
 
       {page.checkpoints.length === 0 ? (
         lost.length > 0 ? null : (
-          <p className="muted">{emptyListing(page, whole, attempts)}</p>
+          <p className="muted">{emptyListing(page, whole, records)}</p>
         )
       ) : (
         <div className="ckpt-rows">
@@ -424,8 +514,14 @@ function CheckpointRow({ taskId, record }: { taskId: string; record: CheckpointR
 // Logs
 // ---------------------------------------------------------------------------
 
-function LogsPanel({ task }: { task: Task }) {
-  const state = useRead<TaskLogs>(() => loadTaskLogs(task.id), task.id)
+function LogsPanel({ task, readAt }: { task: Task; readAt: number | null }) {
+  // RE-READ WITH THE DRAWER. Read once, this panel said "no attempt yet"
+  // beside a RUNNING chip for as long as the drawer stayed open, and kept a
+  // `live tail -- the attempt is still writing` header over a task that had
+  // finished, without ever fetching the final log. The drawer's read moving
+  // is what moves it; when the drawer stops re-reading a finished task, the
+  // read that stopped it was the last, and the final log is what it fetched.
+  const { state } = useRead<TaskLogs>(() => loadTaskLogs(task.id), task.id, `${readAt ?? ''}`, null)
 
   if (state.status === 'loading') {
     return (

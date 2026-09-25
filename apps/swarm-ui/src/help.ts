@@ -52,6 +52,7 @@ import {
   DISPATCH_STRATEGIES,
   REAL_STATES,
   STRATEGY_LABEL,
+  TERMINAL_STATES,
   type TaskState,
 } from './types'
 
@@ -87,12 +88,14 @@ export type TopicId =
   | 'dispatch-absent-is-old-api'
   | 'dispatch-carrier'
   | 'dispatch-strategies'
+  | 'event-paging'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
   | 'lease-and-pool-are-two-records'
   | 'lending'
   | 'lending-narrows-isolation'
   | 'lent-account'
+  | 'masking-is-serve-time'
   | 'never-assigned-pool'
   | 'no-amber-band'
   | 'not-a-machine-inventory'
@@ -199,14 +202,23 @@ export function helpAnchor(topic: TopicId): string {
 type TopicSpec = Omit<HelpTopic, 'anchor'>
 
 const SPECS: Record<TopicId, TopicSpec> = {
+  // REWRITTEN FROM design-system.md §8.6 (AH-2). The old text taught an
+  // encoding the screens do not draw: that a never-measured figure is "a
+  // phrase, on a dashed tile", and that the two absences differ by colour.
+  // What tells the kinds apart is the mark and its words; the dashed edge is
+  // a second channel under them, and colour is never the only one.
   'absent-vs-zero': {
     group: 'reading-a-figure',
     title: 'Absent is not zero',
     short:
-      'A figure this platform never measured is written as a phrase, on a dashed tile. A figure it did measure is written as a digit. The two never share a shape, so a missing number can never be read as a small one.',
+      'A digit is a measurement, and a measured zero is a digit too. A dash, or the hatched mark “not measured”, means nothing ever recorded the figure. The dashed mark “not read” means the read failed and the platform may still hold it. A tilde marks a real reading too old to trust.',
     long: [
-      'Every number on these screens is one of three things: measured, never measured, or not read. They are three different facts and drawing them alike was this UI’s defining bug.',
-      'A measured figure renders as a digit on a solid tile — including a measured zero, which is a real result and is shown as one. A figure the platform never recorded renders as a short phrase on a dashed tile in the faint colour, because a phrase cannot be mistaken for a quantity and a zero can. A figure a failed read left behind renders as a phrase too, but in the warning colour, because the platform may well hold the number and we simply did not get it.',
+      'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and drawing them alike was this UI’s defining bug.',
+      'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “real zero”.',
+      'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
+      'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and this page did not get it.',
+      'A tilde (~) in front of a figure means the reading is real but older than it can be trusted to describe now.',
+      'The dashed edge on a tile that holds no figure — the metric tiles and the Timeline’s tiles alike — is a second channel for the same fact, not the fact itself. The mark and its words are what carry the distinction, so it survives greyscale and a screenshot; colour never carries it alone.',
       'The same rule runs through the bars: a track whose ceiling could not be read is hatched with no fill, because an empty plain track reads as “0% used” — a claim about a measurement nobody has.',
     ],
   },
@@ -218,6 +230,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The bar at the foot of every screen summarises the routes this browser tab has called. The age it shows is of the newest SUCCESSFUL payload, not of the newest attempt \u2014 which is the part that tells a stale panel from a healthy one.',
     long: [
       'Every read this tab makes registers in one place: which route, what happened to the last attempt, how long that attempt took, and when the route last actually produced a payload. The dock at the foot of the window is one line off that registry, and it opens into a cell per route.',
+      // CH-18. The registry was keyed by URL, so every opened task added a
+      // "route" of its own; it is keyed by the path template now, and this is
+      // what makes "one record per route" true. The decision's wording ended in
+      // "(… the head shows the screen's own read, CH-2)"; the box id is left
+      // out of product copy and the fact kept.
+      'A route is a path template with ids and query removed. Its status is the last attempt of any call to it, and its age is the newest successful payload of any call to it; each panel still carries its own age and its own failure, and the head beside the page title shows the screen’s own newest read.',
       'The age is the load-bearing number, and it is the age of the last SUCCESS. A panel drawn from a figure four minutes old, whose route has been failing for three of them, is indistinguishable from a healthy panel \u2014 the figure is still on screen, still formatted as a measurement, and nothing on the panel itself has changed. The age is the only thing that says otherwise.',
       'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute, and a number labelled as though it were would be the same class of claim as a total summed over a partial response.',
       'A 403 on an admin-only route is counted apart from failures, and deliberately. Someone who is not an admin genuinely cannot read those routes; a console that reported that as a fault would be reporting itself broken every time a non-admin opened it.',
@@ -233,6 +251,55 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The unit of the agent screen is the attempt, not the task. Each attempt carries its own runtime, its own requested-against-used figures, its own tokens and cost, its own checkpoints and its own error.',
       'The document is created at dispatch, and the task’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: a task that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running task as much as a finished one.',
       'A task that counts no attempts and returned no documents is consistent, and its empty attempt list is a measurement rather than a failure.',
+    ],
+  },
+
+  // AG-19. The Attempts toolbar's `?` opened "One message belongs to one
+  // failure" -- a topic about rollups keeping one error -- beside marks that are
+  // about how much of the event history this screen holds.
+  //
+  // THE FIRST VERSION BLAMED THE ROUTE, AND THE ROUTE IS NOT THE LIMIT. It was
+  // built from AttemptTimeline.tsx's `say` strings, which said the events route
+  // "returns no page token" and that newer events "cannot be fetched at all".
+  // Both went stale with #19: `GET /v1/tasks/{id}/events` returns
+  // `next_page_token` whenever more events exist and takes `order=desc`
+  // (swarm_api/routes/tasks.py, `list_events`). What is true is narrower and is
+  // about the UI: api.ts asks for one page, oldest-first, and never sends the
+  // token back. The toolbar's strings now say that too, so the card and the
+  // marks still agree, and tests/help.test.ts reads both the route and api.ts
+  // and holds this topic to whichever of them changes.
+  'event-paging': {
+    group: 'an-attempt',
+    title: 'One page of events, oldest first',
+    short:
+      'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
+    long: [
+      'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. This screen uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
+      'So \u201cthis is everything\u201d is a claim the screen is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not on this screen.',
+      'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
+    ],
+  },
+
+  // AG-19. The `?` beside `masked N` opened "Credential names, never values",
+  // which is about the runtime catalogue publishing variable NAMES. What the
+  // artifact viewer's count needs explained is that masking happens on the
+  // way out and leaves the stored object untouched -- the `say` on its mark.
+  //
+  // AND THAT THE COUNT IS OVER THE WINDOW SERVED, NOT THE OBJECT. inspect.py
+  // runs `redact()` over the bytes of this read and reports that call's count
+  // as `redaction_count`; a large artifact is served a window at a time and the
+  // viewer marks it `partial`. The first version called the count "the number
+  // of values hidden in this copy", which a zero on a partial read is not.
+  'masking-is-serve-time': {
+    group: 'an-attempt',
+    title: 'Masking happens when an artifact is served',
+    short:
+      'Credential-shaped values are masked on the way out, when an artifact is served. The object in the bucket is unchanged and still holds them, so a count above zero means rotate what was found. The count covers only the bytes this read served, and zero means nothing in them matched the rules, not that nothing secret is there.',
+    long: [
+      'Masking is a property of the serving path, not of the artifact. The viewer reads the object, replaces every value that matches one of its rule families, and sends the result; the object in storage is never rewritten.',
+      'So the count beside an artifact is the number of values hidden in the part of it this read served. Every one of them is still in the bucket, readable by anything with access to it, and anything recognisable should be rotated.',
+      'It covers that part and nothing past it. A large artifact is served a window at a time, and the viewer marks such a read partial beside its byte count: the masked count is over those bytes, and the rest of the object has not been checked by this read at all.',
+      'A count of zero is measured against the rules, not against the content: it says no value in the bytes served matched a known family of credential, which is not the same as the artifact holding nothing sensitive.',
     ],
   },
 
@@ -288,15 +355,18 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // PENDING, NOT ABSENT, WHILE THE ATTEMPT IS OPEN (AG-4). The old card said a
+  // running attempt "has none, so the figure is absent" -- the encoding for
+  // "nothing will ever record this", on a figure the worker is about to write.
   'peak-memory': {
     group: 'an-attempt',
     title: 'When peak memory is written',
     short:
-      'Peak memory is written when an attempt ends. An attempt still running has none, so the figure is absent rather than zero, and a run whose peak is absent may have used any amount at all.',
+      'Peak memory is written when an attempt ends. While an attempt is still running the figure is pending: not written yet, which is not the same as never recorded. An attempt that ended without writing one is absent rather than zero, and may have used any amount at all.',
     long: [
-      'The worker writes peak resident memory at the end of an attempt, from the sampler it ran throughout. An attempt that is still going has not written it yet.',
+      'The worker writes peak resident memory at the end of an attempt, from the sampler it ran throughout. An attempt that is still going has not written it yet, so its figure is pending — a reading still to come, beside a heartbeat that says the attempt is alive — and not an absence.',
       'A run-level peak is the worst single attempt, not a total across attempts, and the tile says so. A total would be meaningless: three attempts of 600 MiB each did not use 1.8 GiB at any moment.',
-      'When no attempt has written one, the tile shows a phrase rather than a zero. A zero would assert the run used no memory, which is the one thing that cannot be true.',
+      'When the attempts have ended and none of them wrote one, the tile shows a phrase rather than a zero. A zero would assert the run used no memory, which is the one thing that cannot be true.',
     ],
   },
 
@@ -332,13 +402,22 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'Several members of the state enum are never written to a task document: some are creation states the real state machine walks through without storing, one belongs to workflows rather than tasks, and one is reachable only through a branch nothing calls.',
       'They are still decoded when they arrive, because decoding a string is not the same as offering it as a choice — but they are never offered as a filter, a legend entry or a histogram bucket. A bucket that cannot fill reads as “nothing is broken” rather than “this cannot happen”, which is the wrong lesson to teach at 3am.',
-      'The states a task document can actually hold are listed below, with the ones that reserve capacity marked.',
+      'The states a task document can actually hold are listed below, each marked as reserving capacity, waiting, or finished.',
     ],
     // READ from types.ts. Nothing below is typed into this file.
+    //
+    // THREE NOTES, NOT TWO (AH-3). Everything outside the concurrency set used
+    // to read "waiting -- costs nothing", which labelled a finished task as
+    // waiting: right about the cost, wrong about the state. The third note is
+    // derived from TERMINAL_STATES, the same set every screen tests against.
     values: () =>
       REAL_STATES.map((s) => ({
         term: s,
-        note: CONCURRENCY_STATES.has(s) ? 'reserves capacity' : 'waiting \u2014 costs nothing',
+        note: CONCURRENCY_STATES.has(s)
+          ? 'reserves capacity'
+          : TERMINAL_STATES.has(s)
+            ? 'finished \u2014 holds nothing'
+            : 'waiting \u2014 costs nothing',
       })),
   },
 

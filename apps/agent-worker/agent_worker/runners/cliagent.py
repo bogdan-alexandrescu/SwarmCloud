@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .. import expected_outputs as expected_mod
 from ..logs import StructuredLogger
 from ..procman import run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
@@ -279,12 +280,48 @@ def run_cli_agent(
         if not re.fullmatch(r"[A-Za-z0-9._:\-]{1,128}", str(model)):
             raise RunnerFailure(f"input.model {model!r} contains unsupported characters")
         argv += [spec.model_flag, str(model)]
+    # WHAT LATER STEPS NEED FROM THIS ONE (#149). The worker puts the names in
+    # input.json when a dependant's `input_from` stages them from this task.
+    # They go into the PROMPT because the prompt is the one instruction channel
+    # every CLI runner shares. A system-prompt flag would have to exist in
+    # whichever CLI release the image carries, and `*_ARGS` can replace the
+    # whole flag set. With no names the prompt is passed unchanged, byte for
+    # byte. See agent_worker/expected_outputs.py for what is measured and why.
+    expected = expected_mod.parse_names(payload.get(expected_mod.METADATA_KEY))
+    # THIS RUNNER'S OWN FILES ARE LEFT OUT. A dependant may stage the upstream
+    # runner's log or transcript, and the API records that name like any
+    # other, but this process writes those three files itself -- the logs
+    # while the agent is running. An agent told to write one would be writing
+    # into a file this runner holds open, or one it overwrites afterwards.
+    own_files = (
+        f"{spec.name}.stdout.log",
+        f"{spec.name}.stderr.log",
+        spec.transcript_name,
+    )
+    told = expected_mod.without_platform_names(expected.names, own_files)
     # The prompt is the only caller-controlled value that reaches argv, and it
     # is passed as a single trailing argument with no shell in the picture.
-    argv.append(prompt)
+    argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir))
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
+    if told:
+        log.info(
+            "told the agent which files later steps need and where to write them",
+            expected_outputs=list(told),
+            artifacts_dir=os.path.abspath(ctx.artifacts_dir),
+        )
+    if len(told) != len(expected.names):
+        log.info(
+            "left this runner's own files out of the agent's instructions; the "
+            "runner writes them itself",
+            left_out=[name for name in expected.names if name not in told],
+        )
+    if expected.rejected:
+        log.warning(
+            "left unusable expected_outputs entries out of the agent's instructions: "
+            + ", ".join(repr(entry) for entry in expected.rejected)
+        )
     # This process's own stderr is captured by the worker and uploaded, and
     # `run_child` logs the argv it starts. Register the key here as well as in
     # the worker: a runner is a separate process and does not inherit the

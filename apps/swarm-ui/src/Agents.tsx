@@ -7,10 +7,12 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
-import { loadTasks } from './api'
+import { TASK_PAGE_LIMIT, loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
-import { HelpCard } from './HelpCard'
+import type { Result } from './fetch'
+import { HelpCard, phoneWidth } from './HelpCard'
 import { Id, Screen } from './Shell'
+import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
   RESOURCE_UNITS,
@@ -97,12 +99,78 @@ function shortTaskId(id: string): string {
 }
 
 /**
+ * HOW OFTEN THIS LIST IS WORTH RE-READING, from what the last read held.
+ *
+ * docs/web-ui/03-agents-and-workflows.md §2.5: 5s while the Live tab holds any
+ * row, 30s otherwise. A live agent changes state on the order of seconds -- it
+ * finishes, it is reclaimed, its cancel lands -- and a waiting or finished one
+ * does not. Hidden tabs do not read at all; that half is `Screen`'s.
+ *
+ * THE COST IS THE PAYLOAD, NOT THE QUERY. Every row carries `input`,
+ * `metadata` and `result_summary`, so a 200-row page is 2-4 MB (§2.5), and at
+ * 5s that is roughly 600 KB/s. Only the Live tab earns the fast cadence, and
+ * only while it has rows; the `view=summary` parameter §8/P2 proposes is what
+ * would make it cheap. Until it exists, a phone reads `PHONE_PAGE_LIMIT` rows
+ * rather than 200 -- see below.
+ */
+export const LIVE_POLL_MS = 5_000
+export const IDLE_POLL_MS = 30_000
+
+export function pollInterval(page: TaskPage | null): number {
+  return page !== null && page.tasks.some((t) => tabOf(t) === 'live') ? LIVE_POLL_MS : IDLE_POLL_MS
+}
+
+/**
+ * THE PHONE PAGE: 50 rows, not 200 (docs/web-ui/03-agents-and-workflows.md
+ * §2.1 and §2.5).
+ *
+ * §2.5 states the condition this screen's 5s poll ships under: "Until
+ * [view=summary] exists, the phone build must cap at limit=50 and say 'showing
+ * the 50 most recent' rather than ship a 4 MB poll." `view=summary` does not
+ * exist (routes/tasks.py and codec.py take no such parameter), and the list
+ * polled the full 200-row page on every viewport -- 2-4 MB every 5s over
+ * cellular, for as long as Live held a row and the tab was visible.
+ *
+ * "PHONE" IS `phoneWidth()` from HelpCard.tsx: 560px and under, the width at
+ * which this list already draws as cards and a `?` takes a fingertip. §2.1
+ * writes 640px for the card layout; the stylesheet has drawn the phone list at
+ * 560px since before this, and one definition of phone keeps the two from
+ * disagreeing about which layout a width gets. It is decided at each READ,
+ * not once, so a rotated device takes the right page on its next poll.
+ */
+export const PHONE_PAGE_LIMIT = 50
+
+/** A page of the list, and the page size that read asked for. */
+interface AgentsPage extends TaskPage {
+  /** The `limit` the read asked for: `PHONE_PAGE_LIMIT` at phone width. */
+  asked: number
+}
+
+async function loadAgentsPage(): Promise<Result<AgentsPage>> {
+  const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
+  const read = await loadTasks(asked)
+  return read.status === 'ok' || read.status === 'stale'
+    ? { ...read, data: { ...read.data, asked } }
+    : read
+}
+
+/**
  * Screen A -- Agents. One table, three tabs, no sub-pages.
  *
  * The tab counts come from the ROWS, never from /v1/stats, so the badge and
  * the table can never disagree with each other.
+ *
+ * `taskId` is the agent the inspector has open, when one is (AG-17): App
+ * passes it and the matching row is marked `aria-current`. OPTIONAL, so this
+ * screen stands on its own and App can pass it whether or not it has yet.
  */
-export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
+export function AgentsScreen({
+  onOpen,
+  taskId = null,
+}: {
+  onOpen: (taskId: string) => void
+  taskId?: string | null
+}) {
   // `null` until a page has told the body where to land -- see `landingTab`.
   const [tab, setTab] = useState<Tab | null>(null)
   const [profile, setProfile] = useState<string>('')
@@ -111,7 +179,14 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
   return (
     <Screen
       title="Agents"
-      load={loadTasks}
+      load={loadAgentsPage}
+      // THE LIST RE-READS (AG-1). It read once and never again, while its
+      // clock went on adding to every row: a finished agent read `running`
+      // and was counted in Live. `Screen` owns the timer, the pause while the
+      // tab is hidden, the back-off and the stop on an answer only a person
+      // can change; this screen owns the cadence, which is a function of the
+      // rows it holds.
+      pollMs={pollInterval}
       summary={(d) => {
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
@@ -138,10 +213,17 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
         body: <>The read succeeded and returned nothing.</>,
       }}
     >
-      {(d) => (
+      {(d, reading) => (
         <AgentsBody
           onOpen={onOpen}
+          openTaskId={taskId}
           page={d}
+          // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
+          // `Screen` read them -- not recorded a second time here. A stale
+          // screen hands over the last GOOD read's time, which is the one the
+          // rows describe.
+          readAt={reading.fetchedAt}
+          interval={reading.pollMs ?? pollInterval(d)}
           tab={tab}
           setTab={setTab}
           profile={profile}
@@ -154,9 +236,19 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
   )
 }
 
+/**
+ * The instant the row durations are computed at (AG-1). It lives in useNow.ts
+ * now, beside the clock it caps, because the inspector's drawer caps its clock
+ * the same way; re-exported so this screen's tests keep reading it from here.
+ */
+export { rowClock }
+
 function AgentsBody({
   onOpen,
+  openTaskId,
   page,
+  readAt,
+  interval,
   tab,
   setTab,
   profile,
@@ -165,7 +257,11 @@ function AgentsBody({
   setGrouped,
 }: {
   onOpen: (taskId: string) => void
-  page: TaskPage
+  openTaskId: string | null
+  page: AgentsPage
+  readAt: number | null
+  /** The cadence the rows are re-read at: how far past `readAt` they are good for. */
+  interval: number
   tab: Tab | null
   setTab: Dispatch<SetStateAction<Tab | null>>
   profile: string
@@ -174,12 +270,12 @@ function AgentsBody({
   setGrouped: (g: boolean) => void
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
-  // not each hold their own interval.
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [])
+  // not each hold their own interval -- and it stops advancing the rows once
+  // they are older than one poll interval (`rowClock`).
+  // The SHARED 1s clock (useNow.ts), the cadence a running duration asks for:
+  // the inspector's `run` ticks on the same instant, so a row and the drawer
+  // beside it cannot disagree by a tick.
+  const now = rowClock(useNow(1000), readAt, interval)
 
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { live: 0, waiting: 0, recent: 0 }
@@ -222,9 +318,17 @@ function AgentsBody({
   // its accessible name. A count that looks server-side but is not is the same
   // lie as an error rendered as an empty list, so the qualifier is never
   // conditional on there being a next page -- only its second half is.
-  const scopeSay = page.next_page_token
-    ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
-    : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
+  //
+  // A PHONE PAGE THAT STOPPED SHORT SAYS SO IN §2.5's WORDS. At phone width
+  // the read asks for `PHONE_PAGE_LIMIT` rows, and when more exist the list is
+  // the most recent ones -- `showing the 50 most recent` -- not a page that
+  // merely happens to end early.
+  const phonePage = page.asked < TASK_PAGE_LIMIT && Boolean(page.next_page_token)
+  const scopeSay = phonePage
+    ? `Every count and filter on this screen runs over the ${page.tasks.length} most recent agents, not over the platform. At this width the list reads ${PHONE_PAGE_LIMIT} rows rather than ${TASK_PAGE_LIMIT}, because every row carries its input and its output and the list re-reads every few seconds. More rows exist beyond it.`
+    : page.next_page_token
+      ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
+      : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
 
   return (
     <>
@@ -267,7 +371,9 @@ function AgentsBody({
         )}
 
         <span className="is-end ag-scope" aria-label={scopeSay}>
-          {page.tasks.length} loaded{page.next_page_token ? ' · more beyond' : ''}
+          {phonePage
+            ? `showing the ${page.tasks.length} most recent`
+            : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
         </span>
       </div>
 
@@ -288,23 +394,27 @@ function AgentsBody({
                     : 'Nothing has finished in the loaded page.'
               }
             />{' '}
-            {/* THIS SCREEN'S ONE `?` (B7.4). An empty `live` tab is the one
-                place on this screen where the mark alone can still be read
-                wrongly: "nothing is running" and "nothing costs anything" are
-                not the same claim, and which states hold a pool slot is
-                invariant 1 rather than anything the row could show. That is
-                the test for a glyph -- a platform rule no label can carry --
-                and `prose.runs.test.tsx` pins it to this empty state. */}
+            {/* THIS SCREEN'S ONE `?` (B7.4), AND ONLY ON THE EMPTY LIVE TAB
+                (AG-32). An empty `live` tab is the one place on this screen
+                where the mark alone can still be read wrongly: "nothing is
+                running" and "nothing costs anything" are not the same claim,
+                and which states hold a pool slot is invariant 1 rather than
+                anything the row could show. That is the test for a glyph -- a
+                platform rule no label can carry -- and it is not met by an
+                empty Waiting or Recent tab, which make no claim about cost:
+                the capacity topic opened from those answered a question
+                nobody there was asking. `prose.runs.test.tsx` pins it. */}
             nothing in {shown}
-            <HelpCard topic="capacity" />
+            {shown === 'live' && <HelpCard topic="capacity" />}
           </h3>
         </div>
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} />
       ) : (
         <div className="rows">
+          <RowHead />
           {rows.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
+            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
           ))}
         </div>
       )}
@@ -323,10 +433,12 @@ function GroupedRows({
   rows,
   now,
   onOpen,
+  openTaskId,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
+  openTaskId: string | null
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -375,8 +487,9 @@ function GroupedRows({
               </span>
             </h2>
             <div className="rows">
+              <RowHead />
               {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
+                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
               ))}
             </div>
           </section>
@@ -386,17 +499,74 @@ function GroupedRows({
   )
 }
 
+/**
+ * THE COLUMN HEADS (AG-16), on the row's own grid.
+ *
+ * A list of forty rows reading `1/3`, `1u` and `4m 12s` with nothing saying
+ * which is attempts, which is weight and which is elapsed left a reader to
+ * infer three columns from their values. This is a `.row` with the SAME cell
+ * classes in the SAME order as `TaskRow`, so it sits on the same named-line
+ * template and every breakpoint that drops a column -- the inspector's two
+ * stages, the phone card -- drops its head with it, by construction rather
+ * than by a second list of widths. `is-head` is the one hook the sheet needs
+ * to set it in the label treatment and to hide it where rows become cards.
+ *
+ * The flags column has no head: it is empty on most rows, and the chip in it
+ * names itself.
+ */
+function RowHead() {
+  return (
+    <div className="row is-head">
+      <span className="st">State</span>
+      <span className="agent">Agent</span>
+      <span className="owner">Owner</span>
+      <span className="wf">Step</span>
+      <span className="when">Elapsed</span>
+      <span className="try">Try</span>
+      <span className="class">Class</span>
+      <span className="badges" />
+    </div>
+  )
+}
+
+/**
+ * The accessible name of the attempts cell, and whether it is over its cap.
+ *
+ * OVER THE CEILING IS `>`, NOT `>=` (AG-15). `3/3` is a task that used every
+ * attempt it was allowed -- normal for anything that failed -- while `4/3` and
+ * `83/3` are a task that ran MORE times than its cap: the retry-cap defect
+ * `task_d18d8d8b044d469cb43c` hit at 83 attempts. Only the second is a
+ * problem with the platform, and only it gets the treatment and the overage
+ * in words.
+ */
+export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>): {
+  over: boolean
+  say: string
+} {
+  const over = task.attempt_count > task.max_attempts
+  return {
+    over,
+    say: over
+      ? `${task.attempt_count} attempts against a cap of ${task.max_attempts}: ${task.attempt_count - task.max_attempts} over the ceiling`
+      : `${task.attempt_count} of ${task.max_attempts} attempts used`,
+  }
+}
+
 function TaskRow({
   task,
   now,
   onOpen,
+  open = false,
 }: {
   task: Task
   now: number
   onOpen: (taskId: string) => void
+  /** This is the agent the inspector has open (AG-17). */
+  open?: boolean
 }) {
   const why = whyAgent(task)
   const el = elapsed(task, now)
+  const tries = attemptsUsed(task)
   const units = RESOURCE_UNITS[task.resource_class]
   // Driven by the flag, not by an optimistic state flip. A cancel on a LEASED
   // or RUNNING task writes only cancel_requested -- the state does not change
@@ -414,6 +584,12 @@ function TaskRow({
       className="row clickable"
       role="button"
       tabIndex={0}
+      // WHICH ROW IS OPEN (AG-17). With the inspector open no row said which
+      // agent it was showing; the one it is gets `aria-current`, which a
+      // screen reader announces and the sheet draws (a surface step and an
+      // ink rule, design-system.md §1.3). `undefined` rather than `false`,
+      // so the attribute is absent on every other row.
+      aria-current={open ? 'true' : undefined}
       onClick={() => onOpen(task.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -479,7 +655,11 @@ function TaskRow({
 
       <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
 
-      <span className="try" aria-label={`${task.attempt_count} of ${task.max_attempts} attempts used`}>
+      {/* OVER THE CAP IS A PROBLEM, AND IT LOOKS LIKE ONE (AG-15). `83/3`
+          rendered exactly like `1/3`. `is-over` is the design system's word
+          for more held than a ceiling allows (the pool bars' `.is-over`);
+          the overage is in the accessible name, not only in the arithmetic. */}
+      <span className={`try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
         {task.attempt_count}/{task.max_attempts}
       </span>
 

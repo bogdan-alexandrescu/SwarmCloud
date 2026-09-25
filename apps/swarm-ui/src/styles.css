@@ -400,6 +400,27 @@ body {
 :where(.app button:not(:disabled):hover) { color: var(--text); border-color: var(--text-faint); }
 :where(.app button:disabled) { opacity: .45; cursor: not-allowed; }
 
+/* A LINK NOBODY STYLED IS STILL A `.ctl-link`, NOT THE BROWSER'S BLUE (CH-5).
+   The 2026-09-25 QA pass found three anchors with no class at all -- API
+   reads' "What these mean ->", the workflow inspector's "run ->" and the
+   staged-input "From" task link -- falling back to the user agent's link blue,
+   and to visited PURPLE once followed: a sixth hue this sheet never chose,
+   appearing on exactly the links a reader has already used. The user agent's
+   `a:link` rule loses to ANY author rule, so this needs no specificity to
+   win, and `:where()` gives it none: every anchor that carries its own class
+   keeps its own treatment. Same values as `.ctl-link` (sec 9b), and scoped to
+   no container, because the portalled help card and the dock sit outside
+   `.app` and carry links too. The resting underline is `--line` at 1px
+   (CH-23; the reason is at sec 9b). */
+:where(a) {
+  color: var(--text);
+  text-decoration-color: var(--line);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+:where(a:hover) { color: var(--info); text-decoration-color: currentColor; }
+:where(a:focus-visible) { color: var(--info); outline: 2px solid var(--info); outline-offset: 2px; }
+
 /* Checkboxes and radios are excluded, and get `accent-color` instead: the
    platform draws those as MARKS rather than as boxes, and a border and a
    padding on one produces a control that is the right size and the wrong
@@ -625,10 +646,17 @@ body {
    hardcoded "dev" beside every screen title -- a word nothing in this app had
    measured, repeated on sixteen screens. The environment is drawn once now, by
    Brand.tsx, and only from something that was established. */
-.sub { color: var(--text-dim); font-size: var(--t-lead); line-height: var(--lh-lead); margin: 0 0 24px; }
+/* `--ctl-s5`, not 24px (TS-21): 24 was one of seven values on this sheet that
+   sat between the scale's steps, and it is the nearest step up. The summary
+   line is the page's own head; what follows it is the first region, and s5 is
+   what a region break is. */
+.sub { color: var(--text-dim); font-size: var(--t-lead); line-height: var(--lh-lead); margin: 0 0 var(--ctl-s5); }
+/* The summary line's "refresh" on all fourteen Screen routes. Its colour, its
+   underline and its hover now come from the `.ctl-link` list in sec 9b (CH-5);
+   what is left here is the reset a <button> needs in order to be a link. */
 .sub button {
-  background: none; border: none; color: var(--info);
-  font: inherit; cursor: pointer; padding: 0; text-decoration: underline;
+  background: none; border: none;
+  font: inherit; cursor: pointer; padding: 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -771,9 +799,15 @@ body {
 /* FOUR TREATMENTS, AND THE CHANNEL IS NEVER COLOUR ALONE.
    A pill is quiet; a square-cornered block with a rule down its left edge is
    loud. That distinction survives greyscale, a colour-blind reader and a
-   screenshot, which is where these screens are actually read. */
+   screenshot, which is where these screens are actually read.
+   THE ADMIN TAG TAKES THE QUIET TREATMENT TOO (CH-20). It was an `--info`
+   tinted pill -- the accent spent on a fact about you, beside the one badge on
+   this bar that is allowed to be loud. It is a grey hairline tag now, the
+   same box as a non-production environment, and it is in this list rather
+   than restating it. */
 .brand-env.is-nonprod,
-.brand-env.is-local {
+.brand-env.is-local,
+.brand-admin {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-2);
@@ -789,13 +823,32 @@ body {
   background: color-mix(in srgb, var(--bad) 18%, transparent);
   color: var(--bad-ink);
 }
+/* THE HATCH STAYS ON THE BADGE; THE WORDS GO ON A PLATE (CH-4).
+   `--ctl-hatch` is two stripes, `--surface-2` and `--line`, and `--line` is a
+   component BOUNDARY colour: `--text-dim` over it measured 1.51:1 in light and
+   1.90:1 in dark, across half of every glyph. The environment is the one thing
+   this bar exists to say, and it was the least legible text in it.
+   So the badge keeps its hatch -- "we could not establish this" is still the
+   loudest shape on the bar, and `brand.test.tsx` tells the four environments
+   apart by exactly that -- and each word sits on a solid `--surface-2` plate
+   inside it, so the hatch shows as the badge's rim and between the words.
+   No `color` on the badge itself: the text is in the two spans, which is
+   where `test_ui_contrast.py` measures it. */
 .brand-env.is-unknown {
   border: 1px solid var(--line);
   border-left: 3px solid var(--text-dim);
   border-radius: var(--ctl-radius-sm);
   background: var(--ctl-hatch);
+}
+.brand-env.is-unknown > span {
+  padding: 0 var(--ctl-s1);
+  border-radius: var(--track-radius);
+  background: var(--surface-2);
   color: var(--text-dim);
 }
+/* The key keeps the faint tone it has on the other three badges; the plate
+   rule above would otherwise lift it to the value's. */
+.brand-env.is-unknown > .brand-k { color: var(--text-faint); }
 
 /* WHO YOU ARE. Pushed right, and allowed to wrap rather than to truncate: a
    service-account email cut off at the column edge is the one thing on this
@@ -824,19 +877,100 @@ body {
    not evidence about the platform. */
 .brand-who.is-unread { color: var(--text-dim); max-width: var(--measure); }
 
+/* The box is the quiet treatment's, in the list above. */
 .brand-admin {
   padding: 0 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--info) 22%, transparent);
-  color: var(--info-ink);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
 }
+/* THE PRINCIPAL AND THE ADMIN TAG ARE ONE UNIT THAT NEVER WRAPS (CH-20), so
+   above 560px "admin" cannot fall onto a line of its own -- at 390 it used to,
+   alone, on a third line. Between 561 and 899px the identity still wraps onto
+   its own line when it does not fit; it does so as a unit. */
+.brand-who-me {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+/* THE TENANT ID IS ITS OWN COPY CONTROL (CH-20, Brand.tsx `TenantId`). A
+   button that draws nothing of its own: no box, no fill, the id's own ink and
+   type, so the header shows the id exactly as before and the pointer says what
+   a press does. It is the flex item that gives way at 560px and below; the id
+   inside it is what ellipsizes. */
+.brand-id {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: copy;
+}
+.brand-id:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+/* What the copy did, for a screen reader. Never drawn: the id beside it is
+   what a sighted reader was pointing at. */
+.brand-id-said {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
-/* On a phone the identity gets its own line rather than squeezing the
-   wordmark and the environment into forty pixels each. */
-@media (max-width: 720px) {
-  .brand-row { padding-top: 6px; padding-bottom: 6px; row-gap: 6px; }
-  .brand-who { margin-left: 0; width: 100%; }
+/* AT 560px AND BELOW THE HEADER IS ONE ROW (CH-20, design-system.md §7.2).
+   It doubled to about 100px at 390 -- the identity on a line of its own, and
+   the admin badge on a third -- against §7.2's "the header keeps its height".
+   The row holds, in order: the mark (the home link, named "SwarmCloud" by the
+   mark's own title), the environment badge, the tenant key, the tenant id and
+   the admin tag, and it keeps its 52px min-height.
+
+   ONLY THE TENANT ID GIVES WAY: it ellipsizes, with the whole value in its
+   title, and the text is intact under the ellipsis, so copying it copies all
+   of it. NOT DRAWN, AND STILL ANNOUNCED: the tenant's display name, the
+   "signed in" key with the principal, the unknown badge's host and the word
+   ENVIRONMENT before UNKNOWN -- visually hidden, never `display: none`, so a
+   screen reader still reads each one (and "ENVIRONMENT UNKNOWN" is still the
+   badge's words). The wordmark IS `display: none`: it repeats the mark's name.
+
+   The row is the containing block for the hidden spans, so an absolutely
+   positioned 1px box cannot escape into `.ctl-scroll`'s overflow the way the
+   stacked tables' heads once did (§B6.3). The 720px rule that used to put the
+   identity on its own line is gone: 720 is a retired breakpoint (§7.1). */
+@media (max-width: 560px) {
+  .brand-row { position: relative; flex-wrap: nowrap; gap: var(--ctl-s2); }
+  .brand-word { display: none; }
+  .brand-who { flex: 0 1 auto; flex-wrap: nowrap; min-width: 0; gap: var(--ctl-s2); }
+  /* The copy control gives way in the row and reaches §7.2's 44px target
+     inside the 52px bar; the id in it ellipsizes, whole in the control's
+     title and in what it copies. */
+  .brand-who > .brand-id {
+    align-items: center;
+    min-width: 0;
+    min-height: 44px;
+  }
+  .brand-id > .id {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .brand-who-name,
+  .brand-who-principal,
+  .brand-env.is-unknown > .id,
+  .brand-env-lead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* ---- section ---- */
@@ -1019,8 +1153,20 @@ body {
      A viewport gets a different LAYOUT here, never a different type scale. */
 }
 
+/* ONE ITERATION, NOT JUST A SHORT ONE (CH-19). `.01ms` alone left every
+   `infinite` animation running: the live pulse cycled .01ms at a time, so each
+   frame caught the mark at an arbitrary point of its fade. A single iteration
+   plays once, invisibly, and rests at the element's own base style -- opacity
+   1 for a live mark, whose static halo is then what keeps it apart from ok, as
+   `.ctl-dot.is-live` and design-system.md §5.4 say. One declaration covers every
+   infinite animation; `.ctl-pending` and `.wf-tl-span.is-running` also set
+   `animation: none` of their own. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }
 
 /* ---- nav ---- */
@@ -1053,16 +1199,22 @@ body {
 /* SIX ROWS WERE SIX FLOATING CARDS. NOW THEY ARE ONE LIST.
    ---------------------------------------------------------------------------
    `#work/workflows` is the screen the owner named as already right, and the
-   thing that makes it right is measurable: its rows are 37px, single-line, and
-   they STACK -- `.wf-card + .wf-card` drops the duplicated top border, so ten
-   rows draw one box and nine hairlines rather than ten boxes. This list drew
-   `gap: var(--ctl-s1)` between bordered, rounded, 72px-tall rows, so six rows
-   were six separate objects with 4px of page showing between them. That is
-   "everything is a bordered rounded box" in the one place the product repeats
-   a box the most.
+   thing that makes it right is measurable: its rows are 37px and single-line.
+   CORRECTED (WF-17, epic #83): this said they stack into one box -- that
+   `.wf-card + .wf-card` drops the duplicated top border, "so ten rows draw one
+   box and nine hairlines". They do not and never did. The board draws ten
+   one-line rows, each `.wf-bar` its own bordered box, 8px apart (`.wf-board`'s
+   gap is `--ctl-s2`); `.wf-card + .wf-card` only removes the `.section +
+   .section` region hairline. That is the reference the owner froze (§11.4
+   measured "13 boxes"), and design-system.md §13.3 names it as an exception
+   to the no-box row. This list drew `gap: var(--ctl-s1)` between bordered,
+   rounded, 72px-tall rows, so six rows were six separate objects with 4px of
+   page showing between them. That is "everything is a bordered rounded box"
+   in the one place the product repeats a box the most.
 
-   So: the same construction as the board. The gap goes, the radius survives
-   only on the two ends, and `+` removes the shared edge. Separation between
+   So: one list. The gap goes, the radius survives only on the two ends, and
+   `+` removes the shared edge -- a construction that stands on §13.3 alone, not
+   on the Workflows board, which is built differently. Separation between
    rows is one hairline at the SEPARATOR weight, which is what §5.1 and §5.2
    say a repeated interior rule is -- and `.row + .row` gives the structural
    probe the adjacent twin it looks for, so it is graded at 1.5:1 rather than
@@ -1147,11 +1299,31 @@ body {
        `scan-terraf…` at EVERY width, 1440 included. A track sized under its own
        longest known value is a truncation with no width band to blame. */
     [step] minmax(0, 120px)
-    [age] minmax(0, 76px)
+    /* 19ch, NOT 76px (AG-11). At 1440 76px cut every waiting row to
+       "queued 1…", which is the one fact the Waiting tab exists to show.
+       `ch` rather than px because the cell is `tabular-nums`, so a digit IS
+       one `ch`, and the letters of the words are each within a few percent
+       of one.
+       WAS 15ch, sized when every wait read "queued 23h 59m" (14); then 19ch
+       for AG-12's "dispatched 99d 23h" (18). THAT FORM IS GONE: a state word
+       in front of the task's age read as time spent in the state, so
+       `elapsed()` now prints LEASED, DISPATCHED and every task between
+       attempts as the state word alone. The longest form it prints is
+       "waiting 99d 23h", 15 characters, so 19ch now carries four of slack.
+       Whether those four go back to `[name]` is left open, not decided here:
+       it is a width #154 measured, and this change was to the words.
+       `shell.test.tsx` derives the floor from `elapsed()` itself, over every
+       state, started or not. */
+    [age] minmax(0, 19ch)
     [try] 44px
     [class] minmax(0, 116px)
     [flags] minmax(0, 0.85fr);
-  align-items: center; gap: var(--ctl-s3);
+  /* ROW-GAP `--ctl-s1`, COLUMN-GAP `--ctl-s3` (AG-32). One `gap` of s3 put the
+     why line 12px + its own 4px margin under the row it explains and 9px above
+     the next one, so at desktop a reason read as the heading of the row BELOW
+     it. The phone and inspector variants already said s1; this is the same
+     number at the width that did not. */
+  align-items: center; gap: var(--ctl-s1) var(--ctl-s3);
   /* No background and no border of its own: `.rows` above draws both, once. */
   padding: var(--ctl-s1) var(--ctl-s3);
 }
@@ -1178,7 +1350,9 @@ body {
     [state] 112px
     [name] minmax(0, 1fr)
     [step] minmax(0, 120px)
-    [age] minmax(0, 76px);
+    /* The same 19ch as the full row, and for the same reason (AG-11): the
+       inspector is open on the screen where "queued 1…" was measured. */
+    [age] minmax(0, 19ch);
   row-gap: var(--ctl-s1);
 }
 /* F3 OF THE 2026-09-23 OVERFLOW INVENTORY: A SECOND STAGE, BECAUSE FOUR TRACKS
@@ -1196,14 +1370,30 @@ body {
    columns are dropped, never squeezed together into illegibility) and for the
    same reason — the step id is on the panel that is open two inches to the
    right. State, identity and age are what a row is matched on. */
+/* AND THE AGE TAKES A SECOND LINE HERE RATHER THAN THE NAME'S WIDTH (AG-11).
+   The first two templates size `[age]` to its longest value, 19ch. This one
+   cannot: in the 1101-1200 band the list is ~350px, and 19ch here is ~70px out
+   of `[name]` -- which is exactly the squeeze the stage exists to prevent, the
+   one that cut task ids mid-character. So the track is sized to the longest
+   DURATION, "23h 59m" (7 characters, plus one of slack), and the cell wraps:
+   `waiting` sits above "13m 18s" instead of "waiting 1…" sitting in one
+   line. The row grows a line only on the rows that are waiting.
+   NOT YET TRUE OF ONE WORD. `waiting` (7) and `leased` (6) fit 8ch;
+   `dispatched` is 10 and overflows it by two -- printed alone now, with no
+   duration after it, but still two over. That word arrived with AG-12
+   after this track was sized for `queued`, and the width to hold it would
+   come out of `[name]` here and in the 390px template below, which were
+   each measured down to the pixel. Which to give up is left open, not
+   decided here. */
 @media (max-width: 1200px) {
   .app.has-inspector .row {
     grid-template-columns:
       [state] 100px
       [name] minmax(0, 1fr)
-      [age] minmax(0, 68px);
+      [age] minmax(0, 8ch);
   }
   .app.has-inspector .row .wf { display: none; }
+  .app.has-inspector .row .when { white-space: normal; }
 }
 /* THE DISPATCH FLAG MOVES TO ITS OWN LINE RATHER THAN BEING CLIPPED, which is
    the same call the 390px block makes and for the same reason:
@@ -1261,6 +1451,46 @@ body {
 .row .badges { display: flex; gap: var(--ctl-s2); justify-content: flex-end; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
 .row .badges > * { flex: none; }
 
+/* THE OPEN AGENT'S ROW SAYS SO (AG-17). With the inspector open beside the
+   list, no row showed which agent was open -- the one question a two-pane
+   layout has to answer at a glance. §1.3's selection treatment, the one the
+   rail uses: a `--surface-2` step and a 2px `--text` rule down the leading
+   edge. The rule is an inset shadow rather than a border, and that is not the
+   "hidden rule" `.ctl-seg` warns about: a border here would give every row a
+   second drawn edge, and a row with two drawn edges is graded by the spacing
+   probe as a BOUNDARY rather than as the repeated separator `.row + .row` is
+   (§5.2), which is a real change to what the row is. The mark is a selection,
+   not a divider, and it moves no content. `aria-current` is the hook because
+   it is also what a screen reader is told (App.tsx / Agents.tsx set it). */
+.row[aria-current]:not([aria-current='false']) {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+/* THE RUN LIST'S HEAD ROW (AG-16). `1/3`, `1u` and the elapsed time had no
+   label anywhere on the screen. The head is itself a `.row` whose cells carry
+   the same classes as a data row's, so it sits on the same named-line grid and
+   drops the same columns at the same breakpoints without a rule of its own for
+   any of them -- a head that re-derived the template would drift from it. What
+   is here is only the head's register: the column-head treatment
+   `.ctl-table thead th` uses (mono, micro, faint, on the `--surface-2` step).
+   `.row.is-head` is the class the markup half (Agents.tsx) sets; the second
+   selector is the same row found by what it IS -- the one `.row` in a list
+   that is not a control -- so the treatment does not depend on the two lanes
+   having picked one spelling. The cell rule is (0,3,0) or more on purpose:
+   `.row .owner`, `.row .try` and `.row .class` set a body-size font at
+   (0,2,0) further down the sheet, and would otherwise win on order. */
+.row.is-head,
+.rows > .row:first-child:not(.clickable) {
+  min-height: 0;
+  background: var(--surface-2);
+}
+.row.is-head:not(.clickable) > *,
+.rows > .row:first-child:not(.clickable) > * {
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+
 /* The board-level mode switch. Replaces `.dagx-modes`: the classes it
    styled are not rendered by any component after the board rewrite. */
 /* ---- the workflow board ---- */
@@ -1295,7 +1525,9 @@ body {
 
 .wf-board { display: flex; flex-direction: column; gap: var(--ctl-s2); }
 /* The board is a LIST, so the hairline `.section + .section` draws between
-   panels would cut every row off from its own open body. */
+   panels would cut every row off from its own open body. It is a list of
+   BOXED rows: each `.wf-bar` keeps a panel's box, 8px from the next -- the
+   named exception to §13.3's no-box row (design-system.md §13.3, WF-17). */
 .wf-card { margin-bottom: 0; }
 .wf-card + .wf-card { border-top-width: 0; padding-top: 0; }
 
@@ -1342,7 +1574,15 @@ body {
     [mix] minmax(0, 1.1fr)
     [spend] 96px
     [age] max-content
-    [flags] minmax(0, auto)
+    /* RESERVED, NOT CONTENT-SIZED (WF-16). `minmax(0, auto)` sized this track
+       per row to whatever the row carried, and each row is its own grid -- so
+       the one row with `cancel requested` in it took ~140px out of the fr
+       tracks and its id ellipsed at 1440 while the rows around it did not.
+       140px is that tag, the only flag this column draws: 16 characters of
+       --t-meta mono (~125px) plus the tag's 12px of padding and 2px of border.
+       Every row keeps it whether it has a flag or not, which is §14's rule:
+       an absent thing occupies the space it would have occupied. */
+    [flags] minmax(0, 140px)
     [actions] 16px;
   align-items: center; gap: var(--ctl-s3);
   text-align: left; text-transform: none; letter-spacing: normal;
@@ -1463,11 +1703,26 @@ body {
   white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis;
 }
 
-.wf-mix { display: flex; gap: var(--ctl-s1); min-width: 0; overflow: hidden; }
+/* A CHIP IS SHOWN WHOLE OR NOT AT ALL (WF-16). This was one nowrap line with
+   `overflow: hidden`, so a column narrower than its chips cut the last one
+   mid-word -- `moc`, half a `+` -- which reads as a profile called "moc".
+   Now the chips WRAP and the box is exactly one chip tall: a chip that does
+   not fit on the first line goes to a second line that is clipped away
+   entirely. The height is the chip's own line box plus its two border pixels,
+   stated from the tokens that set it. Folding the hidden count into the `+N`
+   chip is the markup's half (Workflows.tsx `Mix`). */
+.wf-mix {
+  display: flex; flex-wrap: wrap; align-content: flex-start;
+  gap: var(--ctl-s1); min-width: 0; overflow: hidden;
+  height: calc(var(--t-micro) * var(--lh-micro) + 2px);
+}
 .wf-chip {
   font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   padding: 0 5px; color: var(--text-dim); white-space: nowrap;
+  /* A lone chip wider than the whole column is the one case wrapping cannot
+     hide, so it says it was shortened rather than being sliced. */
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
 }
 .wf-chip-n { color: var(--text-faint); margin-left: 3px; }
 .wf-chip.more { color: var(--text-faint); }
@@ -1496,7 +1751,10 @@ body {
      now rather than guessed. */
   white-space: nowrap; text-align: right;
 }
-.wf-flags { display: flex; justify-content: flex-end; }
+/* The reserved track is a ceiling as well as a floor, so what is inside it
+   ellipses at the edge instead of painting into `[actions]`. */
+.wf-flags { display: flex; justify-content: flex-end; min-width: 0; overflow: hidden; }
+.wf-flags > .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* THE TWO FACT STRIPS IN AN OPEN CARD, and between them they replaced four
    paragraphs totalling 72 words (§6.13).
@@ -1553,7 +1811,13 @@ body {
 .wf-canvas-wrap { overflow-x: auto; padding-bottom: var(--ctl-s2); }
 /* The rail and the canvas side by side. `align-items: start` so the rail is
    exactly as tall as the graph rather than stretching past its last level. */
-.wf-graph { display: flex; align-items: start; gap: var(--ctl-s3); }
+/* `width: max-content` (WF-8). A sticky element sticks only within its
+   containing block, and `.wf-levels`' containing block is this box -- which,
+   as a block-level flex container, was exactly as wide as the scroll wrapper.
+   Scroll a wide canvas sideways and this box scrolled out with it, taking the
+   "then ×13" rail along. As wide as its content, it spans the whole scrolled
+   width and the rail has the full distance to stay stuck across. */
+.wf-graph { display: flex; align-items: start; gap: var(--ctl-s3); width: max-content; }
 /* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS ACROSS THE TOP.
    Levels run down now, so their captions run down beside them.
 
@@ -1598,14 +1862,19 @@ body {
 /* THE EDGE CARRIES ITS OWN CLEARANCE, AND IT IS WHY THE NODES LOST THEIR
    SHADOWS. `.node` used to carry `--ctl-shadow` -- fourteen drop shadows on
    this one screen, against a reference band of one or two -- and the job it
-   was doing was real: an edge spanning more than one level crosses the band
-   between, and without separation it reads as running INTO a card rather than
+   was doing was real: an edge spanning more than one level crossed the band
+   between, and without separation it read as running INTO a card rather than
    past it. Putting that separation on the fourteen boxes was paying per box
    for a property of the two or three lines that actually cross. It is on the
    line now: a wider stroke in the canvas's own fill, drawn under the line, so
    the crossing is what carries the gap. 5px against the line's 1.5 leaves
    1.75px of clear fill on each side -- enough to read as a break, small enough
-   that two edges converging on one join still touch. */
+   that two edges converging on one join still touch.
+
+   SINCE WF-4 NO EDGE CROSSES A CARD AT ALL: an edge that skips a level runs on
+   a lane of its own, `LANE_CLEAR` (8px) off every card and band it passes
+   (`dag.ts`, `laneRouter`). What the halo separates now is one edge from
+   another where two cross in a gap, which is the crossing that remains. */
 .wf-edge-halo { fill: none; stroke: var(--wf-body-bg); stroke-width: 5; }
 .wf-arrowhead { fill: var(--line); }
 
@@ -1634,6 +1903,14 @@ body {
 }
 .wf-zoom-seg { flex: none; }
 .wf-zoom > .wf-caveat { flex: none; }
+/* WHAT THE ZOOM IS NOT DRAWING, AS A NOTE AND NOT AS A DATA MARK (WF-14). It
+   was a `.ctl-mark.is-partial` -- amber, a one-sided dash -- which is how this
+   console says a READ came back partial. A zoom is the reader's choice (or
+   Auto's) about the VIEW, so it takes provenance type and nothing else: faint
+   mono at the micro step, no border, no dash, no hue. Its sentence is its
+   accessible name and its title. The partial mark stays where a read IS
+   partial, on the sample note. */
+.wf-zoom-note { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 
 /* THE MAP.
    ---------------------------------------------------------------------------
@@ -1820,6 +2097,23 @@ body {
   border-left-color: var(--bad);
   background: color-mix(in srgb, var(--bad) 6%, var(--surface));
 }
+/* THE STAGE THAT HOLDS THE PICKED STEP (WF-10). A step the scrubber carried
+   into this workflow could be one of thirteen folded into a band: picked, and
+   nowhere on the canvas. The band is marked the way `.node.is-picked` marks a
+   card -- three sides in `--text`, so the left accent keeps the state tone it
+   carries, because a selection is not a state -- and names the step. The stage
+   is opened to it as well (`WorkflowGraph`). */
+.wf-band.holds-picked {
+  border-top-color: var(--text);
+  border-right-color: var(--text);
+  border-bottom-color: var(--text);
+}
+.wf-band-pick {
+  flex: none;
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text);
+  white-space: nowrap;
+}
 /* THE WRAPPER `aria-controls` POINTS AT, AND IT IS DELIBERATELY SIZELESS.
    A disclosure control needs something to name, and the nodes of a stage are
    absolutely positioned siblings on a shared canvas with no container of their
@@ -1831,10 +2125,11 @@ body {
 .wf-stage { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 
 /* THE SLOT THE LAYOUT PLACES, and the reason it exists is valid HTML.
-   The card is an `<a>` now -- the whole node is the link -- and a `<button>`
-   may not live inside an `<a>`. So the slot is what `layoutOf` positions, and
-   the card and the stop control are its two children: siblings, neither nested
-   in the other, both addressed from one set of coordinates. */
+   The whole card is one target -- an `<a>` when it was the link, a `<button>`
+   since WF-7 made it pick the step into the inspector -- and the stop control,
+   a `<button>`, may live inside neither. So the slot is what `layoutOf`
+   positions, and the card and the stop control are its two children: siblings,
+   neither nested in the other, both addressed from one set of coordinates. */
 .node-slot { position: absolute; }
 
 /* THE NODE CARD. `--radius`, not `--ctl-radius-sm`: a DAG node is a card on a
@@ -1880,9 +2175,21 @@ body {
 .node-line > .ctl-dot { align-self: center; }
 .node-line > .node-state { flex: none; }
 .node-line > .node-dur { margin-left: auto; text-align: right; }
-a.node { text-decoration: none; color: inherit; }
-a.node:hover, a.node:focus-visible { border-color: var(--info); }
-a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* THE CARD IS A BUTTON THAT PICKS ITS STEP (WF-7). It was an `<a>` to the task
+   drawer, so clicking a step on the Graph left the workflow; it now fills the
+   inspector in place and the inspector carries the link. A button brings the
+   sheet's `:where(.app button)` floor -- a sans font, `--text-dim`, centred
+   text -- none of which a card is, so those go back to the card's own; the
+   width and height are the slot's, because a positioned button does not
+   stretch to its insets in every engine. Hover and the ring are the ones the
+   anchor had. */
+button.node {
+  width: 100%; height: 100%; margin: 0;
+  font: inherit; color: var(--text); text-align: left;
+  cursor: pointer;
+}
+button.node:hover, button.node:focus-visible { border-color: var(--info); }
+button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
@@ -1920,6 +2227,16 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
   overflow-wrap: anywhere;
 }
+/* ONE UNIT OF THE DEPENDENCY LINE -- a parent id, or the `(file)` it hands over,
+   with its comma -- which the line may move to the next line but not split
+   (WF-19). The line broke ids at their hyphens (`check-` / `3`). No max-width:
+   an inline-block's shrink-to-fit width is already capped at the line, so a
+   unit longer than a whole line still wraps INSIDE its own box through the
+   rule above, and nothing is truncated. Such a unit is exactly as wide as the
+   line, so it shares its lines with nothing, which `depLines` counts. No
+   U+2011 either: a copied id still pastes as the id. `heightOf` packs the
+   same units (`depUnits`). */
+.node-dep-item { display: inline-block; }
 /* A SENTENCE, never a numeral. Dashed underline so it reads as "there is no
    figure here" rather than as a small figure. */
 /* Recovered when the four run figures came back onto the node. These four
@@ -1985,6 +2302,23 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 /* A read still in flight is NOT an absence: it has made no claim about the
    platform at all, so it gets a moving placeholder instead of a sentence. */
 .node-num.is-reading dd { color: var(--text-faint); }
+/* WHICH FIGURES ARE THE STEP'S RESULT'S, NOT ITS ATTEMPTS' (WF-5):
+   `cost · tokens from result`, a line of its own under the four figures.
+   It sat beside each figure first, in a value column budgeted for a
+   20-character figure and nothing more, and the rule that made room there
+   set `text-overflow: clip` -- so the note showed as `…` beside a token
+   figure and a wider figure was CUT with no mark (#160 review). The figure's
+   cell is the plain `.node-num dd` again, ellipsis and all.
+   RESERVED: every Figures-tier node draws this line, empty unless a figure
+   was borrowed, and `nodeHeightAt('figures')` counts it -- a card may not
+   grow a row when the attempt read lands. `min-height` is the one micro line
+   an empty block would otherwise not have. Its longest text is 25 characters
+   (180.6px) in a 227px content box; the ellipsis is the guard, not the plan. */
+.node-src {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
+  min-height: calc(var(--t-micro) * var(--lh-micro));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .node-reading {
   display: block; width: 44px; height: 9px; border-radius: 999px;
   background: var(--surface-2);
@@ -2201,8 +2535,16 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .state.stale-note h3 { color: var(--warn); }
 
 /* The "checked at" time on an empty state. Muted, because an empty state is
-   calm by design -- what must be loud is UNREADABLE, not zero. */
-.checked-at {
+   calm by design -- what must be loud is UNREADABLE, not zero.
+   `.state p.checked-at` AS WELL AS `.checked-at` (CH-10). Every one of these
+   inside a `.state` panel -- Shell's empty, failed and stale panels, about
+   thirteen screens -- is a `<p>`, and `.state p` (0,1,1) outranks
+   `.checked-at` (0,1,0) on `font-size`: the `!important`s below were added for
+   the colour and the margin and nobody noticed the size, so "Checked just
+   now." rendered at 16px mono, the lead step, louder than the panel's own
+   sentence. The second selector wins on specificity rather than by force. */
+.checked-at,
+.state p.checked-at {
   margin-top: 8px !important;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint) !important;
@@ -2255,7 +2597,13 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   vertical-align: middle;
 }
 .scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info-ink); }
-.scope.tenant   { background: color-mix(in srgb, var(--paused) 15%, transparent); color: var(--paused-ink); }
+/* NEUTRAL, NOT `--paused` (CP-13). A scope is metadata about a row, and
+   `--paused` is a STATE: "an operator is holding this". Profile headroom drew
+   every "this tenant" pill in the paused hue, beside pools that really were
+   paused and drawn in the same one, so the one screen that has to tell a
+   held pool from a tenant-scoped one painted them alike. The words carry the
+   scope; the step off the surface is what makes it a pill. */
+.scope.tenant   { background: var(--surface-2); color: var(--text-dim); }
 
 /* §B6.1: `.table-wrap` IS THE PANEL, because something has to be.
    This was a bare `overflow-x: auto` with no edge at all, so `table.pools`
@@ -2289,17 +2637,34 @@ table.pools th, table.pools td {
    a column head says once, at the top, where the data starts — and it says it
    on a fill step, at `--line-soft`, not at `--text-faint`. The old
    `border-bottom-color: var(--text-faint)` made this the strongest horizontal
-   on the screen, heavier than the panel's own edge. */
+   on the screen, heavier than the panel's own edge.
+
+   NOT STICKY (WF-21). It declared `position: sticky; top: 0; z-index: 1`, and
+   that never took effect: every `table.pools` sits in a `.table-wrap`, which
+   is `overflow-x: auto` -- so the wrapper is the head's scroll container on
+   both axes, and no wrapper ever scrolls vertically. What the declaration did
+   do was make every head cell a layer of its own. `.ctl-table thead th` carries
+   the same note. */
 table.pools thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   background: var(--surface-2);
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
 }
 table.pools .n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* PROFILE HEADROOM'S TABLES SHARE ONE SET OF COLUMNS (CP-18), for the reason
+   `.cap-families` gives: one table per runner profile, one schema, and each
+   sized its own columns, so the columns zigzagged from profile to profile.
+   The selector is structural because the markup names no screen class: the
+   table that follows a profile's `dl.kv` facts inside its panel. Fixed layout
+   with the widths on the head row -- the pool a third, each figure an eighth,
+   scope and status splitting the rest -- and cells allowed to wrap, since a
+   fixed column no longer grows to fit its content. */
+.section.panel > dl.kv + .table-wrap > table.pools { table-layout: fixed; }
+.section.panel > dl.kv + .table-wrap > table.pools > thead th:first-child { width: 33%; }
+.section.panel > dl.kv + .table-wrap > table.pools > thead th.n { width: 12.5%; }
+.section.panel > dl.kv + .table-wrap > table.pools th,
+.section.panel > dl.kv + .table-wrap > table.pools td { white-space: normal; overflow-wrap: anywhere; }
 table.pools tbody tr.over   { background: color-mix(in srgb, var(--bad) 8%, transparent); }
 table.pools tbody tr.paused { background: color-mix(in srgb, var(--paused) 7%, transparent); }
 table.pools .pool-name { font-weight: 500; }
@@ -2445,11 +2810,9 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   color: var(--text-dim);
 }
 .t-label-note code { font-size: var(--t-micro); color: var(--text-dim); }
-.ctl-panel-note a {
-  color: var(--info);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
+/* `.ctl-panel-note a` drew the accent under its own rule. It is a branch of the
+   `.ctl-link` list in sec 9b now (CH-5), so the rule that painted it blue is
+   gone rather than left to out-rank the primitive. */
 
 /* `[name]` IS ONE BASELINE, NOT A THREE-LINE STACK.
    It was `flex-direction: column` -- profile, then model, then id -- so the
@@ -2533,8 +2896,17 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      is one line now, the same shape as at 1440px with six columns removed.
      Columns are DROPPED, never relabelled into "Label: value": a stacked
      record is a different and worse thing than a row. */
+  /* `[age]` IS 8ch, NOT `auto` (AG-13). An `auto` track is sized to its own
+     row's content BEFORE the `1fr` name gets anything, so a Waiting row
+     handed "queued 13m 18s" ~108px and left the name 106 -- "brow… 0961e…",
+     profile and id both cut. And because each row is its own grid, the name
+     column moved from row to row. 8ch holds the longest duration ("23h 59m",
+     7 characters, tabular) and the state word wraps above it, so the age
+     costs a line on a waiting row instead of costing the name its width --
+     except `dispatched`, 10 characters, which overflows 8ch by two (see the
+     1101-1200 band above for why that is left open). */
   .row {
-    grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] auto;
+    grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] minmax(0, 8ch);
     row-gap: var(--ctl-s1);
     column-gap: var(--ctl-s2);
     /* 12px OF SIDE PADDING BOUGHT BACK FOR THE NAME, MEASURED RATHER THAN
@@ -2550,6 +2922,14 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     padding-right: var(--ctl-s2);
   }
   .row .agent { gap: var(--ctl-s1); }
+  /* THE NAME CELL'S FLOOR IS THE WHOLE ID (AG-13). `shortTaskId` prints at most
+     8 characters and the id is mono, so 8ch is exactly it. At desktop the id
+     gives way first, because the detail panel beside the list repeats it; on a
+     phone there is no panel beside it and the id is what somebody is matching
+     against the one in their terminal -- so here the PROFILE ellipses first
+     and the id keeps every character. */
+  .row .agent .id { min-width: 8ch; }
+  .row .when { white-space: normal; }
   /* The id survives and the model goes. On a phone the id is what somebody is
      matching against the one in their terminal; the model is on the detail. */
   .row .agent .model { display: none; }
@@ -2561,7 +2941,19 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      (`DispatchChip` renders nothing for a plain `collect`), so this costs a
      second line only on the rows that have something to say. */
   .row .badges { grid-column: 1 / -1; order: 8; justify-content: flex-start; flex-wrap: wrap; overflow: visible; }
-  .row .why { grid-column: 1 / -1; order: 9; -webkit-line-clamp: 2; }
+  /* THE CLAMP NEEDS ITS BOX (AG-27). `-webkit-line-clamp` alone does nothing:
+     it only applies to a `display: -webkit-box` with a vertical box orient,
+     and it truncates only what `overflow: hidden` actually hides. With just
+     the one declaration, a failed row carried its whole five-line error. The
+     full reason is on the agent's own panel, one tap away. */
+  .row .why {
+    grid-column: 1 / -1; order: 9;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
   /* Padding only. The 12.5px that was here is --t-body everywhere now: a tab
      is a tab at 390pt, and half a pixel of type was never the reason four of
      them fitted. */
@@ -2881,12 +3273,12 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     white-space: normal;
     text-align: left;
   }
-  /* 44px TOUCH TARGETS (§7.2), WHICH THE PRIMITIVE DOES NOT SHIP. `.ctl-seg`
-     declares a 30px segment and no phone rule; the run list is the first
-     screen to render one, so the rule lands here rather than staying a line in
-     the specification. THE TYPE DOES NOT GROW WITH IT -- the segment gets
-     taller, not louder. */
-  .ctl-seg > button { min-height: 44px; }
+  /* `.ctl-seg > button { min-height: 44px }` LIVED HERE AND NEVER APPLIED
+     (CH-8). This block sits ~2,000 lines ABOVE the primitive's own
+     `.ctl-seg > button { min-height: 26px }`; a media query adds nothing to
+     specificity, so the later base rule won at every width and the segment
+     stayed 26px on a phone. It moved to the touch-target block at the foot of
+     the sheet, which is after every rule it has to beat. */
   /* The select is the other control on this toolbar and gets the same target.
      Its font-size stays at --t-body: a 16px minimum is an iOS zoom-avoidance
      trick, and this sheet's --t-body is 14px everywhere by decision. */
@@ -2986,12 +3378,28 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    LONGHAND MARGINS, for the reason `.section + .section` gives above: jsdom does
    not reliably expand a shorthand into its longhands, and a test reads this rule
    back through `CSSStyleRule.style`. */
+/* TWO CORRECTIONS FROM THE 2026-09-25 QA PASS.
+   `top: -18px`, NOT 0 (AG-31). A sticky box's inset is measured from the
+   scroll container's CONTENT edge, inside its padding -- so with `top: 0` the
+   band stuck 18px below the drawer's top edge: it covered the top of the
+   Detail/Attempts control once scrolled, and left an 18px strip above it
+   through which the content showed. Minus the drawer's own top padding puts
+   it on the edge it was measured against; `shell.test.tsx` holds the two
+   equal.
+   `z-index: 3`, NOT 1 (AG-30). `.ctl-table thead th` was sticky at z-index 1,
+   and it comes later in the DOM than this band -- so at equal z it painted
+   OVER the band and scrolled across the close button's row. The band is 3, the
+   button on it 4 and the inspector's drag handle, which must stay above both,
+   5. The band stays above ANY positioned table cell: since WF-21 no table head
+   is one (the sticky declaration never took effect inside an `overflow-x`
+   wrapper), and CH-13's sticky first column, when it lands, has to rank under
+   3 as well -- `shell.test.tsx` holds both. */
 .drawer::before {
   content: '';
   position: sticky;
-  top: 0;
-  /* Above the scrolling content, below the button that sits on it. */
-  z-index: 1;
+  top: -18px;
+  /* Above any positioned table cell in the drawer, below the button on it. */
+  z-index: 3;
   display: block;
   height: 50px;
   margin-top: -18px;
@@ -3007,7 +3415,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      band above, whose height is only correct because of this. */
   display: block; margin-left: auto;
   /* ON the band, not merely above the parent's other children. */
-  z-index: 2;
+  z-index: 4;
   width: 32px; height: 32px;
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text-dim);
@@ -3127,25 +3535,30 @@ ol.timeline li::before {
      reflowing. The `min()` is what lets this grid go 1-up on a phone with no
      media query, which is the construction the design system standardises. */
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-  gap: 6px;
+  /* `--ctl-s3`, up from 6px: with no edge on a cell, the gap IS what
+     separates two of them -- §13.3's metric-strip precedent (CH-17). */
+  gap: var(--ctl-s3);
   margin-top: 10px;
 }
+/* A CELL IS A ROW OF THE DOCK'S PANEL, NOT A BOX (CH-17, §13.3). It was a
+   bordered card with a 3px left rule and a `--surface` fill, one per route --
+   twenty-nine boxes on a healthy platform, every rule green. The dock is the
+   panel; a cell draws nothing of its own. The two-row cell (path over status
+   and age) and the auto-fit grid stay.
+   ONLY A FAILING CELL CARRIES TONE, and in §6.7's forms: `.source.bad` and
+   `.source.warn` are in the `.ctl-table` row-tone lists (sec 4 below), so they
+   take the table row's own left-edge rule -- full height, half height --
+   without restating it, and keep their diamond or triangle. A healthy cell is
+   the neutral disc and a 403 the neutral flat bar (the `.ctl-dot` rules). An
+   admin-only 403 is information, not breakage: a non-admin genuinely cannot
+   read /v1/admin/*, and styling it as an error is what makes a working page
+   look broken. */
 .source {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 1px 8px;
   padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--text-faint);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
 }
-.source.ok   { border-left-color: var(--ok); }
-.source.warn { border-left-color: var(--warn); }
-.source.bad  { border-left-color: var(--bad); }
-/* Informational, not broken: a non-admin genuinely cannot read /v1/admin/*.
-   Styling this as an error is what makes a working page look broken. */
-.source.info { border-left-color: var(--info); }
 
 /* THE DOT LEADS THE ROUTE (operator pass). The tone was carried by the left
    border and by the status text's colour -- two channels, both hue, so in the
@@ -3176,11 +3589,14 @@ ol.timeline li::before {
    has no spaces to break at, so the alternative to breaking mid-token is
    overflowing the cell. */
 .s-path-t { min-width: 0; overflow-wrap: anywhere; }
-.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
-.source.ok   .s-status { color: var(--ok); }
-.source.warn .s-status { color: var(--warn); }
-.source.bad  .s-status { color: var(--bad); }
-.source.info .s-status { color: var(--info); }
+/* THE STATUS IS NEVER IN ITS TONE'S HUE (CH-17). A healthy or admin-only
+   cell's status is `--text-dim`; a failing one's is full ink -- §6.7's "never a
+   text colour" and §6.6's "the hue never touches the word", which is how the
+   API reads table already draws the same records. The mark and the edge
+   carry the tone. */
+.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+.source.warn .s-status,
+.source.bad .s-status { color: var(--text); }
 /* `grid-column: 1 / -1` IS GONE, which is the other half of F5's regrouping.
    The age used to be a full-width third line under `path | status`; the path
    has taken the first line to itself, so the age moves up beside the status and
@@ -3244,7 +3660,22 @@ ol.timeline li::before {
 
 .row.fail-row { grid-template-columns: 92px minmax(0, 1fr) 54px 76px; }
 .row.fail-row .err { grid-column: 1 / -1; margin-top: 6px; }
-.row .try.spent { color: var(--bad); font-weight: 600; }
+/* OVER THE CEILING (AG-15). `83/3` and `4/3` -- a task that has used more
+   attempts than it is allowed, which the platform should make impossible --
+   rendered as ordinary figures in Agents and in the workflow Table. This rule
+   existed and nothing rendered it. It is the over-ceiling vocabulary of the
+   track primitive (`.ctl-util-track.is-over`) carried to a figure: the bad
+   tone, and weight as the second channel so it survives greyscale.
+   TWO CLASS NAMES, ONE RULE, deliberately. `spent` is the name this dead rule
+   already carried and the one the QA box cites; `is-over` is the sheet's own
+   word for "more than the ceiling". The markup halves (Agents.tsx,
+   Workflows.tsx) are another lane's, written in parallel, and either name
+   lands on the same treatment. Applied when attempt_count > max_attempts --
+   `>`, not `>=`: using every allowed attempt is not a fault. */
+.row .try.spent,
+.row .try.is-over,
+.wf-table .spent,
+.wf-table .is-over { color: var(--bad); font-weight: 600; }
 
 /* Parked: one row of colour, grey by default. Never drawn at all on error --
    an empty bar and a failed fetch are indistinguishable once the segments are
@@ -3307,10 +3738,14 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 /* Activity                                                                  */
 /* ------------------------------------------------------------------------ */
 
+/* ON THE SCALE (TS-21): the gap and margin were 16 and 14 and the padding
+   10/12 -- three values between steps. Each moves to the nearest step, and the
+   padding to the compact pair a toolbar panel uses (s2 above and below, s3 at
+   the sides), which keeps the ink ~11px off the rule. */
 .window-bar {
   position: sticky; top: 0; z-index: 5;
-  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-  margin-bottom: 14px; padding: 10px 12px;
+  display: flex; align-items: baseline; gap: var(--ctl-s3); flex-wrap: wrap;
+  margin-bottom: var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3);
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--surface);
 }
@@ -3337,7 +3772,7 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   font-style: normal;
 }
 .wb-more-note { color: var(--text-dim); }
-.wb-more a { color: var(--info); text-decoration: underline; text-underline-offset: 3px; }
+/* `.wb-more a` is a `.ctl-link` branch now (CH-5, sec 9b). */
 
 /* §B4.3 move 3: CAP THE BARS, AND LEFT-ALIGN THEM.
    `.chart .col { flex: 1 }` divided the full content width between the
@@ -3359,13 +3794,60 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   min-width: 26px; flex: 1 1 26px; max-width: 72px;
 }
+/* THE DAY BOUNDARY ON AN HOURLY AXIS: the first column of each day after the
+   first carries a rule down its left edge, the interior-separator tone, so
+   four days of hours read as four days even where a label was thinned out.
+   `--ctl-s1` inside it, so the bar and the date clear the rule rather than
+   touching it. */
+.chart .col.is-day-start { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s1); }
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
-.stackcol > i.succeeded { background: var(--ok); }
-.stackcol > i.failed    { background: var(--bad); }
-.stackcol > i.cancelled { background: var(--text-faint); }
-/* Hatched, so "still open" never reads as an outcome. */
-.stackcol > i.open {
+/* FOUR OUTCOMES, FOUR FORMS, NOT FOUR HUES (TS-4). They were three flat fills
+   and one hatch, told apart by hue alone: failed against cancelled measured
+   1.01:1 in the dark theme and succeeded against cancelled 1.08:1 in the
+   light one, so in greyscale -- or to a colour-blind reader -- a day of
+   failures and a day of cancellations were the same bar.
+
+     succeeded  solid                 the one outcome that is just a fill
+     failed     solid + a 2px left    redesign-v2 §5.5 Tier 1's form for bad,
+                rule                  as written: the fill stays solid, so a
+                                      day of failures weighs what a day of
+                                      successes does
+     cancelled  flat bars             CH-22's neutral "ended" mark, stacked:
+                                      one 3px bar per step, grey, no verdict
+     open       the 45° hatch         unchanged: not an outcome yet
+
+   THE FAILED RULE IS DRAWN IN THE PANEL'S OWN GROUND, `--surface`: a 2px cut
+   down the segment's left edge. It has to show against solid `--bad`, and
+   measured against it only the grounds do -- `--surface` 5.32:1 (dark) and
+   12.49:1 (light). A rule in `--bad` is 1:1, `--bad-ink` 1.28:1 (dark) and
+   1.68:1 (light), `--text` 2.83:1 (dark) and 1.26:1 (light): each is in the
+   sheet and not on the screen in at least one theme. (A 60% wash under a
+   `--bad` rule was built first, and drew failed lighter than succeeded.)
+   `encoding.hues.test.ts` holds the rule at 3:1 on the fill in both themes.
+
+   EVERY SEGMENT AND ITS LEGEND KEY ARE ONE RULE, as TS-22 made "still open":
+   one declaration, two selectors, so a key cannot drift from its bar. The
+   colours are unchanged -- CH-17's hue ruling does not re-rule chart fills. */
+.stackcol > i.succeeded,
+.chart-legend .k.succeeded { background: var(--ok); }
+.stackcol > i.failed,
+.chart-legend .k.failed {
+  background: var(--bad);
+  box-shadow: inset 2px 0 0 var(--surface);
+}
+.stackcol > i.cancelled,
+.chart-legend .k.cancelled {
+  background: repeating-linear-gradient(to bottom, var(--text-faint) 0 3px, transparent 3px 5px);
+}
+/* Hatched, so "still open" never reads as an outcome.
+   THE LEGEND'S KEY IS THE SAME RULE, NOT A SECOND DRAWING OF IT (TS-22). The
+   key was a flat `--surface-2` square with a border while the segment it names
+   was hatched, so the one entry in the legend that had to be matched by its
+   PATTERN could only be matched by elimination. One declaration, two
+   selectors: the key cannot drift from the bar again. */
+.stackcol > i.open,
+.chart-legend .k.open {
   background: repeating-linear-gradient(
     45deg, var(--surface-2), var(--surface-2) 3px, var(--line) 3px, var(--line) 6px
   );
@@ -3373,18 +3855,18 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .col-label { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; }
 .chart-legend { margin: 10px 0 0; font-size: var(--t-micro); color: var(--text-faint); line-height: var(--lh-micro); }
 .chart-legend .k { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: baseline; }
-.chart-legend .k.succeeded { background: var(--ok); }
-.chart-legend .k.failed    { background: var(--bad); }
-.chart-legend .k.cancelled { background: var(--text-faint); }
-.chart-legend .k.open      { background: var(--surface-2); border: 1px solid var(--line); }
+/* Every key is drawn by its segment's rule above (TS-22, TS-4). */
 /* THE BASIS, FUSED TO THE LEGEND rather than trailing it as a clause. "stacks
    bucket on completed_at; a task's submission time is a different question"
    was a sentence explaining an axis; this is the axis saying it. */
 .chart-legend .cl-basis { margin-left: var(--ctl-s3); }
 
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; margin-bottom: 14px; }
+/* ON THE SCALE (TS-21): 14px below the strip and 11/13px inside a tile were
+   three values between steps; each is `--ctl-s3` now, and the 8px gap is
+   written as the step it already was. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--ctl-s2); margin-bottom: var(--ctl-s3); }
 .tile {
-  padding: 11px 13px; border: 1px solid var(--line);
+  padding: var(--ctl-s3); border: 1px solid var(--line);
   border-radius: var(--radius); background: var(--surface);
 }
 .t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); }
@@ -3439,15 +3921,28 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .liveness.silent > i { background: var(--bad); }
 .liveness.finished > i { background: var(--text-faint); }
 .liveness.not-started > i { background: transparent; border: 1.5px solid var(--text-faint); }
-.lv-word { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); }
-.liveness.live .lv-word { color: var(--ok); }
-.liveness.quiet .lv-word { color: var(--warn); }
-.liveness.silent .lv-word { color: var(--bad); }
+/* THE WORD IS AT FULL INK (AG-18). It was painted in the dot's hue -- green,
+   amber, red -- beside a dot already in that hue and beside the state chip's
+   own mark, so the drawer's heading carried one fact in three coloured
+   channels. §6.6 settled this for every status: the mark carries the tone and
+   the silhouette, the word is ink. The three word-colour rules are deleted,
+   not overridden. (Moving the dot onto the `.ctl-dot` vocabulary is
+   Liveness.tsx's half.) */
+.lv-word { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .lv-copy { color: var(--text-faint); font-size: var(--t-micro); }
 /* THE LIVE PULSE, under its own name. It was a second `@keyframes pulse`,
    which silently replaced the skeleton's (see `.skeleton`); every live mark --
-   this dot, `.ctl-dot.is-live`, `.ctl-chip.is-live > i` -- names it here. */
-@keyframes ctl-live-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+   this dot, `.ctl-dot.is-live`, `.ctl-chip.is-live > i` -- names it here.
+   A FLOOR OF .8, NOT .35 (CH-19). Blended over each ground, .35 left a live
+   mark at 1.69:1 (light) and 1.95:1 (dark) for about half of every cycle --
+   the running dot, the one mark that says "this costs money now", under the
+   3:1 a graphical object needs. Measured: at .7 light `--info` is about 2.9:1
+   on `--surface-2` and `--bg`; at .75 the light `--ok` liveness dot is 3.00:1
+   on `--surface-2`; at .8 every live mark clears 3:1 on `--bg`, `--surface`
+   and `--surface-2` in both themes, the lowest being light `--ok` at 3.26:1
+   (light `--info` 3.39-3.66:1, dark 4.65:1 or higher). `encoding.hues.test.ts`
+   holds every rule that names this keyframe to 3:1 at its lowest stop. */
+@keyframes ctl-live-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .8 } }
 
 /* ---- header bars ---- */
 .bar {
@@ -3529,6 +4024,16 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
   font: var(--t-body)/var(--lh-body) var(--mono); font-variant-numeric: tabular-nums;
 }
 .limit-edit input:disabled { opacity: .5; cursor: not-allowed; }
+/* AN INVALID CEILING IS MARKED ON THE FIELD, NOT ONLY BESIDE IT (AH-8). The
+   `0–100000` message appeared as a flex item AFTER the save button, so it
+   widened the cell, which widened the column, which moved every column in the
+   table the moment a digit too many was typed. It takes a line of its own
+   under the field now -- the cell keeps its width, and the one row that is
+   wrong is the one that grows. The field itself carries the tone once the
+   markup sets `aria-invalid` (AdminSettings.tsx's half), so the fault is on
+   the thing that has to change and not only in a caption next to it. */
+.limit-edit input[aria-invalid='true'] { border-color: var(--warn); }
+.limit-edit > .warn-text { flex-basis: 100%; margin: 0; }
 .limit-edit button {
   padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--surface); color: var(--text-dim);
@@ -3647,10 +4152,17 @@ table.pools.accounts td.n { white-space: nowrap; }
 
 /* ---- one account, opened ---- */
 tr.acct-detail-row > td { padding: 0; background: var(--surface); }
+/* THE OPEN ACCOUNT IS A SELECTION, SO IT IS MARKED LIKE ONE (CP-23). It was a
+   3px `--info` rule: the accent, spent on "this row is open", on the screen
+   whose chips already use `--info` for a fact. §1.3 is the rule for every
+   selected, active or current thing -- a surface step plus a 2px rule in
+   `--text`, never a hue -- and `.ctl-nav-link.is-on` and `.sbf-runner.is-on`
+   are drawn that way. */
 .acct-detail {
   display: grid; gap: 18px;
   padding: 16px 14px 20px;
-  border-left: 3px solid var(--info);
+  border-left: 2px solid var(--text);
+  background: var(--surface-2);
 }
 .acct-facts { max-width: 560px; }
 
@@ -3662,6 +4174,24 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 
 .acct-action { display: grid; gap: 8px; justify-items: start; }
 .acct-action > * { max-width: 620px; }
+/* THE FIELDS IN AN OPEN ACCOUNT TAKE THE PANEL'S WIDTH (CP-19). They are
+   inside a `.limit-edit` -- the Pool limits editor's inline wrapper -- whose
+   `input { width: 74px }` (0,1,1) out-ranks `.acct-wide` (0,1,0), and the
+   grid's `justify-items: start` then shrank the wrapper to fit that. So the
+   lending field, the reason field and the removal confirmation were each 74px
+   wide and cut their own placeholders to "tena", "why, e.", and the first four
+   letters of the account's label. The wrapper stretches across the grid cell
+   and the wide fields fill it; the confirmation field sizes to what it asks
+   for -- the label, which is its placeholder -- where the browser can
+   (`field-sizing`), and to 24 characters of mono where it cannot. */
+.acct-action > .limit-edit { justify-self: stretch; display: flex; }
+.acct-action > .limit-edit > input.acct-wide {
+  flex: 1 1 auto; width: auto; min-width: 0; max-width: 420px;
+}
+.acct-action > .limit-edit > input:not(.acct-wide) {
+  flex: none; width: auto; min-width: 24ch; max-width: 100%;
+  field-sizing: content;
+}
 /* Removal is the one control on this screen that cannot be undone from here,
    so it is separated rather than sitting flush with the rest. */
 .acct-action.danger {
@@ -3687,6 +4217,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* A value the form states rather than asks for: the one provider, the one
    credential kind. It reads as a field so that it is not mistaken for prose. */
 .acct-fixed { margin: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
+/* `anthropic` and the `fixed` chip beside it had no space between them -- the
+   markup has no whitespace there -- and read as one word (CP-20). */
+.acct-fixed > .ctl-chip { margin-left: var(--ctl-s2); }
 
 .acct-wide { width: 100%; max-width: 420px; }
 .acct-action input, #acct-label, #acct-lend {
@@ -4357,10 +4890,16 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    already too overloaded to read as "clickable" on its own. An underline is
    unambiguous at any tone, in greyscale, and to a colour-blind reader.
 
-   `--line-soft` for the resting underline rather than `currentColor`: the rule
-   should be visible without competing with the word sitting on top of it, and
-   `--line-soft` is this sheet's token for exactly that -- a repeated interior
-   separator. `text-underline-offset: 3px` keeps it off the descenders.
+   `--line` FOR THE RESTING UNDERLINE, AT 1px (CH-23). It was `--line-soft`,
+   chosen so the rule would not compete with the word on it -- and at rest the
+   underline is the WHOLE affordance, so it is a component boundary and is held
+   to §1.2's 3:1 floor for one. `--line-soft` measured 2.05:1 (light) and
+   1.72:1 (dark) on `--surface`, about 1.3:1 once antialiased, which is why
+   Overview's row links read as plain text. `--line` measures 4.04 / 3.80 /
+   3.63:1 in light and 3.53 / 3.85 / 3.24:1 in dark on `--surface`, `--bg` and
+   `--surface-2`; `.ctl-nav-util button` already drew its underline in it. The
+   1px thickness is a floor, so the rule is never drawn thinner than a pixel.
+   `text-underline-offset: 3px` keeps it off the descenders.
 
    NOT YET UNIVERSAL, and the report says so plainly rather than claiming it.
    `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`, `.node-links a` and
@@ -4368,20 +4907,46 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    `--info`, and folding them into this primitive means editing five screens --
    which is the next phase's job, not this one's. What this pass ships is the
    primitive they collapse into, so the screen lanes cannot each invent a sixth
-   answer. */
-.ctl-link {
+   answer.
+
+   AND THE LIST GREW BY FIVE (CH-5, the 2026-09-25 QA pass). Five more link
+   treatments were painting `--info` under rules of their own: the summary
+   line's "refresh" on all fourteen Screen routes, the dock's two tool links,
+   the note links in `.ctl-panel-note`, Timeline's `.wb-more` link and the
+   workflow inspector's "run ->". They are branches of THIS rule rather than
+   five restatements of it, so a change to the primitive reaches them, and the
+   rules that painted them blue are deleted where they stood -- an equal-
+   specificity rule later in the sheet would otherwise quietly out-rank this
+   one. Anchors with no class at all get the same values from `:where(a)`. */
+.ctl-link,
+.sub button,
+.ctl-dock-tools a,
+.ctl-panel-note a,
+.wb-more a,
+.wf-inspect-run {
   color: var(--text);
   text-decoration: underline;
-  text-decoration-color: var(--line-soft);
+  text-decoration-color: var(--line);
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
   border-radius: var(--ctl-radius-sm);
 }
-.ctl-link:hover {
+.ctl-link:hover,
+.sub button:not(:disabled):hover,
+.ctl-dock-tools a:hover,
+.ctl-panel-note a:hover,
+.wb-more a:hover,
+.wf-inspect-run:hover {
   color: var(--info);
   text-decoration-color: currentColor;
 }
 /* The one place sec 1.3 allows the accent on a control state: the focus ring. */
-.ctl-link:focus-visible {
+.ctl-link:focus-visible,
+.sub button:focus-visible,
+.ctl-dock-tools a:focus-visible,
+.ctl-panel-note a:focus-visible,
+.wb-more a:focus-visible,
+.wf-inspect-run:focus-visible {
   color: var(--info);
   outline: 2px solid var(--info);
   outline-offset: 2px;
@@ -4545,11 +5110,34 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   padding-left: 5px;
 }
 /* NOTHING WAS EVER RECORDED. Hatched — this sheet's one surface for "not a
-   measurement". Declared in test_ui_contrast.py's allowlist, which is why this
-   is the only variant here allowed a background at all. */
+   measurement" — but THE HATCH IS A SWATCH AT THE MARK'S LEADING EDGE, AND THE
+   WORD SITS ON A SOLID FILL (CH-4).
+   It was the whole background, under the words. `--ctl-hatch` is a
+   `--surface-2` stripe and a `--line` stripe, and `--line` is a component-
+   boundary colour: `--text-dim` over it measured 1.51:1 in light and 1.90:1 in
+   dark, across half of every glyph of "not measured" -- the phrase this mark
+   exists to make legible. `test_ui_contrast.py` let it through because it
+   allowlisted `var(--ctl-hatch)` on the premise that "both stripes clear AA",
+   which was never measured and was false; it now measures a gradient stripe by
+   stripe (and the allowlist is empty), so this cannot come back quietly.
+   The silhouette is unchanged in kind: solid border, a hatched band, the word.
+   The band is 6px of the mark's own height, flush against its left border, so
+   the six marks still differ by shape in greyscale. */
 .ctl-mark.is-absent {
   color: var(--text-dim);
+  background: var(--surface-2);
+  padding-left: 0;
+}
+.ctl-mark.is-absent::before {
+  content: '';
+  align-self: stretch;
+  flex: none;
+  width: 6px;
   background: var(--ctl-hatch);
+  /* The mark's 6px corner less its 1px border, so the band follows the inside
+     of the curve instead of poking through it. */
+  border-top-left-radius: 5px;
+  border-bottom-left-radius: 5px;
 }
 /* THE READ FAILED, which is not the same as there being nothing. Dashed, and
    warning-toned: something is wrong and it is ours, not the platform's. */
@@ -4603,8 +5191,22 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: transparent;
   border: 1.5px solid var(--text-faint);
 }
-.ctl-dot.is-ok     { background: var(--ok); border-color: var(--ok); }
-.ctl-dot.is-info   { background: var(--info); border-color: var(--info); }
+/* OK AND INFO KEEP THEIR SHAPES AND LOSE THEIR HUE (CH-17, design-system.md
+   §6.6). On a state mark, hue is spent only on warn, bad, paused and live; a
+   healthy platform is a quiet grey screen. The ok mark is a filled disc in
+   `--text-faint` -- a disc, where the unknown default is a hollow ring.
+   THE INFO MARK IS THE FLAT BAR §6.6 SPECIFIES (CH-22), not the filled disc it
+   was: at 390, where the word is hidden, a cancelled and a queued workflow
+   were the same dot. It is the neutral "ended" mark CANCELLED takes and the
+   mark for a fact that is not a verdict -- ONE modifier, not a second one --
+   and it is the chip's own bar (`.ctl-chip.is-info > i`), 10 by 3. */
+.ctl-dot.is-ok     { background: var(--text-faint); border-color: var(--text-faint); }
+.ctl-dot.is-info {
+  width: 10px; height: 3px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--text-faint);
+}
 .ctl-dot.is-paused { background: var(--paused); border-color: var(--paused); }
 /* Caution keeps the chip's triangle; failure keeps its diamond. */
 .ctl-dot.is-warn {
@@ -5049,8 +5651,14 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    rather than a bare "—" so that "absent" is styleable as a class of thing:
    dimmed, non-tabular, and never mistakable for a digit at a glance down a
    column of figures. */
+/* ONE FACE, WHEREVER IT LANDS (CP-22). The dash inherited its family, so in an
+   `.is-num` cell it was the mono dash and beside prose it was the sans one --
+   two widths for one mark, which is enough to make a column of absences look
+   like two kinds of absence. The sans dash, because the mark is deliberately
+   not a figure (it is `font-variant-numeric: normal` for the same reason). */
 .ctl-em {
   color: var(--ctl-absent);
+  font-family: var(--font);
   font-variant-numeric: normal;
   user-select: none;
 }
@@ -5212,7 +5820,19 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    THE MARK MOVED FROM THE BOX'S CORNER TO THE LABEL'S BASELINE, because there
    is no box to have a corner. It is still a pseudo-element: it is decoration
    that repeats the figure's own caption, and putting it in the markup would
-   make every screen reader read a state twice. */
+   make every screen reader read a state twice.
+
+   EVERY LABEL RESERVES THE MARK'S 13px, PAINTED OR NOT (OV-13). The box was
+   generated only on `.is-alert` and `.is-good`, so the Running tile's label
+   was 13px wider whenever its tone mark appeared and the whole content-sized
+   strip slid sideways by 8-9px on the poll that changed it -- the one strip on
+   the landing screen that is meant to hold still. The first selector below
+   generates the same empty box on every label; the tone rules paint it.
+   The two state branches restate the same box on purpose:
+   `test_state_colour_discriminability.py` looks each state's mark up by its
+   own selector and asks it for a `content` and a size, which is the right
+   question to ask of a mark and the reason they are not dropped as redundant. */
+.ctl-metric-label::after,
 .ctl-metric.is-alert .ctl-metric-label::after,
 .ctl-metric.is-good .ctl-metric-label::after {
   content: '';
@@ -5233,11 +5853,14 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 .ctl-metric.is-alert .ctl-metric-value { color: var(--bad); }
 
+/* THE GOOD FIGURE IS A NEUTRAL DISC AND AN INK VALUE (CH-17): nothing is
+   coloured for being healthy (§6.7). The disc still sets it apart from the
+   alert's diamond in greyscale, which is the shape rule's half. */
 .ctl-metric.is-good .ctl-metric-label::after {
-  background: var(--ok);
+  background: var(--text-faint);
   border-radius: 999px;
 }
-.ctl-metric.is-good .ctl-metric-value { color: var(--ok); }
+.ctl-metric.is-good .ctl-metric-value { color: var(--text); }
 
 /* -------------------------------------------------------------------------- */
 /* 2. Utilisation bar                                                          */
@@ -5312,7 +5935,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    on a full row it changes nothing (the track already absorbs the slack), and
    on a wrapped one it holds the last field at the right edge instead of
    stranding it under the name. */
-.ctl-util > .ctl-util-by { flex: 0 0 128px; margin-left: auto; }
+/* 19ch, NOT 128px (OV-3). "five-hour · 2m ago" and its kin are up to 19
+   characters, and 128px was that at an 11px --t-micro that no longer exists:
+   at 12px it is ~137px, so the age -- the part that was added so a reading
+   would say how old it is -- was the part ellipsed ("4m a…"). The basis is in
+   the element's own mono face, where one `ch` is one character. */
+.ctl-util > .ctl-util-by { flex: 0 0 19ch; margin-left: auto; }
 /* NO RULE BETWEEN TWO OF THESE (§B5.3), and this one is the sheet's own
    example turned around. §5.2 of the design system cites `.ctl-util +
    .ctl-util` as the canonical case where `--line-soft` is LEGAL — it is a
@@ -5643,10 +6271,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: var(--chip-tone, var(--text-faint));
   flex: none;
 }
-.ctl-chip.is-ok      { --chip-tone: var(--ok); }
+/* `ok` and `info` are grey (CH-17): the disc and the flat bar keep the shape,
+   the hue is spent only on warn, bad, paused and live (§6.6). The flat bar is
+   also the neutral "ended" mark CANCELLED takes (CH-22). */
+.ctl-chip.is-ok      { --chip-tone: var(--text-faint); }
 .ctl-chip.is-warn    { --chip-tone: var(--warn); }
 .ctl-chip.is-bad     { --chip-tone: var(--bad); }
-.ctl-chip.is-info    { --chip-tone: var(--info); }
+.ctl-chip.is-info    { --chip-tone: var(--text-faint); }
 .ctl-chip.is-paused  { --chip-tone: var(--paused); }
 
 /* The shapes. Each one overrides the disc; none of them changes the colour,
@@ -5748,11 +6379,21 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* THE ONE HAIRLINE PERMITTED INSIDE A PANEL, and it is here because a column
    head is a different KIND of row rather than the next one: it says once, at
    the top, where the data starts. `--line-soft` and not `--line`, because it
-   still sits inside a box that has already drawn its boundary. */
+   still sits inside a box that has already drawn its boundary.
+
+   THE HEAD IS NOT STICKY, AND NEVER WAS IN EFFECT (WF-21). It declared
+   `position: sticky; top: 0; z-index: 1`. `.ctl-table` is `overflow-x: auto`,
+   which makes the table's own wrapper the head's scroll container on BOTH
+   axes, and that wrapper never scrolls vertically -- so the head never stuck
+   to anything. What the declaration did do was draw every head cell as a
+   positioned layer of its own, which is the likely source of the faint
+   vertical seams the Workflows Table showed at fractional column edges
+   (runner|waited, waited|ran, attempts|cost, cost|tokens). Below 899px the
+   stacked tables hide the head anyway. Not verified rendered: the next release
+   has to be looked at at 1440, light and dark, and if a seam survives, the fill
+   moves from each `th` to `thead` once. shell.test.tsx holds that no head is
+   sticky, and that any positioned cell still ranks under the drawer's band. */
 .ctl-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   background: var(--surface-2);
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
@@ -5781,18 +6422,26 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 
    It is drawn as a background on the first cell rather than a border, so it
    costs no layout and cannot push a column out of line, and rather than as a
-   `box-shadow` on the row, which `border-collapse: collapse` drops. */
+   `box-shadow` on the row, which `border-collapse: collapse` drops.
+
+   THE DOCK'S FAILING READ CELLS TAKE THE SAME TWO EDGES (CH-17): `.source.bad`
+   and `.source.warn` are in these lists rather than restating them, so a read
+   that failed and a table row that failed are one form. */
 .ctl-table tbody tr.is-bad > :first-child,
 .ctl-table tbody tr.is-warn > :first-child,
-.ctl-table tbody tr.is-paused > :first-child {
+.ctl-table tbody tr.is-paused > :first-child,
+.source.bad,
+.source.warn {
   background-repeat: no-repeat;
   background-position: left center;
 }
-.ctl-table tbody tr.is-bad > :first-child {
+.ctl-table tbody tr.is-bad > :first-child,
+.source.bad {
   background-image: linear-gradient(var(--bad), var(--bad));
   background-size: 3px 100%;
 }
-.ctl-table tbody tr.is-warn > :first-child {
+.ctl-table tbody tr.is-warn > :first-child,
+.source.warn {
   background-image: linear-gradient(var(--warn), var(--warn));
   background-size: 3px 46%;
 }
@@ -5930,18 +6579,33 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 
 /* One value that is stale inside an otherwise fresh panel. Carries its own age
    in the text, because a mark with no age just says "distrust this" with no
-   way to act on it. */
+   way to act on it.
+   THE WORDS ON A SOLID FILL, THE HATCH AS A BAND AT THE EDGE (CH-4), for the
+   reason `.ctl-mark.is-absent` gives: `--text-dim` over `--ctl-hatch`'s
+   `--line` stripe is 1.51:1 in light and 1.90:1 in dark, and this mark's
+   words are the age that tells a reader how far to distrust the value. The
+   absence vocabulary moves together (§12.4), so both hatched marks changed in
+   one edit and keep one silhouette. */
 .ctl-stale-mark {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   margin-left: 6px;
-  padding: 0 6px;
+  padding: 0 6px 0 0;
   border-radius: var(--ctl-radius-sm);
-  background: var(--ctl-hatch);
+  background: var(--surface-2);
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-dim);
   vertical-align: middle;
+}
+.ctl-stale-mark::before {
+  content: '';
+  align-self: stretch;
+  flex: none;
+  width: 6px;
+  background: var(--ctl-hatch);
+  border-top-left-radius: var(--ctl-radius-sm);
+  border-bottom-left-radius: var(--ctl-radius-sm);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -6123,6 +6787,18 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 .ctl-rail-tabs button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 
+/* THE PHONE STRIP'S TWO ROWS, AND WHAT THEY ARE ON THE DESKTOP COLUMN (CH-21).
+   Below 900px the strip is two rows (the narrow block below): row 1,
+   `.ctl-rail-main`, holds the sections and the utility corner; row 2,
+   `.ctl-rail-sub`, the open section's tabs. Here -- 900px and up, and as base
+   rules so the narrow block overrides them by order -- row 1 is TRANSPARENT to
+   the layout, so the sections and the corner are the column's own flex items
+   exactly as before, and row 2 is not displayed: the tabs are drawn inline,
+   under every section, where the column has always drawn them. */
+.ctl-rail-main { display: contents; }
+/* After `.ctl-rail-tabs`, which row 2 also carries, so this wins by order. */
+.ctl-rail-sub { display: none; }
+
 /* THE 152px RAIL IS NOT WIDE ENOUGH FOR THREE OF THESE LABELS. MEASURED.
    The figures and the argument are on `--rail-w` above; the short version is
    that at 152px a tab has 118px of content, and "Platform counts" with its
@@ -6179,9 +6855,18 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   padding-top: var(--ctl-s3);
   border-top: 1px solid var(--ctl-hairline);
 }
+/* THE CURRENT PAGE IS MARKED THE WAY A SECTION IS (CH-6). API reads and Help
+   said "you are here" with the accent alone -- on Help the only marker was a
+   small underlined `?` turning blue -- while every other place in the rail
+   says it with a surface step and a 2px `--text` rule (`.ctl-nav-link.is-on`,
+   §1.3). The rule is reserved transparent on every state, as the section
+   link's is, so choosing one moves no text; below 900px it moves to the
+   bottom edge with the rest of the strip's. */
 .ctl-nav-util button {
   background: none;
-  border: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--ctl-radius-sm) var(--ctl-radius-sm) 0;
   min-height: 24px;
   padding: 2px 10px;
   color: var(--text-faint);
@@ -6192,7 +6877,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   text-decoration-color: var(--line);
 }
 .ctl-nav-util button:hover { color: var(--text-dim); }
-.ctl-nav-util button.is-on { color: var(--info); text-decoration-color: currentColor; }
+.ctl-nav-util button.is-on {
+  color: var(--text);
+  background: var(--surface-2);
+  border-left-color: var(--text);
+  text-decoration-color: currentColor;
+}
 .ctl-nav-util button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
 /* ---- the head ---- */
@@ -6210,15 +6900,31 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   min-height: 44px;
   margin-bottom: var(--ctl-s3);
 }
+/* ONE LINE, AND THE LAST SEGMENT GIVES WAY (CH-15). This wrapped, so at 390
+   "Capacity ▸" ended one line and "Profile headroom" started the next with the
+   separator orphaned at the end of the first -- and WHETHER it wrapped flipped
+   every five seconds, because the read age beside it changes width as it
+   ticks, so the page under it moved. The trail holds one line now: the
+   segments leading to the page keep their width and the last one -- the page,
+   or the open object -- ellipses, and the age beside it has a fixed width
+   (below), so nothing here changes size on a tick. */
 .ctl-crumb {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   margin: 0;
   min-width: 0;
   font-size: var(--t-body);
   color: var(--text-dim);
+}
+.ctl-crumb > * { flex: none; }
+.ctl-crumb > :last-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ctl-crumb-at { color: var(--text-dim); }
 .ctl-crumb-sep { color: var(--text-faint); }
@@ -6234,9 +6940,16 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A FIXED WIDTH, SO THE TICK MOVES NOTHING (CH-15). "newest read " plus the
+   longest thing `timeAgo` prints ("just now", "59m ago", "999d ago") is at
+   most 20 characters, and in this mono face a `ch` is a character. Content-
+   sized, the age grew and shrank every five seconds and pushed the
+   breadcrumb beside it across its wrap point and back. */
 .ctl-head-age {
   margin-left: auto;
   flex: none;
+  min-width: 20ch;
+  text-align: right;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
@@ -6255,6 +6968,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      and there is nothing under it to drop to. */
   width: 20px;
   height: 20px;
+  /* THE MINIMUM IS THE SIZE (CH-7). `:where(.app button)` gives every button a
+     28px `min-height` for the control target, and a `min-height` beats a
+     smaller `height` whatever either's specificity -- so this "20px disc" was
+     a 20x28 pill on every screen. Stated here, it is a disc again. (At phone
+     width the TARGET still reaches 44px, through the hit area in the touch-
+     target block at the foot of the sheet, without the disc growing.) */
+  min-height: 20px;
   padding: 0;
   /* A SURFACE STEP, NOT A RULE (§B5.3). Six of these shipped on the Overview
      — one beside every panel title — and six 20px circles each drawing a
@@ -6293,7 +7013,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / .28);
+  /* THE TOKEN, NOT ITS DARK VALUE (CH-9). `--ctl-shadow-pop` was named from
+     exactly this declaration and then used nowhere -- including here -- so the
+     light theme got the dark theme's 28%-black drop, which on #f6f8fa reads as
+     grime. The token carries both themes' values. */
+  box-shadow: var(--ctl-shadow-pop);
   text-align: left;
   cursor: auto;
 }
@@ -6348,8 +7072,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      its top 50px is survivable — but the one thing this control cannot afford
      is a dead band at the top, because that is where a pointer arriving from
      the list above first crosses the edge. `z-index: auto` also put it under
-     any positioned content painted later. */
-  z-index: 3;
+     any positioned content painted later. 5 since AG-30 raised the band to 3
+     and the close button to 4: the handle stays above both. */
+  z-index: 5;
   cursor: col-resize;
   touch-action: none;
 }
@@ -6386,6 +7111,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   align-items: center;
   gap: var(--ctl-s2);
   width: 100%;
+  /* `flex: none` (CH-16). The dock is a flex COLUMN, and when it opens on a
+     phone its body asks for more height than the dock has; every child was
+     shrinkable, so this line shrank below its own two wrapped lines of facts
+     and its first line was drawn through the dock's top border. Only
+     `.ctl-dock-body` -- the part that scrolls -- may give way. */
+  flex: none;
   min-height: 28px;
   /* 4px OF VERTICAL AIR, WHICH IS FREE AT ONE LINE AND LOAD-BEARING AT TWO.
      `min-height: 28px` still decides the collapsed bar's height wherever the
@@ -6402,19 +7133,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 .ctl-dock-line:hover { color: var(--text); }
 .ctl-dock-line:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-/* The dot repeats the summary as a SHAPE as well as a tone: filled for a clean
-   strip, hatched for one with failures in it, ringed for an expired session.
-   A colour-only signal at 8px fails in greyscale and for a colour-blind
-   reader, which is the rule the state palette is held to everywhere else. */
-.ctl-dock-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--ok);
-}
-.ctl-dock-dot.is-warn { background: var(--ctl-hatch-bad); }
-.ctl-dock-dot.is-bad { background: transparent; border: 2px solid var(--bad); }
+/* THE LINE'S MARK IS THE SHARED `.ctl-dot` (CH-17). A private `.ctl-dock-dot`
+   drew a clean strip green, failures hatched, and an expired session as a
+   RING -- which is the unknown silhouette everywhere else in the product. The
+   line now draws the vocabulary's own: the neutral disc for a clean strip,
+   the triangle for failures, the diamond for an expired session. */
 .ctl-dock-label {
   flex: none;
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
@@ -6455,6 +7178,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    the same reason it comes off here. The hairline `border-top` above is the
    separation, which is the reference set's answer too. */
 .ctl-dock-grip {
+  /* Not shrinkable either (CH-16): a 6px handle squeezed to 0 is a handle
+     nobody can find. */
+  flex: none;
   height: 6px;
   margin-top: -3px;
   cursor: row-resize;
@@ -6472,11 +7198,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    control at each end and zero words of product copy between them. */
 .ctl-dock-tools { margin: var(--ctl-s2) 0; }
 .ctl-dock-tools .ctl-eyebrow { margin: 0; }
+/* Its colour and underline come from the `.ctl-link` list (sec 9b, CH-5). */
 .ctl-dock-tools a {
   font: var(--t-meta)/var(--lh-meta) var(--mono);
-  color: var(--info);
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 .ctl-dock-foot {
   margin: var(--ctl-s2) 0 0;
@@ -6485,26 +7209,56 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   max-width: var(--measure);
 }
 
-/* ---- narrow: the rail is a top bar again ---- */
-/* 200px of a 390pt phone is half the screen. The MARKUP does not change: the
-   column becomes a scrolling row and every unopened section's tabs are hidden,
-   which yields the same eleven-item horizontal strip this replaced -- the
-   right shape at this width and the wrong one above it. */
+/* ---- narrow: the rail is a top bar again, in two rows ---- */
+/* 200px of a 390pt phone is half the screen, so below 900px the column is a
+   strip at the top -- and it is TWO ROWS (CH-21). It used to be one scrolling
+   row with the open section's tabs inserted inline after their section, which
+   moved every later section whenever a section opened; §6.14's "a position
+   means one thing" held on the desktop and nowhere else. Now:
+
+     row 1  `.ctl-rail-main`  the sections and the utility corner -- the same
+                              items in the same places on every route
+     row 2  `.ctl-rail-sub`   the open section's tabs, drawn only when it has
+                              more than one (Overview draws no second row)
+
+   Each row scrolls on its own, with the same fade. `.ctl-rail` is the column
+   holding them and is no longer the scroller. The inline copy of the tabs is
+   hidden here, and row 2 is `.ctl-rail-tabs` as well, so every tab rule --
+   the 44px target at 560px included -- reaches it without a second copy.
+   A SECTION'S SELECTION IS A RULE AND A TAB'S IS A FILL: the section keeps its
+   2px `--text` bottom rule and loses its surface step; the tab takes the
+   `--surface-2` step in `--text` ink and no rule. Those differ in greyscale,
+   which the two used not to (a rule under each, near alike) -- the phone case
+   of §1.3's "surface step plus a 2px rule", split between the two levels. */
 @media (max-width: 899px) {
   .app { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .ctl-rail {
     position: static;
-    flex-direction: row;
-    align-items: center;
-    gap: var(--ctl-s2);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
     max-height: none;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
+    /* Not a scroller any more: each row is. The desktop column's own
+       `overflow-y: auto` would make it one. */
+    overflow: visible;
     margin-right: 0;
     padding: 0 0 var(--ctl-s2);
     border-right: none;
     border-bottom: 1px solid var(--ctl-hairline);
+  }
+  .ctl-rail-main {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--ctl-s2);
+  }
+  /* THE TWO ROWS' SCROLLER, ONE RULE FOR BOTH (CH-21). Two copies of these
+     declarations are how the next edit to one row leaves the other behind. */
+  .ctl-rail-main,
+  .ctl-rail-sub {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
     /* AN EDGE THAT SAYS THERE IS MORE.
        The rail becomes a horizontal strip here and scrolls, and its scrollbar
        is hidden on purpose -- a native bar under a row of tabs is heavier than
@@ -6519,17 +7273,18 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
        unconditional in the fallback and the strip is short enough that the
        cost is one faded tab-edge at most.
        (This was a second `.ctl-rail` rule two rules further down this block;
-       one element, one rule.)
+       one element, one rule. It is on each ROW now, from this one rule.)
        THE FADE'S WIDTH IS ONE TOKEN, `--rail-fade` beside `--rail-w`, read by
-       the mask here and by the utility corner's trailing padding below. A
-       mask does not scroll with the content, so the last fade-width of the
-       row sits under it at every scroll position, the end included; the
-       corner reserves exactly that much empty space so the end of the scroll
-       uncovers the last label. */
+       the mask here and by the trailing padding at the end of each row --
+       the utility corner's on row 1, row 2's own below. A mask does not
+       scroll with the content, so the last fade-width of a row sits under it
+       at every scroll position, the end included; each row reserves exactly
+       that much empty space so the end of the scroll uncovers the last label. */
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
     mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
   }
-  .ctl-rail::-webkit-scrollbar { display: none; }
+  .ctl-rail-main::-webkit-scrollbar,
+  .ctl-rail-sub::-webkit-scrollbar { display: none; }
   /* HELD AT THEIR OWN WIDTH, so the row OVERFLOWS the strip and the strip
      scrolls. As ordinary flex items (`flex-shrink: 1`) they were squeezed to
      fit a row wider than the phone instead -- measured at 390x844 on
@@ -6538,25 +7293,50 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      is hidden (`08-overview-390.png`). */
   .ctl-rail-sections { flex: 0 0 auto; flex-direction: row; align-items: center; gap: var(--ctl-s2); }
   .ctl-rail-group { flex-direction: row; align-items: center; }
+  /* `scroll-margin-inline-end: var(--rail-fade)` ON ALL THREE KINDS OF ITEM
+     (CH-14). The strip scrolls and its last 24px are under the fade mask, so
+     an item scrolled into view flush with the end would be scrolled INTO the
+     fade -- present and unreadable. The margin makes "into view" mean clear of
+     it. Scrolling the current item into view on a route change is App.tsx's
+     half; without this, the item it scrolls to lands under the mask. */
   .ctl-nav-link {
     width: auto;
     border-left: none;
     border-bottom: 2px solid transparent;
     border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
+    scroll-margin-inline-end: var(--rail-fade);
   }
-  .ctl-nav-link.is-on { border-left-color: transparent; border-bottom-color: var(--text); }
-  /* Only the open section's second level. Nineteen items in a scrolling row is
-     a row nobody scrolls to the end of. */
-  .ctl-rail-group:not(.is-on) .ctl-rail-tabs { display: none; }
+  /* A SECTION'S SELECTION IS THE RULE ALONE here: its surface step is the
+     tab's (CH-21). */
+  .ctl-nav-link.is-on { border-left-color: transparent; border-bottom-color: var(--text); background: none; }
+  /* No section's tabs are inline in row 1 -- the open section's are row 2.
+     They used to be: nineteen items in one scrolling row, and every section
+     after the open one moved when it opened. */
+  .ctl-rail-group .ctl-rail-tabs { display: none; }
   .ctl-rail-tabs { flex-direction: row; margin: 0 0 0 var(--ctl-s2); }
   .ctl-rail-tabs button {
     width: auto;
     border-left: none;
     border-bottom: 2px solid transparent;
+    scroll-margin-inline-end: var(--rail-fade);
   }
+  /* A TAB'S SELECTION IS THE FILL ALONE: the `--surface-2` step in `--text`
+     ink from the base rule, and no rule under it (CH-21). */
   .ctl-rail-tabs button[aria-selected='true'] {
     border-left-color: transparent;
-    border-bottom-color: var(--text-dim);
+    border-bottom-color: transparent;
+  }
+  /* ROW 2. After the `.ctl-rail-tabs` rule above, which it overrides by order
+     at equal specificity: flush with the strip's edge rather than indented,
+     and ending on the faded band's width of empty space, as row 1 ends on
+     the utility corner's. */
+  .ctl-rail-sub {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 1px;
+    margin: 0;
+    padding-right: var(--rail-fade);
   }
   .ctl-nav-util {
     flex: 0 0 auto;
@@ -6572,8 +7352,16 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     border-left: 1px solid var(--ctl-hairline);
   }
   /* One line, like every other label in the strip (`.ctl-nav-link` is nowrap
-     at every width). */
-  .ctl-nav-util button { white-space: nowrap; }
+     at every width). The current-page rule moves to the bottom edge with the
+     section links' (CH-6), and the scroll margin is CH-14's. */
+  .ctl-nav-util button {
+    white-space: nowrap;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
+    scroll-margin-inline-end: var(--rail-fade);
+  }
+  .ctl-nav-util button.is-on { border-left-color: transparent; border-bottom-color: var(--text); }
   .ctl-q-card { right: auto; left: 0; max-width: min(44ch, 86vw); }
 }
 
@@ -6621,6 +7409,28 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    outer panel's content with nothing to stick to. One drawer, one header. */
 .ctl-drawer > .drawer::before { display: none; }
 
+/* A CHOSEN RING, NOT THE BROWSER'S (AG-31). Below 1100px the drawer covers the
+   list, so opening it moves focus onto the panel itself (`App.tsx`), and on a
+   keyboard open that drew the user agent's default ring round the whole
+   viewport-tall panel. Inset, because the panel is flush with the viewport's
+   edges and an outset ring would be off-screen on three sides. Not `outline:
+   none`: `keyboard.test.tsx` fails any rule that takes a ring away without
+   putting one back, and a keyboard reader does need to see where focus went. */
+.ctl-drawer:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* THE DRAWER IS A SIZE CONTAINER (AG-26), so a table inside it can ask how
+   wide the DRAWER is rather than how wide the window is. The stacked-table
+   layout (§B6.3) is a viewport query: at 1440 the inspector is a 480px column
+   and its checkpoint and artifact tables stayed tables, with `copy gsutil`
+   pushed off the panel's right edge. The `@container` block beside §B6.3
+   restates that layout for this container. Inline-size only, and safe here
+   because the drawer's width never comes from its content: it is a fixed
+   width as an overlay and a grid track as a column. */
+.ctl-drawer { container: ctl-inspector / inline-size; }
+/* The checkpoint prefix is a path with no spaces in it, and it overflowed the
+   drawer at every width. A path has nowhere to break but anywhere (AG-26). */
+.drawer code { overflow-wrap: anywhere; }
+
 /* THE PANE STRIP, and it is now the inspector's alone.
    It used to draw the SECTION's tabs as well, above every screen; those moved
    into the rail (§B3), where they keep a fixed position instead of reflowing
@@ -6654,10 +7464,13 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    rather than colouring it red, because "no pull request" is the default and
    correct answer for most dispatches, not a warning. */
 
-.dsp { border: none; padding: 0; margin: 18px 0 0; min-width: 0; }
+/* ON THE SCALE (TS-21). 18px was the retired `--ctl-s4` and 6px sat between
+   s1 and s2; each moves to the nearest step, and the 8/12 that were already
+   steps are written as the steps they are. */
+.dsp { border: none; padding: 0; margin: var(--ctl-s3) 0 0; min-width: 0; }
 .dsp > legend { padding: 0; }
 
-.dsp-options { display: grid; gap: 8px; margin: 6px 0 12px; }
+.dsp-options { display: grid; gap: var(--ctl-s2); margin: var(--ctl-s2) 0 var(--ctl-s3); }
 
 .dsp-option {
   display: grid;
@@ -6671,7 +7484,17 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   cursor: pointer;
 }
 .dsp-option:hover { border-color: var(--text-faint); }
-.dsp-option.is-on { border-color: var(--info); background: color-mix(in srgb, var(--info) 7%, var(--surface)); }
+/* SELECTION HAS NO HUE (TS-13, §1.3). The chosen strategy was a blue border on
+   a blue tint while the chosen runner on the same form -- `.sbf-runner.is-on`,
+   forty lines of this sheet away -- was a surface step and an ink rule, so one
+   form drew "selected" two ways. This is the runner's treatment: the step,
+   and a 2px `--text` rule down the leading edge, drawn as the 1px border in
+   ink plus a 1px inset so the content does not move when it is chosen. */
+.dsp-option.is-on {
+  background: var(--surface-2);
+  border-left-color: var(--text);
+  box-shadow: inset 1px 0 0 var(--text);
+}
 .dsp-option:focus-within { outline: 2px solid var(--info); outline-offset: 2px; }
 /* Visible but not selectable: the reason it cannot be chosen is inside it. */
 .dsp-option.is-off { cursor: not-allowed; opacity: .72; border-style: dashed; }
@@ -6686,17 +7509,24 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
       font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
 }
 
-.dsp-count { font-size: var(--t-body); font-weight: 600; color: var(--info); }
+/* INK (TS-13). The pull-request count is the decision on this control, and the
+   decision is carried by its size and weight; blue on a number that is not a
+   link is the accent spent on emphasis, which §11's budget does not allow. */
+.dsp-count { font-size: var(--t-body); font-weight: 600; color: var(--text); }
 .dsp-count.is-none { color: var(--text-dim); font-weight: 500; }
 .dsp-off-why { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 
+/* The consequence box's rule is a callout edge, not a link and not a state, so
+   it is `--text-faint` like every other quiet edge (TS-13). */
 .dsp-consequence {
-  border-left: 3px solid var(--info);
+  border-left: 3px solid var(--text-faint);
   background: var(--surface-2);
   border-radius: 0 var(--radius) var(--radius) 0;
   padding: 10px 12px;
 }
-.dsp-consequence.is-none { border-left-color: var(--text-faint); }
+/* `.dsp-consequence.is-none` set the rule to `--text-faint`, which is now what
+   every consequence draws; the headline is what says whether anything is
+   pushed. The restatement is deleted rather than kept agreeing by accident. */
 .dsp-consequence-head { margin: 0 0 4px; font-size: var(--t-body); font-weight: 600; color: var(--text); }
 
 .dsp-repo { width: 100%; max-width: 520px; }
@@ -6707,6 +7537,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 .dsp-facts { margin: 0; }
+/* The gap above each of the dispatch control's two labelled fields. It was an
+   inline `marginTop: 14` on each label in Dispatch.tsx -- off the four-step
+   scale, and out of this sheet's reach. */
+.dsp > .dsp-label { margin-top: var(--ctl-s3); }
 /* `.dsp-rollup` is gone with the paragraph it styled. Its only caller was the
    workflow board's dispatch line, which is now a `.ctl-facts` strip. */
 .node-id .tag { margin-left: 6px; }
@@ -6745,8 +7579,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      column and costs legibility. A cell is `--t-body` at every width. */
   .ctl-table th, .ctl-table td { padding: 6px 8px; }
 
-  /* Padding only; the `font-size: 13px` restated --t-body. */
-  .ctl-nav-link { padding: 9px 10px; }
+  /* Padding only; the `font-size: 13px` restated --t-body.
+     44px OF TARGET (CH-8, §7.2): the padding came to 41px. The box grows and
+     the label stays centred in it; the type does not change. */
+  .ctl-nav-link { padding: 9px 10px; min-height: 44px; display: flex; align-items: center; }
   .ctl-empty { padding: var(--ctl-s3); }
 }
 
@@ -6823,7 +7659,12 @@ table.pools tbody tr.unmeasured {
 }
 .cf-action { color: var(--text); }
 .cf-action code { font-size: var(--t-body); background: transparent; color: var(--text); }
-.cf-effect { color: var(--ok); }
+/* INK, NOT `--ok` (CP-13). A counterfactual is a measurement of what WOULD
+   have happened -- "+3 would fit" -- and it was painted in the healthy hue,
+   including the row that says it "could not be measured". Green on a
+   hypothetical reads as a result somebody got. The effect is a figure and is
+   drawn as one; the dimmed rows below are the zeros and the unmeasured. */
+.cf-effect { color: var(--text); }
 /* The zeros are the valuable half -- they say which ceilings are POINTLESS to
    raise -- so they are dimmed rather than hidden, and never coloured as a
    result. A green "no change" reads as a success. */
@@ -7054,7 +7895,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    so h2 takes --t-lead. It is a deliberate stretch of that token's purpose and
    it is written down here rather than left for somebody to find: if a third
    heading level ever needs its own step, this is the rule that says why. */
-.art-md { max-width: 78ch; font-size: var(--t-body); line-height: var(--lh-body); }
+/* CAPPED LIKE THE TEXT VIEWER, AND IT SCROLLS INSIDE ITSELF (AG-22). The plain
+   text and code viewers stop at 60vh; the markdown one had no cap, so a README
+   rendered about 4,558px tall inline and pushed the rest of the drawer --
+   every panel below the artifact list -- out of reach. Same cap as
+   `.art-text`, so every kind of artifact occupies the same slot. */
+.art-md { max-width: 78ch; max-height: 60vh; overflow: auto; font-size: var(--t-body); line-height: var(--lh-body); }
 .art-md p { margin: 0 0 var(--ctl-s3); }
 .art-md .art-h { margin: var(--ctl-s5) 0 var(--ctl-s2); line-height: var(--lh-title); }
 .art-md .art-h[data-level="1"] { font-size: var(--t-title); }
@@ -7462,6 +8308,20 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    it, which is what makes six of them read as one list of sections. */
 .cap-families > .ctl-card > .ctl-card-head { padding-left: 0; padding-right: 0; }
 .cap-families > .ctl-card > .ctl-card-body { padding-left: 0; padding-right: 0; }
+/* SIX TABLES, ONE SET OF COLUMNS (CP-18). The six family tables share a schema
+   and each sized its own columns to its own content (`table-layout: auto`), so
+   "In use" ended anywhere from x≈688 to x≈889 down the page and every column
+   zigzagged -- six tables that read as six unrelated tables. Fixed layout
+   takes the widths from the head row alone, and the head row is the same in
+   all six, so every column starts at the same x in every family: the pool
+   name a quarter, each figure an eighth, and the rest split between "Set by"
+   and the status. Cells may wrap now, because a fixed column no longer grows
+   to fit, and a nowrap cell would paint into its neighbour instead. */
+.cap-families .ctl-table > table { table-layout: fixed; }
+.cap-families .ctl-table > table > thead th:first-child { width: 25%; }
+.cap-families .ctl-table > table > thead th.is-num { width: 12.5%; }
+.cap-families .ctl-table th,
+.cap-families .ctl-table td { white-space: normal; overflow-wrap: anywhere; }
 
 /* The configured hard limit, beside the effective one. Chrome, not a second
    figure: it is the same quantity measured before a cap was applied. */
@@ -7936,9 +8796,13 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 /* The connector is a BACKGROUND, not a border: it is a mark of flow between
    two panels, and §13.3 gives the border budget to the panel itself. */
-.wfb-stage + .wfb-stage { position: relative; margin-top: 24px; }
+/* `--ctl-s5`, not 24px (TS-21): the nearest step, and a break between two
+   stages is the one large break this form has. The connector is centred in
+   whatever the gap is -- `top` is minus half of (gap + its own 14px) -- so it
+   moves with the margin: 24px put it at -19, 28px puts it at -21. */
+.wfb-stage + .wfb-stage { position: relative; margin-top: var(--ctl-s5); }
 .wfb-stage + .wfb-stage::before {
-  content: ''; position: absolute; left: 24px; top: -19px;
+  content: ''; position: absolute; left: 24px; top: -21px;
   width: 2px; height: 14px; border-radius: 2px;
   background: var(--line-soft);
 }
@@ -7976,7 +8840,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    key still arrives, as `.sbf-note` under the field, at the moment it is
    actually needed — after it has been added. The task screen has the width and
    keeps the note on the offer itself. */
-.wfb-step .sbf-offer { max-width: none; padding: 3px var(--ctl-s2); }
+/* `--surface`, NOT THE STEP'S OWN `--surface-2` (TS-7). An offer is a filled
+   chip and a step card is a filled card, and both were `--surface-2`: the
+   offers were drawn at zero contrast against the card they sit in, which made
+   them invisible -- and they are the only way to give a browser step its url.
+   One step UP from the card, as the task screen's offers are one step up from
+   its panel, and the hover steps toward ink from there. */
+.wfb-step .sbf-offer { max-width: none; padding: 3px var(--ctl-s2); background: var(--surface); }
+.wfb-step .sbf-offer:not(:disabled):hover { background: color-mix(in srgb, var(--surface) 88%, var(--text)); }
 .wfb-step .sbf-offer-note { display: none; }
 .wfb-step .sbf-offer > .mono, .wfb-step .sbf-offer > span:first-child { font-size: var(--t-micro); }
 .wfb-step .sbf-add { gap: var(--ctl-s1); }
@@ -7998,12 +8869,21 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* The dependency refinement, behind the answer it already has. The summary
    line states what this step waits for; opening it is for changing that. */
+/* A DISCLOSURE THAT LOOKS LIKE ONE (TS-24). This is the only way to narrow a
+   step's dependencies or stage a file into it, and it had no marker, no hover
+   and no focus cue: the browser's own triangle was removed below and nothing
+   replaced it, so it read as a caption. It gets what `.ov-more` has -- a
+   ▸/▾ that is a SHAPE and turns on open, ink on hover, and a focus ring. */
 .wfb-more > summary {
   cursor: pointer; list-style: none;
   font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
 }
+.wfb-more > summary:hover { color: var(--text); }
+.wfb-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .wfb-more > summary::-webkit-details-marker { display: none; }
 .wfb-more > summary::marker { content: ''; }
+.wfb-more > summary::before { content: '\25B8  '; }
+.wfb-more[open] > summary::before { content: '\25BE  '; }
 .wfb-dep { color: var(--text); }
 .wfb-deps { display: grid; gap: var(--ctl-s1); margin-top: var(--ctl-s2); }
 .wfb-deps .check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-body); color: var(--text-dim); }
@@ -8077,7 +8957,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    OPT-IN, via `.is-stacked`. Three screens this lane does not own also render
    `table.pools`, and a stacked row with no `data-label` would be a column of
    unlabelled values -- strictly worse than a sideways scroll. So the layout
-   turns on only where the labels exist. */
+   turns on only where the labels exist.
+
+   AND SINCE CH-13 (2026-09-25) ONLY FOR A RECORD. The owner's one rule for
+   tables below 900px keeps this construction for records of four columns or
+   fewer -- an inspector fact -- and gives a data table `.is-scroll` instead:
+   it scrolls with its first column held (the block after the inspector's
+   mirror of this one, and design-system.md §7.3). Stacking Pools made it
+   5,924px tall at 390. */
 @media (max-width: 899px) {
   /* Nothing scrolls sideways any more, so the scroller that hid the columns
      is not merely unused: it is removed, or it would clip the stacked rows. */
@@ -8189,19 +9076,25 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     );
     background-size: 3px 100%;
   }
-  /* A FIELD IS A KEY AND A VALUE ON ONE LINE, with every key ENDING at the
+  /* A FIELD IS A KEY AND A VALUE ON ONE LINE, with every key STARTING at the
      same x down the whole record -- the property a table had and a wrapped
-     list of pairs does not. The key column is right-aligned (it inherits the
-     `<th>`'s alignment through the grid) so the keys' right edge and the
-     values' left edge are both straight, which is the ledger shape and is why
-     `13ch` is a width rather than `max-content`.
+     list of pairs does not. The key column is `13ch` wide rather than
+     `max-content` so the values' left edge is one straight line as well.
 
-     `.ctl-table .is-num`'s right alignment SURVIVES this block, on
-     specificity, and that is the wanted outcome rather than an accident worth
-     correcting: the figures then line up on their own right edge with the
-     tabular-nums they are already set in, so `4210` and `9` are comparable
-     down a record the way they were comparable down a column. Text cells stay
-     left, beside their key. */
+     THE KEYS ARE LEFT-ALIGNED, EVERY ONE (CH-11). This comment used to promise
+     "every key ENDING at the same x", and the sheet did not deliver it: the
+     key is the cell's `::before`, it inherits the cell's `text-align`, and
+     `.ctl-table .is-num` (0,2,0) and `table.pools .n` out-rank this block's
+     `text-align: left` -- so numeric cells right-aligned their keys and text
+     cells left-aligned theirs, and one record's keys ended at two different
+     x positions. The key now states its own alignment. LEFT rather than right
+     because "Ceiling (units)" is longer than 13ch: right-aligned, an
+     overlong key is cut on the side a reader starts from.
+
+     `.ctl-table .is-num`'s right alignment of the VALUE still survives, on
+     specificity, and that is wanted: the figures line up on their own right
+     edge with the tabular-nums they are set in, so `4210` and `9` are
+     comparable down a record the way they were down a column. */
   .is-stacked > table > tbody > tr > td {
     display: grid;
     grid-template-columns: minmax(0, 13ch) minmax(0, 1fr);
@@ -8215,6 +9108,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     content: attr(data-label);
     font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
     color: var(--text-faint);
+    text-align: left;
   }
   /* EVERY PART OF THE VALUE STAYS IN THE VALUE COLUMN. A cell is often two or
      three elements -- Accounts' window cell is `—` plus `not measured`, its
@@ -8226,13 +9120,43 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     grid-column: 2;
   }
   /* A grid item fills its column by default, which for a mark or a chip means
-     a 190px dashed box around two words. They are the only children here that
-     draw an edge, so they are the only ones that have to be told to be as wide
-     as they are -- a figure must keep `stretch`, or `.is-num`'s right
-     alignment has nothing to align against. */
+     a 190px dashed box around two words. The children that draw an edge or a
+     fill are the ones that have to be told to be as wide as they are -- a
+     figure must keep `stretch`, or `.is-num`'s right alignment has nothing to
+     align against.
+     `.tag` AND `.scope` JOIN THE LIST (CH-12). They draw an edge and a fill
+     respectively, and stacked they stretched into 200px boxes around one word
+     -- `none registered`, `this tenant` -- on Tenants and Profile headroom.
+     `.scope`'s 10px of left margin is for sitting beside a heading; in a value
+     column it only pushes the pill off the column's edge. */
   .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
-  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip {
+  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip,
+  .is-stacked > table > tbody > tr > td[data-label] > .tag,
+  .is-stacked > table > tbody > tr > td[data-label] > .scope {
     justify-self: start;
+  }
+  .is-stacked > table > tbody > tr > td[data-label] > .scope { margin-left: 0; }
+  /* AN IDENTITY BREAKS RATHER THAN RUNS OFF THE CARD (CH-12). A service
+     account or a principal is one unbroken token -- `swarm-u-bogdan@saga-
+     agents-staging.iam.gserviceaccount.com` -- and in a 200px value column it
+     ran past the card's edge with the `.com` cut off. It has no spaces to
+     break at, so it breaks anywhere; a cut identity is a different identity.
+     A LOCATION IS THE EXCEPTION, AND IT ELLIPSIZES (CH-13). An attempt's
+     gs:// uri broke over nine lines at 390 -- a record taller than the screen
+     for a value nobody reads, only copies. It holds one line now and ends in
+     an ellipsis; the whole value is in its `title` and in the copy action the
+     markup puts beside every one (`copy gsutil`), which is the AH-11
+     precedent: cut on screen, whole on hover and in the copy. */
+  .is-stacked > table > tbody > tr > td.mono[data-label],
+  .is-stacked > table > tbody > tr > td[data-label] > .mono {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .is-stacked > table > tbody > tr > td[data-label] > .uri {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* A cell with no column of its own -- Accounts' expanded detail spans all
      five -- is a block, not a field, and must not grow an empty key column. */
@@ -8244,6 +9168,273 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      read as the start of the data rather than as a cropped row. */
   .is-stacked > table > tbody > tr:first-child {
     padding-top: var(--ctl-pad-chrome);
+  }
+}
+
+/* THE SAME STACKED LAYOUT, INSIDE THE INSPECTOR (AG-26).
+   The block above is a VIEWPORT query, and the inspector is a 480px column at
+   1440 -- so its checkpoint and artifact tables stayed tables and pushed
+   `copy gsutil` off the panel. `.ctl-drawer` is a size container
+   (`ctl-inspector`), and this block is the block above verbatim, asked of the
+   drawer's width instead of the window's. The threshold is the same number, so
+   one rule decides both: a table stacks when the box it is in is phone-narrow.
+   The inspector is never wider than 720px (INSPECTOR.max in panes.ts), so in
+   practice its tables always stack.
+
+   WHY A COPY AND NOT ONE BLOCK. CSS has no way to say "this media condition OR
+   that container condition" around one set of rules, and making the page a
+   container too would change the threshold's meaning (the work column is not
+   the window) and would make the fixed overlay drawer position against it.
+   So the two blocks are held identical by a test instead of by hope:
+   `shell.test.tsx` reads both through the gate's parser and fails if a rule is
+   in one and not the other, or if one rule differs by a declaration. Change
+   the block above and this one together; the comments live only above. */
+@container ctl-inspector (max-width: 899px) {
+  .ctl-table.is-stacked,
+  .table-wrap.is-stacked {
+    overflow-x: visible;
+  }
+  .is-stacked > table,
+  .is-stacked > table > thead,
+  .is-stacked > table > tbody,
+  .is-stacked > table > tbody > tr,
+  .is-stacked > table > tbody > tr > th,
+  .is-stacked > table > tbody > tr > td {
+    display: block;
+    width: auto;
+  }
+  .is-stacked > table > thead {
+    position: relative;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .is-stacked > table > caption {
+    display: block;
+    border-radius: 0 0 var(--radius) var(--radius);
+  }
+  .is-stacked > table > tbody > tr {
+    height: auto;
+    padding: var(--ctl-s3) var(--ctl-pad-chrome);
+  }
+  .is-stacked > table > tbody > tr > th[scope='row'] {
+    padding: 0 0 var(--ctl-s2);
+    font-size: var(--t-lead);
+    line-height: var(--lh-lead);
+    font-weight: 600;
+    white-space: normal;
+  }
+  .is-stacked > table > tbody > tr > th[scope='row'] .ctl-sub,
+  .is-stacked > table > tbody > tr > th[scope='row'] .raw {
+    line-height: var(--lh-micro);
+  }
+  .is-stacked > table > tbody > tr.is-bad > :first-child,
+  .is-stacked > table > tbody > tr.is-warn > :first-child,
+  .is-stacked > table > tbody > tr.is-paused > :first-child {
+    background-image: none;
+  }
+  .is-stacked > table > tbody > tr.is-bad,
+  .is-stacked > table > tbody > tr.is-warn,
+  .is-stacked > table > tbody > tr.is-paused {
+    background-repeat: no-repeat;
+    background-position: left center;
+  }
+  .is-stacked > table > tbody > tr.is-bad {
+    background-image: linear-gradient(var(--bad), var(--bad));
+    background-size: 3px 100%;
+  }
+  .is-stacked > table > tbody > tr.is-warn {
+    background-image: linear-gradient(var(--warn), var(--warn));
+    background-size: 3px 46%;
+  }
+  .is-stacked > table > tbody > tr.is-paused {
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--paused) 0 2px,
+      transparent 2px 4px
+    );
+    background-size: 3px 100%;
+  }
+  .is-stacked > table > tbody > tr > td {
+    display: grid;
+    grid-template-columns: minmax(0, 13ch) minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--ctl-s3);
+    padding: 2px 0;
+    text-align: left;
+    white-space: normal;
+  }
+  .is-stacked > table > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+    color: var(--text-faint);
+    text-align: left;
+  }
+  .is-stacked > table > tbody > tr > td[data-label] > * {
+    grid-column: 2;
+  }
+  .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
+  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip,
+  .is-stacked > table > tbody > tr > td[data-label] > .tag,
+  .is-stacked > table > tbody > tr > td[data-label] > .scope {
+    justify-self: start;
+  }
+  .is-stacked > table > tbody > tr > td[data-label] > .scope { margin-left: 0; }
+  .is-stacked > table > tbody > tr > td.mono[data-label],
+  .is-stacked > table > tbody > tr > td[data-label] > .mono {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .is-stacked > table > tbody > tr > td[data-label] > .uri {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .is-stacked > table > tbody > tr > td:not([data-label]) {
+    display: block;
+    padding: var(--ctl-s2) 0 0;
+  }
+  .is-stacked > table > tbody > tr:first-child {
+    padding-top: var(--ctl-pad-chrome);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   ONE RULE FOR TABLES BELOW 900px (CH-13, design-system.md §7.3)
+   --------------------------------------------------------------------------
+   §B6.3 above stacked EVERY opted-in table into `Label: value` records below
+   900px, while design-system §6.7 and §6.8 said tables scroll or drop columns
+   and neither document named the other. Stacking a data table cost what the
+   table was for -- a comparison down a column -- and a great deal of height:
+   Pools was 5,924px tall at 390 and Profile headroom 9,882px. The owner's rule
+   (2026-09-25), one for the whole app:
+
+     a DATA table -- five or more columns, read across rows (Pools, Profile
+       headroom and their kind) -- is `.is-scroll`: it scrolls sideways and its
+       first column, the row's name, stays in view;
+     a RECORD -- four columns or fewer, an inspector fact -- is `.is-stacked`:
+       §B6.3's stacked record, above;
+     a long value in a record (a gs:// uri) ellipsizes on one line with its
+       whole value in a title and a copy action (the `.uri` rule in §B6.3).
+
+   §B6.3 existed because of F6: columns hidden behind an `overflow-x: auto`
+   that paints no scrollbar here, with nothing to say more existed. A held
+   first column answers the half of F6 that made the hidden columns
+   unreadable -- a value is always beside the name it belongs to -- and the
+   column cut at the edge is what says the row goes on. (The background-
+   attachment scroll shadow that would say it louder is recorded, and why it
+   was reverted, in the note on F6/F7 further down this sheet.)
+
+   THE FILL IS OPAQUE AND IS THE PANEL'S OWN, so the columns scrolling under
+   the held one do not show through it: `--surface` for a cell, `--surface-2`
+   for the head's. A row-tone's left-edge rule is a background IMAGE on that
+   cell (sec 4) and still paints over the fill; the row's wash shows in the
+   cells that scroll, not under the held one.
+
+   The inspector's container query does not restate this: every table the
+   inspector draws is a record. */
+/* THE CELLS ARE NAMED BY TAG, not as a bare `:first-child`: a subject with no
+   type or class could be anything to `test_state_colour_discriminability.py`'s
+   fill scan, which then has to assume this fill could land on a proportion
+   bar -- and a table cell is all it can ever be. */
+/* THE HELD COLUMN HAS A CEILING: under half the viewport, and 20 characters
+   where that is less. Nothing capped it, and `.ctl-table th` is nowrap, so a
+   held cell was as wide as its longest line -- on API reads a task read's
+   concrete URL, ~53 characters and ~400px of mono in a 356px scrollport. A
+   sticky cell wider than the scrollport covers it at every offset: the other
+   columns scrolled underneath and were never visible at all. So the cell has a
+   WIDTH, not only a max-width (a max-width on a table cell is ignored by more
+   than one engine, and a wrapping cell with no width is squeezed to one
+   character when the table overflows), and it wraps -- at spaces, and at any
+   character for an id with none. A raw-id line under the name that is a
+   locator rather than a name ellipsizes instead (API reads, below).
+
+   A CELL THAT SPANS THE ROW IS NOT THE HELD COLUMN (`:not([colspan])`): an
+   expanded account's detail is one cell across all five columns, and held it
+   covered the scrollport at every offset (Accounts, below). */
+@media (max-width: 899px) {
+  .is-scroll > table > thead > tr > th:first-child,
+  .is-scroll > table > tbody > tr > th:first-child,
+  .is-scroll > table > tbody > tr > td:first-child:not([colspan]) {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background-color: var(--surface);
+    width: min(45vw, 20ch);
+    max-width: min(45vw, 20ch);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* The corner cell is sticky both ways: the head's own `top: 0` and this
+     `left: 0`. It paints over both the held column and the head row. */
+  .is-scroll > table > thead > tr > th:first-child {
+    z-index: 2;
+    background-color: var(--surface-2);
+  }
+
+  /* API READS: THE CONCRETE URL UNDER A ROUTE IS CUT, NOT WRAPPED. It is the
+     locator for one call (CH-18's `lastUrl`), up to 110 characters for a
+     checkpoint file, and wrapped in a 20ch column it would be six lines per
+     row. One line, the whole of it in its `title`. `width: 0` with
+     `min-width: 100%` is what stops a nowrap line widening the column it sits
+     in: it contributes nothing to the column's size and then fills it. */
+  .is-scroll .ctl-ref-path > .ctl-sub {
+    width: 0;
+    min-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* POOLS AND PROFILE HEADROOM SCROLL (CP-18 is a wide-screen rule). CP-18
+     gives both `table-layout: fixed` at `width: 100%`, percentage widths on the
+     head row, and cells that wrap anywhere, so that six family tables -- and
+     every profile's headroom table -- share their column positions. That is
+     right where the tables fit. Below 900px it sized each table to the phone:
+     a fixed-layout table at 100% never overflows, so there was nothing to
+     scroll and the held column held nothing, while "In use (units)" wrapped to
+     three lines in a 25px column and figures broke mid-number. Here each table
+     is sized by its content, its cells do not wrap, and it scrolls. The
+     columns no longer line up from one table to the next below 900px; each
+     table scrolls on its own, so there is no shared x to keep. */
+  .cap-families .ctl-table.is-scroll > table,
+  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools {
+    table-layout: auto;
+    width: max-content;
+    min-width: 100%;
+  }
+  .cap-families .ctl-table.is-scroll > table > * > tr > :not(:first-child),
+  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools > * > tr > :not(:first-child) {
+    width: auto;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  /* CP-18's quarter and third for the name column out-rank the held column's
+     ceiling, so it is restated for these two. */
+  .cap-families .ctl-table.is-scroll > table > thead > tr > th:first-child,
+  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools > thead > tr > th:first-child {
+    width: min(45vw, 20ch);
+  }
+
+  /* AN EXPANDED ACCOUNT STAYS IN VIEW. Its detail -- a grid of prose and the
+     lend, state, refresh and delete controls -- is one cell spanning the
+     account table, which is 909px of columns in a 358px phone, so under
+     `is-scroll` it was laid out 909px wide: the sentences ran off the right
+     edge and the controls on the right were off screen until the reader
+     panned the whole table. The detail is held at the scrollport's left edge
+     and made one scrollport wide -- the viewport less the page's two gutters
+     and the wrapper's two 1px borders -- so it reads in place at every scroll
+     offset. `white-space: normal` because `table.pools td` is nowrap and a
+     cell's descendants inherit it. */
+  .is-scroll tr.acct-detail-row > td > .acct-detail {
+    position: sticky;
+    left: 0;
+    width: calc(100vw - 2 * var(--app-pad) - 2px);
+    white-space: normal;
   }
 }
 
@@ -8308,6 +9499,27 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    breaks an identifier across a line -- the one thing §B17 says must not
    happen to a string a reader may need to paste. */
 .adm-operands { --fact-key: 20ch; }
+/* THE CEILINGS ARE A COLUMN OF FIGURES, SO THEY ALIGN LIKE ONE (AH-19). The
+   value was whatever width its digits happened to be, left-aligned after the
+   key, so a `5` sat under the `2` of `25` and the smallest ceiling on the card
+   -- the whole point of the card -- could not be found by running an eye down
+   the right edge. Each fact is a two-track grid here: the key at its own
+   `--fact-key` width, and the figure right-aligned in a fixed 7ch track
+   (100000, the editor's own ceiling, is six digits; the seventh is room for
+   the bold of the binding row), in tabular figures. (0,4,0), because the
+   primitive's `.ctl-facts.is-rows > .ctl-fact` is (0,3,0) and lays it out as a
+   flex row. */
+.ctl-facts.is-rows.adm-operands > .ctl-fact {
+  display: grid;
+  grid-template-columns: auto 7ch;
+  justify-content: start;
+  justify-items: end;
+  font-variant-numeric: tabular-nums;
+}
+.ctl-facts.is-rows.adm-operands > .ctl-fact > b {
+  justify-self: start;
+  width: var(--fact-key, 9ch);
+}
 /* The value takes the rest of the line and wraps inside it. `min-width: 0` is
    what lets a long image name wrap instead of forcing the row wider than the
    card, which is how `demo-runtime-viewport` used to widen a 340px track. */
@@ -8564,14 +9776,33 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   color: var(--text-faint);
   white-space: nowrap;
 }
-/* The last label hangs LEFT of its line, so an axis ending at 100% does not
-   push its final label past the card's edge. */
-.wf-tl-tick:last-child:not(:first-child) {
+/* THE LAST LABEL HANGS LEFT OF ITS LINE ONLY IN THE LAST QUARTER OF THE TRACK
+   (WF-12), so an axis ending near 100% does not push its final label past the
+   card's edge. It hung on `:last-child` wherever the last tick sat, so a last
+   line at 70% printed its label back over the tick before it. `axisOf` marks
+   `end` at 75% or more; a last tick further left keeps its label to the right
+   of its line like every other. Positions stay percentages: nothing here is
+   measured. */
+.wf-tl-tick.is-end {
   transform: translateX(-100%);
   padding-left: 0;
   padding-right: var(--ctl-s1);
   border-left: 0;
   border-right: 1px solid var(--line);
+}
+/* ON A PHONE THE AXIS PRINTS EVERY OTHER LABEL, counting back from the last
+   (WF-12). At 390 the track beside the step names is about 215px, so six
+   labels sit about 43px apart, and a seven-character one (`+1h 30m`) is ~59px:
+   they printed over each other,
+   `+1520m`, `+10m+15m`. §7.2: a phone chart is drawn for the phone, not
+   scaled. Only the LABEL is hidden -- every tick keeps its rule line -- and
+   `0` and the last label always print. Every printed label but `0` is two
+   intervals from the next; with an even tick count `0` and the tick after it
+   both print one interval apart, which is safe because `0` is one character.
+   The one case this does not clear: exactly five steps, to the millisecond,
+   is six ticks, and two seven-character labels at 60% and 100% can touch. */
+@media (max-width: 560px) {
+  .wf-tl-tick:nth-last-child(even):not(:first-child) > .wf-tl-tick-label { visibility: hidden; }
 }
 .wf-tl-track {
   position: relative;
@@ -8589,15 +9820,41 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   box-sizing: border-box;
   border-radius: var(--track-radius);
 }
-/* TIME WAITED IS AN OUTLINE, in every state: waiting is not a verdict on the
-   step, and a filled bar would read as work. */
+/* ONLY A FAILURE OR LIVE WORK IS COLOURED (WF-11, the #122 hue ruling;
+   design-system.md §6.4). A hue on a bar is a verdict, and on this view two
+   bars have one: a run that FAILED, and a run in flight.
+
+   TIME WAITED IS A FAINT OUTLINE, in every state: waiting is not a verdict on
+   the step, and a filled bar would read as work. It was `--warn-ink` -- the
+   caution hue on every wait on the screen, the one thing this comment already
+   said it was not. */
 .wf-tl-span.is-waited,
-.wf-tl-span.is-waiting { border: 1px solid var(--warn-ink); }
-/* TIME RUN IS FILLED, and a finished run takes the tone the node's accent
-   takes -- the one place on this view the outcome is coloured. */
-.wf-tl-span.is-ran { background: var(--text-faint); }
-.wf-tl-span.is-ran.is-ok { background: var(--ok); }
+.wf-tl-span.is-waiting { border: 1px solid var(--text-faint); }
+/* TIME RUN IS FILLED, and a finished run is one grey whether it succeeded or
+   was cancelled: finishing is not a verdict either. `.is-ok { --ok }` is gone.
+   The row's state dot still says every state; cancelled is CH-22's grey flat
+   bar. */
+.wf-tl-span.is-ran { background: var(--text-dim); }
+/* A FAILED RUN keeps its `--bad` fill and gains TS-4's failed mark
+   (redesign-v2 §5.5 Tier 1, "solid fill + a 2px left rule"), in the shape §6.7
+   gives bad: a full-height rule, a post at the run's start standing 8px above
+   and below the bar. It has to stand past the bar -- a `--bad` rule on a `--bad`
+   fill is invisible, and a `--text` one is 1.26:1 on `--bad` in light. Against
+   `--surface` the post is 5.3:1 dark and 12.5:1 light, so in greyscale a failed
+   run keeps an outline a grey run does not (where `--bad` on `--text-dim` is
+   only 1.26:1 dark). The 8px is the span's `--ctl-s2` inset, written as a
+   literal because spaceprobe cannot resolve a negated calc (see the AG-31
+   note). TS-4 reuses this shape when it lands. */
 .wf-tl-span.is-ran.is-bad { background: var(--bad); }
+.wf-tl-span.is-ran.is-bad::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -8px;
+  bottom: -8px;
+  width: 2px;
+  background: var(--bad);
+}
 /* IN FLIGHT, SO IT MOVES (viz #2: "in-flight bars dashed and animating"). A
    light band sweeping along the bar, on `ctl-sweep` -- the keyframes the
    pending surface already runs on -- and NOT on `pulse`: that name was
@@ -8670,6 +9927,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   border-bottom: 1px dashed currentColor;
 }
 .wf-cell.is-none { color: var(--text-faint); }
+/* WHERE A FIGURE CAME FROM, when it is the step's result's rather than its
+   attempts' (WF-5): `from result`, beside the figure, on the node, in the
+   table and in the inspector alike. A qualifier in the figure's own slot
+   (design-system.md §8.4): provenance type -- faint, micro, mono -- and no
+   hue, because a source is not a verdict and the figure is still a figure. */
+.wf-src { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); font-style: normal; }
 .wf-cell-state { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
 .wf-table .node-reading { display: inline-block; vertical-align: middle; }
 .wf-table .wf-pick { min-height: 0; padding: 0 var(--ctl-s1); }
@@ -9152,9 +10415,12 @@ a.ov-tile {
   text-decoration: none;
   color: inherit;
 }
+/* The same underline cue as every link: `--line`, the boundary token at 3:1
+   or better, never thinner than a pixel (CH-23). */
 a.ov-tile:hover .ctl-metric-value {
   text-decoration: underline;
-  text-decoration-color: var(--line-soft);
+  text-decoration-color: var(--line);
+  text-decoration-thickness: 1px;
   text-underline-offset: 4px;
 }
 a.ov-tile:hover .ctl-metric-label { color: var(--text-dim); }
@@ -9203,8 +10469,10 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    sec 11.3 named .ov-link as one of the five screen-private link treatments
    that .ctl-link exists for them to collapse into. This is that collapse: the
    three call sites now carry "ctl-link ov-link", the primitive paints it (ink
-   plus a --line-soft underline, accent on hover and focus), and what is left
-   here is the LAYOUT ONLY.
+   plus a --line underline at 1px, accent on hover and focus), and what is left
+   here is the LAYOUT ONLY. The underline was --line-soft, which measured under
+   the 3:1 boundary floor, so these row links read as plain text at rest; it is
+   --line now (CH-23, sec 9b).
 
    The colour, the text-decoration, the transparent bottom border and the focus
    rule all had to go rather than be overridden to match: this block comes
@@ -9431,10 +10699,22 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    by" column on a phone and keeps the name and the figure; an unscoped
    override here would out-specify that and put four columns back into 358px.
    It is the primitive's decision to make, not this screen's. */
+/* `display: grid` IS DECLARED, OR NONE OF THIS APPLIES (OV-3). The primitive
+   became a wrapping FLEX line in §B6.2, and this override kept its track list
+   and never said `grid` -- so at every width above 900 the template was inert,
+   "claude-code · 15 can start" wrapped as the flex line does, and the last
+   column was the primitive's 128px basis, which cut the account age to
+   "4m a…". The drawer's variant (`.drawer .ctl-util`) had the same defect and
+   `shell.test.tsx` now asserts, for every rule that gives a `.ctl-util` a grid
+   template, that the same rule makes it a grid.
+   The last track is at least 19ch: "five-hour · 2m ago" and its kin are up to
+   19 characters, and this track list is read in the row's own face, which is
+   wider than the provenance's mono, so 19 of it holds 19 of those. */
 @media (min-width: 900px) {
   .ov-dialrow-rows .ctl-util,
   .ov-group .ctl-card-body > .ctl-util {
-    grid-template-columns: minmax(14ch, 1fr) minmax(40px, 88px) max-content minmax(0, 96px);
+    display: grid;
+    grid-template-columns: minmax(14ch, 1fr) minmax(40px, 88px) max-content minmax(19ch, max-content);
     gap: var(--ctl-s2);
     padding: 4px 0;
   }
@@ -9522,3 +10802,73 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
 .ov-warn { color: var(--warn); }
 .ov-bad { color: var(--bad); }
 .ov-checks:empty { display: none; }
+
+/* ==========================================================================
+   44px TOUCH TARGETS AT PHONE WIDTH (CH-8, design-system.md §7.2)
+   ==========================================================================
+   §7.2 says every control is at least 44px to a thumb at 390pt. The
+   2026-09-25 QA pass measured a dozen that were not: the rail's tabs (~31px)
+   and its utility buttons (~25px), the `?` glyphs (20px), Overview's refresh
+   and its "open ->" links, Pool limits' ceiling field and save button (29px),
+   Timeline's window select (28px), the submit forms' "remove" (~17px) and
+   their send button (34px), and the workflow form's offer chips.
+
+   AT THE FOOT OF THE SHEET, AND THAT IS LOAD-BEARING. A media query adds
+   nothing to specificity, so a phone rule loses to any equally specific base
+   rule that comes after it -- which is exactly how `.ctl-seg > button {
+   min-height: 44px }` shipped and never applied: it sat ~2,000 lines above the
+   primitive's own 26px. Everything below comes after every rule it overrides.
+
+   THE TYPE DOES NOT GROW. Two mechanisms, chosen by the control's shape:
+     a box that can be taller      `min-height: 44px`, content centred
+     a word or a disc that cannot  a hit area: an empty `::after`, centred on
+                                   the control and at least 44x44, which takes
+                                   the pointer and draws nothing
+   `a.ov-tile` already clears 44px and is not listed. The rail's items take
+   height rather than a hit area because the strip clips vertically (it is a
+   horizontal scroller), and a hit area outside a clip cannot be hit. The
+   section links are in the phone block beside their own padding, where the
+   gate wants a selector's phone rule to be. */
+@media (max-width: 560px) {
+  .ctl-seg > button { min-height: 44px; }
+
+  .ctl-rail-tabs button,
+  .ctl-nav-util button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .limit-edit input,
+  .limit-edit button,
+  .wb-controls select,
+  .sbf-go {
+    min-height: 44px;
+  }
+
+  /* An offer chip is a box that can grow; its key stays at the chip's own
+     step and centres in the taller chip. */
+  .wfb-step .sbf-offer {
+    min-height: 44px;
+    align-content: center;
+  }
+
+  .ctl-q-glyph,
+  .ov-refresh,
+  .ov-link,
+  .sbf-mini {
+    position: relative;
+  }
+  .ctl-q-glyph::after,
+  .ov-refresh::after,
+  .ov-link::after,
+  .sbf-mini::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}

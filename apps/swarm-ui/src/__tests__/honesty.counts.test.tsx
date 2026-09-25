@@ -10,18 +10,41 @@
 // "no total over a partial response" trivially, so the complete case must show
 // the total or the rule is being kept by accident.
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { Stats } from '../types'
+import type { Me, Stats } from '../types'
 import { NEVER_WRITTEN, REAL_STATES } from '../types'
 import { expectNoFigures } from './setup'
 
 const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
-vi.mock('../api', () => ({ loadStats }))
+// THE SESSION READ, the one the header's admin badge is drawn from. Platform
+// counts reads it too, so the cost it shows before the first run is the cost
+// THIS caller's first run will have (AH-9).
+const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
+vi.mock('../api', () => ({ loadStats, loadMe }))
 
 const { PlatformCountsScreen } = await import('../PlatformCounts')
+
+function session(isAdmin: boolean): Result<Me> {
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tenant: { tenant_id: 'eng' },
+      principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: isAdmin },
+      environment: 'dev',
+      environment_declared: false,
+    } as unknown as Me,
+  }
+}
+
+// Every test below that does not care who is asking is asked by a non-admin,
+// which is the cost the screen drew for everyone before AH-9.
+beforeEach(() => {
+  loadMe.mockResolvedValue(session(false))
+})
 
 const COMPLETE: Record<string, number> = {
   READY: 2, PARKED: 1, LEASED: 0, DISPATCHED: 0, STARTING: 1,
@@ -322,6 +345,55 @@ describe('the states that can never be written', () => {
       expect(foot.textContent, `${state} is excluded and unnamed`).toContain(state)
     }
     // And the `?` that holds the reason is present and shut.
-    expect(foot.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(foot.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
+  })
+})
+
+/**
+ * AH-9 (#86). `per run · 12 count()` was shown to an admin whose first press
+ * costs 24, because the screen learned who was asking only from the RESULT of
+ * a run: `admin` stayed null, and null priced the run as a tenant's. The
+ * figure that exists to say what the button costs was wrong on exactly the
+ * press it was there for.
+ *
+ * The expected figures are DERIVED from the contract sets, as the screen's
+ * are, so a new state moves both sides together.
+ */
+describe('the cost shown before the first run', () => {
+  const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
+
+  function perRun(): string {
+    const fact = [...document.querySelectorAll('.ctl-toolbar .ctl-fact')].find((f) =>
+      (f.textContent ?? '').startsWith('per run'),
+    )
+    if (!fact) throw new Error('no "per run" fact in the toolbar')
+    return fact.textContent ?? ''
+  }
+
+  it('is an admin’s cost for an admin, known from the session before any run', async () => {
+    loadMe.mockResolvedValue(session(true))
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(perRun()).toContain(`${PER_SCOPE * 2} count()`))
+    expect(loadStats, 'the figure came from a run, not from the session').not.toHaveBeenCalled()
+  })
+
+  it('is a tenant’s cost for a non-admin', async () => {
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(loadMe).toHaveBeenCalled())
+    await waitFor(() => expect(perRun()).toContain(`${PER_SCOPE} count()`))
+    expect(perRun()).not.toContain(String(PER_SCOPE * 2))
+  })
+
+  it('does not price the run as a tenant’s when nobody could say who is asking', async () => {
+    loadMe.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'upstream_degraded', httpStatus: 503, code: null, message: 'no session' },
+    })
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(loadMe).toHaveBeenCalled())
+    // Both answers are possible, so both are on screen -- a single figure here
+    // would be a guess about the caller wearing the clothes of a price.
+    await waitFor(() => expect(perRun()).toContain(String(PER_SCOPE * 2)))
+    expect(perRun()).toContain(String(PER_SCOPE))
   })
 })

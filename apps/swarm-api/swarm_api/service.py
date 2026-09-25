@@ -37,6 +37,11 @@ from swarm_common.states import ParkReason, TaskState, assert_transition
 from .auth import AuthContext
 from .codec import quota_to_api
 from .errors import Forbidden, ValidationFailed
+from .expected_outputs import (
+    expected_outputs_by_step,
+    record_expected_outputs,
+    reject_caller_expected_outputs,
+)
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
@@ -194,6 +199,7 @@ class SubmissionService:
         # service adds is two short strings, plus -- on an integrator only -- one
         # task id per upstream step, so `max_workflow_steps` is its ceiling.
         reject_reserved_metadata(spec.metadata)
+        reject_caller_expected_outputs(spec.metadata)
         validate_input_size(spec.metadata, 16 * 1024, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
@@ -318,6 +324,11 @@ class SubmissionService:
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
                 integrator_step_id = resolve_integrator_step(step_specs)
+            # The WORKFLOW's own metadata is copied onto every step's task, so
+            # `_build_task` would refuse a caller's `expected_outputs` there
+            # too -- but mid-loop, outside this try, uncounted. Refused here,
+            # before a single task is built (#149).
+            reject_caller_expected_outputs(spec.metadata)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -401,6 +412,13 @@ class SubmissionService:
             on_step_failure=spec.on_step_failure,
             priority=spec.priority,
         )
+        # Each UPSTREAM step's task records the files its dependants stage from
+        # it, so the worker can tell that agent to write them where they are
+        # uploaded (#149). Set before the store call: it is part of the write
+        # that creates the task document, never a second update.
+        expected = expected_outputs_by_step((s.step_id, s.input_from) for s in spec.steps)
+        for task in tasks:
+            record_expected_outputs(task.metadata, expected.get(task.step_id or ""))
         self._store.create_workflow(workflow, tasks)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
@@ -537,6 +555,17 @@ class SubmissionService:
                 "resource_class": profile.resource_class,
                 "backend": backend,
                 "provider": profile.provider,
+                # WHETHER IT MAY BE DISPATCHED AT ALL, read off the frozen
+                # catalogue exactly as /v1/runtimes serves it. Without these
+                # two keys every client check of `available` on this route was
+                # dead code, and a disabled profile (codex) was drawn with
+                # headroom on Pools and Profile headroom and offered on Submit
+                # (visual QA 2026-09-25, CP-3). The admission block below is
+                # still served for a disabled profile: it is a true statement
+                # about the pools, and the screens decide not to draw it as an
+                # offer.
+                "available": profile.available,
+                "disabled_reason": profile.disabled_reason,
                 "units": units,
                 "pools": required,
                 # What this profile's RUNNER refuses to start without, so a

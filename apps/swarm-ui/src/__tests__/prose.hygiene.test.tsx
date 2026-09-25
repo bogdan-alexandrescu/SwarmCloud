@@ -155,7 +155,9 @@ const CASES: ReadonlyArray<{ name: string; state: TaskState; events: TaskEvent[]
   { name: 'silent', state: 'RUNNING', events: eventAgo(540), say: /reconciler/i },
   { name: 'unknown (read failed)', state: 'RUNNING', events: null, say: /could not be read/i },
   { name: 'unknown (no timestamp)', state: 'RUNNING', events: [{ ...eventAgo(0)[0]!, at: 'not a date' }], say: /timestamp/i },
-  { name: 'finished', state: 'SUCCEEDED', events: eventAgo(60), say: /finished/i },
+  // `finished` LEFT THIS LIST (AG-18): a finished task draws no badge at all,
+  // which the block below asserts. Its case here asserted a `done at <clock>`
+  // badge whose every word repeated the state chip beside it.
   { name: 'not started', state: 'READY', events: [], say: /dispatched/i },
 ]
 
@@ -174,6 +176,50 @@ describe('the liveness badge is a word and a figure, not a sentence', () => {
       expect(badge!.getAttribute('aria-label') ?? '').toMatch(c.say)
     })
   }
+})
+
+// AG-18. THE BADGE SPEAKS THE CHIP'S VOCABULARY, AND SAYS NOTHING WHEN THERE
+// IS NOTHING TO SAY.
+//
+// It drew a private dot and painted its WORD in the verdict hue -- `live` green,
+// `silent` red -- beside a state chip whose mark is `.ctl-dot`-shaped and whose
+// word is at full ink. And on a finished task it printed `done at 8:46:38 PM`,
+// a clock time with no date repeating what the chip already said.
+describe('the liveness badge draws the console’s own dot, and nothing for a finished task', () => {
+  const TONES: ReadonlyArray<{ name: string; events: TaskEvent[] | null; tone: string }> = [
+    { name: 'live', events: eventAgo(12), tone: 'is-ok' },
+    { name: 'quiet', events: eventAgo(240), tone: 'is-warn' },
+    { name: 'silent', events: eventAgo(540), tone: 'is-bad' },
+    // "We could not look" is the unknown ring, never the caution triangle
+    // that says the worker has gone quiet.
+    { name: 'unknown (read failed)', events: null, tone: 'is-unknown' },
+  ]
+
+  for (const c of TONES) {
+    it(`${c.name}: one .ctl-dot in the ${c.tone} tone, and the word carries no hue of its own`, () => {
+      // BREAK IT: go back to `<i aria-hidden />` inside `liveness ${kind}`.
+      const { container } = render(<LivenessBadge task={task('RUNNING')} events={c.events} now={NOW} />)
+      const badge = container.querySelector('.liveness')!
+      const dots = badge.querySelectorAll('.ctl-dot')
+      expect(dots.length, 'the badge draws a mark outside the .ctl-dot vocabulary').toBe(1)
+      expect(dots[0]!.classList.contains(c.tone), `${c.name} is not drawn ${c.tone}`).toBe(true)
+      // THE WORD IS NOT COLOURED BY THE BADGE. The sheet's word colours hang
+      // off `.liveness.<kind>`; a badge that no longer carries its kind as a
+      // class cannot be reached by them, whatever the sheet still says.
+      for (const kind of ['live', 'quiet', 'silent', 'finished', 'not-started']) {
+        expect(badge.classList.contains(kind), `the badge still carries the colouring class ${kind}`).toBe(false)
+      }
+    })
+  }
+
+  it('draws nothing at all for a finished task', () => {
+    // BREAK IT: let `LivenessBadge` render the `finished` answer again.
+    for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
+      const { container } = render(<LivenessBadge task={task(state)} events={eventAgo(60)} now={NOW} />)
+      expect(container.querySelector('.liveness'), `a ${state} task still draws a liveness badge`).toBeNull()
+      expect(container.textContent ?? '', `a ${state} task prints a clock time`).not.toMatch(/\d:\d\d/)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

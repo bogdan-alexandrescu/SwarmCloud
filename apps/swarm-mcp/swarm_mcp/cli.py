@@ -12,6 +12,9 @@ Exit codes are meant to be read by a script:
     0  the thing asked for happened
     1  it did not
     2  it happened, with conflicts a human has to resolve
+
+Anywhere a command takes task ids -- `status`, `tail`, `follow` -- a workflow
+id (wf_...) stands for every step of that workflow.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import os
 import sys
 import textwrap
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +43,13 @@ from .client import (
 )
 from .follow import (
     DEFAULT_LOG_BUDGET,
+    STREAMS,
     event_type,
     follow,
     follow_command,
+    no_log_line,
     render,
+    settled,
     terminal_command,
 )
 from .patches import (
@@ -52,7 +59,16 @@ from .patches import (
     explain_absence,
     explain_failure,
     integrate,
+    object_size,
     patch_uri,
+)
+from .render import (
+    clock,
+    describe_blockers,
+    parse_time,
+    principal_of,
+    task_label,
+    tenant_of,
 )
 
 EXIT_OK = 0
@@ -61,23 +77,147 @@ EXIT_CONFLICT = 2
 
 
 def _artifact_bucket() -> str:
+    """The bucket the live logs are in, or a SwarmError that says how to name it.
+
+    RESOLVED THE WAY `doctor` RESOLVES THE PROJECT: SWARM_ARTIFACT_BUCKET, else
+    the bucket named for the project -- PROJECT_ID, or gcloud's configured
+    project, through `client.project_id`. It read PROJECT_ID alone, and the
+    error it raised when that was unset was swallowed by `tail` as "not
+    published yet", so a machine with no project configured tailed events and
+    never a log line, with no warning (#88, SC-F12).
+    """
     bucket = os.environ.get("SWARM_ARTIFACT_BUCKET", "").strip()
     if bucket:
         return bucket
-    project = os.environ.get("PROJECT_ID", "").strip()
-    if not project:
-        raise SwarmError("set SWARM_ARTIFACT_BUCKET or PROJECT_ID to locate the logs")
+    try:
+        project = project_id()
+    except SwarmError as exc:
+        raise SwarmError(
+            "cannot locate the logs: set SWARM_ARTIFACT_BUCKET, or a project -- "
+            "PROJECT_ID or `gcloud config set project` -- whose "
+            f"swarm-artifacts-<project> bucket holds them ({exc})"
+        ) from exc
     return f"swarm-artifacts-{project}"
 
 
-def _live_log_uri(task: dict[str, Any], attempt_id: str, stream: str) -> str:
+def _logs_prefix(task: dict[str, Any], attempt_id: str, bucket: str | None) -> str:
     # `task_id_of`, not `task["task_id"]`: the API names the field `id`, so
     # the subscript raised KeyError -- which is not a SwarmError and so escaped
     # every handler in this file as a traceback, mid-tail.
     return (
-        f"gs://{_artifact_bucket()}/tenants/{task['tenant_id']}"
-        f"/tasks/{task_id_of(task)}/attempts/{attempt_id}/logs/live/{stream}.tail.log"
+        f"gs://{bucket or _artifact_bucket()}/tenants/{task['tenant_id']}"
+        f"/tasks/{task_id_of(task)}/attempts/{attempt_id}/logs"
     )
+
+
+def _live_log_uri(
+    task: dict[str, Any], attempt_id: str, stream: str, *, bucket: str | None = None
+) -> str:
+    """The window `lifecycle._publish_live_logs` republishes while the agent runs."""
+    return f"{_logs_prefix(task, attempt_id, bucket)}/live/{stream}.tail.log"
+
+
+def _completed_log_uri(
+    task: dict[str, Any], attempt_id: str, stream: str, *, bucket: str | None = None
+) -> str:
+    """The whole stream, which `lifecycle._upload_outputs` writes at exit."""
+    return f"{_logs_prefix(task, attempt_id, bucket)}/{stream}.log"
+
+
+def _finished_quietly(
+    client: SwarmClient,
+    task: dict[str, Any],
+    attempt: str,
+    bucket: str,
+    *,
+    live_found: bool,
+    live_unreadable: bool,
+) -> str:
+    """The one line for a finished task whose live log showed nothing -- what
+    was OBSERVED, and nothing more.
+
+    NO LIVE LOG IS NOT MISSING OUTPUT. `lifecycle._publish_live_logs` publishes
+    first one `LIVE_LOG_INTERVAL_SECONDS` (5 by default) after the agent
+    starts, never at exit, and never for a stream with no bytes. Three kinds of
+    run leave no live log: an agent that printed nothing, a run that fit inside
+    the first interval, and an agent that printed only after its last flush.
+    `tail` printed "its output is MISSING, not empty" for all three. The
+    completed log (`logs/<stream>.log`, written by `_upload_outputs` at exit)
+    tells the empty run from the other two. Its SIZE is read from the
+    object's metadata, because it can be 32 MB and one number is the answer.
+
+    Its contents are NOT printed here. `swarm follow` reads the completed log
+    through the API, which redacts at read time. That is the path for output
+    this tail never saw, and the line names it.
+
+    EVERY LINE NAMES THE ATTEMPT IT DESCRIBES. What is read here is one
+    attempt's objects, under its own `attempts/<id>/logs` prefix, and a task
+    can have several. Only the no-object line named one, so the rest read as
+    a verdict on the whole task -- and `tail` used to pass in the first
+    attempt it saw, which after a quota park or a retry is not the one the
+    task finished on. `tail` now passes the newest, read on the poll that saw
+    the terminal state.
+    """
+    task_id = task_id_of(task)
+    if live_unreadable:
+        # The warning above has the status. A read that failed says nothing
+        # about the output, so this line does not either.
+        return (
+            f"whether attempt {attempt} printed anything is unknown -- its logs could "
+            "not be read"
+        )
+    if live_found:
+        return f"attempt {attempt} printed nothing -- its live log is empty"
+    held: dict[str, int] = {}
+    for stream in STREAMS:
+        try:
+            held[stream] = object_size(
+                client, _completed_log_uri(task, attempt, stream, bucket=bucket)
+            )
+        except SwarmError as exc:
+            if exc.status == 404:
+                continue
+            return (
+                f"whether attempt {attempt} printed anything is unknown -- its completed "
+                f"log could not be read: {exc}"
+            )
+    if not held:
+        return no_log_line(task_id, attempt)
+    if not any(held.values()):
+        return (
+            f"attempt {attempt} printed nothing -- its completed log is empty, and an "
+            "empty stream gets no live log"
+        )
+    sizes = " and ".join(f"{count} bytes of {stream}" for stream, count in held.items() if count)
+    return (
+        f"attempt {attempt} has no live log, but its completed log holds {sizes} -- the "
+        "worker publishes the live log every 5 s by default, not at exit, so output "
+        f"written after its last flush never reaches one. Read it with: "
+        f"{terminal_command(f'swarm follow {task_id}')}"
+    )
+
+
+def _expand(client: SwarmClient, given: list[str]) -> list[str]:
+    """Task ids, with each workflow id (`wf_...`) replaced by its steps' tasks.
+
+    `status`, `tail` and `follow` took only task ids, and a workflow id -- the
+    one id `swarm workflow` prints first -- answered a bare 404 from
+    `/v1/tasks/wf_...` (#88, SC-F17). A workflow is the thing most worth
+    following live, so its id now means "every step of it". Duplicates are
+    dropped, in the order given.
+    """
+    out: list[str] = []
+    for item in given:
+        if str(item).startswith("wf_"):
+            envelope = workflows.fetch(client, str(item))
+            steps = envelope["workflow"].get("steps") or []
+            found = [str(step["task_id"]) for step in steps if step.get("task_id")]
+            if not found:
+                raise SwarmError(f"{item} has no step with a task id to read")
+            out += [task_id for task_id in found if task_id not in out]
+        elif item not in out:
+            out.append(item)
+    return out
 
 
 def _latest_attempt(
@@ -155,9 +295,10 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
 
 
 def cmd_status(client: SwarmClient, args) -> int:
-    for task_id in args.task_ids:
+    for task_id in _expand(client, list(args.task_ids)):
         task = client.task(task_id)
-        print(f"{task_id}  {task.get('state')}  {task.get('runner_profile', '')}")
+        step = f"  step {task['step_id']}" if task.get("step_id") else ""
+        print(f"{task_id}  {task.get('state')}  {task.get('runner_profile', '')}{step}")
     return EXIT_OK
 
 
@@ -171,28 +312,65 @@ def cmd_tail(client: SwarmClient, args) -> int:
     non-adjacent pieces of output together would print a transcript that never
     happened, which is worse than admitting the gap.
     """
-    tasks = list(args.task_ids)
+    tasks = _expand(client, list(args.task_ids))
     seen_events: dict[str, set[str]] = {t: set() for t in tasks}
     shown_to: dict[tuple[str, str], int] = {}
+    # Per task: the newest attempt, looked up again on EVERY poll (see below).
+    # `shown_to`, `found_log` and `unreadable` all describe this attempt, and
+    # are cleared when it changes.
     attempts: dict[str, str] = {}
+    labels: dict[str, str] = {t: task_label(t) for t in tasks}
     # Said ONCE per task, not once per poll: at three seconds an interval, a
-    # repeated line would bury the agent's own output within a minute.
-    warned: set[str] = set()
+    # repeated line would bury the agent's own output within a minute. Keyed
+    # by (task, what), so one warning cannot silence a different one.
+    warned: set[tuple[str, str]] = set()
+    # Per task: whether any live log object was FOUND. Beside `shown_to`, it is
+    # what tells an agent that printed nothing from a log nobody published.
+    found_log: set[str] = set()
+    # Per task, as of its LATEST poll: a read that failed. A failed read says
+    # nothing about the output, so the finished line must not either -- and a
+    # read that failed once and then worked is not held against the task.
+    unreadable: set[str] = set()
+    # Per task, as of its LATEST poll: the attempts read failed. With no
+    # attempt stored, whether the task started is unknown. With one stored,
+    # whether a later attempt ran is unknown.
+    attempts_failed: set[str] = set()
+    # The bucket, resolved once per tail and only once an attempt exists --
+    # `[value]` or `[error]` -- because resolving it may ask gcloud.
+    bucket: list[Any] = []
     done: set[str] = set()
     failed = False
 
+    def warn_once(task_id: str, what: str, text: str) -> None:
+        if (task_id, what) not in warned:
+            warned.add((task_id, what))
+            _emit(labels[task_id], text)
+
+    def resolve_bucket() -> str | None:
+        if not bucket:
+            try:
+                bucket.append(_artifact_bucket())
+            except SwarmError as exc:
+                bucket.append(exc)
+        return bucket[0] if isinstance(bucket[0], str) else None
+
     while len(done) < len(tasks):
+        polled: dict[str, dict[str, Any]] = {}
+        fresh: list[tuple[datetime | None, str, dict[str, Any], str]] = []
         for task_id in tasks:
             if task_id in done:
                 continue
-            short = task_id[-8:]
             try:
                 task = client.task(task_id)
             except SwarmError as exc:
-                _emit(short, f"! {exc}")
+                _emit(labels[task_id], f"! {exc}")
                 done.add(task_id)
                 failed = True
                 continue
+            # `[b 4674b39f]` for a workflow step: the step id is the name the
+            # reader wrote in their spec (#88, SC-F15).
+            labels[task_id] = task_label(task_id, task.get("step_id"))
+            polled[task_id] = task
 
             for event in client.events(task_id, limit=50):
                 key = str(event.get("event_id") or f"{event.get('at')}{event.get('type')}")
@@ -204,25 +382,90 @@ def cmd_tail(client: SwarmClient, args) -> int:
                 kind = event_type(event) or "?"
                 if kind == "heartbeat" and not args.verbose:
                     continue
-                _emit(short, f"· {kind}")
+                fresh.append((parse_time(event.get("at")), task_id, event, kind))
 
+        # ONE ORDER ACROSS TASKS, the platform's. Printed task by task, the
+        # events of one poll came out in the order of the argument list, so a
+        # dependent step's cancel printed above the upstream failure that
+        # caused it (#88, SC-F9). Sorted by `at`, stably, and each carries its
+        # time so an order across polls can be read off the screen too.
+        fresh.sort(key=lambda item: (item[0] is None, item[0] or _EPOCH))
+        for _, task_id, event, kind in fresh:
+            _emit(labels[task_id], f"{clock(event.get('at'))} · {kind}")
+
+        for task_id, task in polled.items():
+            label = labels[task_id]
+            # EVERY POLL, NOT ONCE. A task moves to a new attempt when a quota
+            # park ends one and the resume starts the next (invariant 4), and
+            # on a retry after a crash or a reclaim. A slow interval can see
+            # RUNNING on both sides of the move, so no state says when to look.
+            # Each attempt publishes under its own prefix. `tail` looked once
+            # and kept the first id, so it polled the old attempt's objects
+            # while the new one published, and its finished line explained the
+            # task from the wrong attempt's logs. The task was read ABOVE,
+            # before this, so on the poll that reads a terminal state this is
+            # the attempt the task finished on.
+            stored = attempts.get(task_id)
+            latest, why = _latest_attempt(client, task_id)
+            attempts_failed.discard(task_id)
+            if why is not None:
+                # Not fatal -- the state polling above still works, so the
+                # tail can still report the outcome. But silence here is
+                # indistinguishable from an agent that has printed nothing,
+                # which is the reading an operator would take.
+                attempts_failed.add(task_id)
+                if stored:
+                    # The stored attempt is still read below. What is lost is
+                    # knowing whether it is still the newest.
+                    warn_once(
+                        task_id,
+                        f"latest:{stored}",
+                        f"! cannot tell whether {stored} is still the latest attempt: {why}",
+                    )
+                else:
+                    warn_once(task_id, "attempts", f"! logs unavailable: {why}")
+            elif latest and stored and latest != stored:
+                # Said, as `follow._logs` says it, rather than left to be read
+                # off output that starts again from nothing. Every position
+                # held was measured against the old attempt's objects, and the
+                # new attempt's streams start at zero.
+                _emit(
+                    label,
+                    f"attempt {latest} is now the latest one, not {stored}: what follows "
+                    f"is {latest}'s output, not a continuation of {stored}'s",
+                )
+                for stream in STREAMS:
+                    shown_to.pop((task_id, stream), None)
+                found_log.discard(task_id)
+                unreadable.discard(task_id)
+            if latest:
+                attempts[task_id] = latest
             attempt = attempts.get(task_id)
-            if attempt is None:
-                attempt, why = _latest_attempt(client, task_id)
-                if why is not None and task_id not in warned:
-                    # Not fatal -- the state polling above still works, so the
-                    # tail can still report the outcome. But silence here is
-                    # indistinguishable from an agent that has printed nothing,
-                    # which is the reading an operator would take.
-                    warned.add(task_id)
-                    _emit(short, f"! logs unavailable: {why}")
-            if attempt:
-                attempts[task_id] = attempt
-                for stream in ("stdout", "stderr"):
+            where = resolve_bucket() if attempt else None
+            if attempt and where is None:
+                # A CONFIGURATION error, said. It was raised inside the read
+                # below and swallowed there as "not published yet".
+                warn_once(task_id, "bucket", f"! logs unavailable: {bucket[0]}")
+            if attempt and where:
+                unreadable.discard(task_id)
+                for stream in STREAMS:
                     try:
-                        blob = download(client, _live_log_uri(task, attempt, stream))
-                    except SwarmError:
-                        continue  # not published yet, or nothing written
+                        blob = download(client, _live_log_uri(task, attempt, stream, bucket=where))
+                    except SwarmError as exc:
+                        if exc.status == 404:
+                            # Not published yet -- or never: the worker skips
+                            # an empty stream and does not flush at exit. The
+                            # finished line below reads the completed log to
+                            # tell those apart.
+                            continue
+                        # Anything else -- a 403 on the tenant's prefix, a
+                        # timeout -- is a read that FAILED, and an agent that
+                        # printed nothing looks exactly like it unless it is
+                        # said. Once per attempt: the URI in it names one.
+                        warn_once(task_id, f"read:{attempt}", f"! logs unreadable: {exc}")
+                        unreadable.add(task_id)
+                        continue
+                    found_log.add(task_id)
                     header, _, body = blob.decode("utf-8", errors="replace").partition("\n")
                     offset = 0
                     if header.startswith("#swarm-tail "):
@@ -234,16 +477,53 @@ def cmd_tail(client: SwarmClient, args) -> int:
                     key = (task_id, stream)
                     already = shown_to.get(key, 0)
                     if offset > already and already > 0:
-                        _emit(short, f"… {offset - already} bytes of {stream} were missed")
+                        _emit(label, f"… {offset - already} bytes of {stream} were missed")
                         already = offset
-                    fresh = body[max(0, already - offset):]
-                    if fresh.strip():
-                        _emit(short, fresh.rstrip("\n"))
+                    new_text = body[max(0, already - offset):]
+                    if new_text.strip():
+                        _emit(label, new_text.rstrip("\n"))
                     shown_to[key] = offset + len(body)
 
             state = task.get("state")
+            printed = any(shown_to.get((task_id, stream), 0) > 0 for stream in STREAMS)
+            quiet = not printed and not attempt and task_id not in attempts_failed
+            if quiet and state not in TERMINAL:
+                # ONE line, not one a poll, and not nothing: nothing is what an
+                # agent that printed nothing ALSO looks like (#88, SC-F19).
+                warn_once(task_id, "quiet", "no output yet -- no attempt has started")
             if state in TERMINAL:
                 done.add(task_id)
+                if not printed:
+                    if not attempt and task_id in attempts_failed:
+                        # "No attempt" is an ANSWER from the attempts route;
+                        # a failed read of it is not, and was warned above.
+                        _emit(
+                            label,
+                            "whether it started is unknown -- its attempts could not be read",
+                        )
+                    elif not attempt:
+                        _emit(label, "never started, so it printed nothing")
+                    elif task_id in attempts_failed:
+                        # The attempt read is known. Whether the task finished
+                        # on it is not, so a cause taken from its logs could
+                        # be the stale-attempt explanation all over again.
+                        _emit(
+                            label,
+                            f"nothing was shown from attempt {attempt}, and whether a later "
+                            "attempt ran is unknown -- its attempts could not be read",
+                        )
+                    elif where:
+                        _emit(
+                            label,
+                            _finished_quietly(
+                                client,
+                                task,
+                                attempt,
+                                where,
+                                live_found=task_id in found_log,
+                                live_unreadable=task_id in unreadable,
+                            ),
+                        )
                 git = ((task.get("result_summary") or {}).get("git")) or {}
                 summary = ""
                 if git.get("commit_count"):
@@ -256,12 +536,18 @@ def cmd_tail(client: SwarmClient, args) -> int:
                 pr = git.get("pull_request")
                 if pr:
                     summary += f" · PR #{pr.get('number')}"
-                _emit(short, f"{'OK' if state == 'SUCCEEDED' else state}{summary}")
+                _emit(label, f"{'OK' if state == 'SUCCEEDED' else state}{summary}")
                 if state != "SUCCEEDED":
                     failed = True
         if len(done) < len(tasks):
             time.sleep(args.interval)
     return EXIT_FAIL if failed else EXIT_OK
+
+
+#: A stand-in that keeps `tail`'s sort key comparable for an event whose `at`
+#: could not be read. Such events already sort LAST on the key's first element;
+#: this only stops the second from comparing None with a datetime.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def cmd_follow(client: SwarmClient, args) -> int:
@@ -279,31 +565,44 @@ def cmd_follow(client: SwarmClient, args) -> int:
     It deliberately does NOT re-derive anything. `follow` builds the report and
     `render` turns it into lines; a second answer to "what is new" living here
     is how a CLI and a tool start disagreeing.
+
+    A FINISHED TASK IS PRINTED AS FINISHED ONCE, AND THEN LEFT ALONE. Every
+    poll used to re-read every task and reprint every finished one's terminal
+    line -- 111 lines for five steps, one of them 20 times (#88, SC-F8). A task
+    leaves the poll once `follow.settled` says nothing of it is still owed, and
+    `render`'s memo keeps the lines that describe a task rather than something
+    new about it to one each.
     """
-    cursor: dict[str, Any] | None = None
-    report: dict[str, Any] = {"tasks": []}
-    while True:
+    pending = _expand(client, list(args.task_ids))
+    cursor: dict[str, Any] = {}
+    memo: dict[str, set[str]] = {}
+    last: dict[str, dict[str, Any]] = {}
+    while pending:
         report = follow(
             client,
-            list(args.task_ids),
+            pending,
             cursor=cursor,
             max_log_bytes=args.max_log_bytes,
             include_heartbeats=args.verbose,
         )
-        cursor = report["cursor"]
-        for line in render(report):
+        cursor.update(report["cursor"])
+        for line in render(report, memo=memo):
             print(line, flush=True)
-        if args.once or report["all_finished"]:
+        for task in report["tasks"]:
+            last[task["task_id"]] = task
+        pending = [task["task_id"] for task in report["tasks"] if not settled(task)]
+        if args.once or not pending:
             break
         time.sleep(args.interval)
 
     # A task that could not be READ is a failure even though it never reached a
     # terminal state -- reporting exit 0 for it would tell a script the run was
-    # fine because nothing said otherwise.
+    # fine because nothing said otherwise. `last` holds each task's final
+    # report, including the ones that left the poll early.
     failed = any(
         task["read"] == "failed"
         or (task["terminal"] and task["state"] != "SUCCEEDED")
-        for task in report["tasks"]
+        for task in last.values()
     )
     return EXIT_FAIL if failed else EXIT_OK
 
@@ -343,6 +642,44 @@ def _print_failure(client: SwarmClient, task: dict[str, Any]) -> None:
         )
 
 
+def _upstream_steps(client: SwarmClient, task: dict[str, Any]) -> list[str]:
+    """The upstream steps a cascade-cancelled step was cancelled FOR.
+
+    The scheduler cancels a step whose dependency failed with `last_error` "an
+    upstream workflow step did not succeed" and a `cancelled` event whose
+    detail names the parents as `failed_parents` -- task ids. `swarm result`
+    printed neither, so a step cancelled because of another one read as a step
+    that simply stopped (#88, SC-F10). The newest events are asked for first
+    (`order=desc`, which the route serves); each parent is read once, for its
+    step id and state.
+    """
+    task_id = task_id_of(task)
+    try:
+        data = client.request("GET", f"/v1/tasks/{task_id}/events?limit=50&order=desc")
+    except SwarmError as exc:
+        return [f"could not be read: {exc}"]
+    events = data.get("events") if isinstance(data, dict) else None
+    parents: list[str] = []
+    for event in events or []:
+        detail = event.get("detail")
+        if (
+            event_type(event) == "cancelled"
+            and isinstance(detail, dict)
+            and detail.get("failed_parents")
+        ):
+            parents = [str(parent) for parent in detail["failed_parents"]]
+            break
+    out: list[str] = []
+    for parent in parents:
+        try:
+            upstream = client.task(parent)
+        except SwarmError as exc:
+            out.append(f"{parent}  (could not be read: {exc})")
+            continue
+        out.append(f"{upstream.get('step_id') or '?'}  {upstream.get('state')}  {parent}")
+    return out
+
+
 def cmd_result(client: SwarmClient, args) -> int:
     task = client.task(args.task_id)
     if args.json:
@@ -350,7 +687,17 @@ def cmd_result(client: SwarmClient, args) -> int:
         return EXIT_OK
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
-    print(f"{args.task_id}  {task.get('state')}")
+    state = task.get("state")
+    print(f"{args.task_id}  {state}")
+    if task.get("step_id"):
+        print(f"  step    {task['step_id']} of {task.get('workflow_id') or '?'}")
+    # WHY IT ENDED, as `sc task` prints it. `swarm result` never said why a
+    # step was cancelled, although the task document carries it (#88, SC-F10).
+    if task.get("last_error"):
+        print(f"  why     {task['last_error']}")
+    if state == "CANCELLED" and task.get("workflow_id"):
+        for line in _upstream_steps(client, task):
+            print(f"  upstream {line}")
     _print_failure(client, task)
     if not git:
         print(f"  code: {explain_absence(task)}")
@@ -395,11 +742,64 @@ def cmd_integrate(client: SwarmClient, args) -> int:
     return EXIT_CONFLICT if result.conflicts else EXIT_OK
 
 
+#: How often `swarm cancel --wait` re-reads a task it is waiting on.
+_CANCEL_POLL_SECONDS = 2.0
+
+
+def _wait_until_stopped(client: SwarmClient, task_id: str, seconds: float) -> str | None:
+    """Poll one task until it is terminal or `seconds` pass. Returns its last state."""
+    deadline = time.monotonic() + seconds
+    while True:
+        state = client.task(task_id).get("state")
+        remaining = deadline - time.monotonic()
+        if state in TERMINAL or remaining <= 0:
+            return state
+        time.sleep(min(_CANCEL_POLL_SECONDS, remaining))
+
+
 def cmd_cancel(client: SwarmClient, args) -> int:
+    """Cancel, and say which of the two things the API did.
+
+    A TASK HOLDING CAPACITY IS NOT CANCELLED BY THIS CALL. The route cancels an
+    idle task outright, but only FLAGS one that is LEASED, DISPATCHED,
+    STARTING or RUNNING: its worker or the reconciler releases the lease and
+    writes CANCELLED later, because freeing the slot from here would free one a
+    live container still occupies (invariant 1). This printed "<id> cancelled"
+    for both -- on 2026-09-25 (#88, SC-F1) for a task that `swarm status`
+    showed RUNNING in the same second. The route answers with the task as its
+    own write left it, so the state in that answer is the discriminator (it is
+    exactly what the route derives `released_immediately` from).
+
+    `--wait SECONDS` polls each flagged task until it has stopped, and exits 1
+    if one has not by then: the cancel is then requested, not done.
+    """
+    wait = float(getattr(args, "wait", 0) or 0)
+    code = EXIT_OK
     for task_id in args.task_ids:
-        client.cancel(task_id)
-        print(f"{task_id} cancelled")
-    return EXIT_OK
+        task = client.cancel(task_id)
+        state = task.get("state")
+        if state == "CANCELLED":
+            print(f"{task_id} cancelled", flush=True)
+            continue
+        print(
+            f"{task_id} cancel requested; stops when the worker releases it "
+            f"(still {state or 'in a state the API did not report'})",
+            flush=True,
+        )
+        if wait <= 0:
+            continue
+        final = _wait_until_stopped(client, task_id, wait)
+        if final == "CANCELLED":
+            print(f"{task_id} cancelled", flush=True)
+        elif final in TERMINAL:
+            print(f"{task_id} finished {final} before the cancel took effect", flush=True)
+        else:
+            print(
+                f"{task_id} still {final} after {wait:g}s; the cancel is requested, not done",
+                flush=True,
+            )
+            code = EXIT_FAIL
+    return code
 
 
 # -- workflows -------------------------------------------------------------
@@ -476,36 +876,115 @@ def cmd_workflow_status(client: SwarmClient, args) -> int:
         return EXIT_FAIL if report.get("state") is None else EXIT_OK
 
     state = report.get("state") or "NO STATE"
-    print(f"{report['workflow_id']}  {state}  (stored: {report.get('stored_state')})")
+    steps = report["steps"]
+    # FINISHED means every step has stopped. Read from the steps, which are
+    # live, rather than from the derived state alone, which may be absent.
+    finished = bool(steps) and all(row.get("state") in TERMINAL for row in steps)
+    header = f"{report['workflow_id']}  {state}  (stored: {report.get('stored_state')})"
+    if report.get("cancel_requested") and not finished:
+        # The workflow's own flag. Its state does not carry it -- a cancel only
+        # flags a step that holds capacity -- so without this a cancelled
+        # workflow read as plainly RUNNING (#88, SC-F2).
+        header += "  cancel requested"
+    print(header)
     if report.get("state_unavailable_because"):
         print(f"  ! {report['state_unavailable_because']}")
     if report.get("state_incomplete_because"):
         print(f"  ! {report['state_incomplete_because']}")
-    for row in report["steps"]:
-        print(f"  {row['step_id']}  {row.get('state') or '—'}  {row.get('task_id') or '—'}")
-        for key in ("state_unavailable_because", "park_reason", "blocked_by", "error"):
+    # Each distinct no-patch sentence is printed ONCE, under the steps, and
+    # each step points at it. It used to be printed in full under every step
+    # that had no patch -- one paragraph five times for a five-step workflow
+    # (#88, SC-F16).
+    reasons: list[str] = []
+    for row in steps:
+        line = f"  {row['step_id']}  {row.get('state') or '—'}  {row.get('task_id') or '—'}"
+        if row.get("cancel_requested") and row.get("state") not in TERMINAL:
+            line += "  cancel requested; stops when the worker releases it"
+        print(line)
+        for key in ("state_unavailable_because", "park_reason"):
             if row.get(key):
                 print(f"      {key}: {row[key]}")
+        # As `sc agents` words it -- `provider concurrency limit
+        # (provider:anthropic)` -- and not as a Python repr of the stored dicts.
+        blockers = describe_blockers(row.get("blocked_by"))
+        if blockers:
+            print(f"      blocked by: {'; '.join(blockers)}")
+        if row.get("error"):
+            print(f"      error: {row['error']}")
         produced = row.get("produced") or {}
         if produced:
-            print(
-                f"      commits {produced.get('commits')}  "
-                f"patch {produced.get('patch') or produced.get('no_patch_because')}"
+            patch = produced.get("patch")
+            if not patch:
+                reason = str(produced.get("no_patch_because") or "no reason recorded")
+                if reason not in reasons:
+                    reasons.append(reason)
+                patch = f"none [{reasons.index(reason) + 1}]"
+            print(f"      commits {produced.get('commits')}  patch {patch}")
+    for number, reason in enumerate(reasons, 1):
+        print(
+            textwrap.fill(
+                reason,
+                width=78,
+                initial_indent=f"  [{number}] ",
+                subsequent_indent=" " * (len(str(number)) + 5),
+                break_on_hyphens=False,
+                break_long_words=False,
             )
-    if report.get("follow_live_with"):
+        )
+    # NOT for a workflow that has finished: a tail of steps that have all
+    # stopped prints their ends and exits, which is not following anything.
+    if report.get("follow_live_with") and not finished:
         print(f"  follow: {report['follow_live_with']}")
     return EXIT_FAIL if report.get("state") is None else EXIT_OK
 
 
 def cmd_workflow_cancel(client: SwarmClient, args) -> int:
+    """Cancel a workflow, and say which steps stopped and which were only asked to.
+
+    The route answers `tasks_cancelled` for every step it asked to cancel. A
+    step holding capacity is only FLAGGED by that ask and stays DISPATCHED or
+    RUNNING until its worker releases it, and this printed "cancelled" for it
+    -- on 2026-09-25 (#88, SC-F2) for a step that stayed DISPATCHED for about
+    seventy seconds more. So the workflow is read ONCE afterwards, and each step
+    is described by the state that read returns.
+    """
     result = workflows.cancel(client, args.workflow_id)
-    print(f"{result.get('workflow_id')} cancel_requested")
-    for task_id in result.get("tasks_cancelled") or []:
-        print(f"  cancelled {task_id}")
+    workflow_id = result.get("workflow_id") or args.workflow_id
+    print(f"{workflow_id} cancel requested")
+
+    states: dict[str, Any] = {}
+    step_of: dict[str, Any] = {}
+    try:
+        envelope = workflows.fetch(client, str(workflow_id))
+    except SwarmError as exc:
+        # Nothing is guessed: every step is described as what is certain.
+        print(f"  ! the steps' states could not be re-read: {exc}")
+    else:
+        for step in envelope["workflow"].get("steps") or []:
+            if step.get("task_id"):
+                step_of[str(step["task_id"])] = step.get("step_id")
+        for task in envelope.get("tasks") or []:
+            if isinstance(task, dict) and task.get("id"):
+                states[str(task["id"])] = task.get("state")
+
+    def name(task_id: str) -> str:
+        step = step_of.get(task_id)
+        return f"{step}  {task_id}" if step else task_id
+
+    for task_id in [str(t) for t in result.get("tasks_cancelled") or []]:
+        state = states.get(task_id)
+        if state == "CANCELLED":
+            print(f"  {name(task_id)}  cancelled")
+        elif state in TERMINAL:
+            print(f"  {name(task_id)}  finished {state} before the cancel took effect")
+        else:
+            now = f"still {state}" if state else "its state was not re-read"
+            print(f"  {name(task_id)}  cancel requested; {now} until the worker releases it")
     # Printed, not swallowed. A step that had already finished is not a failed
     # cancel, and an operator who cannot see the difference re-runs the cancel.
-    for task_id in result.get("tasks_already_terminal") or []:
-        print(f"  already terminal {task_id}")
+    for task_id in [str(t) for t in result.get("tasks_already_terminal") or []]:
+        state = states.get(task_id)
+        print(f"  {name(task_id)}  already finished{f' ({state})' if state else ''}")
     return EXIT_OK
 
 
@@ -663,25 +1142,24 @@ def _doctor_deployment(args) -> Any:
     return deployment
 
 
-def cmd_doctor(_client, args) -> int:
-    """Say which deployment, which tier this machine is on, and what that reaches."""
-    deployment = _doctor_deployment(args)
-    detection = detect(deployment)
-    print(f"tier        {detection.tier.value}")
-    # Wrapped like everything else here: a detail names the context and, on
-    # the user-credentials tier, the route its token takes -- often past 80.
-    print(
-        textwrap.fill(
-            detection.detail,
-            width=78,
-            initial_indent=" " * 12,
-            subsequent_indent=" " * 12,
-            break_on_hyphens=False,
-            break_long_words=False,
-        )
-    )
-    print(f"reaches     {', '.join(REACHES[detection.tier])} deployments")
+def _print_reach(detection: Any, *, reached: bool) -> None:
+    """What this tier reaches: the MEASUREMENT when there is one, else the table.
 
+    THE TABLE IS A PREDICTION, AND IT WAS PRINTED OVER A MEASUREMENT. On
+    2026-09-25 (#88, SC-F3) doctor reached the team deployment on the
+    service-account tier -- `/v1/tenants/me` answered -- and in the same run
+    printed "reaches solo deployments" and the pre-grant paragraph saying that
+    tier is "missing authorisation" at the front door. The read is now done
+    before this is printed, and when it succeeded that is the answer: this
+    deployment was reached, and why another kind of deployment might not be is
+    no longer this command's question. When it failed, the table and its
+    explanations are printed as before, labelled as what they are -- they are
+    exactly what a reader needs to say WHY it failed.
+    """
+    if reached:
+        print("reaches     this deployment -- measured: /v1/tenants/me answered")
+        return
+    print(f"reaches     {', '.join(REACHES[detection.tier])} deployments (by tier; not measured)")
     for profile in ("solo", "team"):
         why = WHY_NOT.get((detection.tier, profile))
         if why:
@@ -703,6 +1181,25 @@ def cmd_doctor(_client, args) -> int:
                 )
             )
 
+
+def cmd_doctor(_client, args) -> int:
+    """Say which deployment, which tier this machine is on, and what that reaches."""
+    deployment = _doctor_deployment(args)
+    detection = detect(deployment)
+    print(f"tier        {detection.tier.value}")
+    # Wrapped like everything else here: a detail names the context and, on
+    # the user-credentials tier, the route its token takes -- often past 80.
+    print(
+        textwrap.fill(
+            detection.detail,
+            width=78,
+            initial_indent=" " * 12,
+            subsequent_indent=" " * 12,
+            break_on_hyphens=False,
+            break_long_words=False,
+        )
+    )
+
     for name, verdict in detection.considered:
         print(f"  checked   {name}: {verdict}")
 
@@ -717,6 +1214,7 @@ def cmd_doctor(_client, args) -> int:
             print(f"service     {service_name()} / {region()}")
         except SwarmError as exc:
             print(f"project     UNKNOWN -- {exc}")
+            _print_reach(detection, reached=False)
             return EXIT_FAIL
 
     # WHICH DOOR, PRINTED BEFORE THE READ, and this is the line whose absence
@@ -785,17 +1283,31 @@ def cmd_doctor(_client, args) -> int:
         with SwarmClient(context=getattr(args, "context", None)) as client:
             endpoint = client.base_url
             me = client.request("GET", "/v1/tenants/me")
-            print(f"api         {endpoint}")
-            print(f"identity    {me.get('email') or '(not reported)'}")
-            print(f"tenant      {me.get('tenant_id')}")
-            groups = me.get("groups") or []
-            print(f"groups      {', '.join(groups) if groups else 'none -- personal tenant'}")
-            print(f"admin       {me.get('is_admin')}")
     except SwarmError as exc:
         print("api         UNREACHABLE")
         for line in str(exc).split(" -- "):
             print(f"            {line.strip()}")
+        _print_reach(detection, reached=False)
         return EXIT_FAIL
+
+    # NESTED, under `tenant` and `principal` (swarm_api/routes/tenants.py). The
+    # flat reads printed `tenant None`, `admin None` and "identity (not
+    # reported)" for a route that had just answered all three (#88, SC-F3).
+    principal = principal_of(me)
+    print(f"api         {endpoint}")
+    print(f"identity    {principal.get('email') or '(not reported)'}")
+    print(f"tenant      {tenant_of(me) or '(not reported)'}")
+    groups = principal.get("groups") or []
+    print(f"groups      {', '.join(groups) if groups else 'none -- personal tenant'}")
+    if principal.get("is_admin_unresolved"):
+        # `is_admin: false` is an assertion; the route says when it is not one.
+        admin = "unknown -- the directory did not answer"
+    elif principal.get("is_admin") is None:
+        admin = "(not reported)"
+    else:
+        admin = str(principal["is_admin"])
+    print(f"admin       {admin}")
+    _print_reach(detection, reached=True)
     return EXIT_OK
 
 
@@ -874,8 +1386,55 @@ def _run_quiet(argv):
 # -- entry point -----------------------------------------------------------
 
 
+#: What a task-id argument accepts, said once for every command that takes one.
+_IDS_HELP = "task ids, or a workflow id (wf_...) for every step of that workflow"
+
+
+def _workflow_epilog() -> str:
+    """`swarm workflow --help`'s example: the smallest spec that is worth writing.
+
+    THE CLI DID NOT SAY WHAT A SPEC LOOKS LIKE (#88, SC-F17). The command takes
+    a JSON file and nothing in `--help` showed one, so a first workflow was
+    written by reading `workflows.py`. The step keys are read from
+    `workflows._STEP_KEYS` -- the list `build_steps` enforces -- so this text
+    cannot offer a key the command then refuses.
+    """
+    optional = ", ".join(sorted(workflows._STEP_KEYS - {"step_id", "prompt"}))
+    keys = textwrap.fill(
+        f"Each step needs step_id and prompt; it may also carry {optional} "
+        f"(runner_profile defaults to {workflows.DEFAULT_PROFILE}). No other "
+        "step key is sent. At the top level, all optional: strategy, carrier, "
+        "repository_url, repository_ref, on_step_failure, priority, label -- "
+        "the flags below override the file's.",
+        width=76,
+    )
+    return (
+        "A minimal spec: two steps, the second reading a file the first wrote.\n"
+        "\n"
+        "  {\n"
+        '    "steps": [\n'
+        '      {"step_id": "research", "runner_profile": "mock",\n'
+        '       "prompt": "Survey the auth code and write notes.md"},\n'
+        '      {"step_id": "draft", "runner_profile": "mock",\n'
+        '       "prompt": "Draft the fix that notes.md describes",\n'
+        '       "depends_on": ["research"],\n'
+        '       "input_from": {"research": "notes.md"}}\n'
+        "    ]\n"
+        "  }\n"
+        "\n"
+        f"{keys}\n"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="swarm", description=__doc__)
+    # RAW, so the exit-code table in the module docstring stays a table. The
+    # default formatter reflowed it into one sentence -- "0 the thing asked for
+    # happened 1 it did not 2 it happened..." (#88, SC-F17).
+    parser = argparse.ArgumentParser(
+        prog="swarm",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--context",
         default=None,
@@ -924,11 +1483,11 @@ def build_parser() -> argparse.ArgumentParser:
     d.set_defaults(func=cmd_dispatch)
 
     s = sub.add_parser("status", help="one line per task")
-    s.add_argument("task_ids", nargs="+")
+    s.add_argument("task_ids", nargs="+", help=_IDS_HELP)
     s.set_defaults(func=cmd_status)
 
     t = sub.add_parser("tail", help="follow logs and events until every task finishes")
-    t.add_argument("task_ids", nargs="+")
+    t.add_argument("task_ids", nargs="+", help=_IDS_HELP)
     t.add_argument("--interval", type=float, default=3.0)
     t.add_argument("--verbose", action="store_true", help="include heartbeat events")
     t.set_defaults(func=cmd_tail)
@@ -936,7 +1495,7 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser(
         "follow", help="what is new since the last look, through the API (what the MCP tool sees)"
     )
-    f.add_argument("task_ids", nargs="+")
+    f.add_argument("task_ids", nargs="+", help=_IDS_HELP)
     f.add_argument("--interval", type=float, default=3.0)
     f.add_argument("--once", action="store_true", help="one poll, then exit")
     f.add_argument("--max-log-bytes", type=int, default=DEFAULT_LOG_BUDGET, dest="max_log_bytes")
@@ -960,17 +1519,45 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--into", default=None)
     i.set_defaults(func=cmd_integrate)
 
-    c = sub.add_parser("cancel", help="cancel running tasks")
+    c = sub.add_parser("cancel", help="cancel tasks (a task holding capacity is flagged, not stopped)")
     c.add_argument("task_ids", nargs="+")
+    c.add_argument(
+        "--wait",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="poll each flagged task until it has stopped, up to SECONDS; "
+        "exit 1 if one has not",
+    )
     c.set_defaults(func=cmd_cancel)
 
-    w = sub.add_parser("workflow", help="submit a DAG of agents from a JSON spec")
+    w = sub.add_parser(
+        "workflow",
+        help="submit a DAG of agents from a JSON spec",
+        description="Submit a DAG of agents, read from a JSON spec file or stdin.",
+        epilog=_workflow_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     w.add_argument("spec", help="path to the workflow JSON, or - to read stdin")
     w.add_argument("--repo", default=os.environ.get("SWARM_REPO") or None)
     w.add_argument("--ref", default=None)
-    w.add_argument("--strategy", default=None)
-    w.add_argument("--carrier", default=None)
-    w.add_argument("--label", default=None)
+    w.add_argument(
+        "--strategy",
+        default=None,
+        choices=workflows.STRATEGIES,
+        help="what happens to the agents' work: collect (the default -- patches "
+        "are kept and nothing is pushed), direct-pr (each step opens its own "
+        "pull request) or integrate (the final step opens one); the last two "
+        "need a repository, from --repo or the spec's repository_url",
+    )
+    w.add_argument(
+        "--carrier",
+        default=None,
+        choices=workflows.CARRIERS,
+        help="where a step's work is kept for the next step: checkpoints (the "
+        "default) or branches (pushed, and they outlive the platform)",
+    )
+    w.add_argument("--label", default=None, help="recorded as metadata.unit")
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=cmd_workflow)
 

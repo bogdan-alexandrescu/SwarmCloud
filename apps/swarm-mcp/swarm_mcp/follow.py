@@ -65,6 +65,7 @@ import json
 from typing import Any
 
 from .client import TERMINAL, SwarmClient, SwarmError
+from .render import clock, task_label
 
 #: Both streams, in the order they are read and reported. Matches
 #: `swarm_api.inspect.STREAMS`; asking for both in one request is not possible
@@ -385,6 +386,10 @@ def _follow_one(
             "read": "ok",
             "state": state,
             "terminal": terminal,
+            # The workflow step this task is, or None. Carried so a reader --
+            # and `render` -- can name the step rather than only an id nobody
+            # wrote down (#88, SC-F15).
+            "step_id": task.get("step_id"),
             "runner_profile": task.get("runner_profile"),
             "park_reason": task.get("park_reason"),
             "last_error": task.get("last_error"),
@@ -1063,34 +1068,142 @@ def _fetch(
 # Rendering, for the terminal
 # --------------------------------------------------------------------------
 
-def render(report: dict[str, Any]) -> list[str]:
+def no_log_line(task_id: str, attempt_id: str | None) -> str:
+    """A finished attempt with NEITHER a completed log nor a live tail, as observed.
+
+    ONE SENTENCE FOR `follow` AND `tail`, because both said the same wrong
+    thing: "its output is MISSING, not empty". That is one reading of two
+    absent objects, and the worker gives ordinary ones. `_upload_outputs`
+    writes the completed log only from a capture file the runner creates
+    (`procman.StreamCapture`), so an attempt that fails during its startup
+    has neither object. A worker stopped before its upload leaves only the
+    live tail. There is no tail for an agent that printed nothing, or that
+    printed only after the worker's last live flush, which is always the
+    case for a short run. The objects alone cannot tell these apart. So the
+    line names what was looked for, and says where the reason the attempt
+    ended is recorded.
+    """
+    where = f" for attempt {attempt_id}" if attempt_id else ""
+    how = f" -- {terminal_command(f'swarm result {task_id}')} says how it ended" if task_id else ""
+    return (
+        f"no log object exists{where}, live or completed: its agent may never have "
+        f"started, or its worker stopped before uploading{how}"
+    )
+
+
+def quiet_line(task: dict[str, Any], cursor: dict[str, Any] | None) -> str | None:
+    """The one line that tells "printed nothing" from "nothing to read yet".
+
+    AN EMPTY LOG AND A MISSING ONE LOOKED THE SAME: both printed nothing at
+    all (#88, SC-F19), so a reader could not tell an agent that ran and said
+    nothing from one whose log was never published, or from one that never
+    ran. The follow report already holds the difference -- a stream read from
+    the completed record and found empty, a log object that is absent, a task
+    with no attempt -- and this names it.
+
+    None whenever output HAS been delivered for this task, or the case cannot
+    be judged from this report (an unreadable stream prints its own line).
+    """
+    logs = task.get("logs") or {}
+    rows = {row.get("stream"): row for row in logs.get("streams") or []}
+    positions = ((cursor or {}).get("streams") or {})
+    if any(int((positions.get(name) or {}).get("pos") or 0) > 0 for name in STREAMS):
+        return None
+    if any(row.get("status") == "ok" and row.get("text") for row in rows.values()):
+        return None
+    status = logs.get("status")
+    if not task.get("terminal"):
+        if status == "no_attempt_yet":
+            return "no output yet -- no attempt has started"
+        if status == "absent":
+            return "no output yet -- the attempt has published no log"
+        return None
+    if status == "no_attempt_yet":
+        return "never started, so it printed nothing"
+    if status == "absent":
+        return no_log_line(str(task.get("task_id") or ""), logs.get("attempt_id"))
+    complete = [bool((positions.get(name) or {}).get("complete")) for name in STREAMS]
+    settled_streams = [
+        complete[i] or (rows.get(name) or {}).get("status") == "absent"
+        for i, name in enumerate(STREAMS)
+    ]
+    if any(complete) and all(settled_streams):
+        return "printed nothing -- its logs exist and are empty"
+    return None
+
+
+def settled(task: dict[str, Any]) -> bool:
+    """Finished, read, and nothing held back: safe to stop polling this task.
+
+    `swarm follow` re-read every task on every poll until ALL of them had
+    finished, and printed each finished task's terminal line every time --
+    111 lines for five steps on 2026-09-25, one of them 20 times (#88, SC-F8).
+    A task is dropped from the poll once it is terminal AND this report
+    withheld nothing of it: a stream skipped for budget, a live window the
+    cursor could not reach, bytes left past `next_offset` or an events page
+    that came back exactly full are all still owed, and stopping there would
+    lose them.
+    """
+    if task.get("read") != "ok" or not task.get("terminal"):
+        return False
+    if (task.get("events") or {}).get("page_was_full"):
+        return False
+    for row in (task.get("logs") or {}).get("streams") or []:
+        if row.get("status") in ("skipped_budget", "behind") or row.get("more_bytes"):
+            return False
+    return True
+
+
+def render(report: dict[str, Any], *, memo: dict[str, set[str]] | None = None) -> list[str]:
     """The same answer as lines, so a human sees exactly what the model sees.
 
     Deliberately not a second implementation of anything: it reads the report
     `follow` already built. A renderer that went back to the client would be a
     second definition of "what is new", which is how a CLI and a tool start
     disagreeing.
+
+    `memo` is what a caller polling in a loop passes back each time, so the
+    lines that describe a task rather than something NEW about it -- its
+    terminal state, and the one "no output yet" / "printed nothing" line --
+    are printed once per task and not once per poll. Without it every call
+    prints them, which is right for a single call.
+
+    Every event line carries its time (`render.clock`), and every line is
+    labelled `[<step> <last 8>]` for a workflow step and `[<last 8>]` otherwise
+    -- one truncation, the same as `tail` and `sc agents` (#88, SC-F15/F19).
     """
+    said = memo if memo is not None else {}
+    cursors = report.get("cursor") or {}
     lines: list[str] = []
     for task in report["tasks"]:
-        short = task["task_id"][-8:]
+        task_id = task["task_id"]
+        label = task_label(task_id, task.get("step_id"))
+        seen = said.setdefault(task_id, set())
         if task["read"] == "failed":
-            lines.append(f"[{short}] ! {task['error']}")
+            lines.append(f"[{label}] ! {task['error']}")
             continue
         for event in task["events"].get("new") or []:
-            lines.append(f"[{short}] · {event['type']}")
+            lines.append(f"[{label}] {clock(event.get('at'))} · {event['type']}")
         if task["events"]["status"] == "unreadable":
-            lines.append(f"[{short}] ! events unreadable: {task['events']['detail']}")
+            lines.append(f"[{label}] ! events unreadable: {task['events']['detail']}")
         for row in task["logs"].get("streams") or []:
             if row["status"] == "ok" and row["text"]:
                 for line in row["text"].splitlines():
-                    lines.append(f"[{short}] {line}")
+                    lines.append(f"[{label}] {line}")
             elif row["status"] in ("unreadable", "behind", "skipped_budget"):
-                lines.append(f"[{short}] ! {row['stream']}: {row['detail']}")
+                lines.append(f"[{label}] ! {row['stream']}: {row['detail']}")
         for note in task["logs"].get("notes") or []:
-            lines.append(f"[{short}] ⟲ {note}")
-        if task["terminal"]:
-            lines.append(f"[{short}] {task['state']}")
+            lines.append(f"[{label}] ⟲ {note}")
+        quiet = quiet_line(task, cursors.get(task_id))
+        if quiet is not None:
+            # One while it runs and one once it has finished, never one a poll.
+            key = "quiet:finished" if task["terminal"] else "quiet:running"
+            if key not in seen:
+                seen.add(key)
+                lines.append(f"[{label}] {quiet}")
+        if task["terminal"] and "terminal" not in seen:
+            seen.add("terminal")
+            lines.append(f"[{label}] {task['state']}")
     for message in report["truncation"]:
         lines.append(f"… {message}")
     return lines
