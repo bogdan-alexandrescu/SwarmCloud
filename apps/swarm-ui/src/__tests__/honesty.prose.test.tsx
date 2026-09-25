@@ -22,9 +22,11 @@
 // in the SOURCE. `vitest.config.ts` sets `css: true`, so a class this asserts
 // on is a class the shipped stylesheet actually carries.
 
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import STYLES from '../styles.css?raw'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
 
+import { cascade } from './cssgate'
 import type { Result } from '../fetch'
 import type { AccountsBoard, RuntimeTopology, SpendRollup } from '../api'
 import type {
@@ -687,9 +689,13 @@ describe('Accounts, with every help card closed', () => {
     for (const cell of unmeasured) {
       expect(textOf(cell.querySelector('.acct-pct'))).toBe('—')
       expect(textOf(cell)).not.toMatch(/\d/)
-      // THE BAR IS THE MARKER. An empty five-cell bar and a measured 0% are
-      // the same picture, so an unmeasured cell draws no bar at all.
-      expect(cell.querySelector('.acct-bar'), 'an unmeasured cell drew a bar').toBeNull()
+      // THE BAR IS THE MARKER. An empty bar and a measured 0% are the same
+      // picture, so an unmeasured cell draws no bar at all.
+      // CP-25 (#85) RE-POINT: the five-cell `.acct-bar` is gone and the cell
+      // draws the shared §6.4 track, so the absence is asked of the track.
+      // The claim did not move: no proportion of any kind is drawn here.
+      expect(cell.querySelector('.ctl-util-track'), 'an unmeasured cell drew a bar').toBeNull()
+      expect(cell.querySelector('.acct-bar'), 'an unmeasured cell drew the old bar').toBeNull()
     }
 
     // ...and its CLEARS cell, which has no window to count down to, is an em
@@ -705,7 +711,13 @@ describe('Accounts, with every help card closed', () => {
     )
     expect(measured.length, 'the measured-zero row drew no window cell').toBeGreaterThan(0)
     expect(textOf(measured[0]!.querySelector('.acct-pct'))).toBe('0%')
-    expect(measured[0]!.querySelector('.acct-bar'), 'a measured cell drew no bar').not.toBeNull()
+    // CP-25 RE-POINT, and the claim got STRONGER. The five-cell bar drew a
+    // measured 0% as five empty cells -- the same picture as a bar that failed
+    // to paint. The shared track draws it with its baseline tick (§8.7.2).
+    const track = measured[0]!.querySelector('.ctl-util-track')
+    expect(track, 'a measured cell drew no bar').not.toBeNull()
+    expect(track!.classList.contains('is-zero'), 'a measured 0% drew no baseline tick').toBe(true)
+    expect(track!.querySelector('.ctl-util-zero')).not.toBeNull()
   })
 
   it('marks the empty pool as a real zero rather than leaving an empty table', async () => {
@@ -751,6 +763,151 @@ describe('Accounts, with every help card closed', () => {
     // ...and the eleven-paragraph legend is gone from the surface.
     expect(document.querySelector('.section.legend')).toBeNull()
     expect(visibleText()).not.toContain('How to run this pool')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Accounts: the owner's decisions on #85, 2026-09-25 (CP-25, CP-26). Each
+// block was pushed before the change it pins.
+// ---------------------------------------------------------------------------
+
+/** A window far enough out that nothing here resets it. */
+const FAR = '2099-01-01T00:00:00Z'
+
+/** The `data-label` cell of one account's row, by the id printed under it. */
+function accountCell(id: string, label: string): HTMLElement {
+  const raw = [...document.querySelectorAll('span.raw')].find((s) => s.textContent === id)
+  expect(raw, `no row for ${id}`).toBeTruthy()
+  const cell = raw!.closest('tr')!.querySelector(`td[data-label="${label}"]`)
+  expect(cell, `${id} has no ${label} cell`).not.toBeNull()
+  return cell as HTMLElement
+}
+
+describe('Accounts draws a window with the shared track, not the five-cell bar (CP-25)', () => {
+  const now = () => new Date().toISOString()
+  const board2 = () => [
+    account({
+      account_id: 'eng:live',
+      label: 'live',
+      observed_at: now(),
+      windows: {
+        five_hour: { utilization: 0.4237, resets_at: FAR, reset: false },
+        seven_day: { utilization: 1, resets_at: FAR, reset: false },
+      },
+    }),
+    account({
+      account_id: 'eng:old',
+      label: 'old',
+      observed_at: now(),
+      stale: true,
+      windows: {
+        five_hour: { utilization: 1, resets_at: FAR, reset: false },
+        seven_day: { utilization: 0.3, resets_at: FAR, reset: false },
+      },
+    }),
+  ]
+
+  it('draws the exact percentage in the default grey', async () => {
+    renderAccounts(board2())
+    await screen.findByText('eng:live', undefined, WAIT)
+    expect(document.querySelector('.acct-bar'), 'the five-cell bar is still drawn').toBeNull()
+    const fill = accountCell('eng:live', '5h').querySelector<HTMLElement>('.ctl-util-fill')
+    expect(fill, 'a live reading drew no track').not.toBeNull()
+    // Unrounded: 42.37, not the nearest fifth and not 42.
+    expect(fill!.style.width).toBe('42.37%')
+    // No verdict below a spent window: there is no amber band on Accounts.
+    expect(fill!.className.trim()).toBe('ctl-util-fill')
+  })
+
+  it('draws bad only for a live window that is fully spent', async () => {
+    renderAccounts(board2())
+    await screen.findByText('eng:live', undefined, WAIT)
+    expect(accountCell('eng:live', '7d').querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
+    // Spent, but the reading is stale: projected, never the verdict.
+    const old = accountCell('eng:old', '5h')
+    expect(old.querySelector('.ctl-util-fill.is-bad'), 'a stale reading drew the spent verdict').toBeNull()
+    expect(old.querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
+    expect(old.querySelector('.acct-tilde')?.textContent).toBe('~')
+    expect(accountCell('eng:old', '7d').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
+  })
+
+  it('keeps the track a fixed 40px inline beside the figure, and hides it at 560px and below', async () => {
+    renderAccounts(board2())
+    await screen.findByText('eng:live', undefined, WAIT)
+    const track = accountCell('eng:live', '5h').querySelector('.acct-window > .ctl-util-track')
+    expect(track, 'the track is not the window cell’s own child').not.toBeNull()
+    const won = (prop: string, width: number) => {
+      const r = cascade(STYLES, track!, prop, { width })
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
+    expect(won('width', 1440)).toBe('40px')
+    expect(won('display', 1440)).toBe('inline-flex')
+    // The phone block's own rule governs, as it does every other track.
+    expect(won('display', 390)).toBe('none')
+  })
+})
+
+describe('the Accounts foot says how old the readings are (CP-26)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * Renders the screen under a fake clock, one row per reading age in
+   * SECONDS (null: never read), and returns the foot's text.
+   */
+  async function footFor(ages: (number | null)[]): Promise<{ foot: () => string; advance: (ms: number) => Promise<void> }> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const t = Date.now()
+    const rows = ages.map((s, i) =>
+      s === null
+        ? account({ account_id: `eng:n${i}`, label: `n${i}`, observed_at: null })
+        : account({
+            account_id: `eng:r${i}`,
+            label: `r${i}`,
+            observed_at: new Date(t - s * 1000).toISOString(),
+            windows: { five_hour: { utilization: 0.1, resets_at: FAR, reset: false } },
+          }),
+    )
+    api.loadAccountsBoard.mockResolvedValue(ok(board(rows)))
+    const { container } = render(<AccountsScreen />)
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+    await advance(0)
+    return { foot: () => textOf(container.querySelector('.provenance')), advance }
+  }
+
+  it('prints the range after the row count, leaving out a row with no reading', async () => {
+    const { foot } = await footFor([2 * 60, 14 * 60, null])
+    expect(foot()).toMatch(/^3 rows · readings 2m–14m old · ~ is projected, not measured/)
+  })
+
+  it('moves the range on its own clock, without a reload', async () => {
+    const { foot, advance } = await footFor([20, 40])
+    expect(foot()).toContain('readings 20s–40s old')
+    // Ten seconds later, with nothing re-read, the range is ten seconds older.
+    // The table's per-render clock would still say 20s-40s: Accounts does not
+    // re-render on its own.
+    const calls = api.loadAccountsBoard.mock.calls.length
+    await advance(10_000)
+    expect(foot()).toContain('readings 30s–50s old')
+    expect(api.loadAccountsBoard.mock.calls.length, 'the range moved because the board was re-read').toBe(calls)
+  })
+
+  it('prints one age when every reading agrees', async () => {
+    const { foot } = await footFor([4 * 60, 4 * 60])
+    expect(foot()).toContain('readings 4m old')
+    expect(foot()).not.toMatch(/readings \S+–/)
+  })
+
+  it('drops the clause when no row has a reading', async () => {
+    const { foot } = await footFor([null])
+    expect(foot()).toContain('1 row')
+    expect(foot()).not.toContain('readings')
   })
 })
 

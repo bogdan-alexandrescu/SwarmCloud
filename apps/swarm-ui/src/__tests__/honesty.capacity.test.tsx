@@ -14,13 +14,13 @@
 // test are Results and driving them through HTTP would test `read` again.
 
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { RuntimeTopology } from '../api'
 import type { Capacity, Counterfactual, Pool, ProfileAdmission, ProfileBlocker, Runtime, RunnerProfile } from '../types'
 import { headroomFor } from '../types'
-import { BlockerList, Counterfactuals, IncompleteNote, headroomFigure } from '../Blockers'
+import { BlockerList, IncompleteNote, headroomFigure } from '../Blockers'
 import { expectNoFigures } from './setup'
 
 const loadCapacity = vi.hoisted(() => vi.fn<() => Promise<Result<Capacity>>>())
@@ -64,6 +64,10 @@ function capacity(over: Partial<Capacity>): Capacity {
     generated_at: '2026-09-22T10:00:00Z',
     ...over,
   }
+}
+
+function cf(over: Partial<Counterfactual>): Counterfactual {
+  return { pool: 'global', action: 'raise', headroom_after: 4, basis_after: 'measured', delta: 4, next_binding: [], ...over }
 }
 
 function renderCapacity(data: Capacity) {
@@ -256,13 +260,36 @@ describe('an incomplete read', () => {
     expect(screen.getByText('No pool is refusing this profile.')).toBeTruthy()
   })
 
-  it('does not compute a counterfactual over ceilings it never read', () => {
-    const h = headroomFor(profile({ admission: admission({ complete: false, unread: ['global'], counterfactual: [] }) }))
-    render(<Counterfactuals h={h} generatedAt="2026-09-22T10:00:00Z" />)
-    const text = document.body.textContent ?? ''
-    expect(text).toContain('Not computed')
+  /**
+   * CP-6 (#85) RE-POINT. This rendered `<Counterfactuals>`, the list under a
+   * Profile headroom card, and asserted it said "Not computed" with no figure
+   * anywhere. The list is gone: what relaxing a ceiling would buy is now the
+   * `+N if lifted` column, on the rows of the pools that cap the card. The
+   * claim is unchanged and pinned where the figure would now be: a refusing
+   * pool on a read that missed a ceiling gets the em dash, the words on its
+   * accessible name, and no digit.
+   */
+  it('does not compute a counterfactual over ceilings it never read', async () => {
+    renderProfiles(
+      capacity({
+        pools: [pool({ name: 'global', active: 8, available: 0 })],
+        runner_profiles: {
+          'claude-code': profile({
+            pools: ['global', 'tenant:eng'],
+            admission: admission({
+              headroom: null, basis: 'unknown', complete: false, unread: ['tenant:eng'],
+              blockers: [blocker({})], counterfactual: [],
+            }),
+          }),
+        },
+      }),
+    )
+    const card = await profileCard('claude-code')
+    const cell = liftCell(card, 'global')
+    expect(cell.getAttribute('aria-label') ?? '').toContain('Not computed')
+    expect(cell.querySelector('.ctl-em'), 'the refusing pool drew no em dash').not.toBeNull()
     // And no number is offered in its place.
-    expectNoFigures(document.body)
+    expect(cell.textContent ?? '').not.toMatch(/\d/)
   })
 })
 
@@ -298,35 +325,64 @@ describe('blocker grouping', () => {
 // The counterfactual is a snapshot, not a promise
 // ---------------------------------------------------------------------------
 
+/**
+ * CP-6 (#85) RE-POINT, ALL THREE. These rendered `<Counterfactuals>`, the
+ * "If one ceiling were lifted" list under each Profile headroom card, whose
+ * rows were sentences: "4 more would have started", "nothing would have
+ * changed -- anthropic still binds". The owner's decision made the list a
+ * `+N if lifted` column on the pools that cap the card, and dropped the rows
+ * for pools whose lifting buys nothing.
+ *
+ * WHAT DID NOT MOVE, and each test below still pins it: the prediction is
+ * worded in the past conditional against the server's own instant (the
+ * instant is now said once, in the page foot, rather than once per card); a
+ * zero on a pool that binds names what still binds; an unmeasurable change
+ * is an em dash with its reason, never a 0. The sentence each row used to be
+ * is now the cell's accessible name, beside the figure it explains.
+ */
 describe('the counterfactual', () => {
-  function cf(over: Partial<Counterfactual>): Counterfactual {
-    return { pool: 'global', action: 'raise', headroom_after: 4, basis_after: 'measured', delta: 4, next_binding: [], ...over }
+  function oneProfile(list: Counterfactual[], binding: string[] = ['global']) {
+    return capacity({
+      generated_at: '2026-09-22T10:00:00Z',
+      pools: [pool({ name: 'global' }), pool({ name: 'provider:anthropic' })],
+      runner_profiles: {
+        'claude-code': profile({
+          pools: ['global', 'provider:anthropic'],
+          admission: admission({ headroom: 3, binding, counterfactual: list }),
+        }),
+      },
+    })
   }
 
-  it('is worded in the past conditional, against the server’s own instant', () => {
-    const h = headroomFor(profile({ admission: admission({ counterfactual: [cf({})] }) }))
-    render(<Counterfactuals h={h} generatedAt="2026-09-22T10:00:00Z" />)
-    const text = document.body.textContent ?? ''
-    expect(text).toContain('would have started')
+  it('is worded in the past conditional, against the server’s own instant', async () => {
+    renderProfiles(oneProfile([cf({})]))
+    const card = await profileCard('claude-code')
+    const said = liftCell(card, 'global').getAttribute('aria-label') ?? ''
+    expect(said).toContain('would have started')
+    const text = `${document.body.textContent ?? ''} ${said}`
     expect(text).not.toContain('will start')
     expect(text).not.toContain('you can start')
-    expect(document.querySelector('time')?.getAttribute('dateTime') ?? document.querySelector('time')?.getAttribute('datetime'))
-      .toBe('2026-09-22T10:00:00Z')
+    // The instant, once for the whole page, from the server's own clock.
+    const time = document.querySelector('.provenance time')
+    expect(time, 'the page does not say when the counts were read').not.toBeNull()
+    expect(time!.getAttribute('dateTime') ?? time!.getAttribute('datetime')).toBe('2026-09-22T10:00:00Z')
   })
 
-  it('a zero delta names what still binds, rather than reading as a glitch', () => {
-    const h = headroomFor(profile({ admission: admission({ counterfactual: [cf({ delta: 0, headroom_after: 0, next_binding: ['provider:anthropic'] })] }) }))
-    render(<Counterfactuals h={h} generatedAt="2026-09-22T10:00:00Z" />)
-    const row = document.querySelector('.cf-row')
-    expect(row?.className).toContain('is-pointless')
-    expect(row?.textContent).toContain('nothing would have changed')
-    expect(row?.textContent).toContain('anthropic')
+  it('a zero delta names what still binds, rather than reading as a glitch', async () => {
+    renderProfiles(oneProfile([cf({ delta: 0, headroom_after: 3, next_binding: ['provider:anthropic'] })]))
+    const cell = liftCell(await profileCard('claude-code'), 'global')
+    expect(cell.className).toContain('is-pointless')
+    expect(cell.textContent).toBe('+0')
+    expect(cell.getAttribute('aria-label')).toContain('nothing would have changed')
+    expect(cell.getAttribute('aria-label')).toContain('anthropic')
   })
 
-  it('an unmeasurable delta is said to be unmeasurable, not shown as 0', () => {
-    const h = headroomFor(profile({ admission: admission({ counterfactual: [cf({ delta: null, headroom_after: 3 })] }) }))
-    render(<Counterfactuals h={h} generatedAt="2026-09-22T10:00:00Z" />)
-    expect(document.querySelector('.cf-effect')?.textContent).toBe('the change could not be measured')
+  it('an unmeasurable delta is said to be unmeasurable, not shown as 0', async () => {
+    renderProfiles(oneProfile([cf({ delta: null, headroom_after: 3 })]))
+    const cell = liftCell(await profileCard('claude-code'), 'global')
+    expect(cell.querySelector('.ctl-em'), 'an unmeasured change drew no em dash').not.toBeNull()
+    expect(cell.textContent ?? '').not.toMatch(/\d/)
+    expect(cell.getAttribute('aria-label')).toContain('the change could not be measured')
   })
 })
 
@@ -433,27 +489,60 @@ describe('the capacity board as a whole', () => {
     expect(panel?.querySelector('table')).not.toBeNull()
   })
 
-  it('declares scope on every pool family, so two figures are never silently compared', async () => {
-    // B4.5 RE-POINT. Same claim, same words, new slot: every pool family is a
-    // `.ctl-card` and its scope is that card's `.ctl-card-note`. Trap E is
-    // that a number may only sit beside a number of the same scope, so the
-    // declaration has to be on the CONTAINER of the figures rather than on a
-    // heading that a scrolled table has left behind -- which is what the note
-    // slot is and what an `<h2>` badge was not.
-    renderCapacity(capacity({ pools: [pool({ name: 'global' }), pool({ name: 'tenant:eng' }), pool({ name: 'provider:anthropic:tenant:eng' })] }))
+  /**
+   * CP-2 (#85) RE-POINT. The claim is Trap E's and did not move: a figure may
+   * only sit beside a figure of the same scope, so every figure on Pools
+   * declares its scope. What moved is WHERE. This asserted one
+   * `.ctl-card-note` per family, and that note was computed from the family's
+   * FIRST row: an admin's Tenants family printed "this tenant" above four
+   * tenants' pools, and Providers printed "platform-wide" above per-tenant
+   * slices. The owner's decision is a Scope column on every row, and the
+   * family note is removed, so a family holding two scopes says both.
+   */
+  it('declares scope on every pool row, so two figures are never silently compared', async () => {
+    renderCapacity(
+      capacity({
+        tenant_id: 'eng',
+        pools: [
+          pool({ name: 'global' }),
+          pool({ name: 'tenant:eng' }),
+          pool({ name: 'tenant:research' }),
+          pool({ name: 'provider:anthropic' }),
+          pool({ name: 'provider:anthropic:tenant:eng' }),
+          pool({ name: 'provider:anthropic:tenant:research' }),
+        ],
+      }),
+    )
     await screen.findByText('Global')
 
-    // One card per family, and every one of them declares a scope.
     const families = [...document.querySelectorAll('.cap-families > .ctl-card')]
     expect(families.length).toBe(3)
     for (const f of families) {
-      expect(f.querySelector('.ctl-card-note'), 'a pool family declares no scope').not.toBeNull()
+      expect(
+        f.querySelector('.ctl-card-head > .ctl-card-note'),
+        'a family still declares one scope, read off its first row, for all of them',
+      ).toBeNull()
+      const heads = [...f.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+      expect(heads, 'a family table has no Scope column').toContain('Scope')
     }
-    const scopes = families.map((f) => f.querySelector('.ctl-card-note')?.textContent)
-    expect(scopes).toContain('platform-wide')
-    expect(scopes).toContain('this tenant')
+
+    expect(scopeCell('global')).toBe('platform')
+    expect(scopeCell('provider:anthropic')).toBe('platform')
     // The per-tenant slice of a provider pool is tenant scope, not platform.
-    expect(scopes.filter((s) => s === 'this tenant').length).toBe(2)
+    expect(scopeCell('tenant:eng')).toBe('this tenant')
+    expect(scopeCell('provider:anthropic:tenant:eng')).toBe('this tenant')
+    // The rows the first-row note mislabelled: another tenant's pools.
+    expect(scopeCell('tenant:research')).toBe('tenant research')
+    expect(scopeCell('provider:anthropic:tenant:research')).toBe('tenant research')
+  })
+
+  it('carries the same scope on every card in the Cards view (CP-2)', async () => {
+    renderCapacity(
+      capacity({ tenant_id: 'eng', pools: [pool({ name: 'global' }), pool({ name: 'tenant:research' })] }),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }))
+    expect(poolCard('global').querySelector('.cap-pool-scope')?.textContent).toBe('platform')
+    expect(poolCard('tenant:research').querySelector('.cap-pool-scope')?.textContent).toBe('tenant research')
   })
 
   it('marks a pool carrying more than its ceiling as drift rather than as full', async () => {
@@ -511,6 +600,67 @@ function poolRow(card: HTMLElement, name: string): HTMLElement {
   const th = [...card.querySelectorAll('th[title]')].find((t) => t.getAttribute('title') === name)
   expect(th, `the card draws no row for ${name}`).toBeTruthy()
   return th!.closest('tr') as HTMLElement
+}
+
+/** The name of the column that carries the counterfactual (CP-6). */
+const LIFTED = '+N if lifted'
+
+/**
+ * A pool's cell in a Profile headroom card's `+N if lifted` column, found by
+ * the column's HEADER rather than by a class, so the test reads the column a
+ * reader reads.
+ */
+function liftCell(card: HTMLElement, name: string): HTMLElement {
+  const heads = [...card.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+  const at = heads.indexOf(LIFTED)
+  expect(at, `the card has no ${LIFTED} column: ${heads.join(' | ')}`).toBeGreaterThanOrEqual(0)
+  const cell = poolRow(card, name).children[at]
+  expect(cell, `${name} has no ${LIFTED} cell`).toBeTruthy()
+  return cell as HTMLElement
+}
+
+/** The Status cell a Profile headroom card draws for one pool. */
+function statusCell(card: HTMLElement, name: string): HTMLElement {
+  const cell = poolRow(card, name).querySelector('td[data-label="Status"]')
+  expect(cell, `${name} has no Status cell`).not.toBeNull()
+  return cell as HTMLElement
+}
+
+/** The Scope a Pools family table prints for one pool (CP-2). */
+function scopeCell(name: string): string {
+  const th = [...document.querySelectorAll('.cap-families tbody th[title]')].find(
+    (t) => t.getAttribute('title') === name,
+  )
+  expect(th, `Pools draws no row for ${name}`).toBeTruthy()
+  const cell = th!.closest('tr')!.querySelector('td[data-label="Scope"]')
+  expect(cell, `${name} has no Scope cell`).not.toBeNull()
+  return (cell!.textContent ?? '').trim()
+}
+
+/** The Pools family-table row for one pool. */
+function familyRow(name: string): HTMLElement {
+  const th = [...document.querySelectorAll('.cap-families tbody th[title]')].find(
+    (t) => t.getAttribute('title') === name,
+  )
+  expect(th, `Pools draws no row for ${name}`).toBeTruthy()
+  return th!.closest('tr') as HTMLElement
+}
+
+/** One tile in Pools' Cards view. */
+function poolCard(name: string): HTMLElement {
+  const card = [...document.querySelectorAll('.cap-pool')].find(
+    (p) => p.querySelector('.cap-pool-name')?.getAttribute('title') === name,
+  )
+  expect(card, `the Cards view draws no tile for ${name}`).toBeTruthy()
+  return card as HTMLElement
+}
+
+/** The state marks a Pools row or tile draws, as `word|modifier` pairs. */
+function chipsOf(el: Element): string[] {
+  return [...el.querySelectorAll('.ctl-chip')].map((c) => {
+    const mod = [...c.classList].find((k) => k.startsWith('is-')) ?? '(none)'
+    return `${(c.textContent ?? '').trim()}|${mod}`
+  })
 }
 
 describe('an em dash is only ever "not measured" (CP-1)', () => {
@@ -685,51 +835,330 @@ describe('units are named on every column that counts them (CP-24)', () => {
   })
 })
 
-describe('a counterfactual row says what kind of answer it is (CP-13, CP-15)', () => {
-  function cf(over: Partial<Counterfactual>): Counterfactual {
-    return { pool: 'global', action: 'raise', headroom_after: 4, basis_after: 'measured', delta: 4, next_binding: [], ...over }
-  }
-  function rows(list: Counterfactual[]): HTMLElement[] {
-    render(
-      <Counterfactuals
-        h={headroomFor(profile({ admission: admission({ counterfactual: list }) }))}
-        generatedAt="2026-09-22T10:00:00Z"
-      />,
+/**
+ * CP-6 (#85) RE-POINT of the CP-13 and CP-15 rows. These rendered the
+ * `.cf-row` list and read each row's class and sentence. The rows are now
+ * cells in the `+N if lifted` column, so the same four claims are asked of
+ * the cells: the class still says which KIND of answer a cell is, and the
+ * sentence the row used to print is the cell's accessible name, where its
+ * grammar and its pool labels are still read.
+ */
+describe('a counterfactual cell says what kind of answer it is (CP-13, CP-15)', () => {
+  /** One `claude-code` card over `pools`, `binding` of which cap its figure. */
+  function cells(list: Counterfactual[], pools: string[], binding: string[]): void {
+    renderProfiles(
+      capacity({
+        pools: pools.map((name) => pool({ name })),
+        runner_profiles: {
+          'claude-code': profile({ pools, admission: admission({ headroom: 3, binding, counterfactual: list }) }),
+        },
+      }),
     )
-    return [...document.querySelectorAll<HTMLElement>('.cf-row')]
   }
 
-  it('marks an unmeasured change apart from a measured result', () => {
-    const [measured, unmeasured, uncaps] = rows([
-      cf({ pool: 'global' }),
-      cf({ pool: 'tenant:eng', delta: null, headroom_after: 3 }),
-      cf({ pool: 'resource:standard', delta: null, headroom_after: null }),
-    ])
+  it('marks an unmeasured change apart from a measured result', async () => {
+    const pools = ['global', 'tenant:eng', 'resource:standard']
+    cells(
+      [
+        cf({ pool: 'global' }),
+        cf({ pool: 'tenant:eng', delta: null, headroom_after: 3 }),
+        cf({ pool: 'resource:standard', delta: null, headroom_after: null }),
+      ],
+      pools,
+      pools,
+    )
+    const card = await profileCard('claude-code')
+    const [measured, unmeasured, uncaps] = pools.map((p) => liftCell(card, p))
     expect(unmeasured!.className).toContain('is-unmeasured')
     expect(measured!.className).not.toContain('is-unmeasured')
-    // "Nothing else would have been left to cap it" is an answer, not a gap.
+    expect(measured!.textContent).toBe('+4')
+    // "Nothing else would have been left to cap it" is an answer, not a gap:
+    // a word, not a dash and not a number.
     expect(uncaps!.className).not.toContain('is-unmeasured')
+    expect(uncaps!.textContent).toBe('uncapped')
   })
 
-  it('says bind, not binds, when more than one pool would still bind', () => {
-    const [plural] = rows([cf({ delta: 0, headroom_after: 0, next_binding: ['tenant:eng', 'provider:anthropic'] })])
-    expect(plural!.textContent).toMatch(/still bind\b/)
-    expect(plural!.textContent).not.toContain('still binds')
+  it('says bind, not binds, when more than one pool would still bind', async () => {
+    const pools = ['global', 'tenant:eng', 'provider:anthropic']
+    cells([cf({ delta: 0, headroom_after: 3, next_binding: ['tenant:eng', 'provider:anthropic'] })], pools, ['global'])
+    const said = liftCell(await profileCard('claude-code'), 'global').getAttribute('aria-label') ?? ''
+    expect(said).toMatch(/still bind\b/)
+    expect(said).not.toContain('still binds')
   })
 
-  it('keeps binds for a single pool', () => {
-    const [single] = rows([cf({ delta: 0, headroom_after: 0, next_binding: ['tenant:eng'] })])
-    expect(single!.textContent).toContain('still binds')
+  it('keeps binds for a single pool', async () => {
+    const pools = ['global', 'tenant:eng']
+    cells([cf({ delta: 0, headroom_after: 3, next_binding: ['tenant:eng'] })], pools, ['global'])
+    const said = liftCell(await profileCard('claude-code'), 'global').getAttribute('aria-label') ?? ''
+    expect(said).toContain('still binds')
   })
 
-  it('never prints two different pools under one label', () => {
-    const list = rows([
-      cf({ pool: 'resource:browser', delta: 0, headroom_after: 0, next_binding: ['resource:browser', 'runner:browser'] }),
-      cf({ pool: 'runner:browser', delta: 0, headroom_after: 0, next_binding: ['resource:browser'] }),
-    ])
-    const labels = list.map((r) => r.querySelector('.cf-action code')?.textContent ?? '')
+  it('never prints two different pools under one label', async () => {
+    const pools = ['resource:browser', 'runner:browser']
+    cells(
+      [
+        cf({ pool: 'resource:browser', delta: 0, headroom_after: 3, next_binding: ['runner:browser'] }),
+        cf({ pool: 'runner:browser', delta: 0, headroom_after: 3, next_binding: ['resource:browser'] }),
+      ],
+      pools,
+      pools,
+    )
+    const card = await profileCard('claude-code')
+    const labels = pools.map((p) => {
+      const th = [...card.querySelectorAll('tbody th[title]')].find((t) => t.getAttribute('title') === p)
+      return th?.firstChild?.textContent ?? ''
+    })
     expect(new Set(labels).size, `two pools share a label: ${labels.join(' | ')}`).toBe(labels.length)
-    expect(list[0]!.textContent).not.toMatch(/browser and browser/)
+    for (const p of pools) {
+      expect(liftCell(card, p).getAttribute('aria-label') ?? '').not.toMatch(/browser and browser/)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner's decisions on #85, 2026-09-25 (CP-2, CP-6, CP-12, CP-14). Each
+// block was pushed before the change it pins.
+// ---------------------------------------------------------------------------
+
+describe('Profile headroom gives every Status cell one mark (CP-12)', () => {
+  /**
+   * One card with a pool of every kind the Status column tells apart, and one
+   * card whose read missed a pool. `global` is read, capped, running and
+   * refusing nothing: the healthy row that used to be blank.
+   */
+  const marked = () =>
+    capacity({
+      tenant_id: 'eng',
+      pools: [
+        pool({ name: 'global', active: 3, available: 5 }),
+        pool({ name: 'tenant:eng', enabled: false }),
+        pool({ name: 'resource:browser', hard_limit: 0, effective_limit: 0, available: 0 }),
+        pool({ name: 'runner:browser', hard_limit: 4, effective_limit: 4, active: 4, available: 0 }),
+      ],
+      runner_profiles: {
+        browser: profile({
+          resource_class: 'browser',
+          units: 2,
+          pools: ['global', 'tenant:eng', 'resource:browser', 'runner:browser', 'provider:anthropic'],
+          admission: admission({
+            units: 2,
+            headroom: 0,
+            blockers: [
+              blocker({ pool: 'tenant:eng', reason: 'MANUAL_PAUSE', limit: 8, active: 0, group: 'needs_action' }),
+              blocker({ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 0, active: 0 }),
+              blocker({ pool: 'runner:browser', reason: 'RUNNER_LIMIT', limit: 4, active: 4 }),
+            ],
+            binding: ['tenant:eng', 'resource:browser', 'runner:browser'],
+            uncapped: ['provider:anthropic'],
+          }),
+        }),
+        mock: profile({
+          provider: null,
+          pools: ['global', 'backend:cloudrun'],
+          admission: admission({
+            headroom: null, basis: 'unknown', complete: false, unread: ['backend:cloudrun'], blockers: [],
+          }),
+        }),
+      },
+    })
+
+  it('holds a chip or a mark in every row’s Status cell, and exactly one status mark', async () => {
+    renderProfiles(marked())
+    for (const name of ['browser', 'mock']) {
+      const card = await profileCard(name)
+      const rows = [...card.querySelectorAll('tbody tr')]
+      expect(rows.length, `${name} drew no pool rows`).toBeGreaterThan(0)
+      for (const row of rows) {
+        const cell = row.querySelector('td[data-label="Status"]')!
+        const pool = row.querySelector('th')?.getAttribute('title')
+        expect(cell.querySelector('.ctl-chip, .ctl-mark'), `${name} ${pool}: the Status cell is blank`).not.toBeNull()
+        // The `binding` fact may follow the status; it is not a status.
+        const marks = [...cell.querySelectorAll('.ctl-chip, .ctl-mark')].filter(
+          (m) => (m.textContent ?? '').trim() !== 'binding',
+        )
+        expect(marks.length, `${name} ${pool}: ${marks.map((m) => m.textContent).join(', ')}`).toBe(1)
+      }
+    }
+  })
+
+  it('draws a healthy pool that was read with the ok chip Pools draws', async () => {
+    renderProfiles(marked())
+    const chip = statusCell(await profileCard('browser'), 'global').querySelector('.ctl-chip')
+    expect(chip?.className).toContain('is-ok')
+    expect(chip?.textContent).toBe('ok')
+  })
+
+  it('draws an unread pool with the not-read mark', async () => {
+    renderProfiles(marked())
+    const mark = statusCell(await profileCard('mock'), 'backend:cloudrun').querySelector('.ctl-mark')
+    expect(mark?.className).toContain('is-unread')
+    expect(mark?.textContent).toBe('not read')
+  })
+
+  it('says limit 0, not full, for a blocker at a ceiling of zero', async () => {
+    renderProfiles(marked())
+    const card = await profileCard('browser')
+    const cell = statusCell(card, 'resource:browser')
+    expect(cell.textContent).toContain('limit 0')
+    expect(cell.textContent).not.toContain('full')
+    // Capped by a person, so the paused tone: waiting does not clear it.
+    expect(cell.querySelector('.ctl-chip')?.className).toContain('is-paused')
+    // The row follows the mark.
+    expect(poolRow(card, 'resource:browser').className).not.toContain('full')
+  })
+
+  it('draws full, paused and uncapped in Pools’ vocabulary', async () => {
+    renderProfiles(marked())
+    const card = await profileCard('browser')
+    const first = (pool: string) => statusCell(card, pool).querySelector('.ctl-chip, .ctl-mark')
+    expect(first('runner:browser')?.className).toContain('is-warn')
+    expect(first('runner:browser')?.textContent).toBe('full')
+    expect(first('tenant:eng')?.className).toContain('is-paused')
+    expect(first('tenant:eng')?.textContent).toBe('paused')
+    expect(first('provider:anthropic')?.className).toContain('is-info')
+    expect(first('provider:anthropic')?.textContent).toBe('uncapped')
+    // Each mark carries the explanation its `.tag` carried.
+    for (const pool of ['runner:browser', 'tenant:eng', 'provider:anthropic', 'resource:browser']) {
+      expect(first(pool)?.getAttribute('title'), `${pool}'s mark lost its explanation`).toBeTruthy()
+      expect(first(pool)?.getAttribute('aria-label'), `${pool}'s mark has no accessible sentence`).toBeTruthy()
+    }
+  })
+
+  it('keeps no .tag in a Profile headroom card', async () => {
+    renderProfiles(marked())
+    for (const name of ['browser', 'mock']) {
+      expect((await profileCard(name)).querySelector('.tag'), `${name} still draws a .tag`).toBeNull()
+    }
+  })
+})
+
+describe('Profile headroom draws the counterfactual as a column (CP-6)', () => {
+  /**
+   * `claude-code` is capped by a TIE: `global` and `tenant:eng` both bind, so
+   * lifting either one alone buys nothing (+0), which is the case the card's
+   * tags and its sentences used to contradict each other on. `browser` is
+   * capped by `global` alone. The other pools bind nothing, and those are the
+   * "nothing would have changed" rows that go.
+   */
+  const two = () =>
+    capacity({
+      generated_at: '2026-09-22T10:00:00Z',
+      pools: [
+        pool({ name: 'global', effective_limit: 5, available: 5 }),
+        pool({ name: 'tenant:eng', effective_limit: 5, available: 5 }),
+        pool({ name: 'resource:standard', effective_limit: 20, available: 20 }),
+        pool({ name: 'resource:browser', effective_limit: 20, available: 20 }),
+      ],
+      runner_profiles: {
+        'claude-code': profile({
+          pools: ['global', 'tenant:eng', 'resource:standard'],
+          admission: admission({
+            headroom: 5,
+            binding: ['global', 'tenant:eng'],
+            counterfactual: [
+              cf({ pool: 'global', delta: 0, headroom_after: 5, next_binding: ['tenant:eng'] }),
+              cf({ pool: 'tenant:eng', delta: 0, headroom_after: 5, next_binding: ['global'] }),
+              cf({ pool: 'resource:standard', delta: 0, headroom_after: 5, next_binding: ['global', 'tenant:eng'] }),
+            ],
+          }),
+        }),
+        browser: profile({
+          resource_class: 'browser',
+          pools: ['global', 'resource:browser'],
+          admission: admission({
+            headroom: 5,
+            binding: ['global'],
+            counterfactual: [
+              cf({ pool: 'global', delta: 15, headroom_after: 20, next_binding: ['resource:browser'] }),
+              cf({ pool: 'resource:browser', delta: 0, headroom_after: 5, next_binding: ['global'] }),
+            ],
+          }),
+        }),
+      },
+    })
+
+  it('puts +N on every pool that binds, and nothing on a pool whose lifting buys nothing', async () => {
+    renderProfiles(two())
+    const browser = await profileCard('browser')
+    expect(liftCell(browser, 'global').textContent).toBe('+15')
+    expect(liftCell(browser, 'resource:browser').textContent).toBe('')
+
+    const tie = await profileCard('claude-code')
+    expect(liftCell(tie, 'global').textContent).toBe('+0')
+    expect(liftCell(tie, 'tenant:eng').textContent).toBe('+0')
+    expect(liftCell(tie, 'resource:standard').textContent).toBe('')
+  })
+
+  it('draws no counterfactual list and none of its sentences', async () => {
+    renderProfiles(two())
+    for (const name of ['browser', 'claude-code']) {
+      const card = await profileCard(name)
+      expect(card.querySelector('.counterfactual, .cf-list, .cf-row'), `${name} still draws the list`).toBeNull()
+      expect(card.textContent).not.toContain('nothing would have changed')
+      expect(card.textContent).not.toContain('No pool is refusing')
+      expect(card.textContent).not.toContain('From pool counts read')
+    }
+  })
+
+  it('says one fact per card, and it is what runs out first', async () => {
+    renderProfiles(two())
+    for (const name of ['browser', 'claude-code']) {
+      const card = await profileCard(name)
+      const said = [...card.querySelectorAll('p')].map((p) => (p.textContent ?? '').trim())
+      expect(said, `${name}: ${said.join(' / ')}`).toHaveLength(1)
+      expect(said[0]).toContain('run out first')
+      // One sentence, not a sentence and a rider.
+      expect(said[0]!.split(/[.!?](\s|$)/).filter((s) => /[a-z]/i.test(s)), said[0]).toHaveLength(1)
+    }
+  })
+})
+
+describe('Pools draws one classification in its table and its cards (CP-14)', () => {
+  /**
+   * `global` is healthy. `resource:browser` was set to 0 by a person and
+   * `provider:anthropic:tenant:eng` was zeroed by its quota; neither is paused
+   * and neither is `ok`. `runner:claude-code` is at a positive ceiling.
+   */
+  const board = () =>
+    capacity({
+      tenant_id: 'eng',
+      pools: [
+        pool({ name: 'global', active: 2, available: 6 }),
+        pool({ name: 'resource:browser', hard_limit: 0, effective_limit: 0, available: 0 }),
+        pool({
+          name: 'provider:anthropic:tenant:eng', hard_limit: 20, quota_derived_limit: 0, effective_limit: 0, available: 0,
+        }),
+        pool({ name: 'runner:claude-code', hard_limit: 4, effective_limit: 4, active: 4, available: 0 }),
+      ],
+    })
+
+  it('the table draws limit 0 for a pool with a ceiling of 0, never ok', async () => {
+    renderCapacity(board())
+    await screen.findByText('Global')
+    expect(chipsOf(familyRow('resource:browser'))).toEqual(['limit 0|is-paused'])
+    expect(chipsOf(familyRow('provider:anthropic:tenant:eng'))).toEqual(['limit 0|is-bad'])
+    expect(chipsOf(familyRow('global'))).toEqual(['ok|is-ok'])
+  })
+
+  it('the Cards view draws the ok chip for a healthy pool and limit 0 for a pool at 0', async () => {
+    renderCapacity(board())
+    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }))
+    expect(chipsOf(poolCard('global'))).toEqual(['ok|is-ok'])
+    expect(chipsOf(poolCard('resource:browser'))).toEqual(['limit 0|is-paused'])
+    expect(chipsOf(poolCard('provider:anthropic:tenant:eng'))).toEqual(['limit 0|is-bad'])
+  })
+
+  it('draws a full pool as warn in the chip, the row and the track', async () => {
+    renderCapacity(board())
+    await screen.findByText('Global')
+    expect(chipsOf(familyRow('runner:claude-code'))).toEqual(['full|is-warn'])
+    expect(familyRow('runner:claude-code').className).toContain('is-warn')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cards' }))
+    const tile = poolCard('runner:claude-code')
+    expect(chipsOf(tile)).toEqual(['full|is-warn'])
+    expect(tile.querySelector('.ctl-util-fill.is-warn'), 'the full tile’s track is not warn').not.toBeNull()
+    expect(tile.querySelector('.ctl-util-fill.is-bad'), 'the full tile’s track is bad').toBeNull()
   })
 })
 

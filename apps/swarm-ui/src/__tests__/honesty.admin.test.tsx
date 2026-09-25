@@ -287,3 +287,111 @@ describe('Provider quota counts in English (CP-22)', () => {
     expect(note!.textContent).toBe('1 tenant')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Provider quota: the owner's decisions on #85, 2026-09-25 (CP-8, CP-9,
+// CP-10). Each block was pushed before the change it pins.
+// ---------------------------------------------------------------------------
+
+/** A reported instant `minutes` before now. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString()
+}
+
+/** The column names of the first quota table, as a reader reads them. */
+function quotaHeads(): string[] {
+  return [...document.querySelectorAll('table thead th')].map((th) => (th.textContent ?? '').trim())
+}
+
+async function renderQuota(rows: QuotaState[]): Promise<HTMLElement> {
+  api.loadAdminQuota.mockResolvedValue(ok({ quota: rows }))
+  render(<QuotaDetailScreen />)
+  const [th] = await screen.findAllByRole('rowheader', { name: rows[0]!.tenant_id }, WAIT)
+  return th!.closest('tr') as HTMLElement
+}
+
+describe('Provider quota says what its cap is and which pool it feeds (CP-8)', () => {
+  it('calls the cap a quota cap, in the header and in the stacked key', async () => {
+    const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
+    expect(quotaHeads()).toContain('Quota cap')
+    expect(quotaHeads()).not.toContain('Limit')
+    // The value is unchanged: the document's effective_limit.
+    expect(row.querySelector('td[data-label="Quota cap"]')?.textContent).toBe('50')
+    expect(row.querySelector('td[data-label="Limit"]')).toBeNull()
+  })
+
+  it('names the pool the cap feeds, right after it, as a link to Pools', async () => {
+    const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
+    const heads = quotaHeads()
+    expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap') + 1)
+    const link = row.querySelector('td[data-label="Feeds pool"] a')
+    expect(link, 'the pool is not a link').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('#capacity/pools')
+    expect(link!.textContent).toBe('provider:anthropic:tenant:eng')
+    // The full name survives an ellipsis below 900px (CH-13).
+    expect(link!.getAttribute('title')).toBe('provider:anthropic:tenant:eng')
+    expect(link!.className).toContain('ctl-link')
+  })
+})
+
+describe('Provider quota says which run its 429 count is of (CP-10)', () => {
+  it('names the window in the header and in the stacked key', async () => {
+    const row = await renderQuota([
+      quota({ state: 'AVAILABLE', updated_at: minutesAgo(1), rate_limit_count: 0, last_429_at: minutesAgo(25 * 60) }),
+    ])
+    expect(quotaHeads()).toContain('429s (this run)')
+    expect(quotaHeads()).not.toContain('429s')
+    const count = row.querySelector('td[data-label="429s (this run)"]')
+    expect(count?.textContent).toBe('0')
+    // The time of the last 429 stays, beside a count that has been reset.
+    expect(row.querySelector('td[data-label="Last 429"]')?.textContent).toContain('ago')
+  })
+
+  it('puts no help glyph inside the quota tables, and indexes the row fields in the footer', async () => {
+    await renderQuota([
+      quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) }),
+      quota({ provider: 'openai', state: 'AVAILABLE', updated_at: minutesAgo(1) }),
+    ])
+    const tables = [...document.querySelectorAll('table')]
+    expect(tables.length).toBe(2)
+    for (const t of tables) {
+      expect(t.querySelector('button[aria-expanded]'), 'a ? sits inside a quota table').toBeNull()
+    }
+    expect(document.querySelector('a[href="#help/quota-row-fields"]'), 'the footer does not index the row fields').not.toBeNull()
+  })
+})
+
+describe('Provider quota never draws an old reading as a current verdict (CP-9)', () => {
+  /** The State cell of the only row. */
+  function state(row: HTMLElement): HTMLElement {
+    const cell = row.querySelector('td[data-label="State"]')
+    expect(cell, 'the row has no State cell').not.toBeNull()
+    return cell as HTMLElement
+  }
+
+  it('draws a reading five days old with the stale mark and its age, not the ok chip', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(5 * 24 * 60) })]))
+    expect(cell.querySelector('.ctl-chip.is-ok'), 'a five-day-old reading is drawn as a current verdict').toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('5d')
+    // The word it last reported is still on the row, marked, not hidden.
+    expect((cell.textContent ?? '').toLowerCase()).toContain('available')
+  })
+
+  it('draws a reading well inside twice the broker’s interval as current', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(4) })]))
+    expect(cell.querySelector('.ctl-chip.is-ok')).not.toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')).toBeNull()
+  })
+
+  it('draws a reading past twice the broker’s five-minute interval as stale', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(11) })]))
+    expect(cell.querySelector('.ctl-chip.is-ok')).toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('11m')
+  })
+
+  it('keeps a verdict that is not ok on a stale reading, and marks its age', async () => {
+    const cell = state(await renderQuota([quota({ state: 'THROTTLED', updated_at: minutesAgo(60) })]))
+    expect(cell.querySelector('.ctl-chip.is-warn')).not.toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('1h')
+  })
+})
