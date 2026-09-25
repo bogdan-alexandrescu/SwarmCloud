@@ -313,6 +313,12 @@ jobs:
         # installs it -- at THIS commit, since the release tag it pins does not
         # exist until the merge is tagged -- from a cold uv cache, outside the
         # checkout, and talks MCP to it. Network: github.com and pypi.org.
+        #
+        # RUN EVEN WHEN THE UNIT STEP FAILED. It is an independent answer --
+        # "does a marketplace install start" -- and skipping it behind any
+        # unrelated unit failure hid that answer in the one run that proved a
+        # test red (#62, run 36091955032).
+        if: ${{ !cancelled() }}
         env:
           SWARM_BRIDGE_INSTALL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
         run: uv run pytest tests/unit/mcp/test_plugin_bridge_install.py -q -s

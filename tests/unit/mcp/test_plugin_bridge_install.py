@@ -428,8 +428,121 @@ def test_the_escape_hatch_is_the_one_the_readme_documents():
     )
 
 
+def _checkout_bound_surfaces() -> list[str]:
+    """Every part of the plugin that works only inside a checkout, as it is spelt.
+
+    `uv run` resolves a PROJECT from the session's own directory, and
+    `${CLAUDE_PLUGIN_ROOT}` is not exported to the Bash tool, so a command file
+    that runs `uv run`, or a skill whose only tools are shell commands, needs a
+    checkout of this repository whatever the MCP server does. Derived from the
+    plugin's files rather than listed, so a new command is covered the day it
+    is added.
+    """
+    bound: list[str] = []
+    for command in sorted((_PLUGIN / "commands").glob("*.md")):
+        if re.search(r"^\s*uv run ", command.read_text(), re.MULTILINE):
+            bound.append(f"/{command.stem}")
+    for skill in sorted((_PLUGIN / "skills").glob("*/SKILL.md")):
+        text = skill.read_text()
+        front = text.split("---", 2)[1] if text.startswith("---") else ""
+        tools = re.findall(r"^\s*-\s*(\S.*?)\s*$", front, re.MULTILINE)
+        if tools and not any(t.startswith("mcp__") for t in tools) and any(
+            t.startswith("Bash(uv run") for t in tools
+        ):
+            name = re.search(r"^name:\s*(\S+)", front, re.MULTILINE)
+            bound.append(f"`{name.group(1) if name else skill.parent.name}`")
+    return bound
+
+
+def _descriptions() -> dict[str, str]:
+    marketplace = json.loads((_REPO / ".claude-plugin" / "marketplace.json").read_text())
+    name = _manifest()["name"]
+    entries = [p for p in marketplace.get("plugins", []) if p.get("name") == name]
+    assert len(entries) == 1, f"marketplace.json lists {name!r} {len(entries)} times"
+    return {
+        "plugin/.claude-plugin/plugin.json": _manifest().get("description", ""),
+        ".claude-plugin/marketplace.json": entries[0].get("description", ""),
+    }
+
+
+def test_the_descriptions_say_what_still_needs_a_checkout():
+    """The install listing is where a user decides whether this plugin works for
+    them, so it must not over-claim.
+
+    #62 first fixed the old false claim ("requires the swarm-mcp bridge in this
+    repository") with a new one: "it needs uv, not a checkout", said of both
+    skills in plugin.json and of the whole plugin in marketplace.json. That is
+    true of the MCP server only. `/sc` and the `sc` skill run `uv run sc` in the
+    session's directory and fail anywhere but a checkout.
+
+    THE PROPERTY: each description has one sentence that mentions a checkout and
+    names every checkout-bound surface, and no sentence denies needing a
+    checkout unless it is about the MCP server. THE MUTATION THIS CATCHES: both
+    descriptions as #62 first wrote them.
+    """
+    bound = _checkout_bound_surfaces()
+    assert "/sc" in bound and "`sc`" in bound, (
+        f"expected /sc and the `sc` skill to be checkout-bound, derived {bound}"
+    )
+    problems = []
+    for where, description in _descriptions().items():
+        sentences = re.split(r"(?<=[.!?])\s+", description.strip())
+        about_checkouts = [s for s in sentences if re.search(r"\bcheckout\b", s)]
+        if not any(all(surface in s for surface in bound) for s in about_checkouts):
+            problems.append(
+                f"{where}: no sentence says that {', '.join(bound)} need a checkout; "
+                f"the ones about a checkout are {about_checkouts}"
+            )
+        for sentence in sentences:
+            denies = re.search(r"\b(not|no|without)\s+(a\s+)?checkout\b", sentence)
+            if denies and "MCP server" not in sentence:
+                problems.append(
+                    f"{where}: {sentence!r} says no checkout is needed without saying "
+                    "that only the MCP server is meant"
+                )
+    assert not problems, "\n".join(problems)
+
+
 #: A commit that exists on GitHub. Set by CI only; see the test below.
 _INSTALL_REF = os.environ.get("SWARM_BRIDGE_INSTALL_REF", "").strip()
+
+#: Run with the installed bridge's own interpreter, to read what the MCP
+#: protocol cannot show: which repository the installed copy thinks it is in,
+#: and how it classes the front door. One JSON line on stdout.
+_PROBE = """
+import json, sys
+from swarm_mcp import client
+front_door = sys.argv[1]
+print(json.dumps({
+    "file": client.__file__,
+    "root": str(client._repo_root()),
+    "host": client.front_door_host(),
+    "front_door_is_front_door": client.is_front_door("https://" + front_door),
+    "run_app_is_front_door": client.is_front_door("https://swarm-api-xyz123-uc.a.run.app"),
+}))
+"""
+
+#: Variables that would tell the probe where the API is. Removed, so the probe
+#: sees what a user with none of them set sees.
+_ADDRESS_VARS = {
+    "SWARM_REPO_ROOT",
+    "SWARM_API_HOST",
+    "API_HOST",
+    "SWARM_API_URL",
+    "API_URL",
+    "ENVIRONMENT",
+}
+
+
+def _tfvars_front_door() -> str:
+    """dev.tfvars' frontend_hostname, parsed here rather than by the bridge."""
+    tfvars = (_REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
+    assert not re.search(r"^\s*enable_frontend\s*=\s*false", tfvars, re.MULTILINE), (
+        "dev.tfvars disables the front door; the probe below has nothing to find"
+    )
+    hosts = re.findall(r'^\s*frontend_hostname\s*=\s*"(.+?)"', tfvars, re.MULTILINE)
+    assert hosts, "dev.tfvars no longer sets frontend_hostname"
+    return hosts[0]
 
 
 def _talk_mcp(argv: list[str], *, cwd: Path, env: dict[str, str]) -> tuple[dict, float, str]:
@@ -538,6 +651,63 @@ def test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it(tmp_path):
             f"{label}: the installed bridge serves {served}, this commit's serves "
             f"{expected_tools} -- it is not this commit's bridge"
         )
+
+    # WHERE EACH INSTALL THINKS IT IS, and what it makes of the front door --
+    # asked of the installed code, in the environment uv built, because both
+    # answers depend on where the installed files landed and no mock can say
+    # that. The same two facts are held offline, against a simulated layout,
+    # in tests/unit/mcp/test_bridge_outside_a_checkout.py.
+    front_door = _tfvars_front_door()
+    probe_env = {key: value for key, value in env.items() if key not in _ADDRESS_VARS}
+    readings: dict[str, dict] = {}
+    for label, from_value in runs:
+        args = list(declared["args"])
+        args[args.index("--from") + 1] = from_value
+        args[-1:] = ["python", "-c", _PROBE, front_door]
+        probed = subprocess.run(
+            [uv, *args], capture_output=True, text=True, cwd=elsewhere, env=probe_env, timeout=600
+        )
+        assert probed.returncode == 0, (
+            f"{label}: the probe did not run\nexit {probed.returncode}\n{probed.stderr[-3000:]}"
+        )
+        readings[label] = json.loads(probed.stdout.strip().splitlines()[-1])
+        print(f"{label}: {readings[label]}")
+
+    problems = []
+    pinned, local = readings["pinned"], readings["escape hatch"]
+    # A git install is in uv's cache and has no repository to read -- the
+    # state the reviewer's failure scenario starts from.
+    if Path(pinned["file"]).resolve().is_relative_to(_REPO.resolve()):
+        problems.append(f"pinned: the bridge ran from this checkout ({pinned['file']}), not an install")
+    if pinned["host"]:
+        problems.append(f"pinned: a git install found a front door ({pinned['host']!r}) to read")
+    # ...so an explicit front-door URL has to be recognised by its shape.
+    if pinned["front_door_is_front_door"] is not True:
+        problems.append(
+            f"pinned: SWARM_API_URL=https://{front_door} is not classed as the front "
+            "door outside a checkout, so the bridge would present an ID token that IAP "
+            "refuses with `Invalid JWT audience`"
+        )
+    if pinned["run_app_is_front_door"] is not False:
+        problems.append("pinned: a *.run.app address was classed as the front door")
+    # The escape hatch's files are in the cache too, but it was built from
+    # this checkout and must read this checkout's tfvars, as `uv run` here does.
+    if Path(local["file"]).resolve().is_relative_to(_REPO.resolve()):
+        problems.append(
+            f"escape hatch: ran from the checkout itself ({local['file']}), so this "
+            "proves nothing about a non-editable install"
+        )
+    if Path(local["root"]).resolve() != _REPO.resolve():
+        problems.append(
+            f"escape hatch: the installed bridge takes {local['root']} for its "
+            f"repository, not the checkout it was built from ({_REPO})"
+        )
+    if local["host"] != front_door:
+        problems.append(
+            f"escape hatch: found front door {local['host']!r}; this checkout's "
+            f"dev.tfvars says {front_door!r}"
+        )
+    assert not problems, "\n".join(problems)
 
     # Where swarm-common came from: the same repository, the same commit, its
     # own subdirectory -- never PyPI.
