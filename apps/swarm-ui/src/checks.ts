@@ -420,9 +420,11 @@ function poolCheck(capacity: Result<Capacity>): Check {
  * Failures among the tasks this page can see.
  *
  * SCOPED, and the scope is stated: `/v1/tasks?limit=200` is the 200 most
- * recently CREATED tasks, so this is "recent failures" in the only sense the
- * API can serve cheaply. It is not the tenant's total and does not claim to
- * be; the exact per-state count lives on Platform counts.
+ * recently CREATED tasks (50 at phone width, where the Overview reads the
+ * agent list's phone page -- OV-10), so this is "recent failures" in the only
+ * sense the API can serve cheaply, and the headline's N says which page. It is
+ * not the tenant's total and does not claim to be; the exact per-state count
+ * lives on Platform counts.
  */
 function failureCheck(tasks: Result<TaskPage>): Check {
   const label = 'Failures'
@@ -464,11 +466,12 @@ function failureCheck(tasks: Result<TaskPage>): Check {
         // destination, as OV-11 set for the card heads.
         //
         // THE SAME POPULATION AS THE COUNT. The list filters client-side over
-        // the same `/v1/tasks?limit=200` this check counts, deliberately not
-        // `loadTasksInState`: a server-side FAILED list is a different, larger
-        // population under the same number. The two can differ only by what
-        // changed between the reads, and the headline says "among the N most
-        // recent".
+        // the same task page this check counts -- `/v1/tasks?limit=200`, or
+        // the 50-row phone page at phone width, where the Overview reads the
+        // list's page too -- deliberately not `loadTasksInState`: a
+        // server-side FAILED list is a different, larger population under the
+        // same number. The two can differ only by what changed between the
+        // reads, and the headline says "among the N most recent".
         href: '#work/running/recent/failed',
         linkLabel: 'failed agents',
       },

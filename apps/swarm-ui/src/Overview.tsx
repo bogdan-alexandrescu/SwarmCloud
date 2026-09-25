@@ -10,9 +10,10 @@ import {
   loadWorkflows,
   type SpendRollup,
 } from './api'
+import { PHONE_PAGE_LIMIT } from './agentlist'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
-import { HelpCard, HelpNote } from './HelpCard'
+import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Absent, Mark, Metric, UtilRow, type TrackTone } from './primitives'
 import { timeAgo } from './Shell'
@@ -146,7 +147,7 @@ export function OverviewScreen() {
   }, [])
 
   const capacity = useRead(loadCapacity, live)
-  const tasks = useRead(loadTasks, live)
+  const tasks = useRead(loadListPage, live)
   const leases = useRead(loadLeases, live)
   const providers = useRead(loadProviders, live)
   const accounts = useRead(loadAccountPool, live)
@@ -521,6 +522,26 @@ const POLL_MS = 20_000
  */
 const STATS_POLL_MS = 60_000
 
+/**
+ * THE TASK PAGE THIS SCREEN COUNTS OVER IS THE AGENT LIST'S PAGE (OV-10).
+ *
+ * The failures item links to `#work/running/recent/failed`, a client-side
+ * filter over the list's own read, and the decision's guarantee is that the
+ * figure and that list describe one population. The list reads
+ * `PHONE_PAGE_LIMIT` rows at phone width (§2.5), so this reads the same page
+ * there and the api's full page everywhere else; every "among the N most
+ * recent" on this screen then names the page the list shows. Decided at each
+ * read, as the list decides it, so a rotated phone takes the right page on
+ * its next poll.
+ *
+ * `loadTasks()` WITH NO ARGUMENT on a wide screen, not `TASK_PAGE_LIMIT`: the
+ * full page is the api's default, and naming it here would be a second
+ * statement of it.
+ */
+function loadListPage(): Promise<Result<TaskPage>> {
+  return phoneWidth() ? loadTasks(PHONE_PAGE_LIMIT) : loadTasks()
+}
+
 // ---------------------------------------------------------------------------
 // Read plumbing
 // ---------------------------------------------------------------------------
@@ -742,9 +763,12 @@ function ageOf(r: Result<unknown>): number | null {
  * % used for the headroom headline, open checks over all checks for the lead.
  *
  * COVERAGE APPEARS ONLY WHEN IT IS PARTIAL, as the kit's partial mark beside
- * the figure (`mark`), and the track keeps its hatched remainder: filled to the
- * figure, hatched from there. A complete population draws no coverage at all,
- * because "every account reported" is not news.
+ * the figure (`mark`), and the track keeps its hatched remainder. The hatch
+ * starts at `measured`: on the attention lead that is the checks that ran, so
+ * a check that came back clear is plain track and only a blind one is hatched;
+ * the headroom headline passes none, and hatches from its figure. A complete
+ * population draws no coverage at all, because "every account reported" is
+ * not news.
  *
  * FIVE KINDS, AND THEY MUST NOT CONVERGE:
  *
@@ -766,6 +790,7 @@ function ageOf(r: Result<unknown>): number | null {
 function Dial({
   kind,
   pct,
+  measured,
   tone,
   say,
   mark,
@@ -774,6 +799,12 @@ function Dial({
   kind: 'measured' | 'partial' | 'unknown' | 'zero' | 'pending'
   /** 0-100: the figure's own proportion. Ignored when there is no figure. */
   pct: number
+  /**
+   * 0-100, on the same scale as `pct`: how much of the track was measured.
+   * A partial track hatches from here to the end and draws the plain track
+   * between the figure and here. Omitted, it is the figure itself.
+   */
+  measured?: number | undefined
   tone?: 'is-warn' | 'is-bad' | undefined
   say: string
   /** The kit's partial or pending mark, drawn under the track. */
@@ -781,6 +812,8 @@ function Dial({
   children: ReactNode
 }) {
   const fill = Math.max(0, Math.min(100, Math.round(pct)))
+  // Never below the fill: a figure is measured, so no part of it is hatched.
+  const read = measured === undefined ? fill : Math.max(fill, Math.min(100, Math.round(measured)))
   const figured = kind !== 'unknown' && kind !== 'pending'
   return (
     <div
@@ -788,9 +821,9 @@ function Dial({
       // Strings, not numbers: React appends `px` to a numeric value for a
       // known length property, and a custom property that arrives as `57px`
       // makes `calc(var(--pct) * 1%)` invalid and the fill disappear.
-      // `--measured` is where `.is-partial` ends the fill and starts the
-      // hatch; it is the figure too now, so the two are one number.
-      style={{ '--pct': String(fill), '--measured': String(fill) } as CSSProperties}
+      // `--measured` is where `.is-partial` starts the hatch (OV-2): only the
+      // share nobody measured is drawn as a hole.
+      style={{ '--pct': String(fill), '--measured': String(read) } as CSSProperties}
       role="img"
       aria-label={say}
       data-partial={kind === 'partial' ? 'yes' : 'no'}
@@ -1403,7 +1436,8 @@ const RUNNING_ROWS = 4
  * TWO SOURCES, DELIBERATELY, AND BOTH ARE NAMED. The COUNT comes from
  * `/v1/stats`, an exact Firestore count() per state. The ROWS come from
  * `/v1/tasks?limit=200`, the 200 most recently CREATED tasks (store.py:408
- * orders created_at DESCENDING) -- so an agent running for two days while 200
+ * orders created_at DESCENDING; 50 at phone width, the agent list's page --
+ * `loadListPage`) -- so an agent running for two days while 200
  * newer tasks were created is counted and not listed. The caption prints both
  * figures rather than quietly showing whichever is smaller, because the gap
  * between them is itself information.
@@ -1530,7 +1564,7 @@ function RunningBody({
       {/* THE GAP BETWEEN THE TWO SOURCES IS THE INFORMATION, so both figures
           stay on the surface as digits. `/v1/stats` counting more than the
           page holds is not a discrepancy to hide: it is agents older than the
-          200 most recently created. */}
+          200 most recently created (50 on a phone). */}
       <p className="ctl-card-foot">
         <FootRun>
           <span>
@@ -2256,6 +2290,22 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
           <div className="ov-dialrow-rows">
             {accounts.map(({ a, w }) => {
               const { r, pct, projected, windowName, tone } = accountRow(a, w)
+              // What the reading is, when it is not a current one. The figure
+              // carries the same fact as its dash or tilde.
+              const readingWord =
+                r.kind === 'never'
+                  ? 'never polled'
+                  : r.kind === 'absent'
+                    ? 'no window reported'
+                    : r.kind === 'reset'
+                      ? 'cleared'
+                      : r.kind === 'stale'
+                        ? `stale ${timeAgo(r.observedAt)}`
+                        : null
+              // Paused, draining: the account is not taking work, whatever
+              // its reading says. `needsAHuman` is the one state with a
+              // sentence of its own, above.
+              const stateWord = a.state !== 'AVAILABLE' && !needsAHuman(a) ? a.state.toLowerCase() : null
               // A CURRENT READING CARRIES ITS AGE TOO. `stale` and `cleared`
               // have said how old they are for as long as this card has
               // existed; a `live` reading printed only the window name, so the
@@ -2268,28 +2318,25 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                   // hand this account to this tenant while the report stands.
                   unreadableFor(a, tenantId)
                   ? 'pool is skipping it'
-                  : r.kind === 'never'
-                    ? 'never polled'
-                    : r.kind === 'absent'
-                      ? 'no window reported'
-                      : r.kind === 'reset'
-                        ? 'cleared'
-                        : r.kind === 'stale'
-                          ? `stale ${timeAgo(r.observedAt)}`
-                          : a.state !== 'AVAILABLE'
-                            ? a.state.toLowerCase()
-                            : r.kind === 'live' && windowName !== null
-                              ? `${windowName} · ${timeAgo(r.observedAt)}`
-                              : (windowName ?? '—')
+                  : // THE STATE LEADS AND THE READING WORD FOLLOWS IT (OV-7).
+                    // The reading words used to outrank the state, so a paused
+                    // account with a stale reading printed only "stale 3h
+                    // ago": no note on a phone, and no "paused" anywhere.
+                    stateWord !== null
+                    ? readingWord !== null
+                      ? `${stateWord} · ${readingWord}`
+                      : stateWord
+                    : readingWord !== null
+                      ? readingWord
+                      : r.kind === 'live' && windowName !== null
+                        ? `${windowName} · ${timeAgo(r.observedAt)}`
+                        : (windowName ?? '—')
               // THE NOTES (OV-7): the states that change what the row's figure
               // means -- a person has to sign in, the pool is skipping it for
               // this tenant, or it is paused or draining. A window name and an
               // age are provenance, and the reading words are carried by the
               // figure's own dash or tilde.
-              const note =
-                by === 'sign in again' ||
-                by === 'pool is skipping it' ||
-                (a.state !== 'AVAILABLE' && by === a.state.toLowerCase())
+              const note = by === 'sign in again' || by === 'pool is skipping it' || stateWord !== null
               return (
                 <UtilRow
                   key={a.account_id}
@@ -2459,7 +2506,8 @@ const ATTENTION_ROWS = 4
  *   - A SHORT LIST OVER BLIND CHECKS AND A SHORT LIST OVER CLEAR ONES ARE STILL
  *     DIFFERENT PICTURES. The track draws open checks over all checks now
  *     (OV-2) rather than the ones that ran, and a blind check is the kit's
- *     partial mark plus a hatched remainder -- visible before either is read,
+ *     partial mark plus a hatch over the blind share alone -- the checks that
+ *     ran clear stay plain track -- visible before either is read,
  *     which is the whole point, because only one of them is good news.
  *     `data-partial`, `is-partial` and `--pct` are the same three attributes
  *     `honesty.prose.test.tsx` mutates against.
@@ -2517,6 +2565,11 @@ function AttentionLead({ checks }: { checks: Check[] }) {
         <Dial
           kind={dialKind}
           pct={checks.length === 0 ? 0 : (found / checks.length) * 100}
+          // THE HATCH IS THE BLIND SHARE AND NOTHING ELSE. A check that ran
+          // and came back clear was measured -- it is plain track -- so the
+          // hatch starts where the checks that ran end: one blind of eight is
+          // an eighth of hatch, not everything past the open count.
+          measured={checks.length === 0 ? 0 : (ran / checks.length) * 100}
           mark={
             dialKind === 'partial' ? (
               <Mark

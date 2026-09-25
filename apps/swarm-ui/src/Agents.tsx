@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
-import { RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
 import type { Result } from './fetch'
@@ -138,8 +138,13 @@ export function pollInterval(page: TaskPage | null): number {
  * 560px since before this, and one definition of phone keeps the two from
  * disagreeing about which layout a width gets. It is decided at each READ,
  * not once, so a rotated device takes the right page on its next poll.
+ *
+ * THE VALUE LIVES IN `agentlist.ts` (OV-10): the Overview's failures check
+ * counts over the same page at the same width, so the figure and the list its
+ * link opens describe one population. Re-exported here for this screen's
+ * readers.
  */
-export const PHONE_PAGE_LIMIT = 50
+export { PHONE_PAGE_LIMIT }
 
 /** A page of the list, and the page size that read asked for. */
 interface AgentsPage extends TaskPage {
@@ -339,7 +344,8 @@ function AgentsBody({
   // failures check counts FAILED among the newest 200, this list is that same
   // newest page, and a server-side FAILED list would be a different, larger
   // population answering to the same number. (At phone width the page is the
-  // newest `PHONE_PAGE_LIMIT`, and the scope qualifier says so.)
+  // newest `PHONE_PAGE_LIMIT`, the scope qualifier says so, and the Overview
+  // counts over that same phone page there -- `loadListPage`.)
   const stateFilter = shown === 'recent' ? recentState : null
   const rows = useMemo(
     () =>

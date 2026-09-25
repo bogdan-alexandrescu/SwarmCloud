@@ -315,11 +315,14 @@ to the page `<h1>` alone. In-page region and card headings sit at `--t-lead`
 and weight 600 — the Overview's attention lead title is an `<h2>` at that step,
 and stays distinct from the card titles by its position, its track and its
 unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
-heading that ties with the h1 is a defect.** One known exception is in the
-code today and is named so the document and the code agree: `.section > h2`
-(§B4.1 of the sheet) is still `--t-title`, pinned by `typescale.test.ts` ("a
-panel title is --t-title"). TS-18 decides it; OV-15 left that rule and its test
-alone.
+heading that ties with the h1 is a defect.** The in-page headings the sheet
+still draws at `--t-title` are named so the document and the code agree:
+`.section > h2` and `.section > .ctl-toolbar > h2` (§B4.1 of the sheet, pinned
+by `typescale.test.ts`: "a panel title is --t-title"), `.sbf-move-h`,
+`.state h3`, `.ctl-empty > h3`, `.art-head h3` and `.ckb-head h3`. They are
+TS-18's (epic #84), which moves them to `--t-lead`; OV-15 left those rules and
+their tests alone. A rendered document's own h1 (`.art-md .art-h[data-level="1"]`)
+follows the document's ladder, not the console's.
 
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use
@@ -632,11 +635,15 @@ inspector's strip.
 at the figure step once** (OV-12). The Overview's strip is Running and Units
 held; headroom and spend are drawn by the panels that hold their context.
 
-**A linked tile underlines its label** (OV-8): ink plus a resting underline in
-`.ctl-link`'s token and offset, the accent on hover and focus — §1.3's rule, on
-`a.ctl-metric` so every linked fact gets it. The figure is never underlined: the
-fact's bottom edge is reserved for the absent, unread and alert rules, and the
-label is present in all four renderings while the figure is not.
+**A linked tile underlines its label** (OV-8): ink plus a resting underline,
+the accent on hover and focus — §1.3's rule, on `a.ctl-metric` so every linked
+fact gets it. **The label is a branch of the `.ctl-link` rule itself** (and of
+its hover rule, for hover and focus), not a rule restating its values, so
+whatever the link's underline token, thickness or offset becomes applies to the
+label unchanged; the metric block adds only the label's faint ink at rest. The
+figure is never underlined: the fact's bottom edge is reserved for the absent,
+unread and alert rules, and the label is present in all four renderings while
+the figure is not.
 
 ### 6.3 Figure — `.ctl-figure`
 
@@ -853,7 +860,7 @@ only their geometry is linear instead of angular:
 | State | Drawing |
 |---|---|
 | default | `--pct` filled in `--text-dim`, the rest `--surface-2`, the axis drawn at the origin |
-| `.is-partial` | filled to `--measured`, **hatched** from there — the hole in the total drawn as a hole |
+| `.is-partial` | filled to `--pct`, plain track on to `--measured`, **hatched** from there — the hole in the total drawn as a hole *(split by OV-2; see below)* |
 | `.is-unknown` | hatched, **no fill and no axis**. An empty track reads as 0%, which is a claim nobody made |
 | `.is-zero` | empty, axis drawn, plus the inset hairline `.ctl-util-track.is-zero` uses — the same mark, meaning the same thing |
 
@@ -866,10 +873,19 @@ The `aria-label` route to the sentence is the caller's and is unchanged.
   that said something else, so it was full whenever coverage was complete. The
   headroom track is the headline's % used; the checks track is open checks over
   all checks (checks, not problems: one check can raise several problems and a
-  track cannot fill past its total). `--measured` is set to the same number, so
-  `.is-partial` fills to the figure and hatches the remainder. **Coverage
-  appears only when it is partial, as the kit's `.ctl-mark.is-partial` under the
-  track**; a complete population draws no coverage at all.
+  track cannot fill past its total). **Coverage appears only when it is
+  partial, as the kit's `.ctl-mark.is-partial` under the track**; a complete
+  population draws no coverage at all.
+* **A partial track hatches only what was not measured** (OV-2, corrected in
+  review of #157). `.is-partial` is three segments now: the figure filled to
+  `--pct`, the plain track on to `--measured`, the hatch from `--measured` to
+  the end. The attention lead sets `--measured` to the checks that ran, so a
+  check that came back clear is plain track and only a blind one is hatched:
+  one blind check of eight is an eighth of hatch (`--measured: 88`), where the
+  first version of OV-2 hatched everything past the open count and drew seven
+  clear checks as unmeasured. The headroom headline sets no `--measured`, so its
+  hatch starts at its figure — the hatched remainder OV-12 (b) names; the
+  table's `.is-partial` row above keeps its meaning, the hole drawn as a hole.
 * **A fifth state, `.is-pending` (OV-9)**: the reads are in flight. The figure
   slot holds the pending mark and no digit; the track is `.ctl-pending`'s moving
   surface, with no fill, no axis and **no hatch** — the hatch means a read
@@ -1157,7 +1173,7 @@ media query.
 | | At 390px |
 |---|---|
 | Frame | rail → horizontal strip; `--app-pad` 16px; header keeps its height and its environment bar |
-| Overview | one column: the lead, the fact strip as a wrapping run of facts (`styles.css` §B6.1, no grid), then the three panels stacked. *Amended by OV-6, 2026-09-25: this row said "five cards stacked; the metric strip becomes a 2-up grid", which §B6.1 had removed on purpose. Since OV-12 the strip holds two facts and they fit on one line at 390.* An account row's status note (sign in again, pool skipping, paused, draining, the binding pool) wraps to its own line under the row, only when there is one (OV-7) |
+| Overview | one column: the lead, the fact strip as a wrapping run of facts (`styles.css` §B6.1, no grid), then the three panels stacked. *Amended by OV-6, 2026-09-25: this row said "five cards stacked; the metric strip becomes a 2-up grid", which §B6.1 had removed on purpose. Since OV-12 the strip holds two facts and they fit on one line at 390.* An account row's status note (sign in again, pool skipping, paused, draining, the binding pool) wraps to its own line under the row, only when there is one (OV-7). A paused or draining note leads the reading word rather than giving way to it (`paused · stale 3h ago`), so a stale, cleared or never-polled reading cannot hide it |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
 | Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
 | Pools / Runtimes / Accounts / AdminSettings | `.ctl-table` scrolls sideways; **Pools' Cards toggle is promoted to all four**, since a side-scrolling table is the audit's worst mobile finding and four of the five screens have no escape from it |

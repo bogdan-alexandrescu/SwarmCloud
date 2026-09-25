@@ -4718,12 +4718,21 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    five restatements of it, so a change to the primitive reaches them, and the
    rules that painted them blue are deleted where they stood -- an equal-
    specificity rule later in the sheet would otherwise quietly out-rank this
-   one. Anchors with no class at all get the same values from `:where(a)`. */
+   one. Anchors with no class at all get the same values from `:where(a)`.
+
+   A LINKED FACT'S LABEL IS A BRANCH TOO (OV-8), because `Metric` renders an
+   <a> whenever it has an href and the cue belongs on its label. It is here
+   rather than restated in the metric block so that this rule's underline --
+   its token, its thickness, its offset, whatever they become -- is the
+   label's without a second copy to drift. The metric block (sec 10) puts
+   the label's faint ink back, and its hover and focus are branches of the
+   hover rule below. */
 .ctl-link,
 .sub button,
 .ctl-dock-tools a,
 .ctl-panel-note a,
 .wb-more a,
+a.ctl-metric .ctl-metric-label,
 .wf-inspect-run {
   color: var(--text);
   text-decoration: underline;
@@ -4736,6 +4745,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dock-tools a:hover,
 .ctl-panel-note a:hover,
 .wb-more a:hover,
+a.ctl-metric:hover .ctl-metric-label,
+a.ctl-metric:focus-visible .ctl-metric-label,
 .wf-inspect-run:hover {
   color: var(--info);
   text-decoration-color: currentColor;
@@ -5123,9 +5134,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
      default      `--pct` filled, the rest track, the axis drawn at the origin
      .is-unknown  hatched, NO fill and NO axis. There is no scale to start, and
                   an empty track reads as 0%, which is a claim nobody made
-     .is-partial  filled to `--measured`, HATCHED from there -- the hole in the
-                  total drawn as a hole, so "40% of the 4 pools that answered"
-                  is not drawn as "40%"
+     .is-partial  filled to `--pct`, plain track on to `--measured`, HATCHED
+                  from there -- the hole in the total drawn as a hole, so
+                  "40% of the 4 pools that answered" is not drawn as "40%"
+                  (OV-2 split the figure from the measured share)
      .is-zero     empty, axis drawn, plus the inset hairline `.ctl-util-track`
                   uses: the scale starts here and the value is at the start of
                   it. A measured zero and a widget that failed to paint are
@@ -5197,13 +5209,19 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: var(--ctl-hatch);
   border-left-width: 0;
 }
-/* PARTIAL: measured up to `--measured`, hatched from there. The hole in the
-   total is drawn as a hole. */
+/* PARTIAL: THREE SEGMENTS, AND ONLY THE LAST IS HATCHED (OV-2). The figure
+   filled to `--pct`; the plain track from there to `--measured`, the share of
+   the population that was read; the hatch from `--measured` to the end. The
+   hole in the total is drawn as a hole, and nothing that was read is drawn
+   inside it -- on the attention lead, a check that ran and came back clear is
+   measured, so it is track, not hatch. A caller that sets no `--measured`
+   gets the figure (`.ctl-dial`'s default above), and the hatch starts there. */
 .ctl-dial.is-partial::after {
   background:
     linear-gradient(
       90deg,
-      var(--text-dim) 0 calc(var(--measured, 0) * 1%),
+      var(--text-dim) 0 calc(var(--pct, 0) * 1%),
+      var(--surface-2) calc(var(--pct, 0) * 1%) calc(var(--measured, 0) * 1%),
       transparent calc(var(--measured, 0) * 1%) 100%
     ),
     var(--ctl-hatch);
@@ -5216,9 +5234,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-faint) 55%, transparent);
 }
 /* THE TRACK DRAWS THE FIGURE NOW (OV-2), NOT THE COVERAGE: `--pct` is the
-   headline's own proportion, and `--measured` -- where `.is-partial` ends the
-   fill and starts the hatch -- is set to the same number. Coverage appears only
-   when it is partial, as the kit's `.ctl-mark.is-partial` under the track. */
+   headline's own proportion. `--measured` is where `.is-partial` starts the
+   hatch: the attention lead sets it to the checks that ran, so only the blind
+   ones are hatched; the headroom headline leaves it at the figure. Coverage
+   is otherwise shown only when it is partial, as the kit's
+   `.ctl-mark.is-partial` under the track. */
 .ctl-dial > .ctl-mark {
   order: 3;
   align-self: flex-start;
@@ -5273,8 +5293,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background-size: calc(var(--pct, 0) * 1%) 100%;
   background-repeat: no-repeat;
 }
-/* A PARTIAL VERDICT KEEPS ITS HATCHED REMAINDER: the two verdict layers over
-   the hatch, which shows only where they stop. */
+/* A PARTIAL VERDICT KEEPS ITS HATCHED REMAINDER: the two verdict layers, then
+   the plain track to `--measured`, over the hatch -- which shows only past
+   what was measured, as `.is-partial` above draws it. */
 .ctl-dial.is-partial.is-warn::after {
   background-color: transparent;
   background-image:
@@ -5284,10 +5305,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
       transparent 3px 7px
     ),
     linear-gradient(var(--warn), var(--warn)),
+    linear-gradient(var(--surface-2), var(--surface-2)),
     var(--ctl-hatch);
   background-size:
     calc(var(--pct, 0) * 1%) 100%,
     calc(var(--pct, 0) * 1%) 100%,
+    calc(var(--measured, 0) * 1%) 100%,
     100% 100%;
   background-repeat: no-repeat;
 }
@@ -5300,10 +5323,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
       transparent 2px 5px
     ),
     linear-gradient(var(--bad), var(--bad)),
+    linear-gradient(var(--surface-2), var(--surface-2)),
     var(--ctl-hatch);
   background-size:
     calc(var(--pct, 0) * 1%) 100%,
     calc(var(--pct, 0) * 1%) 100%,
+    calc(var(--measured, 0) * 1%) 100%,
     100% 100%;
   background-repeat: no-repeat;
 }
@@ -5749,10 +5774,16 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    reserved for the absent (dashed), unread (dashed warn) and alert (solid bad)
    rules above; and the label is present in all four renderings -- a value, a
    read in flight, an absence, a failed read -- while the figure is not, so the
-   cue is there in every state. The label keeps its faint ink at rest and takes
-   `.ctl-link`'s underline token and offset, so whatever the link primitive's
-   token becomes, this follows it. Its `::after` mark box is inline-block, and
-   an underline does not run under an inline-block.
+   cue is there in every state. Its `::after` mark box is inline-block, and an
+   underline does not run under an inline-block.
+
+   THE UNDERLINE IS NOT WRITTEN HERE. The label is a branch of the `.ctl-link`
+   rule in sec 9b, and of its hover rule for hover and focus, so the resting
+   underline is that rule's own declaration and whatever the link primitive's
+   token, thickness or offset becomes is this label's too. A copy here was
+   equal to the link on the day it was written and on no day after. All
+   this block adds is the label's faint ink at rest, over the link's `--text`
+   -- the same selector, later in the sheet; the hover branch outranks it.
 
    The anchor draws no decoration of its own: one a browser propagates to every
    descendant, the figure included, whatever the figure declares. */
@@ -5761,16 +5792,7 @@ a.ctl-metric {
   text-decoration: none;
   color: inherit;
 }
-a.ctl-metric .ctl-metric-label {
-  text-decoration-line: underline;
-  text-decoration-color: var(--line-soft);
-  text-underline-offset: 3px;
-}
-a.ctl-metric:hover .ctl-metric-label,
-a.ctl-metric:focus-visible .ctl-metric-label {
-  color: var(--info);
-  text-decoration-color: currentColor;
-}
+a.ctl-metric .ctl-metric-label { color: var(--text-faint); }
 /* The whole fact is the target, so the whole fact takes the focus ring. */
 a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 
