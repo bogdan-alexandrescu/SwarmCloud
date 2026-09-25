@@ -367,3 +367,133 @@ def test_the_delegate_skill_says_to_run_the_command_as_handed_back():
     assert "prefix is not optional" not in text, "the skill still insists on one prefix"
     assert "follow_live_with" in text
     assert "uv tool run --from" in text, "the plugin-only spelling is not described"
+
+
+# -- review of PR #201: the three places the one spelling did not yet reach -------
+
+
+#: A backticked `swarm <subcommand>` or `sc <subcommand>` in a string the bridge
+#: prints: a command handed to a reader, spelled by hand. A bare program name
+#: (`sc`, `swarm`) is a name, not a command, and is not matched.
+_HAND_SPELLED = re.compile(r"`(?:swarm|sc) [a-z<-][^`]*`")
+
+
+def test_no_module_hands_back_a_command_it_did_not_spell():
+    """`test_only_one_module_spells_a_launcher` finds a module that writes `uv
+    run` itself; it does not find one that writes NO launcher. `sc.py` printed
+    the remedy "see `swarm doctor`" -- `command not found` on a plugin-only
+    install -- and `config.py` told a reader "`sc context add` writes a fresh
+    one", both bare, beside commands the same functions spell through
+    `terminal_command`. So: no printed string outside `swarm_mcp.invocation`
+    carries a backticked command at all. Every one is built by the function
+    that knows the install."""
+    modules = sorted(_PACKAGE.glob("*.py"))
+    assert len(modules) > 5, f"found nothing to read under {_PACKAGE}"
+    offenders = {
+        path.name: sorted({m for s in _string_literals(path) for m in _HAND_SPELLED.findall(s)})
+        for path in modules
+        if path.name != "invocation.py"
+    }
+    offenders = {name: found for name, found in offenders.items() if found}
+    assert not offenders, (
+        "a command is spelled by hand, not by invocation.terminal_command: " f"{offenders}"
+    )
+
+
+def test_the_outranked_warning_spells_doctor_for_this_install(monkeypatch, tmp_path):
+    """`sc login` on a machine where something outranks the sign-in names a
+    remedy. For the tiers with no specific one it was "see `swarm doctor`",
+    typed bare: on a plugin-only install, `command not found`."""
+    from swarm_mcp import sc
+
+    _install(monkeypatch, tmp_path, _git_record())
+    spelled = _tool_run(_requirement(), "")
+
+    warning = sc._outranked(auth.Detection(Tier.PROXY, "ordinary user credentials"), "me@example.com")
+
+    assert f"`{spelled}swarm doctor`" in warning, warning
+
+
+class _EdgeRefused:
+    """A client whose one call is answered by Google's edge, not the API."""
+
+    def __init__(self, *, edge: bool) -> None:
+        self.edge = edge
+
+    def cancel(self, task_id: str) -> None:  # noqa: ARG002
+        if self.edge:
+            raise client.SwarmError(
+                "POST /v1/tasks/task_a/cancel -> 401: IAP refused this before the API "
+                "saw it -- Invalid IAP credentials: Invalid JWT audience.",
+                status=401,
+                edge=True,
+            )
+        raise client.SwarmError("task is already cancelled", status=409)
+
+
+def _tool_error(monkeypatch, *, edge: bool) -> str:
+    """The text an MCP tool call answers when its request fails, through the stdio loop."""
+    import io
+
+    monkeypatch.setattr(server, "SwarmClient", lambda: _EdgeRefused(edge=edge))
+    requests = [
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "swarm_cancel", "arguments": {"task_ids": ["task_a"]}},
+        }),
+    ]
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    server.serve(stdin=io.StringIO("\n".join(requests) + "\n"))
+    replies = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    call = next(r for r in replies if r.get("id") == 2)["result"]
+    assert call.get("isError") is True, call
+    return call["content"][0]["text"]
+
+
+def test_a_refusal_the_api_never_saw_names_doctor_spelled_for_this_install(monkeypatch, tmp_path):
+    """The delegate skill's answer to `IAP refused this before the API saw it`
+    was "Run `uv run swarm doctor`" -- `Failed to spawn: swarm` on a plugin-only
+    install, the exact output #189 reports, while the model is diagnosing an
+    unreachable API. The skill cannot know the install; the bridge does. So the
+    refusal itself hands back the doctor command, spelled, and the skill says
+    to run the one the error names."""
+    _install(monkeypatch, tmp_path, _git_record())
+    spelled = _tool_run(_requirement(), "")
+
+    text = _tool_error(monkeypatch, edge=True)
+
+    assert "IAP refused this before the API saw it" in text, text
+    assert f"`{spelled}swarm doctor`" in text, text
+
+
+def test_an_answer_from_the_api_itself_is_not_sent_to_doctor(monkeypatch, tmp_path):
+    """The control. A 409 from swarm-api means the request arrived; doctor,
+    which explains how a request fails to arrive, is no answer to it."""
+    _install(monkeypatch, tmp_path, _git_record())
+
+    text = _tool_error(monkeypatch, edge=False)
+
+    assert text == "task is already cancelled", text
+
+
+def _without_frontmatter(text: str) -> str:
+    assert text.startswith("---\n"), "the skill's frontmatter moved"
+    return text.split("\n---\n", 1)[1]
+
+
+def test_the_delegate_skill_spells_no_launcher_outside_its_three_spellings():
+    """The skill is the only one that works on a plugin-only install, and it
+    still said "Run `uv run swarm doctor`" and named "`uv run swarm dispatch
+    --repo`". The one passage that may show a launcher is the one that lists
+    all three spellings, to say which the bridge picks; the frontmatter's
+    permission rules are patterns to match, not commands to run."""
+    body = _without_frontmatter(_SKILL.read_text())
+    paragraphs = re.split(r"\n\s*\n", body)
+    spellings = [p for p in paragraphs if "never retype it" in p]
+    assert len(spellings) == 1, f"expected one spellings passage, found {len(spellings)}"
+    rest = "\n\n".join(p for p in paragraphs if p is not spellings[0])
+    found = sorted(set(re.findall(r"uv run (?:swarm|sc)\b[^`\n]*", rest)))
+    assert not found, f"the delegate skill hands the model a checkout-only command: {found}"
+    assert "swarm doctor" in rest, "the skill no longer says how to diagnose an unreachable API"

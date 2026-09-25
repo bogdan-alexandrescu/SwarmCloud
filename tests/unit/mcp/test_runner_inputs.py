@@ -24,6 +24,7 @@ Offline: the transport is a recorder; nothing is sent anywhere.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 from pathlib import Path
@@ -141,7 +142,6 @@ def test_an_undeclared_key_is_refused_and_the_declared_ones_are_offered(key):
         ("steps", 1.5),
         ("fail", "yes"),
         ("exit_code", 300),
-        ("retry_after_seconds", -5),
         ("artifact_name", "../escape.txt"),
         ("artifact_name", "nested/out.txt"),
         ("artifact_name", ""),
@@ -294,3 +294,188 @@ def test_swarm_profiles_prints_the_declared_inputs(capsys):
     assert cli.cmd_profiles(None, argparse.Namespace(json=False)) == cli.EXIT_OK
     printed = capsys.readouterr().out
     assert "sleep_seconds" in printed, printed
+
+
+# -- review of PR #201: no declared input can make a task that never ends ----------
+
+
+def _runner_source(name: str) -> tuple[Path, str]:
+    module = RUNNER_PROFILES[name].runner_argv[-1]
+    path = _REPO / "apps" / "agent-worker" / (module.replace(".", "/") + ".py")
+    return path, path.read_text()
+
+
+def _payload_keys(node: ast.AST) -> set[str]:
+    """Every `payload.get("k")` / `payload["k"]` key read anywhere under `node`."""
+    keys: set[str] = set()
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "get"
+            and isinstance(sub.func.value, ast.Name)
+            and sub.func.value.id == "payload"
+            and sub.args
+            and isinstance(sub.args[0], ast.Constant)
+        ):
+            keys.add(sub.args[0].value)
+        if (
+            isinstance(sub, ast.Subscript)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id == "payload"
+            and isinstance(sub.slice, ast.Constant)
+        ):
+            keys.add(sub.slice.value)
+    return keys
+
+
+def _raises(node: ast.If, signal: str) -> bool:
+    """Does this `if`'s body raise `signal(...)`?"""
+    return any(
+        isinstance(sub, ast.Raise)
+        and isinstance(sub.exc, ast.Call)
+        and isinstance(sub.exc.func, ast.Name)
+        and sub.exc.func.id == signal
+        for stmt in node.body
+        for sub in ast.walk(stmt)
+    )
+
+
+def test_no_declared_input_reaches_the_runners_rate_limit_signal():
+    """`quota_exhausted` was declared, and the mock raises its rate limit on
+    EVERY attempt: the check runs before any saved state and keeps no count,
+    unlike `credential_revoked_times`. A park does not spend an attempt --
+    neither `control.park` nor the scheduler's promotion reads
+    `retries_exhausted` -- so the task re-leased and re-parked, a new Cloud Run
+    execution each time, until someone ran `swarm cancel`. The delegate skill
+    told the model `{"quota_exhausted": true}` "parks it", as if once.
+
+    So nothing a caller may send reaches `QuotaExhaustedSignal`: no key read in
+    the condition that raises it, nor in the signal it raises (its provider,
+    its retry-after). Read from the runner's own source, never imported."""
+    checked = 0
+    for name, declared in catalogue.DECLARED_INPUTS.items():
+        path, source = _runner_source(name)
+        branches = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.If) and _raises(node, "QuotaExhaustedSignal")
+        ]
+        if name == "mock":
+            assert branches, (
+                f"{path.relative_to(_REPO)} no longer raises a rate limit; re-read this test"
+            )
+        for branch in branches:
+            checked += 1
+            reaches = sorted(_payload_keys(branch) & set(declared))
+            assert not reaches, (
+                f"{name} declares {reaches}, which reach the runner's rate limit at "
+                f"{path.relative_to(_REPO)}:{branch.lineno} -- a task that parks on every "
+                "attempt and never ends"
+            )
+    assert checked, "no rate-limit branch was checked; the loop ran over nothing"
+
+
+@pytest.mark.parametrize("key,value", [("quota_exhausted", True), ("retry_after_seconds", 46)])
+def test_the_rate_limit_knobs_are_refused_by_name(key, value):
+    """The two keys the finding's session sent. Refused, never dropped."""
+    with pytest.raises(SwarmError) as caught:
+        catalogue.check_inputs("mock", {key: value})
+    assert key in str(caught.value), caught.value
+
+
+def _worker_exit_codes() -> dict[str, int]:
+    """`EXIT_*` in agent_worker/runners/base.py: the codes the worker reads a
+    runner's exit by. Read from the source, as the runner is above."""
+    path = _REPO / "apps" / "agent-worker" / "agent_worker" / "runners" / "base.py"
+    codes: dict[str, int] = {}
+    for node in ast.parse(path.read_text()).body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id.startswith("EXIT_")
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, int)
+        ):
+            codes[node.targets[0].id] = node.value.value
+    return codes
+
+
+def _read_as_something_else() -> list[tuple[str, int]]:
+    """Every exit code the worker reads as anything but a plain failure."""
+    codes = _worker_exit_codes()
+    assert codes.get("EXIT_FAILED") == 1, codes
+    return sorted((name, code) for name, code in codes.items() if name != "EXIT_FAILED")
+
+
+def test_the_worker_still_reads_the_codes_this_file_is_about():
+    """Guards the parametrisation below against reading nothing."""
+    names = {name for name, _ in _read_as_something_else()}
+    expected = {"EXIT_OK", "EXIT_QUOTA_EXHAUSTED", "EXIT_CREDENTIAL_REVOKED", "EXIT_TERMINATED"}
+    assert expected <= names, names
+
+
+@pytest.mark.parametrize("name,code", _read_as_something_else())
+def test_a_failure_cannot_exit_with_a_code_the_worker_reads_as_something_else(name, code):
+    """`fail` with `exit_code` exits the mock with that code, and the worker
+    decides what the attempt WAS from it: 77 is a rate limit -- with no
+    quota.json it invents one for provider "unknown" and parks, the same loop
+    as above -- 143 records the task CANCELLED, 78 is the refused-credential
+    code, and 0, beside the result.json the mock writes, records SUCCEEDED. A
+    failure on purpose that reads as any of those is not a failure."""
+    with pytest.raises(SwarmError) as caught:
+        catalogue.check_inputs("mock", {"fail": True, "exit_code": code})
+    message = str(caught.value)
+    assert "exit_code" in message, f"{name}: {message}"
+    assert str(code) in message, f"{name}: {message}"
+
+
+@pytest.mark.parametrize("code", [1, 2, 42, 76, 79, 142, 255])
+def test_a_failure_may_still_exit_with_an_ordinary_code(code):
+    assert catalogue.check_inputs("mock", {"fail": True, "exit_code": code}) == {
+        "exit_code": code,
+        "fail": True,
+    }
+
+
+#: `{"key": ...}` in an example, and `--input key=...` (lowercase, so the
+#: usage line's `--input KEY=VALUE` metavar is not read as a key).
+_EXAMPLE_KEY = re.compile(r"""\{\s*\\?["'](?P<a>\w+)\\?["']\s*:|--input\s+(?P<b>[a-z_]+)=""")
+
+
+def _examples(text: str) -> set[str]:
+    return {m["a"] or m["b"] for m in _EXAMPLE_KEY.finditer(text)}
+
+
+def _subcommand(name: str) -> argparse.ArgumentParser:
+    for action in cli.build_parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices[name]
+    raise AssertionError("swarm has no subcommands")
+
+
+def test_every_input_the_bridge_or_the_skill_shows_is_one_that_is_declared():
+    """The skill said `{"quota_exhausted": true}` parks a mock step, and the PR
+    said so too. An example is what a model copies, so each one names a key
+    `mock` declares -- read from the texts a session actually sees: the
+    delegate skill's `inputs` paragraph, the tool schema, the CLI's help."""
+    skill = (_REPO / "plugin" / "skills" / "delegate" / "SKILL.md").read_text()
+    paragraph = [p for p in re.split(r"\n\s*\n", skill) if p.startswith("`inputs`")]
+    assert len(paragraph) == 1, "the delegate skill's `inputs` paragraph moved"
+    # Sentences end at a full stop before a capital, so `e.g. {...}` stays whole.
+    epilog = [s for s in re.split(r"\.\s+(?=[A-Z])", cli._workflow_epilog()) if "`inputs`" in s]
+    assert len(epilog) == 1, "the workflow help's `inputs` sentence moved"
+    flag = [a for a in _subcommand("dispatch")._actions if a.dest == "inputs"]
+    assert len(flag) == 1, "swarm dispatch has no --input"
+    texts = {
+        "delegate SKILL.md": paragraph[0],
+        "the inputs schema": server._INPUTS_SCHEMA["description"],
+        "swarm workflow --help": epilog[0],
+        "swarm dispatch --input's help": flag[0].help,
+    }
+    for where, text in texts.items():
+        shown = _examples(text)
+        assert shown, f"{where} shows no example any more; this test reads nothing there"
+        undeclared = sorted(shown - set(catalogue.DECLARED_INPUTS["mock"]))
+        assert not undeclared, f"{where} shows {undeclared} as inputs, which mock does not declare"
